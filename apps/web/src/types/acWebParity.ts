@@ -1,8 +1,11 @@
 export interface AcWebTask {
   task_id: string
-  task_type: string
   status: string
-  message: string
+  action: string
+  artifact_id: string
+  available: boolean
+  sha256: string
+  size_bytes: number
 }
 
 export interface AcExtension {
@@ -39,7 +42,6 @@ export interface AcExtensionPreview {
 
 export interface AcActionPlan {
   plan_id: string
-  site_id: string
   target_id: string
   action_id: string
   action_label: string

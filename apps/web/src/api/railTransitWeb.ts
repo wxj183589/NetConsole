@@ -11,21 +11,22 @@ export function listOnlineTrains(page = 1, pageSize = 50): Promise<Record<string
   return apiRequest(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
 }
 
-export function startCarNetworkDiagnostic(siteId = '', trainId = ''): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/car-network-diagnostic`, { method: 'POST', body: JSON.stringify({ site_id: siteId, train_id: trainId }) })
+export function startCarNetworkDiagnostic(trainId = ''): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${onlineMrRoot}/car-network-diagnostic`, { method: 'POST', body: JSON.stringify({ train_id: trainId }) })
 }
 
-export function refreshTracksideBusiness(siteId = '', acId = ''): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${acRoot}/trackside-business/refresh`, { method: 'POST', body: JSON.stringify({ site_id: siteId, ac_id: acId }) })
+export function refreshTracksideBusiness(acId = ''): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${acRoot}/trackside-business/refresh`, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
-export function importMeshAnalysis(files: File[], profile: MeshImportProfile, siteId = ''): Promise<RailTransitTask> {
+export function importMeshAnalysis(files: File[], profile: MeshImportProfile): Promise<RailTransitTask> {
   const form = new FormData()
   files.forEach((file) => form.append('files', file))
-  form.append('site_id', siteId)
-  Object.entries(profile).forEach(([key, value]) => {
-    if (value !== undefined) form.append(key, String(value))
-  })
+  form.append('mr_id', profile.mr_id)
+  form.append('display_name', profile.display_name)
+  form.append('safe_folder_name', profile.safe_folder_name)
+  if (profile.linked_device_id !== undefined) form.append('linked_device_id', String(profile.linked_device_id))
+  if (profile.notes !== undefined) form.append('notes', profile.notes)
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/mesh-analysis/import`, { method: 'POST', body: form })
 }
 
@@ -36,4 +37,20 @@ export function queryOnlineMrMetrics(sessionId: string, metricTypes = ['rssi']):
 
 export function exportOnlineMrReport(sessionId: string, outputName = ''): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/report`, { method: 'POST', body: JSON.stringify({ output_name: outputName }) })
+}
+
+export function exportMeshAnalysisReport(sessionId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`/api/rail-transit/mesh-analysis/sessions/${encodeURIComponent(sessionId)}/report`, { method: 'POST' })
+}
+
+export function getRailTransitTask(taskId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${onlineMrRoot}/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelRailTransitTask(taskId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${onlineMrRoot}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
+export function recoverRailTransitTasks(): Promise<RailTransitTask[]> {
+  return apiRequest<RailTransitTask[]>(`${onlineMrRoot}/tasks/recover`, { method: 'POST' })
 }

@@ -58,6 +58,15 @@ def test_mesh_analysis_api_is_get_only_and_keeps_analysis_files_unchanged(tmp_pa
     assert before == [_fingerprint(path) for path in protected]
     routes = [route for route in mesh_analysis_router.routes if getattr(route, "path", "").startswith("/rail-transit/mesh-analysis")]
     assert routes
-    assert all(route.methods == {"GET"} for route in routes)
+    post_paths = {route.path for route in routes if route.methods == {"POST"}}
+    assert post_paths == {"/rail-transit/mesh-analysis/sessions/{session_id}/report"}
+    assert all(route.methods in ({"GET"}, {"POST"}) for route in routes)
+    generated_report_paths = post_paths | {
+        "/rail-transit/mesh-analysis/report-artifacts/{artifact_id}/download"
+    }
     forbidden = ("analyze", "reparse", "export", "report", "delete", "start", "stop")
-    assert not any(any(word in route.path for word in forbidden) for route in routes)
+    assert not any(
+        any(word in route.path for word in forbidden)
+        for route in routes
+        if route.path not in generated_report_paths
+    )

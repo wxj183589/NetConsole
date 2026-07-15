@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAlignmentDTO,
@@ -24,6 +26,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshSwitchEventPageDTO,
     MeshTimelineDTO,
 )
+from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
 
 
@@ -33,6 +36,17 @@ T = TypeVar("T")
 
 def _service(request: Request) -> MeshAnalysisQueryService:
     return request.app.state.mesh_analysis_query_service
+
+
+def _rail_service(request: Request) -> RailTransitWebApplicationService:
+    service = getattr(request.app.state, "rail_transit_web_application_service", None)
+    if service is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="轨交 Web 服务未接线")
+    return service
+
+
+def _current_site_id(request: Request) -> str:
+    return request.app.state.online_mr_api_facade.current_site_id()
 
 
 def _site_id(request: Request, supplied: str) -> str:
@@ -252,6 +266,38 @@ def raw_tail(
     lines: int = Query(default=100, ge=1, le=200),
 ) -> MeshRawTailDTO:
     return _query(lambda: _service(request).read_raw_tail(_site_id(request, site_id), session_id, source_id, lines=lines))
+
+
+@router.post(
+    "/sessions/{session_id}/report",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+)
+def start_report(request: Request, session_id: str) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_report(_current_site_id(request), session_id)
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/report-artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+)
+def download_generated_report(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _rail_service(request).open_mesh_report(_current_site_id(request), artifact_id)
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return FileResponse(path, filename=name)
 
 
 __all__ = ["router"]

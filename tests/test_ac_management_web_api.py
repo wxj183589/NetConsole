@@ -83,6 +83,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/mesh-links/refresh",
         "/api/ac-management/extensions/import-preview",
         "/api/ac-management/extensions/import-apply",
+        "/api/ac-management/extensions/export",
         "/api/ac-management/extensions/audits/{audit_id}/rollback",
         "/api/ac-management/refresh/{refresh_kind}",
         "/api/ac-management/trackside-business/refresh",

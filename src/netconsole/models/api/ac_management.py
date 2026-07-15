@@ -192,29 +192,35 @@ class AcExtensionPageDTO(ApiModel):
 class AcTracksidePlanDTO(ApiModel):
     station_name: str
     ap_count: int = 0
-    planned_count: int = 0
-    actual_count: int = 0
+    ap_start_address: str = ""
+    mask_length: int = 0
+    ap_gateway: str = ""
+    ap_management_vlans: str = ""
     remark: str = ""
-    mode: str = "trackside"
+    sort_order: int = 0
+    mode: str = "unified"
+    created_at: str = ""
     updated_at: str = ""
 
 
 class AcTracksidePlanPageDTO(ApiModel):
     items: list[AcTracksidePlanDTO] = Field(default_factory=list)
     total: int = 0
-    mode: str = "trackside"
+    mode: str = "unified"
 
 
 class AcWebTaskDTO(ApiModel):
     task_id: str
-    task_type: str
     status: str = "PENDING"
-    message: str = ""
+    action: str
+    artifact_id: str = ""
+    available: bool = False
+    sha256: str = ""
+    size_bytes: int = 0
 
 
 class AcActionPlanDTO(ApiModel):
     plan_id: str
-    site_id: str
     target_id: str
     action_id: str
     action_label: str

@@ -1,9 +1,11 @@
 export interface RailTransitTask {
   task_id: string
-  task_type: string
   status: string
-  message: string
-  artifact_path: string
+  action: string
+  artifact_id: string
+  available: boolean
+  sha256: string
+  size_bytes: number
 }
 
 export interface OnlineMrMetricPoint {
@@ -24,7 +26,6 @@ export interface MeshImportProfile {
   mr_id: string
   display_name: string
   safe_folder_name: string
-  relative_folder_path?: string
   linked_device_id?: number
   notes?: string
 }

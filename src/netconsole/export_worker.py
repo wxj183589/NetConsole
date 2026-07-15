@@ -19,6 +19,8 @@ from netconsole.services.export.export_job import ExportJob
 from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
 from netconsole.services.job_center.job_events import log_event
 from netconsole.services.job_center.worker_protocol import write_event
+from netconsole.services.mesh_analysis_report import MeshReportOptions
+from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
 from netconsole.services.file_contract import attach_export_metadata
@@ -136,6 +138,77 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
     _emit(event)
 
 
+class _MeshProgressQueue:
+    def __init__(self, job: ExportJob) -> None:
+        self.job = job
+        self.terminal: dict[str, Any] = {}
+        self.generated_files: list[str] = []
+
+    def put(self, payload: dict[str, Any]) -> None:
+        kind = str(payload.get("kind") or "")
+        self.generated_files = [str(value) for value in payload.get("generated_files") or self.generated_files]
+        if kind == "progress":
+            value = int(payload.get("value") or 0)
+            _emit_progress(self.job, value, 100, str(payload.get("stage") or "mesh_report"))
+        elif kind in {"completed", "failed", "cancelled"}:
+            self.terminal = dict(payload)
+
+
+class _MeshCancelEvent:
+    def __init__(self, job: ExportJob) -> None:
+        self.job = job
+
+    def is_set(self) -> bool:
+        return _should_cancel(self.job)
+
+
+def _run_mesh_analysis_report(job: ExportJob) -> None:
+    job.validate()
+    output_root = Path(job.output_path).resolve().parent
+    payload = dict(job.params.get("payload") or job.params or {})
+    option_values = dict(payload.get("options") or {})
+    option_values.update(use_multi_core=False, open_output_dir_after_done=False, separate_reports_by_source_file=True)
+    options = MeshReportOptions(**option_values)
+    source_ids = tuple(int(value) for value in payload.get("source_file_ids") or ())
+    if len(source_ids) != 1:
+        raise ValueError("Web MESH 报告必须绑定一个来源文件")
+    queue = _MeshProgressQueue(job)
+    request = MeshReportProcessRequest(
+        db_path=job.db_path,
+        mr_name=str(payload.get("mr_name") or ""),
+        output_path=job.output_path,
+        temp_path=job.tmp_path,
+        options=options,
+        source_file_ids=source_ids,
+    )
+    try:
+        run_mesh_report_process(request, queue, _MeshCancelEvent(job))
+        kind = str(queue.terminal.get("kind") or "")
+        if kind == "cancelled" or _should_cancel(job):
+            raise ExportCancelled("导出已取消")
+        if kind != "completed":
+            raise RuntimeError(str(queue.terminal.get("error") or "MESH 报告生成失败"))
+        if len(queue.generated_files) != 1:
+            raise RuntimeError("MESH 报告输出数量异常")
+        generated = Path(queue.generated_files[0]).resolve()
+        if generated.is_symlink() or output_root not in generated.parents:
+            raise RuntimeError("MESH 报告输出路径无效")
+        tmp_path = Path(job.tmp_path)
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(generated, tmp_path)
+        os.replace(tmp_path, job.output_path)
+        _emit(finished_event(job.job_id, job.output_path, row_count=1))
+    except Exception:
+        for value in queue.generated_files:
+            path = Path(value).resolve()
+            try:
+                if output_root in path.parents and path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def run_job(job: ExportJob) -> int:
     diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
     with redirect_stdout(diagnostics):
@@ -157,6 +230,9 @@ def _run_job(job: ExportJob) -> int:
             return 0
         if job.job_type == "mesh_link_detail":
             _run_mesh_link_detail(job)
+            return 0
+        if job.job_type == "mesh_analysis_report":
+            _run_mesh_analysis_report(job)
             return 0
         raise ValueError(f"不支持的导出任务类型：{job.job_type}")
     except (MeshLinkDetailExportCancelled, TracksideApExportCancelled, ExportCancelled) as exc:

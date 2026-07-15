@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
+from pathlib import Path
+from uuid import uuid4
 
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
+
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.common import ApiResponse
 from netconsole.models.api.online_mr import (
     OnlineMrCollectorStatusDTO,
@@ -132,62 +137,154 @@ def artifacts(request: Request, session_id: str) -> ApiResponse[list[OnlineMrArt
     return ApiResponse(data=_rail_service(request).artifacts(_facade(request).current_site_id(), session_id))
 
 
-@router.post("/sessions/{session_id}/report", response_model=RailTransitTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/sessions/{session_id}/report",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.online_mr_report_export"))],
+)
 def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO) -> RailTransitTaskDTO:
     try:
-        site_id = payload.site_id or _facade(request).current_site_id()
-        return _rail_service(request).start_online_mr_report(site_id, session_id, payload.output_name)
+        return _rail_service(request).start_online_mr_report(
+            _facade(request).current_site_id(), session_id, payload.output_name
+        )
     except RailTransitWebError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": exc.code, "message": str(exc)}) from exc
+        _raise_rail_error(exc)
 
 
-@router.post("/mesh-analysis/import", response_model=RailTransitTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/mesh-analysis/import",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
 async def mesh_analysis_import(
     request: Request,
     files: list[UploadFile] = File(...),
-    site_id: str = Form(default=""),
     mr_id: str = Form(default=""),
     display_name: str = Form(default=""),
     safe_folder_name: str = Form(default=""),
-    relative_folder_path: str = Form(default=""),
     linked_device_id: int | None = Form(default=None),
     notes: str = Form(default=""),
 ) -> RailTransitTaskDTO:
-    contents: list[tuple[str, bytes]] = []
+    service = _rail_service(request)
+    site_id = _facade(request).current_site_id()
+    staging = service.create_mesh_staging(site_id)
+    staged: list[Path] = []
     total_size = 0
     try:
-        for upload in files:
-            content = await upload.read(20 * 1024 * 1024 + 1)
-            total_size += len(content)
-            if total_size > 100 * 1024 * 1024:
-                raise RailTransitWebError("FILES_TOO_LARGE", "MESH 导入文件总大小不得超过 100 MB")
-            contents.append((upload.filename or "", content))
-        selected_site = site_id or _facade(request).current_site_id()
-        return _rail_service(request).start_mesh_import(
-            selected_site,
+        submitted = await request.form()
+        if "site_id" in submitted or "relative_folder_path" in submitted:
+            raise RailTransitWebError("BROWSER_SITE_FORBIDDEN", "Browser 不得提交局点或运行目录")
+        for index, upload in enumerate(files, 1):
+            suffix = Path(upload.filename or "").suffix.casefold()
+            if suffix not in {".log", ".txt"}:
+                raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT 文件")
+            target = staging / f"{index:03d}-{uuid4().hex}{suffix}"
+            file_size = 0
+            with target.open("xb") as handle:
+                while chunk := await upload.read(1024 * 1024):
+                    file_size += len(chunk)
+                    total_size += len(chunk)
+                    if file_size > 20 * 1024 * 1024:
+                        raise RailTransitWebError("FILE_TOO_LARGE", "单个 MESH 日志不得超过 20 MiB")
+                    if total_size > 100 * 1024 * 1024:
+                        raise RailTransitWebError("FILES_TOO_LARGE", "MESH 导入文件总大小不得超过 100 MiB")
+                    handle.write(chunk)
+            staged.append(target)
+        return service.start_mesh_import(
+            site_id,
             profile={
                 "mr_id": mr_id,
                 "display_name": display_name,
                 "safe_folder_name": safe_folder_name,
-                "relative_folder_path": relative_folder_path,
                 "linked_device_id": linked_device_id,
                 "notes": notes,
             },
-            uploads=contents,
+            staging_dir=staging,
+            uploads=staged,
         )
     except RailTransitWebError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": exc.code, "message": str(exc)}) from exc
+        service.discard_mesh_staging(site_id, staging)
+        _raise_rail_error(exc)
+    except Exception:
+        service.discard_mesh_staging(site_id, staging)
+        raise
     finally:
         for upload in files:
             await upload.close()
 
 
-@router.post("/car-network-diagnostic", response_model=RailTransitTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/car-network-diagnostic",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.rail_car_network_diagnostic_execute"))],
+)
 def car_network_diagnostic(request: Request, payload: RailTransitTaskRequestDTO) -> RailTransitTaskDTO:
     try:
-        return _rail_service(request).start_car_network_diagnostic(payload.site_id or _facade(request).current_site_id(), train_id=payload.train_id)
+        return _rail_service(request).start_car_network_diagnostic(
+            _facade(request).current_site_id(), train_id=payload.train_id
+        )
     except RailTransitWebError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": exc.code, "message": str(exc)}) from exc
+        _raise_rail_error(exc)
+
+
+@router.get(
+    "/report-artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.online_mr_report_export"))],
+)
+def report_download(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _rail_service(request).open_online_mr_report(
+            _facade(request).current_site_id(), artifact_id
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+    return FileResponse(path, filename=name)
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def task_detail(request: Request, task_id: str) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).get_task(_facade(request).current_site_id(), task_id)
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.post(
+    "/tasks/{task_id}/cancel",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def task_cancel(request: Request, task_id: str) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).cancel_task(_facade(request).current_site_id(), task_id)
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.post(
+    "/tasks/recover",
+    response_model=list[RailTransitTaskDTO],
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def task_recover(request: Request) -> list[RailTransitTaskDTO]:
+    try:
+        return _rail_service(request).recover_tasks(_facade(request).current_site_id())
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+def _raise_rail_error(exc: RailTransitWebError) -> None:
+    not_found = {"TASK_NOT_FOUND", "SESSION_NOT_FOUND", "MESH_SESSION_NOT_FOUND", "MESH_RESULT_NOT_FOUND", "ARTIFACT_INVALID"}
+    status_code = status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 __all__ = ["router"]

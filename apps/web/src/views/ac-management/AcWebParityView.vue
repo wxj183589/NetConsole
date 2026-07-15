@@ -6,6 +6,7 @@ import {
   confirmAcActionPlan,
   createAcActionPlan,
   executeAcActionPlan,
+  exportAcExtensions,
   listAcExtensions,
   previewAcExtension,
   rollbackAcExtension,
@@ -62,6 +63,10 @@ async function refresh(kind: Parameters<typeof startAcRefresh>[0]): Promise<void
   task.value = await startAcRefresh(kind, targetId.value)
 }
 
+async function exportExtensions(): Promise<void> {
+  task.value = await exportAcExtensions('', targetId.value)
+}
+
 async function createPlan(): Promise<void> {
   actionPlan.value = await createAcActionPlan(targetId.value, actionId.value)
 }
@@ -79,7 +84,7 @@ onMounted(() => { void loadExtensions() })
 
 <template>
   <section class="ac-web-parity">
-    <header class="heading"><div><p class="eyebrow">AC WEB · CONTROLLED</p><h1>AC 扩展与受控动作</h1><p>复用正式 AC Query/Import/Task；危险动作只生成固定计划并交给 Fake Executor。</p></div><el-button :loading="loading" @click="loadExtensions">刷新扩展信息</el-button></header>
+    <header class="heading"><div><p class="eyebrow">AC WEB · CONTROLLED</p><h1>AC 扩展与受控动作</h1><p>复用正式 AC Query/Import/Task；危险动作只生成固定计划并交给 Fake Executor。</p></div><div class="actions"><el-button @click="exportExtensions">受控导出</el-button><el-button :loading="loading" @click="loadExtensions">刷新扩展信息</el-button></div></header>
     <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
     <div class="toolbar"><el-input v-model="targetId" placeholder="AC 目标 ID，例如 ac-1" /><el-select v-model="actionId"><el-option label="固化新 AP" value="persist_auto_ap" /><el-option label="save force" value="save_config" /><el-option label="开启 AP 远程登录" value="enable_ap_remote_login" /></el-select><el-button @click="createPlan">生成计划</el-button><el-button :disabled="!actionPlan" @click="confirmPlan">二次确认</el-button><el-button type="danger" :disabled="actionPlan?.status !== 'CONFIRMED'" @click="executePlan">执行 Fake</el-button><el-button @click="refresh('optical')">刷新光衰任务</el-button></div>
     <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>计划 {{ actionPlan.plan_id }} · {{ actionPlan.status }}</template><p>摘要：{{ actionPlan.plan_digest }}</p><p>令牌仅用于本次确认，过期或篡改会被拒绝。</p><pre>{{ actionPlan.command_summary.join('\n') }}</pre><p v-if="task">任务：{{ task.task_id }} / {{ task.status }}</p></el-card>

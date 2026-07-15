@@ -43,6 +43,10 @@ export function startAcRefresh(kind: 'ac' | 'fit-ap' | 'optical' | 'trackside-pl
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
+export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
+}
+
 export function createAcActionPlan(targetId: string, actionId: string): Promise<AcActionPlan> {
   return apiRequest<AcActionPlan>(`${root}/actions/plans`, { method: 'POST', body: JSON.stringify({ target_id: targetId, action_id: actionId }) })
 }
