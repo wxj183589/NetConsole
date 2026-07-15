@@ -1,27 +1,40 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 from threading import Barrier, Event
+import zipfile
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from netconsole.backend.api.config_collection_router import router
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
+from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
+from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.config_collection_job_handlers import HANDLERS as CONFIG_WEB_HANDLERS
+from netconsole.services import config_collection_job_handlers
 from netconsole.services.config_lifecycle_service import ConfigLifecycleService
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
+from netconsole.services.job_center.job_events import cancelled_event, error_event, finished_event, progress_event
 from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.worker_protocol import encode_event
 
 
 class _NoopAsyncService:
@@ -54,6 +67,81 @@ class _FakeProcessAdapter:
 
     def shutdown(self) -> None:
         return None
+
+
+class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
+    def __init__(self, task_service: TaskApplicationService) -> None:
+        super().__init__(task_service)
+        self.cancel_next = False
+
+    def start_job(self, job: JobSpec, **_kwargs) -> str:
+        self.jobs.append(job)
+        launch = self.task_service.prepare(job)
+        self.task_service.mark_running(job.job_id)
+        def progress(stage, current, total, message):
+            self._event(job.job_id, progress_event(job.job_id, stage, current, total, message))
+        try:
+            if job.task_type in CONFIG_WEB_HANDLERS:
+                result = CONFIG_WEB_HANDLERS[job.task_type](
+                    JobContext.from_job(job, progress, lambda: self.cancel_next)
+                )
+            else:
+                result = dispatch_job(job, progress, lambda: self.cancel_next)
+            self._event(job.job_id, finished_event(job.job_id, result))
+            exit_code = 0
+        except BackgroundTaskCancelled as exc:
+            self._event(job.job_id, cancelled_event(job.job_id, str(exc)))
+            exit_code = 2
+        except Exception as exc:
+            self._event(job.job_id, error_event(job.job_id, str(exc)))
+            exit_code = 1
+        self.task_service.complete(launch.job.job_id, exit_code)
+        self.cancel_next = False
+        return launch.job.job_id
+
+    def _event(self, job_id: str, event: dict[str, object]) -> None:
+        self.task_service.feed_stdout(job_id, encode_event(event).encode("utf-8"))
+
+
+HANDOFF_FEATURES = (
+    "web.config_collection_delete",
+    "web.config_collection_save_force",
+    "web.config_collection_export",
+    "web.config_collection_open_directory",
+)
+
+
+def _enable_handoff_features(monkeypatch) -> None:
+    for feature_id in HANDOFF_FEATURES:
+        monkeypatch.setitem(
+            FEATURE_BY_ID,
+            feature_id,
+            FeatureItem(feature_id, feature_id, "web.config_collection", "action"),
+        )
+
+
+def _install_fake_connector(monkeypatch, *, fail: bool = False) -> list[str]:
+    commands: list[str] = []
+
+    def run_with_retry(_device, operation):
+        return operation(object(), SimpleNamespace(protocol="ssh"))
+
+    def send_command(_connection, command: str, **_kwargs):
+        commands.append(command)
+        if fail:
+            raise RuntimeError("fake connector failure")
+        if command == "display saved-configuration":
+            return "#\nsysname SW-01\nvlan 10\nreturn"
+        if command == "display current-configuration":
+            return "#\nsysname SW-01\nvlan 20\nreturn"
+        return "success"
+
+    monkeypatch.setattr(
+        "netconsole.services.config_lifecycle_service.netmiko_connection.run_netmiko_with_retry",
+        run_with_retry,
+    )
+    monkeypatch.setattr("netconsole.services.config_lifecycle_service.safe_send_command", send_command)
+    return commands
 
 
 def _fixture(tmp_path: Path):
@@ -256,11 +344,15 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
         site_name="demo",
     )
     app.state.config_collection_service.task_service.repository("demo").save(task)
+    pending = replace(task, task_id="config-web-pending-diff", status=TaskState.RUNNING)
+    app.state.config_collection_service.task_service.repository("demo").save(pending)
     with TestClient(app) as client:
         status = client.get("/api/config-collection/tasks/config-web-test-diff")
         removed = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=removed")
         invalid_filter = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=unknown")
         artifact = client.get("/api/config-collection/artifacts/diff-config-web-test-diff")
+        pending_status = client.get("/api/config-collection/tasks/config-web-pending-diff")
+        pending_artifact = client.get("/api/config-collection/artifacts/diff-config-web-pending-diff")
 
     assert status.status_code == 200
     assert status.json()["result"]["artifact_id"] == "diff-config-web-test-diff"
@@ -271,22 +363,342 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
     assert str(paths.data_root) not in status.text
     assert artifact.status_code == 200
     assert "vlan 10" in artifact.text
+    assert "artifact_id" not in pending_status.json()["result"]
+    assert pending_artifact.status_code == 404
 
 
-def test_config_collection_delete_uses_registered_task_and_cancel_is_owner_scoped(tmp_path: Path) -> None:
+def test_config_collection_delete_requires_scoped_one_time_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_handoff_features(monkeypatch)
     app, _paths, device, running, _saved, adapter = _fixture(tmp_path)
 
     with TestClient(app) as client:
-        deleted = client.post("/api/config-collection/snapshots/delete", json={"snapshot_ids": [running.id]})
+        issued = client.post(
+            "/api/config-collection/snapshots/delete/issue",
+            json={"snapshot_ids": [running.id, running.id]},
+        )
+        tampered = client.post(
+            "/api/config-collection/snapshots/delete/confirm",
+            json={"confirmation_token": issued.json()["confirmation_token"] + "x", "digest": issued.json()["digest"]},
+        )
+        deleted = client.post(
+            "/api/config-collection/snapshots/delete/confirm",
+            json={"confirmation_token": issued.json()["confirmation_token"], "digest": issued.json()["digest"]},
+        )
+        replay = client.post(
+            "/api/config-collection/snapshots/delete/confirm",
+            json={"confirmation_token": issued.json()["confirmation_token"], "digest": issued.json()["digest"]},
+        )
         cancelled = client.post(f"/api/config-collection/tasks/{deleted.json()['id']}/cancel")
         foreign = client.post("/api/config-collection/tasks/not-a-config-task/cancel")
-        directory = client.get("/api/config-collection/directory?directory_kind=config_exports")
+        directory = client.post("/api/config-collection/desktop-actions/open-directory?directory_kind=config_exports")
 
+    assert issued.status_code == 200
+    assert issued.json()["snapshot_ids"] == [running.id]
+    assert "删除 1 个" in issued.json()["summary"]
+    assert tampered.status_code == 422
     assert deleted.status_code == 202
     assert deleted.json()["type"] == "config_snapshot_delete_many"
     assert adapter.jobs[-1].params["snapshot_ids"] == [running.id]
+    assert replay.status_code == 422
     assert cancelled.status_code == 200
     assert cancelled.json()["id"] == deleted.json()["id"]
     assert foreign.status_code == 404
     assert directory.status_code == 200
-    assert "本机目录" in directory.json()["message"]
+    assert directory.json()["target_id"] == "config_exports:demo"
+    assert directory.json()["success"] is False
+    assert "DesktopActionService" in directory.json()["message"]
+
+
+def test_config_confirmation_rejects_expiry_site_change_and_digest_tamper(tmp_path: Path) -> None:
+    app, _paths, _device, running, _saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+
+    issued = service.issue_snapshot_delete("demo", [int(running.id)])
+    service._confirmations[issued.confirmation_token] = replace(
+        service._confirmations[issued.confirmation_token], expires_at=0
+    )
+    with pytest.raises(ValueError, match="过期"):
+        service.confirm_snapshot_delete("demo", issued.confirmation_token, issued.digest)
+
+    issued = service.issue_snapshot_delete("demo", [int(running.id)])
+    with pytest.raises(ValueError, match="内容已变化"):
+        service.confirm_snapshot_delete("other", issued.confirmation_token, issued.digest)
+    with pytest.raises(ValueError, match="内容已变化"):
+        service.confirm_snapshot_delete("demo", issued.confirmation_token, "0" * 64)
+
+
+def test_config_router_exposes_fixed_save_export_and_desktop_action_contracts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_handoff_features(monkeypatch)
+    app, _paths, device, running, saved, adapter = _fixture(tmp_path)
+    opened: list[str] = []
+
+    class DesktopActions:
+        def open_controlled_directory(self, target_id: str):
+            opened.append(target_id)
+            return SimpleNamespace(success=True, code="opened", message="已打开")
+
+    app.state.config_collection_service.desktop_action_service = DesktopActions()
+    with TestClient(app) as client:
+        preview = client.post(
+            "/api/config-collection/actions/save-force/preview",
+            json={"device_ids": [device.id]},
+        )
+        saved_task = client.post(
+            "/api/config-collection/actions/save-force/confirm",
+            json={
+                "confirmation_token": preview.json()["confirmation_token"],
+                "digest": preview.json()["digest"],
+            },
+        )
+        diff_export = client.post(
+            "/api/config-collection/exports/diff",
+            json={"left_snapshot_id": running.id, "right_snapshot_id": saved.id},
+        )
+        zip_export = client.post(
+            "/api/config-collection/exports/snapshots",
+            json={"snapshot_ids": [running.id, saved.id]},
+        )
+        directory = client.post(
+            "/api/config-collection/desktop-actions/open-directory?directory_kind=config_exports"
+        )
+
+    assert preview.status_code == 200
+    assert preview.json()["action_plan"][0] == "固定执行 save force"
+    assert saved_task.status_code == 202
+    assert saved_task.json()["type"] == "config_web_save_force"
+    assert diff_export.json()["type"] == "config_web_export_diff"
+    assert zip_export.json()["type"] == "config_web_export_snapshots"
+    assert all("output_path" not in json.dumps(job.params) for job in adapter.jobs)
+    assert directory.json() == {
+        "directory_kind": "config_exports",
+        "action": "open_controlled_directory",
+        "target_id": "config_exports:demo",
+        "success": True,
+        "code": "opened",
+        "message": "已打开",
+    }
+    assert opened == ["config_exports:demo"]
+
+
+def test_config_task_recovery_scans_past_other_modules_and_keeps_all_active(tmp_path: Path) -> None:
+    app, _paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    repository = app.state.config_collection_service.task_service.repository("demo")
+    for index in range(450):
+        repository.save(
+            TaskSnapshot(
+                task_id=f"foreign-{index:04d}",
+                task_type="other_module_task",
+                task_name="其他模块",
+                status=TaskState.COMPLETED,
+                created_time=f"2026-07-15T12:{index // 60:02d}:{index % 60:02d}Z",
+                updated_time=f"2026-07-15T12:{index // 60:02d}:{index % 60:02d}Z",
+                owner="other_module",
+                source="local",
+                site_name="demo",
+            )
+        )
+    for task_id, status in (("config-history", TaskState.COMPLETED), ("config-active-a", TaskState.RUNNING), ("config-active-b", TaskState.STOPPING)):
+        repository.save(
+            TaskSnapshot(
+                task_id=task_id,
+                task_type="config_web_snapshot_fetch",
+                task_name="配置任务",
+                status=status,
+                created_time="2026-07-14T00:00:00Z",
+                updated_time="2026-07-14T00:00:00Z",
+                owner="web_config_collection",
+                source="local",
+                site_name="demo",
+            )
+        )
+
+    tasks = app.state.config_collection_service.list_tasks("demo", limit=2)
+
+    assert {task.id for task in tasks} == {"config-active-a", "config-active-b"}
+    tasks = app.state.config_collection_service.list_tasks("demo", limit=3)
+    assert {task.id for task in tasks} == {"config-active-a", "config-active-b", "config-history"}
+
+
+def test_config_get_and_cancel_reject_site_owner_source_and_type_mismatches(tmp_path: Path) -> None:
+    app, _paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    repository = service.task_service.repository("demo")
+    mismatches = (
+        ("wrong-site", "other", "web_config_collection", "local", "config_web_snapshot_fetch"),
+        ("wrong-owner", "demo", "other", "local", "config_web_snapshot_fetch"),
+        ("wrong-source", "demo", "web_config_collection", "agent", "config_web_snapshot_fetch"),
+        ("wrong-type", "demo", "web_config_collection", "local", "other_module_task"),
+    )
+    for task_id, site_name, owner, source, task_type in mismatches:
+        repository.save(
+            TaskSnapshot(
+                task_id=task_id,
+                task_type=task_type,
+                task_name="边界测试",
+                status=TaskState.RUNNING,
+                created_time="2026-07-15T00:00:00Z",
+                updated_time="2026-07-15T00:00:00Z",
+                owner=owner,
+                source=source,
+                site_name=site_name,
+            )
+        )
+        assert service.get_task("demo", task_id) is None
+        assert service.cancel_task("demo", task_id) is None
+
+
+def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_cancel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app, paths, device, running, saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    executing = _ExecutingFakeProcessAdapter(service.task_service)
+    service.process_adapter = executing
+    commands = _install_fake_connector(monkeypatch)
+
+    fetched = service.submit_collection("demo", "fetch", [int(device.id)])[0]
+    fetched_status = service.get_task("demo", fetched.id)
+    assert fetched_status is not None and fetched_status.status == TaskState.COMPLETED.value
+    assert {item.type for item in service.list_snapshots("demo", int(device.id))} >= {"running", "saved", "diff"}
+    event_types = {event["type"] for event in service.task_service.repository("demo").list_events(fetched.id)}
+    assert {"state", "progress", "finished"} <= event_types
+
+    save_preview = service.preview_save_force("demo", [int(device.id), int(device.id)])
+    assert save_preview.device_ids == [device.id]
+    assert save_preview.action_plan == ["固定执行 save force", "生成 saved 状态快照并写入审计"]
+    saved_task = service.confirm_save_force(
+        "demo", save_preview.confirmation_token, save_preview.digest
+    )
+    saved_status = service.get_task("demo", saved_task.id)
+    assert saved_status is not None and saved_status.status == TaskState.COMPLETED.value
+    assert commands.count("save force") == 1
+    assert all(command in {"screen-length disable", "display current-configuration", "display saved-configuration", "save force"} for command in commands)
+
+    diff_task = service.submit_diff_export("demo", int(running.id), int(saved.id))
+    diff_status = service.get_task("demo", diff_task.id)
+    assert diff_status is not None and diff_status.status == TaskState.COMPLETED.value
+    diff_artifact_id = str(diff_status.result["artifact_id"])
+    diff_path, diff_name = service.open_artifact("demo", diff_artifact_id)
+    assert diff_name.endswith(".diff")
+    assert diff_status.result["hash"] == hashlib.sha256(diff_path.read_bytes()).hexdigest()
+    assert diff_status.result["size"] == diff_path.stat().st_size
+    assert str(paths.data_root) not in json.dumps(diff_status.model_dump(), ensure_ascii=False)
+
+    zip_task = service.submit_snapshots_export("demo", [int(running.id), int(saved.id), int(running.id)])
+    zip_status = service.get_task("demo", zip_task.id)
+    assert zip_status is not None and zip_status.status == TaskState.COMPLETED.value
+    zip_path, _zip_name = service.open_artifact("demo", str(zip_status.result["artifact_id"]))
+    with zipfile.ZipFile(zip_path) as archive:
+        assert any(name.endswith("running_20260715_101500.txt") for name in archive.namelist())
+        assert "_netconsole_manifest.json" in archive.namelist()
+
+    refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
+    recovered = refreshed.get_task("demo", zip_task.id)
+    assert recovered is not None and recovered.id == zip_task.id
+    assert recovered.result["artifact_id"] == zip_status.result["artifact_id"]
+    repository = service.task_service.repository("demo")
+    persisted_zip_task = repository.get(zip_task.id)
+    assert persisted_zip_task is not None
+    repository.save(replace(persisted_zip_task, status=TaskState.RUNNING))
+    with pytest.raises(FileNotFoundError):
+        service.open_artifact("demo", str(zip_status.result["artifact_id"]))
+    repository.save(persisted_zip_task)
+
+    delete_preview = service.issue_snapshot_delete("demo", [int(running.id), int(saved.id)])
+    ConfigLifecycleService("demo", Database(paths.site_db_path("demo")), paths).delete_snapshot(
+        ConfigSnapshotRepository(Database(paths.site_db_path("demo")), ensure_schema=False).get(int(running.id))
+    )
+    delete_task = service.confirm_snapshot_delete(
+        "demo", delete_preview.confirmation_token, delete_preview.digest
+    )
+    delete_status = service.get_task("demo", delete_task.id)
+    assert delete_status is not None and delete_status.status == TaskState.COMPLETED.value
+    assert delete_status.result["deleted"] == 1
+    assert delete_status.result["failed"] == 1
+    assert delete_status.result["failed_items"][0]["snapshot_id"] == running.id
+
+    _install_fake_connector(monkeypatch, fail=True)
+    failed = service.submit_collection("demo", "fetch", [int(device.id)])[0]
+    failed_status = service.get_task("demo", failed.id)
+    assert failed_status is not None and failed_status.status == TaskState.FAILED.value
+
+    _install_fake_connector(monkeypatch)
+    executing.cancel_next = True
+    cancelled = service.submit_collection("demo", "fetch", [int(device.id)])[0]
+    cancelled_status = service.get_task("demo", cancelled.id)
+    assert cancelled_status is not None and cancelled_status.status == TaskState.CANCELLED.value
+
+
+def test_config_export_handler_cleans_output_job_and_tmp_on_failure_and_cancel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _app, paths, _device, running, saved, _adapter = _fixture(tmp_path)
+    params = {
+        "site_name": "demo",
+        "db_path": str(paths.site_db_path("demo")),
+        "app_root": str(paths.app_root),
+        "data_root": str(paths.data_root),
+        "owner": "web_config_collection",
+        "task_source": "local",
+        "left_snapshot_id": running.id,
+        "right_snapshot_id": saved.id,
+    }
+
+    class FailedProcess:
+        returncode = 1
+
+        def __init__(self, command, **_kwargs) -> None:
+            self.command = command
+            payload = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            Path(payload["output_path"]).write_text("partial", encoding="utf-8")
+            Path(payload["tmp_path"]).write_text("partial", encoding="utf-8")
+
+        def communicate(self, timeout=None):
+            return encode_event(error_event("export", "fake export failure")), ""
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(config_collection_job_handlers.subprocess, "Popen", FailedProcess)
+    failed_context = JobContext.from_job(JobSpec("failed-export", "config_web_export_diff", params))
+    with pytest.raises(RuntimeError, match="fake export failure"):
+        config_collection_job_handlers.config_web_export_diff(failed_context)
+
+    outputs = paths.config_center_root("demo") / "outputs"
+    runtime_jobs = paths.runtime_cache_dir / "export_jobs"
+    assert not list(outputs.glob("export-*"))
+    assert not list(runtime_jobs.glob("failed-export*"))
+
+    class HungProcess(FailedProcess):
+        returncode = None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(self.command, timeout)
+
+        def terminate(self):
+            self.returncode = -15
+
+    checks = iter((False, True))
+    monkeypatch.setattr(config_collection_job_handlers.subprocess, "Popen", HungProcess)
+    cancelled_context = JobContext.from_job(
+        JobSpec("cancelled-export", "config_web_export_diff", params),
+        should_cancel=lambda: next(checks, True),
+    )
+    with pytest.raises(BackgroundTaskCancelled):
+        config_collection_job_handlers.config_web_export_diff(cancelled_context)
+    assert not list(outputs.glob("export-*"))
+    assert not list(runtime_jobs.glob("cancelled-export*"))

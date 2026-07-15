@@ -7,10 +7,14 @@ from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.config_collection import (
     ConfigActionRequest,
+    ConfigConfirmationDTO,
+    ConfigConfirmationRequest,
     ConfigDirectoryDTO,
     ConfigDeviceDiffRequest,
+    ConfigDeviceIdsRequest,
     ConfigDevicePageDTO,
     ConfigSnapshotDiffRequest,
+    ConfigSnapshotExportRequest,
     ConfigSnapshotIdsRequest,
     ConfigSnapshotDTO,
     ConfigTaskReferenceDTO,
@@ -131,12 +135,79 @@ def cancel_task(request: Request, task_id: str) -> ConfigTaskStatusDTO:
     return result
 
 
-@router.post("/snapshots/delete", response_model=ConfigTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
-def delete_snapshots(request: Request, payload: ConfigSnapshotIdsRequest) -> ConfigTaskReferenceDTO:
-    return _query(lambda: _service(request).submit_snapshot_delete(_site_id(request), payload.snapshot_ids))
+@router.post(
+    "/snapshots/delete/issue",
+    response_model=ConfigConfirmationDTO,
+    dependencies=[Depends(require_feature("web.config_collection_delete"))],
+)
+def issue_snapshot_delete(request: Request, payload: ConfigSnapshotIdsRequest) -> ConfigConfirmationDTO:
+    return _query(lambda: _service(request).issue_snapshot_delete(_site_id(request), payload.snapshot_ids))
 
 
-@router.get("/directory", response_model=ConfigDirectoryDTO)
+@router.post(
+    "/snapshots/delete/confirm",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_delete"))],
+)
+def confirm_snapshot_delete(request: Request, payload: ConfigConfirmationRequest) -> ConfigTaskReferenceDTO:
+    return _query(
+        lambda: _service(request).confirm_snapshot_delete(
+            _site_id(request), payload.confirmation_token, payload.digest
+        )
+    )
+
+
+@router.post(
+    "/actions/save-force/preview",
+    response_model=ConfigConfirmationDTO,
+    dependencies=[Depends(require_feature("web.config_collection_save_force"))],
+)
+def preview_save_force(request: Request, payload: ConfigDeviceIdsRequest) -> ConfigConfirmationDTO:
+    return _query(lambda: _service(request).preview_save_force(_site_id(request), payload.device_ids))
+
+
+@router.post(
+    "/actions/save-force/confirm",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_save_force"))],
+)
+def confirm_save_force(request: Request, payload: ConfigConfirmationRequest) -> ConfigTaskReferenceDTO:
+    return _query(
+        lambda: _service(request).confirm_save_force(_site_id(request), payload.confirmation_token, payload.digest)
+    )
+
+
+@router.post(
+    "/exports/diff",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_export"))],
+)
+def export_diff(request: Request, payload: ConfigSnapshotDiffRequest) -> ConfigTaskReferenceDTO:
+    return _query(
+        lambda: _service(request).submit_diff_export(
+            _site_id(request), payload.left_snapshot_id, payload.right_snapshot_id
+        )
+    )
+
+
+@router.post(
+    "/exports/snapshots",
+    response_model=ConfigTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.config_collection_export"))],
+)
+def export_snapshots(request: Request, payload: ConfigSnapshotExportRequest) -> ConfigTaskReferenceDTO:
+    return _query(lambda: _service(request).submit_snapshots_export(_site_id(request), payload.snapshot_ids))
+
+
+@router.post(
+    "/desktop-actions/open-directory",
+    response_model=ConfigDirectoryDTO,
+    dependencies=[Depends(require_feature("web.config_collection_open_directory"))],
+)
 def directory_info(request: Request, directory_kind: str = Query(default="config_exports", max_length=30)) -> ConfigDirectoryDTO:
     return _query(lambda: _service(request).directory_info(_site_id(request), directory_kind))
 

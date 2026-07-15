@@ -70,6 +70,10 @@ class ConfigActionRequest(ApiModel):
     device_ids: list[int] = Field(min_length=1, max_length=50)
 
 
+class ConfigDeviceIdsRequest(ApiModel):
+    device_ids: list[int] = Field(min_length=1, max_length=50)
+
+
 class ConfigSnapshotDiffRequest(ApiModel):
     left_snapshot_id: int = Field(ge=1)
     right_snapshot_id: int = Field(ge=1)
@@ -84,21 +88,48 @@ class ConfigSnapshotIdsRequest(ApiModel):
     snapshot_ids: list[int] = Field(min_length=1, max_length=50)
 
 
+class ConfigSnapshotExportRequest(ApiModel):
+    snapshot_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class ConfigConfirmationRequest(ApiModel):
+    confirmation_token: str = Field(min_length=20, max_length=200)
+    digest: str = Field(min_length=64, max_length=64)
+
+
+class ConfigConfirmationDTO(ApiModel):
+    action: Literal["delete_snapshots", "save_force"]
+    confirmation_token: str
+    digest: str
+    summary: str
+    expires_at: str
+    snapshot_ids: list[int] = Field(default_factory=list)
+    device_ids: list[int] = Field(default_factory=list)
+    action_plan: list[str] = Field(default_factory=list)
+
+
 class ConfigDirectoryDTO(ApiModel):
     directory_kind: Literal["config_snapshots", "config_exports"]
-    available: bool = False
+    action: Literal["open_controlled_directory"] = "open_controlled_directory"
+    target_id: str
+    success: bool = False
+    code: str = ""
     message: str = ""
 
 
 __all__ = [
     "ConfigDeviceDTO",
     "ConfigActionRequest",
+    "ConfigConfirmationDTO",
+    "ConfigConfirmationRequest",
     "ConfigDeviceDiffRequest",
+    "ConfigDeviceIdsRequest",
     "ConfigDirectoryDTO",
     "ConfigDeviceGroupDTO",
     "ConfigDevicePageDTO",
     "ConfigSnapshotDTO",
     "ConfigSnapshotDiffRequest",
+    "ConfigSnapshotExportRequest",
     "ConfigSnapshotIdsRequest",
     "ConfigTaskReferenceDTO",
     "ConfigTaskStatusDTO",

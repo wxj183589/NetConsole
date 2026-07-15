@@ -58,8 +58,22 @@ export interface ConfigTaskStatus extends ConfigTaskReference {
   result: Record<string, unknown>
 }
 
+export interface ConfigConfirmation {
+  action: 'delete_snapshots' | 'save_force'
+  confirmation_token: string
+  digest: string
+  summary: string
+  expires_at: string
+  snapshot_ids: number[]
+  device_ids: number[]
+  action_plan: string[]
+}
+
 export interface ConfigDirectory {
   directory_kind: 'config_snapshots' | 'config_exports'
-  available: boolean
+  action: 'open_controlled_directory'
+  target_id: string
+  success: boolean
+  code: string
   message: string
 }

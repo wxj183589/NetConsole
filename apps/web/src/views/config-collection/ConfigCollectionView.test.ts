@@ -12,19 +12,33 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain('onBeforeUnmount')
   })
 
-  it('gates fetch, diff and artifact download actions independently', () => {
+  it('gates each destructive, save, export and desktop action independently', () => {
     expect(source).toContain("isFeatureEnabled('web.config_collection_fetch')")
     expect(source).toContain("isFeatureEnabled('web.config_collection_diff')")
     expect(source).toContain("isFeatureEnabled('web.config_collection_download')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_delete')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_save_force')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_export')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_open_directory')")
   })
 
-  it('exposes controlled artifact download and formal snapshot deletion', () => {
+  it('uses server confirmation tokens, fixed save plan and controlled artifacts', () => {
     expect(source).toContain('采集 running / saved')
     expect(source).toContain('configArtifactUrl(row.artifact_id)')
     expect(source).toContain('保存配置')
-    expect(source).toContain('submitSnapshotDelete')
+    expect(source).toContain('issueSnapshotDelete')
+    expect(source).toContain('confirmSnapshotDelete')
+    expect(source).toContain('previewSaveForce')
+    expect(source).toContain('confirmSaveForce')
+    expect(source).toContain('submitConfigDiffExport')
+    expect(source).toContain('submitConfigSnapshotsExport')
     expect(source).toContain('cancelConfigTask')
-    expect(source).not.toContain('save force')
     expect(source).not.toContain('任意路径')
+  })
+
+  it('shows partial deletion failures instead of a false success state', () => {
+    expect(source).toContain('failed_items')
+    expect(source).toContain('任务部分完成')
+    expect(source).toContain('部分完成')
   })
 })

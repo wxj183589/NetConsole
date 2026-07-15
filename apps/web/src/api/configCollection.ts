@@ -1,5 +1,6 @@
 import { apiRequest } from './client'
 import type {
+  ConfigConfirmation,
   ConfigDevicePage,
   ConfigDirectory,
   ConfigSnapshot,
@@ -62,8 +63,43 @@ export function submitDeviceConfigDiff(leftDeviceId: number, rightDeviceId: numb
   })
 }
 
-export function submitSnapshotDelete(snapshotIds: number[]): Promise<ConfigTaskReference> {
-  return apiRequest<ConfigTaskReference>(`${root}/snapshots/delete`, {
+export function issueSnapshotDelete(snapshotIds: number[]): Promise<ConfigConfirmation> {
+  return apiRequest<ConfigConfirmation>(`${root}/snapshots/delete/issue`, {
+    method: 'POST',
+    body: JSON.stringify({ snapshot_ids: snapshotIds }),
+  })
+}
+
+export function confirmSnapshotDelete(confirmation: ConfigConfirmation): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/snapshots/delete/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmation_token: confirmation.confirmation_token, digest: confirmation.digest }),
+  })
+}
+
+export function previewSaveForce(deviceIds: number[]): Promise<ConfigConfirmation> {
+  return apiRequest<ConfigConfirmation>(`${root}/actions/save-force/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ device_ids: deviceIds }),
+  })
+}
+
+export function confirmSaveForce(confirmation: ConfigConfirmation): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/actions/save-force/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmation_token: confirmation.confirmation_token, digest: confirmation.digest }),
+  })
+}
+
+export function submitConfigDiffExport(leftSnapshotId: number, rightSnapshotId: number): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/exports/diff`, {
+    method: 'POST',
+    body: JSON.stringify({ left_snapshot_id: leftSnapshotId, right_snapshot_id: rightSnapshotId }),
+  })
+}
+
+export function submitConfigSnapshotsExport(snapshotIds: number[]): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/exports/snapshots`, {
     method: 'POST',
     body: JSON.stringify({ snapshot_ids: snapshotIds }),
   })
@@ -82,7 +118,7 @@ export function cancelConfigTask(taskId: string): Promise<ConfigTaskStatus> {
 }
 
 export function getConfigDirectory(directoryKind = 'config_exports'): Promise<ConfigDirectory> {
-  return apiRequest<ConfigDirectory>(`${root}/directory${queryString({ directory_kind: directoryKind })}`)
+  return apiRequest<ConfigDirectory>(`${root}/desktop-actions/open-directory${queryString({ directory_kind: directoryKind })}`, { method: 'POST' })
 }
 
 export function configArtifactUrl(artifactId: string): string {
