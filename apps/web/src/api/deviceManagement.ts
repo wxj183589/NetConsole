@@ -96,8 +96,10 @@ export function startBatchRefreshDetails(deviceUuids: string[]): Promise<DeviceT
   return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-refresh-details', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
 
-export function previewDeviceImport(path: string): Promise<DeviceImportPreview> {
-  return apiRequest<DeviceImportPreview>('/api/device-management/imports/preview', { method: 'POST', body: JSON.stringify({ path }) })
+export function previewDeviceImport(file: File): Promise<DeviceImportPreview> {
+  const form = new FormData()
+  form.append('file', file)
+  return apiRequest<DeviceImportPreview>('/api/device-management/imports/preview', { method: 'POST', body: form })
 }
 
 export function confirmDeviceImport(previewToken: string): Promise<DeviceTaskReference> {
@@ -108,16 +110,21 @@ export function startDeviceCsvExport(payload: DeviceExportRequest): Promise<Devi
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/csv', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function startDeviceTemplateExport(outputPath: string): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>('/api/device-management/exports/template', { method: 'POST', body: JSON.stringify({ output_path: outputPath }) })
+export function startDeviceTemplateExport(): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>('/api/device-management/exports/template', { method: 'POST', body: JSON.stringify({}) })
 }
 
-export function startSecureCrtExport(payload: DeviceExportRequest & { output_dir: string; template_ini?: string }): Promise<DeviceTaskReference> {
+export function startSecureCrtExport(payload: DeviceExportRequest): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/securecrt', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: string; include_device_mr?: boolean }): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function downloadDeviceExport(taskId: string, artifactId: string): string {
+  const params = new URLSearchParams({ artifact_id: artifactId })
+  return `/api/device-management/exports/${encodeURIComponent(taskId)}/download?${params.toString()}`
 }
 
 export function getDeviceExportTask(taskId: string): Promise<DeviceTaskReference> {

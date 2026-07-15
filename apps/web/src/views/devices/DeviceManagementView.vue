@@ -64,10 +64,10 @@ const groupName = ref('')
 const groupAssignVisible = ref(false)
 const groupAssignId = ref<number | null>(null)
 const importVisible = ref(false)
-const importPath = ref('')
+const importFile = ref<File | null>(null)
+const importFileInput = ref<HTMLInputElement | null>(null)
 const importLoading = ref(false)
 const importPreview = ref<DeviceImportPreview | null>(null)
-const exportPath = ref('')
 const filters = reactive({
   search: '',
   group: '',
@@ -349,10 +349,10 @@ async function saveGroupAssignment(): Promise<void> {
 }
 
 async function runImportPreview(): Promise<void> {
-  if (!importPath.value.trim()) return
+  if (!importFile.value) return
   importLoading.value = true
   try {
-    importPreview.value = await previewDeviceImport(importPath.value.trim())
+    importPreview.value = await previewDeviceImport(importFile.value)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 预览失败'))
   } finally {
@@ -364,8 +364,7 @@ async function confirmImport(): Promise<void> {
   if (!importPreview.value || importPreview.value.errors.length) return
   try {
     await confirmDeviceImport(importPreview.value.preview_token)
-    importVisible.value = false
-    importPreview.value = null
+    closeImportDialog()
     ElMessage.success('CSV 导入任务已提交')
     await loadDevices(true)
   } catch (cause) {
@@ -373,9 +372,26 @@ async function confirmImport(): Promise<void> {
   }
 }
 
+function chooseImportFile(): void {
+  importFileInput.value?.click()
+}
+
+function onImportFileChange(event: Event): void {
+  const input = event.target as HTMLInputElement
+  importFile.value = input.files?.[0] ?? null
+  importPreview.value = null
+  if (importFile.value) void runImportPreview()
+}
+
+function closeImportDialog(): void {
+  importVisible.value = false
+  importFile.value = null
+  importPreview.value = null
+  if (importFileInput.value) importFileInput.value.value = ''
+}
+
 function currentExportFilters(): DeviceExportRequest {
   return {
-    output_path: exportPath.value.trim(),
     device_uuids: selectedUuids.value,
     search: filters.search,
     vendor: '',
@@ -385,9 +401,6 @@ function currentExportFilters(): DeviceExportRequest {
 }
 
 async function exportCsv(): Promise<void> {
-  const path = exportPath.value.trim() || window.prompt('请输入 CSV 输出路径', 'devices.csv') || ''
-  if (!path) return
-  exportPath.value = path
   try {
     await startDeviceCsvExport(currentExportFilters())
     ElMessage.success('CSV 导出任务已提交')
@@ -397,10 +410,8 @@ async function exportCsv(): Promise<void> {
 }
 
 async function exportTemplate(): Promise<void> {
-  const path = window.prompt('请输入模板输出路径', 'device-template.csv') || ''
-  if (!path) return
   try {
-    await startDeviceTemplateExport(path)
+    await startDeviceTemplateExport()
     ElMessage.success('模板导出任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '模板导出失败'))
@@ -408,10 +419,8 @@ async function exportTemplate(): Promise<void> {
 }
 
 async function exportSecureCrt(): Promise<void> {
-  const outputDir = window.prompt('请输入 SecureCRT 会话输出目录', '') || ''
-  if (!outputDir) return
   try {
-    await startSecureCrtExport({ ...currentExportFilters(), output_dir: outputDir })
+    await startSecureCrtExport(currentExportFilters())
     ElMessage.success('SecureCRT 会话任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'SecureCRT 会话生成失败'))
@@ -419,10 +428,8 @@ async function exportSecureCrt(): Promise<void> {
 }
 
 async function exportOmniPeek(): Promise<void> {
-  const path = window.prompt('请输入 OmniPeek 名称表输出路径', 'devices.nam') || ''
-  if (!path) return
   try {
-    await startOmniPeekExport({ ...currentExportFilters(), output_path: path, line_name: 'NetConsole' })
+    await startOmniPeekExport({ ...currentExportFilters(), line_name: 'NetConsole' })
     ElMessage.success('OmniPeek 名称表任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'OmniPeek 名称表导出失败'))
@@ -498,7 +505,7 @@ function errorMessage(cause: unknown, fallback: string): string {
   <section class="device-management">
     <div class="page-heading">
       <div><h1>设备管理</h1><p>与 Qt 设备页共享设备库、采集事实和后台任务；本页不保存凭据。</p></div>
-      <div class="heading-actions"><el-button type="primary" :icon="Plus" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
+      <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('web.device_management')" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
     </div>
 
     <div class="content-card filters">
@@ -528,17 +535,17 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <div class="content-card action-bar">
       <span>已选 {{ selectedUuids.length }} 台</span>
-      <el-button :icon="Edit" :disabled="selectedUuids.length !== 1" @click="openSelectedDetail">编辑</el-button>
-      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1" @click="duplicateSelected">复制</el-button>
-      <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length" @click="deleteSelected">批量删除</el-button>
-      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length" @click="groupAssignVisible = true">设置分组</el-button>
-      <el-button :icon="Plus" @click="groupVisible = true">分组管理</el-button>
-      <el-button :icon="Refresh" :disabled="!selectedUuids.length" @click="refreshSelectedDetails">批量更新详情</el-button>
-      <el-button :icon="Download" :disabled="!selectedUuids.length" @click="downloadDiagnostics">下载诊断</el-button>
-      <el-button :icon="Upload" @click="importVisible = true">导入 CSV</el-button>
+      <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management')" @click="openSelectedDetail">编辑</el-button>
+      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management')" @click="duplicateSelected">复制</el-button>
+      <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="deleteSelected">批量删除</el-button>
+      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="groupAssignVisible = true">设置分组</el-button>
+      <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management')" @click="groupVisible = true">分组管理</el-button>
+      <el-button :icon="Refresh" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="downloadDiagnostics">下载诊断</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management')" @click="importVisible = true">导入 CSV</el-button>
       <el-dropdown>
-        <el-button :icon="Download">导出</el-button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item @click="exportCsv">CSV 导出</el-dropdown-item><el-dropdown-item @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item @click="exportOmniPeek">OmniPeek 名称表</el-dropdown-item><el-dropdown-item @click="exportSecureCrt">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+        <el-button :icon="Download" :disabled="!isFeatureEnabled('web.device_management')">导出</el-button>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportCsv">CSV 导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportOmniPeek">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportSecureCrt">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
       </el-dropdown>
     </div>
 
@@ -577,7 +584,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <template v-else-if="detail">
           <div class="detail-heading">
             <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <div class="heading-actions"><el-button :icon="FolderOpened" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="openPreview">编辑预览</el-button><el-button type="primary" @click="openEdit">正式编辑</el-button></div>
+            <div class="heading-actions"><el-button :icon="FolderOpened" :disabled="!isFeatureEnabled('web.device_management')" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management')" @click="openPreview">编辑预览</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="openEdit">正式编辑</el-button></div>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="系统名">{{ detail.device.system_name || '--' }}</el-descriptions-item>
@@ -669,7 +676,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-form-item label="连接能力"><el-checkbox v-model="writeForm.ssh_enabled">SSH</el-checkbox><el-checkbox v-model="writeForm.telnet_enabled">Telnet</el-checkbox><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox></el-form-item>
         <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" @click="saveWrite">保存</el-button></template>
+      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management')" @click="saveWrite">保存</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">
@@ -678,25 +685,26 @@ function errorMessage(cause: unknown, fallback: string): string {
         <div v-for="group in pageData.groups" :key="group.id" class="group-row">
           <span>{{ group.name }}</span>
           <span>
-            <el-button link type="primary" @click="renameGroup(group.id, group.name)">重命名</el-button>
-            <el-button link type="danger" @click="removeGroup(group.id, group.name)">删除</el-button>
+            <el-button link type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="renameGroup(group.id, group.name)">重命名</el-button>
+            <el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management')" @click="removeGroup(group.id, group.name)">删除</el-button>
           </span>
         </div>
         <el-empty v-if="!pageData.groups.length" description="暂无分组" :image-size="56" />
       </div>
-      <template #footer><el-button @click="groupVisible = false">取消</el-button><el-button type="primary" @click="saveGroup">新增分组</el-button></template>
+      <template #footer><el-button @click="groupVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="saveGroup">新增分组</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="groupAssignVisible" title="设置分组" width="420px">
       <el-select v-model="groupAssignId" clearable placeholder="选择分组（清空为未分组）" style="width: 100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select>
-      <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" @click="saveGroupAssignment">确认</el-button></template>
+      <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)">
+    <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)" @close="closeImportDialog">
       <el-alert title="先预览再确认；服务端会校验文件 SHA-256、备份设备数据库并在失败时回滚。" type="info" show-icon :closable="false" />
-      <el-input v-model="importPath" class="preview-form" placeholder="本机 CSV 路径" />
+      <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
+      <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
       <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /></div>
-      <template #footer><el-button @click="importVisible = false">关闭</el-button><el-button :loading="importLoading" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length" @click="confirmImport">确认导入</el-button></template>
+      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management')" @click="confirmImport">确认导入</el-button></template>
     </el-dialog>
   </section>
 </template>
@@ -726,6 +734,8 @@ function errorMessage(cause: unknown, fallback: string): string {
 .command-row code { overflow-wrap: anywhere; }
 .preview-form { margin-top: 18px; }
 .import-summary { margin-top: 16px; overflow-wrap: anywhere; }
+.import-file-picker { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
 @media (max-width: 760px) { .filters { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

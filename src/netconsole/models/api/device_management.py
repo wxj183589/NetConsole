@@ -201,7 +201,8 @@ class DeviceTaskReferenceDTO(ApiModel):
     task_id: str
     task_status: str
     action: str
-    output_path: str = ""
+    artifact_id: str = ""
+    available: bool = False
 
 
 class DeviceTaskBatchDTO(ApiModel):
@@ -214,7 +215,7 @@ class DeviceBatchRefreshRequestDTO(ApiModel):
 
 
 class DeviceImportPreviewRequestDTO(ApiModel):
-    path: str = Field(min_length=1, max_length=1024)
+    """CSV preview is multipart upload; browser paths are not accepted."""
 
 
 class DeviceImportPreviewDTO(ApiModel):
@@ -233,7 +234,6 @@ class DeviceImportConfirmRequestDTO(ApiModel):
 
 
 class DeviceExportRequestDTO(ApiModel):
-    output_path: str = Field(min_length=1, max_length=2048)
     device_uuids: list[str] = Field(default_factory=list, max_length=500)
     search: str = Field(default="", max_length=200)
     vendor: str = Field(default="", max_length=40)
@@ -242,9 +242,7 @@ class DeviceExportRequestDTO(ApiModel):
 
 
 class DeviceSecureCrtExportRequestDTO(DeviceExportRequestDTO):
-    output_path: str = ""
-    output_dir: str = Field(min_length=1, max_length=2048)
-    template_ini: str = Field(default="", max_length=2048)
+    pass
 
 
 class DeviceOmniPeekExportRequestDTO(DeviceExportRequestDTO):

@@ -6,12 +6,15 @@ import json
 import math
 import os
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import zipfile
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from typing import BinaryIO
 import uuid
 from threading import RLock
 
@@ -43,7 +46,6 @@ from netconsole.models.api.device_management import (
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
-    DeviceImportPreviewRequestDTO,
     DeviceOmniPeekExportRequestDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
@@ -80,6 +82,18 @@ DEVICE_CONNECTION_TEST_TASK_TYPE = "device_connection_test"
 ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 DEVICE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 DEVICE_DELETE_TOKEN_TTL_SECONDS = 5 * 60
+MAX_DEVICE_IMPORT_BYTES = 16 * 1024 * 1024
+WEB_TASK_OWNER = "web_device_management"
+WEB_ARTIFACT_DIR = "web_artifacts"
+WEB_IMPORT_STAGING_DIR = "web_staging"
+EXPORT_TASK_TYPES = frozenset(
+    {
+        "device_export_device_csv",
+        "device_export_device_template_csv",
+        "device_export_securecrt_sessions",
+        "device_export_omnipeek_name_table",
+    }
+)
 SENSITIVE_DEVICE_FIELDS = {
     "password",
     "ssh_password",
@@ -120,6 +134,7 @@ class DeviceManagementWebService:
         self._import_previews: dict[str, dict[str, object]] = {}
         self._delete_tokens: dict[str, dict[str, object]] = {}
         self._export_processes: dict[str, subprocess.Popen[str]] = {}
+        self._export_artifacts: dict[str, dict[str, object]] = {}
 
     def current_site_id(self) -> str:
         site = self.site_name or SiteManager(self.paths).get_current_site()
@@ -308,7 +323,8 @@ class DeviceManagementWebService:
                     "device": self._safe_device_record(device),
                     "device_uuid": device_uuid,
                     "task_name": f"设备详情刷新 · {device.name or device_uuid}",
-                    "owner": "web_device_management",
+                    "owner": WEB_TASK_OWNER,
+                    "task_source": "web",
                 },
             )
             self.process_adapter.start_job(job)
@@ -317,22 +333,20 @@ class DeviceManagementWebService:
                 references.append(DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action="batch_refresh_details"))
         return DeviceTaskBatchDTO(action="batch_refresh_details", tasks=references)
 
-    def preview_import(self, payload: DeviceImportPreviewRequestDTO) -> DeviceImportPreviewDTO:
-        path = Path(payload.path).expanduser().resolve()
-        source_name = path.name
-        source_sha256 = self._file_sha256(path) if path.is_file() else ""
+    def preview_import(self, filename: str, stream: BinaryIO) -> DeviceImportPreviewDTO:
+        site = self.current_site_id()
+        self._cleanup_expired_import_previews(site)
+        source_name = self._validate_upload_filename(filename)
+        staged_path, source_sha256 = self._stage_csv_upload(site, source_name, stream)
         errors: list[str] = []
         warnings: list[str] = []
         columns: list[str] = []
         row_count = 0
         mapped_rows: list[tuple[int, dict[str, object | None]]] = []
         try:
-            if not path.is_file():
-                raise FileNotFoundError("CSV 文件不存在")
-            site_id = self.current_site_id()
-            repository, groups, _ = self._repositories(site_id)
+            repository, groups, _ = self._repositories(site)
             importer = DeviceImportExportService(repository, groups)
-            rows = importer._read_csv_rows(path)
+            rows = importer._read_csv_rows(staged_path)
             if rows:
                 columns = [str(value).strip() for value in rows[0]]
                 mode = importer._detect_mode(columns)
@@ -357,8 +371,8 @@ class DeviceManagementWebService:
         token = secrets.token_urlsafe(32)
         with self._mutation_lock:
             self._import_previews[token] = {
-                "site": self.current_site_id(),
-                "path": str(path),
+                "site": site,
+                "path": str(staged_path),
                 "sha256": source_sha256,
                 "expires": datetime.now(UTC).timestamp() + DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
                 "errors": tuple(errors),
@@ -375,35 +389,42 @@ class DeviceManagementWebService:
 
     def confirm_import(self, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
+        self._cleanup_expired_import_previews(site)
         with self._mutation_lock:
             preview = self._import_previews.pop(payload.preview_token, None)
         if not preview or preview.get("site") != site or float(preview.get("expires") or 0) < datetime.now(UTC).timestamp():
             raise ValueError("导入预览 token 无效或已过期")
         path = Path(str(preview.get("path") or ""))
-        if tuple(preview.get("errors") or ()):
-            raise ValueError("导入预览存在错误，不能确认")
-        if not path.is_file() or self._file_sha256(path) != str(preview.get("sha256") or ""):
-            raise ValueError("CSV 文件已变化，请重新预览")
-        backup_path = self._backup_device_database(site)
-        operation_id = f"device-import-{uuid.uuid4().hex}"
-        self._write_import_audit(site, operation_id, {"status": "PENDING", "source_file": path.name, "source_sha256": preview.get("sha256"), "backup_reference": str(backup_path)})
-        task_id = f"device-import-{uuid.uuid4().hex}"
-        job = BackgroundJob(
-            job_id=task_id,
-            task_type="device_csv_import",
-            params={
-                "path": str(path),
-                "db_path": str(self.paths.site_db_path(site)),
-                "site_name": site,
-                "task_name": f"设备 CSV 导入 · {path.name}",
-                "owner": "web_device_management",
-            },
-        )
-        self.process_adapter.start_job(job, on_complete=lambda completion: self._finish_import(site, operation_id, backup_path, completion))
-        snapshot = self.task_service.repository(site).get(task_id)
-        if snapshot is None:
-            raise RuntimeError("设备导入任务创建后未写入任务中心")
-        return DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action="import_csv")
+        try:
+            self._assert_controlled_path(path, self._import_staging_root(site))
+            if tuple(preview.get("errors") or ()):
+                raise ValueError("导入预览存在错误，不能确认")
+            if self._file_sha256(path) != str(preview.get("sha256") or ""):
+                raise ValueError("CSV 文件已变化，请重新预览")
+            backup_path = self._backup_device_database(site)
+            operation_id = f"device-import-{uuid.uuid4().hex}"
+            self._write_import_audit(site, operation_id, {"status": "PENDING", "source_file": path.name, "source_sha256": preview.get("sha256"), "backup_reference": str(backup_path)})
+            task_id = f"device-import-{uuid.uuid4().hex}"
+            job = BackgroundJob(
+                job_id=task_id,
+                task_type="device_csv_import",
+                params={
+                    "path": str(path),
+                    "db_path": str(self.paths.site_db_path(site)),
+                    "site_name": site,
+                    "task_name": f"设备 CSV 导入 · {path.name}",
+                    "owner": WEB_TASK_OWNER,
+                    "task_source": "web",
+                },
+            )
+            self.process_adapter.start_job(job, on_complete=lambda completion: self._finish_import(site, operation_id, backup_path, path, completion))
+            snapshot = self.task_service.repository(site).get(task_id)
+            if snapshot is None:
+                raise RuntimeError("设备导入任务创建后未写入任务中心")
+            return DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action="import_csv")
+        except Exception:
+            self._remove_controlled_file(path, self._import_staging_root(site))
+            raise
 
     def start_diagnostic_download(self, device_uuids: list[str]) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
@@ -416,7 +437,7 @@ class DeviceManagementWebService:
             task_name="设备诊断信息下载",
             source="web",
             site_name=site,
-            owner="web_device_management",
+            owner=WEB_TASK_OWNER,
             device=",".join(str(device.device_uuid or "") for device in selected),
         )
         thread = threading.Thread(target=self._run_diagnostic_task, args=(task_id, site, selected), name=f"device-diagnostic-{task_id}", daemon=True)
@@ -432,57 +453,58 @@ class DeviceManagementWebService:
         site = self.current_site_id()
         filters = self._export_filters(payload)
         job_payload = {"db_path": str(self.paths.site_db_path(site)), "site_name": site, "filters": filters}
-        return self._start_export(site, "device_csv", payload.output_path, job_payload, "export_csv")
+        return self._start_export(site, "device_csv", "csv", job_payload, "export_csv")
 
-    def start_template_export(self, output_path: str) -> DeviceTaskReferenceDTO:
-        return self._start_export(self.current_site_id(), "device_template_csv", output_path, {}, "export_template")
+    def start_template_export(self) -> DeviceTaskReferenceDTO:
+        return self._start_export(self.current_site_id(), "device_template_csv", "csv", {}, "export_template")
 
     def start_securecrt_export(self, payload: DeviceSecureCrtExportRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
-        marker = Path(payload.output_dir).expanduser().resolve() / ".netconsole_securecrt_export.txt"
         job_payload = {
-            "output_dir": str(Path(payload.output_dir).expanduser().resolve()),
             "db_path": str(self.paths.site_db_path(site)),
             "site_name": site,
             "selected_device_uuids": list(payload.device_uuids),
             "filters": filters,
-            "template_ini": payload.template_ini,
         }
-        return self._start_export(site, "securecrt_sessions", str(marker), job_payload, "securecrt_sessions")
+        return self._start_export(site, "securecrt_sessions", "zip", job_payload, "securecrt_sessions")
 
     def start_omnipeek_export(self, payload: DeviceOmniPeekExportRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
-        output_path = Path(payload.output_path).expanduser().resolve()
         job_payload = {
             "db_path": str(self.paths.site_db_path(site)),
             "site_name": site,
             "source": {"device_filters": filters, "selected_device_uuids": list(payload.device_uuids), "ac_uuid": ""},
-            "config": {"line_name": payload.line_name, "output_path": str(output_path), "include_ac_fit_ap": False, "include_ap_extensions": False, "include_device_mr": payload.include_device_mr},
+            "config": {"line_name": payload.line_name, "include_ac_fit_ap": False, "include_ap_extensions": False, "include_device_mr": payload.include_device_mr},
             "selected_item_keys": list(payload.selected_item_keys),
             "excluded_item_keys": list(payload.excluded_item_keys),
             "force_export_keys": list(payload.force_export_keys),
         }
-        return self._start_export(site, "omnipeek_name_table", str(output_path), job_payload, "omnipeek_name_table")
+        return self._start_export(site, "omnipeek_name_table", "nam", job_payload, "omnipeek_name_table")
 
     def get_export_task(self, task_id: str) -> DeviceTaskReferenceDTO:
-        snapshot = self.task_service.repository(self.current_site_id()).get(task_id)
-        if snapshot is None or not snapshot.task_type.startswith("device_export_"):
-            raise KeyError(task_id)
+        snapshot = self._require_web_export_task(task_id)
         result = dict(snapshot.result or {})
-        return DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action=snapshot.task_type.removeprefix("device_export_"), output_path=str(result.get("path") or result.get("output_path") or ""))
+        spec = self._export_artifacts.get(task_id) or {}
+        return DeviceTaskReferenceDTO(
+            task_id=task_id,
+            task_status=snapshot.status.value,
+            action=snapshot.task_type.removeprefix("device_export_"),
+            artifact_id=str(result.get("artifact_id") or spec.get("artifact_id") or ""),
+            available=bool(result.get("available")),
+        )
 
-    def open_export_artifact(self, task_id: str) -> tuple[Path, str]:
-        snapshot = self.task_service.repository(self.current_site_id()).get(task_id)
-        if snapshot is None or not snapshot.task_type.startswith("device_export_"):
-            raise KeyError(task_id)
+    def open_export_artifact(self, task_id: str, artifact_id: str) -> tuple[Path, str]:
+        snapshot = self._require_web_export_task(task_id)
         if snapshot.status is not TaskState.COMPLETED:
             raise ValueError("导出任务尚未完成")
         result = dict(snapshot.result or {})
-        path = Path(str(result.get("path") or result.get("output_path") or "")).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError("导出文件不存在；SecureCRT 会话请打开输出目录")
+        if str(result.get("artifact_id") or "") != artifact_id or not bool(result.get("available")):
+            raise KeyError(artifact_id)
+        name = self._validate_artifact_name(str(result.get("artifact_name") or ""))
+        artifact_root = self._artifact_root(snapshot.site_name)
+        path = self._assert_controlled_path(artifact_root / name, artifact_root)
         return path, path.name
 
     def _device_from_write(self, payload: DeviceWriteRequestDTO, existing: Device | None, groups: DeviceGroupRepository) -> Device:
@@ -535,6 +557,123 @@ class DeviceManagementWebService:
                 digest.update(chunk)
         return digest.hexdigest()
 
+    def _site_files_root(self, site: str) -> Path:
+        raw_root = self.paths.site_files_dir(site)
+        if raw_root.is_symlink():
+            raise ValueError("设备文件根目录不允许使用符号链接")
+        return raw_root.resolve()
+
+    def _controlled_root(self, site: str, name: str) -> Path:
+        base = self._site_files_root(site)
+        raw_root = base / name
+        if raw_root.exists() and raw_root.is_symlink():
+            raise ValueError("受控文件根目录不允许使用符号链接")
+        raw_root.mkdir(parents=True, exist_ok=True)
+        root = raw_root.resolve()
+        if not root.is_relative_to(base):
+            raise ValueError("受控文件根目录越界")
+        return root
+
+    def _import_staging_root(self, site: str) -> Path:
+        return self._controlled_root(site, WEB_IMPORT_STAGING_DIR)
+
+    def _artifact_root(self, site: str) -> Path:
+        return self._controlled_root(site, WEB_ARTIFACT_DIR)
+
+    @staticmethod
+    def _validate_upload_filename(filename: str) -> str:
+        clean = str(filename or "").strip()
+        if not clean or "\x00" in clean or "/" in clean or "\\" in clean or ":" in clean:
+            raise ValueError("只允许上传本地 CSV 文件名")
+        if PureWindowsPath(clean).name != clean or not clean.casefold().endswith(".csv"):
+            raise ValueError("只允许上传 .csv 文件")
+        return clean
+
+    @staticmethod
+    def _validate_artifact_name(name: str) -> str:
+        clean = str(name or "").strip()
+        if not clean or clean in {".", ".."} or PureWindowsPath(clean).name != clean or "/" in clean or "\\" in clean or "\x00" in clean:
+            raise ValueError("artifact 文件名无效")
+        return clean
+
+    @staticmethod
+    def _assert_controlled_path(path: Path, root: Path, *, require_exists: bool = True, directory: bool = False) -> Path:
+        candidate = Path(path)
+        controlled_root = Path(root).resolve()
+        if candidate.is_symlink():
+            raise ValueError("受控文件不允许使用符号链接")
+        resolved = candidate.resolve(strict=False)
+        try:
+            relative = resolved.relative_to(controlled_root)
+        except ValueError as exc:
+            raise ValueError("文件路径越过受控根目录") from exc
+        current = controlled_root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("受控文件路径包含符号链接")
+        if require_exists:
+            if directory and not candidate.is_dir():
+                raise FileNotFoundError("受控目录不存在")
+            if not directory and not candidate.is_file():
+                raise FileNotFoundError("受控文件不存在")
+        return resolved
+
+    def _remove_controlled_file(self, path: Path, root: Path) -> None:
+        candidate = Path(path)
+        try:
+            controlled_root = Path(root).resolve()
+            parent = self._assert_controlled_path(candidate.parent, controlled_root, directory=True)
+            candidate = parent / candidate.name
+            if candidate.is_symlink():
+                candidate.unlink()
+            elif candidate.is_dir():
+                for child in candidate.rglob("*"):
+                    if child.is_symlink():
+                        child.unlink()
+                shutil.rmtree(candidate)
+            elif candidate.exists():
+                candidate.unlink()
+        except (FileNotFoundError, ValueError, OSError):
+            return
+
+    def _stage_csv_upload(self, site: str, filename: str, stream: BinaryIO) -> tuple[Path, str]:
+        staging_root = self._import_staging_root(site)
+        path = staging_root / f"device-preview-{uuid.uuid4().hex}.csv"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            fd = os.open(path, flags, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_DEVICE_IMPORT_BYTES:
+                        raise ValueError(f"CSV 文件超过 {MAX_DEVICE_IMPORT_BYTES // (1024 * 1024)} MiB 限制")
+                    digest.update(chunk)
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
+            self._remove_controlled_file(path, staging_root)
+            raise
+        return path, digest.hexdigest()
+
+    def _cleanup_expired_import_previews(self, site: str) -> None:
+        now = datetime.now(UTC).timestamp()
+        expired: list[Path] = []
+        with self._mutation_lock:
+            for token, preview in list(self._import_previews.items()):
+                if preview.get("site") == site and float(preview.get("expires") or 0) < now:
+                    self._import_previews.pop(token, None)
+                    expired.append(Path(str(preview.get("path") or "")))
+        staging_root = self._import_staging_root(site)
+        for path in expired:
+            self._remove_controlled_file(path, staging_root)
+
     def _backup_device_database(self, site: str) -> Path:
         source_path = self.paths.site_db_path(site).resolve()
         if not source_path.is_file():
@@ -562,7 +701,7 @@ class DeviceManagementWebService:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"operation_id": operation_id, **payload}, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _finish_import(self, site: str, operation_id: str, backup_path: Path, completion: object) -> None:
+    def _finish_import(self, site: str, operation_id: str, backup_path: Path, staged_path: Path, completion: object) -> None:
         payload = dict(getattr(completion, "payload", None) or {})
         result = dict(payload.get("result") or {})
         exit_code = getattr(completion, "exit_code", None)
@@ -574,12 +713,15 @@ class DeviceManagementWebService:
             or int(result.get("skipped") or 0) > 0
         )
         audit: dict[str, object] = {"status": "ROLLED_BACK" if failed else "APPLIED", "backup_reference": str(backup_path), "created_count": int(result.get("created") or 0), "skipped_count": int(result.get("skipped") or 0)}
-        if failed:
-            try:
-                self._restore_device_database(backup_path, site)
-            except Exception as exc:
-                audit.update({"status": "ROLLBACK_FAILED", "error_summary": str(exc)})
-        self._write_import_audit(site, operation_id, audit)
+        try:
+            if failed:
+                try:
+                    self._restore_device_database(backup_path, site)
+                except Exception as exc:
+                    audit.update({"status": "ROLLBACK_FAILED", "error_summary": str(exc)})
+            self._write_import_audit(site, operation_id, audit)
+        finally:
+            self._remove_controlled_file(staged_path, self._import_staging_root(site))
 
     def _export_filters(self, payload: DeviceExportRequestDTO) -> dict[str, object | None]:
         return {
@@ -589,38 +731,79 @@ class DeviceManagementWebService:
             "group_filter": payload.group_filter,
         }
 
-    def _start_export(self, site: str, export_type: str, output_path: str, payload: dict[str, object], action: str) -> DeviceTaskReferenceDTO:
-        target = Path(output_path).expanduser().resolve()
+    def _require_web_export_task(self, task_id: str):
+        snapshot = self.task_service.repository(self.current_site_id()).get(task_id)
+        if (
+            snapshot is None
+            or snapshot.site_name != self.current_site_id()
+            or snapshot.owner != WEB_TASK_OWNER
+            or snapshot.source != "web"
+            or snapshot.task_type not in EXPORT_TASK_TYPES
+        ):
+            raise KeyError(task_id)
+        return snapshot
+
+    def _start_export(self, site: str, export_type: str, extension: str, payload: dict[str, object], action: str) -> DeviceTaskReferenceDTO:
+        artifact_root = self._artifact_root(site)
+        artifact_id = f"device-{uuid.uuid4().hex}"
+        target = artifact_root / f"{artifact_id}.{extension}"
+        staging_dir: Path | None = None
+        job_payload = dict(payload)
+        if export_type == "securecrt_sessions":
+            staging_dir = artifact_root / f".{artifact_id}-sessions"
+            self._assert_controlled_path(staging_dir.parent, artifact_root, directory=True)
+            staging_dir.mkdir(parents=True, exist_ok=False)
+            job_payload["output_dir"] = str(staging_dir)
         task_id = f"device_export_{export_type}_{uuid.uuid4().hex}"
+        job_dir = self.paths.runtime_cache_dir / "export_jobs"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = target.with_name(f"{target.name}.{task_id}.tmp")
+        zip_tmp = target.with_name(f"{target.name}.tmp")
+        cancel_path = job_dir / f"{task_id}.cancel"
         job = ExportJob(
             job_id=task_id,
             job_type=export_type,
             site_name=site,
             output_path=str(target),
             db_path=str(self.paths.site_db_path(site)),
-            params={"payload": payload},
-        )
-        job_dir = self.paths.runtime_cache_dir / "export_jobs"
-        job_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = target.with_name(f"{target.name}.{task_id}.tmp")
-        job = job.with_runtime_paths(tmp_path=str(tmp_path), cancel_path=str(job_dir / f"{task_id}.cancel"))
+            params={"payload": job_payload},
+        ).with_runtime_paths(tmp_path=str(tmp_path), cancel_path=str(cancel_path))
         job_path = job_dir / f"{task_id}.json"
-        job_path.write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        self.task_service.create_external_task(
-            task_id=task_id,
-            task_type=f"device_export_{export_type}",
-            task_name=f"设备{action}",
-            source="web",
-            site_name=site,
-            owner="web_device_management",
-        )
+        spec = {
+            "site": site,
+            "artifact_id": artifact_id,
+            "artifact_name": target.name,
+            "export_type": export_type,
+            "artifact_root": artifact_root,
+            "target": target,
+            "tmp_path": tmp_path,
+            "zip_tmp": zip_tmp,
+            "staging_dir": staging_dir,
+            "job_path": job_path,
+            "cancel_path": cancel_path,
+        }
+        self._export_artifacts[task_id] = spec
+        task_created = False
+        process: subprocess.Popen[str] | None = None
         try:
+            job_path.write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            self.task_service.create_external_task(
+                task_id=task_id,
+                task_type=f"device_export_{export_type}",
+                task_name=f"设备{action}",
+                source="web",
+                site_name=site,
+                owner=WEB_TASK_OWNER,
+            )
+            task_created = True
             environment = os.environ.copy()
             environment["PYTHONPATH"] = str(self.paths.app_root) + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
             process = subprocess.Popen(
-                [sys.executable, "-m", "netconsole.export_worker", "--job", str(job_path)],
+                self._export_worker_command(job_path),
                 cwd=str(self.paths.app_root),
                 env=environment,
+                shell=False,
+                close_fds=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -629,45 +812,155 @@ class DeviceManagementWebService:
             )
             self._export_processes[task_id] = process
             self.task_service.record_external_event(task_id, "state", {"state": TaskState.RUNNING.value}, site_name=site)
-            threading.Thread(target=self._monitor_export, args=(task_id, site, process, job_path), name=f"device-export-{task_id}", daemon=True).start()
+            threading.Thread(target=self._monitor_export, args=(task_id, site, process), name=f"device-export-{task_id}", daemon=True).start()
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc))
-            self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+            if process is not None:
+                try:
+                    self._stop_export_process(process)
+                except Exception:
+                    pass
+                if process.stdout is not None:
+                    process.stdout.close()
+                self._export_processes.pop(task_id, None)
+            self._cleanup_export_files(spec, remove_artifact=True)
+            if task_created or self.task_service.repository(site).get(task_id) is not None:
+                self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+            else:
+                self._export_artifacts.pop(task_id, None)
+                raise
+        snapshot = self.task_service.repository(site).get(task_id)
+        return DeviceTaskReferenceDTO(
+            task_id=task_id,
+            task_status=snapshot.status.value if snapshot is not None else TaskState.FAILED.value,
+            action=action,
+            artifact_id=artifact_id,
+            available=False,
+        )
+
+    def _finalize_export_artifact(self, spec: dict[str, object], raw_result: dict[str, object]) -> dict[str, object]:
+        root = Path(str(spec["artifact_root"]))
+        target = Path(str(spec["target"]))
+        export_type = str(spec["export_type"])
+        if export_type == "securecrt_sessions":
+            staging_dir = self._assert_controlled_path(Path(str(spec["staging_dir"])), root, directory=True)
+            source_text = str(raw_result.get("path") or "")
+            source = self._assert_controlled_path(Path(source_text), root, directory=True)
+            if source != staging_dir:
+                raise ValueError("SecureCRT 输出目录未绑定到本任务 staging 目录")
+            zip_tmp = self._assert_controlled_path(Path(str(spec["zip_tmp"])), root, require_exists=False)
+            with zipfile.ZipFile(zip_tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+                for entry in source.rglob("*"):
+                    if entry.is_symlink():
+                        raise ValueError("SecureCRT 输出包含符号链接")
+                    if entry.is_file():
+                        resolved = entry.resolve()
+                        if not resolved.is_relative_to(source):
+                            raise ValueError("SecureCRT 输出越过受控目录")
+                        archive.write(resolved, resolved.relative_to(source).as_posix())
+            os.replace(zip_tmp, target)
+            self._remove_controlled_file(source, staging_dir.parent)
+        else:
+            candidate = Path(str(raw_result.get("path") or spec["tmp_path"]))
+            candidate = self._assert_controlled_path(candidate, root)
+            expected = self._assert_controlled_path(target, root, require_exists=False)
+            if candidate != expected:
+                os.replace(candidate, expected)
+            target = self._assert_controlled_path(expected, root)
+        return {
+            "artifact_id": str(spec["artifact_id"]),
+            "artifact_name": target.name,
+            "available": True,
+            "sha256": self._file_sha256(target),
+            "size_bytes": target.stat().st_size,
+            "row_count": int(raw_result.get("row_count") or 0),
+        }
+
+    @staticmethod
+    def _export_worker_command(job_path: Path) -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, "--export-worker", "--job", str(job_path)]
+        return [sys.executable, "-m", "netconsole.export_worker", "--job", str(job_path)]
+
+    def _cleanup_export_files(self, spec: dict[str, object], *, remove_artifact: bool) -> None:
+        root = Path(str(spec["artifact_root"]))
+        for key in ("tmp_path", "zip_tmp"):
+            self._remove_controlled_file(Path(str(spec[key])), root)
+        staging_dir = spec.get("staging_dir")
+        if staging_dir:
+            self._remove_controlled_file(Path(str(staging_dir)), root)
+        if remove_artifact:
+            self._remove_controlled_file(Path(str(spec["target"])), root)
+        for key in ("job_path", "cancel_path"):
             try:
-                job_path.unlink()
+                Path(str(spec[key])).unlink(missing_ok=True)
             except OSError:
                 pass
-        return DeviceTaskReferenceDTO(task_id=task_id, task_status=TaskState.RUNNING.value, action=action, output_path=str(target))
 
-    def _monitor_export(self, task_id: str, site: str, process: subprocess.Popen[str], job_path: Path) -> None:
+    @staticmethod
+    def _stop_export_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+
+    def _monitor_export(self, task_id: str, site: str, process: subprocess.Popen[str]) -> None:
+        spec = self._export_artifacts.get(task_id)
         terminal = False
+        completed = False
         try:
+            if spec is None:
+                raise RuntimeError("导出任务 artifact 状态不存在")
             if process.stdout is not None:
                 for line in process.stdout:
                     event = parse_event_line(line.strip())
                     if not event or str(event.get("job_id") or "") != task_id:
                         continue
                     event_type = str(event.get("type") or "")
-                    safe_payload = {key: event[key] for key in ("stage", "current", "total", "message", "result", "error", "cancelled") if key in event}
-                    if event_type in {"progress", "log", "finished", "error", "cancelled"}:
-                        self.task_service.record_external_event(task_id, event_type, safe_payload, site_name=site)
-                    if event_type in {"finished", "error", "cancelled"}:
+                    safe_payload = {key: event[key] for key in ("stage", "current", "total") if key in event}
+                    if event_type in {"progress", "log"}:
+                        safe_payload["message"] = sanitize_sensitive_text(str(event.get("message") or ""))
+                    if event_type == "finished":
+                        try:
+                            safe_payload["result"] = self._finalize_export_artifact(spec, dict(event.get("result") or {}))
+                        except Exception as exc:
+                            message = sanitize_sensitive_text(str(exc))
+                            self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+                        else:
+                            self.task_service.record_external_event(task_id, "finished", safe_payload, site_name=site)
+                            completed = True
                         terminal = True
+                    elif event_type in {"error", "cancelled"}:
+                        message = sanitize_sensitive_text(str(event.get("error") or event.get("message") or "导出任务失败"))
+                        self.task_service.record_external_event(task_id, event_type, {"message": message, "error": message, "cancelled": event_type == "cancelled"}, site_name=site)
+                        terminal = True
+                    elif event_type in {"progress", "log"}:
+                        self.task_service.record_external_event(task_id, event_type, safe_payload, site_name=site)
             process.wait(timeout=10)
             if not terminal:
                 message = "导出进程异常退出" if process.returncode else "导出任务未返回完成事件"
                 self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
         except Exception as exc:
+            message = sanitize_sensitive_text(str(exc))
             try:
-                self.task_service.record_external_event(task_id, "error", {"message": str(exc), "error": str(exc)}, site_name=site)
+                if not terminal:
+                    self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
             except Exception:
                 pass
         finally:
+            if process.poll() is None:
+                try:
+                    self._stop_export_process(process)
+                except Exception:
+                    pass
+            if process.stdout is not None:
+                process.stdout.close()
             self._export_processes.pop(task_id, None)
-            try:
-                job_path.unlink()
-            except OSError:
-                pass
+            if spec is not None:
+                self._cleanup_export_files(spec, remove_artifact=not completed)
 
     def _run_diagnostic_task(self, task_id: str, site: str, devices: list[Device]) -> None:
         try:
@@ -682,7 +975,7 @@ class DeviceManagementWebService:
                 {
                     "result": {
                         "results": [
-                            {"device_id": result.device_id, "device_name": result.device_name, "file_path": result.file_path or "", "status": result.status, "error_message": result.error_message or "", "elapsed_ms": result.elapsed_ms}
+                            {"device_id": result.device_id, "device_name": result.device_name, "status": result.status, "error_message": result.error_message or "", "elapsed_ms": result.elapsed_ms}
                             for result in results
                         ]
                     }
@@ -746,7 +1039,8 @@ class DeviceManagementWebService:
                     "device_uuid": device_uuid,
                     "protocol": selected_protocol,
                     "task_name": f"设备连接测试 · {device.name or device_uuid} · {selected_protocol}",
-                    "owner": "web_device_management",
+                    "owner": WEB_TASK_OWNER,
+                    "task_source": "web",
                     "device": device_uuid,
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
@@ -26,7 +26,6 @@ from netconsole.models.api.device_management import (
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
-    DeviceImportPreviewRequestDTO,
     DeviceOmniPeekExportRequestDTO,
     DevicePageDTO,
     DeviceSecureCrtExportRequestDTO,
@@ -38,7 +37,11 @@ from netconsole.models.api.device_management import (
 from netconsole.services.device_management_web_service import DeviceManagementWebService
 
 
-router = APIRouter(prefix="/device-management", tags=["device-management"])
+router = APIRouter(
+    prefix="/device-management",
+    tags=["device-management"],
+    dependencies=[Depends(require_feature("web.device_management"))],
+)
 
 
 def _service(request: Request) -> DeviceManagementWebService:
@@ -131,8 +134,11 @@ def batch_refresh_details(request: Request, payload: DeviceBatchRefreshRequestDT
 
 
 @router.post("/imports/preview", response_model=DeviceImportPreviewDTO)
-def preview_import(request: Request, payload: DeviceImportPreviewRequestDTO) -> DeviceImportPreviewDTO:
-    return _query(lambda: _service(request).preview_import(payload))
+def preview_import(request: Request, file: UploadFile = File(...)) -> DeviceImportPreviewDTO:
+    disposition = file.headers.get("content-disposition", "")
+    if any(marker in disposition for marker in ("\\", "/", ":", "\x00")):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="上传文件名不得包含本机路径")
+    return _query(lambda: _service(request).preview_import(file.filename or "", file.file))
 
 
 @router.post("/imports/confirm", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
@@ -147,7 +153,7 @@ def export_csv(request: Request, payload: DeviceExportRequestDTO) -> DeviceTaskR
 
 @router.post("/exports/template", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
 def export_template(request: Request, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
-    return _query(lambda: _service(request).start_template_export(payload.output_path))
+    return _query(lambda: _service(request).start_template_export())
 
 
 @router.post("/exports/securecrt", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
@@ -166,8 +172,8 @@ def export_status(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
 
 
 @router.get("/exports/{task_id}/download", response_class=FileResponse)
-def download_export(request: Request, task_id: str) -> FileResponse:
-    path, filename = _not_found(lambda: _service(request).open_export_artifact(task_id), "导出任务或文件不存在")
+def download_export(request: Request, task_id: str, artifact_id: str = Query(min_length=8, max_length=160)) -> FileResponse:
+    path, filename = _not_found(lambda: _service(request).open_export_artifact(task_id, artifact_id), "导出任务或文件不存在")
     return FileResponse(path, filename=filename)
 
 

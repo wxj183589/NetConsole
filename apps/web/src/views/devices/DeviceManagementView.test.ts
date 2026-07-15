@@ -35,4 +35,15 @@ describe('Device Management Web view', () => {
   it('gates edit preview independently', () => {
     expect(source).toContain("isFeatureEnabled('web.device_edit_preview')")
   })
+
+  it('uses browser file upload and controlled server exports', () => {
+    expect(source).toContain('type="file"')
+    expect(source).toContain('previewDeviceImport(importFile.value)')
+    expect(source).not.toContain('importPath')
+    expect(source).not.toContain('output_path')
+    expect(source).not.toContain('output_dir')
+    expect(source).not.toContain('template_ini')
+    expect(source).not.toContain('file_path')
+    expect(source).toContain("isFeatureEnabled('web.device_management')")
+  })
 })

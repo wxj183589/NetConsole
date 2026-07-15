@@ -172,7 +172,8 @@ export interface DeviceTaskReference {
   task_id: string
   task_status: string
   action: string
-  output_path: string
+  artifact_id: string
+  available: boolean
 }
 
 export interface DeviceTaskBatch {
@@ -205,6 +206,5 @@ export interface DeviceExternalTerminalAction {
 }
 
 export interface DeviceExportRequest extends DeviceListQuery {
-  output_path: string
   device_uuids?: string[]
 }
