@@ -220,7 +220,9 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.launcher.launcher import parse_launch_options
 from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
 assert parse_launch_options(['--mode', 'server']).mode == 'server'
-runtime = RuntimeSupervisor(RuntimeMode.SERVER, paths=PathResolver(), port=None)
+assert parse_launch_options(['--mode', 'web']).mode == 'web'
+RuntimeSupervisor(RuntimeMode.SERVER, paths=PathResolver(), port=None)
+RuntimeSupervisor(RuntimeMode.DESKTOP, paths=PathResolver(), port=None)
 assert not hasattr(api_main, 'app')
 assert not any(name == 'PySide6' or name.startswith('PySide6.') for name in sys.modules)
 print('qt_imported=false')
@@ -242,6 +244,30 @@ print('qt_imported=false')
 
     assert result.returncode == 0, result.stderr
     assert "qt_imported=false" in result.stdout
+
+
+def test_auto_qt_initialization_failure_falls_back_once(tmp_path: Path, monkeypatch) -> None:
+    import netconsole.launcher.runtime_supervisor as supervisor_module
+
+    opened: list[str] = []
+    monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
+    monkeypatch.setattr(
+        launcher,
+        "_capabilities_for",
+        lambda _mode: launcher.CapabilityReport(
+            qt_widgets_available=False,
+            external_browser_available=True,
+            qt_detail="widgets=initialization-failed",
+        ),
+    )
+    monkeypatch.setattr(launcher, "_open_browser_shell", lambda runtime, _paths: opened.append(runtime.base_url) or True)
+    monkeypatch.setattr(launcher, "_log_frontend_status", lambda _runtime: None)
+
+    result = launcher._launch_once(launcher.LaunchOptions("auto", "127.0.0.1", 8000, ()), PathResolver(tmp_path))
+
+    assert result == 0
+    assert len(_FakeRuntime.instances) == 1
+    assert opened == [_FakeRuntime.instances[0].base_url]
 
 
 def test_qt_probe_import_does_not_load_core_runtime(tmp_path: Path) -> None:
