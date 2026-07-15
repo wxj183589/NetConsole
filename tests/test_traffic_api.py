@@ -19,6 +19,7 @@ from netconsole.models.traffic_test import (
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventHub
+from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 
 
 class FakeAgentService:
@@ -175,6 +176,7 @@ def _app(tmp_path):
         traffic_service=traffic,
         frontend_dist=tmp_path / "missing",
     )
+    app.state.traffic_web_application_service = TrafficWebApplicationService(traffic, agent)
     return app, traffic, agent
 
 

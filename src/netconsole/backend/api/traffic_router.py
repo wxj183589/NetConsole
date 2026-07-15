@@ -6,7 +6,6 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 
-from netconsole.models.agent import AgentStatus
 from netconsole.models.api.traffic import (
     FpingStartRequest,
     IperfClientStartRequest,
@@ -23,11 +22,10 @@ from netconsole.models.api.traffic import (
 )
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import ExecutionTargetDTO, ExecutionTargetKind, HighFrequencyPingConfig, TrafficTestType
-from netconsole.services.agent.controller import AgentControllerService
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfServerConfig
-from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventStreamClosed, TrafficEventStreamOverflow
+from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
@@ -36,48 +34,18 @@ ws_router = APIRouter(tags=["traffic"])
 _ACTIVE_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING}
 
 
-def traffic_service(request: Request) -> TrafficTestApplicationService:
-    return request.app.state.traffic_service
-
-
-def agent_service(request: Request) -> AgentControllerService:
-    return request.app.state.agent_service
+def traffic_web_service(request: Request) -> TrafficWebApplicationService:
+    return request.app.state.traffic_web_application_service
 
 
 @router.get("/execution-targets", response_model=list[TrafficExecutionTargetDTO])
 def list_execution_targets(request: Request) -> list[TrafficExecutionTargetDTO]:
-    targets = [
-        TrafficExecutionTargetDTO(
-            kind=ExecutionTargetKind.LOCAL,
-            id="LOCAL",
-            display_name="本机",
-            capabilities={"iperf_server": True, "iperf_client": True, "fping": True, "tcp_ping_probe": True},
-        )
-    ]
-    for agent in agent_service(request).list_agents():
-        capabilities = dict(agent.get("capabilities") or {})
-        available, reason = _agent_availability(agent, capabilities)
-        targets.append(
-            TrafficExecutionTargetDTO(
-                kind=ExecutionTargetKind.AGENT,
-                id=str(agent.get("agent_id") or ""),
-                agent_id=str(agent.get("agent_id") or ""),
-                display_name=str(agent.get("name") or agent.get("agent_id") or "Agent"),
-                available=available,
-                unavailable_reason=reason,
-                status=str(agent.get("status") or ""),
-                platform=str(agent.get("platform") or ""),
-                architecture=str(agent.get("architecture") or ""),
-                version=str(agent.get("version") or ""),
-                capabilities=capabilities,
-            )
-        )
-    return targets
+    return traffic_web_service(request).list_execution_targets()
 
 
 @router.post("/iperf/server", response_model=TrafficStartResponse, status_code=202)
 async def start_iperf_server(body: IperfServerStartRequest, request: Request) -> TrafficStartResponse:
-    run = await traffic_service(request).start_iperf_server(
+    run = await traffic_web_service(request).start_iperf_server(
         IperfServerConfig(
             bind_ip=body.bind_ip,
             port=body.port,
@@ -93,7 +61,7 @@ async def start_iperf_server(body: IperfServerStartRequest, request: Request) ->
 
 @router.post("/iperf/client", response_model=TrafficStartResponse, status_code=202)
 async def start_iperf_client(body: IperfClientStartRequest, request: Request) -> TrafficStartResponse:
-    run = await traffic_service(request).start_iperf_client(
+    run = await traffic_web_service(request).start_iperf_client(
         IperfClientConfig(
             server_ip=body.server_ip,
             port=body.port,
@@ -121,7 +89,7 @@ async def start_iperf_client(body: IperfClientStartRequest, request: Request) ->
 
 @router.post("/fping", response_model=TrafficStartResponse, status_code=202)
 async def start_fping(body: FpingStartRequest, request: Request) -> TrafficStartResponse:
-    run = await traffic_service(request).start_high_frequency_ping(
+    run = await traffic_web_service(request).start_high_frequency_ping(
         HighFrequencyPingConfig(
             targets=tuple(body.targets),
             interval_ms=body.interval_ms,
@@ -150,33 +118,32 @@ def list_runs(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[TrafficRunDTO]:
-    fetch_limit = min(2_000, offset + limit)
-    runs = traffic_service(request).list_runs(
+    page = traffic_web_service(request).list_runs(
         statuses=set(run_status or ()),
         test_type=test_type,
         executor_kind=executor_kind,
         agent_id=agent_id or None,
-        limit=fetch_limit,
+        created_after=created_after,
+        created_before=created_before,
+        offset=offset,
+        limit=limit,
     )
-    if created_after:
-        runs = [run for run in runs if run.created_at >= created_after]
-    if created_before:
-        runs = [run for run in runs if run.created_at <= created_before]
-    return [traffic_run_dto(run) for run in runs[offset : offset + limit]]
+    return [traffic_run_dto(run) for run in page.items]
 
 
 @router.get("/runs/{traffic_run_id}", response_model=TrafficRunDTO)
 def get_run(traffic_run_id: str, request: Request) -> TrafficRunDTO:
-    return traffic_run_dto(_require_run(traffic_service(request), traffic_run_id))
+    return traffic_run_dto(traffic_web_service(request).require_run(traffic_run_id))
 
 
 @router.get("/runs/{traffic_run_id}/summary", response_model=TrafficSummaryDTO)
 def get_summary(traffic_run_id: str, request: Request) -> TrafficSummaryDTO:
-    run = _require_run(traffic_service(request), traffic_run_id)
+    service = traffic_web_service(request)
+    run = service.require_run(traffic_run_id)
     return TrafficSummaryDTO(
         traffic_run_id=traffic_run_id,
         updated_at=run.updated_at,
-        summary=traffic_service(request).get_summary(traffic_run_id),
+        summary=service.get_summary(traffic_run_id),
     )
 
 
@@ -189,7 +156,7 @@ def get_events(
     limit: int = Query(default=500, ge=1, le=2000),
 ) -> list[TrafficEventDTO]:
     cursor = after if after_sequence is None else after_sequence
-    return [TrafficEventDTO.model_validate(event) for event in traffic_service(request).get_events(traffic_run_id, after=cursor, limit=limit)]
+    return [TrafficEventDTO.model_validate(event) for event in traffic_web_service(request).get_events(traffic_run_id, after=cursor, limit=limit)]
 
 
 @router.get("/runs/{traffic_run_id}/ping-samples", response_model=list[TrafficPingSampleDTO])
@@ -206,7 +173,7 @@ def get_ping_samples(
     cursor = after if after_sequence is None else after_sequence
     return [
         ping_sample_dto(sample)
-        for sample in traffic_service(request).get_ping_samples(
+        for sample in traffic_web_service(request).get_ping_samples(
             traffic_run_id,
             after=cursor,
             target=target,
@@ -219,9 +186,7 @@ def get_ping_samples(
 
 @router.post("/runs/{traffic_run_id}/cancel", response_model=TrafficCancelResponse)
 async def cancel_run(traffic_run_id: str, request: Request) -> TrafficCancelResponse:
-    service = traffic_service(request)
-    run = _require_run(service, traffic_run_id)
-    stopped = await service.cancel(run.controller_task_id)
+    stopped = await traffic_web_service(request).cancel_run(traffic_run_id)
     return TrafficCancelResponse(
         traffic_run_id=stopped.traffic_run_id,
         controller_task_id=stopped.controller_task_id,
@@ -232,15 +197,13 @@ async def cancel_run(traffic_run_id: str, request: Request) -> TrafficCancelResp
 
 @router.post("/runs/{traffic_run_id}/retry", response_model=TrafficRetryResponse, status_code=202)
 async def retry_run(traffic_run_id: str, request: Request) -> TrafficRetryResponse:
-    service = traffic_service(request)
-    run = _require_run(service, traffic_run_id)
-    retried = await service.retry(run.controller_task_id)
+    retried = await traffic_web_service(request).retry_run(traffic_run_id)
     return TrafficRetryResponse(run=traffic_run_dto(retried), retry_of_traffic_run_id=traffic_run_id)
 
 
 @ws_router.websocket("/ws/traffic/{traffic_run_id}")
 async def traffic_events_socket(websocket: WebSocket, traffic_run_id: str) -> None:
-    service: TrafficTestApplicationService = websocket.app.state.traffic_service
+    service: TrafficWebApplicationService = websocket.app.state.traffic_web_application_service
     if service.get_run(traffic_run_id) is None:
         await websocket.close(code=4404, reason="traffic run not found")
         return
@@ -299,7 +262,7 @@ async def traffic_events_socket(websocket: WebSocket, traffic_run_id: str) -> No
 
 async def _send_catchup(
     websocket: WebSocket,
-    service: TrafficTestApplicationService,
+    service: TrafficWebApplicationService,
     traffic_run_id: str,
     last_event_sequence: int,
     last_sample_sequence: int,
@@ -369,26 +332,6 @@ def _execution_target(value: TrafficExecutionTargetRequest) -> ExecutionTargetDT
         )
     except ValueError as exc:
         raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, str(exc)) from exc
-
-
-def _require_run(service: TrafficTestApplicationService, traffic_run_id: str) -> object:
-    run = service.get_run(traffic_run_id)
-    if run is None:
-        raise TrafficTestError(TrafficErrorCode.RESULT_NOT_FOUND, "流量任务不存在")
-    return run
-
-
-def _agent_availability(agent: dict[str, object], capabilities: dict[str, object]) -> tuple[bool, str]:
-    if not bool(agent.get("enabled")):
-        return False, "Agent 已禁用"
-    status = str(agent.get("status") or AgentStatus.UNKNOWN.value)
-    if status == AgentStatus.UNAUTHORIZED.value:
-        return False, "Agent 认证失败或 Token 未加载"
-    if status != AgentStatus.ONLINE.value:
-        return False, "Agent 当前不在线"
-    if not any(bool(capabilities.get(key)) for key in ("iperf_server", "iperf_client", "fping", "tcp_ping_probe")):
-        return False, "Agent 未报告流量测试能力"
-    return True, ""
 
 
 def _public_reference(value: object) -> str:
