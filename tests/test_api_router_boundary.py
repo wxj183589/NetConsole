@@ -18,9 +18,17 @@ FORBIDDEN_IMPORTS = {
     "zlib",
 }
 CONSTRUCTOR_SUFFIXES = ("Database", "Parser", "PathResolver", "Repository", "Service")
+SQLITE_DEPENDENCY = "sqlite3 exception mapping dependency"
 
-# Phase 0.5 A/B/C 当前分支证据；E 集成对应修复后必须删除已消失项。
+# Phase 0.5 当前分支证据：A/B/C 业务债务和既有 SQLite 映射；E 集成后删除已消失项。
 TEMPORARY_WAVE_DEBT = {
+    "ac_management_router.py": {SQLITE_DEPENDENCY},
+    "ac_mesh_link_router.py": {SQLITE_DEPENDENCY},
+    "config_collection_router.py": {SQLITE_DEPENDENCY},
+    "device_management_router.py": {SQLITE_DEPENDENCY},
+    "file_management_router.py": {SQLITE_DEPENDENCY},
+    "job_center_router.py": {SQLITE_DEPENDENCY},
+    "mesh_analysis_router.py": {SQLITE_DEPENDENCY},
     "online_mr_router.py": {"stateful SiteManager.get_current_site"},
     "online_mr_control_router.py": {"stateful SiteManager.get_current_site"},
     "online_mr_agent_control_router.py": {"private router site helper"},
@@ -32,7 +40,10 @@ TEMPORARY_WAVE_DEBT = {
     "rail_transit_base_data_router.py": {
         "import policy assembly",
         "import service guard access",
+        SQLITE_DEPENDENCY,
     },
+    "train_communication_router.py": {SQLITE_DEPENDENCY},
+    "wireless_dashboard_router.py": {SQLITE_DEPENDENCY},
 }
 
 
@@ -68,36 +79,24 @@ def _forbidden_import(module: str) -> bool:
     )
 
 
-def _is_sqlite_exception(node: ast.Attribute, tree: ast.AST) -> bool:
-    if node.attr not in {"Error", "OperationalError"}:
-        return False
-    return any(
-        handler.type is not None and node in ast.walk(handler.type)
-        for handler in ast.walk(tree)
-        if isinstance(handler, ast.ExceptHandler)
-    )
-
-
 def _findings(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     aliases = _aliases(tree)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     findings: set[str] = set()
-    sqlite_imported = False
-    sqlite_references = 0
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module == "sqlite3":
-                findings.add("sqlite3 direct symbol import")
+            if (node.module or "").split(".", 1)[0] == "sqlite3":
+                findings.add(SQLITE_DEPENDENCY)
             elif _forbidden_import(node.module or ""):
                 findings.add(f"forbidden import {node.module}")
         elif isinstance(node, ast.Import):
-            sqlite_imported = sqlite_imported or any(item.name == "sqlite3" for item in node.names)
+            if any(item.name.split(".", 1)[0] == "sqlite3" for item in node.names):
+                findings.add(SQLITE_DEPENDENCY)
             findings.update(f"forbidden import {item.name}" for item in node.names if _forbidden_import(item.name))
         elif isinstance(node, ast.Attribute) and _qualified_name(node, aliases).startswith("sqlite3."):
-            sqlite_references += 1
-            if not _is_sqlite_exception(node, tree):
+            if node.attr not in {"Error", "OperationalError"}:
                 findings.add(f"sqlite3 runtime access {node.attr}")
         elif isinstance(node, ast.Call):
             name = _qualified_name(node.func, aliases)
@@ -162,8 +161,6 @@ def _findings(path: Path) -> set[str]:
             for node in ast.walk(tree)
         ):
             findings.add("import policy assembly")
-    if sqlite_imported and sqlite_references == 0:
-        findings.add("unused sqlite3 import")
     return findings
 
 
@@ -207,9 +204,16 @@ def test_router_boundary_rejects_runtime_dependencies_and_construction(tmp_path:
     )
 
     findings = _findings(router)
+    assert SQLITE_DEPENDENCY in findings
     assert "sqlite3 runtime call connect" in findings
     assert "stateful SiteManager.get_current_site" in findings
     assert "infrastructure construction DemoApplicationService" in findings
     assert "dynamic import or constructor lookup" in findings
     assert {"forbidden import zipfile", "forbidden import paramiko"} <= findings
     assert any(item.startswith("forbidden import netconsole.repositories") for item in findings)
+
+
+def test_router_boundary_rejects_sqlite_direct_symbol_import(tmp_path: Path) -> None:
+    router = tmp_path / "sqlite_symbol_router.py"
+    router.write_text("from sqlite3 import OperationalError\n", encoding="utf-8")
+    assert _findings(router) == {SQLITE_DEPENDENCY}
