@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.models.task_state import TaskState
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
 _SAFE_STEM = re.compile(r"[^0-9A-Za-z._\u4e00-\u9fff-]+")
@@ -28,14 +30,17 @@ class ReservedWebArtifact:
     source: str
     artifact_type: str
     task_id: str
+    task_type: str
+    task_source: str
     output_path: Path
 
 
 class WebArtifactStore:
     """Web 报告的随机标识、完整性清单和受控下载边界。"""
 
-    def __init__(self, paths: PathResolver) -> None:
+    def __init__(self, paths: PathResolver, task_service: TaskApplicationService) -> None:
         self.paths = paths
+        self.task_service = task_service
 
     def reserve(
         self,
@@ -45,6 +50,7 @@ class WebArtifactStore:
         source: str,
         artifact_type: str,
         task_id: str,
+        task_type: str,
         output_root: Path,
         preferred_name: str,
     ) -> ReservedWebArtifact:
@@ -53,6 +59,11 @@ class WebArtifactStore:
         suffix = Path(preferred_name).suffix.casefold() or ".xlsx"
         if suffix not in _ALLOWED_SUFFIXES:
             raise WebArtifactError("报告文件类型不受支持")
+        if str(artifact_type or "").casefold() != suffix.removeprefix("."):
+            raise WebArtifactError("报告类型与文件扩展名不一致")
+        task_type = str(task_type or "").strip()
+        if not task_type:
+            raise WebArtifactError("报告任务类型不能为空")
         artifact_id = str(uuid4())
         stem = _SAFE_STEM.sub("_", Path(preferred_name).stem).strip(" ._") or "report"
         root.mkdir(parents=True, exist_ok=True)
@@ -65,6 +76,8 @@ class WebArtifactStore:
             "source": str(source),
             "artifact_type": str(artifact_type),
             "task_id": str(task_id),
+            "task_type": task_type,
+            "task_source": "local",
             "relative_path": output_path.relative_to(self.paths.site_dir(site_id).resolve()).as_posix(),
             "completed": False,
             "sha256": "",
@@ -79,30 +92,42 @@ class WebArtifactStore:
             source=str(source),
             artifact_type=str(artifact_type),
             task_id=str(task_id),
+            task_type=task_type,
+            task_source="local",
             output_path=output_path,
         )
 
     def complete(self, reservation: ReservedWebArtifact) -> dict[str, object]:
-        manifest = self._read_manifest(reservation.site_id, reservation.artifact_id)
-        expected = {
-            "artifact_id": reservation.artifact_id,
-            "site_id": reservation.site_id,
-            "owner": reservation.owner,
-            "source": reservation.source,
-            "artifact_type": reservation.artifact_type,
-            "task_id": reservation.task_id,
-        }
-        if any(str(manifest.get(key) or "") != value for key, value in expected.items()):
-            raise WebArtifactError("报告清单归属校验失败")
-        path = self._validated_output(manifest)
-        if not path.is_file() or path.is_symlink():
-            raise WebArtifactError("报告输出不存在或不是普通文件")
-        digest, size = self._digest(path)
-        manifest.update(completed=True, sha256=digest, size_bytes=size)
-        self._write_manifest(reservation.site_id, reservation.artifact_id, manifest)
-        return manifest
+        try:
+            manifest = self._read_manifest(reservation.site_id, reservation.artifact_id)
+            self._validate_reservation(manifest, reservation)
+            task = self._trusted_task(manifest)
+            if task.status is not TaskState.COMPLETED:
+                raise WebArtifactError("报告所属任务尚未成功完成")
+            path = self._validated_output(manifest)
+            if not path.is_file() or path.is_symlink():
+                raise WebArtifactError("报告输出不存在或不是普通文件")
+            digest, size = self._digest(path)
+            manifest.update(completed=True, sha256=digest, size_bytes=size)
+            self._write_manifest(reservation.site_id, reservation.artifact_id, manifest)
+            result = self._safe_task_result(manifest)
+            self.task_service.finalize_artifact_result(
+                reservation.task_id,
+                site_name=reservation.site_id,
+                owner=reservation.owner,
+                source=reservation.task_source,
+                task_type=reservation.task_type,
+                result=result,
+            )
+            return manifest
+        except WebArtifactError as exc:
+            self._reject_task(reservation, str(exc))
+            raise
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            self._reject_task(reservation, str(exc))
+            raise WebArtifactError("报告完整性最终化失败") from exc
 
-    def fail(self, reservation: ReservedWebArtifact) -> None:
+    def fail(self, reservation: ReservedWebArtifact, error_message: str = "报告不可用") -> None:
         for path in (
             reservation.output_path,
             reservation.output_path.with_name(f"{reservation.output_path.name}.tmp"),
@@ -117,6 +142,7 @@ class WebArtifactStore:
             self._manifest_path(reservation.site_id, reservation.artifact_id).unlink(missing_ok=True)
         except OSError:
             pass
+        self._reject_task(reservation, error_message)
 
     def task_metadata(
         self,
@@ -124,38 +150,23 @@ class WebArtifactStore:
         task_id: str,
         *,
         owner: str,
-        sources: set[str],
+        source_task_types: dict[str, str],
     ) -> dict[str, object] | None:
-        site_id = self._site(site_id)
-        root = self._manifest_root(site_id)
-        if not root.is_dir():
+        data = self._find_task_manifest(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if data is None:
             return None
-        for path in root.glob("*.json"):
-            if path.is_symlink():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict) or data.get("task_id") != task_id:
-                continue
-            try:
-                if path.resolve() != self._manifest_path(site_id, str(data.get("artifact_id") or "")):
-                    continue
-            except (ValueError, WebArtifactError):
-                continue
-            if data.get("site_id") != site_id or data.get("owner") != owner or data.get("source") not in sources:
-                continue
+        try:
+            task = self._trusted_task(data)
             if data.get("completed") is True:
-                try:
-                    output = self._validated_output(data)
-                    digest, size = self._digest(output)
-                except (OSError, WebArtifactError):
-                    continue
-                if digest != data.get("sha256") or size != int(data.get("size_bytes") or -1):
-                    continue
-            return data
-        return None
+                self._validate_completed(data, task_result=task.result)
+        except (OSError, TypeError, ValueError, WebArtifactError):
+            return None
+        return data
 
     def recover_task(
         self,
@@ -163,26 +174,37 @@ class WebArtifactStore:
         task_id: str,
         *,
         owner: str,
-        sources: set[str],
+        source_task_types: dict[str, str],
         succeeded: bool,
     ) -> bool:
-        data = self.task_metadata(site_id, task_id, owner=owner, sources=sources)
-        if data is None:
+        current = self.task_metadata(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if succeeded and current is not None and current.get("completed") is True:
             return False
-        if data.get("completed") is True and succeeded:
+        data = self._find_task_manifest(
+            site_id,
+            task_id,
+            owner=owner,
+            source_task_types=source_task_types,
+        )
+        if data is None:
             return False
         try:
             reservation = self._reservation(data)
             if succeeded:
                 self.complete(reservation)
             else:
-                self.fail(reservation)
-        except WebArtifactError:
+                self.fail(reservation, "报告所属任务未成功完成")
+        except (OSError, WebArtifactError):
             try:
                 reservation = self._reservation(data)
             except WebArtifactError:
                 return False
-            self.fail(reservation)
+            self.fail(reservation, "报告恢复校验失败")
         return True
 
     def open(
@@ -193,6 +215,7 @@ class WebArtifactStore:
         owner: str,
         source: str,
         artifact_type: str,
+        task_type: str,
     ) -> tuple[Path, str, dict[str, object]]:
         site_id = self._site(site_id)
         manifest = self._read_manifest(site_id, artifact_id)
@@ -201,18 +224,121 @@ class WebArtifactStore:
             "owner": owner,
             "source": source,
             "artifact_type": artifact_type,
+            "task_type": task_type,
+            "task_source": "local",
         }
         if any(str(manifest.get(key) or "") != value for key, value in expected.items()):
             raise WebArtifactError("报告归属校验失败")
         if manifest.get("completed") is not True:
             raise WebArtifactError("报告尚未完成")
+        task = self._trusted_task(manifest)
+        self._validate_completed(manifest, task_result=task.result)
+        path = self._validated_output(manifest)
+        return path, str(manifest.get("file_name") or path.name), manifest
+
+    def _find_task_manifest(
+        self,
+        site_id: str,
+        task_id: str,
+        *,
+        owner: str,
+        source_task_types: dict[str, str],
+    ) -> dict[str, object] | None:
+        site_id = self._site(site_id)
+        root = self._manifest_root(site_id)
+        if not root.is_dir():
+            return None
+        for path in root.glob("*.json"):
+            if path.is_symlink():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or data.get("task_id") != task_id:
+                    continue
+                artifact_id = str(data.get("artifact_id") or "")
+                if path.resolve() != self._manifest_path(site_id, artifact_id):
+                    continue
+                source = str(data.get("source") or "")
+                expected_task_type = source_task_types.get(source)
+                if (
+                    data.get("site_id") != site_id
+                    or data.get("owner") != owner
+                    or not expected_task_type
+                    or data.get("task_type") != expected_task_type
+                    or data.get("task_source") != "local"
+                ):
+                    continue
+                self._trusted_task(data)
+            except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError, WebArtifactError):
+                continue
+            return data
+        return None
+
+    def _validate_reservation(
+        self,
+        manifest: dict[str, object],
+        reservation: ReservedWebArtifact,
+    ) -> None:
+        expected = {
+            "artifact_id": reservation.artifact_id,
+            "site_id": reservation.site_id,
+            "owner": reservation.owner,
+            "source": reservation.source,
+            "artifact_type": reservation.artifact_type,
+            "task_id": reservation.task_id,
+            "task_type": reservation.task_type,
+            "task_source": reservation.task_source,
+        }
+        if any(str(manifest.get(key) or "") != value for key, value in expected.items()):
+            raise WebArtifactError("报告清单归属校验失败")
+        if self._validated_output(manifest) != reservation.output_path.resolve():
+            raise WebArtifactError("报告清单输出路径校验失败")
+
+    def _trusted_task(self, manifest: dict[str, object]):
+        site_id = self._site(str(manifest.get("site_id") or ""))
+        task_id = str(manifest.get("task_id") or "")
+        snapshot = self.task_service.repository(site_id).get(task_id)
+        if snapshot is None:
+            raise WebArtifactError("报告所属任务不存在")
+        if (
+            snapshot.site_name != site_id
+            or snapshot.owner != str(manifest.get("owner") or "")
+            or snapshot.source != str(manifest.get("task_source") or "")
+            or snapshot.task_type != str(manifest.get("task_type") or "")
+        ):
+            raise WebArtifactError("报告所属任务归属校验失败")
+        return snapshot
+
+    def _validate_completed(self, manifest: dict[str, object], *, task_result: dict[str, object]) -> None:
+        if task_result != self._safe_task_result(manifest):
+            raise WebArtifactError("报告任务结果锚点校验失败")
         path = self._validated_output(manifest)
         if not path.is_file() or path.is_symlink():
             raise WebArtifactError("报告文件不存在")
         digest, size = self._digest(path)
         if digest != manifest.get("sha256") or size != int(manifest.get("size_bytes") or -1):
             raise WebArtifactError("报告完整性校验失败")
-        return path, str(manifest.get("file_name") or path.name), manifest
+
+    @staticmethod
+    def _safe_task_result(manifest: dict[str, object]) -> dict[str, object]:
+        return {
+            "artifact_id": str(manifest.get("artifact_id") or ""),
+            "artifact_source": str(manifest.get("source") or ""),
+            "artifact_type": str(manifest.get("artifact_type") or ""),
+            "artifact_name": str(manifest.get("file_name") or ""),
+            "sha256": str(manifest.get("sha256") or ""),
+            "size_bytes": int(manifest.get("size_bytes") or 0),
+        }
+
+    def _reject_task(self, reservation: ReservedWebArtifact, error_message: str) -> None:
+        self.task_service.reject_artifact_result(
+            reservation.task_id,
+            site_name=reservation.site_id,
+            owner=reservation.owner,
+            source=reservation.task_source,
+            task_type=reservation.task_type,
+            error_message=error_message,
+        )
 
     def _validated_output(self, manifest: dict[str, object]) -> Path:
         site_id = self._site(str(manifest.get("site_id") or ""))
@@ -224,6 +350,10 @@ class WebArtifactStore:
         path = (site_root / relative).resolve()
         root = self._source_root(site_id, source).resolve()
         self._require_within(path, root)
+        file_name = str(manifest.get("file_name") or "")
+        artifact_type = str(manifest.get("artifact_type") or "").casefold()
+        if path.name != file_name or path.suffix.casefold().removeprefix(".") != artifact_type:
+            raise WebArtifactError("报告名称或类型校验失败")
         return path
 
     def _reservation(self, manifest: dict[str, object]) -> ReservedWebArtifact:
@@ -240,6 +370,8 @@ class WebArtifactStore:
             source=str(manifest.get("source") or ""),
             artifact_type=str(manifest.get("artifact_type") or ""),
             task_id=str(manifest.get("task_id") or ""),
+            task_type=str(manifest.get("task_type") or ""),
+            task_source=str(manifest.get("task_source") or ""),
             output_path=output,
         )
 

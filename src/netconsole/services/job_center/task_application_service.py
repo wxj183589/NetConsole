@@ -202,6 +202,57 @@ class TaskApplicationService:
         finally:
             self._job_sites.pop(job_id, None)
 
+    def finalize_artifact_result(
+        self,
+        task_id: str,
+        *,
+        site_name: str,
+        owner: str,
+        source: str,
+        task_type: str,
+        result: dict[str, object],
+    ) -> TaskSnapshot:
+        """以安全标量替换导出 Worker 暂存的路径结果。"""
+
+        snapshot = self._artifact_task(site_name, task_id, owner, source, task_type)
+        if snapshot.status is not TaskState.COMPLETED:
+            raise ValueError("Artifact 所属任务尚未成功完成")
+        return self.record_external_event(
+            task_id,
+            "artifact_finalized",
+            {"result": dict(result), "message": "报告完整性校验完成"},
+            source="artifact_store",
+            site_name=site_name,
+        )
+
+    def reject_artifact_result(
+        self,
+        task_id: str,
+        *,
+        site_name: str,
+        owner: str,
+        source: str,
+        task_type: str,
+        error_message: str,
+    ) -> TaskSnapshot | None:
+        """清除路径结果；已完成任务在 Artifact 最终化失败时转为失败。"""
+
+        try:
+            snapshot = self._artifact_task(site_name, task_id, owner, source, task_type)
+        except (KeyError, ValueError):
+            return None
+        return self.record_external_event(
+            task_id,
+            "artifact_rejected",
+            {
+                "state": TaskState.FAILED.value if snapshot.status is TaskState.COMPLETED else snapshot.status.value,
+                "error": str(error_message or "报告完整性校验失败"),
+                "message": "报告不可用",
+            },
+            source="artifact_store",
+            site_name=site_name,
+        )
+
     def fail_start(self, job_id: str, message: str) -> dict[str, object] | None:
         try:
             return self.runtime.fail_start(job_id, message)
@@ -307,7 +358,49 @@ class TaskApplicationService:
                     "error_message": str(payload.get("error") or payload.get("message") or "任务已取消"),
                 }
             )
+        elif event_type == "artifact_finalized":
+            values.update(
+                {
+                    "result": dict(payload.get("result") or {}),
+                    "result_path": "",
+                    "message": str(payload.get("message") or "报告完整性校验完成"),
+                }
+            )
+        elif event_type == "artifact_rejected":
+            state = TaskState(str(payload.get("state") or snapshot.status.value))
+            values.update(
+                {
+                    "status": state,
+                    "result": {},
+                    "result_path": "",
+                    "message": str(payload.get("message") or "报告不可用"),
+                    "error_message": str(payload.get("error") or "报告完整性校验失败")
+                    if state is TaskState.FAILED
+                    else values["error_message"],
+                    "finished_time": event_time if state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED} else values["finished_time"],
+                }
+            )
         return TaskSnapshot(**values)
+
+    def _artifact_task(
+        self,
+        site_name: str,
+        task_id: str,
+        owner: str,
+        source: str,
+        task_type: str,
+    ) -> TaskSnapshot:
+        snapshot = self.repository(site_name).get(task_id)
+        if snapshot is None:
+            raise KeyError(task_id)
+        if (
+            snapshot.site_name != site_name
+            or snapshot.owner != owner
+            or snapshot.source != source
+            or snapshot.task_type != task_type
+        ):
+            raise ValueError("Artifact 所属任务校验失败")
+        return snapshot
 
     def _record_prepare_failure(self, snapshot: TaskSnapshot, message: str) -> None:
         now = utc_now_iso()

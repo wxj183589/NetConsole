@@ -38,6 +38,26 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   return (await response.json()) as T
 }
 
+export async function apiDownload(path: string): Promise<void> {
+  const response = await fetch(`${apiBase}${path}`)
+  if (!response.ok) throw new Error(`下载失败 (${response.status})`)
+  const disposition = response.headers.get('content-disposition') || ''
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+  const rawName = encodedName || plainName || 'report'
+  let fileName = rawName
+  try { fileName = decodeURIComponent(rawName) } catch { /* 保留响应中的原始安全文件名。 */ }
+  const objectUrl = URL.createObjectURL(await response.blob())
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = fileName
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
 export function getHealth(): Promise<HealthResponse> {
   return apiRequest<HealthResponse>('/api/health')
 }

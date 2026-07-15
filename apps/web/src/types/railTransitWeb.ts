@@ -6,6 +6,9 @@ export interface RailTransitTask {
   available: boolean
   sha256: string
   size_bytes: number
+  message: string
+  error_message: string
+  result_summary: Record<string, unknown>
 }
 
 export interface OnlineMrMetricPoint {
@@ -28,4 +31,22 @@ export interface MeshImportProfile {
   safe_folder_name: string
   linked_device_id?: number
   notes?: string
+}
+
+export interface OnlineTrainRow {
+  train_id: string
+  train_no: string
+  train_name: string
+  communication_status: string
+  current_mesh_links: number
+  active_sessions: number
+  warning_count: number
+  last_updated_at: string | null
+}
+
+export interface OnlineTrainPage {
+  items: OnlineTrainRow[]
+  total: number
+  page: number
+  page_size: number
 }

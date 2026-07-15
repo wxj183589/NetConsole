@@ -217,6 +217,9 @@ class AcWebTaskDTO(ApiModel):
     available: bool = False
     sha256: str = ""
     size_bytes: int = 0
+    message: str = ""
+    error_message: str = ""
+    result_summary: dict[str, object] = Field(default_factory=dict)
 
 
 class AcActionPlanDTO(ApiModel):
@@ -280,10 +283,8 @@ class AcExtensionRollbackResultDTO(ApiModel):
     restored_rows: int = 0
 
 
-class AcRefreshRequestDTO(ApiModel):
-    ac_id: str = ""
-    source: str = "auto"
-    refresh_scope: str = "all"
+class AcLocalRebuildRequestDTO(ApiModel):
+    ac_id: str = Field(default="", max_length=100)
 
 
 __all__ = [
@@ -309,7 +310,7 @@ __all__ = [
     "AcExtensionPreviewDTO",
     "AcExtensionRollbackRequestDTO",
     "AcExtensionRollbackResultDTO",
-    "AcRefreshRequestDTO",
+    "AcLocalRebuildRequestDTO",
     "AcTracksidePlanDTO",
     "AcTracksidePlanPageDTO",
     "AcWebTaskDTO",

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-from uuid import uuid4
+import asyncio
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
@@ -169,29 +168,16 @@ async def mesh_analysis_import(
 ) -> RailTransitTaskDTO:
     service = _rail_service(request)
     site_id = _facade(request).current_site_id()
-    staging = service.create_mesh_staging(site_id)
-    staged: list[Path] = []
-    total_size = 0
+    staging = None
     try:
         submitted = await request.form()
         if "site_id" in submitted or "relative_folder_path" in submitted:
             raise RailTransitWebError("BROWSER_SITE_FORBIDDEN", "Browser 不得提交局点或运行目录")
-        for index, upload in enumerate(files, 1):
-            suffix = Path(upload.filename or "").suffix.casefold()
-            if suffix not in {".log", ".txt"}:
-                raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT 文件")
-            target = staging / f"{index:03d}-{uuid4().hex}{suffix}"
-            file_size = 0
-            with target.open("xb") as handle:
-                while chunk := await upload.read(1024 * 1024):
-                    file_size += len(chunk)
-                    total_size += len(chunk)
-                    if file_size > 20 * 1024 * 1024:
-                        raise RailTransitWebError("FILE_TOO_LARGE", "单个 MESH 日志不得超过 20 MiB")
-                    if total_size > 100 * 1024 * 1024:
-                        raise RailTransitWebError("FILES_TOO_LARGE", "MESH 导入文件总大小不得超过 100 MiB")
-                    handle.write(chunk)
-            staged.append(target)
+        staging, staged = await asyncio.to_thread(
+            service.stage_mesh_uploads,
+            site_id,
+            [(upload.filename or "", upload.file) for upload in files],
+        )
         return service.start_mesh_import(
             site_id,
             profile={
@@ -205,10 +191,12 @@ async def mesh_analysis_import(
             uploads=staged,
         )
     except RailTransitWebError as exc:
-        service.discard_mesh_staging(site_id, staging)
+        if staging is not None:
+            service.discard_mesh_staging(site_id, staging)
         _raise_rail_error(exc)
     except Exception:
-        service.discard_mesh_staging(site_id, staging)
+        if staging is not None:
+            service.discard_mesh_staging(site_id, staging)
         raise
     finally:
         for upload in files:

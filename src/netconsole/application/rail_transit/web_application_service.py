@@ -5,6 +5,7 @@ import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from typing import BinaryIO
 from uuid import uuid4
 
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
@@ -44,7 +45,10 @@ class RailTransitWebApplicationService:
         "web_export_mesh_analysis_report",
     }
     _OWNER = "web_rail_transit"
-    _ARTIFACT_SOURCES = {"online_mr_report", "mesh_analysis_report"}
+    _ARTIFACT_TASK_TYPES = {
+        "online_mr_report": "web_export_online_mr_report_xlsx",
+        "mesh_analysis_report": "web_export_mesh_analysis_report",
+    }
     _ACTIONS = {
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
@@ -67,7 +71,7 @@ class RailTransitWebApplicationService:
         self.export_adapter = export_adapter
         self.query_service = query_service or OnlineMrQueryService(paths)
         self.mesh_query_service = mesh_query_service or MeshAnalysisQueryService(paths)
-        self.artifact_store = artifact_store or WebArtifactStore(paths)
+        self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
 
     def create_mesh_staging(self, site_id: str) -> Path:
         site_id = self._site(site_id)
@@ -78,6 +82,41 @@ class RailTransitWebApplicationService:
             raise RailTransitWebError("STAGING_INVALID", "MESH 临时目录无效")
         staging.mkdir(parents=False, exist_ok=False)
         return staging
+
+    def stage_mesh_uploads(
+        self,
+        site_id: str,
+        uploads: list[tuple[str, BinaryIO]],
+    ) -> tuple[Path, list[Path]]:
+        """在线程中完成受控 MESH 上传落盘和大小校验。"""
+
+        site_id = self._site(site_id)
+        if not uploads:
+            raise RailTransitWebError("FILE_REQUIRED", "至少选择一个 MESH 原始日志文件")
+        staging = self.create_mesh_staging(site_id)
+        staged: list[Path] = []
+        total_size = 0
+        try:
+            for index, (file_name, source) in enumerate(uploads, 1):
+                suffix = Path(str(file_name or "")).suffix.casefold()
+                if suffix not in self._UPLOAD_SUFFIXES:
+                    raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT 文件")
+                target = staging / f"{index:03d}-{uuid4().hex}{suffix}"
+                file_size = 0
+                with target.open("xb") as handle:
+                    while chunk := source.read(1024 * 1024):
+                        file_size += len(chunk)
+                        total_size += len(chunk)
+                        if file_size > 20 * 1024 * 1024:
+                            raise RailTransitWebError("FILE_TOO_LARGE", "单个 MESH 日志不得超过 20 MiB")
+                        if total_size > 100 * 1024 * 1024:
+                            raise RailTransitWebError("FILES_TOO_LARGE", "MESH 导入文件总大小不得超过 100 MiB")
+                        handle.write(chunk)
+                staged.append(target)
+            return staging, staged
+        except Exception:
+            self._cleanup_staging(site_id, staging)
+            raise
 
     def discard_mesh_staging(self, site_id: str, staging_dir: Path) -> None:
         self._cleanup_staging(self._site(site_id), staging_dir)
@@ -137,6 +176,7 @@ class RailTransitWebApplicationService:
             source="online_mr_report",
             artifact_type="xlsx",
             task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["online_mr_report"],
             output_root=root / "reports",
             preferred_name=name,
         )
@@ -165,6 +205,7 @@ class RailTransitWebApplicationService:
             source="mesh_analysis_report",
             artifact_type="xlsx",
             task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["mesh_analysis_report"],
             output_root=output_root,
             preferred_name=f"{context.mr_name}_MESH分析报告.xlsx",
         )
@@ -201,22 +242,24 @@ class RailTransitWebApplicationService:
     def recover_tasks(self, site_id: str) -> list[RailTransitTaskDTO]:
         site_id = self._site(site_id)
         repository = self.task_service.repository(site_id)
-        recovered = {item.task_id: item for item in self._reconcile_owned_orphans(site_id)}
+        self._reconcile_owned_orphans(site_id)
         for item in repository.list(statuses=TERMINAL_TASK_STATES, limit=1000):
             if item.site_name != site_id or not self._authorized(item):
                 continue
-            cleaned = self._cleanup_recovered_task(site_id, item)
+            self._cleanup_recovered_task(site_id, item)
             if item.task_type.startswith("web_export_"):
-                cleaned = self.artifact_store.recover_task(
+                self.artifact_store.recover_task(
                     site_id,
                     item.task_id,
                     owner=self._OWNER,
-                    sources=self._ARTIFACT_SOURCES,
+                    source_task_types=self._ARTIFACT_TASK_TYPES,
                     succeeded=item.status == TaskState.COMPLETED,
-                ) or cleaned
-            if cleaned:
-                recovered[item.task_id] = item
-        return [self._task_dto(site_id, item) for item in recovered.values()]
+                )
+        return [
+            self._task_dto(site_id, item)
+            for item in repository.list(limit=200)
+            if item.site_name == site_id and self._authorized(item)
+        ]
 
     def open_online_mr_report(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "online_mr_report")
@@ -328,7 +371,10 @@ class RailTransitWebApplicationService:
 
     def _task_dto(self, site_id: str, snapshot) -> RailTransitTaskDTO:
         metadata = self.artifact_store.task_metadata(
-            site_id, snapshot.task_id, owner=self._OWNER, sources=self._ARTIFACT_SOURCES
+            site_id,
+            snapshot.task_id,
+            owner=self._OWNER,
+            source_task_types=self._ARTIFACT_TASK_TYPES,
         )
         action = self._ACTIONS.get(snapshot.task_type, snapshot.task_type)
         return RailTransitTaskDTO(
@@ -339,7 +385,23 @@ class RailTransitWebApplicationService:
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
+            message=snapshot.message,
+            error_message=snapshot.error_message,
+            result_summary=self._result_summary(snapshot.result),
         )
+
+    @staticmethod
+    def _result_summary(result: dict[str, object]) -> dict[str, object]:
+        summary: dict[str, object] = {}
+        for key in ("count", "row_count", "train_count", "success_count", "failed_count"):
+            value = result.get(key)
+            if isinstance(value, (bool, int, float, str)):
+                summary[key] = value
+        for key in ("rows", "items", "generated_files"):
+            value = result.get(key)
+            if isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+        return summary
 
     def _open_artifact(self, site_id: str, artifact_id: str, source: str) -> tuple[Path, str]:
         try:
@@ -349,6 +411,7 @@ class RailTransitWebApplicationService:
                 owner=self._OWNER,
                 source=source,
                 artifact_type="xlsx",
+                task_type=self._ARTIFACT_TASK_TYPES[source],
             )
         except WebArtifactError as exc:
             raise RailTransitWebError("ARTIFACT_INVALID", str(exc)) from exc

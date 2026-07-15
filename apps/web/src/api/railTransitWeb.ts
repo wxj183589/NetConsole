@@ -1,22 +1,17 @@
-import { apiRequest } from './client'
-import type { OnlineMrMetricSeries, MeshImportProfile, RailTransitTask } from '../types/railTransitWeb'
+import { apiDownload, apiRequest } from './client'
+import type { OnlineMrMetricSeries, MeshImportProfile, OnlineTrainPage, RailTransitTask } from '../types/railTransitWeb'
 
 const onlineMrRoot = '/api/online-mr'
 const trainRoot = '/api/rail-transit/train-communication'
-const acRoot = '/api/ac-management'
 
 interface ApiResponse<T> { ok: boolean; data: T }
 
-export function listOnlineTrains(page = 1, pageSize = 50): Promise<Record<string, unknown>> {
-  return apiRequest(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
+export function listOnlineTrains(page = 1, pageSize = 50): Promise<OnlineTrainPage> {
+  return apiRequest<OnlineTrainPage>(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
 }
 
 export function startCarNetworkDiagnostic(trainId = ''): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/car-network-diagnostic`, { method: 'POST', body: JSON.stringify({ train_id: trainId }) })
-}
-
-export function refreshTracksideBusiness(acId = ''): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${acRoot}/trackside-business/refresh`, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
 export function importMeshAnalysis(files: File[], profile: MeshImportProfile): Promise<RailTransitTask> {
@@ -53,4 +48,12 @@ export function cancelRailTransitTask(taskId: string): Promise<RailTransitTask> 
 
 export function recoverRailTransitTasks(): Promise<RailTransitTask[]> {
   return apiRequest<RailTransitTask[]>(`${onlineMrRoot}/tasks/recover`, { method: 'POST' })
+}
+
+export function downloadOnlineMrReport(artifactId: string): Promise<void> {
+  return apiDownload(`${onlineMrRoot}/report-artifacts/${encodeURIComponent(artifactId)}/download`)
+}
+
+export function downloadMeshAnalysisReport(artifactId: string): Promise<void> {
+  return apiDownload(`/api/rail-transit/mesh-analysis/report-artifacts/${encodeURIComponent(artifactId)}/download`)
 }

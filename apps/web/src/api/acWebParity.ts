@@ -1,5 +1,5 @@
-import { apiRequest } from './client'
-import type { AcActionPlan, AcExtensionPage, AcExtensionPreview, AcWebTask } from '../types/acWebParity'
+import { apiDownload, apiRequest } from './client'
+import type { AcActionPlan, AcExtensionPage, AcExtensionPreview, AcTracksidePlanPage, AcWebTask } from '../types/acWebParity'
 
 const root = '/api/ac-management'
 
@@ -12,6 +12,10 @@ function query(values: Record<string, string | number | undefined>): string {
 
 export function listAcExtensions(page = 1, pageSize = 50, search = ''): Promise<AcExtensionPage> {
   return apiRequest<AcExtensionPage>(`${root}/extensions${query({ page, page_size: pageSize, search })}`)
+}
+
+export function listAcTracksidePlan(): Promise<AcTracksidePlanPage> {
+  return apiRequest<AcTracksidePlanPage>(`${root}/trackside-plan`)
 }
 
 export function previewAcExtension(file: File): Promise<AcExtensionPreview> {
@@ -38,13 +42,29 @@ export function rollbackAcExtension(auditId: string): Promise<{ audit_id: string
   })
 }
 
-export function startAcRefresh(kind: 'ac' | 'fit-ap' | 'optical' | 'trackside-plan' | 'trackside-business', acId = ''): Promise<AcWebTask> {
-  const path = kind === 'trackside-business' ? `${root}/trackside-business/refresh` : `${root}/refresh/${kind}`
+export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'trackside-plan' | 'trackside-business', acId = ''): Promise<AcWebTask> {
+  const path = kind === 'trackside-business' ? `${root}/trackside-business/local-rebuild` : `${root}/local-rebuild/${kind}`
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
 export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
+}
+
+export function getAcWebTask(taskId: string): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/web-tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelAcWebTask(taskId: string): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/web-tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
+export function recoverAcWebTasks(): Promise<AcWebTask[]> {
+  return apiRequest<AcWebTask[]>(`${root}/web-tasks/recover`, { method: 'POST' })
+}
+
+export function downloadAcExtensionArtifact(artifactId: string): Promise<void> {
+  return apiDownload(`${root}/extensions/artifacts/${encodeURIComponent(artifactId)}/download`)
 }
 
 export function createAcActionPlan(targetId: string, actionId: string): Promise<AcActionPlan> {

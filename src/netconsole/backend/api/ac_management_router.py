@@ -24,7 +24,7 @@ from netconsole.models.api.ac_management import (
     AcExtensionPreviewDTO,
     AcExtensionRollbackRequestDTO,
     AcExtensionRollbackResultDTO,
-    AcRefreshRequestDTO,
+    AcLocalRebuildRequestDTO,
     AcTracksidePlanPageDTO,
     AcWebTaskDTO,
 )
@@ -254,38 +254,72 @@ def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRoll
 
 
 @router.post(
-    "/refresh/{refresh_kind}",
+    "/local-rebuild/{rebuild_kind}",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(require_feature("web.ac_refresh"))],
 )
-def refresh(request: Request, refresh_kind: str, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
+def local_rebuild(request: Request, rebuild_kind: str, payload: AcLocalRebuildRequestDTO) -> AcWebTaskDTO:
     task_types = {"ac": "ac_overview_refresh", "fit-ap": "ac_fit_ap_resources_refresh", "optical": "ac_fit_ap_optical_refresh", "trackside-plan": "trackside_ap_plan_refresh"}
     try:
-        task_type = task_types[refresh_kind]
-        return _web_service(request).start_refresh(_web_site_id(request), task_type, ac_id=payload.ac_id, source=payload.source, refresh_scope=payload.refresh_scope)
+        task_type = task_types[rebuild_kind]
+        return _web_service(request).start_local_rebuild(_web_site_id(request), task_type, ac_id=payload.ac_id)
     except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="不支持的 AC 刷新类型") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="不支持的 AC 本地重算类型") from exc
     except AcWebActionError as exc:
         _raise_web_error(exc)
 
 
 @router.post(
-    "/trackside-business/refresh",
+    "/trackside-business/local-rebuild",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(require_feature("web.ac_refresh"))],
 )
-def trackside_business_refresh(request: Request, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
+def trackside_business_local_rebuild(request: Request, payload: AcLocalRebuildRequestDTO) -> AcWebTaskDTO:
     try:
-        task = _web_service(request).start_refresh(
+        task = _web_service(request).start_local_rebuild(
             _web_site_id(request),
             "ac_trackside_business_refresh",
             ac_id=payload.ac_id,
-            source=payload.source,
-            refresh_scope=payload.refresh_scope,
         )
         return task
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get(
+    "/web-tasks/{task_id}",
+    response_model=AcWebTaskDTO,
+    dependencies=[Depends(require_feature("web.ac_refresh"))],
+)
+def web_task(request: Request, task_id: str) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).get_task(_web_site_id(request), task_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
+    "/web-tasks/{task_id}/cancel",
+    response_model=AcWebTaskDTO,
+    dependencies=[Depends(require_feature("web.ac_refresh"))],
+)
+def cancel_web_task(request: Request, task_id: str) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).cancel_task(_web_site_id(request), task_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
+    "/web-tasks/recover",
+    response_model=list[AcWebTaskDTO],
+    dependencies=[Depends(require_feature("web.ac_refresh"))],
+)
+def recover_web_tasks(request: Request) -> list[AcWebTaskDTO]:
+    try:
+        return _web_service(request).recover_tasks(_web_site_id(request))
     except AcWebActionError as exc:
         _raise_web_error(exc)
 
@@ -405,7 +439,7 @@ def _raise_web_error(exc: AcWebActionError) -> None:
         "PLAN_SITE_MISMATCH", "TARGET_STALE", "ALREADY_APPLIED", "BASE_DATA_DATABASE_CHANGED",
         "BASE_DATA_ROLLBACK_CONFLICT", "BASE_DATA_IMPORT_CONFLICT", "BASE_DATA_BLOCKING_ISSUES",
     }
-    not_found = {"PLAN_NOT_FOUND", "ARTIFACT_INVALID"}
+    not_found = {"PLAN_NOT_FOUND", "ARTIFACT_INVALID", "TASK_NOT_FOUND"}
     status_code = status.HTTP_409_CONFLICT if exc.code in conflicts else status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

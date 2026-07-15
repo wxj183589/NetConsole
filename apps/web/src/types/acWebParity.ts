@@ -6,6 +6,26 @@ export interface AcWebTask {
   available: boolean
   sha256: string
   size_bytes: number
+  message: string
+  error_message: string
+  result_summary: Record<string, unknown>
+}
+
+export interface AcTracksidePlan {
+  mode: string
+  station_name: string
+  ap_count: number
+  ap_start_address: string
+  mask_length: number
+  ap_gateway: string
+  ap_management_vlans: string
+  remark: string
+}
+
+export interface AcTracksidePlanPage {
+  items: AcTracksidePlan[]
+  total: number
+  mode: string
 }
 
 export interface AcExtension {

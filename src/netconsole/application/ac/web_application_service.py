@@ -28,6 +28,7 @@ from netconsole.models.api.ac_management import (
     AcTracksidePlanPageDTO,
     AcWebTaskDTO,
 )
+from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
@@ -56,6 +57,19 @@ class AcWebActionError(ValueError):
 class AcWebApplicationService:
     """AC Web 用例边界；写入复用基础资料服务，设备动作只进入 Fake Task。"""
 
+    _OWNER = "web_ac"
+    _ARTIFACT_TASK_TYPES = {"ac_extension_export": "web_export_fit_ap_extension_xlsx"}
+    _LOCAL_REBUILD_TASKS = {
+        "ac_overview_refresh": "AC 在线概览本地重算",
+        "ac_fit_ap_resources_refresh": "FIT-AP 信息本地重算",
+        "ac_fit_ap_optical_refresh": "FIT-AP 光衰本地重算",
+        "trackside_ap_plan_refresh": "轨旁 AP 规划本地加载",
+        "ac_trackside_business_refresh": "轨旁 AP 业务本地重算",
+    }
+    _TASK_ACTIONS = {
+        **{task_type: task_type for task_type in _LOCAL_REBUILD_TASKS},
+        "web_export_fit_ap_extension_xlsx": "ac_extension_export",
+    }
     _locks_guard = threading.Lock()
     _locks: dict[str, threading.RLock] = {}
 
@@ -78,7 +92,7 @@ class AcWebApplicationService:
             RailTransitBaseDataQueryService(paths), import_service=self.base_import_service
         )
         self.export_adapter = export_adapter
-        self.artifact_store = artifact_store or WebArtifactStore(paths)
+        self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
 
     def current_site_id(self) -> str:
         try:
@@ -119,42 +133,72 @@ class AcWebApplicationService:
         ]
         return AcTracksidePlanPageDTO(items=items, total=len(items), mode=mode)
 
-    def start_refresh(
+    def start_local_rebuild(
         self,
         site_id: str,
         task_type: str,
         *,
         ac_id: str,
-        source: str = "auto",
-        refresh_scope: str = "all",
     ) -> AcWebTaskDTO:
         site_id = self._site(site_id)
-        allowed = {
-            "ac_overview_refresh": "AC 在线概览刷新",
-            "ac_fit_ap_resources_refresh": "FIT-AP 信息刷新",
-            "ac_fit_ap_optical_refresh": "FIT-AP 光衰刷新",
-            "trackside_ap_plan_refresh": "轨旁 AP 规划刷新",
-            "ac_trackside_business_refresh": "轨旁 AP 业务刷新",
-        }
-        if task_type not in allowed:
-            raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 AC Web 刷新任务")
+        if task_type not in self._LOCAL_REBUILD_TASKS:
+            raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 AC Web 本地重算任务")
+        ac_id = str(ac_id or "").strip()
+        if ac_id:
+            ac_id = str(self._target(site_id, ac_id).device_uuid)
         task_id = f"ac-web-{uuid4().hex}"
         params: dict[str, object] = {
             "site_name": site_id,
             "db_path": str(self.paths.site_db_path(site_id)),
             "app_root": str(self.paths.app_root),
             "data_root": str(self.paths.data_root),
-            "task_name": allowed[task_type],
-            "owner": "web_ac",
+            "task_name": self._LOCAL_REBUILD_TASKS[task_type],
+            "owner": self._OWNER,
             "task_source": "local",
             "device_uuid": ac_id,
             "ac_uuid": ac_id,
-            "source": source,
-            "refresh_scope": refresh_scope,
-            "mode": "collect" if task_type != "trackside_ap_plan_refresh" else TRACKSIDE_AP_PLAN_MODE,
         }
+        if task_type == "trackside_ap_plan_refresh":
+            params["mode"] = TRACKSIDE_AP_PLAN_MODE
         self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
-        return self._task_dto(site_id, task_id, task_type)
+        return self._task_dto(site_id, task_id)
+
+    def get_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        return self._task_dto(site_id, task_id)
+
+    def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        snapshot = self._task_snapshot(site_id, task_id)
+        if snapshot.status not in TERMINAL_TASK_STATES:
+            cancelled = self.process_adapter.cancel_job(task_id)
+            if not cancelled and self.export_adapter is not None:
+                cancelled = self.export_adapter.cancel_job(task_id)
+            if not cancelled:
+                self._reconcile_owned_orphans(site_id)
+        return self._task_dto(site_id, task_id)
+
+    def recover_tasks(self, site_id: str) -> list[AcWebTaskDTO]:
+        site_id = self._site(site_id)
+        repository = self.task_service.repository(site_id)
+        self._reconcile_owned_orphans(site_id)
+        for item in repository.list(statuses=TERMINAL_TASK_STATES, limit=1000):
+            if item.site_name != site_id or not self._authorized_task(item):
+                continue
+            self._cleanup_task_runtime(item.task_id)
+            if item.task_type in self._ARTIFACT_TASK_TYPES.values():
+                self.artifact_store.recover_task(
+                    site_id,
+                    item.task_id,
+                    owner=self._OWNER,
+                    source_task_types=self._ARTIFACT_TASK_TYPES,
+                    succeeded=item.status == TaskState.COMPLETED,
+                )
+        return [
+            self._task_dto(site_id, item.task_id)
+            for item in repository.list(limit=200)
+            if item.site_name == site_id and self._authorized_task(item)
+        ]
 
     def create_action_plan(self, site_id: str, target_id: str, action_id: str) -> AcActionPlanDTO:
         site_id = self._site(site_id)
@@ -342,6 +386,7 @@ class AcWebApplicationService:
             source="ac_extension_export",
             artifact_type="xlsx",
             task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["ac_extension_export"],
             output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_extensions",
             preferred_name="AP扩展信息.xlsx",
         )
@@ -369,7 +414,7 @@ class AcWebApplicationService:
         except Exception:
             self.artifact_store.fail(reservation)
             raise
-        return self._task_dto(site_id, task_id, "ac_extension_export", reservation.artifact_id)
+        return self._task_dto(site_id, task_id)
 
     def open_extension_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         try:
@@ -379,25 +424,90 @@ class AcWebApplicationService:
                 owner="web_ac",
                 source="ac_extension_export",
                 artifact_type="xlsx",
+                task_type=self._ARTIFACT_TASK_TYPES["ac_extension_export"],
             )
         except WebArtifactError as exc:
             raise AcWebActionError("ARTIFACT_INVALID", str(exc)) from exc
         return path, name
 
-    def _task_dto(self, site_id: str, task_id: str, action: str, artifact_id: str = "") -> AcWebTaskDTO:
-        snapshot = self.task_service.repository(site_id).get(task_id)
-        metadata = self.artifact_store.task_metadata(
-            site_id, task_id, owner="web_ac", sources={"ac_extension_export"}
-        ) if artifact_id else None
+    def _task_dto(self, site_id: str, task_id: str) -> AcWebTaskDTO:
+        snapshot = self._task_snapshot(site_id, task_id)
+        metadata = (
+            self.artifact_store.task_metadata(
+                site_id,
+                task_id,
+                owner=self._OWNER,
+                source_task_types=self._ARTIFACT_TASK_TYPES,
+            )
+            if snapshot.task_type in self._ARTIFACT_TASK_TYPES.values()
+            else None
+        )
         return AcWebTaskDTO(
             task_id=task_id,
-            status=snapshot.status.value if snapshot else "PENDING",
-            action=action,
-            artifact_id=artifact_id,
+            status=snapshot.status.value,
+            action=self._TASK_ACTIONS[snapshot.task_type],
+            artifact_id=str((metadata or {}).get("artifact_id") or ""),
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
+            message=snapshot.message,
+            error_message=snapshot.error_message,
+            result_summary=self._result_summary(snapshot.result),
         )
+
+    def _task_snapshot(self, site_id: str, task_id: str):
+        snapshot = self.task_service.repository(site_id).get(str(task_id or ""))
+        if snapshot is None or snapshot.site_name != site_id or not self._authorized_task(snapshot):
+            raise AcWebActionError("TASK_NOT_FOUND", "任务不存在或不属于当前局点")
+        return snapshot
+
+    def _authorized_task(self, snapshot) -> bool:
+        return (
+            snapshot.owner == self._OWNER
+            and snapshot.source == "local"
+            and snapshot.task_type in self._TASK_ACTIONS
+        )
+
+    def _reconcile_owned_orphans(self, site_id: str):
+        repository = self.task_service.repository(site_id)
+        active = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
+        owned_pids = {
+            item.owner_pid
+            for item in repository.list(statuses=active, limit=1000)
+            if item.site_name == site_id and self._authorized_task(item) and item.owner_pid > 0
+        }
+        if not owned_pids:
+            return []
+        return repository.reconcile_orphaned_local_tasks(
+            lambda pid: True if pid not in owned_pids else self.task_service._is_process_alive(pid)
+        )
+
+    def _cleanup_task_runtime(self, task_id: str) -> None:
+        for directory, suffix in (
+            (self.paths.runtime_cache_dir / "background_jobs", ".json"),
+            (self.paths.runtime_cache_dir / "background_jobs", ".cancel"),
+            (self.paths.runtime_cache_dir / "export_jobs", ".json"),
+            (self.paths.runtime_cache_dir / "export_jobs", ".json.tmp"),
+        ):
+            path = (directory / f"{task_id}{suffix}").resolve()
+            try:
+                if directory.resolve() in path.parents:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _result_summary(result: dict[str, object]) -> dict[str, object]:
+        summary: dict[str, object] = {}
+        for key in ("count", "row_count", "uses_trackside_plan", "offline_ap_stats"):
+            value = result.get(key)
+            if isinstance(value, (bool, int, float, str, dict)):
+                summary[key] = value
+        for key in ("rows", "overview_rows", "resources", "optical_rows", "offline_ap_ledger_rows"):
+            value = result.get(key)
+            if isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+        return summary
 
     def _site(self, site_id: str) -> str:
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ from netconsole.core.database import Database
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
+from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO
+from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -247,6 +250,66 @@ def test_site_escape_is_rejected_before_path_resolution(tmp_path: Path) -> None:
     assert not (paths.sites_dir.parent / "escaped").exists()
 
 
+def test_ac_local_rebuild_validates_target_and_task_recovery_scope(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, _export, tasks = _service(paths)
+
+    assert set(AcLocalRebuildRequestDTO.model_fields) == {"ac_id"}
+    with pytest.raises(AcWebActionError) as missing_target:
+        service.start_local_rebuild("demo", "ac_fit_ap_optical_refresh", ac_id="missing-ac")
+    assert missing_target.value.code == "TARGET_NOT_AUTHORIZED"
+
+    started = service.start_local_rebuild("demo", "ac_fit_ap_optical_refresh", ac_id="ac-1")
+    job = normal.jobs[started.task_id]
+    assert job.params["ac_uuid"] == "ac-1"
+    assert "source" not in job.params
+    assert "refresh_scope" not in job.params
+    assert "mode" not in job.params
+    assert service.get_task("demo", started.task_id).task_id == started.task_id
+
+    snapshot = tasks.repository("demo").get(started.task_id)
+    assert snapshot is not None
+    normal.jobs.pop(started.task_id)
+    normal.callbacks.pop(started.task_id)
+    tasks.repository("demo").save(replace(snapshot, owner_pid=2_147_483_000, status=TaskState.RUNNING))
+    foreign = tasks.create_external_task(
+        task_id="foreign-ac-task",
+        task_type="ac_fit_ap_optical_refresh",
+        task_name="foreign",
+        source="local",
+        site_name="demo",
+        owner="other-owner",
+    )
+    tasks.repository("demo").save(replace(foreign, owner_pid=2_147_482_999, status=TaskState.RUNNING))
+
+    recovered = service.recover_tasks("demo")
+    assert [item.task_id for item in recovered] == [started.task_id]
+    assert recovered[0].status == "FAILED"
+    assert tasks.repository("demo").get("foreign-ac-task").status == TaskState.RUNNING
+    with pytest.raises(AcWebActionError) as foreign_task:
+        service.get_task("demo", "foreign-ac-task")
+    assert foreign_task.value.code == "TASK_NOT_FOUND"
+
+
+def test_ac_local_rebuild_api_rejects_legacy_source_and_unknown_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _service_instance = _client(tmp_path, monkeypatch)
+    with client:
+        legacy_fields = client.post(
+            "/api/ac-management/local-rebuild/optical",
+            json={"ac_id": "ac-1", "source": "auto", "refresh_scope": "all"},
+        )
+        unknown_target = client.post(
+            "/api/ac-management/local-rebuild/optical",
+            json={"ac_id": "missing-ac"},
+        )
+
+    assert legacy_fields.status_code == 422
+    assert unknown_target.status_code == 422
+
+
 def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     service, _normal, _fake_export, tasks = _service(paths)
@@ -260,7 +323,10 @@ def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest
         assert adapter.wait(started.task_id, timeout=30)
         path, _name = service.open_extension_export("demo", started.artifact_id)
         metadata = service.artifact_store.task_metadata(
-            "demo", started.task_id, owner="web_ac", sources={"ac_extension_export"}
+            "demo",
+            started.task_id,
+            owner="web_ac",
+            source_task_types={"ac_extension_export": "web_export_fit_ap_extension_xlsx"},
         )
     finally:
         adapter.shutdown()
@@ -268,6 +334,9 @@ def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest
     assert path.is_file()
     assert metadata is not None and metadata["completed"] is True
     assert metadata["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    snapshot = tasks.repository("demo").get(started.task_id)
+    assert snapshot is not None and snapshot.result_path == ""
+    assert "output_path" not in snapshot.result
 
 
 def test_fine_grained_feature_gates_block_child_actions_independently(
@@ -285,7 +354,8 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
             files={"file": ("extensions.csv", CSV_CONTENT, "text/csv")},
         )
         client.app.state.feature_gate.features["web.ac_refresh"].update(visible=False, enabled=False, client_package=False)
-        blocked_refresh = client.post("/api/ac-management/refresh/optical", json={"ac_id": "ac-1"})
+        blocked_refresh = client.post("/api/ac-management/local-rebuild/optical", json={"ac_id": "ac-1"})
+        blocked_task_recovery = client.post("/api/ac-management/web-tasks/recover")
         client.app.state.feature_gate.features["web.ac_extensions_apply"].update(visible=False, enabled=False, client_package=False)
         blocked_apply = client.post(
             "/api/ac-management/extensions/import-apply",
@@ -303,6 +373,7 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
     assert blocked_action.status_code == 404
     assert blocked_preview.status_code == 404
     assert blocked_refresh.status_code == 404
+    assert blocked_task_recovery.status_code == 404
     assert blocked_apply.status_code == 404
     assert blocked_rollback.status_code == 404
     assert blocked_export.status_code == 404

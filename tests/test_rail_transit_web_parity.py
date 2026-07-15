@@ -15,6 +15,7 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.online_mr_router import mesh_analysis_import
+from netconsole.backend.api.task_router import task_dto
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -94,7 +95,18 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
 
     job = normal.jobs[started.task_id]
     assert started.action == "mesh_log_import"
-    assert set(started.model_dump()) == {"task_id", "status", "action", "artifact_id", "available", "sha256", "size_bytes"}
+    assert set(started.model_dump()) == {
+        "task_id",
+        "status",
+        "action",
+        "artifact_id",
+        "available",
+        "sha256",
+        "size_bytes",
+        "message",
+        "error_message",
+        "result_summary",
+    }
     assert job.params["profile"]["relative_folder_path"] == "files/rail_transit/mr_raw_mesh/MR-01"
     assert Path(job.params["files"][0]).is_relative_to(paths.runtime_cache_dir)
 
@@ -190,6 +202,75 @@ def test_online_mr_export_manifest_hash_download_cancel_and_ownership(tmp_path: 
     assert wrong_owner.value.code == "TASK_NOT_FOUND"
 
 
+def test_artifact_download_requires_task_database_anchor(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-anchor")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps({"session_id": "session-anchor", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
+
+    started = service.start_online_mr_report("demo", "session-anchor", "anchor.xlsx")
+    output = export.complete(started.task_id, b"trusted")
+    completed = service.get_task("demo", started.task_id)
+    snapshot = tasks.repository("demo").get(started.task_id)
+    assert snapshot is not None
+    assert snapshot.result_path == ""
+    assert set(snapshot.result) == {
+        "artifact_id",
+        "artifact_source",
+        "artifact_type",
+        "artifact_name",
+        "sha256",
+        "size_bytes",
+    }
+    public = task_dto(snapshot).model_dump()
+    assert public["result_path"] == ""
+    assert all("path" not in key for key in public["result"])
+
+    manifest_path = paths.rail_transit_root("demo") / "web_artifacts" / "manifests" / f"{completed.artifact_id}.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    forged = b"forged"
+    output.write_bytes(forged)
+    manifest["sha256"] = hashlib.sha256(forged).hexdigest()
+    manifest["size_bytes"] = len(forged)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RailTransitWebError) as exc_info:
+        service.open_online_mr_report("demo", completed.artifact_id)
+    assert exc_info.value.code == "ARTIFACT_INVALID"
+
+
+def test_artifact_finalization_failure_marks_task_failed_and_clears_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-failure")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps({"session_id": "session-failure", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
+
+    def fail_finalization(*_args, **_kwargs):
+        raise ValueError("forced finalization failure")
+
+    monkeypatch.setattr(tasks, "finalize_artifact_result", fail_finalization)
+    started = service.start_online_mr_report("demo", "session-failure", "failure.xlsx")
+    output = export.complete(started.task_id, b"valid export")
+    snapshot = tasks.repository("demo").get(started.task_id)
+
+    assert snapshot is not None and snapshot.status == TaskState.FAILED
+    assert snapshot.result == {}
+    assert snapshot.result_path == ""
+    assert not output.exists()
+    assert service.get_task("demo", started.task_id).available is False
+
+
 def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, export, _tasks = _service(paths)
@@ -231,7 +312,7 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     assert cancelled_temp.is_file()
 
     recovered_cancel = service.recover_tasks("demo")
-    assert [item.task_id for item in recovered_cancel] == [cancelled.task_id]
+    assert cancelled.task_id in [item.task_id for item in recovered_cancel]
     assert not cancelled_temp.exists()
     with pytest.raises(RailTransitWebError):
         service.open_online_mr_report("demo", cancelled.artifact_id)
@@ -374,6 +455,10 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     assert "site_id" not in RailTransitTaskRequestDTO.model_fields
     assert "site_id" not in inspect.signature(mesh_analysis_import).parameters
     assert "relative_folder_path" not in inspect.signature(mesh_analysis_import).parameters
+    upload_source = inspect.getsource(mesh_analysis_import)
+    assert "asyncio.to_thread" in upload_source
+    assert "target.open" not in upload_source
+    assert "handle.write" not in upload_source
 
     with TestClient(app) as client:
         client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=False, enabled=False, client_package=False)
