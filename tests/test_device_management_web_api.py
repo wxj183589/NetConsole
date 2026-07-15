@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import csv
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event
@@ -26,6 +28,7 @@ from netconsole.services.device_management_web_service import (
     DeviceManagementWebService,
     run_device_connection_test,
 )
+from netconsole.services.device_import_export import TEMPLATE_FIELDS
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -337,14 +340,136 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
     assert "private-community" not in str(snmp)
 
 
-def test_router_exposes_preview_and_task_submission_but_no_write_or_terminal_endpoint(tmp_path: Path) -> None:
+def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(tmp_path: Path) -> None:
     client, *_rest = _fixture(tmp_path)
     paths = client.app.openapi()["paths"]
     device_paths = {path: methods for path, methods in paths.items() if path.startswith("/api/device-management")}
 
     posts = {path for path, methods in device_paths.items() if "post" in methods}
-    assert posts == {
+    assert {
         "/api/device-management/devices/{device_uuid}/edit-preview",
         "/api/device-management/devices/{device_uuid}/connection-tests",
-    }
-    assert not any(token in path for path in device_paths for token in ("password", "terminal", "save", "delete"))
+        "/api/device-management/devices",
+        "/api/device-management/devices/{device_uuid}/duplicate",
+        "/api/device-management/devices/delete-confirmation",
+        "/api/device-management/devices/batch-delete",
+        "/api/device-management/imports/preview",
+        "/api/device-management/imports/confirm",
+        "/api/device-management/exports/csv",
+        "/api/device-management/exports/template",
+        "/api/device-management/exports/securecrt",
+        "/api/device-management/exports/omnipeek",
+        "/api/device-management/diagnostic-download",
+        "/api/device-management/devices/{device_uuid}/external-terminal",
+    }.issubset(posts)
+    assert not any("password" in path or "secret" in path or path.endswith("/shell") for path in device_paths)
+
+
+def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp_path: Path) -> None:
+    client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    created = client.post(
+        "/api/device-management/devices",
+        json={"name": "Web-1", "primary_address": "192.0.2.30", "device_vendor": "H3C", "device_type": "SW"},
+    )
+    assert created.status_code == 201
+    created_uuid = created.json()["device"]["device_uuid"]
+    assert "password" not in created.text.lower()
+
+    updated = client.put(
+        f"/api/device-management/devices/{created_uuid}",
+        json={"name": "Web-1-updated", "primary_address": "192.0.2.31", "device_vendor": "H3C", "device_type": "SW"},
+    )
+    assert updated.status_code == 200
+    assert devices.get_by_uuid(created_uuid).name == "Web-1-updated"
+
+    group = client.post("/api/device-management/groups", json={"name": "WebGroup"})
+    assert group.status_code == 201
+    group_id = group.json()["id"]
+    assigned = client.post("/api/device-management/groups/assign", json={"device_uuids": [created_uuid, str(sw.device_uuid)], "group_id": group_id})
+    assert assigned.status_code == 200
+    assert assigned.json()["success"] == 2
+    renamed = client.patch(f"/api/device-management/groups/{group_id}", json={"name": "WebGroupRenamed"})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "WebGroupRenamed"
+    removed_group = client.delete(f"/api/device-management/groups/{group_id}")
+    assert removed_group.status_code == 200
+    assert removed_group.json() == {"deleted": True}
+    assert devices.get_by_uuid(str(sw.device_uuid)).group_id is None
+
+    rejected_secret = client.post(
+        "/api/device-management/devices",
+        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_password": "must-not-be-accepted"},
+    )
+    assert rejected_secret.status_code == 422
+
+    token = client.post("/api/device-management/devices/delete-confirmation", json={"device_uuids": [created_uuid]})
+    assert token.status_code == 200
+    deleted = client.post(
+        "/api/device-management/devices/batch-delete",
+        json={"device_uuids": [created_uuid], "confirmation_token": token.json()["confirmation_token"]},
+    )
+    assert deleted.status_code == 200
+    assert devices.get_by_uuid(created_uuid) is None
+    assert devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
+
+
+def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Path) -> None:
+    client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "devices.csv"
+    with source.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(TEMPLATE_FIELDS)
+        writer.writerow(["导入设备", "192.0.2.40", "", "SSH", "22", "admin", "", "H3C", "SW", "", "", "否", "", "", "", "", "", "", "", "", "导入测试"])
+
+    preview = client.post("/api/device-management/imports/preview", json={"path": str(source)})
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["row_count"] == 1
+    assert body["persistence"] == "preview_only"
+    assert body["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert "password" not in preview.text.lower()
+
+    confirmed = client.post("/api/device-management/imports/confirm", json={"preview_token": body["preview_token"]})
+    assert confirmed.status_code == 202
+    assert confirmed.json()["action"] == "import_csv"
+    assert adapter.jobs[-1].task_type == "device_csv_import"
+    backups = list(service.paths.site_backups_dir("demo").glob("device-import-*.sqlite"))
+    assert backups
+
+
+def test_import_completion_applies_success_and_restores_failed_database_with_audit(tmp_path: Path) -> None:
+    _client, service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+    backup = service._backup_device_database("demo")
+    temporary = devices.create(Device(name="待回滚设备", primary_address="192.0.2.99", device_type="SW"))
+    service._finish_import(
+        "demo",
+        "device-import-failed",
+        backup,
+        SimpleNamespace(exit_code=1, cancelled=False, payload={"result": {"errors": ["fake failure"], "skipped": 0}}),
+    )
+    assert devices.get_by_uuid(str(temporary.device_uuid)) is None
+    failed_audit = service.paths.site_imports_dir("demo") / "device_import_audit" / "device-import-failed.json"
+    assert '"status": "ROLLED_BACK"' in failed_audit.read_text(encoding="utf-8")
+
+    applied_backup = service._backup_device_database("demo")
+    service._finish_import(
+        "demo",
+        "device-import-applied",
+        applied_backup,
+        SimpleNamespace(exit_code=0, cancelled=False, payload={"result": {"created": 1, "skipped": 0, "errors": []}}),
+    )
+    applied_audit = service.paths.site_imports_dir("demo") / "device_import_audit" / "device-import-applied.json"
+    assert '"status": "APPLIED"' in applied_audit.read_text(encoding="utf-8")
+
+
+def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: Path) -> None:
+    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [str(mr.device_uuid)]})
+    assert refreshed.status_code == 202
+    assert refreshed.json()["action"] == "batch_refresh_details"
+    assert adapter.jobs[-1].task_type == "device_detail_load_all"
+
+    terminal = client.post(f"/api/device-management/devices/{mr.device_uuid}/external-terminal", json={"terminal_type": "securecrt"})
+    assert terminal.status_code == 200
+    assert terminal.json() == {"native_action": "launchTerminal", "device_uuid": str(mr.device_uuid), "terminal_type": "securecrt", "requires_desktop_bridge": True}
+    assert "secret-password" not in terminal.text

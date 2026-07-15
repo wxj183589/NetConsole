@@ -1,15 +1,33 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, CopyDocument, Edit, Refresh, View } from '@element-plus/icons-vue'
+import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
 import { isFeatureEnabled } from '../../features'
 import {
   getDevice,
   getDeviceConnectionTest,
   listDevices,
+  assignDeviceGroup,
+  confirmDeviceImport,
+  createDevice,
+  createDeviceGroup,
+  deleteDevices,
+  deleteDeviceGroup,
+  duplicateDevice,
+  issueDeviceDeleteToken,
+  previewDeviceImport,
   previewDeviceEdit,
+  requestExternalTerminal,
+  renameDeviceGroup,
+  startBatchRefreshDetails,
+  startDeviceCsvExport,
   startDeviceConnectionTest,
+  startDeviceDiagnosticDownload,
+  startDeviceTemplateExport,
+  startOmniPeekExport,
+  startSecureCrtExport,
+  updateDevice,
 } from '../../api/deviceManagement'
 import type {
   DeviceConnectionProtocol,
@@ -18,6 +36,8 @@ import type {
   DeviceDetailResponse,
   DeviceEditPreview,
   DeviceEditPreviewRequest,
+  DeviceExportRequest,
+  DeviceImportPreview,
   DeviceListItem,
   DevicePage,
 } from '../../types/deviceManagement'
@@ -35,6 +55,19 @@ const connectionLoading = ref(false)
 const previewVisible = ref(false)
 const previewLoading = ref(false)
 const previewResult = ref<DeviceEditPreview | null>(null)
+const writeVisible = ref(false)
+const writeMode = ref<'create' | 'edit'>('create')
+const writeLoading = ref(false)
+const selectedUuids = ref<string[]>([])
+const groupVisible = ref(false)
+const groupName = ref('')
+const groupAssignVisible = ref(false)
+const groupAssignId = ref<number | null>(null)
+const importVisible = ref(false)
+const importPath = ref('')
+const importLoading = ref(false)
+const importPreview = ref<DeviceImportPreview | null>(null)
+const exportPath = ref('')
 const filters = reactive({
   search: '',
   group: '',
@@ -46,6 +79,7 @@ const filters = reactive({
   page_size: 50,
 })
 const editForm = reactive<DeviceEditPreviewRequest>({ name: '', primary_address: '' })
+const writeForm = reactive<DeviceEditPreviewRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 let pollTimer: number | undefined
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
@@ -200,6 +234,241 @@ async function validatePreview(): Promise<void> {
   }
 }
 
+function onSelectionChange(rows: DeviceListItem[]): void {
+  selectedUuids.value = rows.map((row) => row.device_uuid)
+}
+
+function openSelectedDetail(): void {
+  const row = pageData.value.items.find((item) => item.device_uuid === selectedUuids.value[0])
+  if (row) void openDetail(row)
+}
+
+function openCreate(): void {
+  writeMode.value = 'create'
+  Object.assign(writeForm, { name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', primary_address: '', backup_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_v3_enabled: false, snmp_port: 161, https_port: null, remark: '' })
+  writeVisible.value = true
+}
+
+function openEdit(): void {
+  if (!detail.value) return
+  writeMode.value = 'edit'
+  Object.assign(writeForm, editForm)
+  writeVisible.value = true
+}
+
+async function saveWrite(): Promise<void> {
+  writeLoading.value = true
+  try {
+    if (writeMode.value === 'create') await createDevice({ ...writeForm })
+    else if (detail.value) await updateDevice(detail.value.device.device_uuid, { ...writeForm })
+    writeVisible.value = false
+    ElMessage.success(writeMode.value === 'create' ? '设备已创建' : '设备已保存')
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '设备保存失败'))
+  } finally {
+    writeLoading.value = false
+  }
+}
+
+async function duplicateSelected(): Promise<void> {
+  const uuid = selectedUuids.value[0] || detail.value?.device.device_uuid
+  if (!uuid) {
+    ElMessage.warning('请先选择设备')
+    return
+  }
+  try {
+    await duplicateDevice(uuid)
+    ElMessage.success('设备已复制')
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '复制设备失败'))
+  }
+}
+
+async function deleteSelected(): Promise<void> {
+  if (!selectedUuids.value.length || !window.confirm(`确认删除 ${selectedUuids.value.length} 台设备？`)) return
+  try {
+    const token = await issueDeviceDeleteToken(selectedUuids.value)
+    await deleteDevices(selectedUuids.value, token.confirmation_token)
+    selectedUuids.value = []
+    ElMessage.success('设备已删除')
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '删除设备失败'))
+  }
+}
+
+async function saveGroup(): Promise<void> {
+  if (!groupName.value.trim()) return
+  try {
+    await createDeviceGroup(groupName.value.trim())
+    groupName.value = ''
+    groupVisible.value = false
+    await loadDevices(true)
+    ElMessage.success('分组已创建')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '分组创建失败'))
+  }
+}
+
+async function renameGroup(groupId: number, currentName: string): Promise<void> {
+  const name = window.prompt('请输入新分组名称', currentName)?.trim() || ''
+  if (!name || name === currentName) return
+  try {
+    await renameDeviceGroup(groupId, name)
+    await loadDevices(true)
+    ElMessage.success('分组已重命名')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '分组重命名失败'))
+  }
+}
+
+async function removeGroup(groupId: number, name: string): Promise<void> {
+  if (!window.confirm(`确认删除分组“${name}”？设备将变为未分组。`)) return
+  try {
+    await deleteDeviceGroup(groupId)
+    if (filters.group === String(groupId)) filters.group = ''
+    await loadDevices(true)
+    ElMessage.success('分组已删除')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '分组删除失败'))
+  }
+}
+
+async function saveGroupAssignment(): Promise<void> {
+  if (!selectedUuids.value.length) return
+  try {
+    const result = await assignDeviceGroup(selectedUuids.value, groupAssignId.value)
+    groupAssignVisible.value = false
+    ElMessage.success(`设置分组完成：成功 ${result.success}，失败 ${result.failed}`)
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '设置分组失败'))
+  }
+}
+
+async function runImportPreview(): Promise<void> {
+  if (!importPath.value.trim()) return
+  importLoading.value = true
+  try {
+    importPreview.value = await previewDeviceImport(importPath.value.trim())
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, 'CSV 预览失败'))
+  } finally {
+    importLoading.value = false
+  }
+}
+
+async function confirmImport(): Promise<void> {
+  if (!importPreview.value || importPreview.value.errors.length) return
+  try {
+    await confirmDeviceImport(importPreview.value.preview_token)
+    importVisible.value = false
+    importPreview.value = null
+    ElMessage.success('CSV 导入任务已提交')
+    await loadDevices(true)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, 'CSV 导入失败'))
+  }
+}
+
+function currentExportFilters(): DeviceExportRequest {
+  return {
+    output_path: exportPath.value.trim(),
+    device_uuids: selectedUuids.value,
+    search: filters.search,
+    vendor: '',
+    device_type: filters.device_type,
+    group_filter: filters.group === 'ungrouped' ? '__ungrouped__' : filters.group ? Number(filters.group) : undefined,
+  }
+}
+
+async function exportCsv(): Promise<void> {
+  const path = exportPath.value.trim() || window.prompt('请输入 CSV 输出路径', 'devices.csv') || ''
+  if (!path) return
+  exportPath.value = path
+  try {
+    await startDeviceCsvExport(currentExportFilters())
+    ElMessage.success('CSV 导出任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, 'CSV 导出失败'))
+  }
+}
+
+async function exportTemplate(): Promise<void> {
+  const path = window.prompt('请输入模板输出路径', 'device-template.csv') || ''
+  if (!path) return
+  try {
+    await startDeviceTemplateExport(path)
+    ElMessage.success('模板导出任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '模板导出失败'))
+  }
+}
+
+async function exportSecureCrt(): Promise<void> {
+  const outputDir = window.prompt('请输入 SecureCRT 会话输出目录', '') || ''
+  if (!outputDir) return
+  try {
+    await startSecureCrtExport({ ...currentExportFilters(), output_dir: outputDir })
+    ElMessage.success('SecureCRT 会话任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, 'SecureCRT 会话生成失败'))
+  }
+}
+
+async function exportOmniPeek(): Promise<void> {
+  const path = window.prompt('请输入 OmniPeek 名称表输出路径', 'devices.nam') || ''
+  if (!path) return
+  try {
+    await startOmniPeekExport({ ...currentExportFilters(), output_path: path, line_name: 'NetConsole' })
+    ElMessage.success('OmniPeek 名称表任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, 'OmniPeek 名称表导出失败'))
+  }
+}
+
+async function refreshSelectedDetails(): Promise<void> {
+  if (!selectedUuids.value.length) {
+    ElMessage.warning('请先选择设备')
+    return
+  }
+  try {
+    await startBatchRefreshDetails(selectedUuids.value)
+    ElMessage.success('批量详情刷新任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '批量刷新失败'))
+  }
+}
+
+async function downloadDiagnostics(): Promise<void> {
+  if (!selectedUuids.value.length) {
+    ElMessage.warning('请先选择设备')
+    return
+  }
+  try {
+    await startDeviceDiagnosticDownload(selectedUuids.value)
+    ElMessage.success('诊断信息下载任务已提交')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '诊断信息下载失败'))
+  }
+}
+
+async function requestTerminal(): Promise<void> {
+  const uuid = selectedUuids.value[0] || detail.value?.device.device_uuid
+  if (!uuid) {
+    ElMessage.warning('请先选择设备')
+    return
+  }
+  try {
+    const action = await requestExternalTerminal(uuid, 'securecrt')
+    ElMessage.info(`${action.native_action} 已生成，等待 Desktop Bridge 执行`)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '外部终端请求失败'))
+  }
+}
+
 async function copyText(value: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(value)
@@ -229,7 +498,7 @@ function errorMessage(cause: unknown, fallback: string): string {
   <section class="device-management">
     <div class="page-heading">
       <div><h1>设备管理</h1><p>与 Qt 设备页共享设备库、采集事实和后台任务；本页不保存凭据。</p></div>
-      <el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button>
+      <div class="heading-actions"><el-button type="primary" :icon="Plus" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
     </div>
 
     <div class="content-card filters">
@@ -257,10 +526,27 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button type="primary" @click="loadDevices(true)">筛选</el-button>
     </div>
 
+    <div class="content-card action-bar">
+      <span>已选 {{ selectedUuids.length }} 台</span>
+      <el-button :icon="Edit" :disabled="selectedUuids.length !== 1" @click="openSelectedDetail">编辑</el-button>
+      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1" @click="duplicateSelected">复制</el-button>
+      <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length" @click="deleteSelected">批量删除</el-button>
+      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length" @click="groupAssignVisible = true">设置分组</el-button>
+      <el-button :icon="Plus" @click="groupVisible = true">分组管理</el-button>
+      <el-button :icon="Refresh" :disabled="!selectedUuids.length" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <el-button :icon="Download" :disabled="!selectedUuids.length" @click="downloadDiagnostics">下载诊断</el-button>
+      <el-button :icon="Upload" @click="importVisible = true">导入 CSV</el-button>
+      <el-dropdown>
+        <el-button :icon="Download">导出</el-button>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item @click="exportCsv">CSV 导出</el-dropdown-item><el-dropdown-item @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item @click="exportOmniPeek">OmniPeek 名称表</el-dropdown-item><el-dropdown-item @click="exportSecureCrt">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+      </el-dropdown>
+    </div>
+
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <el-empty v-if="isEmpty" description="没有符合条件的设备" />
-      <el-table v-else :data="pageData.items" stripe height="calc(100vh - 330px)" empty-text="暂无设备">
+      <el-table v-else :data="pageData.items" stripe height="calc(100vh - 380px)" empty-text="暂无设备" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="44" fixed="left" />
         <el-table-column label="设备" min-width="190" fixed="left">
           <template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.system_name || '未采集系统名' }}</small></template>
         </el-table-column>
@@ -291,7 +577,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <template v-else-if="detail">
           <div class="detail-heading">
             <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="openPreview">编辑预览</el-button>
+            <div class="heading-actions"><el-button :icon="FolderOpened" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="openPreview">编辑预览</el-button><el-button type="primary" @click="openEdit">正式编辑</el-button></div>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="系统名">{{ detail.device.system_name || '--' }}</el-descriptions-item>
@@ -370,16 +656,63 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-alert v-if="previewResult" :title="previewResult.valid ? '校验通过（尚未保存）' : '校验未通过'" :description="[...previewResult.errors, ...previewResult.warnings].join('；') || '字段符合当前设备表单规则'" :type="previewResult.valid ? 'success' : 'error'" show-icon :closable="false" />
       <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="validatePreview">校验预览</el-button></template>
     </el-dialog>
+
+    <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '正式编辑设备'" width="min(760px, 94vw)">
+      <el-alert title="Web 写入不接收或显示任何密码、community、SNMPv3 secret；编辑时保留服务端原凭据。" type="info" show-icon :closable="false" />
+      <el-form label-width="100px" class="preview-form">
+        <el-form-item label="设备名称"><el-input v-model="writeForm.name" /></el-form-item>
+        <el-form-item label="系统名"><el-input v-model="writeForm.system_name" /></el-form-item>
+        <el-form-item label="主地址"><el-input v-model="writeForm.primary_address" /></el-form-item>
+        <el-form-item label="备用地址"><el-input v-model="writeForm.backup_address" /></el-form-item>
+        <el-form-item label="厂商 / 类型"><el-input v-model="writeForm.device_vendor" /><el-input v-model="writeForm.device_type" /></el-form-item>
+        <el-form-item label="站点 / 位置"><el-input v-model="writeForm.station" /><el-input v-model="writeForm.location" /></el-form-item>
+        <el-form-item label="连接能力"><el-checkbox v-model="writeForm.ssh_enabled">SSH</el-checkbox><el-checkbox v-model="writeForm.telnet_enabled">Telnet</el-checkbox><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox></el-form-item>
+        <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" @click="saveWrite">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="groupVisible" title="分组管理" width="420px">
+      <el-input v-model="groupName" placeholder="新分组名称" @keyup.enter="saveGroup" />
+      <div class="group-list">
+        <div v-for="group in pageData.groups" :key="group.id" class="group-row">
+          <span>{{ group.name }}</span>
+          <span>
+            <el-button link type="primary" @click="renameGroup(group.id, group.name)">重命名</el-button>
+            <el-button link type="danger" @click="removeGroup(group.id, group.name)">删除</el-button>
+          </span>
+        </div>
+        <el-empty v-if="!pageData.groups.length" description="暂无分组" :image-size="56" />
+      </div>
+      <template #footer><el-button @click="groupVisible = false">取消</el-button><el-button type="primary" @click="saveGroup">新增分组</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="groupAssignVisible" title="设置分组" width="420px">
+      <el-select v-model="groupAssignId" clearable placeholder="选择分组（清空为未分组）" style="width: 100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select>
+      <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" @click="saveGroupAssignment">确认</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)">
+      <el-alert title="先预览再确认；服务端会校验文件 SHA-256、备份设备数据库并在失败时回滚。" type="info" show-icon :closable="false" />
+      <el-input v-model="importPath" class="preview-form" placeholder="本机 CSV 路径" />
+      <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /></div>
+      <template #footer><el-button @click="importVisible = false">关闭</el-button><el-button :loading="importLoading" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length" @click="confirmImport">确认导入</el-button></template>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
 .device-management { max-width: 1720px; margin: 0 auto; }
 .page-heading, .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.group-list { margin-top: 16px; max-height: 260px; overflow-y: auto; }
+.group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .page-heading h1, .detail-heading h2, .detail-section h3 { margin: 0; }
 .page-heading p, .detail-heading p { margin: 5px 0 0; color: #718096; font-size: 13px; }
 .filters { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(5, minmax(120px, 1fr)) auto; gap: 10px; padding: 14px; margin-bottom: 14px; }
 .state-alert { margin-bottom: 14px; }
+.action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
+.action-bar > span { margin-right: 4px; color: #718096; font-size: 13px; }
 .table-card { min-height: 300px; padding: 0 0 12px; }
 .table-card :deep(.el-pagination) { justify-content: flex-end; padding: 14px 16px 0; }
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,6 +725,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 .command-row + .command-row { margin-top: 8px; }
 .command-row code { overflow-wrap: anywhere; }
 .preview-form { margin-top: 18px; }
+.import-summary { margin-top: 16px; overflow-wrap: anywhere; }
 @media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
 @media (max-width: 760px) { .filters { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

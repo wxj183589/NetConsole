@@ -1,16 +1,39 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.device_management import (
     DeviceConnectionTestDTO,
     DeviceConnectionTestRequestDTO,
+    DeviceBatchRefreshRequestDTO,
+    DeviceDeleteDTO,
+    DeviceDeleteRequestDTO,
+    DeviceDeletionTokenDTO,
     DeviceDetailDTO,
+    DeviceDeletionTokenRequestDTO,
     DeviceEditPreviewDTO,
     DeviceEditPreviewRequestDTO,
+    DeviceExternalTerminalActionDTO,
+    DeviceExternalTerminalRequestDTO,
+    DeviceExportRequestDTO,
+    DeviceGroupAssignmentDTO,
+    DeviceGroupAssignmentRequestDTO,
+    DeviceGroupDeleteDTO,
+    DeviceGroupDTO,
+    DeviceGroupRequestDTO,
+    DeviceImportConfirmRequestDTO,
+    DeviceImportPreviewDTO,
+    DeviceImportPreviewRequestDTO,
+    DeviceOmniPeekExportRequestDTO,
     DevicePageDTO,
+    DeviceSecureCrtExportRequestDTO,
+    DeviceTaskBatchDTO,
+    DeviceTaskReferenceDTO,
+    DeviceWriteDTO,
+    DeviceWriteRequestDTO,
 )
 from netconsole.services.device_management_web_service import DeviceManagementWebService
 
@@ -50,6 +73,117 @@ def list_devices(
             sort_order=sort_order,
         )
     )
+
+
+@router.get("/groups", response_model=list[DeviceGroupDTO])
+def list_groups(request: Request) -> list[DeviceGroupDTO]:
+    return _query(lambda: _service(request).list_groups())
+
+
+@router.post("/groups", response_model=DeviceGroupDTO, status_code=status.HTTP_201_CREATED)
+def create_group(request: Request, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
+    return _query(lambda: _service(request).create_group(payload))
+
+
+@router.patch("/groups/{group_id}", response_model=DeviceGroupDTO)
+def rename_group(request: Request, group_id: int, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
+    return _not_found(lambda: _service(request).rename_group(group_id, payload), "设备分组不存在")
+
+
+@router.delete("/groups/{group_id}", response_model=DeviceGroupDeleteDTO)
+def delete_group(request: Request, group_id: int) -> DeviceGroupDeleteDTO:
+    return _not_found(lambda: _service(request).delete_group(group_id), "设备分组不存在")
+
+
+@router.post("/groups/assign", response_model=DeviceGroupAssignmentDTO)
+def assign_group(request: Request, payload: DeviceGroupAssignmentRequestDTO) -> DeviceGroupAssignmentDTO:
+    return _query(lambda: _service(request).assign_group(payload))
+
+
+@router.post("/devices", response_model=DeviceWriteDTO, status_code=status.HTTP_201_CREATED)
+def create_device(request: Request, payload: DeviceWriteRequestDTO) -> DeviceWriteDTO:
+    return _query(lambda: _service(request).create_device(payload))
+
+
+@router.put("/devices/{device_uuid}", response_model=DeviceWriteDTO)
+def update_device(request: Request, device_uuid: str, payload: DeviceWriteRequestDTO) -> DeviceWriteDTO:
+    return _not_found(lambda: _service(request).update_device(device_uuid, payload), "设备不存在")
+
+
+@router.post("/devices/{device_uuid}/duplicate", response_model=DeviceWriteDTO, status_code=status.HTTP_201_CREATED)
+def duplicate_device(request: Request, device_uuid: str) -> DeviceWriteDTO:
+    return _not_found(lambda: _service(request).duplicate_device(device_uuid), "设备不存在")
+
+
+@router.post("/devices/delete-confirmation", response_model=DeviceDeletionTokenDTO)
+def issue_delete_token(request: Request, payload: DeviceDeletionTokenRequestDTO):
+    return _not_found(lambda: _service(request).issue_delete_token(payload), "设备不存在")
+
+
+@router.post("/devices/batch-delete", response_model=DeviceDeleteDTO)
+def delete_devices(request: Request, payload: DeviceDeleteRequestDTO):
+    return _query(lambda: _service(request).delete_devices(payload))
+
+
+@router.post("/devices/batch-refresh-details", response_model=DeviceTaskBatchDTO, status_code=status.HTTP_202_ACCEPTED)
+def batch_refresh_details(request: Request, payload: DeviceBatchRefreshRequestDTO) -> DeviceTaskBatchDTO:
+    return _query(lambda: _service(request).start_batch_refresh(payload))
+
+
+@router.post("/imports/preview", response_model=DeviceImportPreviewDTO)
+def preview_import(request: Request, payload: DeviceImportPreviewRequestDTO) -> DeviceImportPreviewDTO:
+    return _query(lambda: _service(request).preview_import(payload))
+
+
+@router.post("/imports/confirm", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def confirm_import(request: Request, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).confirm_import(payload))
+
+
+@router.post("/exports/csv", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def export_csv(request: Request, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_csv_export(payload))
+
+
+@router.post("/exports/template", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def export_template(request: Request, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_template_export(payload.output_path))
+
+
+@router.post("/exports/securecrt", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def export_securecrt(request: Request, payload: DeviceSecureCrtExportRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_securecrt_export(payload))
+
+
+@router.post("/exports/omnipeek", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def export_omnipeek(request: Request, payload: DeviceOmniPeekExportRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_omnipeek_export(payload))
+
+
+@router.get("/exports/{task_id}", response_model=DeviceTaskReferenceDTO)
+def export_status(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
+    return _not_found(lambda: _service(request).get_export_task(task_id), "导出任务不存在")
+
+
+@router.get("/exports/{task_id}/download", response_class=FileResponse)
+def download_export(request: Request, task_id: str) -> FileResponse:
+    path, filename = _not_found(lambda: _service(request).open_export_artifact(task_id), "导出任务或文件不存在")
+    return FileResponse(path, filename=filename)
+
+
+@router.post("/devices/{device_uuid}/diagnostic-download", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def diagnostic_download(request: Request, device_uuid: str) -> DeviceTaskReferenceDTO:
+    return _not_found(lambda: _service(request).start_diagnostic_download([device_uuid]), "设备不存在")
+
+
+@router.post("/diagnostic-download", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def batch_diagnostic_download(request: Request, payload: DeviceBatchRefreshRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_diagnostic_download(payload.device_uuids))
+
+
+@router.post("/devices/{device_uuid}/external-terminal", response_model=DeviceExternalTerminalActionDTO)
+def external_terminal(request: Request, device_uuid: str, payload: DeviceExternalTerminalRequestDTO) -> DeviceExternalTerminalActionDTO:
+    return _not_found(lambda: _service(request).external_terminal_action(device_uuid, payload), "设备不存在")
 
 
 @router.get("/devices/{device_uuid}", response_model=DeviceDetailDTO)
@@ -114,6 +248,8 @@ def _query(callback):
     with map_api_errors("设备数据库暂时不可读"):
         try:
             return callback()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc) or "资源不存在") from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

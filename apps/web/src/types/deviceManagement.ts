@@ -149,9 +149,62 @@ export interface DeviceListQuery {
   ungrouped?: boolean
   device_type?: string
   vendor?: string
+  group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
   page?: number
   page_size?: number
   sort_by?: string
   sort_order?: 'asc' | 'desc'
+}
+
+export interface DeviceWriteResponse {
+  action: 'created' | 'updated' | 'duplicated'
+  device: DeviceDetail
+}
+
+export interface DeviceGroup {
+  id: number
+  name: string
+  device_count: number
+}
+
+export interface DeviceTaskReference {
+  task_id: string
+  task_status: string
+  action: string
+  output_path: string
+}
+
+export interface DeviceTaskBatch {
+  action: string
+  tasks: DeviceTaskReference[]
+}
+
+export interface DeviceImportPreview {
+  preview_token: string
+  source_name: string
+  source_sha256: string
+  row_count: number
+  columns: string[]
+  errors: string[]
+  warnings: string[]
+  persistence: 'preview_only'
+}
+
+export interface DeviceDeleteToken {
+  confirmation_token: string
+  device_uuids: string[]
+  expires_at: string
+}
+
+export interface DeviceExternalTerminalAction {
+  native_action: 'launchTerminal'
+  device_uuid: string
+  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  requires_desktop_bridge: boolean
+}
+
+export interface DeviceExportRequest extends DeviceListQuery {
+  output_path: string
+  device_uuids?: string[]
 }

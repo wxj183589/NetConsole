@@ -146,6 +146,126 @@ class DeviceEditPreviewDTO(ApiModel):
     persistence: Literal["preview_only"] = "preview_only"
 
 
+class DeviceWriteRequestDTO(DeviceEditPreviewRequestDTO):
+    """Web 写入字段；凭据字段故意不在 API 契约中。"""
+
+
+class DeviceWriteDTO(ApiModel):
+    action: Literal["created", "updated", "duplicated"]
+    device: DeviceDetailItemDTO
+
+
+class DeviceGroupDTO(DeviceGroupOptionDTO):
+    device_count: int = 0
+
+
+class DeviceGroupRequestDTO(ApiModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class DeviceGroupAssignmentRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=500)
+    group_id: int | None = Field(default=None, ge=1)
+
+
+class DeviceGroupAssignmentDTO(ApiModel):
+    success: int
+    failed: int
+    group_id: int | None = None
+
+
+class DeviceGroupDeleteDTO(ApiModel):
+    deleted: bool = True
+
+
+class DeviceDeletionTokenRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=500)
+
+
+class DeviceDeletionTokenDTO(ApiModel):
+    confirmation_token: str
+    device_uuids: list[str]
+    expires_at: str
+
+
+class DeviceDeleteRequestDTO(DeviceDeletionTokenRequestDTO):
+    confirmation_token: str = Field(min_length=16, max_length=256)
+
+
+class DeviceDeleteDTO(ApiModel):
+    deleted: int
+    device_uuids: list[str]
+
+
+class DeviceTaskReferenceDTO(ApiModel):
+    task_id: str
+    task_status: str
+    action: str
+    output_path: str = ""
+
+
+class DeviceTaskBatchDTO(ApiModel):
+    action: str
+    tasks: list[DeviceTaskReferenceDTO] = Field(default_factory=list)
+
+
+class DeviceBatchRefreshRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+
+
+class DeviceImportPreviewRequestDTO(ApiModel):
+    path: str = Field(min_length=1, max_length=1024)
+
+
+class DeviceImportPreviewDTO(ApiModel):
+    preview_token: str
+    source_name: str
+    source_sha256: str
+    row_count: int
+    columns: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    persistence: Literal["preview_only"] = "preview_only"
+
+
+class DeviceImportConfirmRequestDTO(ApiModel):
+    preview_token: str = Field(min_length=16, max_length=256)
+
+
+class DeviceExportRequestDTO(ApiModel):
+    output_path: str = Field(min_length=1, max_length=2048)
+    device_uuids: list[str] = Field(default_factory=list, max_length=500)
+    search: str = Field(default="", max_length=200)
+    vendor: str = Field(default="", max_length=40)
+    device_type: str = Field(default="", max_length=40)
+    group_filter: int | Literal["__ungrouped__"] | None = None
+
+
+class DeviceSecureCrtExportRequestDTO(DeviceExportRequestDTO):
+    output_path: str = ""
+    output_dir: str = Field(min_length=1, max_length=2048)
+    template_ini: str = Field(default="", max_length=2048)
+
+
+class DeviceOmniPeekExportRequestDTO(DeviceExportRequestDTO):
+    line_name: str = Field(min_length=1, max_length=200)
+    include_device_mr: bool = True
+    selected_item_keys: list[str] = Field(default_factory=list, max_length=5000)
+    excluded_item_keys: list[str] = Field(default_factory=list, max_length=5000)
+    force_export_keys: list[str] = Field(default_factory=list, max_length=5000)
+
+
+class DeviceExternalTerminalRequestDTO(ApiModel):
+    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+
+
+class DeviceExternalTerminalActionDTO(ApiModel):
+    native_action: Literal["launchTerminal"] = "launchTerminal"
+    device_uuid: str
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    requires_desktop_bridge: bool = True
+
+
 class DeviceConnectionTestRequestDTO(ApiModel):
     protocol: DeviceConnectionProtocol
 
