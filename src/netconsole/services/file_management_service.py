@@ -96,7 +96,7 @@ class _RemoteSession:
 
 
 DeviceResolver = Callable[[str, str], Device | None]
-TransferServiceFactory = Callable[[str, PathResolver], FileTransferService]
+TransferServiceFactory = Callable[..., FileTransferService]
 
 
 class FileManagementApplicationService:
@@ -128,6 +128,7 @@ class FileManagementApplicationService:
             self._owns_process_adapter = True
 
     def close(self) -> None:
+        """幂等关闭全部 Web 会话；FastAPI lifespan 必须在 shutdown 调用。"""
         with self._sessions_lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
@@ -164,7 +165,9 @@ class FileManagementApplicationService:
     def connect_device(self, site_id: str, device_id: str) -> FileConnectionDTO:
         site = self._site_id(site_id)
         device = self._resolve_device(site, device_id)
-        transfer = self._transfer_factory(site, self.paths)
+        device_key = str(device.device_uuid or device_id)
+        self._close_device_sessions(site, device_key)
+        transfer = self._transfer_factory(site, self.paths, allow_remote_setup=False)
         try:
             root_path = normalize_remote_path(transfer.connect(device))
         except Exception as exc:
@@ -175,31 +178,25 @@ class FileManagementApplicationService:
             raise RuntimeError(f"设备文件连接失败：{exc}") from exc
         connection_id = f"fc1_{uuid4().hex}"
         root_file = RemoteDeviceFile("根目录", root_path, None, None, "dir", is_dir=True, file_type="directory")
-        root_entry_id = self._remote_entry_id(str(device.device_uuid or device_id), root_path)
+        root_entry_id = self._remote_entry_id(device_key, root_path)
         session = _RemoteSession(
             connection_id=connection_id,
             site_id=site,
-            device_id=str(device.device_uuid or device_id),
+            device_id=device_key,
             device=device,
             transfer=transfer,
             root_path=root_path,
             root_entry_id=root_entry_id,
             current_entry_id=root_entry_id,
-            entries={root_entry_id: _RemoteEntry(str(device.device_uuid or device_id), root_file)},
+            entries={root_entry_id: _RemoteEntry(device_key, root_file)},
             lock=threading.RLock(),
         )
-        with self._sessions_lock:
-            self._sessions[connection_id] = session
+        self._register_session(session)
         return self._connection_dto(session, "已连接")
 
     def disconnect_device(self, site_id: str, connection_id: str) -> FileConnectionDTO:
         session = self._session(site_id, connection_id)
-        with self._sessions_lock:
-            self._sessions.pop(session.connection_id, None)
-        try:
-            session.transfer.disconnect()
-        except Exception:
-            pass
+        self._close_session(session)
         return self._connection_dto(session, "已断开", status="DISCONNECTED")
 
     def list_remote_files(self, site_id: str, connection_id: str, entry_id: str = "") -> RemoteFilePageDTO:
@@ -266,20 +263,36 @@ class FileManagementApplicationService:
         if self.task_service is None:
             return []
         site = self._site_id(site_id)
-        snapshots = self.task_service.repository(site).list(limit=max(1, min(int(limit), 200)))
-        return [
-            task
-            for snapshot in snapshots
-            if snapshot.task_type == "file_management_download"
-            and snapshot.owner == "web_file_management"
-            for task in [self._download_task_from_snapshot(site, snapshot)]
-        ]
+        requested = max(1, min(int(limit), 200))
+        page_size = min(200, max(50, requested))
+        offset = 0
+        tasks: list[FileDownloadTaskDTO] = []
+        repository = self.task_service.repository(site)
+        while len(tasks) < requested:
+            snapshots = repository.list(limit=page_size, offset=offset)
+            if not snapshots:
+                break
+            offset += len(snapshots)
+            for snapshot in snapshots:
+                if (
+                    snapshot.task_type == "file_management_download"
+                    and snapshot.owner == "web_file_management"
+                    and snapshot.source == "local"
+                ):
+                    tasks.append(self._download_task_from_snapshot(site, snapshot))
+                    if len(tasks) >= requested:
+                        break
+            if len(snapshots) < page_size:
+                break
+        return tasks
 
     def cancel_download(self, site_id: str, task_id: str) -> FileDownloadTaskDTO:
         task = self.download_task(site_id, task_id)
         if task is None:
             raise FileReferenceNotFound("下载任务不存在")
-        if self.task_service is None or not self.task_service.cancel_task(task.task_id):
+        if task.status not in {TaskState.PENDING.value, TaskState.STARTING.value, TaskState.RUNNING.value, TaskState.STOPPING.value}:
+            raise FileManagementError("下载任务当前不可停止")
+        if self.process_adapter is None or not self.process_adapter.cancel_job(task.task_id):
             raise FileManagementError("下载任务当前不可停止")
         return self.download_task(site_id, task.task_id) or task
 
@@ -421,7 +434,12 @@ class FileManagementApplicationService:
             return None
         site = self._site_id(site_id)
         snapshot = self.task_service.repository(site).get(str(task_id or ""))
-        if snapshot is None or snapshot.task_type != "file_management_download" or snapshot.owner != "web_file_management":
+        if (
+            snapshot is None
+            or snapshot.task_type != "file_management_download"
+            or snapshot.owner != "web_file_management"
+            or snapshot.source != "local"
+        ):
             return None
         return self._download_task_from_snapshot(site, snapshot)
 
@@ -531,7 +549,7 @@ class FileManagementApplicationService:
             modified_time=str(context.params.get("remote_modified_at") or "") or None,
             category=category,
         )
-        transfer = FileTransferService(site, context.paths)
+        transfer = FileTransferService(site, context.paths, allow_remote_setup=False)
 
         class _JobCancelToken:
             def is_cancelled(self) -> bool:
@@ -605,6 +623,40 @@ class FileManagementApplicationService:
         if session is None or session.site_id != site:
             raise FileReferenceNotFound("设备文件连接不存在或不属于当前局点")
         return session
+
+    def _close_device_sessions(self, site: str, device_id: str) -> None:
+        with self._sessions_lock:
+            sessions = tuple(
+                session
+                for session in self._sessions.values()
+                if session.site_id == site and session.device_id == device_id
+            )
+            for session in sessions:
+                self._sessions.pop(session.connection_id, None)
+        for session in sessions:
+            self._close_session(session, remove=False)
+
+    def _register_session(self, session: _RemoteSession) -> None:
+        with self._sessions_lock:
+            stale = tuple(
+                existing
+                for existing in self._sessions.values()
+                if existing.site_id == session.site_id and existing.device_id == session.device_id
+            )
+            for existing in stale:
+                self._sessions.pop(existing.connection_id, None)
+            self._sessions[session.connection_id] = session
+        for existing in stale:
+            self._close_session(existing, remove=False)
+
+    def _close_session(self, session: _RemoteSession, *, remove: bool = True) -> None:
+        if remove:
+            with self._sessions_lock:
+                self._sessions.pop(session.connection_id, None)
+        try:
+            session.transfer.disconnect()
+        except Exception:
+            pass
 
     @staticmethod
     def _connection_dto(session: _RemoteSession, message: str, *, status: str = "CONNECTED") -> FileConnectionDTO:

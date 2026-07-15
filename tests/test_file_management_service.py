@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +13,7 @@ from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
@@ -20,7 +23,7 @@ from netconsole.services.file_management_service import (
     FileReferenceNotFound,
     run_file_management_download,
 )
-from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.job_registry import dispatch_job
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -170,12 +173,16 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
 
     class FakeTransfer:
         payloads = {"flash:/diagfile/diag_a.tar.gz": b"remote artifact"}
+        instances: list["FakeTransfer"] = []
 
-        def __init__(self, site_name, fake_paths):
+        def __init__(self, site_name, fake_paths, *, allow_remote_setup=True):
             self.site_name = site_name
             self.paths = fake_paths
+            self.allow_remote_setup = allow_remote_setup
             self.connected = False
+            self.disconnect_calls = 0
             self.root_path = "flash:/"
+            self.instances.append(self)
 
         def connect(self, _device):
             self.connected = True
@@ -183,6 +190,7 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
 
         def disconnect(self):
             self.connected = False
+            self.disconnect_calls += 1
 
         def list_directory(self, path):
             current = normalize_remote_path(path, root_path=self.root_path)
@@ -208,10 +216,17 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
     captured: list[BackgroundJob] = []
 
     class FakeProcessAdapter:
+        cancelled: list[str] = []
+
         def start_job(self, job: BackgroundJob) -> str:
             captured.append(job)
             task_service.prepare(job)
             return job.job_id
+
+        def cancel_job(self, job_id: str) -> bool:
+            self.cancelled.append(job_id)
+            task_service.record_external_event(job_id, "cancelled", {"message": "后台任务已取消"}, site_name="demo")
+            return True
 
     service = FileManagementApplicationService(
         paths,
@@ -224,6 +239,12 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert connected.status_code == 201
         connection_id = connected.json()["connection_id"]
         assert "flash:/" not in connected.text
+        assert FakeTransfer.instances[-1].allow_remote_setup is False
+
+        reconnected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
+        assert reconnected.status_code == 201
+        assert FakeTransfer.instances[-2].disconnect_calls == 1
+        connection_id = reconnected.json()["connection_id"]
 
         root = client.get(f"/api/file-management/connections/{connection_id}/entries", params={"site_id": "demo"})
         assert root.status_code == 200
@@ -269,6 +290,8 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert pending.status_code == 202
         pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
         assert pending_cancel.status_code == 200
+        assert pending_cancel.json()["status"] == TaskState.CANCELLED.value
+        assert pending.json()["task_id"] in FakeProcessAdapter.cancelled
         cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
         assert cancelled.status_code == 422
         assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).json()["integration_required"]
@@ -291,3 +314,137 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         )
         with pytest.raises(FileReferenceNotFound):
             run_file_management_download(JobContext.from_job(unsafe_job))
+    session_instances = [instance for instance in FakeTransfer.instances if instance.connected]
+    service.close()
+    service.close()
+    assert all(not instance.connected and instance.disconnect_calls == 1 for instance in session_instances)
+
+
+def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    commands: list[str] = []
+
+    class FakeSshClient:
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            pass
+
+        def open_sftp(self):
+            raise RuntimeError("sftp subsystem disabled")
+
+        def invoke_shell(self):
+            commands.append("invoke_shell")
+            raise AssertionError("Web read-only connection must not open a configuration shell")
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSshClient, AutoAddPolicy=lambda: object()))
+    device = Device(
+        device_uuid=Device.new_uuid(),
+        name="MR-read-only",
+        device_type="MR",
+        primary_address="192.0.2.30",
+        ssh_enabled=1,
+        ssh_username="ops",
+        ssh_password="secret",
+    )
+    service = FileManagementApplicationService(paths, device_resolver=lambda _site, _device_id: device)
+
+    with TestClient(_app(service)) as client:
+        response = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device.device_uuid})
+
+    assert response.status_code == 502
+    assert "只读" in response.json()["detail"]
+    assert commands == []
+
+
+def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    transfer = FileTransferService("demo", paths, allow_remote_setup=False)
+    target = paths.file_downloads_root("demo") / "cancelled.bin"
+
+    class FakeSftp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def open(self, _path, _mode):
+            return self
+
+        def read(self, _size):
+            return b"partial"
+
+    class CancelToken:
+        calls = 0
+
+        def is_cancelled(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise BackgroundTaskCancelled("后台任务已取消")
+            return False
+
+    transfer._sftp = FakeSftp()
+    monkeypatch.setattr(transfer, "_stable_remote_size", lambda *_args: 10)
+    with pytest.raises(BackgroundTaskCancelled):
+        transfer.download("flash:/diagfile/slow.bin", target, cancel_token=CancelToken())
+
+    assert not target.exists()
+    assert not target.with_name(f"{target.name}.part").exists()
+
+
+def test_download_task_recovery_scans_past_other_modules_and_validates_source(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    repository = task_service.repository("demo")
+    for index in range(250):
+        timestamp = f"2026-07-15T12:{index // 60:02d}:{index % 60:02d}.000Z"
+        repository.save(
+            TaskSnapshot(
+                task_id=f"other-{index:03d}",
+                task_type="device_collection",
+                task_name="其他模块任务",
+                status=TaskState.COMPLETED,
+                created_time=timestamp,
+                updated_time=timestamp,
+                owner="other_module",
+                source="local",
+                site_name="demo",
+            )
+        )
+    repository.save(
+        TaskSnapshot(
+            task_id="file-task-old",
+            task_type="file_management_download",
+            task_name="文件下载",
+            status=TaskState.PENDING,
+            created_time="2026-07-15T00:00:00.000Z",
+            updated_time="2026-07-15T00:00:00.000Z",
+            owner="web_file_management",
+            source="local",
+            site_name="demo",
+        )
+    )
+    repository.save(
+        TaskSnapshot(
+            task_id="file-task-external",
+            task_type="file_management_download",
+            task_name="外部任务",
+            status=TaskState.COMPLETED,
+            created_time="2026-07-15T00:00:01.000Z",
+            updated_time="2026-07-15T00:00:01.000Z",
+            owner="web_file_management",
+            source="external",
+            site_name="demo",
+        )
+    )
+    service = FileManagementApplicationService(paths, task_service=task_service, process_adapter=object())
+
+    tasks = service.list_download_tasks("demo", limit=1)
+
+    assert [task.task_id for task in tasks] == ["file-task-old"]
+    assert service.download_task("demo", "file-task-external") is None

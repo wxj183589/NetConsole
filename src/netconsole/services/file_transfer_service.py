@@ -13,7 +13,8 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled
+from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text  # noqa: F401
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
 from netconsole.utils.text_encoding import decode_bytes_with_fallback, clean_h3c_device_text
@@ -84,9 +85,10 @@ class FileDownloadResult:
 
 
 class FileTransferService:
-    def __init__(self, site_name: str, paths: PathResolver | None = None) -> None:
+    def __init__(self, site_name: str, paths: PathResolver | None = None, *, allow_remote_setup: bool = True) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        self.allow_remote_setup = bool(allow_remote_setup)
         self._client = None
         self._sftp = None
         self._device: Device | None = None
@@ -129,6 +131,8 @@ class FileTransferService:
                 try:
                     self._sftp = client.open_sftp()
                 except Exception as sftp_exc:
+                    if not self.allow_remote_setup:
+                        raise RuntimeError("SFTP 未启用；Web 文件管理为只读连接，不会自动配置设备，请先在设备侧启用 SFTP。") from sftp_exc
                     self._emit_progress(progress_callback, "file_management.status.sftp_failed_trying_ssh")
                     app_logger.log_warning(
                         "SFTP_INITIAL_OPEN_FAILED",
@@ -361,7 +365,7 @@ class FileTransferService:
                 part_path.replace(target)
                 file_sha256(target)
                 return target
-            except TransferCancelled:
+            except (TransferCancelled, BackgroundTaskCancelled):
                 if part_path.exists():
                     part_path.unlink(missing_ok=True)
                 raise

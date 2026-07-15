@@ -114,17 +114,17 @@ class TaskRepository:
             row = conn.execute("SELECT * FROM task_snapshots WHERE task_id = ?", (task_id,)).fetchone()
         return self._snapshot_from_row(dict(row)) if row is not None else None
 
-    def list(self, *, statuses: set[TaskState] | None = None, limit: int = 200) -> list[TaskSnapshot]:
+    def list(self, *, statuses: set[TaskState] | None = None, limit: int = 200, offset: int = 0) -> list[TaskSnapshot]:
         params: list[object] = []
         where = ""
         if statuses:
             values = sorted(state.value for state in statuses)
             where = f"WHERE status IN ({','.join('?' for _ in values)})"
             params.extend(values)
-        params.append(max(1, min(int(limit), 1000)))
+        params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM task_snapshots {where} ORDER BY updated_time DESC, created_time DESC LIMIT ?",
+                f"SELECT * FROM task_snapshots {where} ORDER BY updated_time DESC, created_time DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [self._snapshot_from_row(dict(row)) for row in rows]
