@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import csv
 import hashlib
 import json
+import os
 import sys
 import zipfile
 from datetime import UTC, datetime
@@ -16,10 +17,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from netconsole.application.desktop import (
+    DesktopActionResolver,
+    DesktopActionResult,
+    DesktopActionService,
+    RegisteredLaunch,
+)
 from netconsole.backend.api.device_management_router import router
 from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.device_management import DeviceImportConfirmRequestDTO
 from netconsole.models.device import Device
@@ -31,6 +39,10 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_management_web_service import (
     DEVICE_CONNECTION_TEST_TASK_TYPE,
+    DEVICE_IMPORT_CLAIM_GRACE_SECONDS,
+    DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
+    DEVICE_IMPORT_TASK_TYPE,
+    DEVICE_TERMINAL_ACTION_IDS,
     MAX_DEVICE_IMPORT_BYTES,
     WEB_TASK_OWNER,
     DeviceManagementWebService,
@@ -70,6 +82,39 @@ class _CapturingProcessAdapter:
     def cancel_job(self, task_id: str) -> bool:
         self.cancelled.append(task_id)
         return any(job.job_id == task_id for job in self.jobs)
+
+
+class _FakeDesktopAdapter:
+    def __init__(self) -> None:
+        self.terminal_calls: list[RegisteredLaunch] = []
+
+    def launch_registered_terminal(
+        self, launch: RegisteredLaunch
+    ) -> DesktopActionResult:
+        self.terminal_calls.append(launch)
+        return DesktopActionResult(True, "launched", "外部终端已启动")
+
+
+def _desktop_actions(
+    tmp_path: Path, *device_uuids: str
+) -> tuple[DesktopActionService, _FakeDesktopAdapter]:
+    executable = tmp_path / "registered-terminal.exe"
+    executable.write_bytes(b"fake executable")
+    adapter = _FakeDesktopAdapter()
+    terminals = {
+        (action_id, device_uuid): RegisteredLaunch(executable)
+        for action_id in DEVICE_TERMINAL_ACTION_IDS.values()
+        for device_uuid in device_uuids
+    }
+    return (
+        DesktopActionService(
+            RuntimeMode.DESKTOP,
+            adapter,
+            DesktopActionResolver(terminals=terminals),
+            audit=lambda _event, _message: None,
+        ),
+        adapter,
+    )
 
 
 def _write_import_csv(
@@ -116,7 +161,16 @@ def _fixture(tmp_path: Path):
     sw = devices.create(Device(name="SW10", primary_address="192.0.2.20", device_type="SW"))
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     adapter = _CapturingProcessAdapter(tasks)
-    service = DeviceManagementWebService(paths, tasks, site_name="demo", process_adapter=adapter)  # type: ignore[arg-type]
+    desktop_actions, _desktop_adapter = _desktop_actions(
+        tmp_path, str(mr.device_uuid), str(sw.device_uuid)
+    )
+    service = DeviceManagementWebService(
+        paths,
+        tasks,
+        desktop_action_service=desktop_actions,
+        site_name="demo",
+        process_adapter=adapter,  # type: ignore[arg-type]
+    )
     app = FastAPI()
     app.state.device_management_service = service
     app.state.feature_gate = FeatureGate(paths.app_root)
@@ -150,6 +204,8 @@ def _task(task_id: str, device_uuid: str, *, success: bool) -> TaskSnapshot:
         finished_time=now,
         device=device_uuid,
         site_name="demo",
+        owner=WEB_TASK_OWNER,
+        source="local",
         result={"device_uuid": device_uuid, "protocol": "SSH", "success": success, "status": "ok" if success else "timeout"},
     )
 
@@ -318,13 +374,71 @@ def test_connection_test_reuses_active_task_under_concurrent_requests(tmp_path: 
     assert len(adapter.jobs) == 1
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"owner": "foreign-owner"},
+        {"source": "agent"},
+        {"site_name": "foreign-site"},
+        {"task_type": "config_collect"},
+    ),
+    ids=("owner", "source", "site", "task-type"),
+)
+def test_device_task_views_and_dedupe_ignore_foreign_scope(
+    tmp_path: Path, overrides: dict[str, object]
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    foreign_task_id = f"device-test-ssh-foreign-{next(iter(overrides))}"
+    values: dict[str, object] = {
+        "task_type": DEVICE_CONNECTION_TEST_TASK_TYPE,
+        "task_name": "异域任务",
+        "status": TaskState.RUNNING,
+        "created_time": now,
+        "updated_time": now,
+        "device": str(mr.device_uuid),
+        "owner": WEB_TASK_OWNER,
+        "source": "local",
+        "site_name": "demo",
+    }
+    service.task_service.repository("demo").save(
+        TaskSnapshot(task_id=foreign_task_id, **{**values, **overrides})
+    )
+
+    listed = client.get("/api/device-management/devices").json()
+    listed_mr = next(
+        item for item in listed["items"] if item["device_uuid"] == str(mr.device_uuid)
+    )
+    assert listed_mr["connection_status"] == "UNKNOWN"
+    detail = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}"
+    ).json()
+    assert foreign_task_id not in {
+        task["task_id"] for task in detail["recent_tasks"]
+    }
+
+    started = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+    assert started.status_code == 202
+    assert started.json()["task_id"] != foreign_task_id
+    assert len(adapter.jobs) == 1
+
+
 def test_production_service_follows_runtime_site_switch(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "local")
     sites = SiteManager(paths)
     sites.ensure_demo_site()
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     adapter = _CapturingProcessAdapter(tasks)
-    service = DeviceManagementWebService(paths, tasks, process_adapter=adapter)  # type: ignore[arg-type]
+    desktop_actions, _desktop_adapter = _desktop_actions(tmp_path)
+    service = DeviceManagementWebService(
+        paths,
+        tasks,
+        desktop_action_service=desktop_actions,
+        process_adapter=adapter,  # type: ignore[arg-type]
+    )
 
     assert service.current_site_id() == "demo"
     sites.create_site("line-b")
@@ -509,6 +623,7 @@ def test_import_preview_survives_service_restart_before_confirmation(
     restarted = DeviceManagementWebService(
         service.paths,
         restarted_tasks,
+        desktop_action_service=service.desktop_action_service,
         site_name="demo",
         process_adapter=restarted_adapter,  # type: ignore[arg-type]
     )
@@ -518,6 +633,88 @@ def test_import_preview_survives_service_restart_before_confirmation(
 
     assert confirmed.action == "import_csv"
     assert restarted_adapter.jobs[-1].task_type == "device_csv_import"
+
+
+def test_import_claim_publishes_complete_manifest_before_concurrent_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "claim-barrier.csv"
+    _write_import_csv(source, name="并发认领", address="192.0.2.44")
+    with source.open("rb") as handle:
+        preview = service.preview_import(source.name, handle)
+    staging_root = service._import_staging_root("demo")
+    preview_manifest = service._preview_manifest_path(
+        "demo", preview.preview_token
+    )
+    preview_payload = json.loads(preview_manifest.read_text(encoding="utf-8"))
+    preview_payload["expires"] = datetime.now(UTC).timestamp() + 300
+    service._write_json_atomic(preview_manifest, preview_payload, staging_root)
+    staged = staging_root / preview_payload["staged_name"]
+    old = (
+        datetime.now(UTC).timestamp()
+        - DEVICE_IMPORT_PREVIEW_TTL_SECONDS
+        - 30
+    )
+    os.utime(staged, (old, old))
+
+    publish_entered = Event()
+    publish_release = Event()
+    original_replace = os.replace
+
+    def blocked_replace(source_path: object, target_path: object) -> None:
+        if Path(target_path).name.startswith(".claimed-"):
+            publish_entered.set()
+            assert publish_release.wait(2)
+        original_replace(source_path, target_path)
+
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.os.replace",
+        blocked_replace,
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            service.confirm_import,
+            DeviceImportConfirmRequestDTO(preview_token=preview.preview_token),
+        )
+        try:
+            assert publish_entered.wait(2)
+            lock = next(staging_root.glob(".claim-*.lock"))
+            lock_payload = json.loads(lock.read_text(encoding="utf-8"))
+            assert lock_payload["claimed_at"] > 0
+            assert lock_payload["task_id"].startswith("device-import-")
+            assert lock_payload["operation_id"].startswith("device-import-")
+
+            restarted_tasks = TaskApplicationService(
+                paths=service.paths, site_name="demo"
+            )
+            restarted = DeviceManagementWebService(
+                service.paths,
+                restarted_tasks,
+                desktop_action_service=service.desktop_action_service,
+                site_name="demo",
+            )
+            restarted._cleanup_expired_import_previews("demo")
+            assert staged.exists()
+            assert lock.exists()
+        finally:
+            publish_release.set()
+        confirmed = future.result(timeout=2)
+
+    claimed = next(staging_root.glob(".claimed-*.preview.json"))
+    claimed_payload = json.loads(claimed.read_text(encoding="utf-8"))
+    assert claimed_payload["task_id"] == confirmed.task_id
+    assert claimed_payload["claimed_at"] == lock_payload["claimed_at"]
+    assert not list(staging_root.glob(".claim-*.lock"))
+    assert not list(staging_root.glob(".claim-ready-*.preview.json"))
+    assert not list(staging_root.glob(".claim-source-*.preview.json"))
+    adapter.completions[-1](
+        SimpleNamespace(
+            exit_code=0,
+            cancelled=False,
+            payload={"result": {"created": 1, "skipped": 0, "errors": []}},
+        )
+    )
 
 
 def test_claimed_import_ignores_preview_expiry_while_owned_task_is_active(
@@ -540,7 +737,10 @@ def test_claimed_import_ignores_preview_expiry_while_owned_task_is_active(
 
     restarted_tasks = TaskApplicationService(paths=service.paths, site_name="demo")
     restarted = DeviceManagementWebService(
-        service.paths, restarted_tasks, site_name="demo"
+        service.paths,
+        restarted_tasks,
+        desktop_action_service=service.desktop_action_service,
+        site_name="demo",
     )
     restarted.current_site_id()
 
@@ -587,7 +787,10 @@ def test_restart_reconciles_terminal_import_and_reclaims_claimed_files(
 
     restarted_tasks = TaskApplicationService(paths=service.paths, site_name="demo")
     restarted = DeviceManagementWebService(
-        service.paths, restarted_tasks, site_name="demo"
+        service.paths,
+        restarted_tasks,
+        desktop_action_service=service.desktop_action_service,
+        site_name="demo",
     )
     restarted.current_site_id()
 
@@ -597,6 +800,67 @@ def test_restart_reconciles_terminal_import_and_reclaims_claimed_files(
     audit_payload = json.loads(audit.read_text(encoding="utf-8"))
     assert audit_payload["status"] == "APPLIED"
     assert audit_payload["task_id"] == confirmed.task_id
+
+
+@pytest.mark.parametrize(
+    ("suffix", "overrides"),
+    (
+        ("a", {"owner": "foreign-owner"}),
+        ("b", {"source": "agent"}),
+        ("c", {"site_name": "foreign-site"}),
+        ("d", {"task_type": "config_collect"}),
+    ),
+    ids=("owner", "source", "site", "task-type"),
+)
+def test_claim_cleanup_requires_exact_owned_import_task(
+    tmp_path: Path, suffix: str, overrides: dict[str, object]
+) -> None:
+    _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    root = service._import_staging_root("demo")
+    task_id = f"device-import-{suffix * 32}"
+    operation_id = f"device-import-{suffix * 32}"
+    staged = root / f"device-preview-{suffix * 32}.csv"
+    claimed = root / f".claimed-{suffix * 32}.preview.json"
+    staged.write_text("placeholder", encoding="utf-8")
+    service._write_json_atomic(
+        claimed,
+        {
+            "site": "demo",
+            "staged_name": staged.name,
+            "claimed_at": datetime.now(UTC).timestamp()
+            - DEVICE_IMPORT_CLAIM_GRACE_SECONDS
+            - 1,
+            "task_id": task_id,
+            "operation_id": operation_id,
+        },
+        root,
+    )
+    now = datetime.now(UTC).isoformat()
+    values: dict[str, object] = {
+        "task_type": DEVICE_IMPORT_TASK_TYPE,
+        "task_name": "异域导入任务",
+        "status": TaskState.RUNNING,
+        "created_time": now,
+        "updated_time": now,
+        "owner": WEB_TASK_OWNER,
+        "source": "local",
+        "site_name": "demo",
+    }
+    service.task_service.repository("demo").save(
+        TaskSnapshot(task_id=task_id, **{**values, **overrides})
+    )
+
+    service._cleanup_expired_import_previews("demo")
+
+    assert not claimed.exists()
+    assert not staged.exists()
+    audit = json.loads(
+        service._import_audit_path("demo", operation_id).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["status"] == "FAILED"
+    assert audit["task_id"] == task_id
 
 
 def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_files(
@@ -1040,18 +1304,50 @@ def test_import_completion_never_restores_whole_database_and_preserves_audit(
 
 
 def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: Path) -> None:
-    client, _service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [str(mr.device_uuid)]})
     assert refreshed.status_code == 202
     assert refreshed.json()["action"] == "batch_refresh_details"
     assert adapter.jobs[-1].task_type == "device_detail_collect"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
     assert adapter.jobs[-1].params["task_source"] == "local"
+    collect_task_id = refreshed.json()["tasks"][0]["task_id"]
+    diagnostic = client.post(
+        "/api/device-management/diagnostic-download",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert diagnostic.status_code == 202
+    detail = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}"
+    ).json()
+    assert {collect_task_id, diagnostic.json()["task_id"]} <= {
+        task["task_id"] for task in detail["recent_tasks"]
+    }
 
     terminal = client.post(f"/api/device-management/devices/{mr.device_uuid}/external-terminal", json={"terminal_type": "securecrt"})
     assert terminal.status_code == 200
-    assert terminal.json() == {"native_action": "launchTerminal", "device_uuid": str(mr.device_uuid), "terminal_type": "securecrt", "requires_desktop_bridge": True}
+    assert terminal.json() == {
+        "native_action": "launchTerminal",
+        "device_uuid": str(mr.device_uuid),
+        "terminal_type": "securecrt",
+        "success": True,
+        "code": "launched",
+        "message": "外部终端已启动",
+    }
+    desktop_adapter = service.desktop_action_service.adapter
+    assert isinstance(desktop_adapter, _FakeDesktopAdapter)
+    assert [call.executable.name for call in desktop_adapter.terminal_calls] == [
+        "registered-terminal.exe"
+    ]
     assert "secret-password" not in terminal.text
+
+    for forbidden_field in ("executable", "command", "path"):
+        forged = client.post(
+            f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
+            json={"terminal_type": "securecrt", forbidden_field: "cmd.exe"},
+        )
+        assert forged.status_code == 422
+    assert len(desktop_adapter.terminal_calls) == 1
 
 
 def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type(

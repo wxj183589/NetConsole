@@ -19,6 +19,7 @@ from typing import BinaryIO
 import uuid
 from threading import RLock
 
+from netconsole.application.desktop import DesktopActionService
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
@@ -89,6 +90,11 @@ MAX_DEVICE_IMPORT_BYTES = 16 * 1024 * 1024
 WEB_TASK_OWNER = "web_device_management"
 WEB_ARTIFACT_DIR = "web_artifacts"
 WEB_IMPORT_STAGING_DIR = "web_staging"
+DEVICE_TERMINAL_ACTION_IDS = {
+    "securecrt": "terminal.securecrt",
+    "putty": "terminal.putty",
+    "xshell": "terminal.xshell",
+}
 EXPORT_TASK_TYPES = frozenset(
     {
         "device_export_device_csv",
@@ -126,11 +132,13 @@ class DeviceManagementWebService:
         paths: PathResolver,
         task_service: TaskApplicationService,
         *,
+        desktop_action_service: DesktopActionService,
         site_name: str | None = None,
         process_adapter: LocalProcessAdapter | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
+        self.desktop_action_service = desktop_action_service
         self.site_name = site_name
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
         self._start_lock = RLock()
@@ -168,7 +176,11 @@ class DeviceManagementWebService:
         device_repository, group_repository, _ = self._repositories(site)
         groups = group_repository.list()
         group_names = {int(group.id): group.name for group in groups if group.id is not None}
-        tasks = self.task_service.repository(site).list(limit=1000)
+        tasks = self._owned_web_tasks(
+            self.task_service.repository(site).list(limit=1000),
+            site,
+            frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE}),
+        )
         devices = device_repository.list(
             search=search.strip() or None,
             vendor=vendor.strip() or None,
@@ -202,7 +214,13 @@ class DeviceManagementWebService:
         device_repository, group_repository, fact_repository = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
         groups = {int(group.id): group.name for group in group_repository.list() if group.id is not None}
-        tasks = self._device_tasks(self.task_service.repository(site).list(limit=1000), device)
+        tasks = self._device_tasks(
+            self._owned_web_tasks(
+                self.task_service.repository(site).list(limit=1000),
+                site,
+            ),
+            device,
+        )
         list_item = self._list_item(device, groups, self._latest_test(tasks, device))
         fact = fact_repository.get_device_fact(device_uuid)
         collection = fact_repository.get_collect_run(str(fact.get("collect_run_uuid") or "")) if fact else None
@@ -404,8 +422,13 @@ class DeviceManagementWebService:
     def confirm_import(self, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         self._cleanup_expired_import_previews(site)
+        operation_id = f"device-import-{uuid.uuid4().hex}"
+        task_id = f"device-import-{uuid.uuid4().hex}"
         preview, claimed_manifest = self._claim_import_preview(
-            site, payload.preview_token
+            site,
+            payload.preview_token,
+            operation_id=operation_id,
+            task_id=task_id,
         )
         if (
             preview.get("site") != site
@@ -416,8 +439,6 @@ class DeviceManagementWebService:
             )
             raise ValueError("导入预览 token 无效或已过期")
         path = self._import_staging_root(site) / str(preview.get("staged_name") or "")
-        operation_id = f"device-import-{uuid.uuid4().hex}"
-        task_id = f"device-import-{uuid.uuid4().hex}"
         try:
             self._assert_controlled_path(path, self._import_staging_root(site))
             if tuple(preview.get("errors") or ()):
@@ -435,16 +456,6 @@ class DeviceManagementWebService:
                     "source_sha256": preview.get("sha256"),
                     "backup_reference": str(backup_path),
                 },
-            )
-            self._write_json_atomic(
-                claimed_manifest,
-                {
-                    **preview,
-                    "claimed_at": datetime.now(UTC).timestamp(),
-                    "operation_id": operation_id,
-                    "task_id": task_id,
-                },
-                self._import_staging_root(site),
             )
             job = BackgroundJob(
                 job_id=task_id,
@@ -524,7 +535,18 @@ class DeviceManagementWebService:
     def external_terminal_action(self, device_uuid: str, payload: DeviceExternalTerminalRequestDTO) -> DeviceExternalTerminalActionDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
         self._require_device(devices, device_uuid)
-        return DeviceExternalTerminalActionDTO(device_uuid=device_uuid, terminal_type=payload.terminal_type)
+        result = self.desktop_action_service.launch_registered_terminal(
+            DEVICE_TERMINAL_ACTION_IDS[payload.terminal_type],
+            device_uuid,
+        )
+        if not result.success:
+            raise ValueError(result.message or result.code)
+        return DeviceExternalTerminalActionDTO(
+            device_uuid=device_uuid,
+            terminal_type=payload.terminal_type,
+            code=result.code,
+            message=result.message,
+        )
 
     def start_csv_export(self, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
@@ -818,46 +840,150 @@ class DeviceManagementWebService:
         self._write_json_atomic(manifest, payload, root)
 
     def _claim_import_preview(
-        self, site: str, token: str
+        self,
+        site: str,
+        token: str,
+        *,
+        operation_id: str,
+        task_id: str,
     ) -> tuple[dict[str, object], Path]:
         root = self._import_staging_root(site)
         manifest = self._preview_manifest_path(site, token)
-        claimed = root / f".claimed-{uuid.uuid4().hex}.preview.json"
+        digest = self._preview_token_digest(token)
+        claim_id = uuid.uuid4().hex
+        lock = root / f".claim-{digest}.lock"
+        ready = root / f".claim-ready-{digest}-{claim_id}.preview.json"
+        reservation = root / f".claim-source-{digest}-{claim_id}.preview.json"
+        claimed = root / f".claimed-{claim_id}.preview.json"
+        if (
+            not self._valid_import_operation_id(operation_id)
+            or not self._valid_import_operation_id(task_id)
+        ):
+            raise ValueError("导入认领标识无效")
         try:
-            manifest.rename(claimed)
-        except FileNotFoundError as exc:
-            raise ValueError("导入预览 token 无效或已过期") from exc
-        try:
-            payload = json.loads(claimed.read_text(encoding="utf-8"))
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("导入预览状态已损坏")
-            return dict(payload), claimed
+        except FileNotFoundError as exc:
+            raise ValueError("导入预览 token 无效或已过期") from exc
+        claimed_payload = {
+            **payload,
+            "claimed_at": datetime.now(UTC).timestamp(),
+            "operation_id": operation_id,
+            "task_id": task_id,
+        }
+        self._write_json_atomic(ready, claimed_payload, root)
+        lock_acquired = False
+        source_reserved = False
+        release_lock = True
+        try:
+            lock_data = json.dumps(claimed_payload, ensure_ascii=False).encode("utf-8")
+            try:
+                fd = os.open(
+                    lock,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
+            except FileExistsError as exc:
+                raise ValueError("导入预览 token 无效或已过期") from exc
+            lock_acquired = True
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(lock_data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.replace(manifest, reservation)
+            except FileNotFoundError as exc:
+                raise ValueError("导入预览 token 无效或已过期") from exc
+            source_reserved = True
+            os.replace(ready, claimed)
+            self._remove_controlled_file(reservation, root)
+            source_reserved = False
+            return dict(claimed_payload), claimed
         except Exception:
-            self._remove_controlled_file(claimed, root)
+            if source_reserved and not claimed.exists():
+                try:
+                    os.replace(reservation, manifest)
+                    source_reserved = False
+                except OSError:
+                    release_lock = False
             raise
+        finally:
+            self._remove_controlled_file(ready, root)
+            if lock_acquired and release_lock:
+                self._remove_controlled_file(lock, root)
 
     def _cleanup_expired_import_previews(self, site: str) -> None:
         now = datetime.now(UTC).timestamp()
         staging_root = self._import_staging_root(site)
         referenced: set[str] = set()
+        for lock in staging_root.glob(".claim-*.lock"):
+            digest = lock.name.removeprefix(".claim-").removesuffix(".lock")
+            try:
+                payload = json.loads(lock.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("site") != site
+                    or len(digest) != 64
+                    or any(character not in "0123456789abcdef" for character in digest)
+                    or not self._valid_import_operation_id(
+                        str(payload.get("task_id") or "")
+                    )
+                    or not self._valid_import_operation_id(
+                        str(payload.get("operation_id") or "")
+                    )
+                ):
+                    raise ValueError("导入认领锁无效")
+                staged_name = self._validate_artifact_name(
+                    str(payload.get("staged_name") or "")
+                )
+                claimed_at = float(payload["claimed_at"])
+                if now < claimed_at + DEVICE_IMPORT_CLAIM_GRACE_SECONDS:
+                    referenced.add(staged_name)
+                    continue
+            except Exception:
+                pass
+            self._remove_controlled_file(lock, staging_root)
+            for pending in (
+                *staging_root.glob(f".claim-ready-{digest}-*.preview.json"),
+                *staging_root.glob(f".claim-source-{digest}-*.preview.json"),
+            ):
+                self._remove_controlled_file(pending, staging_root)
+        for pattern in (
+            ".claim-ready-*.preview.json",
+            ".claim-source-*.preview.json",
+        ):
+            for pending in staging_root.glob(pattern):
+                try:
+                    stale = (
+                        pending.stat().st_mtime
+                        < now - DEVICE_IMPORT_CLAIM_GRACE_SECONDS
+                    )
+                except OSError:
+                    stale = False
+                if stale:
+                    self._remove_controlled_file(pending, staging_root)
         for manifest in staging_root.glob("device-preview-*.preview.json"):
             try:
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
                 staged_name = self._validate_artifact_name(
                     str(payload.get("staged_name") or "")
                 )
-                referenced.add(staged_name)
                 expired = float(payload.get("expires") or 0) < now
             except Exception:
                 expired = True
                 staged_name = ""
             if expired:
-                if staged_name:
+                if staged_name and staged_name not in referenced:
                     self._remove_controlled_file(
                         staging_root / staged_name, staging_root
                     )
-                    referenced.discard(staged_name)
                 self._remove_controlled_file(manifest, staging_root)
+            elif staged_name:
+                referenced.add(staged_name)
         repository = self.task_service.repository(site)
         for manifest in staging_root.glob(".claimed-*.preview.json"):
             try:
@@ -869,9 +995,12 @@ class DeviceManagementWebService:
                 )
                 task_id = str(payload.get("task_id") or "")
                 operation_id = str(payload.get("operation_id") or "")
-                claimed_at = float(
-                    payload.get("claimed_at") or manifest.stat().st_mtime
-                )
+                claimed_at = float(payload["claimed_at"])
+                if (
+                    not self._valid_import_operation_id(task_id)
+                    or not self._valid_import_operation_id(operation_id)
+                ):
+                    raise ValueError("导入认领标识无效")
                 snapshot = repository.get(task_id) if task_id else None
                 owned_task = snapshot is not None and self._is_owned_import_task(
                     snapshot, site
@@ -1048,12 +1177,37 @@ class DeviceManagementWebService:
 
     @staticmethod
     def _is_owned_import_task(snapshot: TaskSnapshot, site: str) -> bool:
+        return DeviceManagementWebService._is_owned_web_task(
+            snapshot,
+            site,
+            frozenset({DEVICE_IMPORT_TASK_TYPE}),
+        )
+
+    @staticmethod
+    def _is_owned_web_task(
+        snapshot: TaskSnapshot,
+        site: str,
+        allowed_types: frozenset[str] = DEVICE_TASK_TYPES,
+    ) -> bool:
         return (
             snapshot.site_name == site
             and snapshot.owner == WEB_TASK_OWNER
             and snapshot.source == "local"
-            and snapshot.task_type == DEVICE_IMPORT_TASK_TYPE
+            and snapshot.task_type in allowed_types
         )
+
+    @classmethod
+    def _owned_web_tasks(
+        cls,
+        tasks: list[TaskSnapshot],
+        site: str,
+        allowed_types: frozenset[str] = DEVICE_TASK_TYPES,
+    ) -> list[TaskSnapshot]:
+        return [
+            task
+            for task in tasks
+            if cls._is_owned_web_task(task, site, allowed_types)
+        ]
 
     @staticmethod
     def _valid_import_operation_id(value: str) -> bool:
@@ -1076,13 +1230,10 @@ class DeviceManagementWebService:
     def _require_web_task(
         self, task_id: str, allowed_types: frozenset[str] = DEVICE_TASK_TYPES
     ) -> TaskSnapshot:
-        snapshot = self.task_service.repository(self.current_site_id()).get(task_id)
-        if (
-            snapshot is None
-            or snapshot.site_name != self.current_site_id()
-            or snapshot.owner != WEB_TASK_OWNER
-            or snapshot.source != "local"
-            or snapshot.task_type not in allowed_types
+        site = self.current_site_id()
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is None or not self._is_owned_web_task(
+            snapshot, site, allowed_types
         ):
             raise KeyError(task_id)
         return snapshot
@@ -1452,7 +1603,11 @@ class DeviceManagementWebService:
                 (
                     task
                     for task in self.task_service.repository(site).list(statuses=ACTIVE_TASK_STATES, limit=1000)
-                    if task.task_type == DEVICE_CONNECTION_TEST_TASK_TYPE
+                    if self._is_owned_web_task(
+                        task,
+                        site,
+                        frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE}),
+                    )
                     and task.device == device_uuid
                     and _protocol_from_task_id(task.task_id) == selected_protocol
                 ),
@@ -1629,7 +1784,16 @@ class DeviceManagementWebService:
             )
             if str(value or "").strip()
         }
-        return [task for task in tasks if str(task.device or "").strip().casefold() in aliases]
+        return [
+            task
+            for task in tasks
+            if aliases
+            & {
+                value.strip().casefold()
+                for value in str(task.device or "").split(",")
+                if value.strip()
+            }
+        ]
 
     @staticmethod
     def _task_summary(task: TaskSnapshot, device: Device) -> DeviceTaskSummaryDTO:

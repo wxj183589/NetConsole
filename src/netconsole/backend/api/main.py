@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core import app_logger
 from netconsole.backend.web_build import (
@@ -31,6 +32,7 @@ from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
+from netconsole.infrastructure.desktop import BrowserDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
@@ -111,6 +113,7 @@ def create_app(
     *,
     paths: PathResolver | None = None,
     task_service: TaskApplicationService | None = None,
+    desktop_action_service: DesktopActionService | None = None,
     agent_service: AgentControllerService | None = None,
     traffic_service: TrafficTestApplicationService | None = None,
     ac_mesh_link_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
@@ -154,11 +157,22 @@ def create_app(
         )
     if ac_mesh_link_refresh_service is None:
         ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
+    if desktop_action_service is None:
+        desktop_action_service = DesktopActionService(
+            runtime_mode,
+            BrowserDesktopAdapter()
+            if runtime_mode is RuntimeMode.DESKTOP
+            else UnavailableDesktopAdapter(),
+            DesktopActionResolver(
+                controlled_roots=(paths.app_root, paths.data_root),
+            ),
+        )
     feature_gate = FeatureGate(paths.app_root)
     web_process_adapter = LocalProcessAdapter(task_service)
     device_management_service = DeviceManagementWebService(
         paths,
         task_service,
+        desktop_action_service=desktop_action_service,
         process_adapter=web_process_adapter,
     )
     config_collection_service = ConfigCollectionApplicationService(
@@ -230,6 +244,7 @@ def create_app(
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
+    app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
     app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)

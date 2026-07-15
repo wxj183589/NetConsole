@@ -68,5 +68,7 @@ describe('Device Management Web view', () => {
     expect(source).toContain('Object.assign(editForm, values)')
     expect(source).toContain('Object.assign(writeForm, values)')
     expect(source).toContain('detail.value?.device.device_uuid || selectedUuids.value[0]')
+    expect(source).toContain("action.message || '外部终端已启动'")
+    expect(source).not.toContain('等待 Desktop Bridge 执行')
   })
 })

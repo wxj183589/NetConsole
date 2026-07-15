@@ -264,7 +264,9 @@ class DeviceExternalTerminalActionDTO(ApiModel):
     native_action: Literal["launchTerminal"] = "launchTerminal"
     device_uuid: str
     terminal_type: Literal["securecrt", "putty", "xshell"]
-    requires_desktop_bridge: bool = True
+    success: Literal[True] = True
+    code: str
+    message: str = ""
 
 
 class DeviceConnectionTestRequestDTO(ApiModel):

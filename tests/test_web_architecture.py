@@ -10,6 +10,7 @@ from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.infrastructure.desktop import BrowserDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api import AgentStatusDTO, ApiResponse, ErrorDetail, ErrorResponse, TaskDTO, TaskEventDTO
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
@@ -94,6 +95,25 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
     assert app.state.paths.data_root == paths.data_root
     assert app.state.config_collection_service.task_service is app.state.task_service
     assert app.state.device_management_service.task_service is app.state.task_service
+    assert (
+        app.state.device_management_service.desktop_action_service
+        is app.state.desktop_action_service
+    )
+    expected_desktop_adapter = (
+        BrowserDesktopAdapter
+        if runtime_mode is RuntimeMode.DESKTOP
+        else UnavailableDesktopAdapter
+    )
+    assert isinstance(app.state.desktop_action_service.adapter, expected_desktop_adapter)
+    default_terminal = app.state.desktop_action_service.launch_registered_terminal(
+        "terminal.securecrt", "device-1"
+    )
+    assert default_terminal.success is False
+    assert default_terminal.code == (
+        "unknown_terminal_action"
+        if runtime_mode is RuntimeMode.DESKTOP
+        else "server_mode_forbidden"
+    )
     assert app.state.config_collection_service.process_adapter is app.state.device_management_service.process_adapter
     assert app.state.file_management_service.process_adapter is app.state.device_management_service.process_adapter
     assert app.state.network_tools_service.traffic_service is app.state.traffic_service

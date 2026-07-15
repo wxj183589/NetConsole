@@ -205,7 +205,9 @@ export interface DeviceExternalTerminalAction {
   native_action: 'launchTerminal'
   device_uuid: string
   terminal_type: 'securecrt' | 'putty' | 'xshell'
-  requires_desktop_bridge: boolean
+  success: true
+  code: string
+  message: string
 }
 
 export interface DeviceExportRequest extends DeviceListQuery {

@@ -580,7 +580,7 @@ async function requestTerminal(): Promise<void> {
   }
   try {
     const action = await requestExternalTerminal(uuid, 'securecrt')
-    ElMessage.info(`${action.native_action} 已生成，等待 Desktop Bridge 执行`)
+    ElMessage.success(action.message || '外部终端已启动')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '外部终端请求失败'))
   }
