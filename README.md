@@ -13,9 +13,9 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router 和 ECharts。无 Qt 依赖 Launcher 已支持 `auto/qt/web/server`：默认完成轻量能力探测后创建唯一 FastAPI Core Runtime，再启动 Qt、外部浏览器或无 Shell 服务模式；`web/server` 通用导入链不加载 PySide6。Qt 仍保留全部现有页面和故障回退能力，Web 功能对等继续按矩阵验收。Online MR 已由同一 Application Service 分派 LOCAL/AGENT；5B-13B 增加默认关闭的 Desktop WebHost AGENT 受控入口和回环 Fake 全链路验收。Python 依赖以 `requirements.txt` 为准，前端依赖以 `apps/web/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Electron、Element Plus、Pinia、Vue Router 和 ECharts。无 Qt 依赖 Launcher 已支持 `auto/qt/web/server`；`apps/desktop_electron` 另提供安全 Electron main/preload、动态端口 Python supervisor 和 Vue 双运行时基础。Qt 仍保留全部现有页面和故障回退能力，Web 功能对等继续按矩阵验收。Python 依赖以 `requirements.txt` 为准，Vue 与 Electron 分别以各自 `apps/*/package.json` 和 `pnpm-lock.yaml` 为准。
 
-长期产品路线已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳**。Qt 当前仍是生产与回退入口，但只作为迁移层，不再新增 Qt 业务页面；Web 完成逐模块真实验收后先隐藏 Qt 入口，稳定一个发布周期再删除。Electron 尚未建设，本阶段先收敛 Application Service、API 与依赖边界。
+长期产品路线已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳**。当前处于 Electron 与 Qt 并行迁移阶段：Qt 仍是生产与回退入口，不再新增 Qt 业务页面；Electron 安全基础已经可运行，但安装包、升级、托盘和业务模块替换尚未完成。对应模块达到 `REPLACE_READY` 后才可先隐藏 Qt 入口，稳定一个发布周期再删除。
 
 ## 当前能力
 
@@ -91,7 +91,7 @@ flowchart LR
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
 - Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Token 始终留在 Controller 进程内。浏览器端通过“网络工具 / 流量测试”调用统一 Traffic API。
 
-完整说明见 [下一代架构](docs/ARCHITECTURE_NEXT.md)、[当前架构](docs/ARCHITECTURE.md)、[Web 迁移计划](docs/WEB_MIGRATION_PLAN.md)、[Web 迁移矩阵](docs/WEB_MIGRATION_MATRIX.md)、[Qt/Web 详细对等矩阵](docs/WEB_QT_PARITY_MATRIX.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
+完整说明见 [下一代架构](docs/ARCHITECTURE_NEXT.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[当前架构](docs/ARCHITECTURE.md)、[Web 迁移计划](docs/WEB_MIGRATION_PLAN.md)、[Web 迁移矩阵](docs/WEB_MIGRATION_MATRIX.md)、[Qt/Web 详细对等矩阵](docs/WEB_QT_PARITY_MATRIX.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
 ## 开发与运行
 
@@ -155,4 +155,4 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 兼容入口以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
 
-Web parity foundation 已固定源码/冻结前端资源边界、build id 校验、统一 Navigation Registry、模块归属和响应式深色菜单。Launcher 默认在 Qt 能力可用时选择 Qt Shell，Qt 当前仍是稳定生产和回退界面，但长期定位已调整为迁移层；未完成页面仅登记规划 Feature/对等状态，不注册占位业务路由。下一阶段先收敛 Qt 页面级 Task/Application Service、薄化 Router 并固化 Web 写操作边界，不提前创建 Electron 空工程。SNMP Center 和无线勘测归入 `EXCLUDED/FUTURE_REBUILD`，网络工具无线扫描仍按独立能力评估。
+Web parity foundation 已固定源码/冻结前端资源边界、build id 校验、统一 Navigation Registry、模块归属和响应式深色菜单。Launcher 默认在 Qt 能力可用时选择 Qt Shell，Qt 当前仍是稳定生产和回退界面；Electron 安全基础复用同一 Vue/FastAPI，尚未改变模块替换状态。后续继续收敛 Application Service，并按完整纵向闭环迁移；SNMP Center 和无线勘测归入 `EXCLUDED/FUTURE_REBUILD`，网络工具无线扫描仍按独立能力评估。

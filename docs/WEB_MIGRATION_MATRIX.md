@@ -10,7 +10,7 @@
 
 | 模块 | 当前 Qt | 当前 Web | 当前结论 | 长期去向 |
 | --- | --- | --- | --- | --- |
-| 设备管理 | 生产入口 | 已有列表、详情与部分操作 | `IN_PROGRESS` | Vue + FastAPI，真实验收后替换 Qt |
+| 设备管理 | 生产入口 | 已有列表、详情与部分操作 | `IN_PROGRESS` | Vue + FastAPI，达到 `REPLACE_READY` 后替换 Qt |
 | AC 管理 | 生产入口 | 只读与部分受控能力 | `IN_PROGRESS` | Vue + FastAPI，写操作需权限/确认/审计 |
 | 轨道交通 | 生产入口/回退 | 主业务展示与部分控制已覆盖 | `IN_PROGRESS` | Vue 主入口，补齐真实设备闭环 |
 | 网络工具 | 生产入口 | Ping/fping/iPerf/端口能力部分覆盖 | `IN_PROGRESS` | 本地与 Agent 统一任务模型 |
@@ -18,6 +18,7 @@
 | 文件管理 | 生产入口 | 只读浏览与受控下载部分覆盖 | `IN_PROGRESS` | Vue 主入口，远程删除不进入首批 |
 | Job Center | 辅助/分散入口 | 已有统一页面 | `CONTROLLED_WRITE` | 永久 Web 基础能力 |
 | Agent 控制 | 无独立完整 Qt 主入口 | 状态、包、任务与 Fake E2E 已有 | `FAKE_ACCEPTED` | 永久 Web 能力，等待真实 Agent 验收 |
+| Desktop Shell | Qt 为生产入口与稳定回退 | Electron 安全外壳、后端生命周期和 Native Bridge 基础可运行 | `FOUNDATION_READY` | 保留唯一 Vue Renderer；签名安装、升级和业务替换另行验收 |
 | 全局 Dashboard | 分散展示 | 轨交看板已有，全局首页未完成 | `IN_PROGRESS` | Vue 统一首页 |
 | 系统设置 | 本机设置为主 | 部分未开始 | `NOT_STARTED` | 用户设置进 Web；本机能力经 Electron 白名单桥接 |
 | 命令、日志等传统工具 | 生产入口 | 未完整迁移 | `NOT_STARTED` | 先收敛 Application Service，再建设 Web |

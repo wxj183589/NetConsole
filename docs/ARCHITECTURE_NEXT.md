@@ -16,6 +16,8 @@ NetConsole 的长期产品形态确定为：
 
 > **Python Core + FastAPI 作为永久业务层，Vue 作为永久主界面，Electron 作为最终桌面外壳，Qt 仅保留在迁移期并最终删除。**
 
+当前实施阶段是 **Electron 与 Qt 并行迁移**：Qt 保持生产与回退可用，Electron 独立验证新宿主；两者不得复制 Python 业务逻辑，任何 Qt 入口都只能在对应 Web 纵向闭环达到替换门槛后退出。
+
 永久保留：
 
 - Python Core、Application Service、Repository、Parser 与设备适配能力；
@@ -27,8 +29,8 @@ NetConsole 的长期产品形态确定为：
 过渡或未来替换：
 
 - Qt GUI：迁移期生产入口和故障回退，目标是逐模块隐藏并最终删除；
-- 当前 Qt Web Shell：迁移期 Desktop WebHost 宿主，未来由 Electron 外壳替换；
-- Electron：最终桌面外壳，但当前阶段不提前创建空工程或复制现有业务代码。
+- 当前 Qt Web Shell：迁移期 Desktop WebHost 宿主和生产回退，尚未删除；
+- Electron：`apps/desktop_electron/` 已建立可运行安全基础，复用现有 Vue/FastAPI；安装包、升级、托盘和业务模块替换尚未完成。
 
 从本决策起，不再新增 Qt 业务页面，也不在 Qt 页面中建立新的业务规则。新功能默认沿永久链路建设。
 
@@ -80,21 +82,23 @@ API 是永久边界。接口变更必须兼容现有调用方，必要时版本�
 | Application / Domain | `src/netconsole/services/`、`src/netconsole/core/` 等 | 逐用例收敛，不为命名整齐进行批量搬迁 |
 | Infrastructure | `src/netconsole/repositories/`、`parsers/`、`adapters/` 等 | 复用现有实现，按实际依赖治理 |
 | Qt 业务界面 | `src/netconsole/ui/` | 迁移期保留，只维护和回退，不新增业务页面 |
-| Desktop 外壳 | `apps/desktop/` | 当前是 Qt Web Shell；Electron 阶段在同一职责目录内替换，避免并存两个桌面工程 |
+| Qt Legacy 外壳 | `apps/desktop/`、`src/netconsole/ui/` | 当前生产/回退入口，只做缺陷与兼容维护 |
+| Electron 外壳 | `apps/desktop_electron/` | 已有 main/preload/backend supervisor 基础；不复制 `apps/web` 或 Python Core |
 | Agent | `apps/agent/` | 独立运行，继续通过受控 API 与 Core 协作 |
 
-未经独立迁移任务批准，不创建 `domain/`、`application/`、`infrastructure/` 或 Electron 空骨架，也不为了符合示意图机械移动已有代码。
+未经独立迁移任务批准，不创建空 `domain/`、`application/`、`infrastructure/`，也不为了符合示意图机械移动已有代码。Electron 基础已经落地，但不得在其中建立第二套业务、Renderer 或 Node 后端。
 
 ## Electron 本机桥接边界
 
-Electron 只提供经过白名单和参数校验的本机能力。初始允许范围：
+Electron 只提供经过白名单和参数校验的本机能力。第一阶段已实现：
 
 - `selectFile`
 - `selectDirectory`
-- `openArtifact`
-- `openFolder`
-- `launchTerminal`
-- `notification`
+- `chooseSavePath`
+- 仅限当前原生对话框已授权路径的 `openPath`
+- 仅限当前原生对话框已授权路径的 `showItemInFolder`
+
+`openArtifact`、受控目录类型、终端和通知仍是后续能力。
 
 禁止提供：
 
@@ -128,7 +132,7 @@ Electron 只提供经过白名单和参数校验的本机能力。初始允许�
 2. **Core/API 收敛期**：逐模块把业务规则从 Qt 页面和 Router 收敛到 Application Service。
 3. **Vue 主界面期**：按真实验收门槛完成 Web 功能，Qt 保持并行回退。
 4. **Web 默认期**：满足 `REPLACE_READY` 的模块先隐藏 Qt 入口，保留一个发布周期回退。
-5. **Electron 外壳期**：在 Web 主流程稳定后建设最小桌面外壳和白名单 Native Bridge。
+5. **Electron 外壳期**：安全基础已开始；继续补安装/升级/托盘，并仅在模块达到完整纵向闭环后替换 Qt 入口。
 6. **Qt 删除期**：所有目标模块完成迁移、真实验收、发布回退验证后，删除 Qt 业务层和 Qt 运行依赖。
 
 ## 完成定义

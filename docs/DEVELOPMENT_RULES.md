@@ -19,7 +19,7 @@
 - 不新增 Qt 业务页面或 Qt 专用业务逻辑。新功能默认沿共享规则/Application Service -> FastAPI -> Vue 建设。
 - Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
 - Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。
-- Electron 尚未进入实现期，不创建空骨架；未来 Native Bridge 必须使用动作白名单，禁止任意命令、路径和程序执行。
+- Electron 安全基础已进入实现期；只允许 `apps/desktop_electron` 中的窗口、Python 生命周期和白名单 Bridge，不得新增第二套 Renderer/业务 Core。路径只能使用当前原生对话框授予的临时能力，禁止任意命令、程序或未授权路径。
 - SNMP Center 与无线勘测仅允许维护历史代码和数据，不新增功能或入口；网络工具无线扫描单独评估。
 
 详细规则见 [下一代架构](ARCHITECTURE_NEXT.md) 与 [下一阶段开发指南](DEVELOPMENT_GUIDE.md)。

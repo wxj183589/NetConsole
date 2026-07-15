@@ -6,7 +6,7 @@
 
 长期模块总览见 [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md)，最终桌面与业务分层目标见 [下一代架构](ARCHITECTURE_NEXT.md)。
 
-状态只使用：`NOT_STARTED`、`READ_ONLY`、`PREVIEW_ONLY`、`CONTROLLED_WRITE`、`FAKE_ACCEPTED`、`REAL_ACCEPTED`、`REPLACE_READY`、`EXCLUDED`。
+业务页面对等状态只使用：`NOT_STARTED`、`READ_ONLY`、`PREVIEW_ONLY`、`CONTROLLED_WRITE`、`FAKE_ACCEPTED`、`REAL_ACCEPTED`、`REPLACE_READY`、`EXCLUDED`。宿主与基础设施可在长期总览中单独使用 `FOUNDATION_READY`，该状态不表示任何业务页面达到替换条件。
 
 - `FAKE_ACCEPTED` 不等于真实设备验收。
 - “写操作”包括创建/取消 Task、修改配置或数据、执行设备动作；受控下载不计为业务写入。

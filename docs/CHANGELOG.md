@@ -4,6 +4,7 @@
 
 ### 本次修复
 
+- 新增可运行的 Electron Desktop 安全基础：复用唯一 Vue/FastAPI，使用 sandboxed 单文件 preload、白名单 IPC、动态回环 Python 后端、通过 stdin 传递的每次启动临时会话令牌与优雅退出控制管道；Vue 增加 Browser/Electron Runtime Adapter 和最小桌面状态区。当前处于 Electron 与 Qt 并行迁移阶段，只完成源码开发/生产资源模式；Electron 安装包、签名、升级、托盘与业务模块替换尚未完成。
 - 启动架构第一阶段的 Launcher/WebHost 子项改为无 Qt Launcher：新增 `auto/qt/web/server`，完成轻量能力探测后创建唯一 FastAPI Core Runtime，再启动 Qt、本机浏览器或无 Shell Server；`web/server` 通用导入链不加载 PySide6，Qt WebConsoleHost 复用 Launcher 服务，普通启动增加单实例和启动诊断。Server 在远程鉴权完成前只允许回环绑定，Qt probe 使用不加载 FastAPI/Core 的轻量入口。旧 `--web-shell`、Qt 页面及提权网络管理入口继续兼容；Native Bridge、EmbeddedLayout 和旧 Qt 页面服务容器统一尚未完成。
 - 补齐发布链遗漏的 `web_frontend_meta` 校验模块，继续强制核对 Web `index.html`、构建身份、构建时间和导航 schema，避免发布测试在收集阶段失败。
 - 修复 Desktop WebHost 可能继续加载旧 Vue `dist` 的问题：源码/冻结模式使用明确资源边界，构建生成并校验前后端 build id；Web 导航改由统一 Registry 按固定模块顺序渲染，补齐深色子菜单、侧栏折叠、窄屏抽屉和最小可操作窗口，并建立 Qt/Web 功能对等矩阵。未完成页面仍不开放占位入口，Qt 页面继续保留。

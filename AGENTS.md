@@ -28,7 +28,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 先梳理目标、假设和验证标准；只改当前需求范围，优先复用现有组件、Service、Repository、Parser 和路径 helper。
 - 不新增 Qt 业务页面或只供 Qt 使用的新业务逻辑；新用户功能默认按 Domain/共享规则 -> Application Service -> FastAPI -> Vue 建设，迁移期 Qt 只复用永久业务层。
 - Vue、Electron 和 FastAPI Router 不得直接实现设备、数据库、采集或业务状态机；Router 只做 DTO、鉴权、Service 调用和响应映射。
-- Electron 尚未进入实现期；未经独立任务批准不创建空工程。未来只承载窗口、托盘、进程、升级和白名单 Native Bridge，不提供任意命令、路径或程序执行接口。
+- Electron 安全基础已进入实现期；只承载窗口、进程生命周期、后续托盘/升级和白名单 Native Bridge，不提供任意命令、路径或程序执行接口，也不建立第二套 Renderer 或业务 Core。
 - 不执行 `git reset`、`git checkout --`、`git clean`、`git stash` 等破坏性操作，不覆盖用户未提交修改。
 - 网络、磁盘、解析、压缩、大查询和批量任务不得阻塞 UI；超过 300ms 的 IO/CPU/网络任务进入 Job Center，所有导出进入独立 Export Process。
 - UI 只负责布局、输入、轻量校验和状态绑定；Worker 不访问 QWidget，SQLite connection 不跨线程/进程共享。
@@ -42,7 +42,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 仓库目录约束
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](docs/development/repository-layout.md) 并说明唯一职责。
-- Desktop、Web、Agent 分别进入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。`apps/desktop` 当前承载 Qt Web Shell，未来在同一职责目录内替换为 Electron，不并建第二套桌面工程。
+- Qt Legacy、Electron、Web、Agent 分别进入 `apps/desktop`、`apps/desktop_electron`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。本阶段不移动或改名现有 Qt 目录，`apps/desktop_electron` 只放 main/preload/shared，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
