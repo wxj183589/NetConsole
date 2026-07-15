@@ -1471,7 +1471,11 @@ def test_online_mr_start_confirmation_yes_collapses_inputs(tmp_path: Path, monke
     page.selected_device_ids = {int(device.id)}
     started: list[OnlineMrCollectorWorker] = []
     preflight_calls: list[bool] = []
-    monkeypatch.setattr(OnlineMrCollectorWorker, "start", lambda worker: started.append(worker))
+    monkeypatch.setattr(
+        OnlineMrCollectorWorker,
+        "start",
+        lambda worker: started.append(worker) or SimpleNamespace(controller_task_id=worker.job_id),
+    )
     monkeypatch.setattr(page, "_show_start_confirm_dialog", lambda _message: True)
     monkeypatch.setattr(page, "_preflight_iperf_before_start", lambda: preflight_calls.append(True) or True)
 
