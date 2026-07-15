@@ -247,9 +247,25 @@ class NetworkToolsApplicationService:
         selected_id = str(project_id or "").strip()
         with self._project_lock:
             projects = self._read_projects_unlocked()
-            remaining = [item for item in projects if str(item.get("project_id") or "") != selected_id]
-            if len(remaining) == len(projects):
+            project = next(
+                (item for item in projects if str(item.get("project_id") or "") == selected_id),
+                None,
+            )
+            if project is None:
                 raise KeyError(selected_id)
+            self._reconcile_module_tasks()
+            active_scans = self.task_service.repository(self.site_name).list(
+                statuses=_ACTIVE_TASK_STATES,
+                limit=1000,
+            )
+            if any(self._is_scoped_task(task, {NETWORK_WIRELESS_SCAN_TASK}) for task in active_scans):
+                raise ValueError("存在进行中的无线扫描，暂不能删除项目")
+            self._wireless().repository.backfill_project_snapshot(
+                selected_id,
+                str(project.get("name") or ""),
+                str(project.get("description") or ""),
+            )
+            remaining = [item for item in projects if str(item.get("project_id") or "") != selected_id]
             self._write_projects_unlocked(remaining)
 
     async def start_wireless_scan(
@@ -260,18 +276,29 @@ class NetworkToolsApplicationService:
         project_id: str = "",
     ) -> TaskSnapshot:
         selected_project = str(project_id or "").strip()
-        if selected_project and not self._project_exists(selected_project):
-            raise ValueError("无线扫描项目不存在")
-        return self._start_job(
-            NETWORK_WIRELESS_SCAN_TASK,
-            "无线扫描",
-            {
-                "adapter_name": str(adapter_name or "").strip(),
-                "adapter_guid": str(adapter_guid or "").strip(),
-                "project_id": selected_project,
-                "device": str(adapter_name or adapter_guid or "").strip(),
-            },
-        )
+        with self._project_lock:
+            project = next(
+                (
+                    item
+                    for item in self._read_projects_unlocked()
+                    if str(item.get("project_id") or "") == selected_project
+                ),
+                None,
+            )
+            if selected_project and project is None:
+                raise ValueError("无线扫描项目不存在")
+            return self._start_job(
+                NETWORK_WIRELESS_SCAN_TASK,
+                "无线扫描",
+                {
+                    "adapter_name": str(adapter_name or "").strip(),
+                    "adapter_guid": str(adapter_guid or "").strip(),
+                    "project_id": selected_project,
+                    "project_name": str((project or {}).get("name") or ""),
+                    "project_description": str((project or {}).get("description") or ""),
+                    "device": str(adapter_name or adapter_guid or "").strip(),
+                },
+            )
 
     def list_wireless_tasks(self, *, offset: int = 0, limit: int = 100) -> list[TaskSnapshot]:
         return self._list_scoped_tasks(NETWORK_WIRELESS_TASK_TYPES, offset=offset, limit=limit)
@@ -297,28 +324,41 @@ class NetworkToolsApplicationService:
     def cancel_wireless_task(self, task_id: str) -> TaskSnapshot:
         return self._cancel_scoped_task(task_id, NETWORK_WIRELESS_TASK_TYPES)
 
-    def list_wireless_runs(self, *, offset: int = 0, limit: int = 100) -> list[dict[str, object]]:
-        start = max(0, int(offset))
-        size = max(1, min(int(limit), 500))
-        rows = self._wireless().repository.list_runs(limit=min(1000, start + size))
+    def list_wireless_runs(self, *, page: int = 1, page_size: int = 100) -> dict[str, object]:
+        selected_page = max(1, int(page))
+        size = max(1, min(int(page_size), 500))
+        start = (selected_page - 1) * size
+        repository = self._wireless().repository
+        rows = repository.list_runs(limit=size, offset=start)
         safe_rows: list[dict[str, object]] = []
-        for row in rows[start : start + size]:
+        for row in rows:
             safe = dict(row)
             scan_id = str(safe.get("scan_id") or "")
             safe["raw_file"] = f"{scan_id}.txt" if scan_id else ""
             safe_rows.append(safe)
-        return safe_rows
+        return {
+            "items": safe_rows,
+            "total": repository.count_runs(),
+            "page": selected_page,
+            "page_size": size,
+        }
 
-    def list_wireless_results(self, scan_id: str, *, offset: int = 0, limit: int = 500) -> list[dict[str, object]]:
+    def list_wireless_results(self, scan_id: str, *, page: int = 1, page_size: int = 100) -> dict[str, object]:
         repository = self._wireless().repository
         if repository.get_run(str(scan_id or "")) is None:
             raise KeyError(scan_id)
         from netconsole.services.network_tools.wireless_scan_service import repository_row_to_display_row
 
-        start = max(0, int(offset))
-        size = max(1, min(int(limit), 2000))
-        rows = repository.list_results(scan_id)
-        return [repository_row_to_display_row(row) for row in rows[start : start + size]]
+        selected_page = max(1, int(page))
+        size = max(1, min(int(page_size), 500))
+        start = (selected_page - 1) * size
+        rows = repository.list_results(scan_id, limit=size, offset=start)
+        return {
+            "items": [repository_row_to_display_row(row) for row in rows],
+            "total": repository.count_results(scan_id),
+            "page": selected_page,
+            "page_size": size,
+        }
 
     async def export_wireless_scan(self, scan_id: str, file_format: str, filename: str = "") -> TaskSnapshot:
         if self._wireless().repository.get_run(str(scan_id or "")) is None:
@@ -463,18 +503,52 @@ class NetworkToolsApplicationService:
             )
         ):
             raise KeyError(artifact_id)
+        task_result = task.result if isinstance(task.result, dict) else {}
+        anchored_fields = (
+            "artifact_id",
+            "physical_name",
+            "filename",
+            "format",
+            "sha256",
+            "size",
+            "task_id",
+            "parent_id",
+            "site_name",
+            "owner",
+            "source",
+            "task_type",
+            "row_count",
+        )
+        if task_result.get("result_id") != artifact_id or any(
+            task_result.get(key) != manifest.get(key) for key in anchored_fields
+        ):
+            raise ValueError("导出 Artifact 与任务结果锚点不一致")
         file_format = str(manifest.get("format") or "").lower()
         suffix = f".{file_format}"
         physical_name = str(manifest.get("physical_name") or "")
         display_name = self._validate_export_filename(str(manifest.get("filename") or ""))
         if not display_name or suffix not in _ARTIFACT_SUFFIXES or physical_name != f"{artifact_id}{suffix}":
             raise KeyError(artifact_id)
+        anchored_size = task_result.get("size")
+        anchored_digest = task_result.get("sha256")
+        anchored_row_count = task_result.get("row_count")
+        if (
+            not isinstance(anchored_size, int)
+            or isinstance(anchored_size, bool)
+            or anchored_size < 0
+            or not isinstance(anchored_row_count, int)
+            or isinstance(anchored_row_count, bool)
+            or anchored_row_count < 0
+            or not isinstance(anchored_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", anchored_digest)
+        ):
+            raise ValueError("导出 Artifact 任务结果锚点无效")
         root = self._artifact_root(scope).resolve()
         path = (root / physical_name).resolve()
         if path.parent != root or not path.is_file():
             raise KeyError(artifact_id)
         digest, size = _hash_file(path)
-        if digest != str(manifest.get("sha256") or "") or size != int(manifest.get("size") or -1):
+        if digest != anchored_digest or size != anchored_size:
             raise ValueError("导出文件完整性校验失败")
         metadata = {
             "artifact_id": artifact_id,
@@ -561,10 +635,6 @@ class NetworkToolsApplicationService:
                 temp.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    def _project_exists(self, project_id: str) -> bool:
-        with self._project_lock:
-            return any(str(item.get("project_id") or "") == project_id for item in self._read_projects_unlocked())
 
     def _validate_network_task(self, kind: str, params: dict[str, object]) -> None:
         if f"network_tools.{kind}" not in NETWORK_PROBE_TASK_TYPES:

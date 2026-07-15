@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
 from netconsole.backend.api.feature_access import require_feature
@@ -19,6 +19,7 @@ from netconsole.models.api.network_tools import (
     VlsmRequest,
     WirelessExportRequest,
     WirelessProjectRequest,
+    WirelessScanPageResponse,
     WirelessScanStartRequest,
 )
 from netconsole.models.api.task import TaskDTO
@@ -188,12 +189,15 @@ def create_wireless_project(body: WirelessProjectRequest, request: Request) -> d
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.delete("/wireless-scan/projects/{project_id}", status_code=204, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
-def delete_wireless_project(project_id: str, request: Request) -> None:
+@router.delete("/wireless-scan/projects/{project_id}", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def delete_wireless_project(project_id: str, request: Request) -> dict[str, object]:
     try:
         network_tools_service(request).delete_wireless_project(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描项目不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"project_id": project_id, "deleted": True}
 
 
 @router.post("/wireless-scan/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
@@ -240,15 +244,38 @@ def cancel_wireless_task(task_id: str, request: Request) -> TaskDTO:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描任务不存在") from exc
 
 
-@router.get("/wireless-scan/runs", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
-def list_wireless_runs(request: Request, offset: int = 0, limit: int = 100) -> list[dict[str, object]]:
-    return network_tools_service(request).list_wireless_runs(offset=offset, limit=limit)
+@router.get(
+    "/wireless-scan/runs",
+    response_model=WirelessScanPageResponse,
+    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+)
+def list_wireless_runs(
+    request: Request,
+    page: int = Query(default=1, ge=1, le=1_000_000),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> WirelessScanPageResponse:
+    return WirelessScanPageResponse(**network_tools_service(request).list_wireless_runs(page=page, page_size=page_size))
 
 
-@router.get("/wireless-scan/runs/{scan_id}/results", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
-def list_wireless_results(scan_id: str, request: Request, offset: int = 0, limit: int = 500) -> list[dict[str, object]]:
+@router.get(
+    "/wireless-scan/runs/{scan_id}/results",
+    response_model=WirelessScanPageResponse,
+    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+)
+def list_wireless_results(
+    scan_id: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, le=1_000_000),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> WirelessScanPageResponse:
     try:
-        return network_tools_service(request).list_wireless_results(scan_id, offset=offset, limit=limit)
+        return WirelessScanPageResponse(
+            **network_tools_service(request).list_wireless_results(
+                scan_id,
+                page=page,
+                page_size=page_size,
+            )
+        )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描结果不存在") from exc
 

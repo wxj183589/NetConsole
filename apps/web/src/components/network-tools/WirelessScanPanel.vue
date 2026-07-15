@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   cancelWirelessTask,
   createWirelessProject,
+  deleteWirelessProject,
   exportWirelessScan,
   getWirelessExportArtifact,
   getWirelessTask,
@@ -21,6 +22,12 @@ const adapters = ref<WirelessAdapter[]>([])
 const projects = ref<WirelessProject[]>([])
 const runs = ref<WirelessScanRun[]>([])
 const results = ref<Record<string, unknown>[]>([])
+const runPage = ref(1)
+const runPageSize = 50
+const runTotal = ref(0)
+const resultPage = ref(1)
+const resultPageSize = 100
+const resultTotal = ref(0)
 const selectedRun = ref<WirelessScanRun | null>(null)
 const task = ref<NetworkToolTask | null>(null)
 const exportTaskState = ref<NetworkToolTask | null>(null)
@@ -50,11 +57,42 @@ onBeforeUnmount(() => stopPolling())
 async function refresh(): Promise<void> {
   loading.value = true
   try {
-    ;[adapters.value, projects.value, runs.value] = await Promise.all([listWirelessAdapters(), listWirelessProjects(), listWirelessRuns()])
+    const [loadedAdapters, loadedProjects, runPageResult] = await Promise.all([
+      listWirelessAdapters(),
+      listWirelessProjects(),
+      listWirelessRuns(runPage.value, runPageSize),
+    ])
+    adapters.value = loadedAdapters
+    projects.value = loadedProjects
+    runs.value = runPageResult.items
+    runTotal.value = runPageResult.total
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描数据加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function deleteProject(): Promise<void> {
+  const project = projects.value.find((item) => item.project_id === form.project_id)
+  if (!project) return
+  if (running.value) {
+    ElMessage.warning('存在进行中的无线扫描，请先停止后再删除项目')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除项目“${project.name}”？已有扫描历史会保留项目名称和说明快照。`,
+      '删除无线扫描项目',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+    await deleteWirelessProject(project.project_id)
+    projects.value = projects.value.filter((item) => item.project_id !== project.project_id)
+    form.project_id = ''
+    ElMessage.success('无线扫描项目已删除，历史记录保持可辨识')
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描项目删除失败')
   }
 }
 
@@ -105,11 +143,37 @@ function stopPolling(): void {
 
 async function selectRun(run: WirelessScanRun): Promise<void> {
   selectedRun.value = run
+  resultPage.value = 1
+  results.value = []
+  resultTotal.value = 0
+  await loadResults()
+}
+
+async function loadResults(): Promise<void> {
+  if (!selectedRun.value) return
   try {
-    results.value = await listWirelessResults(run.scan_id)
+    const page = await listWirelessResults(selectedRun.value.scan_id, resultPage.value, resultPageSize)
+    results.value = page.items
+    resultTotal.value = page.total
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描结果加载失败')
   }
+}
+
+async function changeRunPage(page: number): Promise<void> {
+  runPage.value = page
+  try {
+    const response = await listWirelessRuns(runPage.value, runPageSize)
+    runs.value = response.items
+    runTotal.value = response.total
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描历史分页加载失败')
+  }
+}
+
+async function changeResultPage(page: number): Promise<void> {
+  resultPage.value = page
+  await loadResults()
 }
 
 async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
@@ -163,7 +227,10 @@ async function recoverTasks(): Promise<void> {
 async function finishRecoveredTasks(): Promise<void> {
   if (task.value && !ACTIVE_STATUSES.includes(task.value.status)) {
     window.localStorage.removeItem(SCAN_TASK_KEY)
-    if (task.value.status === 'COMPLETED') await refresh()
+    if (task.value.status === 'COMPLETED') {
+      runPage.value = 1
+      await refresh()
+    }
   }
   const currentExport = exportTaskState.value
   if (!currentExport || ACTIVE_STATUSES.includes(currentExport.status)) return
@@ -195,6 +262,7 @@ function downloadArtifact(url: string, filename: string): void {
     <div class="toolbar">
       <el-select v-model="form.adapter_guid" clearable placeholder="选择无线网卡"><el-option v-for="adapter in adapters" :key="adapter.guid || adapter.name" :label="adapter.display_name" :value="adapter.guid" /></el-select>
       <el-select v-model="form.project_id" clearable placeholder="扫描项目"><el-option v-for="project in projects" :key="project.project_id" :label="project.name" :value="project.project_id" /></el-select>
+      <el-button v-if="form.project_id" type="danger" plain :disabled="!!running" @click="deleteProject">删除所选项目</el-button>
       <el-button type="primary" :loading="!!running" @click="startScan">开始扫描</el-button>
     </div>
     <el-collapse>
@@ -205,10 +273,12 @@ function downloadArtifact(url: string, filename: string): void {
     <div v-if="exportTaskState" class="task-progress"><span>{{ exportTaskState.name }}：{{ exportTaskState.status }}</span><el-progress :percentage="exportTaskState.progress" :status="exportTaskState.status === 'FAILED' ? 'exception' : exportTaskState.status === 'COMPLETED' ? 'success' : undefined" /><el-button v-if="exportRunning" link type="danger" @click="cancelExport">停止导出</el-button></div>
     <el-divider />
     <el-table :data="runs" empty-text="暂无无线扫描记录" stripe @row-click="selectRun">
-      <el-table-column prop="scan_id" label="扫描 ID" min-width="230" /><el-table-column prop="adapter_name" label="无线网卡" min-width="160" /><el-table-column prop="network_count" label="结果数" width="90" /><el-table-column prop="status" label="状态" width="100" />
+      <el-table-column prop="scan_id" label="扫描 ID" min-width="230" /><el-table-column prop="project_name" label="项目" min-width="140" /><el-table-column prop="project_description" label="项目说明" min-width="180" show-overflow-tooltip /><el-table-column prop="adapter_name" label="无线网卡" min-width="160" /><el-table-column prop="network_count" label="结果数" width="90" /><el-table-column prop="status" label="状态" width="100" />
     </el-table>
+    <el-pagination v-if="runTotal > runPageSize" v-model:current-page="runPage" :total="runTotal" :page-size="runPageSize" layout="prev, pager, next, total" @current-change="changeRunPage" />
     <div class="actions"><el-button v-if="runs.length" link type="primary" @click="exportRun('csv')">导出 CSV</el-button><el-button v-if="runs.length" link type="primary" @click="exportRun('xlsx')">导出 XLSX</el-button></div>
     <el-table v-if="results.length" :data="results" stripe max-height="420"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
+    <el-pagination v-if="resultTotal > resultPageSize" v-model:current-page="resultPage" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
   </el-card>
 </template>
 

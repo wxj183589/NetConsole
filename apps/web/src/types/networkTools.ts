@@ -88,6 +88,8 @@ export interface WirelessScanRun {
   scan_id: string
   site: string
   project_id: string
+  project_name: string
+  project_description: string
   adapter_name: string
   adapter_guid: string
   started_at: string
@@ -95,4 +97,11 @@ export interface WirelessScanRun {
   status: string
   network_count: number
   raw_file: string
+}
+
+export interface WirelessScanPage<T> {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
 }

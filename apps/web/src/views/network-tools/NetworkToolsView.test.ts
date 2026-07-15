@@ -31,6 +31,11 @@ describe('unified network tools view', () => {
     expect(wireless).toContain('Fake Adapter')
     expect(wireless).toContain('startWirelessScan')
     expect(wireless).toContain('exportWirelessScan')
+    expect(wireless).toContain('deleteWirelessProject')
+    expect(wireless).toContain('ElMessageBox.confirm')
+    expect(wireless).toContain('project_name')
+    expect(wireless).toContain('changeRunPage')
+    expect(wireless).toContain('changeResultPage')
   })
 
   it('recovers probe, scan and export task ids instead of assuming request-time completion', () => {

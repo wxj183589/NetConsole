@@ -84,6 +84,13 @@ class NetworkToolArtifactResponse(ApiModel):
     download_url: str
 
 
+class WirelessScanPageResponse(ApiModel):
+    items: list[dict[str, object]] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
+
+
 class WirelessProjectRequest(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
@@ -101,5 +108,6 @@ __all__ = [
     "VlsmRequest",
     "WirelessExportRequest",
     "WirelessProjectRequest",
+    "WirelessScanPageResponse",
     "WirelessScanStartRequest",
 ]

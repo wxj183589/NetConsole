@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from netconsole.backend.api.network_tools_router import router
 from netconsole.core.feature_flags import FeatureGate
@@ -135,7 +136,14 @@ class FakeWirelessWorkerService:
     def list_adapters(self) -> list[WirelessAdapter]:
         return [WirelessAdapter(name="Fake Adapter", guid="fake-guid", state="connected")]
 
-    def scan(self, adapter: WirelessAdapter | None = None, *, project_id: str = "") -> WirelessScanRunResult:
+    def scan(
+        self,
+        adapter: WirelessAdapter | None = None,
+        *,
+        project_id: str = "",
+        project_name: str = "",
+        project_description: str = "",
+    ) -> WirelessScanRunResult:
         if self.block_event is not None:
             self.block_event.wait(5)
         network = WirelessNetwork(
@@ -163,6 +171,8 @@ class FakeWirelessWorkerService:
             raw_file=str(raw_file),
             results=[result],
             project_id=project_id,
+            project_name=project_name,
+            project_description=project_description,
         )
         return WirelessScanRunResult(
             self.scan_id,
@@ -280,7 +290,22 @@ def test_registered_fake_probe_uses_worker_task_minimal_snapshot_paging_and_expo
     export_id = submitted.json()["task"]["id"]
     exported = _wait_task(service, adapter, export_id)
     assert exported.task_type == NETWORK_TOOLBOX_EXPORT_TASK
-    assert set(exported.result) == {"result_id", "row_count"}
+    assert set(exported.result) == {
+        "artifact_id",
+        "filename",
+        "format",
+        "owner",
+        "parent_id",
+        "physical_name",
+        "result_id",
+        "row_count",
+        "sha256",
+        "site_name",
+        "size",
+        "source",
+        "task_id",
+        "task_type",
+    }
     artifact = service.get_network_export_artifact(export_id)
     path, filename, opened = service.open_network_artifact(str(artifact["artifact_id"]))
     assert filename == "probe.csv"
@@ -427,14 +452,17 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     fake_wireless = FakeWirelessWorkerService("demo", paths)
     monkeypatch.setattr(job_handlers, "WirelessScanService", FakeWirelessWorkerService)
     service, adapter = _service(tmp_path, wireless_service=fake_wireless)
-    project = service.create_wireless_project("Fake Project")
+    project = service.create_wireless_project("Fake Project", "history snapshot")
     task = asyncio.run(service.start_wireless_scan(adapter_guid="fake-guid", project_id=str(project["project_id"])))
     completed = _wait_task(service, adapter, task.task_id, wireless=True)
 
     assert completed.result == {"result_id": FakeWirelessWorkerService.scan_id, "row_count": 1}
     history = service.list_wireless_runs()
-    assert history[0]["project_id"] == project["project_id"]
-    assert history[0]["raw_file"] == f"{FakeWirelessWorkerService.scan_id}.txt"
+    assert history["total"] == 1
+    assert history["items"][0]["project_id"] == project["project_id"]
+    assert history["items"][0]["project_name"] == "Fake Project"
+    assert history["items"][0]["project_description"] == "history snapshot"
+    assert history["items"][0]["raw_file"] == f"{FakeWirelessWorkerService.scan_id}.txt"
     assert service.get_network_task(task.task_id) is None
     assert service.get_wireless_task(task.task_id) is not None
 
@@ -449,9 +477,18 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     export_id = submitted.json()["task"]["id"]
     exported = _wait_task(service, adapter, export_id, wireless=True)
     assert exported.task_type == NETWORK_WIRELESS_EXPORT_TASK
+    assert exported.result["task_type"] == NETWORK_WIRELESS_EXPORT_TASK
+    assert exported.result["site_name"] == "demo"
+    assert exported.result["owner"] == NETWORK_TOOL_OWNER
+    assert exported.result["source"] == NETWORK_TASK_SOURCE
     wireless_artifact = service.get_wireless_export_artifact(export_id)
     _path, display_name, _metadata = service.open_wireless_artifact(str(wireless_artifact["artifact_id"]))
     assert display_name == "wireless.csv"
+    service.delete_wireless_project(str(project["project_id"]))
+    assert all(item["project_id"] != project["project_id"] for item in service.list_wireless_projects())
+    deleted_project_history = service.list_wireless_runs()["items"][0]
+    assert deleted_project_history["project_name"] == "Fake Project"
+    assert deleted_project_history["project_description"] == "history snapshot"
 
     release = threading.Event()
     FakeWirelessWorkerService.block_event = release
@@ -463,11 +500,19 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     blocking_project = blocking_service.create_wireless_project("Blocking")
     blocking_task = asyncio.run(blocking_service.start_wireless_scan(project_id=str(blocking_project["project_id"])))
     time.sleep(0.05)
+    with pytest.raises(ValueError, match="进行中的无线扫描"):
+        blocking_service.delete_wireless_project(str(blocking_project["project_id"]))
+    blocking_app = _app(tmp_path / "blocking", blocking_service)
+    blocking_app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    with TestClient(blocking_app) as client:
+        response = client.delete(f"/api/network-tools/wireless-scan/projects/{blocking_project['project_id']}")
+    assert response.status_code == 409
     cancelled = blocking_service.cancel_wireless_task(blocking_task.task_id)
     assert cancelled.status is TaskState.STOPPING
     terminal = _wait_task(blocking_service, blocking_adapter, blocking_task.task_id, wireless=True)
     assert terminal.status is TaskState.CANCELLED
     assert blocking_task.task_id in blocking_adapter.forced_jobs
+    blocking_service.delete_wireless_project(str(blocking_project["project_id"]))
     FakeWirelessWorkerService.block_event = None
 
 
@@ -500,7 +545,64 @@ def test_wireless_project_storage_is_locked_atomic_and_history_schema_migrates(t
     repository = WirelessScanRepository(db_path)
     with repository._connect() as connection:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(wireless_scan_runs)").fetchall()}
-    assert "project_id" in columns
+    assert {"project_id", "project_name", "project_description"} <= columns
+
+
+def test_wireless_runs_and_results_use_sql_pagination_beyond_old_limits(tmp_path: Path) -> None:
+    fake_wireless = FakeWirelessWorkerService("demo", PathResolver(tmp_path))
+    repository = fake_wireless.repository
+    scan_id = "scan_20260715_120000_deadbeef"
+    with repository._connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO wireless_scan_runs (
+                scan_id, site, project_id, project_name, project_description,
+                adapter_name, adapter_guid, started_at, ended_at, status, network_count, raw_file
+            ) VALUES (?, 'demo', '', '', '', '', '', ?, ?, 'success', ?, '')
+            """,
+            [
+                (
+                    scan_id if index == 0 else f"scan_{index:08d}",
+                    f"2026-07-15 12:{index // 60:02d}:{index % 60:02d}",
+                    f"2026-07-15 12:{index // 60:02d}:{index % 60:02d}",
+                    2105 if index == 0 else 0,
+                )
+                for index in range(1006)
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO wireless_scan_results (scan_id, ssid, bssid, rssi_dbm) VALUES (?, ?, ?, ?)",
+            [
+                (scan_id, f"ssid-{index}", f"00:00:00:{index // 65536:02x}:{index // 256 % 256:02x}:{index % 256:02x}", -50)
+                for index in range(2105)
+            ],
+        )
+        connection.commit()
+
+    service, _adapter = _service(tmp_path, wireless_service=fake_wireless)
+    run_page = service.list_wireless_runs(page=21, page_size=50)
+    result_page = service.list_wireless_results(scan_id, page=22, page_size=100)
+
+    assert run_page["total"] == 1006
+    assert run_page["page"] == 21
+    assert run_page["page_size"] == 50
+    assert len(run_page["items"]) == 6
+    assert result_page["total"] == 2105
+    assert result_page["page"] == 22
+    assert result_page["page_size"] == 100
+    assert len(result_page["items"]) == 5
+
+    app = _app(tmp_path, service)
+    app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    with TestClient(app) as client:
+        response = client.get("/api/network-tools/wireless-scan/runs", params={"page": 21, "page_size": 50})
+        results_response = client.get(
+            f"/api/network-tools/wireless-scan/runs/{scan_id}/results",
+            params={"page": 22, "page_size": 100},
+        )
+    assert response.status_code == results_response.status_code == 200
+    assert response.json()["total"] == 1006
+    assert len(results_response.json()["items"]) == 5
 
 
 def test_export_manifest_tamper_and_foreign_scope_are_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -513,6 +615,11 @@ def test_export_manifest_tamper_and_foreign_scope_are_rejected(tmp_path: Path, m
     artifact = service.get_network_export_artifact(export.task_id)
     path, _filename, _metadata = service.open_network_artifact(str(artifact["artifact_id"]))
     path.write_bytes(path.read_bytes() + b"tampered")
+    manifest_path = path.with_suffix(".json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest["size"] = path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     with TestClient(_app(tmp_path, service)) as client:
         assert client.get(f"/api/network-tools/artifacts/{artifact['artifact_id']}").status_code == 409

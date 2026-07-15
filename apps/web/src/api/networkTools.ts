@@ -10,6 +10,7 @@ import type {
   ToolboxResult,
   WirelessAdapter,
   WirelessProject,
+  WirelessScanPage,
   WirelessScanRun,
 } from '../types/networkTools'
 
@@ -84,6 +85,10 @@ export function createWirelessProject(name: string, description = ''): Promise<W
   return apiRequest<WirelessProject>('/api/network-tools/wireless-scan/projects', { method: 'POST', body: JSON.stringify({ name, description }) })
 }
 
+export function deleteWirelessProject(id: string): Promise<{ project_id: string; deleted: boolean }> {
+  return apiRequest<{ project_id: string; deleted: boolean }>(`/api/network-tools/wireless-scan/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export function startWirelessScan(value: { adapter_name?: string; adapter_guid?: string; project_id?: string }): Promise<NetworkTaskResponse> {
   return apiRequest<NetworkTaskResponse>('/api/network-tools/wireless-scan/tasks', { method: 'POST', body: JSON.stringify(value) })
 }
@@ -100,12 +105,12 @@ export function cancelWirelessTask(id: string): Promise<NetworkToolTask> {
   return apiRequest<NetworkToolTask>(`/api/network-tools/wireless-scan/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
 }
 
-export function listWirelessRuns(): Promise<WirelessScanRun[]> {
-  return apiRequest<WirelessScanRun[]>('/api/network-tools/wireless-scan/runs?limit=200')
+export function listWirelessRuns(page = 1, pageSize = 50): Promise<WirelessScanPage<WirelessScanRun>> {
+  return apiRequest<WirelessScanPage<WirelessScanRun>>(`/api/network-tools/wireless-scan/runs?page=${page}&page_size=${pageSize}`)
 }
 
-export function listWirelessResults(scanId: string): Promise<Record<string, unknown>[]> {
-  return apiRequest<Record<string, unknown>[]>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?limit=2000`)
+export function listWirelessResults(scanId: string, page = 1, pageSize = 100): Promise<WirelessScanPage<Record<string, unknown>>> {
+  return apiRequest<WirelessScanPage<Record<string, unknown>>>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?page=${page}&page_size=${pageSize}`)
 }
 
 export function exportWirelessScan(scanId: string, format: 'csv' | 'xlsx'): Promise<NetworkTaskResponse> {

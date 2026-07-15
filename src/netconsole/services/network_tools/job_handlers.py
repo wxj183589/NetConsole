@@ -127,11 +127,18 @@ def run_wireless_scan(context: JobContext) -> dict[str, object]:
     adapter_name = _bounded_text(context.params.get("adapter_name"), 256, "无线网卡名称")
     adapter_guid = _bounded_text(context.params.get("adapter_guid"), 128, "无线网卡 GUID")
     project_id = _bounded_text(context.params.get("project_id"), 128, "无线扫描项目 ID")
+    project_name = _bounded_text(context.params.get("project_name"), 100, "无线扫描项目名称")
+    project_description = _bounded_text(context.params.get("project_description"), 500, "无线扫描项目说明")
     service = WirelessScanService(site_name, context.paths)
     adapter = _find_wireless_adapter(service, adapter_name, adapter_guid)
     context.check_cancelled()
     context.progress("wireless_scan", 0, 0, "无线扫描执行中")
-    result = service.scan(adapter, project_id=project_id)
+    result = service.scan(
+        adapter,
+        project_id=project_id,
+        project_name=project_name,
+        project_description=project_description,
+    )
     context.check_cancelled()
     rows = [result_to_row(item) for item in result.results]
     context.progress("wireless_scan", len(rows), len(rows), f"无线扫描完成，共 {len(rows)} 条结果")
@@ -226,11 +233,16 @@ def _run_network_export(context: JobContext, *, wireless: bool) -> dict[str, obj
             "owner": NETWORK_TOOL_OWNER,
             "source": NETWORK_TASK_SOURCE,
             "task_type": context.task_type,
+            "row_count": row_count,
         }
         _write_json_atomic(manifest_tmp, manifest_path, manifest)
         completed = True
         context.progress("network_export", row_count, row_count, "网络工具导出完成")
-        return {"result_id": artifact_id, "row_count": row_count}
+        return {
+            **manifest,
+            "result_id": artifact_id,
+            "row_count": row_count,
+        }
     finally:
         if temporary_source and source_path is not None:
             _unlink(source_path)

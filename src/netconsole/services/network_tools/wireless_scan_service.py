@@ -68,7 +68,14 @@ class WirelessScanService:
     def list_adapters(self) -> list[WirelessAdapter]:
         return self.scanner.list_adapters()
 
-    def scan(self, adapter: WirelessAdapter | None = None, *, project_id: str = "") -> WirelessScanRunResult:
+    def scan(
+        self,
+        adapter: WirelessAdapter | None = None,
+        *,
+        project_id: str = "",
+        project_name: str = "",
+        project_description: str = "",
+    ) -> WirelessScanRunResult:
         started = datetime.now()
         networks, raw = self.scanner.scan(adapter)
         raw_dir = self.paths.wireless_scan_raw_dir(self.site_name)
@@ -102,6 +109,8 @@ class WirelessScanService:
             raw_file=str(raw_file),
             results=results,
             project_id=str(project_id or ""),
+            project_name=str(project_name or ""),
+            project_description=str(project_description or ""),
         )
         return WirelessScanRunResult(scan_id, started.isoformat(sep=" ", timespec="seconds"), ended.isoformat(sep=" ", timespec="seconds"), raw_file, results)
 

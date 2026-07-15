@@ -23,6 +23,8 @@ class WirelessScanRepository:
                     scan_id TEXT PRIMARY KEY,
                     site TEXT NOT NULL,
                     project_id TEXT DEFAULT '',
+                    project_name TEXT DEFAULT '',
+                    project_description TEXT DEFAULT '',
                     adapter_name TEXT DEFAULT '',
                     adapter_guid TEXT DEFAULT '',
                     started_at TEXT NOT NULL,
@@ -99,15 +101,31 @@ class WirelessScanRepository:
         raw_file: str,
         results: list[WirelessScanResult],
         project_id: str = "",
+        project_name: str = "",
+        project_description: str = "",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO wireless_scan_runs (
-                    scan_id, site, project_id, adapter_name, adapter_guid, started_at, ended_at, status, network_count, raw_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    scan_id, site, project_id, project_name, project_description,
+                    adapter_name, adapter_guid, started_at, ended_at, status, network_count, raw_file
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (scan_id, site, project_id, adapter_name, adapter_guid, started_at, ended_at, status, len(results), raw_file),
+                (
+                    scan_id,
+                    site,
+                    project_id,
+                    project_name,
+                    project_description,
+                    adapter_name,
+                    adapter_guid,
+                    started_at,
+                    ended_at,
+                    status,
+                    len(results),
+                    raw_file,
+                ),
             )
             conn.execute("DELETE FROM wireless_scan_results WHERE scan_id = ?", (scan_id,))
             conn.executemany(
@@ -126,20 +144,57 @@ class WirelessScanRepository:
             )
             conn.commit()
 
-    def list_runs(self, limit: int = 200) -> list[dict[str, object]]:
+    def list_runs(self, limit: int = 200, offset: int = 0) -> list[dict[str, object]]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM wireless_scan_runs ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
+            rows = conn.execute(
+                "SELECT * FROM wireless_scan_runs ORDER BY started_at DESC, scan_id DESC LIMIT ? OFFSET ?",
+                (max(1, int(limit)), max(0, int(offset))),
+            ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_runs(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS value FROM wireless_scan_runs").fetchone()
+        return int(row["value"] if row is not None else 0)
 
     def get_run(self, scan_id: str) -> dict[str, object] | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM wireless_scan_runs WHERE scan_id = ?", (scan_id,)).fetchone()
         return dict(row) if row is not None else None
 
-    def list_results(self, scan_id: str) -> list[dict[str, object]]:
+    def list_results(self, scan_id: str, *, limit: int | None = None, offset: int = 0) -> list[dict[str, object]]:
+        query = """
+            SELECT * FROM wireless_scan_results
+            WHERE scan_id = ?
+            ORDER BY matched_trackside_ap DESC, rssi_dbm DESC, matched_station, matched_ap_name, id
+        """
+        params: tuple[object, ...] = (scan_id,)
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params = (scan_id, max(1, int(limit)), max(0, int(offset)))
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM wireless_scan_results WHERE scan_id = ? ORDER BY matched_trackside_ap DESC, rssi_dbm DESC, matched_station, matched_ap_name", (scan_id,)).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_results(self, scan_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS value FROM wireless_scan_results WHERE scan_id = ?",
+                (scan_id,),
+            ).fetchone()
+        return int(row["value"] if row is not None else 0)
+
+    def backfill_project_snapshot(self, project_id: str, project_name: str, project_description: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE wireless_scan_runs
+                SET project_name = ?, project_description = ?
+                WHERE project_id = ? AND project_name = ''
+                """,
+                (project_name, project_description, project_id),
+            )
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path)
@@ -149,6 +204,10 @@ class WirelessScanRepository:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(wireless_scan_runs)").fetchall()}
         if "project_id" not in columns:
             conn.execute("ALTER " "TABLE wireless_scan_runs ADD COLUMN project_id TEXT DEFAULT ''")
+        if "project_name" not in columns:
+            conn.execute("ALTER " "TABLE wireless_scan_runs ADD COLUMN project_name TEXT DEFAULT ''")
+        if "project_description" not in columns:
+            conn.execute("ALTER " "TABLE wireless_scan_runs ADD COLUMN project_description TEXT DEFAULT ''")
 
     @staticmethod
     def _ensure_results_columns(conn: sqlite3.Connection) -> None:
