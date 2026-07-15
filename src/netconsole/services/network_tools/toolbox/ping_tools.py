@@ -92,6 +92,8 @@ def run_batch_ping(
     concurrency: int = 100,
     source_ip: str = "",
     runner: Runner | None = None,
+    progress: Callable[[PingResult], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[PingResult]:
     cleaned = [target.strip() for target in targets if target.strip()]
     concurrency = max(1, min(int(concurrency), 500))
@@ -110,7 +112,14 @@ def run_batch_ping(
             for target in cleaned
         ]
         for future in as_completed(futures):
-            results.append(future.result())
+            if should_stop and should_stop():
+                for pending in futures:
+                    pending.cancel()
+                break
+            result = future.result()
+            results.append(result)
+            if progress:
+                progress(result)
     return sorted(results, key=lambda item: cleaned.index(item.target) if item.target in cleaned else 0)
 
 
