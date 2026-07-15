@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,12 +8,23 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PythonBackendManager } from '../src/main/backend-manager'
+import { BackendDownloadManager } from '../src/main/backend-download'
+import { GrantedPathRegistry } from '../src/main/path-access'
 import { DESKTOP_SESSION_HEADER } from '../src/shared/bridge'
 import type { NetConsoleDesktopBridge } from '../src/shared/bridge'
 import { getHealth } from '../../web/src/api/client'
+import { listDevices } from '../../web/src/api/deviceManagement'
+import {
+  fileDownloadRequest,
+  getFileDownloadTask,
+  getFileManagementStatus,
+  listManagedFiles,
+  startFileDownload,
+} from '../../web/src/api/fileManagement'
 import {
   initializePlatformRuntime,
   resetPlatformRuntimeForTests,
+  resolveWebSocketUrl,
 } from '../../web/src/platform/runtime'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -30,6 +41,22 @@ describe('real Python backend integration', () => {
     const dataRoot = await mkdtemp(resolve(tmpdir(), 'netconsole-electron-test-'))
     cleanupDirectories.push(dataRoot)
     const logs: string[] = []
+    const sourcePath = resolve(
+      dataRoot,
+      'data',
+      'sites',
+      'demo',
+      'files',
+      'rail_transit',
+      'online_mr',
+      'MR-1',
+      'sessions',
+      'session-1',
+      'outputs',
+      'dynamic-port-test.zip',
+    )
+    await mkdir(dirname(sourcePath), { recursive: true })
+    await writeFile(sourcePath, 'dynamic-port-download', 'utf8')
     const manager = new PythonBackendManager({
       executable: findProjectPython(),
       argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
@@ -60,6 +87,30 @@ describe('real Python backend integration', () => {
       })
       await initializePlatformRuntime()
       await expect(getHealth()).resolves.toMatchObject({ status: 'ok' })
+      expect(resolveWebSocketUrl('/ws/tasks')).toBe(
+        runtime.baseUrl.replace(/^http:/, 'ws:') + '/ws/tasks',
+      )
+      await expect(listDevices({ page: 1, page_size: 1 })).resolves.toMatchObject({ page: 1 })
+      await expect(getFileManagementStatus('demo')).resolves.toMatchObject({ site_id: 'demo' })
+      const files = await listManagedFiles({ site_id: 'demo', limit: 50 })
+      const source = files.items.find((item) => item.name === 'dynamic-port-test.zip')
+      expect(source).toBeDefined()
+      const task = await startFileDownload(source!.file_ref, 'demo')
+      const completed = await waitForDownload(task.task_id)
+      const savedPath = resolve(dataRoot, 'saved-dynamic-port-test.zip')
+      const downloadManager = new BackendDownloadManager({
+        backend: manager,
+        dialog: { showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: savedPath })) },
+        window: {},
+        pathRegistry: new GrantedPathRegistry(),
+      })
+      await expect(downloadManager.download(fileDownloadRequest(
+        completed.task_id,
+        completed.site_id,
+        completed.result!.name,
+      ))).resolves.toEqual({ status: 'saved', savedPath })
+      await expect(readFile(savedPath, 'utf8')).resolves.toBe('dynamic-port-download')
+      expect(new URL(runtime.baseUrl).port).not.toBe('8000')
       expect(logs.join('\n')).not.toContain(runtime.apiToken)
     } finally {
       await manager.stop()
@@ -77,11 +128,25 @@ function runtimeBridge(apiBaseUrl: string, apiToken: string): NetConsoleDesktopB
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     chooseSavePath: vi.fn(async () => ({ cancelled: true })),
+    downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
     onBackendStatusChanged: vi.fn(() => () => undefined),
     reportRendererReady: vi.fn(),
   }
+}
+
+async function waitForDownload(taskId: string) {
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    const task = await getFileDownloadTask(taskId, 'demo')
+    if (task.status === 'COMPLETED' && task.result) return task
+    if (task.status === 'FAILED' || task.status === 'CANCELLED') {
+      throw new Error(`file download task ended as ${task.status}`)
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+  }
+  throw new Error('file download task did not complete')
 }
 
 function findProjectPython(): string {

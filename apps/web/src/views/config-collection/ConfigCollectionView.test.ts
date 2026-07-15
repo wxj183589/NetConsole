@@ -20,7 +20,9 @@ describe('Configuration Collection Center view', () => {
 
   it('keeps collection read-only and exposes controlled artifact download', () => {
     expect(source).toContain('采集 running / saved')
-    expect(source).toContain('configArtifactUrl(row.artifact_id)')
+    expect(source).toContain('configArtifactDownloadRequest(snapshot.artifact_id, snapshot.filename)')
+    expect(source).toContain('downloadBackendResource')
+    expect(source).not.toContain('tag="a"')
     expect(source).toContain('保存配置')
     expect(source).not.toContain('save force')
     expect(source).not.toContain('删除快照')

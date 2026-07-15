@@ -27,6 +27,7 @@ class FakeChild extends EventEmitter implements ManagedChildProcess {
     if (respondToShutdown) {
       this.stdin.on('data', (chunk) => {
         if (chunk.toString('utf8').includes('"command":"shutdown"')) {
+          this.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
           queueMicrotask(() => this.exit(0))
         }
       })
@@ -60,6 +61,7 @@ function createManager(options: {
   child?: FakeChild
   fetchImpl?: typeof fetch
   logger?: (event: string, detail?: string) => void
+  awaitProcessExit?: boolean
 } = {}) {
   const child = options.child ?? new FakeChild()
   const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
@@ -86,6 +88,7 @@ function createManager(options: {
       })
     }) as typeof fetch,
     logger: options.logger,
+    awaitProcessExit: options.awaitProcessExit,
   })
   return { manager, child, spawnCalls }
 }
@@ -127,6 +130,22 @@ describe('PythonBackendManager', () => {
     expect(manager.getStatus()).not.toHaveProperty('baseUrl')
     expect(() => manager.getRuntimeInfo()).toThrow('not ready')
     expect(statuses).toEqual(['starting', 'ready', 'failed'])
+  })
+
+  it('stops after an acknowledgement even when Windows misses the child exit event', async () => {
+    const child = new FakeChild(false)
+    child.stdin.on('data', (chunk) => {
+      if (chunk.toString('utf8').includes('"command":"shutdown"')) {
+        child.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
+      }
+    })
+    const { manager } = createManager({ child, awaitProcessExit: false })
+
+    await manager.start()
+    await manager.stop()
+
+    expect(child.signals).toEqual([])
+    expect(manager.getStatus()).toEqual({ state: 'stopped' })
   })
 
   it('moves to failed when setup fails before a child is spawned', async () => {
@@ -179,7 +198,7 @@ describe('PythonBackendManager', () => {
     })
 
     await expect(manager.start()).rejects.toThrow('health check timed out')
-    expect(child.signals[0]).toBe('SIGTERM')
+    expect(child.signals[0]).toBe('SIGKILL')
     expect(manager.getStatus().state).toBe('failed')
   })
 
@@ -188,7 +207,7 @@ describe('PythonBackendManager', () => {
     const { manager, spawnCalls } = createManager({ child })
     await manager.start()
 
-    await expect(manager.stop()).rejects.toThrow('did not exit')
+    await expect(manager.stop()).rejects.toThrow('did not acknowledge shutdown')
     await expect(manager.start()).rejects.toThrow('still running after a failed stop')
 
     expect(child.signals).toEqual(['SIGTERM', 'SIGKILL'])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,8 +11,10 @@ from netconsole.backend.api.main import DESKTOP_SESSION_HEADER
 from netconsole.backend.electron_runtime import (
     ElectronRuntimeOptions,
     build_app,
+    emit_shutdown_ack,
     parse_options,
     read_session_token,
+    wait_for_exit_command,
     watch_control_stream,
 )
 
@@ -79,6 +82,21 @@ def test_control_stream_requests_shutdown_and_ignores_unknown_messages() -> None
     )
 
     assert server.should_exit is True
+
+
+def test_shutdown_ack_is_emitted_as_bounded_json_event() -> None:
+    output = io.StringIO()
+
+    emit_shutdown_ack(output)
+
+    assert json.loads(output.getvalue()) == {
+        "event": "netconsole.electron_backend.shutdown_ack"
+    }
+
+
+def test_exit_command_wait_ignores_unknown_messages_and_eof() -> None:
+    wait_for_exit_command(io.StringIO('not-json\n{"command":"unknown"}\n{"command":"exit"}\n'))
+    wait_for_exit_command(io.StringIO(""))
 
 
 def test_control_stream_eof_also_requests_shutdown() -> None:

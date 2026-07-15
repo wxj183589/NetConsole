@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { loadDesktopConfig } from '../src/main/config'
+import { isDevelopmentMenuEnabled, loadDesktopConfig } from '../src/main/config'
 
 describe('desktop config', () => {
   it('uses only an exact loopback Vite origin and an absolute developer Python', () => {
@@ -59,5 +59,15 @@ describe('desktop config', () => {
 
     expect(config.backendExecutable).toBe('C:\\installed\\resources\\backend\\NetConsoleBackend.exe')
     expect(config.backendArgumentsPrefix).toEqual([])
+  })
+
+  it('shows the default menu only for an explicitly enabled development server', () => {
+    expect(isDevelopmentMenuEnabled(undefined, {
+      NETCONSOLE_ELECTRON_DEV_MENU: '1',
+    })).toBe(false)
+    expect(isDevelopmentMenuEnabled('http://127.0.0.1:5173', {})).toBe(false)
+    expect(isDevelopmentMenuEnabled('http://127.0.0.1:5173', {
+      NETCONSOLE_ELECTRON_DEV_MENU: '1',
+    })).toBe(true)
   })
 })

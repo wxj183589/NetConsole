@@ -14,6 +14,7 @@ function bridge(runtime = {
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     chooseSavePath: vi.fn(async () => ({ cancelled: true })),
+    downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
     onBackendStatusChanged: vi.fn(() => () => undefined),
@@ -32,6 +33,14 @@ describe('Electron platform adapter', () => {
     })
     adapter.reportRendererReady(true)
     expect(nativeBridge.reportRendererReady).toHaveBeenCalledWith({ healthOk: true })
+    await adapter.downloadBackendResource({
+      apiPath: '/api/file-management/downloads/task-1/file',
+      suggestedName: 'report.zip',
+    })
+    expect(nativeBridge.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/file-management/downloads/task-1/file',
+      suggestedName: 'report.zip',
+    })
   })
 
   it.each([

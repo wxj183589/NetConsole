@@ -19,6 +19,7 @@ describe('preload bridge', () => {
 
     expect(Object.keys(bridge).sort()).toEqual([
       'chooseSavePath',
+      'downloadBackendResource',
       'getAppInfo',
       'getBackendStatus',
       'getRuntimeConfig',
@@ -51,6 +52,10 @@ describe('preload bridge', () => {
     const bridge = createDesktopBridge(ipcRenderer)
 
     expect(() => bridge.chooseSavePath({ suggestedName: '..\\unsafe.exe' })).toThrow()
+    expect(() => bridge.downloadBackendResource({
+      apiPath: 'https://example.com/report.zip',
+      suggestedName: 'report.zip',
+    })).toThrow()
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 })

@@ -23,7 +23,10 @@ class FakeIpcMain {
   }
 }
 
-function createHarness() {
+function createHarness(overrides: {
+  logger?: (event: string, detail?: string) => void
+  onRendererReady?: (healthOk: boolean) => void
+} = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
   const selectedFile = resolve('selected.log')
@@ -51,6 +54,8 @@ function createHarness() {
     },
     pathRegistry,
     isTrustedSender: (event) => event.sender === sender,
+    logger: overrides.logger,
+    onRendererReady: overrides.onRendererReady,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry }
 }
@@ -97,5 +102,26 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!
 
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
+  })
+
+  it('rejects arbitrary backend download URLs at the main-process boundary', async () => {
+    const { ipcMain, sender } = createHarness()
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.downloadBackendResource)!
+
+    await expect(handler({ sender }, {
+      apiPath: 'https://example.com/report.zip',
+      suggestedName: 'report.zip',
+    })).rejects.toThrow('safe relative /api path')
+  })
+
+  it('rejects malformed renderer-ready reports without throwing from the main event loop', () => {
+    const logger = vi.fn()
+    const onRendererReady = vi.fn()
+    const { ipcMain, sender } = createHarness({ logger, onRendererReady })
+    const listener = ipcMain.listeners.get(DESKTOP_IPC.rendererReady)!
+
+    expect(() => listener({ sender }, { healthOk: 'yes' })).not.toThrow()
+    expect(onRendererReady).not.toHaveBeenCalled()
+    expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_READY_REJECTED')
   })
 })
