@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from queue import Empty, Queue
 import subprocess
 import sys
+from threading import Thread
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -143,31 +145,19 @@ def _run_export(context: JobContext, job, artifact_id: str, output_path: Path, d
             cwd=str(context.paths.app_root),
             env=_export_worker_environment(context),
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        stdout, _stderr = _wait_for_export(context, process, cancel_path)
-        terminal: dict[str, object] | None = None
-        for line in stdout.splitlines():
-            event = parse_event_line(line)
-            if event is None:
-                continue
-            if event["type"] == "progress":
-                context.progress(
-                    str(event.get("stage") or "config_export"),
-                    int(event.get("current") or 0),
-                    int(event.get("total") or 0),
-                    str(event.get("message") or "正在导出配置"),
-                )
-            elif event["type"] in {"finished", "error", "cancelled"}:
-                terminal = event
+        terminal, diagnostics = _wait_for_export(context, process, cancel_path)
         if terminal is None or terminal.get("type") != "finished" or process.returncode != 0:
             if terminal and (terminal.get("cancelled") or terminal.get("type") == "cancelled"):
                 raise BackgroundTaskCancelled("配置导出已取消")
-            raise RuntimeError(str((terminal or {}).get("error") or (terminal or {}).get("message") or "配置导出失败"))
+            raise RuntimeError(
+                str((terminal or {}).get("error") or (terminal or {}).get("message") or diagnostics or "配置导出失败")
+            )
         if not output_path.is_file() or output_path.is_symlink():
             raise RuntimeError("配置导出未生成有效 Artifact")
         digest = _sha256_file(output_path)
@@ -203,24 +193,72 @@ def _run_export(context: JobContext, job, artifact_id: str, output_path: Path, d
             process.wait(timeout=3)
 
 
-def _wait_for_export(context: JobContext, process: subprocess.Popen[str], cancel_path: Path) -> tuple[str, str]:
-    while True:
-        try:
-            return process.communicate(timeout=0.1)
-        except subprocess.TimeoutExpired:
-            if context.should_cancel is None or not context.should_cancel():
-                continue
-            cancel_path.write_text("cancelled", encoding="utf-8")
+def _wait_for_export(
+    context: JobContext,
+    process: subprocess.Popen[str],
+    cancel_path: Path,
+) -> tuple[dict[str, object] | None, str]:
+    if process.stdout is None:
+        raise RuntimeError("配置导出进程未提供输出流")
+    lines: Queue[str | None] = Queue()
+    reader = Thread(target=_read_process_output, args=(process.stdout, lines), daemon=True)
+    reader.start()
+    terminal: dict[str, object] | None = None
+    diagnostics: list[str] = []
+    stream_closed = False
+    try:
+        while not (stream_closed and process.poll() is not None):
+            if process.poll() is None and context.should_cancel is not None and context.should_cancel():
+                _cancel_export_process(process, cancel_path)
+                raise BackgroundTaskCancelled("配置导出已取消")
             try:
-                process.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=2)
-            raise BackgroundTaskCancelled("配置导出已取消")
+                line = lines.get(timeout=0.1)
+            except Empty:
+                continue
+            if line is None:
+                stream_closed = True
+                continue
+            event = parse_event_line(line)
+            if event is None:
+                text = line.strip()
+                if text:
+                    diagnostics.append(text)
+                    diagnostics = diagnostics[-20:]
+                continue
+            if event["type"] == "progress":
+                context.progress(
+                    str(event.get("stage") or "config_export"),
+                    int(event.get("current") or 0),
+                    int(event.get("total") or 0),
+                    str(event.get("message") or "正在导出配置"),
+                )
+            elif event["type"] in {"finished", "error", "cancelled"}:
+                terminal = event
+        process.wait(timeout=3)
+    finally:
+        reader.join(timeout=1)
+    return terminal, "\n".join(diagnostics)
+
+
+def _read_process_output(stream, lines: Queue[str | None]) -> None:
+    try:
+        for line in iter(stream.readline, ""):
+            lines.put(line)
+    finally:
+        lines.put(None)
+
+
+def _cancel_export_process(process: subprocess.Popen[str], cancel_path: Path) -> None:
+    cancel_path.write_text("cancelled", encoding="utf-8")
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
 
 
 def _export_worker_command(job_path: Path) -> list[str]:

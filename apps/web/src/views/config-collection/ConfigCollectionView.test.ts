@@ -36,9 +36,11 @@ describe('Configuration Collection Center view', () => {
     expect(source).not.toContain('任意路径')
   })
 
-  it('shows partial deletion failures instead of a false success state', () => {
+  it('distinguishes partial and total deletion failures from success', () => {
     expect(source).toContain('failed_items')
     expect(source).toContain('任务部分完成')
     expect(source).toContain('部分完成')
+    expect(source).toContain('全部失败')
+    expect(source).toContain('isAllFailed')
   })
 })

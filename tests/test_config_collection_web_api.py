@@ -3,9 +3,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
+import io
 import json
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 from threading import Barrier, Event
 import zipfile
@@ -26,7 +26,6 @@ from netconsole.models.task_state import TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
-from netconsole.services.config_collection_job_handlers import HANDLERS as CONFIG_WEB_HANDLERS
 from netconsole.services import config_collection_job_handlers
 from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
@@ -81,12 +80,7 @@ class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
         def progress(stage, current, total, message):
             self._event(job.job_id, progress_event(job.job_id, stage, current, total, message))
         try:
-            if job.task_type in CONFIG_WEB_HANDLERS:
-                result = CONFIG_WEB_HANDLERS[job.task_type](
-                    JobContext.from_job(job, progress, lambda: self.cancel_next)
-                )
-            else:
-                result = dispatch_job(job, progress, lambda: self.cancel_next)
+            result = dispatch_job(job, progress, lambda: self.cancel_next)
             self._event(job.job_id, finished_event(job.job_id, result))
             exit_code = 0
         except BackgroundTaskCancelled as exc:
@@ -175,6 +169,16 @@ def _fixture(tmp_path: Path):
     app.include_router(router, prefix="/api")
     app.state.config_collection_service = web_service
     return app, paths, device, running, saved, process_adapter
+
+
+def test_config_web_job_handlers_are_available_through_production_registry() -> None:
+    assert {
+        "config_web_save_force",
+        "config_web_export_diff",
+        "config_web_export_snapshots",
+    } <= set(registered_task_types())
+    with pytest.raises(ValueError, match="一次最多保存 50 台设备配置"):
+        dispatch_job(JobSpec("registry-dispatch-probe", "config_web_save_force", {"device_uuids": []}))
 
 
 def test_config_collection_router_returns_503_without_composed_service() -> None:
@@ -271,6 +275,34 @@ def test_config_collection_reuses_active_fetch_under_concurrent_requests(tmp_pat
         results = [future.result(timeout=2) for future in futures]
 
     assert results[0].id == results[1].id
+    assert len(adapter.jobs) == 1
+
+
+def test_config_collection_foreign_active_task_does_not_block_valid_fetch(tmp_path: Path) -> None:
+    app, _paths, device, _running, _saved, adapter = _fixture(tmp_path)
+    repository = app.state.config_collection_service.task_service.repository("demo")
+    for task_id, site_name, source in (
+        ("foreign-site", "other", "local"),
+        ("foreign-source", "demo", "agent"),
+    ):
+        repository.save(
+            TaskSnapshot(
+                task_id=task_id,
+                task_type="config_web_snapshot_fetch",
+                task_name="其他来源配置采集",
+                status=TaskState.RUNNING,
+                created_time="2026-07-15T10:00:00Z",
+                updated_time="2026-07-15T10:00:01Z",
+                owner="web_config_collection",
+                device=str(device.device_uuid),
+                source=source,
+                site_name=site_name,
+            )
+        )
+
+    submitted = app.state.config_collection_service.submit_collection("demo", "fetch", [int(device.id)])[0]
+
+    assert submitted.id not in {"foreign-site", "foreign-source"}
     assert len(adapter.jobs) == 1
 
 
@@ -622,6 +654,7 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     assert delete_status is not None and delete_status.status == TaskState.COMPLETED.value
     assert delete_status.result["deleted"] == 1
     assert delete_status.result["failed"] == 1
+    assert delete_status.result["partial_success"] is True
     assert delete_status.result["failed_items"][0]["snapshot_id"] == running.id
 
     _install_fake_connector(monkeypatch, fail=True)
@@ -634,6 +667,91 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     cancelled = service.submit_collection("demo", "fetch", [int(device.id)])[0]
     cancelled_status = service.get_task("demo", cancelled.id)
     assert cancelled_status is not None and cancelled_status.status == TaskState.CANCELLED.value
+
+
+def test_config_snapshot_delete_all_failures_end_as_failed_task(tmp_path: Path) -> None:
+    app, paths, _device, running, _saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    service.process_adapter = _ExecutingFakeProcessAdapter(service.task_service)
+    preview = service.issue_snapshot_delete("demo", [int(running.id)])
+    database = Database(paths.site_db_path("demo"))
+    lifecycle = ConfigLifecycleService("demo", database, paths)
+    lifecycle.delete_snapshot(ConfigSnapshotRepository(database, ensure_schema=False).get(int(running.id)))
+
+    task = service.confirm_snapshot_delete("demo", preview.confirmation_token, preview.digest)
+    status = service.get_task("demo", task.id)
+
+    assert status is not None
+    assert status.status == TaskState.FAILED.value
+    assert "删除全部失败" in status.error_message
+
+
+def test_config_export_forwards_progress_before_worker_finishes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _app, paths, _device, running, saved, _adapter = _fixture(tmp_path)
+    release_terminal = Event()
+    progress_seen = Event()
+
+    class StreamingProcess:
+        returncode = None
+
+        def __init__(self, command, **_kwargs) -> None:
+            self.payload = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            self.stdout = self.Output(self)
+
+        class Output:
+            def __init__(self, process) -> None:
+                self.process = process
+                self.index = 0
+
+            def readline(self) -> str:
+                self.index += 1
+                if self.index == 1:
+                    return encode_event(progress_event("export", "streaming", 1, 2, "已写入一半"))
+                if self.index == 2:
+                    assert release_terminal.wait(2)
+                    Path(self.process.payload["output_path"]).write_text("exported", encoding="utf-8")
+                    self.process.returncode = 0
+                    return encode_event(finished_event("export", {"ok": True}))
+                return ""
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(config_collection_job_handlers.subprocess, "Popen", StreamingProcess)
+    context = JobContext.from_job(
+        JobSpec(
+            "streaming-export",
+            "config_web_export_diff",
+            {
+                "site_name": "demo",
+                "db_path": str(paths.site_db_path("demo")),
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "owner": "web_config_collection",
+                "task_source": "local",
+                "left_snapshot_id": running.id,
+                "right_snapshot_id": saved.id,
+            },
+        ),
+        progress_callback=lambda stage, *_args: progress_seen.set() if stage == "streaming" else None,
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(config_collection_job_handlers.config_web_export_diff, context)
+        assert progress_seen.wait(1)
+        assert not future.done()
+        release_terminal.set()
+        result = future.result(timeout=2)
+
+    assert result["size"] == len("exported")
 
 
 def test_config_export_handler_cleans_output_job_and_tmp_on_failure_and_cancel(
@@ -660,9 +778,7 @@ def test_config_export_handler_cleans_output_job_and_tmp_on_failure_and_cancel(
             payload = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
             Path(payload["output_path"]).write_text("partial", encoding="utf-8")
             Path(payload["tmp_path"]).write_text("partial", encoding="utf-8")
-
-        def communicate(self, timeout=None):
-            return encode_event(error_event("export", "fake export failure")), ""
+            self.stdout = io.StringIO(encode_event(error_event("export", "fake export failure")))
 
         def poll(self):
             return self.returncode
@@ -685,9 +801,6 @@ def test_config_export_handler_cleans_output_job_and_tmp_on_failure_and_cancel(
 
     class HungProcess(FailedProcess):
         returncode = None
-
-        def communicate(self, timeout=None):
-            raise subprocess.TimeoutExpired(self.command, timeout)
 
         def terminate(self):
             self.returncode = -15

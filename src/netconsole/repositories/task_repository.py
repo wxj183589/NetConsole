@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -114,17 +115,55 @@ class TaskRepository:
             row = conn.execute("SELECT * FROM task_snapshots WHERE task_id = ?", (task_id,)).fetchone()
         return self._snapshot_from_row(dict(row)) if row is not None else None
 
-    def list(self, *, statuses: set[TaskState] | None = None, limit: int = 200, offset: int = 0) -> list[TaskSnapshot]:
+    def list(
+        self,
+        *,
+        statuses: set[TaskState] | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[TaskSnapshot]:
+        return self.list_filtered(statuses=statuses, limit=limit, offset=offset)
+
+    def list_filtered(
+        self,
+        *,
+        statuses: Collection[TaskState] | None = None,
+        owner: str | None = None,
+        source: str | None = None,
+        site_name: str | None = None,
+        task_types: Collection[str] | None = None,
+        device: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[TaskSnapshot]:
         params: list[object] = []
-        where = ""
+        clauses: list[str] = []
         if statuses:
             values = sorted(state.value for state in statuses)
-            where = f"WHERE status IN ({','.join('?' for _ in values)})"
+            clauses.append(f"status IN ({','.join('?' for _ in values)})")
             params.extend(values)
+        if owner is not None:
+            clauses.append("owner = ?")
+            params.append(str(owner))
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(str(source))
+        if site_name is not None:
+            clauses.append("site_name = ?")
+            params.append(str(site_name))
+        if task_types:
+            values = sorted(str(task_type) for task_type in task_types)
+            clauses.append(f"task_type IN ({','.join('?' for _ in values)})")
+            params.extend(values)
+        if device is not None:
+            clauses.append("device = ?")
+            params.append(str(device))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM task_snapshots {where} ORDER BY updated_time DESC, created_time DESC LIMIT ? OFFSET ?",
+                f"SELECT * FROM task_snapshots {where} "
+                "ORDER BY updated_time DESC, created_time DESC, task_id DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [self._snapshot_from_row(dict(row)) for row in rows]

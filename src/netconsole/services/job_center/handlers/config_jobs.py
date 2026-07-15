@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.services import config_collection_job_handlers
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 
@@ -9,7 +10,20 @@ config_compare_snapshot_pair = legacy_handler(legacy_tasks._config_compare_snaps
 config_snapshot_load_content = legacy_handler(legacy_tasks._config_snapshot_load_content)
 config_snapshot_copy = legacy_handler(legacy_tasks._config_snapshot_copy)
 config_snapshot_pair_load_content = legacy_handler(legacy_tasks._config_snapshot_pair_load_content)
-config_snapshot_delete_many = legacy_handler(legacy_tasks._config_snapshot_delete_many)
+
+
+def config_snapshot_delete_many(context):
+    result = legacy_tasks._config_snapshot_delete_many(
+        context.params,
+        context.progress_callback,
+        context.should_cancel,
+    )
+    failed_items = list(result.get("failed_items") or [])
+    if failed_items and int(result.get("deleted") or 0) == 0:
+        details = "；".join(f"{item['snapshot_id']}: {item['error']}" for item in failed_items)
+        raise RuntimeError(f"配置快照删除全部失败：{details}")
+    result["partial_success"] = bool(failed_items)
+    return result
 
 
 def config_web_snapshot_fetch(context):
@@ -45,3 +59,4 @@ HANDLERS = {
         "config_web_snapshot_fetch",
     )
 }
+HANDLERS.update(config_collection_job_handlers.HANDLERS)

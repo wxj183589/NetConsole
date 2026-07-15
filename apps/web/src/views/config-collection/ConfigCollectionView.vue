@@ -383,6 +383,7 @@ function isTerminal(status: string): boolean {
 }
 
 function taskType(task: ConfigTaskStatus): 'success' | 'warning' | 'danger' | 'info' {
+  if (task.status === 'COMPLETED' && isAllFailed(task)) return 'danger'
   if (task.status === 'COMPLETED' && Number(task.result?.failed || 0) > 0) return 'warning'
   if (task.status === 'COMPLETED') return 'success'
   if (task.status === 'FAILED') return 'danger'
@@ -391,7 +392,13 @@ function taskType(task: ConfigTaskStatus): 'success' | 'warning' | 'danger' | 'i
 }
 
 function taskStatusLabel(task: ConfigTaskStatus): string {
-  return task.status === 'COMPLETED' && Number(task.result?.failed || 0) > 0 ? '部分完成' : task.status
+  if (task.status !== 'COMPLETED' || Number(task.result?.failed || 0) <= 0) return task.status
+  return isAllFailed(task) ? '全部失败' : '部分完成'
+}
+
+function isAllFailed(task: ConfigTaskStatus): boolean {
+  const total = Number(task.result?.total || 0)
+  return total > 0 && Number(task.result?.failed || 0) >= total
 }
 
 function taskFailureText(task: ConfigTaskStatus): string {

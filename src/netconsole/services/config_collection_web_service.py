@@ -29,7 +29,7 @@ from netconsole.models.api.config_collection import (
 )
 from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
-from netconsole.models.task_state import TaskState
+from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
@@ -373,10 +373,16 @@ class ConfigCollectionApplicationService:
             active = next(
                 (
                     task
-                    for task in self.task_service.repository(site_name).list(statuses=ACTIVE_TASK_STATES, limit=1000)
-                    if task.task_type == task_type
-                    and task.owner == CONFIG_WEB_OWNER
-                    and task.device == device_uuid
+                    for task in self.task_service.repository(site_name).list_filtered(
+                        statuses=ACTIVE_TASK_STATES,
+                        owner=CONFIG_WEB_OWNER,
+                        source="local",
+                        site_name=site_name,
+                        task_types={task_type},
+                        device=device_uuid,
+                        limit=1,
+                    )
+                    if self._is_web_task(task, site_name)
                 ),
                 None,
             )
@@ -508,30 +514,22 @@ class ConfigCollectionApplicationService:
 
     def _scan_tasks(self, site_name: str, limit: int) -> list[TaskSnapshot]:
         repository = self.task_service.repository(site_name)
-        active: list[TaskSnapshot] = []
-        history: list[TaskSnapshot] = []
-        offset = 0
-        page_size = 200
-        with repository._connect() as connection:  # Repository connection keeps one stable SQLite read snapshot.
-            while True:
-                rows = connection.execute(
-                    "SELECT * FROM task_snapshots ORDER BY updated_time DESC, created_time DESC, task_id DESC LIMIT ? OFFSET ?",
-                    (page_size, offset),
-                ).fetchall()
-                if not rows:
-                    break
-                offset += len(rows)
-                for row in rows:
-                    snapshot = repository._snapshot_from_row(dict(row))
-                    if not self._is_web_task(snapshot, site_name):
-                        continue
-                    if snapshot.status in ACTIVE_TASK_STATES:
-                        active.append(snapshot)
-                    elif len(history) < limit:
-                        history.append(snapshot)
-                if len(rows) < page_size:
-                    break
-        return active + history[: max(0, limit - len(active))]
+        filters = {
+            "owner": CONFIG_WEB_OWNER,
+            "source": "local",
+            "site_name": site_name,
+            "task_types": CONFIG_WEB_TASK_TYPES,
+        }
+        active = repository.list_filtered(statuses=ACTIVE_TASK_STATES, limit=1000, **filters)
+        history_limit = max(0, limit - len(active))
+        if history_limit == 0:
+            return active
+        history = repository.list_filtered(
+            statuses=TERMINAL_TASK_STATES,
+            limit=history_limit,
+            **filters,
+        )
+        return active + history
 
     def _safe_diff_path(self, task: TaskSnapshot) -> Path | None:
         raw_path = str(task.result.get("diff_file") or "")
