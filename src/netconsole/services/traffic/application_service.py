@@ -17,6 +17,7 @@ from netconsole.models.traffic_test import (
     TrafficEvent,
     TrafficEventType,
     TrafficRun,
+    TrafficRunPage,
     TrafficSyncState,
     TrafficTestType,
     TcpPortTestConfig,
@@ -299,6 +300,29 @@ class TrafficTestApplicationService:
             test_type=test_type,
             executor_kind=executor_kind,
             agent_id=agent_id,
+            limit=limit,
+        )
+
+    def list_runs_page(
+        self,
+        *,
+        statuses: set[TaskState] | None = None,
+        test_type: TrafficTestType | None = None,
+        executor_kind: ExecutionTargetKind | None = None,
+        agent_id: str | None = None,
+        created_after: str = "",
+        created_before: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> TrafficRunPage:
+        return self.repository.list_page(
+            statuses=statuses,
+            test_type=test_type,
+            executor_kind=executor_kind,
+            agent_id=agent_id,
+            created_after=created_after,
+            created_before=created_before,
+            offset=offset,
             limit=limit,
         )
 

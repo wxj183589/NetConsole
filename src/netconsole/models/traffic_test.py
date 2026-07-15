@@ -173,6 +173,19 @@ class TrafficRun:
 
 
 @dataclass(frozen=True)
+class TrafficRunPage:
+    items: list[TrafficRun]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
+
+    @property
+    def runs(self) -> list[TrafficRun]:
+        return self.items
+
+
+@dataclass(frozen=True)
 class AgentTaskMapping:
     traffic_run_id: str
     controller_task_id: str

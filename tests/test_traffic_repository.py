@@ -18,6 +18,7 @@ from netconsole.models.traffic_test import (
     TrafficTestType,
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
+from netconsole.services.traffic.application_service import TrafficTestApplicationService
 
 
 NOW = "2026-07-12T12:00:00.000Z"
@@ -146,6 +147,99 @@ def test_repository_run_mapping_recovery_retry_and_site_isolation(tmp_path) -> N
     assert first.list_recoverable_agent_mappings() == []
     assert first.delete("run-2")
     assert first.get_agent_mapping("run-2") is None
+
+
+def test_application_service_run_page_filters_counts_and_reads_beyond_2000_rows(tmp_path) -> None:
+    paths = PathResolver(tmp_path)
+    repository = TrafficRunRepository(paths.traffic_runs_db_path("demo"))
+    for index in range(2_205):
+        stamp = f"2026-07-{index // 2:04d}"
+        repository.create(
+            replace(
+                _run(
+                    f"run-{index:04d}",
+                    site_task=f"task-{index:04d}",
+                    executor_kind=ExecutionTargetKind.AGENT,
+                    agent_id="agent-1",
+                ),
+                status=TaskState.FAILED,
+                created_at=stamp,
+                updated_at=stamp,
+            )
+        )
+    repository.create(
+        replace(
+            _run("excluded-status", site_task="task-excluded-status", executor_kind=ExecutionTargetKind.AGENT, agent_id="agent-1"),
+            status=TaskState.RUNNING,
+            created_at="2026-07-1000",
+            updated_at="2026-07-1000",
+        )
+    )
+    repository.create(
+        replace(
+            _run("excluded-type", site_task="task-excluded-type", executor_kind=ExecutionTargetKind.AGENT, agent_id="agent-1"),
+            test_type=TrafficTestType.IPERF_CLIENT,
+            created_at="2026-07-1001",
+            updated_at="2026-07-1001",
+        )
+    )
+    repository.create(
+        replace(
+            _run("excluded-kind", site_task="task-excluded-kind"),
+            status=TaskState.FAILED,
+            created_at="2026-07-1002",
+            updated_at="2026-07-1002",
+        )
+    )
+    repository.create(
+        replace(
+            _run("excluded-agent", site_task="task-excluded-agent", executor_kind=ExecutionTargetKind.AGENT, agent_id="agent-2"),
+            status=TaskState.FAILED,
+            created_at="2026-07-1003",
+            updated_at="2026-07-1003",
+        )
+    )
+    service = TrafficTestApplicationService(paths=paths, site_name="demo", repository=repository)
+
+    page = service.list_runs_page(
+        statuses={TaskState.FAILED},
+        test_type=TrafficTestType.HIGH_FREQUENCY_PING,
+        executor_kind=ExecutionTargetKind.AGENT,
+        agent_id="agent-1",
+        created_after="2026-07-0000",
+        created_before="2026-07-1102",
+        offset=2_000,
+        limit=50,
+    )
+    assert page.total == 2_205
+    expected_ids = sorted(
+        (f"run-{index:04d}" for index in range(2_205)),
+        key=lambda run_id: (f"2026-07-{int(run_id[4:]) // 2:04d}", run_id),
+        reverse=True,
+    )
+    assert [run.traffic_run_id for run in page.items] == expected_ids[2_000:2_050]
+    assert page.has_more is True
+
+    old_page = service.list_runs_page(
+        statuses={TaskState.FAILED},
+        test_type=TrafficTestType.HIGH_FREQUENCY_PING,
+        executor_kind=ExecutionTargetKind.AGENT,
+        agent_id="agent-1",
+        created_after="2026-07-0100",
+        created_before="2026-07-1102",
+        offset=2_000,
+        limit=50,
+    )
+    assert old_page.total == 2_005
+    old_expected_ids = [run_id for run_id in expected_ids if int(run_id[4:]) >= 200]
+    assert [run.traffic_run_id for run in old_page.items] == old_expected_ids[2_000:2_050]
+    assert old_page.has_more is False
+
+    empty = service.list_runs_page(offset=99_999, limit=999)
+    assert empty.items == []
+    assert empty.total == 2_209
+    assert empty.limit == 500
+    assert empty.has_more is False
 
 
 def test_ping_batch_is_transactional_and_deduplicates_replayed_samples(tmp_path) -> None:

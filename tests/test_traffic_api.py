@@ -14,6 +14,7 @@ from netconsole.models.traffic_test import (
     TrafficEventType,
     TrafficPingSample,
     TrafficRun,
+    TrafficRunPage,
     TrafficTestType,
 )
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -99,8 +100,18 @@ class FakeTrafficService:
             retry_of_traffic_run_id=run.traffic_run_id,
         )
 
-    def list_runs(self, **_kwargs) -> list[TrafficRun]:
-        return list(self.runs.values())
+    def list_runs_page(self, *, offset: int = 0, limit: int = 100, **_kwargs) -> TrafficRunPage:
+        runs = list(self.runs.values())
+        selected_offset = max(0, int(offset))
+        selected_limit = max(1, min(int(limit), 500))
+        items = runs[selected_offset : selected_offset + selected_limit]
+        return TrafficRunPage(
+            items=items,
+            total=len(runs),
+            offset=selected_offset,
+            limit=selected_limit,
+            has_more=selected_offset + len(items) < len(runs),
+        )
 
     def get_run(self, traffic_run_id: str) -> TrafficRun | None:
         return self.runs.get(traffic_run_id)
@@ -201,6 +212,7 @@ def test_traffic_rest_targets_start_list_detail_cancel_and_retry(tmp_path) -> No
         assert client.get(f"/api/traffic/runs/{run_id}/summary").json()["summary"]["sent"] == 3
         assert client.get(f"/api/traffic/runs/{run_id}/ping-samples").json()[0]["packet_size"] == 64
         assert client.post(f"/api/traffic/runs/{run_id}/cancel").json()["status"] == "STOPPING"
+        traffic.runs[run_id] = replace(traffic.runs[run_id], status=TaskState.FAILED)
         retry = client.post(f"/api/traffic/runs/{run_id}/retry")
         assert retry.status_code == 202
         assert retry.json()["retry_of_traffic_run_id"] == run_id

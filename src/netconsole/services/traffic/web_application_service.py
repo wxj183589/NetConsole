@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Any
 
 from netconsole.models.agent import AgentStatus
@@ -12,6 +11,7 @@ from netconsole.models.traffic_test import (
     ExecutionTargetKind,
     HighFrequencyPingConfig,
     TrafficRun,
+    TrafficRunPage,
     TrafficTestType,
 )
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfServerConfig
@@ -19,7 +19,6 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 
 
-_MAX_RUN_QUERY = 2_000
 _MAX_PAGE_SIZE = 500
 _LOCAL_CAPABILITIES = {
     "iperf_server": True,
@@ -27,19 +26,6 @@ _LOCAL_CAPABILITIES = {
     "fping": True,
     "tcp_ping_probe": True,
 }
-
-
-@dataclass(frozen=True)
-class TrafficRunPage:
-    items: list[TrafficRun]
-    total: int
-    offset: int
-    limit: int
-    has_more: bool
-
-    @property
-    def runs(self) -> list[TrafficRun]:
-        return self.items
 
 
 class TrafficWebApplicationService:
@@ -123,32 +109,16 @@ class TrafficWebApplicationService:
         limit: int = 100,
     ) -> TrafficRunPage:
         offset, limit = _page_args(offset, limit)
-        runs = self.traffic_service.list_runs(limit=_MAX_RUN_QUERY)
-        after = str(created_after or "").strip()
-        before = str(created_before or "").strip()
-        selected_statuses = set(statuses or ())
-        selected_agent = str(agent_id or "").strip()
-        filtered = [
-            run
-            for run in runs
-            if (not selected_statuses or run.status in selected_statuses)
-            and (test_type is None or run.test_type == test_type)
-            and (executor_kind is None or run.executor_kind == executor_kind)
-            and (not selected_agent or run.agent_id == selected_agent)
-            and (not after or run.created_at >= after)
-            and (not before or run.created_at <= before)
-        ]
-        filtered.sort(
-            key=lambda run: (
-                str(run.updated_at or ""),
-                str(run.created_at or ""),
-                str(run.traffic_run_id or ""),
-            ),
-            reverse=True,
+        return self.traffic_service.list_runs_page(
+            statuses=set(statuses or ()),
+            test_type=test_type,
+            executor_kind=executor_kind,
+            agent_id=str(agent_id or "").strip() or None,
+            created_after=str(created_after or "").strip(),
+            created_before=str(created_before or "").strip(),
+            offset=offset,
+            limit=limit,
         )
-        total = len(filtered)
-        items = filtered[offset : offset + limit]
-        return TrafficRunPage(items, total, offset, limit, offset + len(items) < total)
 
     def get_run(self, traffic_run_id: str) -> TrafficRun | None:
         return self.traffic_service.get_run(traffic_run_id)
@@ -190,8 +160,8 @@ class TrafficWebApplicationService:
 
     async def retry_run(self, traffic_run_id: str) -> TrafficRun:
         run = self._require_run(traffic_run_id)
-        if run.status == TaskState.RUNNING:
-            raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, "运行中的流量任务不允许重试")
+        if run.status not in TERMINAL_TASK_STATES:
+            raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, "非终态流量任务不允许重试")
         return await self.traffic_service.retry(run.controller_task_id)
 
     def _require_run(self, traffic_run_id: str) -> TrafficRun:

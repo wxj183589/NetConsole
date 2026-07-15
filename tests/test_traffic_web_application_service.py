@@ -8,7 +8,7 @@ import pytest
 
 from netconsole.models.agent import AgentStatus
 from netconsole.models.task_state import TaskState
-from netconsole.models.traffic_test import ExecutionTargetKind, TrafficRun, TrafficTestType
+from netconsole.models.traffic_test import ExecutionTargetKind, TrafficRun, TrafficRunPage, TrafficTestType
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventHub
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
@@ -20,13 +20,18 @@ class FakeTrafficService:
         self.runs = {run.traffic_run_id: run for run in runs}
         self.cancel_calls: list[str] = []
         self.retry_calls: list[str] = []
+        self.page_calls: list[dict[str, object]] = []
         self.cancel_entered: asyncio.Event | None = None
         self.cancel_release: asyncio.Event | None = None
         self.retry_error: TrafficTestError | None = None
 
-    def list_runs(self, *, limit: int = 2_000, **_kwargs) -> list[TrafficRun]:
-        assert limit == 2_000
-        return list(self.runs.values())
+    def list_runs_page(self, **kwargs) -> TrafficRunPage:
+        self.page_calls.append(kwargs)
+        runs = list(self.runs.values())
+        offset = int(kwargs["offset"])
+        limit = int(kwargs["limit"])
+        items = runs[offset : offset + limit]
+        return TrafficRunPage(items, len(runs), offset, limit, offset + len(items) < len(runs))
 
     def get_run(self, traffic_run_id: str) -> TrafficRun | None:
         return self.runs.get(traffic_run_id)
@@ -117,7 +122,7 @@ def _run(
     )
 
 
-def test_web_service_filters_sorts_then_pages_and_caps_page_size() -> None:
+def test_web_service_delegates_run_query_and_caps_page_size() -> None:
     runs = [
         _run("old", created_at="2026-07-01", updated_at="2026-07-01"),
         _run("new", created_at="2026-07-03", updated_at="2026-07-03"),
@@ -128,9 +133,19 @@ def test_web_service_filters_sorts_then_pages_and_caps_page_size() -> None:
     service = TrafficWebApplicationService(FakeTrafficService(runs))
 
     page = service.list_runs(statuses={TaskState.FAILED}, created_after="2026-07-02", limit=1)
-    assert [run.traffic_run_id for run in page.items] == ["new"]
-    assert page.total == 2
+    assert page.limit == 1
+    assert page.total == len(runs)
     assert page.has_more is True
+    assert service.traffic_service.page_calls[0] == {
+        "statuses": {TaskState.FAILED},
+        "test_type": None,
+        "executor_kind": None,
+        "agent_id": None,
+        "created_after": "2026-07-02",
+        "created_before": "",
+        "offset": 0,
+        "limit": 1,
+    }
 
     empty = service.list_runs(statuses={TaskState.FAILED}, offset=999, limit=10)
     assert empty.items == []
@@ -175,19 +190,23 @@ def test_web_service_cancel_is_idempotent_for_repeated_and_concurrent_calls() ->
     assert traffic.cancel_calls == ["task-cancel"]
 
 
-def test_web_service_retries_failed_runs_but_rejects_running_and_preserves_credential_error() -> None:
+def test_web_service_retries_failed_runs_but_rejects_nonterminal_and_preserves_credential_error() -> None:
     failed = _run("failed")
-    running = _run("running", status=TaskState.RUNNING)
-    traffic = FakeTrafficService([failed, running])
+    nonterminal = [
+        _run(state.value.lower(), status=state)
+        for state in (TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING)
+    ]
+    traffic = FakeTrafficService([failed, *nonterminal])
     service = TrafficWebApplicationService(traffic)
 
     retried = asyncio.run(service.retry_run("failed"))
     assert retried.traffic_run_id == "failed-retry"
     assert retried.retry_of_traffic_run_id == "failed"
 
-    with pytest.raises(TrafficTestError) as running_error:
-        asyncio.run(service.retry_run("running"))
-    assert running_error.value.code == TrafficErrorCode.INVALID_CONFIG.value
+    for run in nonterminal:
+        with pytest.raises(TrafficTestError) as error:
+            asyncio.run(service.retry_run(run.traffic_run_id))
+        assert error.value.code == TrafficErrorCode.INVALID_CONFIG.value
     assert traffic.retry_calls == ["task-failed"]
 
     traffic.retry_error = TrafficTestError(

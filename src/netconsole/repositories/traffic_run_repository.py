@@ -12,6 +12,7 @@ from netconsole.models.traffic_test import (
     ExecutionTargetKind,
     TrafficPingSample,
     TrafficRun,
+    TrafficRunPage,
     TrafficSyncState,
     TrafficTestType,
 )
@@ -134,6 +135,74 @@ class TrafficRunRepository:
         agent_id: str | None = None,
         limit: int = 200,
     ) -> list[TrafficRun]:
+        clauses, params = self._run_filter_parts(
+            statuses=statuses,
+            test_type=test_type,
+            executor_kind=executor_kind,
+            agent_id=agent_id,
+        )
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 2_000)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM traffic_runs {where} ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._run_from_row(dict(row)) for row in rows]
+
+    def list_page(
+        self,
+        *,
+        statuses: set[TaskState] | None = None,
+        test_type: TrafficTestType | None = None,
+        executor_kind: ExecutionTargetKind | None = None,
+        agent_id: str | None = None,
+        created_after: str = "",
+        created_before: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> TrafficRunPage:
+        clauses, params = self._run_filter_parts(
+            statuses=statuses,
+            test_type=test_type,
+            executor_kind=executor_kind,
+            agent_id=agent_id,
+            created_after=created_after,
+            created_before=created_before,
+        )
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        selected_offset = max(0, int(offset))
+        selected_limit = max(1, min(int(limit), 500))
+        with self._connect() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM traffic_runs {where}", params).fetchone()[0])
+            rows = conn.execute(
+                f"""
+                SELECT * FROM traffic_runs
+                {where}
+                ORDER BY updated_at DESC, created_at DESC, traffic_run_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, selected_limit, selected_offset],
+            ).fetchall()
+        items = [self._run_from_row(dict(row)) for row in rows]
+        return TrafficRunPage(
+            items=items,
+            total=total,
+            offset=selected_offset,
+            limit=selected_limit,
+            has_more=selected_offset + len(items) < total,
+        )
+
+    @staticmethod
+    def _run_filter_parts(
+        *,
+        statuses: set[TaskState] | None = None,
+        test_type: TrafficTestType | None = None,
+        executor_kind: ExecutionTargetKind | None = None,
+        agent_id: str | None = None,
+        created_after: str = "",
+        created_before: str = "",
+    ) -> tuple[list[str], list[object]]:
         clauses: list[str] = []
         params: list[object] = []
         if statuses:
@@ -149,14 +218,13 @@ class TrafficRunRepository:
         if agent_id is not None:
             clauses.append("agent_id = ?")
             params.append(agent_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(max(1, min(int(limit), 2_000)))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM traffic_runs {where} ORDER BY updated_at DESC, created_at DESC LIMIT ?",
-                params,
-            ).fetchall()
-        return [self._run_from_row(dict(row)) for row in rows]
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(str(created_after))
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(str(created_before))
+        return clauses, params
 
     def delete(self, traffic_run_id: str) -> bool:
         def operation() -> bool:
