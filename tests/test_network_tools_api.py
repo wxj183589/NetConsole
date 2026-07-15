@@ -8,6 +8,7 @@ from netconsole.core.feature_flags import FeatureGate
 from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import ExecutionTargetKind, TrafficRun, TrafficTestType
+from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 
 
 class FakeTrafficService:
@@ -35,6 +36,7 @@ def test_network_tools_router_submits_whitelisted_tcp_probe(tmp_path) -> None:
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.state.traffic_service = FakeTrafficService()
+    app.state.network_tools_service = NetworkToolsApplicationService(app.state.traffic_service)
     app.state.feature_gate = FeatureGate(tmp_path)
 
     with TestClient(app) as client:
@@ -54,3 +56,20 @@ def test_network_tools_router_submits_whitelisted_tcp_probe(tmp_path) -> None:
     assert response.json()["run"]["test_type"] == "TCP_PORT_TEST"
     assert app.state.traffic_service.config.to_dict()["target"] == "127.0.0.1"
     assert app.state.traffic_service.target.kind is ExecutionTargetKind.LOCAL
+
+
+def test_network_tools_router_returns_503_without_composed_service(tmp_path) -> None:
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.state.traffic_service = FakeTrafficService()
+    app.state.feature_gate = FeatureGate(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/network-tools/tcp-port-test",
+            json={"target": "127.0.0.1", "port": 443},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "网络工具 Web 服务未接线"}
+    assert not hasattr(app.state, "network_tools_service")

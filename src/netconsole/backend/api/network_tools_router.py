@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.network_tools import TcpPortTestStartRequest
@@ -15,7 +15,10 @@ router = APIRouter(prefix="/network-tools", tags=["network-tools"])
 
 
 def network_tools_service(request: Request) -> NetworkToolsApplicationService:
-    return NetworkToolsApplicationService(request.app.state.traffic_service)
+    service = getattr(request.app.state, "network_tools_service", None)
+    if service is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="网络工具 Web 服务未接线")
+    return service
 
 
 @router.post(

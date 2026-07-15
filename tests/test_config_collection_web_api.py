@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from threading import Barrier, Event
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.config_collection_router import router
@@ -86,6 +87,18 @@ def _fixture(tmp_path: Path):
     app.include_router(router, prefix="/api")
     app.state.config_collection_service = web_service
     return app, paths, device, running, saved, process_adapter
+
+
+def test_config_collection_router_returns_503_without_composed_service() -> None:
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.get("/api/config-collection/devices")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "配置采集 Web 服务未接线"}
+    assert not hasattr(app.state, "config_collection_service")
 
 
 def test_config_collection_reads_redacted_devices_and_controlled_snapshot_artifacts(tmp_path: Path) -> None:

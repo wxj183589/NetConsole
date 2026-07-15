@@ -24,8 +24,7 @@ router = APIRouter(prefix="/config-collection", tags=["config-collection"])
 def _service(request: Request) -> ConfigCollectionApplicationService:
     service = getattr(request.app.state, "config_collection_service", None)
     if service is None:
-        service = ConfigCollectionApplicationService(request.app.state.paths, request.app.state.task_service)
-        request.app.state.config_collection_service = service
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="配置采集 Web 服务未接线")
     return service
 
 

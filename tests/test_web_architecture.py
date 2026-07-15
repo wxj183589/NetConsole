@@ -81,22 +81,43 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
     assert app.state.device_management_service.site_name is None
     assert app.state.config_collection_service is not None
     assert app.state.file_management_service is not None
+    assert app.state.network_tools_service is not None
     assert app.state.online_mr_web_control_enabled is False
 
 
-def test_disabled_web_feature_hides_state_and_blocks_backend_route(tmp_path: Path) -> None:
+@pytest.mark.parametrize("runtime_mode", [RuntimeMode.DESKTOP, RuntimeMode.SERVER])
+def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path / runtime_mode.value)
+    app = create_app(runtime_mode, paths=paths, frontend_dist=tmp_path / "missing")
+
+    assert app.state.runtime_mode is runtime_mode
+    assert app.state.paths.data_root == paths.data_root
+    assert app.state.config_collection_service.task_service is app.state.task_service
+    assert app.state.device_management_service.task_service is app.state.task_service
+    assert app.state.config_collection_service.process_adapter is app.state.device_management_service.process_adapter
+    assert app.state.file_management_service.process_adapter is app.state.device_management_service.process_adapter
+    assert app.state.network_tools_service.traffic_service is app.state.traffic_service
+
+
+def test_disabled_web_features_hide_state_and_block_backend_routes(tmp_path: Path) -> None:
     app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
     app.state.feature_gate.features["web.device_management"] = {"visible": False, "enabled": False}
+    app.state.feature_gate.features["web.config_collection"] = {"visible": False, "enabled": False}
+    app.state.feature_gate.features["web.network_tools_toolbox"] = {"visible": False, "enabled": False}
 
     with TestClient(app) as client:
         features = client.get("/api/features")
         devices = client.get("/api/device-management/devices")
+        config = client.get("/api/config-collection/devices")
+        network = client.post("/api/network-tools/tcp-port-test", json={"target": "127.0.0.1", "port": 443})
 
     assert features.status_code == 200
     state = next(item for item in features.json()["items"] if item["feature_id"] == "web.device_management")
     assert state["visible"] is False
     assert state["enabled"] is False
     assert devices.status_code == 404
+    assert config.status_code == 404
+    assert network.status_code == 404
 
 
 def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypatch) -> None:

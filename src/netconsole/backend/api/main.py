@@ -42,6 +42,7 @@ from netconsole.services.file_management_service import FileManagementApplicatio
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
@@ -233,6 +234,7 @@ def create_app(
     app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
+    app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_management_service = device_management_service
     app.state.config_collection_service = config_collection_service
     app.state.file_management_service = file_management_service
