@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import csv
 import hashlib
+import json
 import sys
 import zipfile
 from datetime import UTC, datetime
@@ -19,6 +21,7 @@ from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.models.api.device_management import DeviceImportConfirmRequestDTO
 from netconsole.models.device import Device
 from netconsole.models.snmp_models import DeviceSnmpProfileResult
 from netconsole.models.task_snapshot import TaskSnapshot
@@ -32,6 +35,8 @@ from netconsole.services.device_management_web_service import (
     WEB_TASK_OWNER,
     DeviceManagementWebService,
     run_device_connection_test,
+    run_device_detail_collect,
+    run_device_diagnostic_download,
 )
 from netconsole.services.device_import_export import TEMPLATE_FIELDS
 from netconsole.services.job_center.job_context import JobContext
@@ -47,6 +52,7 @@ class _CapturingProcessAdapter:
         self.start_entered = Event()
         self.second_start_entered = Event()
         self.release_start = Event()
+        self.cancelled: list[str] = []
 
     def start_job(self, job, **kwargs) -> str:
         self.jobs.append(job)
@@ -60,6 +66,30 @@ class _CapturingProcessAdapter:
 
     def shutdown(self) -> None:
         return None
+
+    def cancel_job(self, task_id: str) -> bool:
+        self.cancelled.append(task_id)
+        return any(job.job_id == task_id for job in self.jobs)
+
+
+def _write_import_csv(
+    path: Path, *, name: str = "导入设备", address: str = "192.0.2.40"
+) -> None:
+    row = [""] * len(TEMPLATE_FIELDS)
+    for index, value in {
+        0: name,
+        1: address,
+        3: "SSH",
+        4: "22",
+        5: "admin",
+        7: "H3C",
+        8: "SW",
+        11: "否",
+        20: "导入测试",
+    }.items():
+        row[index] = value
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        csv.writer(handle).writerows((TEMPLATE_FIELDS, row))
 
 
 def _fixture(tmp_path: Path):
@@ -90,6 +120,20 @@ def _fixture(tmp_path: Path):
     app = FastAPI()
     app.state.device_management_service = service
     app.state.feature_gate = FeatureGate(paths.app_root)
+    for feature_id in (
+        "web.device_management_write",
+        "web.device_management_collect",
+        "web.device_management_import",
+        "web.device_management_export",
+        "web.device_management_desktop",
+    ):
+        state = dict(app.state.feature_gate.features[feature_id])
+        app.state.feature_gate.features[feature_id] = {
+            **state,
+            "visible": True,
+            "enabled": True,
+            "client_package": True,
+        }
     app.include_router(router, prefix="/api")
     return TestClient(app), service, adapter, devices, DeviceFactRepository(database), mr, sw
 
@@ -424,10 +468,7 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
 def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Path) -> None:
     client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     source = tmp_path / "devices.csv"
-    with source.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(TEMPLATE_FIELDS)
-        writer.writerow(["导入设备", "192.0.2.40", "", "SSH", "22", "admin", "", "H3C", "SW", "", "", "否", "", "", "", "", "", "", "", "", "导入测试"])
+    _write_import_csv(source)
 
     preview = client.post("/api/device-management/imports/preview", files={"file": ("devices.csv", source.read_bytes(), "text/csv")})
     assert preview.status_code == 200
@@ -446,7 +487,7 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     assert "path" not in confirmed.json()
     assert adapter.jobs[-1].task_type == "device_csv_import"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
-    assert adapter.jobs[-1].params["task_source"] == "web"
+    assert adapter.jobs[-1].params["task_source"] == "local"
     assert adapter.completions[-1] is not None
     adapter.completions[-1](SimpleNamespace(exit_code=0, cancelled=False, payload={"result": {"created": 1, "skipped": 0, "errors": []}}))
     assert not list(service._import_staging_root("demo").glob("*"))
@@ -454,7 +495,113 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     assert backups
 
 
-def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_files(tmp_path: Path) -> None:
+def test_import_preview_survives_service_restart_before_confirmation(
+    tmp_path: Path,
+) -> None:
+    _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "restart-preview.csv"
+    _write_import_csv(source, name="重启预览", address="192.0.2.41")
+    with source.open("rb") as handle:
+        preview = service.preview_import(source.name, handle)
+
+    restarted_tasks = TaskApplicationService(paths=service.paths, site_name="demo")
+    restarted_adapter = _CapturingProcessAdapter(restarted_tasks)
+    restarted = DeviceManagementWebService(
+        service.paths,
+        restarted_tasks,
+        site_name="demo",
+        process_adapter=restarted_adapter,  # type: ignore[arg-type]
+    )
+    confirmed = restarted.confirm_import(
+        DeviceImportConfirmRequestDTO(preview_token=preview.preview_token)
+    )
+
+    assert confirmed.action == "import_csv"
+    assert restarted_adapter.jobs[-1].task_type == "device_csv_import"
+
+
+def test_claimed_import_ignores_preview_expiry_while_owned_task_is_active(
+    tmp_path: Path,
+) -> None:
+    _client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "active-import.csv"
+    _write_import_csv(source, name="活动导入", address="192.0.2.42")
+    with source.open("rb") as handle:
+        preview = service.preview_import(source.name, handle)
+    confirmed = service.confirm_import(
+        DeviceImportConfirmRequestDTO(preview_token=preview.preview_token)
+    )
+    staging_root = service._import_staging_root("demo")
+    claimed = next(staging_root.glob(".claimed-*.preview.json"))
+    payload = json.loads(claimed.read_text(encoding="utf-8"))
+    payload["expires"] = 0
+    claimed.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    staged = staging_root / payload["staged_name"]
+
+    restarted_tasks = TaskApplicationService(paths=service.paths, site_name="demo")
+    restarted = DeviceManagementWebService(
+        service.paths, restarted_tasks, site_name="demo"
+    )
+    restarted.current_site_id()
+
+    assert restarted_tasks.repository("demo").get(confirmed.task_id).status in {  # type: ignore[union-attr]
+        TaskState.PENDING,
+        TaskState.STARTING,
+        TaskState.RUNNING,
+        TaskState.STOPPING,
+    }
+    assert claimed.exists()
+    assert staged.exists()
+    assert payload["task_id"] == confirmed.task_id
+    assert payload["operation_id"].startswith("device-import-")
+    adapter.completions[-1](
+        SimpleNamespace(
+            exit_code=0,
+            cancelled=False,
+            payload={"result": {"created": 1, "skipped": 0, "errors": []}},
+        )
+    )
+
+
+def test_restart_reconciles_terminal_import_and_reclaims_claimed_files(
+    tmp_path: Path,
+) -> None:
+    _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "terminal-import.csv"
+    _write_import_csv(source, name="终态导入", address="192.0.2.43")
+    with source.open("rb") as handle:
+        preview = service.preview_import(source.name, handle)
+    confirmed = service.confirm_import(
+        DeviceImportConfirmRequestDTO(preview_token=preview.preview_token)
+    )
+    staging_root = service._import_staging_root("demo")
+    claimed = next(staging_root.glob(".claimed-*.preview.json"))
+    claimed_payload = json.loads(claimed.read_text(encoding="utf-8"))
+    staged = staging_root / claimed_payload["staged_name"]
+    service.task_service.record_external_event(
+        confirmed.task_id,
+        "finished",
+        {"result": {"created": 1, "skipped": 0, "errors": []}},
+        site_name="demo",
+    )
+
+    restarted_tasks = TaskApplicationService(paths=service.paths, site_name="demo")
+    restarted = DeviceManagementWebService(
+        service.paths, restarted_tasks, site_name="demo"
+    )
+    restarted.current_site_id()
+
+    assert not claimed.exists()
+    assert not staged.exists()
+    audit = service._import_audit_path("demo", claimed_payload["operation_id"])
+    audit_payload = json.loads(audit.read_text(encoding="utf-8"))
+    assert audit_payload["status"] == "APPLIED"
+    assert audit_payload["task_id"] == confirmed.task_id
+
+
+def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_files(
+    tmp_path: Path,
+) -> None:
     client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
 
     assert client.post("/api/device-management/imports/preview", json={"path": "C:\\outside\\devices.csv"}).status_code == 422
@@ -501,9 +648,15 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
             "updated_time": now,
             "finished_time": now,
             "owner": WEB_TASK_OWNER,
-            "source": "web",
+            "source": "local",
             "site_name": "demo",
-            "result": {"artifact_id": artifact_id, "artifact_name": artifact.name, "available": True},
+            "result": {
+                "artifact_id": artifact_id,
+                "artifact_name": artifact.name,
+                "available": True,
+                "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "size_bytes": artifact.stat().st_size,
+            },
         }
         values.update(overrides)
         service.task_service.repository("demo").save(TaskSnapshot(**values))
@@ -517,9 +670,17 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
     assert downloaded.content.startswith(b"name,primary_address")
     assert str(tmp_path) not in downloaded.text
 
+    artifact.write_text("tampered", encoding="utf-8")
+    tampered = client.get(
+        "/api/device-management/exports/device-export-owned/download",
+        params={"artifact_id": artifact_id},
+    )
+    assert tampered.status_code == 422
+    artifact.write_text("name,primary_address\n安全,192.0.2.51\n", encoding="utf-8")
+
     for task_id, overrides in (
         ("device-export-wrong-owner", {"owner": "other"}),
-        ("device-export-wrong-source", {"source": "desktop"}),
+        ("device-export-wrong-source", {"source": "web"}),
         ("device-export-wrong-type", {"task_type": "device_diagnostic_download"}),
         ("device-export-wrong-site", {"site_name": "other"}),
         ("device-export-pending", {"status": TaskState.PENDING}),
@@ -571,6 +732,60 @@ def test_device_management_parent_feature_gate_blocks_write_actions(tmp_path: Pa
     assert response.status_code == 404
 
 
+def test_device_management_action_gates_block_their_own_endpoints(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "gated-import.csv"
+    _write_import_csv(source)
+    cases = (
+        (
+            "web.device_management_write",
+            "post",
+            "/api/device-management/devices",
+            {"json": {"name": "gate-write", "primary_address": "192.0.2.61"}},
+        ),
+        (
+            "web.device_management_collect",
+            "post",
+            "/api/device-management/devices/batch-refresh-details",
+            {"json": {"device_uuids": [str(mr.device_uuid)]}},
+        ),
+        (
+            "web.device_management_import",
+            "post",
+            "/api/device-management/imports/preview",
+            {"files": {"file": (source.name, source.read_bytes(), "text/csv")}},
+        ),
+        (
+            "web.device_management_export",
+            "post",
+            "/api/device-management/exports/template",
+            {"json": {}},
+        ),
+        (
+            "web.device_management_desktop",
+            "post",
+            f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
+            {"json": {"terminal_type": "securecrt"}},
+        ),
+    )
+    gate = client.app.state.feature_gate
+
+    for feature_id, method, path, kwargs in cases:
+        original = dict(gate.features[feature_id])
+        gate.features[feature_id] = {
+            **original,
+            "enabled": False,
+            "client_package": False,
+        }
+        try:
+            response = getattr(client, method)(path, **kwargs)
+        finally:
+            gate.features[feature_id] = original
+        assert response.status_code == 404, feature_id
+
+
 @pytest.mark.parametrize(
     ("frozen", "expected_prefix"),
     (
@@ -599,9 +814,55 @@ def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(tmp_
     snapshot = service.task_service.repository("demo").get(reference.task_id)
     assert snapshot is not None
     assert snapshot.owner == WEB_TASK_OWNER
-    assert snapshot.source == "web"
+    assert snapshot.source == "local"
     assert snapshot.task_type in {"device_export_device_template_csv"}
     assert "output_path" not in reference.model_dump()
+
+
+def test_device_export_lifecycle_stop_uses_task_site_and_marks_cancelled(tmp_path: Path) -> None:
+    _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    task_id = "device-export-lifecycle"
+    service.task_service.repository("demo").save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type="device_export_device_csv",
+            task_name="设备导出生命周期",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            owner=WEB_TASK_OWNER,
+            source="local",
+            site_name="demo",
+        )
+    )
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    process = FakeProcess()
+    cancel_path = service.paths.runtime_cache_dir / "export_jobs" / f"{task_id}.cancel"
+    cancel_path.parent.mkdir(parents=True, exist_ok=True)
+    service._export_processes[task_id] = process  # type: ignore[assignment]
+    service._export_artifacts[task_id] = {"site": "demo", "cancel_path": cancel_path}
+
+    asyncio.run(service.stop_exports())
+
+    assert process.terminated is True
+    assert cancel_path.read_text(encoding="utf-8") == "cancelled"
+    assert service.task_service.repository("demo").get(task_id).status is TaskState.CANCELLED  # type: ignore[union-attr]
 
 
 def test_securecrt_export_is_finalized_as_controlled_zip(tmp_path: Path) -> None:
@@ -630,38 +891,53 @@ def test_securecrt_export_is_finalized_as_controlled_zip(tmp_path: Path) -> None
     assert result["artifact_name"] == target.name
     assert not staging.exists()
     with zipfile.ZipFile(target) as archive:
-        assert archive.namelist() == ["Group/device.vbs"]
+        assert archive.namelist() == ["Group/device.vbs", "_netconsole_manifest.json"]
         assert archive.read("Group/device.vbs") == b"session"
     staging.mkdir()
     nested = staging / "nested"
     nested.mkdir()
-    with pytest.raises(ValueError, match="绑定"):
+    result = service._finalize_export_artifact(
+        {
+            "artifact_id": artifact_id,
+            "artifact_root": root,
+            "artifact_name": target.name,
+            "export_type": "securecrt_sessions",
+            "target": target,
+            "tmp_path": root / "unused.tmp",
+            "zip_tmp": root / f"{target.name}.tmp",
+            "staging_dir": staging,
+        },
+        {"path": str(nested), "row_count": 1},
+    )
+    assert result["available"] is True
+
+
+def test_device_export_finalizer_rejects_another_artifact_in_controlled_root(tmp_path: Path) -> None:
+    _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    root = service._artifact_root("demo")
+    target = root / "expected.csv"
+    other = root / "other.csv"
+    other.write_text("other", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="未绑定"):
         service._finalize_export_artifact(
             {
-                "artifact_id": artifact_id,
+                "artifact_id": "device-bound-output",
                 "artifact_root": root,
                 "artifact_name": target.name,
-                "export_type": "securecrt_sessions",
+                "export_type": "device_csv",
                 "target": target,
-                "tmp_path": root / "unused.tmp",
-                "zip_tmp": root / f"{target.name}.tmp",
-                "staging_dir": staging,
+                "tmp_path": root / "expected.tmp",
             },
-            {"path": str(nested), "row_count": 1},
+            {"output_path": str(other), "row_count": 1},
         )
+
+    assert other.exists()
+    assert not target.exists()
 
 
 def test_diagnostic_task_result_does_not_expose_file_path(tmp_path: Path, monkeypatch) -> None:
     _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    task_id = "device-diagnostic-safe-result"
-    service.task_service.create_external_task(
-        task_id=task_id,
-        task_type="device_diagnostic_download",
-        task_name="设备诊断信息下载",
-        source="web",
-        site_name="demo",
-        owner=WEB_TASK_OWNER,
-    )
 
     class FakeDiagnosticDownloadService:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -675,49 +951,91 @@ def test_diagnostic_task_result_does_not_expose_file_path(tmp_path: Path, monkey
                 status="success",
                 error_message=None,
                 elapsed_ms=2,
+                success=True,
             )
 
     monkeypatch.setattr(
         "netconsole.services.device_management_web_service.DiagnosticDownloadService",
         FakeDiagnosticDownloadService,
     )
-    service._run_diagnostic_task(task_id, "demo", [mr])
-    snapshot = service.task_service.repository("demo").get(task_id)
-    assert snapshot is not None
-    assert snapshot.status is TaskState.COMPLETED
-    assert "file_path" not in snapshot.result["results"][0]
-    assert "outside" not in str(snapshot.result)
+    result = run_device_diagnostic_download(
+        JobContext(
+            "device-diagnostic-safe-result",
+            "device_diagnostic_download",
+            {"site_name": "demo", "device_uuids": [str(mr.device_uuid)]},
+            None,
+            lambda: False,
+            service.paths,
+        )
+    )
+    assert "file_path" not in result["results"][0]
+    assert "outside" not in str(result)
 
 
-def test_import_completion_applies_success_and_restores_failed_database_with_audit(tmp_path: Path) -> None:
+def test_import_completion_never_restores_whole_database_and_preserves_audit(
+    tmp_path: Path,
+) -> None:
     _client, service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
-    backup = service._backup_device_database("demo")
-    temporary = devices.create(Device(name="待回滚设备", primary_address="192.0.2.99", device_type="SW"))
+    temporary = devices.create(
+        Device(name="待回滚设备", primary_address="192.0.2.99", device_type="SW")
+    )
     staged = service._import_staging_root("demo") / "fake-failure.csv"
+    claimed = service._import_staging_root("demo") / ".claimed-failure.preview.json"
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_text("placeholder", encoding="utf-8")
+    claimed.write_text("{}", encoding="utf-8")
+    service._write_import_audit(
+        "demo",
+        "device-import-failed",
+        {
+            "status": "PENDING",
+            "task_id": "task-failed",
+            "source_file": "devices.csv",
+            "source_sha256": "a" * 64,
+        },
+    )
     service._finish_import(
         "demo",
         "device-import-failed",
-        backup,
         staged,
-        SimpleNamespace(exit_code=1, cancelled=False, payload={"result": {"errors": ["fake failure"], "skipped": 0}}),
+        claimed,
+        SimpleNamespace(
+            exit_code=1,
+            cancelled=False,
+            payload={"result": {"errors": ["fake failure"], "skipped": 0}},
+        ),
     )
-    assert devices.get_by_uuid(str(temporary.device_uuid)) is None
-    failed_audit = service.paths.site_imports_dir("demo") / "device_import_audit" / "device-import-failed.json"
-    assert '"status": "ROLLED_BACK"' in failed_audit.read_text(encoding="utf-8")
+    assert devices.get_by_uuid(str(temporary.device_uuid)) is not None
+    failed_audit = (
+        service.paths.site_imports_dir("demo")
+        / "device_import_audit"
+        / "device-import-failed.json"
+    )
+    failed_payload = json.loads(failed_audit.read_text(encoding="utf-8"))
+    assert failed_payload["status"] == "FAILED"
+    assert failed_payload["task_id"] == "task-failed"
+    assert failed_payload["source_sha256"] == "a" * 64
 
-    applied_backup = service._backup_device_database("demo")
     staged = service._import_staging_root("demo") / "fake-applied.csv"
+    claimed = service._import_staging_root("demo") / ".claimed-applied.preview.json"
     staged.write_text("placeholder", encoding="utf-8")
+    claimed.write_text("{}", encoding="utf-8")
     service._finish_import(
         "demo",
         "device-import-applied",
-        applied_backup,
         staged,
-        SimpleNamespace(exit_code=0, cancelled=False, payload={"result": {"created": 1, "skipped": 0, "errors": []}}),
+        claimed,
+        SimpleNamespace(
+            exit_code=0,
+            cancelled=False,
+            payload={"result": {"created": 1, "skipped": 0, "errors": []}},
+        ),
     )
-    applied_audit = service.paths.site_imports_dir("demo") / "device_import_audit" / "device-import-applied.json"
+    applied_audit = (
+        service.paths.site_imports_dir("demo")
+        / "device_import_audit"
+        / "device-import-applied.json"
+    )
     assert '"status": "APPLIED"' in applied_audit.read_text(encoding="utf-8")
 
 
@@ -726,11 +1044,101 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [str(mr.device_uuid)]})
     assert refreshed.status_code == 202
     assert refreshed.json()["action"] == "batch_refresh_details"
-    assert adapter.jobs[-1].task_type == "device_detail_load_all"
+    assert adapter.jobs[-1].task_type == "device_detail_collect"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
-    assert adapter.jobs[-1].params["task_source"] == "web"
+    assert adapter.jobs[-1].params["task_source"] == "local"
 
     terminal = client.post(f"/api/device-management/devices/{mr.device_uuid}/external-terminal", json={"terminal_type": "securecrt"})
     assert terminal.status_code == 200
     assert terminal.json() == {"native_action": "launchTerminal", "device_uuid": str(mr.device_uuid), "terminal_type": "securecrt", "requires_desktop_bridge": True}
     assert "secret-password" not in terminal.text
+
+
+def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    started = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    task_id = started.json()["tasks"][0]["task_id"]
+
+    assert client.get(f"/api/device-management/tasks/{task_id}").status_code == 200
+    cancelled = client.post(f"/api/device-management/tasks/{task_id}/cancel")
+    assert cancelled.status_code == 200
+    assert adapter.cancelled == [task_id]
+
+    now = datetime.now(UTC).isoformat()
+    base = {
+        "task_type": "device_detail_collect",
+        "task_name": "隔离测试",
+        "status": TaskState.PENDING,
+        "created_time": now,
+        "updated_time": now,
+        "owner": WEB_TASK_OWNER,
+        "source": "local",
+        "site_name": "demo",
+    }
+    invalid_tasks = {
+        "wrong-owner": {"owner": "other"},
+        "wrong-source": {"source": "web"},
+        "wrong-site": {"site_name": "other"},
+        "wrong-type": {"task_type": "config_collect"},
+    }
+    for invalid_id, overrides in invalid_tasks.items():
+        service.task_service.repository("demo").save(
+            TaskSnapshot(task_id=invalid_id, **{**base, **overrides})
+        )
+        assert (
+            client.get(f"/api/device-management/tasks/{invalid_id}").status_code == 404
+        )
+        assert (
+            client.post(f"/api/device-management/tasks/{invalid_id}/cancel").status_code
+            == 404
+        )
+
+
+def test_device_detail_collect_handler_uses_formal_collector_without_real_devices(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    collected: list[str] = []
+
+    def fake_collect(device: Device, site: str, *, repository, paths):
+        collected.append(str(device.device_uuid))
+        assert site == "demo"
+        assert paths is service.paths
+        assert repository is not None
+        return SimpleNamespace(
+            success=True,
+            collect_run_uuid=f"run-{device.name}",
+            facts_updated=True,
+            interfaces_updated=1,
+            optical_modules_updated=0,
+            lldp_neighbors_updated=0,
+            error_message="",
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        fake_collect,
+    )
+    result = run_device_detail_collect(
+        JobContext(
+            "device-detail-formal-handler",
+            "device_detail_collect",
+            {
+                "site_name": "demo",
+                "device_uuids": [str(mr.device_uuid), str(sw.device_uuid)],
+            },
+            None,
+            lambda: False,
+            service.paths,
+        )
+    )
+
+    assert set(collected) == {str(mr.device_uuid), str(sw.device_uuid)}
+    assert result["total"] == 2
+    assert result["success"] == 2
+    assert result["failed"] == 0

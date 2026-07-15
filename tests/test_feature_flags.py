@@ -51,6 +51,19 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.file_management"].parent_id == "module.file_management"
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
+    for feature_id in (
+        "web.device_management_write",
+        "web.device_management_collect",
+        "web.device_management_import",
+        "web.device_management_export",
+        "web.device_management_desktop",
+    ):
+        feature = FEATURE_BY_ID[feature_id]
+        assert feature.parent_id == "web.device_management"
+        assert feature.status is FeatureStatus.DEVELOPMENT
+        assert feature.default_visible is False
+        assert feature.default_enabled is False
+        assert feature.default_client_package is False
     assert FEATURE_BY_ID["web.config_collection_download"].parent_id == "web.config_collection"
     assert FEATURE_BY_ID["web.file_management_download"].parent_id == "web.file_management"
     assert FEATURE_BY_ID["web.network_tools_tcp_port_test"].parent_id == "web.network_tools_toolbox"

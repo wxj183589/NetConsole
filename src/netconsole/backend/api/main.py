@@ -194,12 +194,13 @@ def create_app(
             yield
         finally:
             cleanup = await asyncio.gather(
+                device_management_service.stop_exports(),
                 asyncio.to_thread(web_process_adapter.shutdown),
                 ac_mesh_link_refresh_service.stop(),
                 traffic_service.stop(),
                 return_exceptions=True,
             )
-            for component, result in zip(("local_process", "ac_mesh_link", "traffic"), cleanup, strict=True):
+            for component, result in zip(("device_exports", "local_process", "ac_mesh_link", "traffic"), cleanup, strict=True):
                 if isinstance(result, BaseException):
                     app_logger.log_error(
                         "WEB_LIFESPAN_STOP_FAILED",

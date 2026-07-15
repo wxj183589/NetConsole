@@ -63,6 +63,36 @@ class DeviceRepository:
             conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
             conn.commit()
 
+    def delete_many_by_uuid(self, device_uuids: list[str]) -> list[str]:
+        """在一个事务中校验并删除整批设备。"""
+
+        values = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in device_uuids
+                if str(value or "").strip()
+            )
+        )
+        if not values:
+            return []
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"SELECT device_uuid FROM devices WHERE device_uuid IN ({placeholders})",
+                values,
+            ).fetchall()
+            found = {str(row["device_uuid"]) for row in rows}
+            missing = [value for value in values if value not in found]
+            if missing:
+                conn.rollback()
+                raise KeyError(missing[0])
+            conn.execute(
+                f"DELETE FROM devices WHERE device_uuid IN ({placeholders})", values
+            )
+            conn.commit()
+        return values
+
     def exists_by_uuid(self, device_uuid: str) -> bool:
         with self.database.connect() as conn:
             row = conn.execute("SELECT 1 FROM devices WHERE device_uuid = ? LIMIT 1", (device_uuid,)).fetchone()

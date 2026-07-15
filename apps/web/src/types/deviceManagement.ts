@@ -174,6 +174,9 @@ export interface DeviceTaskReference {
   action: string
   artifact_id: string
   available: boolean
+  sha256: string
+  size_bytes: number
+  message: string
 }
 
 export interface DeviceTaskBatch {

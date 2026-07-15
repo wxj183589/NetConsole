@@ -37,6 +37,27 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.list() == []
 
 
+def test_delete_many_by_uuid_is_all_or_nothing(tmp_path):
+    repository = make_repository(tmp_path)
+    first = repository.create(Device(name="SW1", primary_address="10.0.0.1"))
+    second = repository.create(Device(name="SW2", primary_address="10.0.0.2"))
+
+    try:
+        repository.delete_many_by_uuid([str(first.device_uuid), Device.new_uuid()])
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("missing UUID should abort the full batch")
+
+    assert repository.get_by_uuid(str(first.device_uuid)) is not None
+    assert repository.get_by_uuid(str(second.device_uuid)) is not None
+
+    deleted = repository.delete_many_by_uuid([str(first.device_uuid), str(second.device_uuid)])
+
+    assert deleted == [str(first.device_uuid), str(second.device_uuid)]
+    assert repository.list() == []
+
+
 def test_device_repository_list_uses_name_natural_order(tmp_path):
     repository = make_repository(tmp_path)
     repository.create(Device(name="LC10", primary_address="10.0.0.10"))

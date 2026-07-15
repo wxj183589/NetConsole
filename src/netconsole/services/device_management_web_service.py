@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import math
@@ -70,6 +71,7 @@ from netconsole.services.device_group_service import DeviceGroupService
 from netconsole.services.device_import_export import DeviceImportExportService
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService, run_batch_diagnostic_download
 from netconsole.services.export.export_job import ExportJob
+from netconsole.services.file_contract import attach_export_metadata
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -81,6 +83,7 @@ from netconsole.utils.natural_sort import natural_text_key
 DEVICE_CONNECTION_TEST_TASK_TYPE = "device_connection_test"
 ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 DEVICE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
+DEVICE_IMPORT_CLAIM_GRACE_SECONDS = 60
 DEVICE_DELETE_TOKEN_TTL_SECONDS = 5 * 60
 MAX_DEVICE_IMPORT_BYTES = 16 * 1024 * 1024
 WEB_TASK_OWNER = "web_device_management"
@@ -94,17 +97,18 @@ EXPORT_TASK_TYPES = frozenset(
         "device_export_omnipeek_name_table",
     }
 )
-SENSITIVE_DEVICE_FIELDS = {
-    "password",
-    "ssh_password",
-    "telnet_password",
-    "snmp_ro_community",
-    "snmp_rw_community",
-    "snmpv3_auth_password",
-    "snmpv3_priv_password",
-    "tunnel1_password",
-    "tunnel2_password",
-}
+DEVICE_COLLECT_TASK_TYPE = "device_detail_collect"
+DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
+DEVICE_IMPORT_TASK_TYPE = "device_csv_import"
+DEVICE_TASK_TYPES = frozenset(
+    {
+        DEVICE_CONNECTION_TEST_TASK_TYPE,
+        DEVICE_COLLECT_TASK_TYPE,
+        DEVICE_DIAGNOSTIC_TASK_TYPE,
+        DEVICE_IMPORT_TASK_TYPE,
+        *EXPORT_TASK_TYPES,
+    }
+)
 SORT_FIELDS = {
     "name": lambda item: natural_text_key(item.name),
     "system_name": lambda item: natural_text_key(item.system_name),
@@ -131,14 +135,20 @@ class DeviceManagementWebService:
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
         self._start_lock = RLock()
         self._mutation_lock = RLock()
-        self._import_previews: dict[str, dict[str, object]] = {}
         self._delete_tokens: dict[str, dict[str, object]] = {}
         self._export_processes: dict[str, subprocess.Popen[str]] = {}
         self._export_artifacts: dict[str, dict[str, object]] = {}
+        self._reconciled_import_sites: set[str] = set()
 
     def current_site_id(self) -> str:
         site = self.site_name or SiteManager(self.paths).get_current_site()
-        return SiteManager(self.paths).validate_site_name(str(site or "demo"))
+        selected = SiteManager(self.paths).validate_site_name(str(site or "demo"))
+        with self._mutation_lock:
+            if selected not in self._reconciled_import_sites:
+                self._reconcile_import_audits(selected)
+                self._cleanup_expired_import_previews(selected)
+                self._reconciled_import_sites.add(selected)
+        return selected
 
     def list_devices(
         self,
@@ -272,12 +282,7 @@ class DeviceManagementWebService:
             raise ValueError("删除确认 token 无效或已过期")
         if tuple(uuids) != tuple(token.get("device_uuids") or ()):
             raise ValueError("删除确认 token 与设备范围不匹配")
-        deleted: list[str] = []
-        for device_uuid in uuids:
-            device = self._require_device(device_repository, device_uuid)
-            if device.id is not None:
-                device_repository.delete(int(device.id))
-                deleted.append(str(device_uuid))
+        deleted = device_repository.delete_many_by_uuid(uuids)
         return DeviceDeleteDTO(deleted=len(deleted), device_uuids=deleted)
 
     def create_group(self, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
@@ -310,27 +315,28 @@ class DeviceManagementWebService:
     def start_batch_refresh(self, payload: DeviceBatchRefreshRequestDTO) -> DeviceTaskBatchDTO:
         site = self.current_site_id()
         devices, _groups, _facts = self._repositories(site)
-        references: list[DeviceTaskReferenceDTO] = []
-        for device_uuid in self._unique_ids(payload.device_uuids):
-            device = self._require_device(devices, device_uuid)
-            task_id = f"device-detail-{uuid.uuid4().hex}"
-            job = BackgroundJob(
-                job_id=task_id,
-                task_type="device_detail_load_all",
-                params={
-                    "site_name": site,
-                    "db_path": str(self.paths.site_db_path(site)),
-                    "device": self._safe_device_record(device),
-                    "device_uuid": device_uuid,
-                    "task_name": f"设备详情刷新 · {device.name or device_uuid}",
-                    "owner": WEB_TASK_OWNER,
-                    "task_source": "web",
-                },
-            )
-            self.process_adapter.start_job(job)
-            snapshot = self.task_service.repository(site).get(task_id)
-            if snapshot is not None:
-                references.append(DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action="batch_refresh_details"))
+        device_uuids = self._unique_ids(payload.device_uuids)
+        for device_uuid in device_uuids:
+            self._require_device(devices, device_uuid)
+        task_id = f"device-detail-{uuid.uuid4().hex}"
+        job = BackgroundJob(
+            job_id=task_id,
+            task_type=DEVICE_COLLECT_TASK_TYPE,
+            params={
+                "site_name": site,
+                "device_uuids": device_uuids,
+                "task_name": f"设备详情批量采集 · {len(device_uuids)} 台",
+                "owner": WEB_TASK_OWNER,
+                "task_source": "local",
+                "device": ",".join(device_uuids),
+                "app_root": str(self.paths.app_root),
+                "data_root": str(self.paths.data_root),
+                "_cancel_grace_ms": 2000,
+            },
+        )
+        self.process_adapter.start_job(job)
+        snapshot = self.task_service.repository(site).get(task_id)
+        references = [] if snapshot is None else [self._task_reference(snapshot)]
         return DeviceTaskBatchDTO(action="batch_refresh_details", tasks=references)
 
     def preview_import(self, filename: str, stream: BinaryIO) -> DeviceImportPreviewDTO:
@@ -369,14 +375,22 @@ class DeviceManagementWebService:
         except Exception as exc:
             errors.append(str(exc) or exc.__class__.__name__)
         token = secrets.token_urlsafe(32)
-        with self._mutation_lock:
-            self._import_previews[token] = {
+        self._write_import_preview(
+            site,
+            token,
+            {
                 "site": site,
-                "path": str(staged_path),
+                "staged_name": staged_path.name,
+                "source_name": source_name,
                 "sha256": source_sha256,
-                "expires": datetime.now(UTC).timestamp() + DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
-                "errors": tuple(errors),
-            }
+                "expires": datetime.now(UTC).timestamp()
+                + DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
+                "row_count": row_count,
+                "columns": columns,
+                "errors": errors,
+                "warnings": warnings,
+            },
+        )
         return DeviceImportPreviewDTO(
             preview_token=token,
             source_name=source_name,
@@ -390,11 +404,20 @@ class DeviceManagementWebService:
     def confirm_import(self, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         self._cleanup_expired_import_previews(site)
-        with self._mutation_lock:
-            preview = self._import_previews.pop(payload.preview_token, None)
-        if not preview or preview.get("site") != site or float(preview.get("expires") or 0) < datetime.now(UTC).timestamp():
+        preview, claimed_manifest = self._claim_import_preview(
+            site, payload.preview_token
+        )
+        if (
+            preview.get("site") != site
+            or float(preview.get("expires") or 0) < datetime.now(UTC).timestamp()
+        ):
+            self._remove_controlled_file(
+                claimed_manifest, self._import_staging_root(site)
+            )
             raise ValueError("导入预览 token 无效或已过期")
-        path = Path(str(preview.get("path") or ""))
+        path = self._import_staging_root(site) / str(preview.get("staged_name") or "")
+        operation_id = f"device-import-{uuid.uuid4().hex}"
+        task_id = f"device-import-{uuid.uuid4().hex}"
         try:
             self._assert_controlled_path(path, self._import_staging_root(site))
             if tuple(preview.get("errors") or ()):
@@ -402,47 +425,101 @@ class DeviceManagementWebService:
             if self._file_sha256(path) != str(preview.get("sha256") or ""):
                 raise ValueError("CSV 文件已变化，请重新预览")
             backup_path = self._backup_device_database(site)
-            operation_id = f"device-import-{uuid.uuid4().hex}"
-            self._write_import_audit(site, operation_id, {"status": "PENDING", "source_file": path.name, "source_sha256": preview.get("sha256"), "backup_reference": str(backup_path)})
-            task_id = f"device-import-{uuid.uuid4().hex}"
+            self._write_import_audit(
+                site,
+                operation_id,
+                {
+                    "status": "PENDING",
+                    "task_id": task_id,
+                    "source_file": str(preview.get("source_name") or path.name),
+                    "source_sha256": preview.get("sha256"),
+                    "backup_reference": str(backup_path),
+                },
+            )
+            self._write_json_atomic(
+                claimed_manifest,
+                {
+                    **preview,
+                    "claimed_at": datetime.now(UTC).timestamp(),
+                    "operation_id": operation_id,
+                    "task_id": task_id,
+                },
+                self._import_staging_root(site),
+            )
             job = BackgroundJob(
                 job_id=task_id,
-                task_type="device_csv_import",
+                task_type=DEVICE_IMPORT_TASK_TYPE,
                 params={
                     "path": str(path),
                     "db_path": str(self.paths.site_db_path(site)),
                     "site_name": site,
                     "task_name": f"设备 CSV 导入 · {path.name}",
                     "owner": WEB_TASK_OWNER,
-                    "task_source": "web",
+                    "task_source": "local",
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "_cancel_grace_ms": 1000,
                 },
             )
-            self.process_adapter.start_job(job, on_complete=lambda completion: self._finish_import(site, operation_id, backup_path, path, completion))
+            self.process_adapter.start_job(
+                job,
+                on_complete=lambda completion: self._finish_import(
+                    site,
+                    operation_id,
+                    path,
+                    claimed_manifest,
+                    completion,
+                ),
+            )
             snapshot = self.task_service.repository(site).get(task_id)
             if snapshot is None:
                 raise RuntimeError("设备导入任务创建后未写入任务中心")
-            return DeviceTaskReferenceDTO(task_id=task_id, task_status=snapshot.status.value, action="import_csv")
-        except Exception:
+            return self._task_reference(snapshot)
+        except Exception as exc:
+            audit_path = self._import_audit_path(site, operation_id)
+            if audit_path.exists():
+                self._write_import_audit(
+                    site,
+                    operation_id,
+                    {
+                        "status": "FAILED",
+                        "task_id": task_id,
+                        "error_summary": sanitize_sensitive_text(str(exc)),
+                    },
+                )
             self._remove_controlled_file(path, self._import_staging_root(site))
+            self._remove_controlled_file(
+                claimed_manifest, self._import_staging_root(site)
+            )
             raise
 
     def start_diagnostic_download(self, device_uuids: list[str]) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         devices, _groups, _facts = self._repositories(site)
-        selected = [self._require_device(devices, value) for value in self._unique_ids(device_uuids)]
+        selected_uuids = self._unique_ids(device_uuids)
+        for value in selected_uuids:
+            self._require_device(devices, value)
         task_id = f"device-diagnostic-{uuid.uuid4().hex}"
-        self.task_service.create_external_task(
-            task_id=task_id,
-            task_type="device_diagnostic_download",
-            task_name="设备诊断信息下载",
-            source="web",
-            site_name=site,
-            owner=WEB_TASK_OWNER,
-            device=",".join(str(device.device_uuid or "") for device in selected),
+        job = BackgroundJob(
+            job_id=task_id,
+            task_type=DEVICE_DIAGNOSTIC_TASK_TYPE,
+            params={
+                "site_name": site,
+                "device_uuids": selected_uuids,
+                "task_name": f"设备诊断信息下载 · {len(selected_uuids)} 台",
+                "owner": WEB_TASK_OWNER,
+                "task_source": "local",
+                "device": ",".join(selected_uuids),
+                "app_root": str(self.paths.app_root),
+                "data_root": str(self.paths.data_root),
+                "_cancel_grace_ms": 2000,
+            },
         )
-        thread = threading.Thread(target=self._run_diagnostic_task, args=(task_id, site, selected), name=f"device-diagnostic-{task_id}", daemon=True)
-        thread.start()
-        return DeviceTaskReferenceDTO(task_id=task_id, task_status=TaskState.PENDING.value, action="diagnostic_download")
+        self.process_adapter.start_job(job)
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is None:
+            raise RuntimeError("设备诊断任务创建后未写入任务中心")
+        return self._task_reference(snapshot)
 
     def external_terminal_action(self, device_uuid: str, payload: DeviceExternalTerminalRequestDTO) -> DeviceExternalTerminalActionDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
@@ -452,7 +529,15 @@ class DeviceManagementWebService:
     def start_csv_export(self, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()
         filters = self._export_filters(payload)
-        job_payload = {"db_path": str(self.paths.site_db_path(site)), "site_name": site, "filters": filters}
+        job_payload = {
+            "db_path": str(self.paths.site_db_path(site)),
+            "site_name": site,
+            "filters": filters,
+            "selected_device_uuids": self._unique_ids(payload.device_uuids)
+            if payload.device_uuids
+            else [],
+            "omit_credentials": True,
+        }
         return self._start_export(site, "device_csv", "csv", job_payload, "export_csv")
 
     def start_template_export(self) -> DeviceTaskReferenceDTO:
@@ -485,15 +570,7 @@ class DeviceManagementWebService:
 
     def get_export_task(self, task_id: str) -> DeviceTaskReferenceDTO:
         snapshot = self._require_web_export_task(task_id)
-        result = dict(snapshot.result or {})
-        spec = self._export_artifacts.get(task_id) or {}
-        return DeviceTaskReferenceDTO(
-            task_id=task_id,
-            task_status=snapshot.status.value,
-            action=snapshot.task_type.removeprefix("device_export_"),
-            artifact_id=str(result.get("artifact_id") or spec.get("artifact_id") or ""),
-            available=bool(result.get("available")),
-        )
+        return self._task_reference(snapshot)
 
     def open_export_artifact(self, task_id: str, artifact_id: str) -> tuple[Path, str]:
         snapshot = self._require_web_export_task(task_id)
@@ -505,9 +582,57 @@ class DeviceManagementWebService:
         name = self._validate_artifact_name(str(result.get("artifact_name") or ""))
         artifact_root = self._artifact_root(snapshot.site_name)
         path = self._assert_controlled_path(artifact_root / name, artifact_root)
+        expected_size = int(result.get("size_bytes") or -1)
+        expected_sha256 = str(result.get("sha256") or "")
+        if expected_size < 0 or len(expected_sha256) != 64:
+            raise ValueError("导出文件完整性信息缺失")
+        if path.stat().st_size != expected_size or not secrets.compare_digest(
+            self._file_sha256(path), expected_sha256
+        ):
+            raise ValueError("导出文件完整性校验失败")
         return path, path.name
 
-    def _device_from_write(self, payload: DeviceWriteRequestDTO, existing: Device | None, groups: DeviceGroupRepository) -> Device:
+    def get_task(self, task_id: str) -> DeviceTaskReferenceDTO:
+        return self._task_reference(self._require_web_task(task_id))
+
+    def cancel_task(self, task_id: str) -> DeviceTaskReferenceDTO:
+        snapshot = self._require_web_task(task_id)
+        if snapshot.status in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
+            return self._task_reference(snapshot)
+        if snapshot.task_type in EXPORT_TASK_TYPES:
+            spec = self._export_artifacts.get(task_id)
+            if spec is not None:
+                Path(str(spec["cancel_path"])).write_text("cancelled", encoding="utf-8")
+            self.task_service.record_external_event(
+                task_id,
+                "state",
+                {"state": TaskState.STOPPING.value, "message": "已请求停止导出任务"},
+                site_name=snapshot.site_name,
+            )
+            process = self._export_processes.get(task_id)
+            if process is not None:
+                threading.Thread(
+                    target=self._stop_export_after_grace,
+                    args=(task_id, snapshot.site_name, process),
+                    name=f"device-export-cancel-{task_id}",
+                    daemon=True,
+                ).start()
+        else:
+            cancel_job = getattr(self.process_adapter, "cancel_job", None)
+            if not callable(cancel_job) or not cancel_job(task_id):
+                self.task_service.cancel_task(task_id)
+        return self._task_reference(self._require_web_task(task_id))
+
+    def _device_from_write(
+        self,
+        payload: DeviceWriteRequestDTO,
+        existing: Device | None,
+        groups: DeviceGroupRepository,
+    ) -> Device:
         values = payload.model_dump()
         for field in ("name", "system_name", "station", "location", "device_vendor", "device_type", "primary_address", "backup_address", "remark"):
             values[field] = str(values.get(field) or "").strip()
@@ -527,14 +652,6 @@ class DeviceManagementWebService:
             record.pop("id", None)
             record.pop("device_uuid", None)
         return Device.from_mapping(record)
-
-    @staticmethod
-    def _safe_device_record(device: Device) -> dict[str, object | None]:
-        record = device.to_record()
-        for field in SENSITIVE_DEVICE_FIELDS:
-            if field in record:
-                record[field] = None
-        return record
 
     @staticmethod
     def _unique_ids(values: list[str]) -> list[str]:
@@ -662,17 +779,147 @@ class DeviceManagementWebService:
             raise
         return path, digest.hexdigest()
 
+    @staticmethod
+    def _preview_token_digest(token: str) -> str:
+        return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+    def _preview_manifest_path(self, site: str, token: str) -> Path:
+        return (
+            self._import_staging_root(site)
+            / f"device-preview-{self._preview_token_digest(token)}.preview.json"
+        )
+
+    def _write_json_atomic(
+        self, path: Path, payload: dict[str, object], root: Path
+    ) -> None:
+        target = self._assert_controlled_path(path, root, require_exists=False)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        self._assert_controlled_path(temporary, root, require_exists=False)
+        try:
+            data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            self._remove_controlled_file(temporary, root)
+
+    def _write_import_preview(
+        self, site: str, token: str, payload: dict[str, object]
+    ) -> None:
+        root = self._import_staging_root(site)
+        manifest = self._preview_manifest_path(site, token)
+        self._write_json_atomic(manifest, payload, root)
+
+    def _claim_import_preview(
+        self, site: str, token: str
+    ) -> tuple[dict[str, object], Path]:
+        root = self._import_staging_root(site)
+        manifest = self._preview_manifest_path(site, token)
+        claimed = root / f".claimed-{uuid.uuid4().hex}.preview.json"
+        try:
+            manifest.rename(claimed)
+        except FileNotFoundError as exc:
+            raise ValueError("导入预览 token 无效或已过期") from exc
+        try:
+            payload = json.loads(claimed.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("导入预览状态已损坏")
+            return dict(payload), claimed
+        except Exception:
+            self._remove_controlled_file(claimed, root)
+            raise
+
     def _cleanup_expired_import_previews(self, site: str) -> None:
         now = datetime.now(UTC).timestamp()
-        expired: list[Path] = []
-        with self._mutation_lock:
-            for token, preview in list(self._import_previews.items()):
-                if preview.get("site") == site and float(preview.get("expires") or 0) < now:
-                    self._import_previews.pop(token, None)
-                    expired.append(Path(str(preview.get("path") or "")))
         staging_root = self._import_staging_root(site)
-        for path in expired:
-            self._remove_controlled_file(path, staging_root)
+        referenced: set[str] = set()
+        for manifest in staging_root.glob("device-preview-*.preview.json"):
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                staged_name = self._validate_artifact_name(
+                    str(payload.get("staged_name") or "")
+                )
+                referenced.add(staged_name)
+                expired = float(payload.get("expires") or 0) < now
+            except Exception:
+                expired = True
+                staged_name = ""
+            if expired:
+                if staged_name:
+                    self._remove_controlled_file(
+                        staging_root / staged_name, staging_root
+                    )
+                    referenced.discard(staged_name)
+                self._remove_controlled_file(manifest, staging_root)
+        repository = self.task_service.repository(site)
+        for manifest in staging_root.glob(".claimed-*.preview.json"):
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("site") != site:
+                    raise ValueError("导入认领状态无效")
+                staged_name = self._validate_artifact_name(
+                    str(payload.get("staged_name") or "")
+                )
+                task_id = str(payload.get("task_id") or "")
+                operation_id = str(payload.get("operation_id") or "")
+                claimed_at = float(
+                    payload.get("claimed_at") or manifest.stat().st_mtime
+                )
+                snapshot = repository.get(task_id) if task_id else None
+                owned_task = snapshot is not None and self._is_owned_import_task(
+                    snapshot, site
+                )
+                if owned_task and snapshot.status in ACTIVE_TASK_STATES:
+                    referenced.add(staged_name)
+                    continue
+                if owned_task and snapshot.status in {
+                    TaskState.COMPLETED,
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                }:
+                    if self._valid_import_operation_id(operation_id):
+                        self._reconcile_import_audit_snapshot(
+                            site, operation_id, snapshot
+                        )
+                elif now < claimed_at + DEVICE_IMPORT_CLAIM_GRACE_SECONDS:
+                    referenced.add(staged_name)
+                    continue
+                elif self._valid_import_operation_id(operation_id):
+                    self._write_import_audit(
+                        site,
+                        operation_id,
+                        {
+                            "status": "FAILED",
+                            "task_id": task_id,
+                            "error_summary": "设备导入任务状态不存在，已回收暂存文件",
+                        },
+                    )
+                self._remove_controlled_file(staging_root / staged_name, staging_root)
+                self._remove_controlled_file(manifest, staging_root)
+            except Exception:
+                try:
+                    stale = (
+                        manifest.stat().st_mtime
+                        < now - DEVICE_IMPORT_PREVIEW_TTL_SECONDS
+                    )
+                except OSError:
+                    stale = False
+                if stale:
+                    self._remove_controlled_file(manifest, staging_root)
+        cutoff = now - DEVICE_IMPORT_PREVIEW_TTL_SECONDS
+        for staged in staging_root.glob("device-preview-*.csv"):
+            try:
+                if staged.name not in referenced and staged.stat().st_mtime < cutoff:
+                    self._remove_controlled_file(staged, staging_root)
+            except OSError:
+                continue
 
     def _backup_device_database(self, site: str) -> Path:
         source_path = self.paths.site_db_path(site).resolve()
@@ -687,41 +934,136 @@ class DeviceManagementWebService:
                 raise sqlite3.DatabaseError("设备数据库备份完整性校验失败")
         return target
 
-    def _restore_device_database(self, backup_path: Path, site: str) -> None:
-        target = self.paths.site_db_path(site).resolve()
-        with connect_sqlite(backup_path) as source, connect_sqlite(target) as destination:
-            source.backup(destination)
-            destination.commit()
-            integrity = destination.execute("PRAGMA integrity_check").fetchone()
-            if not integrity or str(integrity[0]).casefold() != "ok":
-                raise sqlite3.DatabaseError("设备数据库回滚完整性校验失败")
+    def _import_audit_path(self, site: str, operation_id: str) -> Path:
+        return (
+            self.paths.site_imports_dir(site)
+            / "device_import_audit"
+            / f"{operation_id}.json"
+        )
 
-    def _write_import_audit(self, site: str, operation_id: str, payload: dict[str, object]) -> None:
-        path = self.paths.site_imports_dir(site) / "device_import_audit" / f"{operation_id}.json"
+    def _write_import_audit(
+        self, site: str, operation_id: str, payload: dict[str, object]
+    ) -> None:
+        path = self._import_audit_path(site, operation_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"operation_id": operation_id, **payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+        current: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                current = dict(loaded) if isinstance(loaded, dict) else {}
+            except Exception:
+                current = {}
+        now = datetime.now(UTC).isoformat()
+        merged = {
+            "operation_id": operation_id,
+            "created_at": current.get("created_at") or now,
+            **current,
+            **payload,
+            "updated_at": now,
+        }
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temporary, path)
 
-    def _finish_import(self, site: str, operation_id: str, backup_path: Path, staged_path: Path, completion: object) -> None:
+    def _finish_import(
+        self,
+        site: str,
+        operation_id: str,
+        staged_path: Path,
+        claimed_manifest: Path,
+        completion: object,
+    ) -> None:
         payload = dict(getattr(completion, "payload", None) or {})
         result = dict(payload.get("result") or {})
         exit_code = getattr(completion, "exit_code", None)
+        cancelled = bool(getattr(completion, "cancelled", False))
         failed = (
             exit_code is None
             or int(exit_code) != 0
-            or bool(getattr(completion, "cancelled", False))
             or bool(result.get("errors"))
             or int(result.get("skipped") or 0) > 0
         )
-        audit: dict[str, object] = {"status": "ROLLED_BACK" if failed else "APPLIED", "backup_reference": str(backup_path), "created_count": int(result.get("created") or 0), "skipped_count": int(result.get("skipped") or 0)}
+        audit: dict[str, object] = {
+            "status": "CANCELLED" if cancelled else "FAILED" if failed else "APPLIED",
+            "created_count": int(result.get("created") or 0),
+            "skipped_count": int(result.get("skipped") or 0),
+        }
+        if failed or cancelled:
+            audit["error_summary"] = sanitize_sensitive_text(
+                str(result.get("error") or "设备导入任务未成功提交全部数据")
+            )
         try:
-            if failed:
-                try:
-                    self._restore_device_database(backup_path, site)
-                except Exception as exc:
-                    audit.update({"status": "ROLLBACK_FAILED", "error_summary": str(exc)})
             self._write_import_audit(site, operation_id, audit)
         finally:
             self._remove_controlled_file(staged_path, self._import_staging_root(site))
+            self._remove_controlled_file(
+                claimed_manifest, self._import_staging_root(site)
+            )
+
+    def _reconcile_import_audits(self, site: str) -> None:
+        root = self.paths.site_imports_dir(site) / "device_import_audit"
+        if not root.is_dir():
+            return
+        repository = self.task_service.repository(site)
+        for path in root.glob("device-import-*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("status") != "PENDING":
+                    continue
+                task_id = str(payload.get("task_id") or "")
+                snapshot = repository.get(task_id)
+                if (
+                    snapshot is None
+                    or not self._is_owned_import_task(snapshot, site)
+                    or snapshot.status
+                    not in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
+                ):
+                    continue
+                self._reconcile_import_audit_snapshot(
+                    site,
+                    str(payload.get("operation_id") or path.stem),
+                    snapshot,
+                )
+            except Exception:
+                continue
+
+    def _reconcile_import_audit_snapshot(
+        self, site: str, operation_id: str, snapshot: TaskSnapshot
+    ) -> None:
+        result = dict(snapshot.result or {})
+        self._write_import_audit(
+            site,
+            operation_id,
+            {
+                "status": "APPLIED"
+                if snapshot.status is TaskState.COMPLETED
+                else snapshot.status.value,
+                "created_count": int(result.get("created") or 0),
+                "skipped_count": int(result.get("skipped") or 0),
+                "error_summary": sanitize_sensitive_text(snapshot.error_message),
+            },
+        )
+
+    @staticmethod
+    def _is_owned_import_task(snapshot: TaskSnapshot, site: str) -> bool:
+        return (
+            snapshot.site_name == site
+            and snapshot.owner == WEB_TASK_OWNER
+            and snapshot.source == "local"
+            and snapshot.task_type == DEVICE_IMPORT_TASK_TYPE
+        )
+
+    @staticmethod
+    def _valid_import_operation_id(value: str) -> bool:
+        prefix = "device-import-"
+        suffix = value.removeprefix(prefix)
+        return (
+            value.startswith(prefix)
+            and len(suffix) == 32
+            and all(character in "0123456789abcdef" for character in suffix)
+        )
 
     def _export_filters(self, payload: DeviceExportRequestDTO) -> dict[str, object | None]:
         return {
@@ -731,19 +1073,53 @@ class DeviceManagementWebService:
             "group_filter": payload.group_filter,
         }
 
-    def _require_web_export_task(self, task_id: str):
+    def _require_web_task(
+        self, task_id: str, allowed_types: frozenset[str] = DEVICE_TASK_TYPES
+    ) -> TaskSnapshot:
         snapshot = self.task_service.repository(self.current_site_id()).get(task_id)
         if (
             snapshot is None
             or snapshot.site_name != self.current_site_id()
             or snapshot.owner != WEB_TASK_OWNER
-            or snapshot.source != "web"
-            or snapshot.task_type not in EXPORT_TASK_TYPES
+            or snapshot.source != "local"
+            or snapshot.task_type not in allowed_types
         ):
             raise KeyError(task_id)
         return snapshot
 
-    def _start_export(self, site: str, export_type: str, extension: str, payload: dict[str, object], action: str) -> DeviceTaskReferenceDTO:
+    def _require_web_export_task(self, task_id: str) -> TaskSnapshot:
+        return self._require_web_task(task_id, EXPORT_TASK_TYPES)
+
+    def _task_reference(self, snapshot: TaskSnapshot) -> DeviceTaskReferenceDTO:
+        result = dict(snapshot.result or {})
+        spec = self._export_artifacts.get(snapshot.task_id) or {}
+        actions = {
+            DEVICE_COLLECT_TASK_TYPE: "batch_refresh_details",
+            DEVICE_DIAGNOSTIC_TASK_TYPE: "diagnostic_download",
+            DEVICE_IMPORT_TASK_TYPE: "import_csv",
+            DEVICE_CONNECTION_TEST_TASK_TYPE: "connection_test",
+        }
+        return DeviceTaskReferenceDTO(
+            task_id=snapshot.task_id,
+            task_status=snapshot.status.value,
+            action=actions.get(
+                snapshot.task_type, snapshot.task_type.removeprefix("device_export_")
+            ),
+            artifact_id=str(result.get("artifact_id") or spec.get("artifact_id") or ""),
+            available=bool(result.get("available")),
+            sha256=str(result.get("sha256") or ""),
+            size_bytes=int(result.get("size_bytes") or 0),
+            message=sanitize_sensitive_text(snapshot.message or snapshot.error_message),
+        )
+
+    def _start_export(
+        self,
+        site: str,
+        export_type: str,
+        extension: str,
+        payload: dict[str, object],
+        action: str,
+    ) -> DeviceTaskReferenceDTO:
         artifact_root = self._artifact_root(site)
         artifact_id = f"device-{uuid.uuid4().hex}"
         target = artifact_root / f"{artifact_id}.{extension}"
@@ -786,14 +1162,20 @@ class DeviceManagementWebService:
         task_created = False
         process: subprocess.Popen[str] | None = None
         try:
-            job_path.write_text(json.dumps(job.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-            self.task_service.create_external_task(
+            job_path.write_text(
+                json.dumps(job.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            snapshot = self.task_service.create_external_task(
                 task_id=task_id,
                 task_type=f"device_export_{export_type}",
                 task_name=f"设备{action}",
-                source="web",
+                source="local",
                 site_name=site,
                 owner=WEB_TASK_OWNER,
+            )
+            self.task_service.repository(site).save(
+                TaskSnapshot(**{**snapshot.__dict__, "owner_pid": os.getpid()})
             )
             task_created = True
             environment = os.environ.copy()
@@ -824,10 +1206,18 @@ class DeviceManagementWebService:
                     process.stdout.close()
                 self._export_processes.pop(task_id, None)
             self._cleanup_export_files(spec, remove_artifact=True)
-            if task_created or self.task_service.repository(site).get(task_id) is not None:
-                self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+            self._export_artifacts.pop(task_id, None)
+            if (
+                task_created
+                or self.task_service.repository(site).get(task_id) is not None
+            ):
+                self.task_service.record_external_event(
+                    task_id,
+                    "error",
+                    {"message": message, "error": message},
+                    site_name=site,
+                )
             else:
-                self._export_artifacts.pop(task_id, None)
                 raise
         snapshot = self.task_service.repository(site).get(task_id)
         return DeviceTaskReferenceDTO(
@@ -843,10 +1233,16 @@ class DeviceManagementWebService:
         target = Path(str(spec["target"]))
         export_type = str(spec["export_type"])
         if export_type == "securecrt_sessions":
-            staging_dir = self._assert_controlled_path(Path(str(spec["staging_dir"])), root, directory=True)
-            source_text = str(raw_result.get("path") or "")
-            source = self._assert_controlled_path(Path(source_text), root, directory=True)
-            if source != staging_dir:
+            staging_dir = self._assert_controlled_path(
+                Path(str(spec["staging_dir"])), root, directory=True
+            )
+            source_text = str(
+                raw_result.get("path") or raw_result.get("output_path") or ""
+            )
+            source = self._assert_controlled_path(
+                Path(source_text), root, directory=True
+            )
+            if source != staging_dir and not source.is_relative_to(staging_dir):
                 raise ValueError("SecureCRT 输出目录未绑定到本任务 staging 目录")
             zip_tmp = self._assert_controlled_path(Path(str(spec["zip_tmp"])), root, require_exists=False)
             with zipfile.ZipFile(zip_tmp, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -858,14 +1254,26 @@ class DeviceManagementWebService:
                         if not resolved.is_relative_to(source):
                             raise ValueError("SecureCRT 输出越过受控目录")
                         archive.write(resolved, resolved.relative_to(source).as_posix())
+            attach_export_metadata(
+                zip_tmp,
+                effective_suffix=".zip",
+                export_type="securecrt_sessions",
+                payload={"source_module": "devices"},
+            )
             os.replace(zip_tmp, target)
-            self._remove_controlled_file(source, staging_dir.parent)
+            self._remove_controlled_file(staging_dir, staging_dir.parent)
         else:
-            candidate = Path(str(raw_result.get("path") or spec["tmp_path"]))
+            candidate = Path(
+                str(
+                    raw_result.get("path")
+                    or raw_result.get("output_path")
+                    or spec["tmp_path"]
+                )
+            )
             candidate = self._assert_controlled_path(candidate, root)
             expected = self._assert_controlled_path(target, root, require_exists=False)
             if candidate != expected:
-                os.replace(candidate, expected)
+                raise ValueError("导出输出文件未绑定到本任务 artifact")
             target = self._assert_controlled_path(expected, root)
         return {
             "artifact_id": str(spec["artifact_id"]),
@@ -907,7 +1315,48 @@ class DeviceManagementWebService:
                 process.kill()
                 process.wait(timeout=2)
 
-    def _monitor_export(self, task_id: str, site: str, process: subprocess.Popen[str]) -> None:
+    def _stop_export_after_grace(
+        self, task_id: str, site: str, process: subprocess.Popen[str]
+    ) -> None:
+        if threading.Event().wait(2.0) or process.poll() is not None:
+            return
+        self._stop_export_process(process)
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is not None and snapshot.status not in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
+            self.task_service.record_external_event(
+                task_id,
+                "cancelled",
+                {
+                    "message": "导出任务已取消",
+                    "error": "导出任务已取消",
+                    "cancelled": True,
+                },
+                site_name=site,
+            )
+
+    def _record_export_error_if_active(
+        self, task_id: str, site: str, message: str
+    ) -> None:
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is not None and snapshot.status not in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
+            self.task_service.record_external_event(
+                task_id,
+                "error",
+                {"message": message, "error": message},
+                site_name=site,
+            )
+
+    def _monitor_export(
+        self, task_id: str, site: str, process: subprocess.Popen[str]
+    ) -> None:
         spec = self._export_artifacts.get(task_id)
         terminal = False
         completed = False
@@ -941,8 +1390,12 @@ class DeviceManagementWebService:
                         self.task_service.record_external_event(task_id, event_type, safe_payload, site_name=site)
             process.wait(timeout=10)
             if not terminal:
-                message = "导出进程异常退出" if process.returncode else "导出任务未返回完成事件"
-                self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+                message = (
+                    "导出进程异常退出"
+                    if process.returncode
+                    else "导出任务未返回完成事件"
+                )
+                self._record_export_error_if_active(task_id, site, message)
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc))
             try:
@@ -961,30 +1414,7 @@ class DeviceManagementWebService:
             self._export_processes.pop(task_id, None)
             if spec is not None:
                 self._cleanup_export_files(spec, remove_artifact=not completed)
-
-    def _run_diagnostic_task(self, task_id: str, site: str, devices: list[Device]) -> None:
-        try:
-            self.task_service.record_external_event(task_id, "state", {"state": TaskState.RUNNING.value}, site_name=site)
-            if len(devices) == 1:
-                results = [DiagnosticDownloadService(site, self.paths).download(devices[0])]
-            else:
-                results = run_batch_diagnostic_download(devices, lambda: DiagnosticDownloadService(site, self.paths))
-            self.task_service.record_external_event(
-                task_id,
-                "finished",
-                {
-                    "result": {
-                        "results": [
-                            {"device_id": result.device_id, "device_name": result.device_name, "status": result.status, "error_message": result.error_message or "", "elapsed_ms": result.elapsed_ms}
-                            for result in results
-                        ]
-                    }
-                },
-                site_name=site,
-            )
-        except Exception as exc:
-            message = sanitize_sensitive_text(str(exc))
-            self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
+            self._export_artifacts.pop(task_id, None)
 
     def preview_edit(self, device_uuid: str, payload: DeviceEditPreviewRequestDTO) -> DeviceEditPreviewDTO:
         site = self.current_site_id()
@@ -1040,7 +1470,7 @@ class DeviceManagementWebService:
                     "protocol": selected_protocol,
                     "task_name": f"设备连接测试 · {device.name or device_uuid} · {selected_protocol}",
                     "owner": WEB_TASK_OWNER,
-                    "task_source": "web",
+                    "task_source": "local",
                     "device": device_uuid,
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
@@ -1056,13 +1486,46 @@ class DeviceManagementWebService:
 
     def get_connection_test(self, task_id: str) -> DeviceConnectionTestDTO:
         site = self.current_site_id()
-        snapshot = self.task_service.repository(site).get(task_id)
-        if snapshot is None or snapshot.task_type != DEVICE_CONNECTION_TEST_TASK_TYPE:
-            raise KeyError(task_id)
+        snapshot = self._require_web_task(
+            task_id, frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE})
+        )
         device_repository, _, _ = self._repositories(site)
         return self._connection_test_dto(snapshot, device_repository.get_by_uuid(snapshot.device))
 
+    async def stop_exports(self) -> None:
+        for task_id, process in tuple(self._export_processes.items()):
+            spec = self._export_artifacts.get(task_id)
+            if spec is not None:
+                try:
+                    Path(str(spec["cancel_path"])).write_text(
+                        "cancelled", encoding="utf-8"
+                    )
+                except OSError:
+                    pass
+            await asyncio.to_thread(self._stop_export_process, process)
+            site = str(spec.get("site") or self.current_site_id()) if spec is not None else self.current_site_id()
+            snapshot = self.task_service.repository(site).get(task_id)
+            if snapshot is not None and snapshot.status not in {
+                TaskState.COMPLETED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            }:
+                try:
+                    self.task_service.record_external_event(
+                        task_id,
+                        "cancelled",
+                        {
+                            "message": "WebHost 正在关闭",
+                            "error": "WebHost 正在关闭",
+                            "cancelled": True,
+                        },
+                        site_name=snapshot.site_name,
+                    )
+                except Exception:
+                    pass
+
     async def stop(self) -> None:
+        await self.stop_exports()
         await asyncio.to_thread(self.process_adapter.shutdown)
 
     def _repositories(self, site: str) -> tuple[DeviceRepository, DeviceGroupRepository, DeviceFactRepository]:
@@ -1330,6 +1793,144 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     return payload
 
 
+def run_device_csv_import(context: JobContext) -> dict[str, object]:
+    site = SiteManager(context.paths).validate_site_name(
+        str(context.params.get("site_name") or "")
+    )
+    path = Path(str(context.params.get("path") or ""))
+    if str(context.params.get("owner") or "") == WEB_TASK_OWNER:
+        staging_root = (
+            context.paths.site_files_dir(site) / WEB_IMPORT_STAGING_DIR
+        ).resolve()
+        DeviceManagementWebService._assert_controlled_path(path, staging_root)
+    context.check_cancelled()
+    context.progress("device_csv_import", 0, 1, "正在原子导入设备 CSV")
+    database = Database(
+        Path(str(context.params.get("db_path") or context.paths.site_db_path(site)))
+    )
+    service = DeviceImportExportService(
+        DeviceRepository(database),
+        DeviceGroupRepository(database, site),
+    )
+    result = service.import_csv_atomic(path, check_cancelled=context.check_cancelled)
+    context.progress("device_csv_import", 1, 1, "设备 CSV 导入完成")
+    return {
+        "created": result.created,
+        "skipped": result.skipped,
+        "groups_created": result.groups_created,
+        "errors": list(result.errors),
+    }
+
+
+def run_device_detail_collect(context: JobContext) -> dict[str, object]:
+    from netconsole.services.h3c_collect_service import collect_h3c_device_details
+
+    site = SiteManager(context.paths).validate_site_name(
+        str(context.params.get("site_name") or "")
+    )
+    values = DeviceManagementWebService._unique_ids(
+        list(context.params.get("device_uuids") or [])
+    )
+    database = Database(context.paths.site_db_path(site))
+    devices = DeviceRepository(database)
+    facts = DeviceFactRepository(database)
+    selected = [
+        DeviceManagementWebService._require_device(devices, value) for value in values
+    ]
+    results: list[dict[str, object]] = []
+    context.progress("device_detail_collect", 0, len(selected), "正在采集设备详情")
+
+    def collect(device: Device):
+        context.check_cancelled()
+        return collect_h3c_device_details(
+            device, site, repository=facts, paths=context.paths
+        )
+
+    worker_count = max(1, min(20, len(selected)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {executor.submit(collect, device): device for device in selected}
+        for index, future in enumerate(as_completed(futures), start=1):
+            context.check_cancelled()
+            device = futures[future]
+            try:
+                result = future.result()
+                item = {
+                    "device_uuid": str(device.device_uuid or ""),
+                    "success": bool(result.success),
+                    "collect_run_uuid": result.collect_run_uuid,
+                    "facts_updated": bool(result.facts_updated),
+                    "interfaces_updated": int(result.interfaces_updated),
+                    "optical_modules_updated": int(result.optical_modules_updated),
+                    "lldp_neighbors_updated": int(result.lldp_neighbors_updated),
+                    "error_message": sanitize_sensitive_text(
+                        result.error_message or "", device
+                    ),
+                }
+            except Exception as exc:
+                item = {
+                    "device_uuid": str(device.device_uuid or ""),
+                    "success": False,
+                    "error_message": sanitize_sensitive_text(str(exc), device),
+                }
+            results.append(item)
+            context.progress(
+                "device_detail_collect",
+                index,
+                len(selected),
+                f"设备详情采集 {index}/{len(selected)}",
+            )
+    return {
+        "total": len(results),
+        "success": sum(1 for item in results if item["success"]),
+        "failed": sum(1 for item in results if not item["success"]),
+        "results": results,
+    }
+
+
+def run_device_diagnostic_download(context: JobContext) -> dict[str, object]:
+    site = SiteManager(context.paths).validate_site_name(
+        str(context.params.get("site_name") or "")
+    )
+    values = DeviceManagementWebService._unique_ids(
+        list(context.params.get("device_uuids") or [])
+    )
+    repository = DeviceRepository(Database(context.paths.site_db_path(site)))
+    devices = [
+        DeviceManagementWebService._require_device(repository, value)
+        for value in values
+    ]
+    context.check_cancelled()
+    context.progress(
+        "device_diagnostic_download", 0, len(devices), "正在下载设备诊断信息"
+    )
+    if len(devices) == 1:
+        results = [DiagnosticDownloadService(site, context.paths).download(devices[0])]
+    else:
+        results = run_batch_diagnostic_download(
+            devices,
+            lambda: DiagnosticDownloadService(site, context.paths),
+        )
+    context.check_cancelled()
+    context.progress(
+        "device_diagnostic_download", len(devices), len(devices), "设备诊断信息下载完成"
+    )
+    return {
+        "total": len(results),
+        "success": sum(1 for result in results if result.success),
+        "failed": sum(1 for result in results if not result.success),
+        "results": [
+            {
+                "device_id": result.device_id,
+                "device_name": result.device_name,
+                "status": result.status,
+                "error_message": result.error_message or "",
+                "elapsed_ms": result.elapsed_ms,
+            }
+            for result in results
+        ],
+    }
+
+
 def _protocol_from_task_id(task_id: str) -> str:
     parts = str(task_id or "").split("-", 3)
     return parts[2].upper() if len(parts) >= 4 and parts[:2] == ["device", "test"] and parts[2] in {"ssh", "telnet", "snmp"} else ""
@@ -1339,4 +1940,7 @@ __all__ = [
     "DEVICE_CONNECTION_TEST_TASK_TYPE",
     "DeviceManagementWebService",
     "run_device_connection_test",
+    "run_device_csv_import",
+    "run_device_detail_collect",
+    "run_device_diagnostic_download",
 ]

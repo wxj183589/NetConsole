@@ -4,7 +4,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -79,6 +79,13 @@ TEMPLATE_FIELD_MAP = {
 }
 
 EXPORT_FIELDS = list(TEMPLATE_FIELDS)
+SENSITIVE_EXPORT_FIELDS = {
+    "password",
+    "ssh_password",
+    "telnet_password",
+    "tunnel1_password",
+    "tunnel2_password",
+}
 
 CSV_IMPORT_ENCODINGS = TEXT_ENCODINGS
 CSV_ENCODING_ERROR = FILE_ENCODING_ERROR
@@ -129,6 +136,93 @@ class DeviceImportExportService:
         self._validate_all_rows(mapped_rows)
         return self._import_rows(mapped_rows)
 
+    def import_csv_atomic(
+        self, path: Path, *, check_cancelled: Callable[[], None] | None = None
+    ) -> ImportResult:
+        """全量校验后，在一个 SQLite 事务中写入分组和设备。"""
+
+        try:
+            validate_csv_import(
+                path,
+                expected_module="devices",
+                required_headers=TEMPLATE_FIELDS,
+                allow_legacy=True,
+            )
+        except ImportValidationError as exc:
+            if "编码" in str(exc):
+                raise ValueError(CSV_ENCODING_ERROR) from exc
+            raise
+        rows = self._read_csv_rows(Path(path))
+        if not rows:
+            return ImportResult(created=0, skipped=0, errors=[])
+        headers = [header.strip() for header in rows[0]]
+        mode = self._detect_mode(headers)
+        mapped_rows = [
+            (line_number, self._map_row(headers, values, mode))
+            for line_number, values in enumerate(rows[1:], start=2)
+        ]
+        self._validate_all_rows(mapped_rows)
+        if check_cancelled is not None:
+            check_cancelled()
+
+        now = datetime.now().isoformat(timespec="seconds")
+        created = 0
+        groups_created = 0
+        database = self.repository.database
+        with database.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for _line_number, source_payload in mapped_rows:
+                    if check_cancelled is not None:
+                        check_cancelled()
+                    payload = {
+                        key: value
+                        for key, value in source_payload.items()
+                        if value is not None
+                    }
+                    group_name = str(payload.pop("group_name", "") or "").strip()
+                    if group_name and self.group_repository is not None:
+                        row = conn.execute(
+                            "SELECT id FROM device_groups WHERE site_id = ? AND name = ? COLLATE NOCASE",
+                            (self.group_repository.site_id, group_name),
+                        ).fetchone()
+                        if row is None:
+                            cursor = conn.execute(
+                                "INSERT INTO device_groups (site_id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                                (
+                                    self.group_repository.site_id,
+                                    group_name,
+                                    100,
+                                    now,
+                                    now,
+                                ),
+                            )
+                            payload["group_id"] = int(cursor.lastrowid)
+                            groups_created += 1
+                        else:
+                            payload["group_id"] = int(row["id"])
+                    else:
+                        payload.pop("group_id", None)
+                    self._apply_defaults(payload)
+                    device = Device.from_mapping(payload)
+                    device.ensure_device_uuid()
+                    record = device.to_record()
+                    record.update({"created_at": now, "updated_at": now})
+                    record.pop("id", None)
+                    columns = list(record)
+                    conn.execute(
+                        f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                        [record[column] for column in columns],
+                    )
+                    created += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return ImportResult(
+            created=created, skipped=0, errors=[], groups_created=groups_created
+        )
+
     def _validate_all_rows(self, rows: list[tuple[int, dict[str, object | None]]]) -> None:
         seen_addresses: set[str] = set()
         for line_number, payload in rows:
@@ -147,14 +241,28 @@ class DeviceImportExportService:
         rows, _metadata, _encoding = read_validated_csv_rows(path)
         return rows
 
-    def export_csv(self, path: Path, devices: Iterable[Device] | None = None) -> None:
+    def export_csv(
+        self,
+        path: Path,
+        devices: Iterable[Device] | None = None,
+        *,
+        include_sensitive: bool = True,
+    ) -> None:
         devices = list(devices if devices is not None else self.repository.list())
         group_names = self._group_names_by_id()
+        fields = [
+            field
+            for field in EXPORT_FIELDS
+            if include_sensitive
+            or TEMPLATE_FIELD_MAP[field] not in SENSITIVE_EXPORT_FIELDS
+        ]
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:
             writer = csv.writer(file)
-            writer.writerow(EXPORT_FIELDS)
+            writer.writerow(fields)
             for device in devices:
-                writer.writerow([self._export_value(device, field, group_names) for field in EXPORT_FIELDS])
+                writer.writerow(
+                    [self._export_value(device, field, group_names) for field in fields]
+                )
 
     def export_template_csv(self, path: Path) -> None:
         with Path(path).open("w", newline="", encoding="utf-8-sig") as file:

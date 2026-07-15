@@ -44,6 +44,29 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('output_dir')
     expect(source).not.toContain('template_ini')
     expect(source).not.toContain('file_path')
-    expect(source).toContain("isFeatureEnabled('web.device_management')")
+    for (const featureId of [
+      'web.device_management_write',
+      'web.device_management_collect',
+      'web.device_management_import',
+      'web.device_management_export',
+      'web.device_management_desktop',
+    ]) {
+      expect(source).toContain(`isFeatureEnabled('${featureId}')`)
+    }
+  })
+
+  it('persists long-running task ids and supports polling, cancellation and controlled downloads', () => {
+    expect(source).toContain('window.sessionStorage.setItem(taskStorageKey')
+    expect(source).toContain('getDeviceTask(taskId)')
+    expect(source).toContain('cancelDeviceTask(task.task_id)')
+    expect(source).toContain('downloadDeviceExport(task.task_id, task.artifact_id)')
+    expect(source).toContain(':disabled="!isTaskActionEnabled(row)"')
+  })
+
+  it('builds edit values from the current detail and prioritizes its uuid for native actions', () => {
+    expect(source).toContain('function currentDeviceWriteValues()')
+    expect(source).toContain('Object.assign(editForm, values)')
+    expect(source).toContain('Object.assign(writeForm, values)')
+    expect(source).toContain('detail.value?.device.device_uuid || selectedUuids.value[0]')
   })
 })

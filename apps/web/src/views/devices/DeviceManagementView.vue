@@ -5,8 +5,11 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, R
 
 import { isFeatureEnabled } from '../../features'
 import {
+  cancelDeviceTask,
+  downloadDeviceExport,
   getDevice,
   getDeviceConnectionTest,
+  getDeviceTask,
   listDevices,
   assignDeviceGroup,
   confirmDeviceImport,
@@ -40,6 +43,7 @@ import type {
   DeviceImportPreview,
   DeviceListItem,
   DevicePage,
+  DeviceTaskReference,
 } from '../../types/deviceManagement'
 
 const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
@@ -68,6 +72,7 @@ const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importLoading = ref(false)
 const importPreview = ref<DeviceImportPreview | null>(null)
+const trackedTasks = ref<DeviceTaskReference[]>([])
 const filters = reactive({
   search: '',
   group: '',
@@ -81,6 +86,8 @@ const filters = reactive({
 const editForm = reactive<DeviceEditPreviewRequest>({ name: '', primary_address: '' })
 const writeForm = reactive<DeviceEditPreviewRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 let pollTimer: number | undefined
+let taskPollTimer: number | undefined
+const taskStorageKey = 'netconsole.device-management.task-ids'
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const testTerminal = computed(() => connectionTest.value && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(connectionTest.value.task_status))
@@ -88,10 +95,14 @@ const testActive = computed(() => Boolean(connectionTest.value && !testTerminal.
 
 onMounted(async () => {
   await loadDevices()
+  await restoreTrackedTasks()
   await restoreConnectionTest()
 })
 
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  stopPolling()
+  stopTaskPolling()
+})
 
 async function loadDevices(resetPage = false): Promise<void> {
   if (resetPage) filters.page = 1
@@ -141,6 +152,16 @@ async function startTest(protocol: DeviceConnectionProtocol): Promise<void> {
   try {
     connectionTest.value = await startDeviceConnectionTest(detail.value.device.device_uuid, protocol)
     rememberTask(connectionTest.value.task_id)
+    trackTasks([{
+      task_id: connectionTest.value.task_id,
+      task_status: connectionTest.value.task_status,
+      action: 'connection_test',
+      artifact_id: '',
+      available: false,
+      sha256: '',
+      size_bytes: 0,
+      message: connectionTest.value.message,
+    }])
     startPolling()
     ElMessage.success(`${protocol} 连接测试任务已提交`)
   } catch (cause) {
@@ -193,10 +214,92 @@ function rememberTask(taskId: string): void {
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
 }
 
-function openPreview(): void {
-  if (!detail.value) return
+function isTaskTerminal(task: DeviceTaskReference): boolean {
+  return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.task_status)
+}
+
+function isTaskActionEnabled(task: DeviceTaskReference): boolean {
+  if (['batch_refresh_details', 'diagnostic_download'].includes(task.action)) {
+    return isFeatureEnabled('web.device_management_collect')
+  }
+  if (task.action === 'import_csv') return isFeatureEnabled('web.device_management_import')
+  if (task.action === 'connection_test') return isFeatureEnabled('web.device_connection_test')
+  return isFeatureEnabled('web.device_management_export')
+}
+
+function persistTrackedTasks(): void {
+  try {
+    window.sessionStorage.setItem(taskStorageKey, JSON.stringify(trackedTasks.value.map((task) => task.task_id)))
+  } catch {
+    // 浏览器禁用会话存储时仍允许当前页面继续轮询。
+  }
+}
+
+function trackTasks(tasks: DeviceTaskReference[]): void {
+  for (const task of tasks) {
+    const index = trackedTasks.value.findIndex((item) => item.task_id === task.task_id)
+    if (index >= 0) trackedTasks.value[index] = task
+    else trackedTasks.value.unshift(task)
+  }
+  trackedTasks.value = trackedTasks.value.slice(0, 30)
+  persistTrackedTasks()
+  if (trackedTasks.value.some((task) => !isTaskTerminal(task))) startTaskPolling()
+}
+
+async function restoreTrackedTasks(): Promise<void> {
+  let taskIds: string[] = []
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(taskStorageKey) || '[]')
+    taskIds = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
+  } catch {
+    taskIds = []
+  }
+  const restored = await Promise.allSettled(taskIds.slice(0, 30).map((taskId) => getDeviceTask(taskId)))
+  trackTasks(restored.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []))
+}
+
+function startTaskPolling(): void {
+  stopTaskPolling()
+  taskPollTimer = window.setInterval(() => void refreshTrackedTasks(), 1500)
+}
+
+function stopTaskPolling(): void {
+  if (taskPollTimer !== undefined) window.clearInterval(taskPollTimer)
+  taskPollTimer = undefined
+}
+
+async function refreshTrackedTasks(): Promise<void> {
+  const active = trackedTasks.value.filter((task) => !isTaskTerminal(task))
+  if (!active.length) {
+    stopTaskPolling()
+    return
+  }
+  const refreshed = await Promise.allSettled(active.map((task) => getDeviceTask(task.task_id)))
+  trackTasks(refreshed.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []))
+  if (!trackedTasks.value.some((task) => !isTaskTerminal(task))) {
+    stopTaskPolling()
+    await loadDevices()
+  }
+}
+
+async function cancelTrackedTask(task: DeviceTaskReference): Promise<void> {
+  try {
+    trackTasks([await cancelDeviceTask(task.task_id)])
+    ElMessage.success('已请求停止任务')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '任务停止失败'))
+  }
+}
+
+function downloadTrackedTask(task: DeviceTaskReference): void {
+  if (!task.available || !task.artifact_id) return
+  window.location.assign(downloadDeviceExport(task.task_id, task.artifact_id))
+}
+
+function currentDeviceWriteValues(): DeviceEditPreviewRequest | null {
+  if (!detail.value) return null
   const device = detail.value.device
-  Object.assign(editForm, {
+  return {
     name: device.name,
     system_name: device.system_name,
     station: device.station,
@@ -217,7 +320,13 @@ function openPreview(): void {
     snmp_port: device.capabilities.snmp_port || 161,
     https_port: device.https_port,
     remark: device.remark,
-  })
+  }
+}
+
+function openPreview(): void {
+  const values = currentDeviceWriteValues()
+  if (!values) return
+  Object.assign(editForm, values)
   previewResult.value = null
   previewVisible.value = true
 }
@@ -250,9 +359,10 @@ function openCreate(): void {
 }
 
 function openEdit(): void {
-  if (!detail.value) return
+  const values = currentDeviceWriteValues()
+  if (!values) return
   writeMode.value = 'edit'
-  Object.assign(writeForm, editForm)
+  Object.assign(writeForm, values)
   writeVisible.value = true
 }
 
@@ -363,10 +473,9 @@ async function runImportPreview(): Promise<void> {
 async function confirmImport(): Promise<void> {
   if (!importPreview.value || importPreview.value.errors.length) return
   try {
-    await confirmDeviceImport(importPreview.value.preview_token)
+    trackTasks([await confirmDeviceImport(importPreview.value.preview_token)])
     closeImportDialog()
     ElMessage.success('CSV 导入任务已提交')
-    await loadDevices(true)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 导入失败'))
   }
@@ -402,7 +511,7 @@ function currentExportFilters(): DeviceExportRequest {
 
 async function exportCsv(): Promise<void> {
   try {
-    await startDeviceCsvExport(currentExportFilters())
+    trackTasks([await startDeviceCsvExport(currentExportFilters())])
     ElMessage.success('CSV 导出任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'CSV 导出失败'))
@@ -411,7 +520,7 @@ async function exportCsv(): Promise<void> {
 
 async function exportTemplate(): Promise<void> {
   try {
-    await startDeviceTemplateExport()
+    trackTasks([await startDeviceTemplateExport()])
     ElMessage.success('模板导出任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '模板导出失败'))
@@ -420,7 +529,7 @@ async function exportTemplate(): Promise<void> {
 
 async function exportSecureCrt(): Promise<void> {
   try {
-    await startSecureCrtExport(currentExportFilters())
+    trackTasks([await startSecureCrtExport(currentExportFilters())])
     ElMessage.success('SecureCRT 会话任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'SecureCRT 会话生成失败'))
@@ -429,7 +538,7 @@ async function exportSecureCrt(): Promise<void> {
 
 async function exportOmniPeek(): Promise<void> {
   try {
-    await startOmniPeekExport({ ...currentExportFilters(), line_name: 'NetConsole' })
+    trackTasks([await startOmniPeekExport({ ...currentExportFilters(), line_name: 'NetConsole' })])
     ElMessage.success('OmniPeek 名称表任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, 'OmniPeek 名称表导出失败'))
@@ -442,7 +551,8 @@ async function refreshSelectedDetails(): Promise<void> {
     return
   }
   try {
-    await startBatchRefreshDetails(selectedUuids.value)
+    const result = await startBatchRefreshDetails(selectedUuids.value)
+    trackTasks(result.tasks)
     ElMessage.success('批量详情刷新任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '批量刷新失败'))
@@ -455,7 +565,7 @@ async function downloadDiagnostics(): Promise<void> {
     return
   }
   try {
-    await startDeviceDiagnosticDownload(selectedUuids.value)
+    trackTasks([await startDeviceDiagnosticDownload(selectedUuids.value)])
     ElMessage.success('诊断信息下载任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '诊断信息下载失败'))
@@ -463,7 +573,7 @@ async function downloadDiagnostics(): Promise<void> {
 }
 
 async function requestTerminal(): Promise<void> {
-  const uuid = selectedUuids.value[0] || detail.value?.device.device_uuid
+  const uuid = detail.value?.device.device_uuid || selectedUuids.value[0]
   if (!uuid) {
     ElMessage.warning('请先选择设备')
     return
@@ -505,7 +615,7 @@ function errorMessage(cause: unknown, fallback: string): string {
   <section class="device-management">
     <div class="page-heading">
       <div><h1>设备管理</h1><p>与 Qt 设备页共享设备库、采集事实和后台任务；本页不保存凭据。</p></div>
-      <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('web.device_management')" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
+      <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('web.device_management_write')" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
     </div>
 
     <div class="content-card filters">
@@ -535,18 +645,34 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <div class="content-card action-bar">
       <span>已选 {{ selectedUuids.length }} 台</span>
-      <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management')" @click="openSelectedDetail">编辑</el-button>
-      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management')" @click="duplicateSelected">复制</el-button>
-      <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="deleteSelected">批量删除</el-button>
-      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="groupAssignVisible = true">设置分组</el-button>
-      <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management')" @click="groupVisible = true">分组管理</el-button>
-      <el-button :icon="Refresh" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="refreshSelectedDetails">批量更新详情</el-button>
-      <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management')" @click="downloadDiagnostics">下载诊断</el-button>
-      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management')" @click="importVisible = true">导入 CSV</el-button>
+      <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management_write')" @click="openSelectedDetail">编辑</el-button>
+      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('web.device_management_write')" @click="duplicateSelected">复制</el-button>
+      <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="deleteSelected">批量删除</el-button>
+      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_write')" @click="groupAssignVisible = true">设置分组</el-button>
+      <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management_write')" @click="groupVisible = true">分组管理</el-button>
+      <el-button :icon="Refresh" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="downloadDiagnostics">下载诊断</el-button>
+      <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
       <el-dropdown>
-        <el-button :icon="Download" :disabled="!isFeatureEnabled('web.device_management')">导出</el-button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportCsv">CSV 导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportOmniPeek">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management')" @click="exportSecureCrt">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+        <el-button :icon="Download" :disabled="!isFeatureEnabled('web.device_management_export')">导出</el-button>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportCsv">CSV 导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportTemplate">模板导出</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportOmniPeek">OmniPeek 名称表</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('web.device_management_export')" @click="exportSecureCrt">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
       </el-dropdown>
+    </div>
+
+    <div v-if="trackedTasks.length" class="content-card task-card">
+      <div class="task-card-heading"><strong>本页任务</strong><span>刷新页面后仍会恢复最近 30 个任务</span></div>
+      <el-table :data="trackedTasks" size="small" max-height="240">
+        <el-table-column prop="action" label="动作" min-width="150" />
+        <el-table-column prop="task_status" label="状态" width="110" />
+        <el-table-column prop="task_id" label="Task ID" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="message" label="消息" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="150">
+          <template #default="{ row }">
+            <el-button v-if="row.available" link type="primary" :disabled="!isFeatureEnabled('web.device_management_export')" @click="downloadTrackedTask(row)">下载</el-button>
+            <el-button v-if="!isTaskTerminal(row)" link type="danger" :disabled="!isTaskActionEnabled(row)" @click="cancelTrackedTask(row)">停止</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
@@ -584,7 +710,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <template v-else-if="detail">
           <div class="detail-heading">
             <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <div class="heading-actions"><el-button :icon="FolderOpened" :disabled="!isFeatureEnabled('web.device_management')" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management')" @click="openPreview">编辑预览</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="openEdit">正式编辑</el-button></div>
+            <div class="heading-actions"><el-button :icon="FolderOpened" :disabled="!isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management_write')" @click="openPreview">编辑预览</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="openEdit">正式编辑</el-button></div>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="系统名">{{ detail.device.system_name || '--' }}</el-descriptions-item>
@@ -661,7 +787,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="3" /></el-form-item>
       </el-form>
       <el-alert v-if="previewResult" :title="previewResult.valid ? '校验通过（尚未保存）' : '校验未通过'" :description="[...previewResult.errors, ...previewResult.warnings].join('；') || '字段符合当前设备表单规则'" :type="previewResult.valid ? 'success' : 'error'" show-icon :closable="false" />
-      <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" :disabled="!isFeatureEnabled('web.device_edit_preview')" @click="validatePreview">校验预览</el-button></template>
+      <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management_write')" @click="validatePreview">校验预览</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '正式编辑设备'" width="min(760px, 94vw)">
@@ -676,7 +802,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-form-item label="连接能力"><el-checkbox v-model="writeForm.ssh_enabled">SSH</el-checkbox><el-checkbox v-model="writeForm.telnet_enabled">Telnet</el-checkbox><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox></el-form-item>
         <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management')" @click="saveWrite">保存</el-button></template>
+      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">
@@ -685,26 +811,26 @@ function errorMessage(cause: unknown, fallback: string): string {
         <div v-for="group in pageData.groups" :key="group.id" class="group-row">
           <span>{{ group.name }}</span>
           <span>
-            <el-button link type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="renameGroup(group.id, group.name)">重命名</el-button>
-            <el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management')" @click="removeGroup(group.id, group.name)">删除</el-button>
+            <el-button link type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="renameGroup(group.id, group.name)">重命名</el-button>
+            <el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="removeGroup(group.id, group.name)">删除</el-button>
           </span>
         </div>
         <el-empty v-if="!pageData.groups.length" description="暂无分组" :image-size="56" />
       </div>
-      <template #footer><el-button @click="groupVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="saveGroup">新增分组</el-button></template>
+      <template #footer><el-button @click="groupVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveGroup">新增分组</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="groupAssignVisible" title="设置分组" width="420px">
       <el-select v-model="groupAssignId" clearable placeholder="选择分组（清空为未分组）" style="width: 100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select>
-      <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management')" @click="saveGroupAssignment">确认</el-button></template>
+      <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="importVisible" title="CSV 导入预览 / 确认" width="min(680px, 94vw)" @close="closeImportDialog">
-      <el-alert title="先预览再确认；服务端会校验文件 SHA-256、备份设备数据库并在失败时回滚。" type="info" show-icon :closable="false" />
+      <el-alert title="先预览再确认；服务端校验 SHA-256 并以单事务提交。备份只供人工恢复，任务失败不会覆盖同期数据。" type="info" show-icon :closable="false" />
       <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
-      <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
+      <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management_import')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
       <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /></div>
-      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management')" @click="confirmImport">确认导入</el-button></template>
+      <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
     </el-dialog>
   </section>
 </template>
@@ -721,6 +847,9 @@ function errorMessage(cause: unknown, fallback: string): string {
 .state-alert { margin-bottom: 14px; }
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .action-bar > span { margin-right: 4px; color: #718096; font-size: 13px; }
+.task-card { padding: 12px 14px; margin-bottom: 14px; }
+.task-card-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #718096; font-size: 13px; }
+.task-card-heading strong { color: var(--el-text-color-primary); }
 .table-card { min-height: 300px; padding: 0 0 12px; }
 .table-card :deep(.el-pagination) { justify-content: flex-end; padding: 14px 16px 0; }
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

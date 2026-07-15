@@ -203,6 +203,9 @@ class DeviceTaskReferenceDTO(ApiModel):
     action: str
     artifact_id: str = ""
     available: bool = False
+    sha256: str = ""
+    size_bytes: int = 0
+    message: str = ""
 
 
 class DeviceTaskBatchDTO(ApiModel):

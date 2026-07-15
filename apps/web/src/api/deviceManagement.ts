@@ -131,6 +131,14 @@ export function getDeviceExportTask(taskId: string): Promise<DeviceTaskReference
   return apiRequest<DeviceTaskReference>(`/api/device-management/exports/${encodeURIComponent(taskId)}`)
 }
 
+export function getDeviceTask(taskId: string): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>(`/api/device-management/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelDeviceTask(taskId: string): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>(`/api/device-management/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
 export function startDeviceDiagnosticDownload(deviceUuids: string[]): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/diagnostic-download', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }

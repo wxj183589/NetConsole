@@ -358,9 +358,22 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             group_filter=filters.get("group_filter"),
         )
         service = DeviceImportExportService(repository, group_repository)
+    selected_uuids = {
+        str(value).strip()
+        for value in payload.get("selected_device_uuids") or []
+        if str(value).strip()
+    }
+    if selected_uuids:
+        devices = [
+            device
+            for device in devices
+            if str(device.device_uuid or "").strip() in selected_uuids
+        ]
     _emit(progress, "write_device_csv", 0, len(devices), "正在导出设备 CSV")
     _check_cancel(should_cancel)
-    service.export_csv(path, devices)
+    service.export_csv(
+        path, devices, include_sensitive=not bool(payload.get("omit_credentials"))
+    )
     _emit(progress, "write_device_csv", len(devices), len(devices), "设备 CSV 导出完成")
     return len(devices)
 

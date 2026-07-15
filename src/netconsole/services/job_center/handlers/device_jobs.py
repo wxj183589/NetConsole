@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
-from netconsole.services.device_management_web_service import run_device_connection_test
+from netconsole.services.device_management_web_service import (
+    run_device_connection_test,
+    run_device_csv_import,
+    run_device_detail_collect,
+    run_device_diagnostic_download,
+)
 
-device_csv_import = legacy_handler(legacy_tasks._device_csv_import)
+device_csv_import = run_device_csv_import
 device_list_page = legacy_handler(legacy_tasks._device_list_page)
 device_object_history_page = legacy_handler(legacy_tasks._device_object_history_page)
 device_detail_load_all = legacy_handler(legacy_tasks._device_detail_load_all)
@@ -33,4 +38,6 @@ HANDLERS = {
     "device_group_count_devices": device_group_count_devices,
     "device_group_delete": device_group_delete,
     "device_connection_test": run_device_connection_test,
+    "device_detail_collect": run_device_detail_collect,
+    "device_diagnostic_download": run_device_diagnostic_download,
 }
