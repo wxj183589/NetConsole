@@ -34,6 +34,7 @@ export interface ConfigSnapshot {
   size_bytes: number
   artifact_id: string
   filename: string
+  hash: string
   created_at: string
   error_message: string
 }
@@ -55,4 +56,10 @@ export interface ConfigTaskStatus extends ConfigTaskReference {
   finished_time: string
   error_message: string
   result: Record<string, unknown>
+}
+
+export interface ConfigDirectory {
+  directory_kind: 'config_snapshots' | 'config_exports'
+  available: boolean
+  message: string
 }

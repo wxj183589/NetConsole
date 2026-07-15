@@ -41,6 +41,7 @@ class ConfigSnapshotDTO(ApiModel):
     size_bytes: int = 0
     artifact_id: str
     filename: str
+    hash: str = ""
     created_at: str = ""
     error_message: str = ""
 
@@ -79,14 +80,26 @@ class ConfigDeviceDiffRequest(ApiModel):
     right_device_id: int = Field(ge=1)
 
 
+class ConfigSnapshotIdsRequest(ApiModel):
+    snapshot_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class ConfigDirectoryDTO(ApiModel):
+    directory_kind: Literal["config_snapshots", "config_exports"]
+    available: bool = False
+    message: str = ""
+
+
 __all__ = [
     "ConfigDeviceDTO",
     "ConfigActionRequest",
     "ConfigDeviceDiffRequest",
+    "ConfigDirectoryDTO",
     "ConfigDeviceGroupDTO",
     "ConfigDevicePageDTO",
     "ConfigSnapshotDTO",
     "ConfigSnapshotDiffRequest",
+    "ConfigSnapshotIdsRequest",
     "ConfigTaskReferenceDTO",
     "ConfigTaskStatusDTO",
 ]

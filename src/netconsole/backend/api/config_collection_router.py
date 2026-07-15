@@ -7,9 +7,11 @@ from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.config_collection import (
     ConfigActionRequest,
+    ConfigDirectoryDTO,
     ConfigDeviceDiffRequest,
     ConfigDevicePageDTO,
     ConfigSnapshotDiffRequest,
+    ConfigSnapshotIdsRequest,
     ConfigSnapshotDTO,
     ConfigTaskReferenceDTO,
     ConfigTaskStatusDTO,
@@ -114,11 +116,29 @@ def list_tasks(request: Request, limit: int = Query(default=100, ge=1, le=200)) 
 
 
 @router.get("/tasks/{task_id}", response_model=ConfigTaskStatusDTO)
-def get_task(request: Request, task_id: str) -> ConfigTaskStatusDTO:
-    result = _query(lambda: _service(request).get_task(_site_id(request), task_id))
+def get_task(request: Request, task_id: str, diff_filter: str = Query(default="all", max_length=20)) -> ConfigTaskStatusDTO:
+    result = _query(lambda: _service(request).get_task(_site_id(request), task_id, diff_filter))
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置任务不存在")
     return result
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=ConfigTaskStatusDTO)
+def cancel_task(request: Request, task_id: str) -> ConfigTaskStatusDTO:
+    result = _query(lambda: _service(request).cancel_task(_site_id(request), task_id))
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置任务不存在")
+    return result
+
+
+@router.post("/snapshots/delete", response_model=ConfigTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED)
+def delete_snapshots(request: Request, payload: ConfigSnapshotIdsRequest) -> ConfigTaskReferenceDTO:
+    return _query(lambda: _service(request).submit_snapshot_delete(_site_id(request), payload.snapshot_ids))
+
+
+@router.get("/directory", response_model=ConfigDirectoryDTO)
+def directory_info(request: Request, directory_kind: str = Query(default="config_exports", max_length=30)) -> ConfigDirectoryDTO:
+    return _query(lambda: _service(request).directory_info(_site_id(request), directory_kind))
 
 
 @router.get(

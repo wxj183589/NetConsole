@@ -116,6 +116,7 @@ def test_config_collection_reads_redacted_devices_and_controlled_snapshot_artifa
     assert "192.0.2.10" not in devices.text
     assert snapshots.status_code == 200
     assert snapshots.json()[0]["artifact_id"].startswith("snapshot-")
+    assert any(item["id"] == running.id and item["hash"] == running.hash for item in snapshots.json())
     assert "file_path" not in snapshots.text
     assert artifact.status_code == 200
     assert "sysname SW-01" in artifact.text
@@ -257,11 +258,35 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
     app.state.config_collection_service.task_service.repository("demo").save(task)
     with TestClient(app) as client:
         status = client.get("/api/config-collection/tasks/config-web-test-diff")
+        removed = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=removed")
+        invalid_filter = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=unknown")
         artifact = client.get("/api/config-collection/artifacts/diff-config-web-test-diff")
 
     assert status.status_code == 200
     assert status.json()["result"]["artifact_id"] == "diff-config-web-test-diff"
+    assert removed.status_code == 200
+    assert "-vlan 10" in removed.json()["result"]["raw_diff"]
+    assert invalid_filter.status_code == 422
     assert "diff_file" not in status.text
     assert str(paths.data_root) not in status.text
     assert artifact.status_code == 200
     assert "vlan 10" in artifact.text
+
+
+def test_config_collection_delete_uses_registered_task_and_cancel_is_owner_scoped(tmp_path: Path) -> None:
+    app, _paths, device, running, _saved, adapter = _fixture(tmp_path)
+
+    with TestClient(app) as client:
+        deleted = client.post("/api/config-collection/snapshots/delete", json={"snapshot_ids": [running.id]})
+        cancelled = client.post(f"/api/config-collection/tasks/{deleted.json()['id']}/cancel")
+        foreign = client.post("/api/config-collection/tasks/not-a-config-task/cancel")
+        directory = client.get("/api/config-collection/directory?directory_kind=config_exports")
+
+    assert deleted.status_code == 202
+    assert deleted.json()["type"] == "config_snapshot_delete_many"
+    assert adapter.jobs[-1].params["snapshot_ids"] == [running.id]
+    assert cancelled.status_code == 200
+    assert cancelled.json()["id"] == deleted.json()["id"]
+    assert foreign.status_code == 404
+    assert directory.status_code == 200
+    assert "本机目录" in directory.json()["message"]

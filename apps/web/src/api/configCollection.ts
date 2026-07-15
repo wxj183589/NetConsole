@@ -1,6 +1,7 @@
 import { apiRequest } from './client'
 import type {
   ConfigDevicePage,
+  ConfigDirectory,
   ConfigSnapshot,
   ConfigTaskReference,
   ConfigTaskStatus,
@@ -54,12 +55,34 @@ export function submitSnapshotConfigDiff(leftSnapshotId: number, rightSnapshotId
   })
 }
 
+export function submitDeviceConfigDiff(leftDeviceId: number, rightDeviceId: number): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/diff/devices`, {
+    method: 'POST',
+    body: JSON.stringify({ left_device_id: leftDeviceId, right_device_id: rightDeviceId }),
+  })
+}
+
+export function submitSnapshotDelete(snapshotIds: number[]): Promise<ConfigTaskReference> {
+  return apiRequest<ConfigTaskReference>(`${root}/snapshots/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ snapshot_ids: snapshotIds }),
+  })
+}
+
 export function listConfigTasks(limit = 100): Promise<ConfigTaskStatus[]> {
   return apiRequest<ConfigTaskStatus[]>(`${root}/tasks${queryString({ limit })}`)
 }
 
-export function getConfigTask(taskId: string): Promise<ConfigTaskStatus> {
-  return apiRequest<ConfigTaskStatus>(`${root}/tasks/${encodeURIComponent(taskId)}`)
+export function getConfigTask(taskId: string, diffFilter = 'all'): Promise<ConfigTaskStatus> {
+  return apiRequest<ConfigTaskStatus>(`${root}/tasks/${encodeURIComponent(taskId)}${queryString({ diff_filter: diffFilter === 'all' ? undefined : diffFilter })}`)
+}
+
+export function cancelConfigTask(taskId: string): Promise<ConfigTaskStatus> {
+  return apiRequest<ConfigTaskStatus>(`${root}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
+export function getConfigDirectory(directoryKind = 'config_exports'): Promise<ConfigDirectory> {
+  return apiRequest<ConfigDirectory>(`${root}/directory${queryString({ directory_kind: directoryKind })}`)
 }
 
 export function configArtifactUrl(artifactId: string): string {

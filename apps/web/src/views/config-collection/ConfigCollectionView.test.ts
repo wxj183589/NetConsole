@@ -18,12 +18,13 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain("isFeatureEnabled('web.config_collection_download')")
   })
 
-  it('keeps collection read-only and exposes controlled artifact download', () => {
+  it('exposes controlled artifact download and formal snapshot deletion', () => {
     expect(source).toContain('采集 running / saved')
     expect(source).toContain('configArtifactUrl(row.artifact_id)')
     expect(source).toContain('保存配置')
+    expect(source).toContain('submitSnapshotDelete')
+    expect(source).toContain('cancelConfigTask')
     expect(source).not.toContain('save force')
-    expect(source).not.toContain('删除快照')
     expect(source).not.toContain('任意路径')
   })
 })

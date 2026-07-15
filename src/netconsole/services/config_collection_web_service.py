@@ -11,6 +11,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.config_collection import (
+    ConfigDirectoryDTO,
     ConfigDeviceDTO,
     ConfigDeviceGroupDTO,
     ConfigDevicePageDTO,
@@ -40,6 +41,7 @@ CONFIG_WEB_TASK_TYPES = frozenset(
         "config_compare_latest_snapshots",
         "config_compare_latest_running_between_devices",
         "config_compare_snapshot_pair",
+        "config_snapshot_delete_many",
     }
 )
 CONFIG_WEB_COMPARE_TASK_TYPES = frozenset(
@@ -177,6 +179,38 @@ class ConfigCollectionApplicationService:
             f"比较设备 · {left.name} / {right.name}",
         )
 
+    def submit_snapshot_delete(self, site_name: str, snapshot_ids: list[int]) -> ConfigTaskReferenceDTO:
+        if not snapshot_ids or len(snapshot_ids) > 50:
+            raise ValueError("一次最多删除 50 个配置快照")
+        ids = list(dict.fromkeys(int(value) for value in snapshot_ids))
+        for snapshot_id in ids:
+            self._snapshot_context(site_name, snapshot_id)
+        return self._start_job(site_name, "config_snapshot_delete_many", {"snapshot_ids": ids}, "删除配置快照")
+
+    def cancel_task(self, site_name: str, task_id: str) -> ConfigTaskStatusDTO | None:
+        task = self.task_service.repository(site_name).get(str(task_id or ""))
+        if not self._is_web_task(task):
+            return None
+        if task.status not in ACTIVE_TASK_STATES:
+            return self._task_dto(task)
+        cancel = getattr(self.process_adapter, "cancel_job", None)
+        if callable(cancel):
+            cancel(task.task_id)
+        else:
+            self.task_service.cancel_task(task.task_id)
+        return self._task_dto(self.task_service.repository(site_name).get(task.task_id) or task)
+
+    def directory_info(self, site_name: str, directory_kind: str) -> ConfigDirectoryDTO:
+        kind = str(directory_kind or "").strip()
+        if kind not in {"config_snapshots", "config_exports"}:
+            raise ValueError("结果目录类型无效")
+        directory = self.paths.config_center_root(site_name) / ("snapshots" if kind == "config_snapshots" else "outputs")
+        return ConfigDirectoryDTO(
+            directory_kind=kind,
+            available=directory.is_dir(),
+            message="Browser/Server 模式不直接打开本机目录，请使用 Artifact 下载。",
+        )
+
     def list_tasks(self, site_name: str, limit: int = 100) -> list[ConfigTaskStatusDTO]:
         snapshots = self.task_service.repository(site_name).list(limit=max(1, min(int(limit), 200)))
         return [
@@ -187,16 +221,11 @@ class ConfigCollectionApplicationService:
             and snapshot.task_type in CONFIG_WEB_TASK_TYPES
         ]
 
-    def get_task(self, site_name: str, task_id: str) -> ConfigTaskStatusDTO | None:
+    def get_task(self, site_name: str, task_id: str, diff_filter: str = "all") -> ConfigTaskStatusDTO | None:
         snapshot = self.task_service.repository(site_name).get(str(task_id))
-        if (
-            snapshot is None
-            or snapshot.source != "local"
-            or snapshot.owner != CONFIG_WEB_OWNER
-            or snapshot.task_type not in CONFIG_WEB_TASK_TYPES
-        ):
+        if not self._is_web_task(snapshot):
             return None
-        return self._task_dto(snapshot)
+        return self._task_dto(snapshot, diff_filter=diff_filter)
 
     def open_artifact(self, site_name: str, artifact_id: str) -> tuple[Path, str]:
         value = str(artifact_id or "")
@@ -224,6 +253,8 @@ class ConfigCollectionApplicationService:
             raw_path = str(task.result.get("diff_file") or "")
             path = Path(raw_path)
             root = (self.paths.runtime_cache_dir / "config_diff").resolve()
+            if path.is_symlink():
+                raise FileNotFoundError("配置差异 Artifact 不存在")
             resolved = path.resolve()
             if root not in resolved.parents or not resolved.is_file() or resolved.is_symlink():
                 raise FileNotFoundError("配置差异 Artifact 不存在")
@@ -366,6 +397,7 @@ class ConfigCollectionApplicationService:
             size_bytes=path.stat().st_size if path.is_file() else 0,
             artifact_id=f"snapshot-{int(snapshot.id or 0)}",
             filename=filename,
+            hash=snapshot.hash,
             created_at=str(snapshot.created_at or ""),
             error_message=_sanitize_text(str(snapshot.error_message or "")),
         )
@@ -375,16 +407,30 @@ class ConfigCollectionApplicationService:
 
     def _safe_snapshot_path(self, site_name: str, snapshot: ConfigSnapshot) -> Path | None:
         root = self.paths.config_center_root(site_name).resolve()
-        path = (self.paths.site_dir(site_name) / snapshot.file_path).resolve()
-        if root not in path.parents or path.is_symlink() or not path.is_file():
+        candidate = self.paths.site_dir(site_name) / snapshot.file_path
+        if candidate.is_symlink():
+            return None
+        path = candidate.resolve()
+        if root not in path.parents or not path.is_file():
             return None
         return path
 
     @staticmethod
-    def _task_dto(snapshot: TaskSnapshot) -> ConfigTaskStatusDTO:
+    def _is_web_task(snapshot: TaskSnapshot | None) -> bool:
+        return bool(
+            snapshot is not None
+            and snapshot.source == "local"
+            and snapshot.owner == CONFIG_WEB_OWNER
+            and snapshot.task_type in CONFIG_WEB_TASK_TYPES
+        )
+
+    @staticmethod
+    def _task_dto(snapshot: TaskSnapshot, *, diff_filter: str = "all") -> ConfigTaskStatusDTO:
         result = _safe_result(snapshot.result)
         if snapshot.task_type in CONFIG_WEB_COMPARE_TASK_TYPES and snapshot.result.get("diff_file"):
             result["artifact_id"] = f"diff-{snapshot.task_id}"
+            if str(diff_filter or "all") != "all":
+                result["raw_diff"] = _filter_diff(str(result.get("raw_diff") or ""), diff_filter)
         return ConfigTaskStatusDTO(
             id=snapshot.task_id,
             type=snapshot.task_type,
@@ -435,6 +481,23 @@ def _sanitize_text(value: str) -> str:
     redacted = _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(value or ""))
     redacted = _SECRET_VALUE_RE.sub(r"\1<redacted>", redacted)
     return _BEARER_RE.sub("Bearer <redacted>", redacted)
+
+
+def _filter_diff(text: str, diff_filter: str) -> str:
+    kind = str(diff_filter or "all").strip().casefold()
+    if kind not in {"all", "added", "removed"}:
+        raise ValueError("差异过滤类型无效")
+    if kind == "all":
+        return text
+    return "\n".join(
+        line
+        for line in str(text or "").splitlines()
+        if line.startswith("---")
+        or line.startswith("+++")
+        or line.startswith("@@")
+        or (kind == "added" and line.startswith("+") and not line.startswith("+++"))
+        or (kind == "removed" and line.startswith("-") and not line.startswith("---"))
+    )
 
 
 __all__ = ["CONFIG_WEB_TASK_TYPES", "ConfigCollectionApplicationService"]

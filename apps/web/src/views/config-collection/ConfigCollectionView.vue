@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
+import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
 
 import { isFeatureEnabled } from '../../features'
 import {
   configArtifactUrl,
+  cancelConfigTask,
+  getConfigDirectory,
   getConfigTask,
   listConfigDevices,
   listConfigSnapshots,
   listConfigTasks,
   submitConfigCollection,
+  submitDeviceConfigDiff,
+  submitSnapshotDelete,
   submitLatestConfigDiff,
   submitSnapshotConfigDiff,
   submitSnapshotContent,
@@ -39,6 +44,8 @@ const error = ref('')
 const resultTitle = ref('')
 const resultText = ref('')
 const resultDiff = ref('')
+const resultArtifactId = ref('')
+const diffFilter = ref<'all' | 'added' | 'removed'>('all')
 const focusedTaskId = ref('')
 const activeTaskIds = ref(new Set<string>())
 const handledTerminalTasks = new Set<string>()
@@ -124,7 +131,7 @@ async function pollTasks(): Promise<void> {
       if (!isTerminal(task.status)) active.add(task.id)
       if (isTerminal(task.status) && !handledTerminalTasks.has(task.id)) {
         handledTerminalTasks.add(task.id)
-        if (task.type === 'config_web_snapshot_fetch' && task.status === 'COMPLETED') await loadSnapshots()
+        if (['config_web_snapshot_fetch', 'config_snapshot_delete_many'].includes(task.type) && task.status === 'COMPLETED') await loadSnapshots()
         if (task.id === focusedTaskId.value) showTaskResult(task)
       }
     }
@@ -197,6 +204,37 @@ async function compareSnapshots(): Promise<void> {
   }
 }
 
+async function compareDevices(): Promise<void> {
+  if (selectedDevices.value.length !== 2) {
+    ElMessage.info('请选择两台设备进行比较')
+    return
+  }
+  try {
+    const task = await submitDeviceConfigDiff(selectedDevices.value[0].id, selectedDevices.value[1].id)
+    addTaskReferences([task])
+    focusedTaskId.value = task.id
+    ElMessage.success('多设备差异任务已提交')
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '多设备差异任务提交失败')
+  }
+}
+
+async function deleteSelectedSnapshots(): Promise<void> {
+  if (!selectedSnapshots.value.length) {
+    ElMessage.info('请先选择快照')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确认删除选中的 ${selectedSnapshots.value.length} 个快照？`, '删除快照', { type: 'warning' })
+    const task = await submitSnapshotDelete(selectedSnapshots.value.map((snapshot) => snapshot.id))
+    addTaskReferences([task])
+    focusedTaskId.value = task.id
+    ElMessage.success('快照删除任务已提交')
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') ElMessage.error(cause instanceof Error ? cause.message : '快照删除任务提交失败')
+  }
+}
+
 async function viewSnapshot(snapshot: ConfigSnapshot): Promise<void> {
   try {
     const task = await submitSnapshotContent(snapshot.id)
@@ -222,14 +260,43 @@ function addTaskReferences(refs: ConfigTaskReference[]): void {
 async function openTask(task: ConfigTaskStatus): Promise<void> {
   focusedTaskId.value = task.id
   try {
-    const current = await getConfigTask(task.id)
+    const current = await getConfigTask(task.id, diffFilter.value)
     showTaskResult(current)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '配置任务详情加载失败')
   }
 }
 
+async function changeDiffFilter(value: 'all' | 'added' | 'removed'): Promise<void> {
+  diffFilter.value = value
+  if (!focusedTaskId.value) return
+  try {
+    showTaskResult(await getConfigTask(focusedTaskId.value, value))
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '差异过滤失败')
+  }
+}
+
+async function cancelTask(task: ConfigTaskStatus): Promise<void> {
+  try {
+    const current = await cancelConfigTask(task.id)
+    tasks.value = tasks.value.map((item) => item.id === current.id ? current : item)
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '任务取消失败')
+  }
+}
+
+async function openResultDirectory(): Promise<void> {
+  try {
+    const result = await getConfigDirectory('config_exports')
+    ElMessage.info(result.message)
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '结果目录不可用')
+  }
+}
+
 function showTaskResult(task: ConfigTaskStatus): void {
+  resultArtifactId.value = typeof task.result?.artifact_id === 'string' ? task.result.artifact_id : ''
   if (task.error_message) {
     resultTitle.value = '任务失败'
     resultText.value = task.error_message
@@ -245,6 +312,10 @@ function showTaskResult(task: ConfigTaskStatus): void {
     resultTitle.value = `配置差异 · ${task.device_name || ''}`
     resultDiff.value = result.raw_diff
     resultText.value = ''
+  } else if (resultArtifactId.value) {
+    resultTitle.value = 'Artifact 已生成'
+    resultText.value = 'Artifact 已生成，可下载。'
+    resultDiff.value = ''
   }
 }
 
@@ -276,7 +347,7 @@ function formatBytes(value: number): string {
   <section class="config-collection">
     <el-alert
       title="配置采集中心"
-       description="Web 只提交白名单只读采集任务；保存配置仅表示查看已存在的 saved 快照，不提供设备写入、删除或非受控文件读取。"
+       description="采集、比较和删除均进入持久 Task；下载只接受服务端 Artifact ID，不接收本机路径。"
       type="info"
       :closable="false"
       show-icon
@@ -298,7 +369,7 @@ function formatBytes(value: number): string {
 
     <div class="main-grid">
       <div class="content-card device-card">
-        <div class="card-heading"><div><h2>设备选择</h2><p>共 {{ devicePage.total }} 台 H3C 设备</p></div><el-button type="primary" :disabled="!selectedDevices.length || hasActiveTasks || !isFeatureEnabled('web.config_collection_fetch')" @click="collectSelected">采集 running / saved</el-button></div>
+        <div class="card-heading"><div><h2>设备选择</h2><p>共 {{ devicePage.total }} 台 H3C 设备</p></div><div class="heading-actions"><el-button type="primary" :disabled="!selectedDevices.length || hasActiveTasks || !isFeatureEnabled('web.config_collection_fetch')" @click="collectSelected">采集 running / saved</el-button><el-button :disabled="selectedDevices.length !== 2 || hasActiveTasks || !isFeatureEnabled('web.config_collection_diff')" @click="compareDevices">比较两台设备</el-button></div></div>
         <el-table v-loading="loading" :data="devicePage.items" row-key="id" stripe height="calc(100vh - 430px)" @row-click="selectDevice" @selection-change="selectedDevices = $event">
           <el-table-column type="selection" width="48" />
           <el-table-column label="设备" min-width="170"><template #default="{ row }"><strong>{{ row.name || '--' }}</strong><small>{{ row.system_name || '--' }}</small></template></el-table-column>
@@ -312,7 +383,7 @@ function formatBytes(value: number): string {
       </div>
 
       <div class="content-card snapshot-card">
-        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 选两个快照可比较</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="selectedSnapshots.length !== 2 || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较快照</el-button><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button></div></div>
+        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 选两个快照可比较</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="selectedSnapshots.length !== 2 || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较快照</el-button><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button><el-button :icon="Delete" :disabled="!selectedSnapshots.length" @click="deleteSelectedSnapshots">删除历史</el-button></div></div>
         <el-table v-loading="snapshotLoading" :data="snapshots" row-key="id" stripe height="calc(100vh - 430px)" @selection-change="selectedSnapshots = $event">
           <el-table-column type="selection" width="48" />
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
@@ -324,7 +395,7 @@ function formatBytes(value: number): string {
     </div>
 
     <div class="content-card task-card">
-      <div class="card-heading"><div><h2>配置任务</h2><p>任务来自 Task Center，刷新页面后可恢复</p></div><el-button :loading="hasActiveTasks" @click="loadTasks">刷新任务</el-button></div>
+      <div class="card-heading"><div><h2>配置任务</h2><p>任务来自 Task Center，刷新页面后可恢复</p></div><div class="heading-actions"><el-button @click="openResultDirectory">结果目录</el-button><el-button :loading="hasActiveTasks" @click="loadTasks">刷新任务</el-button></div></div>
       <el-table :data="visibleTasks" stripe empty-text="暂无配置任务" @row-click="openTask">
         <el-table-column prop="device_name" label="设备" min-width="170" />
         <el-table-column prop="type" label="任务类型" min-width="250" />
@@ -332,11 +403,12 @@ function formatBytes(value: number): string {
         <el-table-column label="进度" width="150"><template #default="{ row }"><el-progress :percentage="row.progress" :stroke-width="7" /></template></el-table-column>
         <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatTime(row.finished_time || row.created_time) }}</template></el-table-column>
         <el-table-column prop="error_message" label="错误" min-width="220" show-overflow-tooltip />
+        <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button v-if="!isTerminal(row.status)" link type="danger" @click.stop="cancelTask(row)">取消</el-button></template></el-table-column>
       </el-table>
     </div>
 
     <div v-if="resultText || resultDiff" class="content-card result-card">
-      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><el-button @click="resultText = ''; resultDiff = ''">清空</el-button></div>
+      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiff" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部差异" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /></el-select><el-button v-if="resultArtifactId" tag="a" :href="configArtifactUrl(resultArtifactId)" target="_blank">下载 Artifact</el-button><el-button @click="resultText = ''; resultDiff = ''; resultArtifactId = ''">清空</el-button></div></div>
       <pre v-if="resultText" class="code-panel">{{ resultText }}</pre>
       <pre v-else class="code-panel diff-panel">{{ resultDiff }}</pre>
     </div>
