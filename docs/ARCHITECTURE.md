@@ -2,7 +2,7 @@
 
 ## 1. 架构目标
 
-NetConsole 是以 Python Core Runtime 为主体、Qt 与 Web 为可选前端的本地网络工程工具。架构的首要目标是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
+本文描述当前生产架构。NetConsole 当前以 Python Core Runtime 为主体，Launcher 可选择 Qt、本机 Web 或 Server Shell；Qt 仍是默认生产和回退入口。已确认的长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 只作为迁移层并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
 
 ## 2. 启动与运行形态
 
@@ -196,6 +196,6 @@ stateDiagram-v2
 
 ## 9. 架构变更准入
 
-新增功能至少回答：运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
+新增功能至少回答：它是否位于永久架构、运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。新用户功能默认经 Application Service -> FastAPI -> Vue 建设，不新增 Qt 业务页面；若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
 
 打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，并已接入 Python 多 Agent 配置、健康检查、版本、能力、iPerf/fping 调度和默认关闭的单 Agent Online MR 远程执行；CentOS Agent、主动注册、上传与多 Agent MR 编排仍未接入。边界见 [独立 Agent](AGENT.md)、[Agent Controller](AGENT_CONTROLLER.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。

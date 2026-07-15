@@ -4,6 +4,8 @@
 
 本矩阵以当前生产代码、Feature Registry 和自动化测试为事实来源。Web 聚合页只代表其明确展示或受控操作的范围，不能自动视为替代 Qt 页面。当前所有目标模块均保持 `dual`：Qt 是稳定生产/回退入口，Web 只有达到 `REPLACE_READY` 后才允许改为默认入口。
 
+长期模块总览见 [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md)，最终桌面与业务分层目标见 [下一代架构](ARCHITECTURE_NEXT.md)。
+
 状态只使用：`NOT_STARTED`、`READ_ONLY`、`PREVIEW_ONLY`、`CONTROLLED_WRITE`、`FAKE_ACCEPTED`、`REAL_ACCEPTED`、`REPLACE_READY`、`EXCLUDED`。
 
 - `FAKE_ACCEPTED` 不等于真实设备验收。
@@ -21,7 +23,7 @@
 | 设备管理 | 编辑设备 | 编辑表单与校验 | `module.devices` | 设备管理 | `/network/devices` | `web.device_edit_preview` | 既有设备表单规则、Device Repository | `PREVIEW_ONLY` | 否 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 仅生成预览，尚未正式落库。 |
 | 设备管理 | 设备与分组管理 | 新增、复制、正式编辑、设置分组、批量删除 | `module.devices` | 设备管理 | `/network/devices` | 待登记动作 Feature | Device Repository、统一审计 | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 不得在 Router 直接写库。 |
 | 设备管理 | 批量与导入导出 | 批量更新、诊断下载、CSV/模板/OmniPeek 导出 | `module.devices`、`devices.omnipeek_name_table_export` | 设备管理 | `/network/devices` | 待登记动作 Feature | Job Center、Export Process | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 大批量动作必须进入 Task/Export。 |
-| 设备管理 | 外部工具 | 外部终端、SecureCRT 会话 | `devices.external_terminal`、`devices.securecrt_sessions` | 设备管理 | `/network/devices` | 待登记 Native 动作 Feature | Desktop Native Bridge（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 只允许业务 ID 和已登记工具。 |
+| 设备管理 | 外部工具 | 外部终端、SecureCRT 会话 | `devices.external_terminal`、`devices.securecrt_sessions` | 设备管理 | `/network/devices` | 待登记 Native 动作 Feature | Electron `launchTerminal`（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 只允许业务 ID、已登记终端和服务端生成参数。 |
 | AC 管理 | 轨旁 AP 规划 | 规划查看与维护 | `ac.trackside_ap_plan` | AC 管理 | `/ac-management/trackside-plan` | `web.ac_trackside_ap_plan` | 现有轨旁 AP 规划 Service | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 固定属于 AC，不得移入轨道交通。 |
 | AC 管理 | AP 上线情况概览 | 在线状态查看 | `ac.ap_online_overview` | AC 管理 | `/ac-management/online-overview` | `web.ac_online_overview` | 现有 AC/AP Query | `NOT_STARTED` | 否 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 规划 Feature 默认关闭。 |
 | AC 管理 | FIT-AP 资源 | AP、Radio、LLDP、历史与详情 | `ac.fit_ap_resources` | AC 管理 | `/ac-management/fit-aps` | `web.ac_fit_ap_resources` | `AcManagementQueryService`、AC Repository | `READ_ONLY` | 否 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 旧 `/ac-management` 兼容重定向到此路由。 |
@@ -44,12 +46,12 @@
 | 配置采集中心 | 保存、下载与导出 | 保存配置、任意快照比较、多设备比较、批量导出、目录、删除历史 | `module.config_collection` | 配置采集中心 | `/config-center` | `web.config_collection_download` 及待登记动作 | Config Lifecycle、Export Process、Native Bridge（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 当前仅受控 Artifact 下载覆盖部分能力。 |
 | 文件管理 | 本地文件 | 局点文件浏览、分类和下载 | `module.file_management` | 文件管理 | `/file-manager` | `web.file_management`、`web.file_management_download` | `FileManagementApplicationService` | `READ_ONLY` | 否 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 仅白名单本地文件；不是 Qt 双窗格完整对等。 |
 | 文件管理 | 设备文件/传输队列 | 连接、断开、导航、下载、进度、取消、Mesh 筛选 | `module.file_management`、`file.mesh_log_download` | 文件管理 | `/file-manager` | 待登记动作 Feature | 既有 SFTP/File Service、Task | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 第一版不新增 Qt 不具备的危险上传/删除。 |
-| 文件管理 | 外部 WinSCP | 启动已配置 WinSCP | `file.external_winscp` | 文件管理 | `/file-manager` | 待登记 Native 动作 Feature | Desktop Native Bridge（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 前端不得传 executable 或绝对路径。 |
+| 文件管理 | 外部 WinSCP | 启动已配置 WinSCP | `file.external_winscp` | 文件管理 | `/file-manager` | — | 不在初始 Native Bridge 白名单 | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 迁移期留在 Qt；未来需要单独安全立项。 |
 | 网络工具 | IPERF 带宽测试 | iPerf Server/Client、fping、LOCAL/Agent、停止与重试 | `network_tools.traffic` | 网络工具 | `/network-tools/traffic` | `network_tools.traffic` | `TrafficTestApplicationService`、Traffic Repository/Supervisor | `CONTROLLED_WRITE` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 通用 Traffic 固定属于网络工具。 |
 | 网络工具 | 小工具 | IPv4/IPv6、VLSM、子网、汇总、反掩码 | `network_tools.toolbox` | 网络工具 | `/network-tools/toolbox` | `web.network_tools_toolbox` | 既有 Network Toolbox Service | `READ_ONLY` | 否 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 旧 `/network-tools/overview` 兼容重定向。 |
 | 网络工具 | 连通性检测 | 单/持续/批量/网段/TCP Ping、端口测试、停止、进度、导出 | `network_tools.toolbox` | 网络工具 | `/network-tools/toolbox` | `web.network_tools_tcp_port_test` 及待登记动作 | Network Toolbox、Task/Export | `CONTROLLED_WRITE` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 当前 Web 只覆盖 TCP 端口测试和部分 Traffic 摘要。 |
 | 网络工具 | 无线扫描 | 扫描、项目、结果与导出 | `network_tools.wireless_scan` | 网络工具 | `/network-tools/wireless-scan` | `web.network_tools_wireless_scan` | Wireless Scan Service、Job/Export | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 与无线勘测不同；真实硬件验收延期。 |
-| 网络工具 | IPOP | 启动已登记工具 | `network_tools.ipop` | 网络工具 | `/network-tools/toolbox` | 待登记 Native 动作 Feature | Desktop Native Bridge（规划） | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 不允许前端传任意 exe。 |
+| 网络工具 | IPOP | 启动已登记工具 | `network_tools.ipop` | 网络工具 | `/network-tools/toolbox` | — | 不在初始 Native Bridge 白名单 | `NOT_STARTED` | 是 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 迁移期留在 Qt；未来需要单独安全立项。 |
 | 任务中心 | 无 Qt 一级入口 | 列表、详情、日志、协作取消 | — | 任务中心 | `/tasks` | `web.job_center` | `TaskApplicationService`、`JobCenterQueryService`、Task Repository | `CONTROLLED_WRITE` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | 复用同一 Task 状态机。 |
 | Agent 管理 | 无 Qt 一级入口 | Profile、健康、工具、任务、包、远程 MR 控制入口 | — | Agent 管理 | `/agents` | `web.agent_management` | `AgentControllerService`、Agent Repository/Client | `CONTROLLED_WRITE` | 是 | `FAKE_ACCEPTED` | `NOT_STARTED` | `NOT_STARTED` | Agent 只管理执行端，不接管 Online MR 业务归属。 |
 | 命令说明 | 命令说明页 | 搜索、筛选、详情、复制、导出 Markdown、刷新 | `module.command_reference` | 命令说明 | `/command-reference` | `web.command_reference` | Command Reference 资源与 Service、Export Process | `NOT_STARTED` | 否 | `NOT_STARTED` | `NOT_STARTED` | `NOT_STARTED` | 页面不得直接执行命令。 |

@@ -4,6 +4,8 @@
 
 截至 2026-07-15，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 89 个任务类型。Traffic 的三个本地 handler、Online MR Agent 包同步/导入两个 handler 与 AC Mesh-Link 白名单刷新 handler 已直接调用正式 Service/Adapter，Online MR 5B-13A/13B 已增加默认关闭的单 Agent 远端执行器和 Desktop WebHost 控制入口；多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `src/netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
 
+长期界面路线已调整为 Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳，Qt 仅作迁移与回退。该决定不改变本表的当前生产事实；任务迁移应优先形成可被 FastAPI 与迁移期 Qt 共用的 Application Service，详见 [下一代架构](ARCHITECTURE_NEXT.md)。
+
 ## 2. 状态定义
 
 | 状态 | 判定标准 |
@@ -38,7 +40,7 @@
 | 报告导出 | `submit_export_task` | ExportProcessManager/worker | 已完成主路径 | 是 | 少量兼容直接 exporter | 搜索外部调用者后再删除兼容方法 |
 | Job Center | Qt/Python Adapter + TaskRuntime + TaskRepository + worker/registry；Web 使用独立只读 Query Service | 七状态、Event Hub、持久快照、REST/WebSocket、GET-only Web 监控、外部 Agent Task 与 11 个 domain modules | 5C-3 已完成只读 Web 列表/详情/日志 tail；领域仍部分迁移 | 任务中心是；Web 查询是；领域逻辑否 | 既有 `/api/tasks` 兼容接口、独立 daemon、`legacy_tasks.py` 兼容区 | Web 保持无 stop/delete/retry；legacy 只迁出 |
 | 统一 Traffic | `TrafficTestApplicationService` + Local/Agent Adapter + Supervisor | 本地/Agent iPerf/fping、任务映射、事件、运行索引、REST/专用 WebSocket/Vue 页面 | 阶段 4C 完成 | 是 | 原 Qt iPerf/Ping 页面、无独立 Controller daemon | 阶段 5 复用 Traffic 边界接 Online MR |
-| Launcher / FastAPI / Web Shell | `main.py --mode auto|qt|web|server`、兼容 `--web-shell`、Vue/API/托盘 Web 控制台 | 无 Qt Launcher、Core-owned WebHost、Desktop 短期会话 | 第一阶段启动子项已完成四模式、隔离 Qt 探测、Browser/Server Shell、单实例和统一 WebHost 启停 | 启动/WebHost 生命周期是；旧 Qt 页面服务容器否 | Native Bridge、EmbeddedLayout、presentation、Qt 页面级 Task Service 注入、远程登录 | 保留 Qt dual；下一阶段只做嵌入框架和服务注入边界，不提前删页 |
+| Launcher / FastAPI / Web Shell | `main.py --mode auto|qt|web|server`、兼容 `--web-shell`、Vue/API/托盘 Web 控制台 | 无 Qt Launcher、Core-owned WebHost、Desktop 短期会话 | 第一阶段启动子项已完成四模式、隔离 Qt 探测、Browser/Server Shell、单实例和统一 WebHost 启停 | 启动/WebHost 生命周期是；旧 Qt 页面服务容器否 | Qt 默认入口、页面级 Task Service、权限/审计、真实验收；Electron 尚未建设 | 先收敛共享 Service 与 API；Web 稳定后再建 Electron，Qt 按模块验收退出 |
 | Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
 | AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
 | Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |

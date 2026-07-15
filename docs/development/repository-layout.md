@@ -14,7 +14,7 @@ NetConsole/
 ├─ .codex/                  # 本地 Codex 状态，允许存在但不提交
 ├─ apps/
 │  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
-│  ├─ desktop/              # Qt Web Shell 宿主
+│  ├─ desktop/              # 当前 Qt Web Shell；未来 Electron 桌面外壳
 │  └─ web/                  # Vue/TypeScript/Vite 前端
 ├─ src/
 │  └─ netconsole/               # 可安装的共享 Python 包
@@ -53,10 +53,12 @@ NetConsole/
 ## 4. 应用边界
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
-- `apps/desktop` 只放 Qt Web Shell 宿主，不复制 Python Core 或业务服务。
+- `apps/desktop` 是桌面外壳的唯一职责目录。当前只放 Qt Web Shell 宿主；Web 主流程稳定后可在独立迁移任务中替换为 Electron，但不得复制 Python Core、业务服务或 Vue 页面。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
 - `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser、UI 和包内静态资源；包名仍为 `netconsole`。
 - 任何应用不得把数据库、日志、抓包、采集结果、缓存或正式报告写入源码目录。
+
+目标架构中的 Domain、Application 和 Infrastructure 当前是逻辑分层，不要求立即建立同名空目录。未经独立迁移和引用审计，不机械移动 `src/netconsole/services`、`repositories`、`parsers`、`adapters` 或 `core`，也不新建第二套 Electron/Desktop 工程。
 
 ### Agent 二级目录
 
@@ -148,7 +150,7 @@ apps/agent/
 | 迁移前 | 迁移后 | 说明 |
 | --- | --- | --- |
 | `agent/` | `apps/agent/` | 独立 Go Agent |
-| `desktop/` | `apps/desktop/` | Qt Web Shell |
+| `desktop/` | `apps/desktop/` | 当前 Qt Web Shell；未来 Electron 桌面外壳仍使用此职责目录 |
 | `frontend/` | `apps/web/` | Vue Web 前端 |
 | `netconsole/` | `src/netconsole/` | 共享 Python 包，导入名仍是 `netconsole` |
 | `profiles/` | `config/profiles/` | Feature profile 配置 |

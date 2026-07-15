@@ -13,6 +13,17 @@
 
 超过 300ms 的 IO、CPU 或网络任务不得在 UI 线程执行。重 CPU、重 IO、重网络和批量任务进入 Worker Process；所有导出进入独立 Export Process。
 
+## 下一阶段 UI 与分层边界
+
+- 长期产品形态是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳；当前 Qt 只作为迁移期生产与回退入口。
+- 不新增 Qt 业务页面或 Qt 专用业务逻辑。新功能默认沿共享规则/Application Service -> FastAPI -> Vue 建设。
+- Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
+- Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。
+- Electron 尚未进入实现期，不创建空骨架；未来 Native Bridge 必须使用动作白名单，禁止任意命令、路径和程序执行。
+- SNMP Center 与无线勘测仅允许维护历史代码和数据，不新增功能或入口；网络工具无线扫描单独评估。
+
+详细规则见 [下一代架构](ARCHITECTURE_NEXT.md) 与 [下一阶段开发指南](DEVELOPMENT_GUIDE.md)。
+
 ## Job 必备字段和能力
 
 所有普通任务和导出任务必须具备：
@@ -82,6 +93,8 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - Worker 不访问 QWidget；数据库连接在 Worker 内创建。
 
 ## SNMP 查询边界
+
+本节只约束仍在使用的通用 SNMP 请求/采集能力，以及被冻结 SNMP Center 的缺陷维护；不表示 SNMP Center 恢复迁移或开放入口。
 
 - GET、GETNEXT、GETBULK、WALK、SET 从 UI 统一提交 `snmp_query_execute`，页面不得直接创建 `SnmpClient` 或查询 QThread。
 - SNMP profile、operation、OID、超时、重试、bulk 参数和 SET 类型必须通过可序列化请求模型传递，禁止跨进程传 client、repository 或 Qt 对象。

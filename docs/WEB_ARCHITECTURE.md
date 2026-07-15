@@ -4,7 +4,7 @@
 
 NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前默认入口由 Launcher 创建 Core Runtime，并在 Qt、本机浏览器和无 Shell Server 间选择；Qt 仍是具备能力机器上的稳定生产与回退界面。Vue Web Shell 已接入任务中心、Agent、Traffic、Online MR，以及第一批设备、网络工具、配置采集和文件管理页面。Web 验收完成前不删除或隐藏 Qt 页面。
 
-目标方向：Qt 逐步壳化，Web 成为主要 UI，Python 成为统一业务核心。每次迁移必须保留可运行旧入口，并以生产调用链、测试和回滚边界确认是否完成。
+最终方向已经明确：Python Core + FastAPI 是永久业务层，Vue 是永久主界面，Electron 是最终桌面外壳，Qt 只在迁移期保留并最终删除。当前不立即建设 Electron；先收敛 Application Service、薄化 Router 并完成 Vue 真实验收。完整目标和阶段门槛见 [下一代架构](ARCHITECTURE_NEXT.md) 与 [Web 迁移计划](WEB_MIGRATION_PLAN.md)。
 
 ## 2. 运行形态
 
@@ -52,7 +52,7 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 | 模式 | 值 | 本机能力 |
 | --- | --- | --- |
-| Desktop Mode | `desktop` | 后续可通过受控 Native Bridge 提供文件选择、打开目录和外部程序调用 |
+| Desktop Mode | `desktop` | 后续 Electron 可通过严格白名单 Native Bridge 提供文件选择、Artifact/目录、终端和通知 |
 | Server Mode | `server` | 使用浏览器上传/下载；禁止假定可访问服务端桌面或本机外部程序 |
 
 当前枚举只建立契约，尚未新增 Native Bridge 或业务分支。后续白名单、宿主条件和永久禁止输入见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
@@ -127,7 +127,7 @@ flowchart TD
 - Qt 退出前先卸载 Vue 页面和 WebSocket，再停止 Uvicorn；正常关闭和 `Ctrl+C` 后均不残留 Web Shell Python、FastAPI 或 QtWebEngine 进程；
 - Vue 外部链接交给系统浏览器，JavaScript error/warning 写入应用日志；WebEngine 默认上下文菜单关闭；
 - Desktop Web Shell 与 Server Mode 均验证 `/`、`/tasks`、`/agents` 和 `/network-tools/traffic`；普通 Qt 启动继续不监听 FastAPI 端口；
-- 不新增 QWebChannel 业务桥接。文件选择、目录选择、打开目录、外部程序和通知仍是后续受控 Native Bridge 范围；
+- 不新增 QWebChannel 业务桥接。文件选择、Artifact/受控目录、已登记终端和通知属于后续 Electron Native Bridge；WinSCP、IPOP 和其他通用外部程序不在初始白名单；
 - 离屏冒烟覆盖 100%/125%/150% 缩放和 1280×720、1920×1080、2560×1440。该验证确认路由、DOM、构建和关闭链路，不代替 Windows 实机上的字体、表格、图表和滚动人工观察。
 
 阶段 5B-1 已完成：
@@ -185,7 +185,7 @@ Web parity foundation 已建立：
 阶段 0～3 新增：
 
 ```text
-apps/desktop/                    # 实验 Qt Web Shell
+apps/desktop/                    # 当前 Qt Web Shell；未来在同一职责目录内替换为 Electron
 src/netconsole/backend/api/          # FastAPI Application/API 骨架
 src/netconsole/models/api/           # Pydantic API DTO
 src/netconsole/services/job_center/runtime/  # 纯 Python 任务运行时
@@ -200,7 +200,7 @@ src/netconsole/backend/api/traffic_router.py
 apps/web/src/views/network-tools/TrafficTestView.vue
 ```
 
-明确禁止新增重复的 `backend/services/`、`backend/repositories/`，也不把现有核心目录搬入 `backend/`。
+明确禁止新增重复的 `backend/services/`、`backend/repositories/`，也不把现有核心目录搬入 `backend/`。当前不创建 Electron 或 `domain/application/infrastructure` 空骨架，不为目标目录示意图机械移动已有包。
 
 ## 8. 启动与验证
 
@@ -231,4 +231,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段才实现 EmbeddedLayout、WebModulePage、模块 presentation 配置、Native Bridge、局点/主题同步和旧 Qt 页面服务注入收口；当前不得把这些规划写成已完成。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测继续冻结，除非收到独立任务。
+下一阶段先修架构约束：禁止新增 Qt 业务页面，逐模块把 Qt 页面和 Router 中的业务编排收敛到 Application Service，并补齐权限、审计、状态恢复和真实验收。暂不建设 Electron、EmbeddedLayout 或通用 Native Bridge；Web 主流程稳定后，Electron 才以最小桌面外壳和动作白名单进入独立阶段。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测归入 `EXCLUDED/FUTURE_REBUILD`，网络工具无线扫描保持独立范围。

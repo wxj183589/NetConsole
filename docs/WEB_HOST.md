@@ -76,4 +76,4 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。
 - Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
-- 本机文件选择、目录、Artifact、外部终端/WinSCP/IPOP 和通知尚未实现；后续必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+- 本机文件选择、目录、Artifact、外部终端和通知尚未实现；后续 Electron 实现必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。WinSCP、IPOP 和其他通用外部程序不在初始白名单，迁移期继续留在 Qt。
