@@ -42,5 +42,8 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain('部分完成')
     expect(source).toContain('全部失败')
     expect(source).toContain('isAllFailed')
+    expect(source).toContain('unknown_items')
+    expect(source).toContain('not_started_items')
+    expect(source).toContain('任务中断，执行记录已保留')
   })
 })

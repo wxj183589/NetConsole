@@ -862,7 +862,7 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
     refreshed = ConfigCollectionApplicationService(paths, task_service, _FakeProcessAdapter(task_service))
     recovered = refreshed.get_task("demo", task_id)
 
-    assert recovered is not None and recovered.status == TaskState.COMPLETED.value
+    assert recovered is not None and recovered.status == TaskState.CANCELLED.value
     assert recovered.result == {
         "total": 3,
         "failed": 0,
@@ -875,7 +875,101 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
         "deleted": 1,
         "deleted_snapshot_ids": [11],
     }
+    assert recovered.error_message == "宿主已终止 Worker"
+    recovery_events = [
+        event
+        for event in task_service.repository("demo").list_events(task_id, limit=100)
+        if event["type"] == "recovery"
+    ]
+    assert len(recovery_events) == 1
     assert config_collection_job_handlers.read_irreversible_checkpoint(paths, launch.job.job_id) is None
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status"),
+    [
+        (
+            {
+                "total": 2,
+                "saved": 1,
+                "failed": 1,
+                "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
+                "snapshot_ids": [7],
+                "partial_success": True,
+                "cancel_policy": "before_batch_only",
+            },
+            TaskState.COMPLETED,
+        ),
+        (
+            {
+                "total": 1,
+                "saved": 0,
+                "failed": 1,
+                "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
+                "snapshot_ids": [],
+                "partial_success": True,
+                "cancel_policy": "before_batch_only",
+            },
+            TaskState.FAILED,
+        ),
+    ],
+)
+def test_config_completed_checkpoint_recovers_failed_terminal_once(
+    tmp_path: Path,
+    result: dict[str, object],
+    expected_status: TaskState,
+) -> None:
+    _app, paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    task_id = "config-web-" + "b" * 32
+    params = {
+        "site_name": "demo",
+        "owner": "web_config_collection",
+        "task_source": "local",
+        "task_name": "保存配置",
+    }
+    task_service.prepare(JobSpec(job_id=task_id, task_type="config_web_save_force", params=params))
+    task_service.mark_running(task_id)
+    context = JobContext.from_job(
+        JobSpec(
+            job_id=task_id,
+            task_type="config_web_save_force",
+            params={**params, "app_root": str(paths.app_root), "data_root": str(paths.data_root)},
+        )
+    )
+    config_collection_job_handlers.write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "save_force",
+            "status": "completed",
+            "total": int(result["total"]),
+            "completed_items": [],
+            "failed_items": list(result["failed_items"]),
+            "current_item": None,
+            "pending_items": [],
+            "result": result,
+        },
+    )
+    task_service.record_external_event(
+        task_id,
+        "error",
+        {"message": "Worker 终态事件丢失"},
+        source="local",
+        site_name="demo",
+    )
+    service = ConfigCollectionApplicationService(paths, task_service, _FakeProcessAdapter(task_service))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        recovered = list(executor.map(lambda _value: service.get_task("demo", task_id), range(2)))
+
+    assert all(item is not None and item.status == expected_status.value for item in recovered)
+    snapshot = task_service.repository("demo").get(task_id)
+    assert snapshot is not None and snapshot.status is expected_status
+    assert snapshot.result == result
+    assert snapshot.error_message == ("" if expected_status is TaskState.COMPLETED else "Worker 终态事件丢失")
+    events = task_service.repository("demo").list_events(task_id, limit=100)
+    assert len([event for event in events if event["type"] == "recovery"]) == 1
+    assert config_collection_job_handlers.read_irreversible_checkpoint(paths, task_id) is None
 
 
 def test_config_export_forwards_progress_before_worker_finishes(

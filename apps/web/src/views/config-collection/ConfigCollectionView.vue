@@ -351,17 +351,25 @@ async function openResultDirectory(): Promise<void> {
 
 function showTaskResult(task: ConfigTaskStatus): void {
   resultArtifactId.value = typeof task.result?.artifact_id === 'string' ? task.result.artifact_id : ''
-  if (task.error_message) {
-    resultTitle.value = '任务失败'
-    resultText.value = task.error_message
-    resultDiff.value = ''
-    return
-  }
   const result = task.result || {}
   const failedItems = Array.isArray(result.failed_items) ? result.failed_items : []
-  if (typeof result.failed === 'number' && result.failed > 0) {
-    resultTitle.value = result.failed === result.total ? '任务失败' : '任务部分完成'
-    resultText.value = `成功 ${Number(result.deleted ?? result.saved ?? 0)} / ${Number(result.total ?? 0)}；失败 ${result.failed}\n${failedItems.map(failureItemText).join('\n')}`
+  const unknownItems = Array.isArray(result.unknown_items) ? result.unknown_items : []
+  const notStartedItems = Array.isArray(result.not_started_items) ? result.not_started_items : []
+  if (result.interrupted || typeof result.failed === 'number' && result.failed > 0) {
+    const succeeded = Number(result.deleted ?? result.saved ?? 0)
+    const details = [
+      `成功 ${succeeded} / ${Number(result.total ?? 0)}；失败 ${Number(result.failed ?? 0)}；状态未知 ${unknownItems.length}；未开始 ${notStartedItems.length}`,
+      ...failedItems.map(failureItemText),
+      unknownItems.length ? `状态未知：${unknownItems.map(failureItemText).join('；')}` : '',
+      notStartedItems.length ? `未开始：${notStartedItems.map(item => typeof item === 'object' ? JSON.stringify(item) : String(item)).join('；')}` : '',
+      task.error_message ? `终态说明：${task.error_message}` : '',
+    ].filter(Boolean)
+    resultTitle.value = result.interrupted ? '任务中断，执行记录已保留' : Number(result.failed) === Number(result.total) ? '任务失败' : '任务部分完成'
+    resultText.value = details.join('\n')
+    resultDiff.value = ''
+  } else if (task.error_message) {
+    resultTitle.value = '任务失败'
+    resultText.value = task.error_message
     resultDiff.value = ''
   } else if (typeof result.text === 'string') {
     resultTitle.value = `${result.snapshot_type || '配置快照'} · ${task.device_name || ''}`

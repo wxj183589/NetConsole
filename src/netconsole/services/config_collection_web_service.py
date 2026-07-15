@@ -6,7 +6,7 @@ import json
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -28,7 +28,7 @@ from netconsole.models.api.config_collection import (
     ConfigTaskStatusDTO,
 )
 from netconsole.models.device import Device
-from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -111,6 +111,7 @@ class ConfigCollectionApplicationService:
         self._confirmation_ttl_seconds = max(1, min(int(confirmation_ttl_seconds), 900))
         self._confirmations: dict[str, _ConfirmationRecord] = {}
         self._start_lock = RLock()
+        self._irreversible_finalize_lock = RLock()
 
     def close(self) -> None:
         self.process_adapter.shutdown()
@@ -453,35 +454,67 @@ class ConfigCollectionApplicationService:
         return self._task_dto(snapshot, site_name=site_name)
 
     def _finalize_irreversible_task(self, site_name: str, task_id: str) -> None:
-        checkpoint = read_irreversible_checkpoint(self.paths, task_id)
-        if checkpoint is None:
-            return
-        snapshot = self.task_service.repository(site_name).get(task_id)
-        if not self._is_web_task(snapshot, site_name) or snapshot.task_type not in IRREVERSIBLE_CONFIG_TASK_TYPES:
-            return
-        if checkpoint.get("site_name") != site_name or checkpoint.get("task_type") != snapshot.task_type:
-            return
-        if snapshot.status is TaskState.COMPLETED:
-            remove_irreversible_checkpoint(self.paths, task_id)
-            return
-        checkpoint_status = str(checkpoint.get("status") or "running")
-        if snapshot.status is TaskState.CANCELLED or checkpoint_status == "running":
+        with self._irreversible_finalize_lock:
+            checkpoint = read_irreversible_checkpoint(self.paths, task_id)
+            if checkpoint is None:
+                return
+            repository = self.task_service.repository(site_name)
+            snapshot = repository.get(task_id)
+            if not self._is_web_task(snapshot, site_name) or snapshot.task_type not in IRREVERSIBLE_CONFIG_TASK_TYPES:
+                return
+            if checkpoint.get("site_name") != site_name or checkpoint.get("task_type") != snapshot.task_type:
+                return
+            checkpoint_status = str(checkpoint.get("status") or "running")
+            if snapshot.status is TaskState.COMPLETED and snapshot.result:
+                remove_irreversible_checkpoint(self.paths, task_id)
+                return
+            if snapshot.status not in TERMINAL_TASK_STATES:
+                return
+
             result = (
                 dict(checkpoint.get("result") or {})
                 if checkpoint_status == "completed"
                 else interrupted_irreversible_result(checkpoint)
             )
-            self.task_service.record_external_event(
-                task_id,
-                "finished",
-                {
-                    "message": "不可逆批次被宿主中断，已保留结构化执行结果",
+            all_failed = bool(result.get("total")) and int(result.get("failed") or 0) >= int(result["total"])
+            recovered_complete = checkpoint_status == "completed" and not all_failed
+            final_status = TaskState.COMPLETED if recovered_complete else snapshot.status
+            if all_failed:
+                final_status = TaskState.FAILED
+            if recovered_complete:
+                message = "不可逆批次已执行完成，终态由检查点恢复"
+            elif checkpoint_status == "completed":
+                message = "不可逆批次已执行完成，但全部项目失败"
+            else:
+                message = "不可逆批次被宿主中断，已保留结构化执行结果"
+            now = utc_now_iso()
+            updated = TaskSnapshot(
+                **{
+                    **asdict(snapshot),
+                    "status": final_status,
+                    "finished_time": snapshot.finished_time or now,
+                    "updated_time": now,
+                    "progress": 100 if recovered_complete else snapshot.progress,
+                    "message": message,
+                    "error_message": "" if recovered_complete else snapshot.error_message,
+                    "result": result,
+                }
+            )
+            event = TaskEvent(
+                event_id=f"config-irreversible-recovery-{task_id}",
+                task_id=task_id,
+                type="recovery",
+                time=now,
+                source="recovery",
+                payload={
+                    "message": message,
+                    "state": final_status.value,
                     "result": result,
                 },
-                source="local",
-                site_name=site_name,
             )
-        remove_irreversible_checkpoint(self.paths, task_id)
+            if repository.record_once(updated, event):
+                self.task_service.events.publish(event.to_dict())
+            remove_irreversible_checkpoint(self.paths, task_id)
 
     def _recover_irreversible_snapshot(self, site_name: str, snapshot: TaskSnapshot) -> TaskSnapshot:
         if (

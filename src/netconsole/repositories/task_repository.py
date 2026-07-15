@@ -110,6 +110,44 @@ class TaskRepository:
 
         run_sqlite_with_retry(operation)
 
+    def record_once(self, snapshot: TaskSnapshot, event: TaskEvent) -> bool:
+        """Atomically persist a snapshot/event pair only once by event id."""
+
+        recorded = False
+
+        def operation() -> None:
+            nonlocal recorded
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                exists = conn.execute(
+                    "SELECT 1 FROM task_events WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+                if exists is not None:
+                    conn.rollback()
+                    return
+                self._upsert(conn, snapshot)
+                conn.execute(
+                    """
+                    INSERT INTO task_events (
+                        event_id, task_id, event_type, event_time, source, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        event.task_id,
+                        event.type,
+                        event.time,
+                        event.source,
+                        json.dumps(event.payload, ensure_ascii=False, separators=(",", ":")),
+                    ),
+                )
+                conn.commit()
+                recorded = True
+
+        run_sqlite_with_retry(operation)
+        return recorded
+
     def get(self, task_id: str) -> TaskSnapshot | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM task_snapshots WHERE task_id = ?", (task_id,)).fetchone()
