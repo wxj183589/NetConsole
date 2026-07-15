@@ -3,8 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from netconsole.backend.api.online_mr_control_router import (
-    _require_local_desktop_session,
-    _site_id,
+    require_local_desktop_session,
 )
 from netconsole.models.api.online_mr_agent_control import (
     OnlineMrAgentCapabilitiesDTO,
@@ -14,9 +13,7 @@ from netconsole.models.api.online_mr_agent_control import (
     OnlineMrAgentWebStartRequestDTO,
     OnlineMrAgentWebStatusDTO,
 )
-from netconsole.services.online_mr.agent_web_control_service import (
-    OnlineMrAgentWebControlService,
-)
+from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 
 
 router = APIRouter(
@@ -25,42 +22,42 @@ router = APIRouter(
 )
 
 
-def _service(request: Request) -> OnlineMrAgentWebControlService:
-    return request.app.state.online_mr_agent_web_control_service
+def _facade(request: Request) -> OnlineMrApiFacade:
+    return request.app.state.online_mr_api_facade
 
 
 @router.get("/capabilities", response_model=OnlineMrAgentCapabilitiesDTO)
 def capabilities(request: Request) -> OnlineMrAgentCapabilitiesDTO:
-    _require_local_desktop_session(request)
-    return _service(request).capabilities(_site_id(request))
+    require_local_desktop_session(request)
+    return _facade(request).agent_capabilities()
 
 
 @router.get("/profiles", response_model=list[OnlineMrAgentProfileDTO])
 def profiles(request: Request) -> list[OnlineMrAgentProfileDTO]:
-    _require_local_desktop_session(request)
-    return _service(request).profiles()
+    require_local_desktop_session(request)
+    return _facade(request).agent_profiles()
 
 
 @router.get(
     "/profiles/{profile_id}/readiness", response_model=OnlineMrAgentReadinessDTO
 )
 def readiness(request: Request, profile_id: str) -> OnlineMrAgentReadinessDTO:
-    _require_local_desktop_session(request)
-    return _service(request).readiness(profile_id)
+    require_local_desktop_session(request)
+    return _facade(request).agent_readiness(profile_id)
 
 
 @router.get("/status", response_model=OnlineMrAgentWebStatusDTO)
 def status(request: Request) -> OnlineMrAgentWebStatusDTO:
-    _require_local_desktop_session(request)
-    return _service(request).status(_site_id(request))
+    require_local_desktop_session(request)
+    return _facade(request).agent_status()
 
 
 @router.get("/{operation_id}", response_model=OnlineMrAgentWebOperationDTO)
 def operation_detail(
     request: Request, operation_id: str
 ) -> OnlineMrAgentWebOperationDTO:
-    _require_local_desktop_session(request)
-    return _service(request).get_operation(operation_id, site_id=_site_id(request))
+    require_local_desktop_session(request)
+    return _facade(request).agent_operation(operation_id)
 
 
 @router.post("/start", response_model=OnlineMrAgentWebOperationDTO)
@@ -68,14 +65,14 @@ def start(
     request: Request,
     payload: OnlineMrAgentWebStartRequestDTO,
 ) -> OnlineMrAgentWebOperationDTO:
-    _require_local_desktop_session(request)
-    return _service(request).start(payload, current_site_id=_site_id(request))
+    require_local_desktop_session(request)
+    return _facade(request).start_agent(payload)
 
 
 @router.post("/{operation_id}/stop", response_model=OnlineMrAgentWebOperationDTO)
 def stop(request: Request, operation_id: str) -> OnlineMrAgentWebOperationDTO:
-    _require_local_desktop_session(request)
-    return _service(request).stop(operation_id, site_id=_site_id(request))
+    require_local_desktop_session(request)
+    return _facade(request).stop_agent(operation_id)
 
 
 __all__ = ["router"]

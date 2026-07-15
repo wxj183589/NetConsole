@@ -80,7 +80,7 @@ class OnlineMrWebControlService:
             operations=[self._operation_dto(item) for item in operations],
         )
 
-    def get_operation(self, operation_id: str, *, site_id: str) -> OnlineMrWebOperationDTO:
+    def get_operation(self, operation_id: str, *, site_id: str | None = None) -> OnlineMrWebOperationDTO:
         self._require_enabled()
         try:
             operation = self.application_service.get_operation(operation_id, site_id=site_id)
@@ -118,7 +118,7 @@ class OnlineMrWebControlService:
             except OnlineMrApplicationError as exc:
                 raise OnlineMrWebControlError(exc.code, exc.message, status_code=409) from exc
 
-    def stop(self, operation_id: str, *, site_id: str) -> OnlineMrWebOperationDTO:
+    def stop(self, operation_id: str, *, site_id: str | None = None) -> OnlineMrWebOperationDTO:
         self._require_enabled()
         with ONLINE_MR_WEB_START_LOCK:
             try:

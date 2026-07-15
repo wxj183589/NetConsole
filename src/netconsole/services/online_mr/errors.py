@@ -69,6 +69,13 @@ class OnlineMrWebControlErrorCode(StrEnum):
     STOP_FAILED = "ONLINE_MR_STOP_FAILED"
 
 
+class OnlineMrSiteContextErrorCode(StrEnum):
+    NOT_SELECTED = "ONLINE_MR_SITE_NOT_SELECTED"
+    NOT_FOUND = "ONLINE_MR_SITE_NOT_FOUND"
+    INVALID = "ONLINE_MR_SITE_INVALID"
+    UNAVAILABLE = "ONLINE_MR_SITE_CONTEXT_UNAVAILABLE"
+
+
 class OnlineMrQueryError(RuntimeError):
     def __init__(self, code: OnlineMrQueryErrorCode | str, message: str) -> None:
         safe_message = str(message or "Online MR 查询失败").strip()
@@ -100,11 +107,17 @@ class OnlineMrWebControlError(RuntimeError):
         self.status_code = int(status_code)
 
 
+class OnlineMrSiteContextError(OnlineMrWebControlError):
+    pass
+
+
 __all__ = [
     "OnlineMrApplicationError",
     "OnlineMrApplicationErrorCode",
     "OnlineMrQueryError",
     "OnlineMrQueryErrorCode",
+    "OnlineMrSiteContextError",
+    "OnlineMrSiteContextErrorCode",
     "OnlineMrWebControlError",
     "OnlineMrWebControlErrorCode",
 ]

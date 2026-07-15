@@ -186,6 +186,63 @@ def _event(task_id: str, event_type: str, *, stage: str = "", details: dict[str,
     }
 
 
+def test_operation_keeps_its_start_site_without_cross_site_scan_or_rebind(tmp_path: Path) -> None:
+    service, _task_service, adapter = _service(tmp_path)
+    operation = service.start_local_collection(_request("site-a"))
+
+    assert service.get_operation(operation.controller_task_id).site_id == "site-a"
+    with pytest.raises(OnlineMrApplicationError) as error:
+        service.get_operation(operation.controller_task_id, site_id="site-b")
+    assert error.value.code == OnlineMrApplicationErrorCode.OPERATION_NOT_FOUND
+    assert not service.paths.site_tasks_db_path("site-b").exists()
+
+    stopped = service.stop_operation(operation.controller_task_id, timeout_seconds=0.1)
+
+    assert stopped.site_id == "site-a"
+    assert stopped.phase is OnlineMrPhase.TERMINAL
+    assert adapter.cancelled_jobs == [operation.controller_task_id]
+    assert not service.paths.site_tasks_db_path("site-b").exists()
+
+
+def test_start_indexes_mapping_before_early_session_event(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    task_service = TaskApplicationService(paths, site_name="site-a")
+
+    class EarlyProgressAdapter(FakeProcessAdapter):
+        def start_job(self, job, *, on_complete=None) -> str:
+            task_id = super().start_job(job, on_complete=on_complete)
+            self.task_service.record_external_event(
+                task_id,
+                "progress",
+                {
+                    "stage": "online_mr_session_created",
+                    "message": json.dumps(
+                        {
+                            "controller_task_id": task_id,
+                            "session_id": "early-session",
+                            "device_id": 7,
+                        }
+                    ),
+                },
+                site_name="site-a",
+            )
+            return task_id
+
+    adapter = EarlyProgressAdapter(task_service)
+    service = OnlineMrApplicationService(
+        paths,
+        site_name="site-a",
+        task_service=task_service,
+        process_adapter=adapter,
+        device_validator=lambda _site, device_id: str(device_id) == "7",
+    )
+
+    operation = service.start_local_collection(_request("site-a"))
+
+    assert operation.session_id == "early-session"
+    assert service.get_operation_by_session("early-session").controller_task_id == operation.controller_task_id
+
+
 def _session_dir(paths: PathResolver, session_id: str, *, site: str = "site-a", status: str = "COLLECTING") -> Path:
     path = paths.online_mr_session_dir(site, "MR-07__7", session_id)
     (path / "raw").mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.online_mr_control import OnlineMrWebControlStatusDTO, OnlineMrWebOperationDTO
+from support.online_mr_api import wire_online_mr_api_facade
 
 
 class _ControlService:
@@ -33,8 +34,8 @@ class _ControlService:
     def status(self, site_id: str):
         return OnlineMrWebControlStatusDTO(enabled=self.enabled, site_id=site_id, operations=[self.operation])
 
-    def get_operation(self, operation_id: str, *, site_id: str):
-        assert operation_id == "task-1" and site_id == "demo"
+    def get_operation(self, operation_id: str, *, site_id: str | None = None):
+        assert operation_id == "task-1" and site_id is None
         return self.operation
 
     def start(self, payload, *, current_site_id: str):
@@ -42,8 +43,8 @@ class _ControlService:
         self.started += 1
         return self.operation
 
-    def stop(self, operation_id: str, *, site_id: str):
-        assert operation_id == "task-1" and site_id == "demo"
+    def stop(self, operation_id: str, *, site_id: str | None = None):
+        assert operation_id == "task-1" and site_id is None
         self.stopped += 1
         return self.operation.model_copy(update={"state": "stopped", "phase": "TERMINAL"})
 
@@ -53,13 +54,14 @@ def _app(tmp_path: Path, service: _ControlService, *, mode: RuntimeMode = Runtim
     paths.site_dir("demo").mkdir(parents=True, exist_ok=True)
     paths.app_config_path.parent.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
-    return create_app(
+    app = create_app(
         mode,
         paths=paths,
         frontend_dist=tmp_path / "missing-dist",
         desktop_session_token="desktop-token" if mode is RuntimeMode.DESKTOP else None,
         online_mr_web_control_service=service,
     )
+    return wire_online_mr_api_facade(app, paths)
 
 
 def _authorized_client(app, *, base_url: str = "http://127.0.0.1"):

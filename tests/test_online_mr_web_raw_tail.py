@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
+from support.online_mr_api import wire_online_mr_api_facade
 
 
 def _app_with_session(tmp_path: Path) -> tuple[TestClient, Path]:
@@ -18,7 +19,8 @@ def _app_with_session(tmp_path: Path) -> tuple[TestClient, Path]:
         json.dumps({"session_id": "session-4", "site": "demo", "mr_name": "MR-03", "status": "COLLECTING"}),
         encoding="utf-8",
     )
-    return TestClient(create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")), session
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    return TestClient(wire_online_mr_api_facade(app, paths)), session
 
 
 def test_raw_tail_is_whitelisted_bounded_and_missing_safe(tmp_path: Path) -> None:

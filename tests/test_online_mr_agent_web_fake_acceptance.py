@@ -34,6 +34,7 @@ from netconsole.services.online_mr.agent_web_control_service import (
     OnlineMrAgentWebControlService,
 )
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
+from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import (
     OnlineMrApplicationError,
     OnlineMrApplicationErrorCode,
@@ -167,6 +168,7 @@ def _acceptance_stack(
         online_mr_agent_web_control_service=agent_web,
         online_mr_agent_executor_enabled=True,
     )
+    app.state.online_mr_api_facade = OnlineMrApiFacade(paths, query, local_control, agent_web)
     try:
         yield AcceptanceStack(
             app=app,

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
+from support.online_mr_api import wire_online_mr_api_facade
 
 
 def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
@@ -47,6 +48,7 @@ def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
 
     with TestClient(app) as client:
         preview = client.get("/api/online-mr/sessions/session-2/preview")
@@ -70,6 +72,7 @@ def test_missing_view_files_return_empty_preview_instead_of_500(tmp_path: Path) 
         encoding="utf-8",
     )
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
 
     with TestClient(app) as client:
         response = client.get("/api/online-mr/sessions/session-3/preview")

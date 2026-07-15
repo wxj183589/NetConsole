@@ -158,7 +158,7 @@ class OnlineMrAgentWebControlService:
         )
 
     def get_operation(
-        self, operation_id: str, *, site_id: str
+        self, operation_id: str, *, site_id: str | None = None
     ) -> OnlineMrAgentWebOperationDTO:
         self._require_enabled()
         try:
@@ -220,7 +220,7 @@ class OnlineMrAgentWebControlService:
                 ) from exc
         return self._operation_dto(operation)
 
-    def stop(self, operation_id: str, *, site_id: str) -> OnlineMrAgentWebOperationDTO:
+    def stop(self, operation_id: str, *, site_id: str | None = None) -> OnlineMrAgentWebOperationDTO:
         self._require_enabled()
         with ONLINE_MR_WEB_START_LOCK:
             try:

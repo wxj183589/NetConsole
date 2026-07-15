@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
+from support.online_mr_api import wire_online_mr_api_facade
 
 
 def _session(paths: PathResolver, session_id: str = "session-1") -> Path:
@@ -39,6 +40,7 @@ def _session(paths: PathResolver, session_id: str = "session-1") -> Path:
 def test_status_api_returns_current_recent_and_readonly_mapping_state(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
     session = _session(paths)
     app.state.task_service.create_external_task(
         task_id="task-1",
@@ -81,6 +83,7 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(tmp_path: 
 def test_current_session_returns_none_when_only_terminal_sessions_exist(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
     session = _session(paths)
     meta_path = session / "session_meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))

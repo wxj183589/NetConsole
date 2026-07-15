@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from dataclasses import replace
 from datetime import datetime
@@ -82,6 +83,9 @@ class OnlineMrApplicationService:
         self.process_adapter = process_adapter or LocalProcessAdapter(self.task_service)
         self.device_validator = device_validator or self._device_exists
         self._repositories: dict[str, OnlineMrTaskSessionRepository] = {}
+        self._operation_sites: dict[str, str] = {}
+        self._session_sites: dict[str, str] = {}
+        self._mapping_index_lock = threading.RLock()
         self.agent_executor = agent_executor
         if self.agent_executor is None and os.environ.get("ONLINE_MR_AGENT_EXECUTOR_ENABLED", "0") == "1":
             from netconsole.services.agent.controller import AgentControllerService
@@ -160,6 +164,7 @@ class OnlineMrApplicationService:
         repository = self.repository(request.site_id)
         try:
             repository.create(mapping)
+            self._remember_mapping(mapping)
         except sqlite3.IntegrityError as exc:
             raise OnlineMrApplicationError(OnlineMrApplicationErrorCode.MAPPING_CONFLICT, "Online MR 任务映射冲突") from exc
 
@@ -467,6 +472,7 @@ class OnlineMrApplicationService:
             repository = self.repository(selected_site)
             task_repository = self.task_service.repository(selected_site)
             for mapping in repository.list(limit=1000):
+                self._remember_mapping(mapping)
                 if mapping.mapping_state not in _ACTIVE_MAPPING_STATES:
                     continue
                 if mapping.executor_kind is not OnlineMrExecutorKind.LOCAL:
@@ -632,7 +638,7 @@ class OnlineMrApplicationService:
             ),
         )
         try:
-            return repository.save(updated)
+            return self._remember_mapping(repository.save(updated))
         except sqlite3.IntegrityError:
             self._terminal_mapping_error(repository, mapping, OnlineMrApplicationErrorCode.MAPPING_CONFLICT, "Online MR session_id 已关联其他任务")
             return mapping
@@ -662,6 +668,7 @@ class OnlineMrApplicationService:
         )
 
     def _to_operation(self, mapping: OnlineMrTaskSessionMapping) -> OnlineMrOperationSnapshotDTO:
+        self._remember_mapping(mapping)
         task = self.task_service.repository(mapping.site_id).get(mapping.controller_task_id)
         return OnlineMrOperationSnapshotDTO(
             controller_task_id=mapping.controller_task_id,
@@ -698,18 +705,43 @@ class OnlineMrApplicationService:
         )
 
     def _find_by_task(self, task_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping | None:
-        for selected_site in ([site_id] if site_id else self._site_ids()):
-            mapping = self.repository(selected_site).get_by_task(task_id)
-            if mapping is not None:
-                return mapping
-        return None
+        bound_site = self._operation_sites.get(task_id)
+        if site_id and bound_site and site_id != bound_site:
+            return None
+        selected_site = site_id or bound_site
+        if not selected_site:
+            return None
+        mapping = self.repository(selected_site).get_by_task(task_id)
+        return self._remember_mapping(mapping) if mapping is not None else None
 
     def _find_by_session(self, session_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping | None:
-        for selected_site in ([site_id] if site_id else self._site_ids()):
-            mapping = self.repository(selected_site).get_by_session(session_id)
-            if mapping is not None:
-                return mapping
-        return None
+        bound_site = self._session_sites.get(session_id)
+        if site_id and bound_site and site_id != bound_site:
+            return None
+        selected_site = site_id or bound_site
+        if not selected_site:
+            return None
+        mapping = self.repository(selected_site).get_by_session(session_id)
+        return self._remember_mapping(mapping) if mapping is not None else None
+
+    def _remember_mapping(self, mapping: OnlineMrTaskSessionMapping) -> OnlineMrTaskSessionMapping:
+        with self._mapping_index_lock:
+            bound_site = self._operation_sites.get(mapping.controller_task_id)
+            session_site = self._session_sites.get(mapping.session_id) if mapping.session_id else None
+            if bound_site not in {None, mapping.site_id}:
+                raise OnlineMrApplicationError(
+                    OnlineMrApplicationErrorCode.MAPPING_CONFLICT,
+                    "Online MR operation 局点绑定冲突",
+                )
+            if session_site not in {None, mapping.site_id}:
+                raise OnlineMrApplicationError(
+                    OnlineMrApplicationErrorCode.MAPPING_CONFLICT,
+                    "Online MR session 局点绑定冲突",
+                )
+            self._operation_sites[mapping.controller_task_id] = mapping.site_id
+            if mapping.session_id:
+                self._session_sites[mapping.session_id] = mapping.site_id
+        return mapping
 
     def _required_mapping(self, task_id: str, *, site_id: str | None = None) -> OnlineMrTaskSessionMapping:
         mapping = self._find_by_task(task_id, site_id=site_id)
