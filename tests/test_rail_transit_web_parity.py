@@ -20,6 +20,7 @@ from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskRequestDTO
+from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
@@ -273,7 +274,7 @@ def test_artifact_finalization_failure_marks_task_failed_and_clears_paths(
 
 def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    service, _normal, export, _tasks = _service(paths)
+    service, _normal, export, tasks = _service(paths)
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-recovery")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
@@ -289,8 +290,27 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     )
 
     started = service.start_online_mr_report("demo", "session-recovery", "recovered.xlsx")
+    leaked_path = str(export.jobs[started.task_id].output_path)
+    subscription = tasks.events.open_stream()
     export.callbacks.pop(started.task_id)
     export.complete(started.task_id, b"recovered-report")
+    live_events = [subscription.get(timeout=1), subscription.get(timeout=1)]
+    subscription.close()
+    stored_snapshot = tasks.repository("demo").get(started.task_id)
+    public_snapshot = tasks.get_task(started.task_id)
+    stored_events = tasks.list_events(started.task_id, limit=100)
+    serialized_public = json.dumps(
+        {
+            "task": task_dto(public_snapshot).model_dump(mode="json") if public_snapshot else {},
+            "events": stored_events,
+            "live": live_events,
+        },
+        ensure_ascii=False,
+    )
+    assert stored_snapshot is not None and stored_snapshot.result_path == ""
+    assert "output_path" not in stored_snapshot.result
+    assert leaked_path not in serialized_public
+    assert "output_path" not in serialized_public
     assert service.get_task("demo", started.task_id).available is False
 
     recovered = service.recover_tasks("demo")
@@ -316,6 +336,59 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     assert not cancelled_temp.exists()
     with pytest.raises(RailTransitWebError):
         service.open_online_mr_report("demo", cancelled.artifact_id)
+
+
+def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-legacy-path")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps({"session_id": "session-legacy-path", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
+    started = service.start_online_mr_report("demo", "session-legacy-path", "legacy.xlsx")
+    leak = str(export.jobs[started.task_id].output_path)
+    repository = tasks.repository("demo")
+    snapshot = repository.get(started.task_id)
+    assert snapshot is not None
+    now = utc_now_iso()
+    repository.record(
+        replace(
+            snapshot,
+            status=TaskState.COMPLETED,
+            finished_time=now,
+            updated_time=now,
+            result_path=leak,
+            result={"output_path": leak, "row_count": 1},
+            error_message=f"导出失败：{leak}",
+        ),
+        TaskEvent(
+            event_id="legacy-web-export-path-event",
+            task_id=started.task_id,
+            type="finished",
+            time=now,
+            source="worker",
+            payload={"message": f"导出完成：{leak}", "result": {"output_path": leak}},
+        ),
+    )
+
+    public_task = tasks.get_task(started.task_id)
+    repository_task = repository.get(started.task_id)
+    public_events = tasks.list_events(started.task_id, limit=100)
+    all_events = tasks.list_all_events(limit=100)
+    serialized = json.dumps(
+        {
+            "task": task_dto(public_task).model_dump(mode="json") if public_task else {},
+            "repository_task": task_dto(repository_task).model_dump(mode="json") if repository_task else {},
+            "events": public_events,
+            "all_events": all_events,
+        },
+        ensure_ascii=False,
+    )
+    assert leak not in serialized
+    assert "output_path" not in serialized
+    assert "<redacted-path>" in serialized
 
 
 def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> None:

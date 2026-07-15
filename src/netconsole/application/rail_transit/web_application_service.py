@@ -344,7 +344,18 @@ class RailTransitWebApplicationService:
                 self.artifact_store.fail(reservation)
 
         try:
-            self.export_adapter.start_export(job, task_name=action, owner=self._OWNER, on_complete=completed)
+            self.export_adapter.start_export(
+                job,
+                task_name=action,
+                owner=self._OWNER,
+                public_result={
+                    "artifact_id": reservation.artifact_id,
+                    "artifact_name": reservation.output_path.name,
+                    "artifact_source": reservation.source,
+                    "artifact_type": reservation.artifact_type,
+                },
+                on_complete=completed,
+            )
         except Exception:
             self.artifact_store.fail(reservation)
             raise

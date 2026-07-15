@@ -12,6 +12,11 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_state import TaskState
 from netconsole.services.job_center.worker_protocol import feed_jsonl, parse_event_line
+from netconsole.services.job_center.web_export_event_safety import (
+    is_web_export_task,
+    redact_web_export_text,
+    sanitize_web_export_event,
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +90,8 @@ class TaskRuntime:
             return
         events, diagnostics, task.stdout_buffer = feed_jsonl(task.stdout_buffer, chunk)
         for line in diagnostics:
-            self.events.publish({"type": "diagnostic", "job_id": job_id, "message": line}, source="worker")
+            message = redact_web_export_text(line) if is_web_export_task(task.launch.job.task_type) else line
+            self.events.publish({"type": "diagnostic", "job_id": job_id, "message": message}, source="worker")
         for event in events:
             self._accept_worker_event(task, event)
 
@@ -135,6 +141,8 @@ class TaskRuntime:
                 "cancelled": cancelled,
             }
             terminal_state = TaskState.CANCELLED if cancelled else TaskState.FAILED
+        if is_web_export_task(task.launch.job.task_type):
+            payload = sanitize_web_export_event(payload)
         self._set_state(job_id, terminal_state)
         self.events.publish(payload)
         self._finish(job_id)
@@ -157,6 +165,8 @@ class TaskRuntime:
             "traceback": "",
             "cancelled": cancelled,
         }
+        if is_web_export_task(task.launch.job.task_type):
+            payload = sanitize_web_export_event(payload)
         self._set_state(job_id, TaskState.CANCELLED if cancelled else TaskState.FAILED)
         self.events.publish(payload)
         self._finish(job_id)
@@ -185,6 +195,8 @@ class TaskRuntime:
         return Path(__file__).resolve().parents[4]
 
     def _accept_worker_event(self, task: _RuntimeTask, event: dict[str, object]) -> None:
+        if is_web_export_task(task.launch.job.task_type):
+            event = sanitize_web_export_event(event)
         event_type = str(event.get("type") or "")
         if event_type in {"finished", "error", "cancelled"}:
             task.terminal_event = event

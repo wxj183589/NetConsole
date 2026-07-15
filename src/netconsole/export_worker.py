@@ -17,7 +17,16 @@ from netconsole.services.export import error_event, finished_event, progress_eve
 from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
-from netconsole.services.job_center.job_events import log_event
+from netconsole.services.job_center.job_events import (
+    cancelled_event as task_cancelled_event,
+    error_event as task_error_event,
+    finished_event as task_finished_event,
+    log_event,
+)
+from netconsole.services.job_center.web_export_event_safety import (
+    redact_web_export_text,
+    sanitize_web_export_value,
+)
 from netconsole.services.job_center.worker_protocol import write_event
 from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
@@ -38,6 +47,39 @@ def _should_cancel(job: ExportJob) -> bool:
     return bool(job.cancel_path and Path(job.cancel_path).exists())
 
 
+def _web_public_result(job: ExportJob, *, row_count: int) -> dict[str, object] | None:
+    value = job.params.get("_web_public_result")
+    if not isinstance(value, dict):
+        return None
+    sanitized = sanitize_web_export_value(value)
+    if not isinstance(sanitized, dict):
+        raise ValueError("Web 导出公开结果无效")
+    result = dict(sanitized)
+    result["row_count"] = int(row_count or 0)
+    result["artifact_pending"] = True
+    return result
+
+
+def _finished(job: ExportJob, output_path: str, *, message: str = "导出完成", row_count: int = 0) -> dict[str, Any]:
+    public_result = _web_public_result(job, row_count=row_count)
+    if public_result is not None:
+        return task_finished_event(job.job_id, public_result, message)
+    return finished_event(job.job_id, output_path, message=message, row_count=row_count)
+
+
+def _error(job: ExportJob, message: str, *, traceback_text: str = "", cancelled: bool = False) -> dict[str, Any]:
+    if _web_public_result(job, row_count=0) is not None:
+        safe_message = redact_web_export_text(message)
+        return task_cancelled_event(job.job_id, safe_message) if cancelled else task_error_event(job.job_id, safe_message)
+    return error_event(
+        job.job_id,
+        message,
+        traceback_text=traceback_text,
+        output_path=job.output_path,
+        cancelled=cancelled,
+    )
+
+
 def _run_trackside_ap_business(job: ExportJob) -> None:
     job.validate()
     if not job.db_path:
@@ -53,8 +95,8 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
         should_cancel=lambda: _should_cancel(job),
     )
     _emit(
-        finished_event(
-            job.job_id,
+        _finished(
+            job,
             str(result.get("path") or job.output_path),
             message="导出完成",
             row_count=int(result.get("row_count") or 0),
@@ -131,7 +173,7 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
         payload={"source_module": "rail.mesh_link_detail"},
     )
     os.replace(tmp_path, output_path)
-    event = finished_event(job.job_id, str(output_path), row_count=total)
+    event = _finished(job, str(output_path), row_count=total)
     result = event.get("result")
     if isinstance(result, dict):
         result.update(export_result)
@@ -197,7 +239,7 @@ def _run_mesh_analysis_report(job: ExportJob) -> None:
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(generated, tmp_path)
         os.replace(tmp_path, job.output_path)
-        _emit(finished_event(job.job_id, job.output_path, row_count=1))
+        _emit(_finished(job, job.output_path, row_count=1))
     except Exception:
         for value in queue.generated_files:
             path = Path(value).resolve()
@@ -223,7 +265,7 @@ def _run_job(job: ExportJob) -> int:
                 progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
                 should_cancel=lambda: _should_cancel(job),
             )
-            _emit(finished_event(job.job_id, str(result.get("path") or job.output_path), row_count=int(result.get("row_count") or 0)))
+            _emit(_finished(job, str(result.get("path") or job.output_path), row_count=int(result.get("row_count") or 0)))
             return 0
         if job.job_type == "trackside_ap_business":
             _run_trackside_ap_business(job)
@@ -237,14 +279,20 @@ def _run_job(job: ExportJob) -> int:
         raise ValueError(f"不支持的导出任务类型：{job.job_type}")
     except (MeshLinkDetailExportCancelled, TracksideApExportCancelled, ExportCancelled) as exc:
         _cleanup_tmp(job)
-        _emit(error_event(job.job_id, str(exc), output_path=job.output_path, cancelled=True))
+        _emit(_error(job, str(exc), cancelled=True))
         return 2
     except Exception as exc:
         _cleanup_tmp(job)
         stack = traceback.format_exc()
         message = _friendly_error_message(exc)
-        _emit(log_event(job.job_id, stack, level="error"))
-        _emit(error_event(job.job_id, message, traceback_text=stack, output_path=job.output_path, cancelled=False))
+        _emit(
+            log_event(
+                job.job_id,
+                "Web 报告导出失败" if _web_public_result(job, row_count=0) is not None else stack,
+                level="error",
+            )
+        )
+        _emit(_error(job, message, traceback_text=stack, cancelled=False))
         return 1
 
 

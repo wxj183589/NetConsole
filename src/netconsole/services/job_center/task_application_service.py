@@ -13,6 +13,11 @@ from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_runtime import TaskLaunch, TaskRuntime
+from netconsole.services.job_center.web_export_event_safety import (
+    is_web_export_task,
+    sanitize_web_export_event,
+    sanitize_web_export_snapshot,
+)
 
 
 class TaskApplicationService:
@@ -143,6 +148,7 @@ class TaskApplicationService:
         snapshot = repository.get(task_id)
         if snapshot is None:
             raise KeyError(task_id)
+        safe_payload = sanitize_web_export_event(payload) if is_web_export_task(snapshot.task_type) else dict(payload or {})
         selected_time = event_time or utc_now_iso()
         event = TaskEvent(
             event_id=event_id or uuid.uuid4().hex,
@@ -150,7 +156,7 @@ class TaskApplicationService:
             type=str(event_type or "log"),
             time=selected_time,
             source=source,
-            payload=dict(payload or {}),
+            payload=safe_payload,
         )
         updated = self._apply_event(snapshot, event.type, event.payload, selected_time)
         repository.record(updated, event)
@@ -269,16 +275,30 @@ class TaskApplicationService:
         return self.runtime.is_running(job_id)
 
     def list_tasks(self, *, statuses: set[TaskState] | None = None, limit: int = 200) -> list[TaskSnapshot]:
-        return self.repository().list(statuses=statuses, limit=limit)
+        return [sanitize_web_export_snapshot(item) for item in self.repository().list(statuses=statuses, limit=limit)]
 
     def get_task(self, task_id: str) -> TaskSnapshot | None:
-        return self.repository().get(task_id)
+        snapshot = self.repository().get(task_id)
+        return sanitize_web_export_snapshot(snapshot) if snapshot is not None else None
 
     def list_events(self, task_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        return self.repository().list_events(task_id, after_sequence=after_sequence, limit=limit)
+        repository = self.repository()
+        events = repository.list_events(task_id, after_sequence=after_sequence, limit=limit)
+        snapshot = repository.get(task_id)
+        return self._public_events(events, snapshot)
 
     def list_all_events(self, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        return self.repository().list_all_events(after_sequence=after_sequence, limit=limit)
+        repository = self.repository()
+        events = repository.list_all_events(after_sequence=after_sequence, limit=limit)
+        task_types: dict[str, str] = {}
+        sanitized: list[dict[str, Any]] = []
+        for event in events:
+            task_id = str(event.get("task_id") or "")
+            if task_id not in task_types:
+                snapshot = repository.get(task_id)
+                task_types[task_id] = snapshot.task_type if snapshot is not None else ""
+            sanitized.append(self._public_event(event, task_types[task_id]))
+        return sanitized
 
     def last_event_sequence(self) -> int:
         return self.repository().last_event_sequence()
@@ -297,6 +317,8 @@ class TaskApplicationService:
             snapshot = repository.get(task_id)
             if snapshot is None:
                 return
+            if is_web_export_task(snapshot.task_type):
+                payload = sanitize_web_export_event(payload)
             updated = self._apply_event(snapshot, str(envelope.get("type") or ""), payload, str(envelope.get("time") or utc_now_iso()))
             repository.record(
                 updated,
@@ -401,6 +423,15 @@ class TaskApplicationService:
         ):
             raise ValueError("Artifact 所属任务校验失败")
         return snapshot
+
+    @staticmethod
+    def _public_events(events: list[dict[str, Any]], snapshot: TaskSnapshot | None) -> list[dict[str, Any]]:
+        task_type = snapshot.task_type if snapshot is not None else ""
+        return [TaskApplicationService._public_event(event, task_type) for event in events]
+
+    @staticmethod
+    def _public_event(event: dict[str, Any], task_type: str) -> dict[str, Any]:
+        return sanitize_web_export_event(event) if is_web_export_task(task_type) else dict(event)
 
     def _record_prepare_failure(self, snapshot: TaskSnapshot, message: str) -> None:
         now = utc_now_iso()

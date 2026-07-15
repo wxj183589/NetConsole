@@ -61,7 +61,15 @@ class FakeExportProcessAdapter:
         self.jobs: dict[str, ExportJob] = {}
         self.callbacks = {}
 
-    def start_export(self, job: ExportJob, *, task_name: str, owner: str, on_complete=None) -> str:
+    def start_export(
+        self,
+        job: ExportJob,
+        *,
+        task_name: str,
+        owner: str,
+        public_result: dict[str, object] | None = None,
+        on_complete=None,
+    ) -> str:
         self.jobs[job.job_id] = job
         self.callbacks[job.job_id] = on_complete
         launch = self.tasks.prepare(
@@ -73,6 +81,7 @@ class FakeExportProcessAdapter:
                     "task_name": task_name,
                     "owner": owner,
                     "task_source": "local",
+                    "public_result": dict(public_result or {}),
                 },
             )
         )

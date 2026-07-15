@@ -35,13 +35,19 @@ class WebExportProcessAdapter(LocalProcessAdapter):
         *,
         task_name: str,
         owner: str,
+        public_result: dict[str, object] | None = None,
         on_complete: CompletionCallback | None = None,
     ) -> str:
         if not _SAFE_JOB_ID.fullmatch(job.job_id):
             raise ValueError("导出任务标识无效")
         if job.job_id in self._exports:
             raise RuntimeError("同一导出任务正在执行")
-        self._exports[job.job_id] = job
+        safe_result = self._safe_public_result(public_result)
+        export = replace(
+            job,
+            params={**dict(job.params or {}), "_web_public_result": safe_result},
+        )
+        self._exports[job.job_id] = export
 
         def completed(value: LocalProcessCompletion) -> None:
             self._cleanup_export_runtime(value.job_id, failed=value.exit_code != 0 or value.cancelled)
@@ -64,6 +70,19 @@ class WebExportProcessAdapter(LocalProcessAdapter):
         except Exception:
             self._cleanup_export_runtime(job.job_id, failed=True)
             raise
+
+    @staticmethod
+    def _safe_public_result(value: dict[str, object] | None) -> dict[str, object]:
+        allowed = {"artifact_id", "artifact_name", "artifact_source", "artifact_type"}
+        payload = dict(value or {})
+        if set(payload) != allowed or not all(isinstance(payload[key], str) and payload[key] for key in allowed):
+            raise ValueError("Web 导出缺少安全 Artifact 结果")
+        name = str(payload["artifact_name"])
+        if Path(name).is_absolute() or Path(name).name != name:
+            raise ValueError("Web 导出 Artifact 名称无效")
+        if any("/" in str(payload[key]) or "\\" in str(payload[key]) for key in allowed - {"artifact_name"}):
+            raise ValueError("Web 导出 Artifact 标识无效")
+        return {key: str(payload[key]) for key in sorted(allowed)}
 
     def _start_process(self, launch: TaskLaunch):
         export = self._exports.get(launch.job.job_id)

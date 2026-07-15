@@ -9,6 +9,7 @@ from netconsole.models.api.task import TaskCancelResponse, TaskDTO, TaskEventDTO
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.web_export_event_safety import sanitize_web_export_snapshot
 
 
 router = APIRouter(tags=["tasks"])
@@ -20,6 +21,7 @@ def task_service(request: Request) -> TaskApplicationService:
 
 
 def task_dto(snapshot: TaskSnapshot) -> TaskDTO:
+    snapshot = sanitize_web_export_snapshot(snapshot)
     return TaskDTO(
         id=snapshot.task_id,
         type=snapshot.task_type,

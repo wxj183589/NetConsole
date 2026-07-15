@@ -410,11 +410,26 @@ class AcWebApplicationService:
                 self.artifact_store.fail(reservation)
 
         try:
-            self.export_adapter.start_export(job, task_name="AP 扩展信息导出", owner="web_ac", on_complete=completed)
+            self.export_adapter.start_export(
+                job,
+                task_name="AP 扩展信息导出",
+                owner="web_ac",
+                public_result=self._public_artifact_result(reservation),
+                on_complete=completed,
+            )
         except Exception:
             self.artifact_store.fail(reservation)
             raise
         return self._task_dto(site_id, task_id)
+
+    @staticmethod
+    def _public_artifact_result(reservation) -> dict[str, object]:
+        return {
+            "artifact_id": reservation.artifact_id,
+            "artifact_name": reservation.output_path.name,
+            "artifact_source": reservation.source,
+            "artifact_type": reservation.artifact_type,
+        }
 
     def open_extension_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         try:
