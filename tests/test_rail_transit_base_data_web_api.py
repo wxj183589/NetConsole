@@ -23,6 +23,17 @@ def _fingerprint(path: Path) -> tuple[str, int]:
     return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
 
 
+def test_router_delegates_import_policy_without_guard_or_source_policy_access() -> None:
+    router_source = (
+        Path(__file__).parents[1] / "src/netconsole/backend/api/rail_transit_base_data_router.py"
+    ).read_text(encoding="utf-8")
+
+    assert "get_import_policy" in router_source
+    assert ".guard" not in router_source
+    assert "source_policy" not in router_source
+    assert "import_policy_rows" not in router_source
+
+
 def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     app = create_app(

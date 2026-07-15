@@ -14,7 +14,6 @@ from netconsole.models.api.rail_transit_base_data import (
     ImportChangePageDTO,
     ImportOperationPageDTO,
     ImportOperationDTO,
-    ImportPolicyDTO,
     ImportPolicyResponseDTO,
     ImportRollbackRequestDTO,
     ImportRollbackResultDTO,
@@ -36,7 +35,6 @@ from netconsole.services.rail_transit.import_preview_service import (
     MAX_IMPORT_PREVIEW_BYTES,
     RailTransitImportPreviewService,
 )
-from netconsole.services.rail_transit.source_policy import import_policy_rows
 
 
 router = APIRouter(prefix="/rail-transit/base-data", tags=["rail-transit-base-data"])
@@ -206,21 +204,7 @@ def import_policies(
     request: Request,
     site_id: str = Query(default="", max_length=100),
 ) -> ImportPolicyResponseDTO:
-    status_value = _import_service(request).guard.status(_site_id(request, site_id))
-    return ImportPolicyResponseDTO(
-        feature_enabled=status_value.feature_enabled,
-        write_enabled=status_value.write_enabled,
-        copy_write_authorized=status_value.copy_write_authorized,
-        real_write_authorized=status_value.real_write_authorized,
-        rollback_enabled=status_value.rollback_enabled,
-        write_scope=status_value.scope,
-        identity_boundaries={
-            "formal": "正式基础资料长期保存，来源数据不能自动覆盖。",
-            "source": "外部文件、AC、Agent 和日志身份保留来源，不自动成为正式身份。",
-            "runtime": "在线状态、DHCP IP、RSSI、光衰和 Mesh-Link 只关联展示。",
-        },
-        items=[ImportPolicyDTO.model_validate(item) for item in import_policy_rows()],
-    )
+    return _import_service(request).get_import_policy(_site_id(request, site_id))
 
 
 @router.post("/import-apply", response_model=ImportApplyResultDTO)

@@ -65,6 +65,22 @@ def test_apply_is_disabled_by_default_and_rejects_changed_database(tmp_path: Pat
     assert changed_error.value.code == "BASE_DATA_DATABASE_CHANGED"
 
 
+def test_import_policy_encapsulates_guard_status_and_source_rules(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = _service(paths)
+
+    real_policy = service.get_import_policy("demo")
+    assert real_policy.write_scope == "real"
+    assert real_policy.real_write_authorized is False
+    assert real_policy.identity_boundaries["formal"].startswith("正式基础资料")
+    assert next(item for item in real_policy.items if item.field_name == "management_ip").runtime_only is True
+
+    mark_base_data_copy(paths)
+    copy_policy = service.get_import_policy("demo")
+    assert copy_policy.write_scope == "copy_validation"
+    assert copy_policy.copy_write_authorized is True
+
+
 def test_temp_database_apply_audit_and_rollback_are_atomic(tmp_path: Path) -> None:
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
     mark_base_data_copy(paths)

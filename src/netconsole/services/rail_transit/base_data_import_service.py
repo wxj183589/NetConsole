@@ -14,6 +14,8 @@ from netconsole.models.api.rail_transit_base_data import (
     FieldProvenanceDTO,
     ImportChangeDTO,
     ImportOperationDTO,
+    ImportPolicyDTO,
+    ImportPolicyResponseDTO,
     ImportPreviewRowDTO,
     MergeFieldDecisionDTO,
     MergeFieldDiffDTO,
@@ -29,6 +31,7 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.rail_transit.source_policy import (
     SOURCE_PRIORITIES,
     field_action,
+    import_policy_rows,
     is_blocking_issue,
     is_runtime_field,
     match_trackside_ap,
@@ -72,6 +75,23 @@ class RailTransitBaseDataImportService:
 
     def inspect_import(self, **kwargs: Any) -> MergePlanDTO:
         return self.build_merge_plan(**kwargs)
+
+    def get_import_policy(self, site_id: str) -> ImportPolicyResponseDTO:
+        status = self.guard.status(site_id)
+        return ImportPolicyResponseDTO(
+            feature_enabled=status.feature_enabled,
+            write_enabled=status.write_enabled,
+            copy_write_authorized=status.copy_write_authorized,
+            real_write_authorized=status.real_write_authorized,
+            rollback_enabled=status.rollback_enabled,
+            write_scope=status.scope,
+            identity_boundaries={
+                "formal": "正式基础资料长期保存，来源数据不能自动覆盖。",
+                "source": "外部文件、AC、Agent 和日志身份保留来源，不自动成为正式身份。",
+                "runtime": "在线状态、DHCP IP、RSSI、光衰和 Mesh-Link 只关联展示。",
+            },
+            items=[ImportPolicyDTO.model_validate(item) for item in import_policy_rows()],
+        )
 
     def save_preview(self, plan: MergePlanDTO) -> str:
         try:
