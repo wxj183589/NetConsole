@@ -17,6 +17,7 @@
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
 | [下一阶段开发指南](DEVELOPMENT_GUIDE.md) | 永久功能调用链、前端/API/Electron 硬边界和迁移检查 | Web/Core/Desktop 开发 | 下一代架构、开发规则、目录规范 | 新功能链路或跨层约束变化 |
+| [API / Application 边界审计](API_APPLICATION_BOUNDARY_AUDIT.md) | 18 个 FastAPI Router 的分层证据、判级和治理顺序 | Web/API/Core 开发 | Router、组合根、Application/Query Service | Router 依赖、用例编排或存储错误边界变化 |
 | [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |
 | [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |
 | [导出进程规范](export_process_policy.md) | Export Process、临时文件、取消和 writer 约束 | 报告/导出开发 | `services/export`、`export_worker.py`、export UI helper | 导出类型、协议或文件提交策略变化 |
