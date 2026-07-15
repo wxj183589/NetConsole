@@ -4,6 +4,7 @@ import type { BackendStatus, NetConsoleDesktopBridge } from '../shared/bridge'
 import { DESKTOP_IPC } from '../shared/bridge'
 import {
   validateBridgePath,
+  validateBackendDownloadRequest,
   validateChooseSavePathOptions,
   validateRendererReadyReport,
   validateSelectFileOptions,
@@ -30,6 +31,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.chooseSavePath,
       validateChooseSavePathOptions(options),
     ) as ReturnType<NetConsoleDesktopBridge['chooseSavePath']>,
+    downloadBackendResource: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.downloadBackendResource,
+      validateBackendDownloadRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['downloadBackendResource']>,
     openPath: (path) => ipcRenderer.invoke(
       DESKTOP_IPC.openPath,
       validateBridgePath(path),

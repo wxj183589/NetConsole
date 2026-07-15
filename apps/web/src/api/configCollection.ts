@@ -5,6 +5,7 @@ import type {
   ConfigTaskReference,
   ConfigTaskStatus,
 } from '../types/configCollection'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/config-collection'
 
@@ -62,6 +63,12 @@ export function getConfigTask(taskId: string): Promise<ConfigTaskStatus> {
   return apiRequest<ConfigTaskStatus>(`${root}/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export function configArtifactUrl(artifactId: string): string {
-  return `${root}/artifacts/${encodeURIComponent(artifactId)}`
+export function configArtifactDownloadRequest(
+  artifactId: string,
+  suggestedName: string,
+): BackendDownloadRequest {
+  return {
+    apiPath: `${root}/artifacts/${encodeURIComponent(artifactId)}`,
+    suggestedName,
+  }
 }

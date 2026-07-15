@@ -1,5 +1,7 @@
 import type {
   AppInfo,
+  BackendDownloadRequest,
+  BackendDownloadResult,
   BackendStatus,
   ChooseSavePathOptions,
   ChooseSavePathResult,
@@ -20,6 +22,7 @@ export interface PlatformAdapter {
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
+  downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openPath(path: string): Promise<NativeActionResult>
   showItemInFolder(path: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void

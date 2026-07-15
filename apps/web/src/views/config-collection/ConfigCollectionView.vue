@@ -5,7 +5,7 @@ import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
 
 import { isFeatureEnabled } from '../../features'
 import {
-  configArtifactUrl,
+  configArtifactDownloadRequest,
   getConfigTask,
   listConfigDevices,
   listConfigSnapshots,
@@ -22,6 +22,7 @@ import type {
   ConfigTaskReference,
   ConfigTaskStatus,
 } from '../../types/configCollection'
+import { downloadBackendResource } from '../../platform/runtime'
 
 const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
 const devicePage = ref<ConfigDevicePage>(emptyPage)
@@ -182,6 +183,19 @@ async function compareLatest(): Promise<void> {
   }
 }
 
+async function downloadArtifact(snapshot: ConfigSnapshot): Promise<void> {
+  try {
+    const result = await downloadBackendResource(
+      configArtifactDownloadRequest(snapshot.artifact_id, snapshot.filename),
+    )
+    if (result.status === 'failed') ElMessage.error(result.error || '配置文件下载失败')
+    else if (result.status === 'saved') ElMessage.success('配置文件已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    ElMessage.error('配置文件下载失败')
+  }
+}
+
 async function compareSnapshots(): Promise<void> {
   if (selectedSnapshots.value.length !== 2) {
     ElMessage.info('请选择两个快照进行比较')
@@ -318,7 +332,7 @@ function formatBytes(value: number): string {
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
           <el-table-column label="采集时间" min-width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
           <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" tag="a" :disabled="!isFeatureEnabled('web.config_collection_download')" :href="isFeatureEnabled('web.config_collection_download') ? configArtifactUrl(row.artifact_id) : undefined" target="_blank" @click.stop>下载</el-button></template></el-table-column>
+          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template></el-table-column>
         </el-table>
       </div>
     </div>

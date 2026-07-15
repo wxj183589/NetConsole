@@ -1,12 +1,16 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
-import { loadDesktopConfig } from './config'
-import { registerDesktopIpc } from './ipc'
-import { createFileLogger } from './logger'
+import { isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
+import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
+import { createFileLogger, type DesktopLogger } from './logger'
 import { GrantedPathRegistry } from './path-access'
+import {
+  installRendererDiagnostics,
+  safeDiagnosticUrl,
+} from './renderer-diagnostics'
 import {
   desktopSessionCookiePath,
   installWindowSecurity,
@@ -20,9 +24,16 @@ let backend: PythonBackendManager | undefined
 let allowQuit = false
 let requestedExitCode = 0
 let shutdownPromise: Promise<void> | undefined
-let smokeTimer: NodeJS.Timeout | undefined
-const allowedOrigins = new Set<string>()
+let smokeWatchdogTimer: NodeJS.Timeout | undefined
+let smokeStableTimer: NodeJS.Timeout | undefined
+let smokeRendererHealthy = false
+let smokeRendererLoading = true
+const rendererOrigins = new Set<string>()
+const connectionOrigins = new Set<string>()
 const pathRegistry = new GrantedPathRegistry()
+let rendererUrl = ''
+let logger: DesktopLogger = () => undefined
+let desktopIpc: DesktopIpcRegistration | undefined
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
@@ -36,15 +47,12 @@ app.on('second-instance', () => {
 app.on('before-quit', (event) => {
   if (allowQuit) return
   event.preventDefault()
-  shutdownPromise ??= shutdown().finally(() => {
-    allowQuit = true
-    app.exit(requestedExitCode)
-  })
+  beginShutdownAndExit()
 })
 
-app.on('window-all-closed', () => app.quit())
-process.once('SIGINT', () => app.quit())
-process.once('SIGTERM', () => app.quit())
+app.on('window-all-closed', () => requestExit(0))
+process.once('SIGINT', () => requestExit(0))
+process.once('SIGTERM', () => requestExit(0))
 
 if (hasSingleInstanceLock) {
   void app.whenReady().then(startDesktop).catch((cause) => handleFatalStartup(cause))
@@ -56,7 +64,7 @@ async function startDesktop(): Promise<void> {
     appPath: app.getAppPath(),
     resourcesPath: process.resourcesPath,
   })
-  const logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
+  logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
   backend = new PythonBackendManager({
     executable: config.backendExecutable,
     argumentsPrefix: config.backendArgumentsPrefix,
@@ -65,8 +73,22 @@ async function startDesktop(): Promise<void> {
     startupTimeoutMs: config.startupTimeoutMs,
     logger,
   })
-  mainWindow = createMainWindow(Boolean(config.devServerUrl))
-  registerDesktopIpc({
+  const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
+  if (!developmentMenu) Menu.setApplicationMenu(null)
+  mainWindow = createMainWindow(Boolean(config.devServerUrl), developmentMenu)
+  installRendererDiagnostics(mainWindow, {
+    logger,
+    getRetryUrl: () => rendererUrl,
+    onLoadStarted: handleRendererLoadStarted,
+    onLoadStopped: handleRendererLoadStopped,
+    showError: (title, detail, retryUrl) => loadStatusPage(
+      mainWindow!,
+      title,
+      detail,
+      retryUrl,
+    ),
+  })
+  desktopIpc = registerDesktopIpc({
     ipcMain,
     dialog,
     shell,
@@ -80,11 +102,13 @@ async function startDesktop(): Promise<void> {
     pathRegistry,
     isTrustedSender: (event) => Boolean(
       mainWindow
-      && isTrustedRendererSender(event, mainWindow, [...allowedOrigins]),
+      && isTrustedRendererSender(event, mainWindow, [...rendererOrigins]),
     ),
     onRendererReady: handleRendererReady,
+    logger,
   })
   backend.onStatusChange((status) => {
+    logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(DESKTOP_IPC.backendStatusChanged, status)
     }
@@ -99,9 +123,11 @@ async function startDesktop(): Promise<void> {
   try {
     const runtime = await backend.start()
     const backendOrigin = new URL(runtime.baseUrl).origin
-    const rendererUrl = config.devServerUrl ?? runtime.baseUrl
-    allowedOrigins.add(backendOrigin)
-    allowedOrigins.add(new URL(rendererUrl).origin)
+    rendererUrl = config.devServerUrl ?? runtime.baseUrl
+    const rendererOrigin = new URL(rendererUrl).origin
+    rendererOrigins.add(rendererOrigin)
+    connectionOrigins.add(rendererOrigin)
+    connectionOrigins.add(backendOrigin)
     const cookiePath = desktopSessionCookiePath(Boolean(config.devServerUrl))
     await mainWindow.webContents.session.cookies.set({
       url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
@@ -112,28 +138,37 @@ async function startDesktop(): Promise<void> {
       secure: false,
       path: cookiePath,
     })
-    await mainWindow.loadURL(rendererUrl)
-    if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
-      smokeTimer = setTimeout(() => requestExit(2), 30_000)
-    }
+    startSmokeWatchdog()
+    void mainWindow.loadURL(rendererUrl).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (/ERR_ABORTED/.test(message)) {
+        logger('ELECTRON_RENDERER_NAVIGATION_SUPERSEDED')
+        return
+      }
+      logger('ELECTRON_RENDERER_NAVIGATION_REJECTED', message)
+      if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
+    })
   } catch (cause) {
     await loadStatusPage(
       mainWindow,
       'NetConsole 启动失败',
       cause instanceof Error ? cause.message : '本地 Python 后端启动失败。',
+      rendererUrl,
     )
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
   }
 }
 
-function createMainWindow(development: boolean): BrowserWindow {
+function createMainWindow(development: boolean, developmentMenu = false): BrowserWindow {
   const window = new BrowserWindow({
+    title: 'NetConsole',
     width: 1360,
     height: 860,
     minWidth: 1024,
     minHeight: 680,
     show: false,
     backgroundColor: '#0b1220',
+    autoHideMenuBar: !developmentMenu,
     webPreferences: {
       preload: resolve(__dirname, '..', 'preload', 'index.cjs'),
       nodeIntegration: false,
@@ -146,40 +181,128 @@ function createMainWindow(development: boolean): BrowserWindow {
       partition: 'netconsole-desktop-ephemeral',
     },
   })
-  installWindowSecurity(window, () => [...allowedOrigins], development)
+  installWindowSecurity(
+    window,
+    () => [...rendererOrigins],
+    () => [...connectionOrigins],
+    development,
+    (target) => logger('ELECTRON_NAVIGATION_BLOCKED', `target=${safeDiagnosticUrl(target)}`),
+    () => logger('ELECTRON_UNMANAGED_DOWNLOAD_BLOCKED'),
+  )
   return window
 }
 
-async function loadStatusPage(window: BrowserWindow, title: string, detail: string): Promise<void> {
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:#0b1220;color:#e2e8f0;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid #26344d;border-radius:14px;background:#111b2e;text-align:center}h1{font-size:22px;margin:0 0 12px}p{color:#94a3b8;line-height:1.7;margin:0}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p></main></body></html>`
+async function loadStatusPage(
+  window: BrowserWindow,
+  title: string,
+  detail: string,
+  retryUrl = '',
+): Promise<void> {
+  const retry = retryUrl
+    ? `<a href="${escapeHtml(retryUrl)}">重试</a>`
+    : ''
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:#0b1220;color:#e2e8f0;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid #26344d;border-radius:14px;background:#111b2e;text-align:center}h1{font-size:22px;margin:0 0 12px}p{color:#94a3b8;line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#1787c9;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
 }
 
 function handleRendererReady(healthOk: boolean): void {
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1') return
-  if (smokeTimer) clearTimeout(smokeTimer)
-  requestExit(healthOk ? 0 : 2)
+  logger('ELECTRON_SMOKE_RENDERER_READY', `health_ok=${healthOk}`)
+  if (smokeStableTimer) clearTimeout(smokeStableTimer)
+  if (!healthOk) {
+    smokeStableTimer = undefined
+    requestExit(2)
+    return
+  }
+  smokeRendererHealthy = true
+  scheduleSmokeStableExit()
+}
+
+function scheduleSmokeStableExit(): void {
+  if (!smokeRendererHealthy || smokeRendererLoading || smokeStableTimer) return
+  smokeStableTimer = setTimeout(() => {
+    logger('ELECTRON_SMOKE_RENDERER_STABLE')
+    smokeStableTimer = undefined
+    requestExit(0)
+  }, 1_500)
+}
+
+function handleRendererLoadStarted(): void {
+  smokeRendererLoading = true
+  if (smokeStableTimer) {
+    clearTimeout(smokeStableTimer)
+    smokeStableTimer = undefined
+    logger('ELECTRON_SMOKE_STABILITY_RESET')
+  }
+}
+
+function handleRendererLoadStopped(): void {
+  smokeRendererLoading = false
+  scheduleSmokeStableExit()
+}
+
+function startSmokeWatchdog(): void {
+  if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1') return
+  if (smokeWatchdogTimer) clearTimeout(smokeWatchdogTimer)
+  smokeRendererHealthy = false
+  smokeRendererLoading = true
+  logger('ELECTRON_SMOKE_WATCHDOG_STARTED')
+  smokeWatchdogTimer = setTimeout(() => {
+    logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')
+    requestExit(2)
+  }, 30_000)
 }
 
 function requestExit(code: number): void {
   requestedExitCode = Math.max(requestedExitCode, code)
-  app.quit()
+  beginShutdownAndExit()
+}
+
+function beginShutdownAndExit(): void {
+  shutdownPromise ??= shutdown().finally(() => {
+    traceSmoke('EXIT_REQUESTED')
+    allowQuit = true
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+    app.releaseSingleInstanceLock()
+    app.exit(requestedExitCode)
+    traceSmoke('EXIT_RETURNED')
+    setImmediate(() => process.exit(requestedExitCode))
+  })
 }
 
 async function shutdown(): Promise<void> {
-  if (smokeTimer) clearTimeout(smokeTimer)
-  smokeTimer = undefined
-  pathRegistry.clear()
+  if (smokeWatchdogTimer) clearTimeout(smokeWatchdogTimer)
+  if (smokeStableTimer) clearTimeout(smokeStableTimer)
+  smokeWatchdogTimer = undefined
+  smokeStableTimer = undefined
+  smokeRendererHealthy = false
+  smokeRendererLoading = false
+  logger('ELECTRON_SHUTDOWN_STARTED')
+  traceSmoke('SHUTDOWN_STARTED')
   try {
+    await desktopIpc?.shutdown()
+    logger('ELECTRON_DOWNLOADS_STOPPED')
+    traceSmoke('DOWNLOADS_STOPPED')
     await backend?.stop()
+    logger('ELECTRON_SHUTDOWN_COMPLETE')
+    traceSmoke('BACKEND_STOPPED')
   } catch {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
+  } finally {
+    pathRegistry.clear()
+  }
+}
+
+function traceSmoke(event: string): void {
+  if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
+    process.stderr.write(`[netconsole-smoke] ${event}\n`)
   }
 }
 
 async function handleFatalStartup(cause: unknown): Promise<void> {
   if (!mainWindow) {
+    Menu.setApplicationMenu(null)
     mainWindow = createMainWindow(false)
     await loadStatusPage(
       mainWindow,
@@ -200,3 +323,7 @@ function escapeHtml(value: string): string {
     "'": '&#39;',
   })[character] ?? character)
 }
+
+app.on('child-process-gone', (_event, details) => {
+  logger('ELECTRON_CHILD_PROCESS_GONE', `type=${details.type} reason=${details.reason}`)
+})

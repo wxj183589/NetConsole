@@ -17,6 +17,7 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     selectFile: (options) => bridge.selectFile(options),
     selectDirectory: () => bridge.selectDirectory(),
     chooseSavePath: (options) => bridge.chooseSavePath(options),
+    downloadBackendResource: (request) => bridge.downloadBackendResource(request),
     openPath: (path) => bridge.openPath(path),
     showItemInFolder: (path) => bridge.showItemInFolder(path),
     onBackendStatusChanged: (listener) => bridge.onBackendStatusChanged((status) => {

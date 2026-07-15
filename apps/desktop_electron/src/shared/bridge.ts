@@ -52,6 +52,19 @@ export interface NativeActionResult {
   error?: string
 }
 
+export interface BackendDownloadRequest {
+  apiPath: string
+  query?: Record<string, string>
+  suggestedName: string
+  filters?: FileFilter[]
+}
+
+export interface BackendDownloadResult {
+  status: 'started' | 'saved' | 'cancelled' | 'failed'
+  savedPath?: string
+  error?: string
+}
+
 export interface RendererReadyReport {
   healthOk: boolean
 }
@@ -63,6 +76,7 @@ export interface NetConsoleDesktopBridge {
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
+  downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openPath(path: string): Promise<NativeActionResult>
   showItemInFolder(path: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
@@ -76,6 +90,7 @@ export const DESKTOP_IPC = Object.freeze({
   selectFile: 'netconsole:desktop:select-file',
   selectDirectory: 'netconsole:desktop:select-directory',
   chooseSavePath: 'netconsole:desktop:choose-save-path',
+  downloadBackendResource: 'netconsole:desktop:download-backend-resource',
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
   backendStatusChanged: 'netconsole:desktop:backend-status-changed',
@@ -92,6 +107,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.selectFile,
   DESKTOP_IPC.selectDirectory,
   DESKTOP_IPC.chooseSavePath,
+  DESKTOP_IPC.downloadBackendResource,
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
 ])

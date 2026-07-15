@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 
 export type DesktopLogger = (event: string, detail?: string) => void
 
-const SENSITIVE_VALUE_RE = /((?:session[_-]?token|api[_-]?token|authorization|password|secret)\s*["']?\s*[:=]\s*["']?)[^\s,"'};]+/gi
+const SENSITIVE_VALUE_RE = /((?:session[_-]?token|api[_-]?token|agent[_-]?token|authorization|password|passphrase|private[_-]?key|ssh[_-]?key|community|secret)\s*["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s,"'};]+/gi
 
 export function redactSensitiveText(value: unknown, secrets: readonly string[] = []): string {
   let safe = String(value ?? '').replace(/[\r\n]+/g, ' ').trim()

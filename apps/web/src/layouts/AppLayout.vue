@@ -196,7 +196,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           </el-menu-item>
         </template>
       </el-menu>
-      <div v-if="!sidebarCollapsed" class="sidebar-note">Electron + Qt 并行迁移</div>
+      <div v-if="!sidebarCollapsed" class="sidebar-note">本地网络运维控制台</div>
     </el-aside>
     <el-container class="app-workspace">
       <el-header class="app-header">

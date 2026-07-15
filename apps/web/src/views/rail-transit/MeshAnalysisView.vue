@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
 import {
   getMeshAlignment, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
   getMeshRssi, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
-  listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadUrl,
+  listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest,
 } from '../../api/meshAnalysis'
 import type {
   MeshAlignment, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact,
   MeshChannelBusy, MeshLinkDetail, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent, MeshTimelineItem,
 } from '../../types/meshAnalysis'
+import { downloadBackendResource } from '../../platform/runtime'
 
 const router = useRouter()
 const loading = ref(false)
@@ -112,6 +114,22 @@ async function loadRawTail(sourceId: string, available: boolean): Promise<void> 
   rawTail.value = await getMeshRawTail(selected.value.session.session_id, sourceId)
 }
 
+async function downloadArtifact(artifact: MeshArtifact): Promise<void> {
+  if (!selected.value) return
+  try {
+    const result = await downloadBackendResource(meshArtifactDownloadRequest(
+      selected.value.session.session_id,
+      artifact.artifact_id,
+      artifact.name,
+    ))
+    if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+    else if (result.status === 'saved') ElMessage.success('Artifact 已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    ElMessage.error('Artifact 下载失败')
+  }
+}
+
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
 function formatBytes(value: number): string { if (!value) return '0 B'; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB` }
 function severityType(value: string): 'error' | 'warning' | 'info' { return value === 'error' || value === 'critical' ? 'error' : value === 'warning' ? 'warning' : 'info' }
@@ -188,7 +206,7 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
         <el-tab-pane label="fping / iPerf 对齐" name="alignment"><el-alert v-if="alignment?.message" :title="alignment.message" type="info" :closable="false" /><el-table :data="alignment?.items || []" border height="400" empty-text="暂无可对齐的结构化流量数据"><el-table-column prop="timestamp" label="时间" width="185" /><el-table-column prop="peer_ap_name" label="Peer AP" min-width="150" /><el-table-column label="RSSI" width="90"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column><el-table-column label="fping RTT" width="110"><template #default="{ row }">{{ display(row.fping_rtt_ms, ' ms') }}</template></el-table-column><el-table-column label="丢包" width="95"><template #default="{ row }">{{ display(row.fping_loss_percent, '%') }}</template></el-table-column><el-table-column label="iPerf" width="110"><template #default="{ row }">{{ display(row.iperf_mbps, ' Mbps') }}</template></el-table-column><el-table-column prop="station" label="站点" width="130" /></el-table></el-tab-pane>
 
         <el-tab-pane label="报告与来源" name="artifacts">
-          <h3>已有报告与文件</h3><el-table :data="artifacts" border><el-table-column prop="artifact_type" label="类型" width="140" /><el-table-column prop="name" label="文件名" min-width="260" /><el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column><el-table-column prop="modified_at" label="生成时间" width="175" /><el-table-column label="操作" width="90"><template #default="{ row }"><el-link v-if="row.downloadable" type="primary" :href="meshArtifactDownloadUrl(selected!.session.session_id, row.artifact_id)">下载</el-link></template></el-table-column></el-table>
+          <h3>已有报告与文件</h3><el-table :data="artifacts" border><el-table-column prop="artifact_type" label="类型" width="140" /><el-table-column prop="name" label="文件名" min-width="260" /><el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column><el-table-column prop="modified_at" label="生成时间" width="175" /><el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></el-table-column></el-table>
           <h3>原始数据来源</h3><el-table :data="selected.sources" border><el-table-column prop="name" label="来源文件" min-width="260" /><el-table-column prop="source_type" label="来源类型" width="150" /><el-table-column label="状态" width="100"><template #default="{ row }">{{ row.exists ? '可用' : '缺失' }}</template></el-table-column><el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column><el-table-column label="只读片段" width="110"><template #default="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></el-table-column></el-table>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </el-tab-pane>

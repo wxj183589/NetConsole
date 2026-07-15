@@ -105,6 +105,8 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
         )
         control_thread.start()
         server.run(sockets=[listener])
+        emit_shutdown_ack(sys.stdout)
+        wait_for_exit_command(control_stream)
     finally:
         listener.close()
     return 0
@@ -122,6 +124,26 @@ def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:
             server.should_exit = True
             return
     server.should_exit = True
+
+
+def emit_shutdown_ack(output: TextIO) -> None:
+    print(
+        '{"event":"netconsole.electron_backend.shutdown_ack"}',
+        file=output,
+        flush=True,
+    )
+
+
+def wait_for_exit_command(stream: TextIO) -> None:
+    for raw in stream:
+        if len(raw) > 4096:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if payload == {"command": "exit"}:
+            return
 
 
 def _valid_port(value: str) -> int:
@@ -161,8 +183,10 @@ if __name__ == "__main__":
 __all__ = [
     "ElectronRuntimeOptions",
     "build_app",
+    "emit_shutdown_ack",
     "main",
     "parse_options",
     "read_session_token",
+    "wait_for_exit_command",
     "watch_control_stream",
 ]

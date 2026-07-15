@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 
-import { fileDownloadUrl, getFileDownloadTask, getFileManagementStatus, listManagedFiles, startFileDownload } from '../../api/fileManagement'
+import { fileDownloadRequest, getFileDownloadTask, getFileManagementStatus, listManagedFiles, startFileDownload } from '../../api/fileManagement'
 import { isFeatureEnabled } from '../../features'
+import { downloadBackendResource } from '../../platform/runtime'
 import type { FileDownloadTask, ManagedFile, ManagedFileCategory } from '../../types/fileManagement'
 
 const storageKey = 'netconsole.file-management.download-tasks'
@@ -65,6 +67,21 @@ async function download(file: ManagedFile): Promise<void> {
     scheduleTaskRefresh()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '文件下载任务创建失败'
+  }
+}
+
+async function saveDownload(task: FileDownloadTask): Promise<void> {
+  if (!task.result) return
+  error.value = ''
+  try {
+    const result = await downloadBackendResource(
+      fileDownloadRequest(task.task_id, task.site_id, task.result.name),
+    )
+    if (result.status === 'failed') error.value = result.error || '文件下载失败'
+    else if (result.status === 'saved') ElMessage.success('文件已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    error.value = '文件下载失败'
   }
 }
 
@@ -159,7 +176,7 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
         <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
         <el-table-column label="进度" width="180"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /></template></el-table-column>
         <el-table-column prop="message" label="信息" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="100"><template #default="{ row }"><a v-if="row.status === 'COMPLETED'" :href="fileDownloadUrl(row.task_id, row.site_id)">下载文件</a></template></el-table-column>
+        <el-table-column label="操作" width="100"><template #default="{ row }"><el-button v-if="row.status === 'COMPLETED' && row.result" link type="primary" @click="saveDownload(row)">下载文件</el-button></template></el-table-column>
       </el-table>
     </div>
   </section>

@@ -1,5 +1,6 @@
 import { apiRequest } from './client'
 import type { FileDownloadTask, FileManagementStatus, ManagedFileCategory, ManagedFilePage } from '../types/fileManagement'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/file-management'
 
@@ -26,6 +27,14 @@ export function getFileDownloadTask(taskId: string, siteId = ''): Promise<FileDo
   return apiRequest(`${root}/downloads/${encodeURIComponent(taskId)}${qs({ site_id: siteId })}`)
 }
 
-export function fileDownloadUrl(taskId: string, siteId = ''): string {
-  return `${root}/downloads/${encodeURIComponent(taskId)}/file${qs({ site_id: siteId })}`
+export function fileDownloadRequest(
+  taskId: string,
+  siteId: string,
+  suggestedName: string,
+): BackendDownloadRequest {
+  return {
+    apiPath: `${root}/downloads/${encodeURIComponent(taskId)}/file`,
+    ...(siteId ? { query: { site_id: siteId } } : {}),
+    suggestedName,
+  }
 }

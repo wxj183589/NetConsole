@@ -48,6 +48,13 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   }
 }
 
+export function isDevelopmentMenuEnabled(
+  devServerUrl: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return Boolean(devServerUrl) && env.NETCONSOLE_ELECTRON_DEV_MENU === '1'
+}
+
 function resolveDeveloperPython(
   override: string | undefined,
   projectRoot: string,

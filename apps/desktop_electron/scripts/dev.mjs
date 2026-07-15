@@ -128,8 +128,15 @@ try {
     },
   })
   const exitCode = await new Promise((resolvePromise, reject) => {
+    let settled = false
+    const finish = (code) => {
+      if (settled) return
+      settled = true
+      resolvePromise(code ?? 1)
+    }
     electron.once('error', reject)
-    electron.once('exit', (code) => resolvePromise(code ?? 1))
+    electron.once('exit', finish)
+    electron.once('close', finish)
   })
   process.exitCode = exitCode
 } finally {

@@ -6,6 +6,8 @@ import {
   validateSelectFileOptions,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
+import { BackendDownloadManager } from './backend-download'
+import type { DesktopLogger } from './logger'
 import { GrantedPathRegistry } from './path-access'
 
 interface IpcEventLike {
@@ -56,10 +58,24 @@ export interface DesktopIpcDependencies {
   pathRegistry?: GrantedPathRegistry
   isTrustedSender: (event: IpcEventLike) => boolean
   onRendererReady?: (healthOk: boolean) => void
+  logger?: DesktopLogger
 }
 
-export function registerDesktopIpc(dependencies: DesktopIpcDependencies): void {
+export interface DesktopIpcRegistration {
+  shutdown(): Promise<void>
+}
+
+export function registerDesktopIpc(
+  dependencies: DesktopIpcDependencies,
+): DesktopIpcRegistration {
   const registry = dependencies.pathRegistry ?? new GrantedPathRegistry()
+  const downloadManager = new BackendDownloadManager({
+    backend: dependencies.backend,
+    dialog: dependencies.dialog,
+    window: dependencies.window,
+    pathRegistry: registry,
+    logger: dependencies.logger,
+  })
   for (const channel of DESKTOP_HANDLED_CHANNELS) dependencies.ipcMain.removeHandler(channel)
 
   const trusted = <T>(handler: (value?: unknown) => T | Promise<T>) => (
@@ -127,6 +143,10 @@ export function registerDesktopIpc(dependencies: DesktopIpcDependencies): void {
     }),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.downloadBackendResource,
+    trusted((value) => downloadManager.download(value)),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
@@ -153,9 +173,14 @@ export function registerDesktopIpc(dependencies: DesktopIpcDependencies): void {
   )
   dependencies.ipcMain.on(DESKTOP_IPC.rendererReady, (event, value) => {
     if (!dependencies.isTrustedSender(event)) return
-    const report = validateRendererReadyReport(value)
-    dependencies.onRendererReady?.(report.healthOk)
+    try {
+      const report = validateRendererReadyReport(value)
+      dependencies.onRendererReady?.(report.healthOk)
+    } catch {
+      dependencies.logger?.('ELECTRON_RENDERER_READY_REJECTED')
+    }
   })
+  return { shutdown: () => downloadManager.shutdown() }
 }
 
 function safeActionError(cause: unknown): string {

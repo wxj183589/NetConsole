@@ -17,6 +17,7 @@ export interface BackendRuntimeInfo {
 }
 
 export interface ManagedChildProcess extends EventEmitter {
+  pid?: number
   stdin: Writable
   stdout: Readable
   stderr: Readable
@@ -43,6 +44,7 @@ export interface PythonBackendManagerOptions {
   fetchImpl?: typeof fetch
   createToken?: () => string
   delay?: (milliseconds: number) => Promise<void>
+  awaitProcessExit?: boolean
   logger?: DesktopLogger
 }
 
@@ -57,9 +59,10 @@ export class PythonBackendManager {
   private startupFailure?: Error
   private readonly expectedExit = new WeakSet<ManagedChildProcess>()
   private readonly listeners = new Set<(status: BackendStatus) => void>()
+  private readonly shutdownAckListeners = new Set<(child: ManagedChildProcess) => void>()
   private readonly options: Required<Pick<
     PythonBackendManagerOptions,
-    'startupTimeoutMs' | 'stopTimeoutMs' | 'pollIntervalMs' | 'spawnProcess' | 'fetchImpl' | 'createToken' | 'delay' | 'logger'
+    'startupTimeoutMs' | 'stopTimeoutMs' | 'pollIntervalMs' | 'spawnProcess' | 'fetchImpl' | 'createToken' | 'delay' | 'awaitProcessExit' | 'logger'
   >> & PythonBackendManagerOptions
 
   constructor(options: PythonBackendManagerOptions) {
@@ -72,6 +75,7 @@ export class PythonBackendManager {
       fetchImpl: options.fetchImpl ?? fetch,
       createToken: options.createToken ?? (() => randomBytes(32).toString('base64url')),
       delay: options.delay ?? ((milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
+      awaitProcessExit: options.awaitProcessExit ?? !process.versions.electron,
       logger: options.logger ?? (() => undefined),
     }
   }
@@ -189,7 +193,7 @@ export class PythonBackendManager {
       }
       if (child) {
         try {
-          await this.terminateOwnedChild(child)
+          await this.terminateOwnedChild(child, false)
         } catch (cleanupCause) {
           const cleanupMessage = this.safeError(cleanupCause, apiToken)
           this.error = `${message}; ${cleanupMessage}`
@@ -227,13 +231,17 @@ export class PythonBackendManager {
       child.once('error', onError)
       child.once('exit', onExit)
       attachLineLogger(child.stdout, 'stdout', apiToken, this.options.logger, (line) => {
-        if (settled) return
         let payload: unknown
         try {
           payload = JSON.parse(line)
         } catch {
           return
         }
+        if (isShutdownAcknowledgement(payload)) {
+          for (const listener of this.shutdownAckListeners) listener(child)
+          return
+        }
+        if (settled) return
         if (!isRuntimeAnnouncement(payload)) return
         finish(undefined, {
           baseUrl: `http://127.0.0.1:${payload.port}`,
@@ -315,8 +323,9 @@ export class PythonBackendManager {
   private async stopInternal(): Promise<void> {
     const child = this.child
     if (child) {
+      this.options.logger('ELECTRON_BACKEND_STOPPING')
       try {
-        await this.terminateOwnedChild(child)
+        await this.terminateOwnedChild(child, this.state === 'ready')
       } catch (cause) {
         const message = this.safeError(cause, this.runtime?.apiToken ?? '')
         this.runtime = undefined
@@ -333,37 +342,74 @@ export class PythonBackendManager {
     this.options.logger('ELECTRON_BACKEND_STOPPED')
   }
 
-  private async terminateOwnedChild(child: ManagedChildProcess): Promise<void> {
+  private async terminateOwnedChild(
+    child: ManagedChildProcess,
+    graceful: boolean,
+  ): Promise<void> {
     this.expectedExit.add(child)
-    let exited = child.exitCode !== null
-    const exitPromise = new Promise<void>((resolvePromise) => {
-      if (exited) {
-        resolvePromise()
-        return
-      }
-      child.once('exit', () => {
-        exited = true
-        resolvePromise()
-      })
-    })
-    if (!exited) {
-      try {
-        child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`, 'utf8')
-      } catch {
-        // 控制管道可能已关闭，继续使用当前子进程句柄兜底。
-      }
+    if (child.exitCode !== null) {
+      child.stdin.end()
+      return
     }
-    await Promise.race([exitPromise, this.options.delay(this.options.stopTimeoutMs)])
-    if (!exited) {
-      child.kill('SIGTERM')
-      await Promise.race([exitPromise, this.options.delay(1_000)])
-    }
-    if (!exited) {
+    if (!graceful) {
+      child.stdin.end()
       child.kill('SIGKILL')
-      await Promise.race([exitPromise, this.options.delay(1_000)])
+      return
+    }
+    let ackListener!: (value: ManagedChildProcess) => void
+    const acknowledgement = new Promise<boolean>((resolvePromise) => {
+      ackListener = (value) => {
+        if (value === child) resolvePromise(true)
+      }
+      this.shutdownAckListeners.add(ackListener)
+    })
+    const timeout = this.options.delay(this.options.stopTimeoutMs).then(() => false)
+    try {
+      child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`, 'utf8')
+      this.options.logger('ELECTRON_BACKEND_SHUTDOWN_SENT')
+    } catch {
+      this.shutdownAckListeners.delete(ackListener)
+      child.stdin.end()
+      child.kill('SIGKILL')
+      return
+    }
+    const acknowledged = await Promise.race([acknowledgement, timeout])
+    this.shutdownAckListeners.delete(ackListener)
+    if (acknowledged) {
+      this.options.logger('ELECTRON_BACKEND_SHUTDOWN_ACKNOWLEDGED')
+      const processExit = this.options.awaitProcessExit
+        ? this.waitForProcessExit(child)
+        : undefined
+      child.stdin.write(`${JSON.stringify({ command: 'exit' })}\n`, 'utf8')
+      child.stdin.end()
+      this.options.logger('ELECTRON_BACKEND_CONTROL_CLOSED')
+      await processExit
+      this.options.logger('ELECTRON_BACKEND_PROCESS_RELEASED')
+      return
     }
     child.stdin.end()
-    if (!exited) throw new Error('Python backend did not exit after forced termination')
+    this.options.logger('ELECTRON_BACKEND_CONTROL_CLOSED')
+    this.options.logger('ELECTRON_BACKEND_SHUTDOWN_ACK_TIMEOUT')
+    const terminated = child.kill('SIGTERM')
+    if (!terminated && child.exitCode === null && !child.kill('SIGKILL')) {
+      throw new Error('Python backend did not acknowledge shutdown or accept termination')
+    }
+  }
+
+  private waitForProcessExit(child: ManagedChildProcess): Promise<void> {
+    if (child.exitCode !== null) return Promise.resolve()
+    return new Promise((resolvePromise) => {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        child.removeListener('exit', finish)
+        child.removeListener('close', finish)
+        resolvePromise()
+      }
+      child.once('exit', finish)
+      child.once('close', finish)
+    })
   }
 
   private transition(state: BackendStatus['state']): void {
@@ -424,4 +470,11 @@ function isRuntimeAnnouncement(value: unknown): value is {
     && Number.isInteger(payload.port)
     && Number(payload.port) >= 1
     && Number(payload.port) <= 65535
+}
+
+function isShutdownAcknowledgement(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).event === 'netconsole.electron_backend.shutdown_ack'
 }
