@@ -9,6 +9,7 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.traffic_presentation import execution_target_from_request, traffic_run_dto
 from netconsole.models.api.network_tools import (
     NetworkExportRequest,
+    NetworkTaskResultPageResponse,
     NetworkTaskResponse,
     NetworkTaskStartRequest,
     NetworkToolArtifactResponse,
@@ -128,23 +129,45 @@ def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在") from exc
 
 
-@router.post("/runs/{task_id}/export", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
-async def export_network_task(task_id: str, body: NetworkExportRequest, request: Request) -> NetworkToolArtifactResponse:
+@router.get("/runs/{task_id}/results", response_model=NetworkTaskResultPageResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+def list_network_task_results(task_id: str, request: Request, offset: int = 0, limit: int = 100) -> NetworkTaskResultPageResponse:
     try:
-        result = await network_tools_service(request).export_network_task(task_id, body.format, body.filename)
+        result = network_tools_service(request).list_network_task_results(task_id, offset=offset, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络探测任务不存在") from exc
+    return NetworkTaskResultPageResponse(**result)
+
+
+@router.post("/runs/{task_id}/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+async def export_network_task(task_id: str, body: NetworkExportRequest, request: Request) -> NetworkTaskResponse:
+    try:
+        task = await network_tools_service(request).export_network_task(task_id, body.format, body.filename)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在或没有结果") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return NetworkToolArtifactResponse(**result)
+    return NetworkTaskResponse(task=network_task_dto(task))
+
+
+@router.get("/runs/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+def get_network_export_artifact(task_id: str, request: Request) -> NetworkToolArtifactResponse:
+    try:
+        return NetworkToolArtifactResponse(**network_tools_service(request).get_network_export_artifact(task_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具导出 Artifact 不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/artifacts/{artifact_id}", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def download_network_artifact(artifact_id: str, request: Request) -> FileResponse:
-    path = network_tools_service(request).resolve_artifact(artifact_id)
-    if path is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出文件不存在")
-    return FileResponse(path, filename=network_tools_service(request).artifact_display_name(artifact_id) or path.name)
+    try:
+        path, filename, _metadata = network_tools_service(request).open_network_artifact(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出文件不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return FileResponse(path, filename=filename)
 
 
 @router.get("/wireless-scan/adapters", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
@@ -182,6 +205,41 @@ async def start_wireless_scan(body: WirelessScanStartRequest, request: Request) 
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
+@router.get("/wireless-scan/tasks", response_model=list[TaskDTO], dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def list_wireless_tasks(request: Request, offset: int = 0, limit: int = 100) -> list[TaskDTO]:
+    return [network_task_dto(task) for task in network_tools_service(request).list_wireless_tasks(offset=offset, limit=limit)]
+
+
+@router.get("/wireless-scan/tasks/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def get_wireless_task(task_id: str, request: Request) -> TaskDTO:
+    task = network_tools_service(request).get_wireless_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描任务不存在")
+    return network_task_dto(task)
+
+
+@router.get("/wireless-scan/tasks/{task_id}/events", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def get_wireless_task_events(task_id: str, request: Request, after_sequence: int = 0, limit: int = 500) -> list[dict[str, object]]:
+    if network_tools_service(request).get_wireless_task(task_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描任务不存在")
+    return [
+        {**event, "payload": _safe_task_event_payload(event.get("payload"))}
+        for event in network_tools_service(request).list_wireless_task_events(
+            task_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+    ]
+
+
+@router.post("/wireless-scan/tasks/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def cancel_wireless_task(task_id: str, request: Request) -> TaskDTO:
+    try:
+        return network_task_dto(network_tools_service(request).cancel_wireless_task(task_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描任务不存在") from exc
+
+
 @router.get("/wireless-scan/runs", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
 def list_wireless_runs(request: Request, offset: int = 0, limit: int = 100) -> list[dict[str, object]]:
     return network_tools_service(request).list_wireless_runs(offset=offset, limit=limit)
@@ -189,18 +247,42 @@ def list_wireless_runs(request: Request, offset: int = 0, limit: int = 100) -> l
 
 @router.get("/wireless-scan/runs/{scan_id}/results", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
 def list_wireless_results(scan_id: str, request: Request, offset: int = 0, limit: int = 500) -> list[dict[str, object]]:
-    return network_tools_service(request).list_wireless_results(scan_id, offset=offset, limit=limit)
-
-
-@router.post("/wireless-scan/export", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
-async def export_wireless_scan(body: WirelessExportRequest, request: Request) -> NetworkToolArtifactResponse:
     try:
-        result = await network_tools_service(request).export_wireless_scan(body.scan_id, body.format, body.filename)
+        return network_tools_service(request).list_wireless_results(scan_id, offset=offset, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描结果不存在") from exc
+
+
+@router.post("/wireless-scan/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+async def export_wireless_scan(body: WirelessExportRequest, request: Request) -> NetworkTaskResponse:
+    try:
+        task = await network_tools_service(request).export_wireless_scan(body.scan_id, body.format, body.filename)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描结果不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    return NetworkToolArtifactResponse(**result)
+    return NetworkTaskResponse(task=network_task_dto(task))
+
+
+@router.get("/wireless-scan/tasks/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def get_wireless_export_artifact(task_id: str, request: Request) -> NetworkToolArtifactResponse:
+    try:
+        return NetworkToolArtifactResponse(**network_tools_service(request).get_wireless_export_artifact(task_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描导出 Artifact 不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/wireless-scan/artifacts/{artifact_id}", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+def download_wireless_artifact(artifact_id: str, request: Request) -> FileResponse:
+    try:
+        path, filename, _metadata = network_tools_service(request).open_wireless_artifact(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描导出文件不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return FileResponse(path, filename=filename)
 
 
 def network_task_dto(snapshot: TaskSnapshot) -> TaskDTO:
@@ -233,21 +315,10 @@ def _safe_task_result(result: object) -> dict[str, object]:
     if not isinstance(result, dict):
         return {}
     safe: dict[str, object] = {}
-    rows = result.get("rows")
-    if isinstance(rows, list):
-        safe["rows"] = [
-            {
-                str(key): value
-                for key, value in row.items()
-                if not str(key).endswith(("_file", "_path")) and str(key) not in {"file", "path"}
-            }
-            for row in rows
-            if isinstance(row, dict)
-        ]
     row_count = result.get("row_count")
     if isinstance(row_count, int) and not isinstance(row_count, bool):
         safe["row_count"] = row_count
-    for key in ("result_id", "scan_id", "project_id"):
+    for key in ("result_id",):
         value = result.get(key)
         if isinstance(value, str) and value:
             safe[key] = value

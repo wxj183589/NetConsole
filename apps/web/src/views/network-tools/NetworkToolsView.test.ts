@@ -32,4 +32,18 @@ describe('unified network tools view', () => {
     expect(wireless).toContain('startWirelessScan')
     expect(wireless).toContain('exportWirelessScan')
   })
+
+  it('recovers probe, scan and export task ids instead of assuming request-time completion', () => {
+    expect(toolbox).toContain('EXPORT_TASK_KEY')
+    expect(toolbox).toContain('window.localStorage.getItem(EXPORT_TASK_KEY)')
+    expect(toolbox).toContain('listNetworkTaskResults')
+    expect(toolbox).toContain('getNetworkExportArtifact')
+    expect(toolbox).toContain('cancelNetworkTask')
+    expect(wireless).toContain('SCAN_TASK_KEY')
+    expect(wireless).toContain('EXPORT_TASK_KEY')
+    expect(wireless).toContain('listWirelessTasks')
+    expect(wireless).toContain('getWirelessTask')
+    expect(wireless).toContain('cancelWirelessTask')
+    expect(wireless).toContain('getWirelessExportArtifact')
+  })
 })

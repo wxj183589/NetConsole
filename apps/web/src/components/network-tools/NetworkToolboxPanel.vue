@@ -10,6 +10,9 @@ import {
   calculateWildcard,
   cancelNetworkTask,
   exportNetworkTask,
+  getNetworkExportArtifact,
+  getNetworkTask,
+  listNetworkTaskResults,
   listNetworkTasks,
   startNetworkTask,
   summarizeRoutes,
@@ -29,8 +32,16 @@ const taskKind = ref<'single_ping' | 'continuous_ping' | 'batch_ping' | 'subnet_
 const probe = reactive({ target: '127.0.0.1', targets: '', port: 443, count: 4, timeout_ms: 1500, interval_ms: 1000, packet_size: 32, concurrency: 100 })
 const tasks = ref<NetworkToolTask[]>([])
 const selectedTask = ref<NetworkToolTask | null>(null)
+const taskResults = ref<Record<string, unknown>[]>([])
+const resultOffset = ref(0)
+const resultPageSize = 100
+const resultTotal = ref(0)
+const exportTaskState = ref<NetworkToolTask | null>(null)
 const loadingTasks = ref(false)
 let timer: number | null = null
+let downloadedExportTaskId = ''
+const EXPORT_TASK_KEY = 'netconsole.network-tools.export-task-id'
+const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
 
 const rowKeys = computed(() => {
   const keys: string[] = []
@@ -38,13 +49,16 @@ const rowKeys = computed(() => {
   return keys
 })
 const resultRows = computed(() => {
-  const rows = selectedTask.value?.result?.rows
-  return Array.isArray(rows) ? rows as Record<string, unknown>[] : []
+  return taskResults.value
 })
-const taskRunning = computed(() => selectedTask.value && ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(selectedTask.value.status))
+const taskRunning = computed(() => selectedTask.value && ACTIVE_STATUSES.includes(selectedTask.value.status))
+const exportRunning = computed(() => exportTaskState.value && ACTIVE_STATUSES.includes(exportTaskState.value.status))
+const selectedProbeCompleted = computed(() => selectedTask.value?.status === 'COMPLETED' && !selectedTask.value.type.endsWith('_export'))
 
-onMounted(() => {
-  void refreshTasks()
+onMounted(async () => {
+  await refreshTasks()
+  await recoverExportTask()
+  if (tasks.value.some((item) => ACTIVE_STATUSES.includes(item.status))) startPolling()
 })
 
 onBeforeUnmount(() => {
@@ -86,6 +100,8 @@ async function startProbe(): Promise<void> {
       concurrency: probe.concurrency,
     })
     selectedTask.value = response.task
+    taskResults.value = []
+    resultTotal.value = 0
     await refreshTasks()
     startPolling()
     ElMessage.success(`网络任务已提交：${response.task.id}`)
@@ -99,8 +115,18 @@ async function refreshTasks(): Promise<void> {
   try {
     tasks.value = await listNetworkTasks()
     if (selectedTask.value) {
+      const previousStatus = selectedTask.value.status
       const current = tasks.value.find((item) => item.id === selectedTask.value?.id)
       if (current) selectedTask.value = current
+      if (current?.status === 'COMPLETED' && previousStatus !== 'COMPLETED' && !current.type.endsWith('_export')) {
+        resultOffset.value = 0
+        await loadTaskResults()
+      }
+    }
+    if (exportTaskState.value) {
+      const current = tasks.value.find((item) => item.id === exportTaskState.value?.id)
+      if (current) exportTaskState.value = current
+      await finishExportIfReady()
     }
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络任务加载失败')
@@ -113,7 +139,7 @@ function startPolling(): void {
   if (timer !== null) return
   timer = window.setInterval(async () => {
     await refreshTasks()
-    if (!taskRunning.value) stopPolling()
+    if (!tasks.value.some((item) => ACTIVE_STATUSES.includes(item.status)) && !exportRunning.value) stopPolling()
   }, 1000)
 }
 
@@ -124,7 +150,13 @@ function stopPolling(): void {
 
 async function selectTask(task: NetworkToolTask): Promise<void> {
   selectedTask.value = task
-  if (['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(task.status)) startPolling()
+  resultOffset.value = 0
+  if (task.status === 'COMPLETED' && !task.type.endsWith('_export')) await loadTaskResults()
+  else {
+    taskResults.value = []
+    resultTotal.value = 0
+  }
+  if (ACTIVE_STATUSES.includes(task.status)) startPolling()
 }
 
 async function cancelTask(): Promise<void> {
@@ -138,13 +170,71 @@ async function cancelTask(): Promise<void> {
 }
 
 async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
-  if (!selectedTask.value) return
+  if (!selectedTask.value || !selectedProbeCompleted.value) return
   try {
-    const artifact = await exportNetworkTask(selectedTask.value.id, format)
-    ElMessage.success(`导出完成，SHA-256：${artifact.sha256}`)
+    const response = await exportNetworkTask(selectedTask.value.id, format)
+    exportTaskState.value = response.task
+    selectedTask.value = response.task
+    window.localStorage.setItem(EXPORT_TASK_KEY, response.task.id)
+    startPolling()
+    ElMessage.success(`导出任务已提交：${response.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络任务导出失败')
   }
+}
+
+async function loadTaskResults(): Promise<void> {
+  if (!selectedTask.value || !selectedProbeCompleted.value) return
+  try {
+    const page = await listNetworkTaskResults(selectedTask.value.id, resultOffset.value, resultPageSize)
+    taskResults.value = page.items
+    resultTotal.value = page.total
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '网络任务结果加载失败')
+  }
+}
+
+async function changeResultPage(page: number): Promise<void> {
+  resultOffset.value = Math.max(0, page - 1) * resultPageSize
+  await loadTaskResults()
+}
+
+async function recoverExportTask(): Promise<void> {
+  const storedTaskId = window.localStorage.getItem(EXPORT_TASK_KEY)
+  const activeExport = tasks.value.find((item) => item.type === 'network_tools.toolbox_export' && ACTIVE_STATUSES.includes(item.status))
+  const taskId = storedTaskId || activeExport?.id
+  if (!taskId) return
+  try {
+    exportTaskState.value = tasks.value.find((item) => item.id === taskId) || await getNetworkTask(taskId)
+    await finishExportIfReady()
+    if (exportRunning.value) startPolling()
+  } catch {
+    window.localStorage.removeItem(EXPORT_TASK_KEY)
+  }
+}
+
+async function finishExportIfReady(): Promise<void> {
+  const current = exportTaskState.value
+  if (!current || ACTIVE_STATUSES.includes(current.status)) return
+  if (current.status !== 'COMPLETED') {
+    window.localStorage.removeItem(EXPORT_TASK_KEY)
+    return
+  }
+  if (downloadedExportTaskId === current.id) return
+  const artifact = await getNetworkExportArtifact(current.id)
+  downloadedExportTaskId = current.id
+  window.localStorage.removeItem(EXPORT_TASK_KEY)
+  downloadArtifact(artifact.download_url, artifact.filename)
+  ElMessage.success(`导出完成，SHA-256：${artifact.sha256}`)
+}
+
+function downloadArtifact(url: string, filename: string): void {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 </script>
 
@@ -189,8 +279,10 @@ async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
     <el-table v-loading="loadingTasks" :data="tasks" empty-text="暂无网络工具任务" stripe @row-click="selectTask">
       <el-table-column prop="name" label="任务" min-width="140" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="100"><template #default="{ row }">{{ row.total ? `${row.progress}%` : `${row.current} 条` }}</template></el-table-column><el-table-column prop="message" label="消息" min-width="220" />
     </el-table>
-    <div v-if="selectedTask" class="task-detail"><span>{{ selectedTask.name }}：{{ selectedTask.status }}</span><el-button v-if="taskRunning" link type="danger" @click="cancelTask">停止</el-button><el-button v-if="selectedTask.result?.rows" link @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedTask.result?.rows" link @click="exportTask('xlsx')">导出 XLSX</el-button></div>
+    <div v-if="selectedTask" class="task-detail"><span>{{ selectedTask.name }}：{{ selectedTask.status }}</span><el-button v-if="taskRunning" link type="danger" @click="cancelTask">停止</el-button><el-button v-if="selectedProbeCompleted" link @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedProbeCompleted" link @click="exportTask('xlsx')">导出 XLSX</el-button></div>
+    <el-progress v-if="exportTaskState" :percentage="exportTaskState.progress" :status="exportTaskState.status === 'FAILED' ? 'exception' : exportTaskState.status === 'COMPLETED' ? 'success' : undefined" />
     <el-table v-if="resultRows.length" :data="resultRows" stripe max-height="360"><el-table-column v-for="key in Object.keys(resultRows[0])" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
+    <el-pagination v-if="resultTotal > resultPageSize" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
   </el-card>
 </template>
 

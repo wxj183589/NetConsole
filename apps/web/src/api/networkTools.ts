@@ -1,6 +1,7 @@
 import { apiRequest } from './client'
 import type {
   NetworkTaskResponse,
+  NetworkTaskResultPage,
   NetworkTaskStartRequest,
   NetworkToolArtifact,
   NetworkToolTask,
@@ -59,8 +60,16 @@ export function cancelNetworkTask(id: string): Promise<NetworkToolTask> {
   return apiRequest<NetworkToolTask>(`/api/network-tools/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
 }
 
-export function exportNetworkTask(id: string, format: 'csv' | 'xlsx'): Promise<NetworkToolArtifact> {
-  return apiRequest<NetworkToolArtifact>(`/api/network-tools/runs/${encodeURIComponent(id)}/export`, { method: 'POST', body: JSON.stringify({ format }) })
+export function listNetworkTaskResults(id: string, offset = 0, limit = 100): Promise<NetworkTaskResultPage> {
+  return apiRequest<NetworkTaskResultPage>(`/api/network-tools/runs/${encodeURIComponent(id)}/results?offset=${offset}&limit=${limit}`)
+}
+
+export function exportNetworkTask(id: string, format: 'csv' | 'xlsx'): Promise<NetworkTaskResponse> {
+  return apiRequest<NetworkTaskResponse>(`/api/network-tools/runs/${encodeURIComponent(id)}/export`, { method: 'POST', body: JSON.stringify({ format }) })
+}
+
+export function getNetworkExportArtifact(id: string): Promise<NetworkToolArtifact> {
+  return apiRequest<NetworkToolArtifact>(`/api/network-tools/runs/${encodeURIComponent(id)}/artifact`)
 }
 
 export function listWirelessAdapters(): Promise<WirelessAdapter[]> {
@@ -79,6 +88,18 @@ export function startWirelessScan(value: { adapter_name?: string; adapter_guid?:
   return apiRequest<NetworkTaskResponse>('/api/network-tools/wireless-scan/tasks', { method: 'POST', body: JSON.stringify(value) })
 }
 
+export function listWirelessTasks(): Promise<NetworkToolTask[]> {
+  return apiRequest<NetworkToolTask[]>('/api/network-tools/wireless-scan/tasks?limit=200')
+}
+
+export function getWirelessTask(id: string): Promise<NetworkToolTask> {
+  return apiRequest<NetworkToolTask>(`/api/network-tools/wireless-scan/tasks/${encodeURIComponent(id)}`)
+}
+
+export function cancelWirelessTask(id: string): Promise<NetworkToolTask> {
+  return apiRequest<NetworkToolTask>(`/api/network-tools/wireless-scan/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
 export function listWirelessRuns(): Promise<WirelessScanRun[]> {
   return apiRequest<WirelessScanRun[]>('/api/network-tools/wireless-scan/runs?limit=200')
 }
@@ -87,6 +108,10 @@ export function listWirelessResults(scanId: string): Promise<Record<string, unkn
   return apiRequest<Record<string, unknown>[]>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?limit=2000`)
 }
 
-export function exportWirelessScan(scanId: string, format: 'csv' | 'xlsx'): Promise<NetworkToolArtifact> {
-  return apiRequest<NetworkToolArtifact>('/api/network-tools/wireless-scan/export', { method: 'POST', body: JSON.stringify({ scan_id: scanId, format }) })
+export function exportWirelessScan(scanId: string, format: 'csv' | 'xlsx'): Promise<NetworkTaskResponse> {
+  return apiRequest<NetworkTaskResponse>('/api/network-tools/wireless-scan/export', { method: 'POST', body: JSON.stringify({ scan_id: scanId, format }) })
+}
+
+export function getWirelessExportArtifact(id: string): Promise<NetworkToolArtifact> {
+  return apiRequest<NetworkToolArtifact>(`/api/network-tools/wireless-scan/tasks/${encodeURIComponent(id)}/artifact`)
 }

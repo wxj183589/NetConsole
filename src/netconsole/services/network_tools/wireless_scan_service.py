@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -67,14 +68,25 @@ class WirelessScanService:
     def list_adapters(self) -> list[WirelessAdapter]:
         return self.scanner.list_adapters()
 
-    def scan(self, adapter: WirelessAdapter | None = None) -> WirelessScanRunResult:
+    def scan(self, adapter: WirelessAdapter | None = None, *, project_id: str = "") -> WirelessScanRunResult:
         started = datetime.now()
         networks, raw = self.scanner.scan(adapter)
         raw_dir = self.paths.wireless_scan_raw_dir(self.site_name)
         raw_dir.mkdir(parents=True, exist_ok=True)
         scan_id = f"scan_{started.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
         raw_file = raw_dir / f"{scan_id}.txt"
-        raw_file.write_text(raw, encoding="utf-8")
+        raw_temp = raw_file.with_name(f".{raw_file.name}.{uuid4().hex}.tmp")
+        try:
+            with raw_temp.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(raw_temp, raw_file)
+        finally:
+            try:
+                raw_temp.unlink(missing_ok=True)
+            except OSError:
+                pass
         resolver = self._trackside_resolver()
         results = [WirelessScanResult(network=network, match=resolver.resolve(network.bssid)) for network in networks]
         results.sort(key=lambda item: (not bool(item.match.ap_name and item.match.ap_name != "-"), -(item.network.rssi_dbm or -999), item.match.station, item.match.ap_name, item.network.bssid))
@@ -89,6 +101,7 @@ class WirelessScanService:
             status="success",
             raw_file=str(raw_file),
             results=results,
+            project_id=str(project_id or ""),
         )
         return WirelessScanRunResult(scan_id, started.isoformat(sep=" ", timespec="seconds"), ended.isoformat(sep=" ", timespec="seconds"), raw_file, results)
 

@@ -68,6 +68,13 @@ class NetworkTaskResponse(ApiModel):
     task: TaskDTO
 
 
+class NetworkTaskResultPageResponse(ApiModel):
+    items: list[dict[str, object]] = Field(default_factory=list)
+    offset: int = 0
+    limit: int = 100
+    total: int = 0
+
+
 class NetworkToolArtifactResponse(ApiModel):
     artifact_id: str
     filename: str
@@ -85,6 +92,7 @@ class WirelessProjectRequest(ApiModel):
 __all__ = [
     "NetworkExportRequest",
     "NetworkTaskResponse",
+    "NetworkTaskResultPageResponse",
     "NetworkTaskStartRequest",
     "NetworkToolArtifactResponse",
     "SubnetSplitRequest",

@@ -54,6 +54,13 @@ export interface NetworkTaskStartRequest {
 
 export interface NetworkTaskResponse { task: NetworkToolTask }
 
+export interface NetworkTaskResultPage {
+  items: Record<string, unknown>[]
+  offset: number
+  limit: number
+  total: number
+}
+
 export interface NetworkToolArtifact {
   artifact_id: string
   filename: string
@@ -80,6 +87,7 @@ export interface WirelessProject {
 export interface WirelessScanRun {
   scan_id: string
   site: string
+  project_id: string
   adapter_name: string
   adapter_guid: string
   started_at: string
