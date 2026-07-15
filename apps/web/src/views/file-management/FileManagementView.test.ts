@@ -22,6 +22,7 @@ describe('file management read-only view', () => {
     expect(source).toContain('getFileDownloadTask')
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('clearTimeout')
+    expect(source).toContain('disconnectDeviceFiles(connectionId')
     expect(source).not.toContain('absolute_path')
   })
 

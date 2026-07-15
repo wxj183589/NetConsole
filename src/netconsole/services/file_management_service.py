@@ -39,6 +39,7 @@ from netconsole.services.file_transfer_service import (
 )
 
 if TYPE_CHECKING:
+    from netconsole.models.task_snapshot import TaskSnapshot
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
     from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -56,6 +57,7 @@ SESSION_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt
 REMOTE_FILES_UNAVAILABLE = "当前局点没有可用的设备资料库。"
 REMOTE_FILES_AVAILABLE = "设备文件通过受控 SFTP 会话读取。"
 WINSCP_INTEGRATION_MESSAGE = "WinSCP 需要 Desktop Action Service；当前 Web 宿主未提供桥接。"
+ACTIVE_DOWNLOAD_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 
 
 class FileManagementError(ValueError):
@@ -265,21 +267,36 @@ class FileManagementApplicationService:
         site = self._site_id(site_id)
         requested = max(1, min(int(limit), 200))
         page_size = min(200, max(50, requested))
-        offset = 0
         tasks: list[FileDownloadTaskDTO] = []
+        task_ids: set[str] = set()
         repository = self.task_service.repository(site)
+
+        offset = 0
+        while True:
+            snapshots = repository.list(statuses=ACTIVE_DOWNLOAD_STATES, limit=page_size, offset=offset)
+            if not snapshots:
+                break
+            offset += len(snapshots)
+            for snapshot in snapshots:
+                if self._is_download_snapshot(snapshot):
+                    tasks.append(self._download_task_from_snapshot(site, snapshot))
+                    task_ids.add(snapshot.task_id)
+            if len(snapshots) < page_size:
+                break
+
+        if len(tasks) >= requested:
+            return tasks
+
+        offset = 0
         while len(tasks) < requested:
             snapshots = repository.list(limit=page_size, offset=offset)
             if not snapshots:
                 break
             offset += len(snapshots)
             for snapshot in snapshots:
-                if (
-                    snapshot.task_type == "file_management_download"
-                    and snapshot.owner == "web_file_management"
-                    and snapshot.source == "local"
-                ):
+                if snapshot.task_id not in task_ids and self._is_download_snapshot(snapshot):
                     tasks.append(self._download_task_from_snapshot(site, snapshot))
+                    task_ids.add(snapshot.task_id)
                     if len(tasks) >= requested:
                         break
             if len(snapshots) < page_size:
@@ -389,7 +406,8 @@ class FileManagementApplicationService:
                     raise FileReferenceNotFound("远程文件引用不存在或不属于当前设备会话")
                 if entry.remote_file.is_dir:
                     raise FileManagementError("不能下载远程目录")
-                target = session.transfer.local_path_for(session.device, entry.remote_file)
+                candidate = session.transfer.local_path_for(session.device, entry.remote_file)
+                target = candidate.with_name(f"{task_id}_{candidate.name}")
                 relative_target = target.resolve().relative_to(self.paths.site_dir(site).resolve()).as_posix()
                 params = {
                     "site_name": site,
@@ -700,6 +718,14 @@ class FileManagementApplicationService:
     def _artifact_id(task_id: str, relative_path: str, sha256: str) -> str:
         digest = hashlib.sha256(f"fa1\0{task_id}\0{relative_path}\0{sha256}".encode("utf-8")).hexdigest()[:32]
         return f"fa1_{digest}"
+
+    @staticmethod
+    def _is_download_snapshot(snapshot: TaskSnapshot) -> bool:
+        return (
+            snapshot.task_type == "file_management_download"
+            and snapshot.owner == "web_file_management"
+            and snapshot.source == "local"
+        )
 
     def _site_id(self, site_id: str) -> str:
         value = str(site_id or self.current_site_id()).strip()

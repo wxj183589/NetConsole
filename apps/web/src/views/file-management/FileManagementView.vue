@@ -60,6 +60,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
+  const connectionId = connection.value?.connection_id
+  if (connectionId) void disconnectDeviceFiles(connectionId, siteId.value).catch(() => undefined)
 })
 
 async function refresh(): Promise<void> {

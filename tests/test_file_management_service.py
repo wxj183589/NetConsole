@@ -273,21 +273,27 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert started.status_code == 202
         task_id = started.json()["task_id"]
         assert captured and captured[-1].params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
-        result = run_file_management_download(JobContext.from_job(captured[-1]))
-        assert result["sha256"] == file_sha256(paths.site_dir("demo") / result["relative_path"])
-        task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
-        queue = client.get("/api/file-management/downloads", params={"site_id": "demo"})
-        assert queue.status_code == 200
-        assert queue.json()[0]["result"]["artifact_id"].startswith("fa1_")
-        artifact = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
-        assert artifact.status_code == 200
-        assert artifact.content == b"remote artifact"
+        first_job = captured[-1]
         pending = client.post(
             "/api/file-management/downloads",
             params={"site_id": "demo"},
             json={"connection_id": connection_id, "remote_entry_id": remote_entry_id},
         )
         assert pending.status_code == 202
+        second_job = captured[-1]
+        assert first_job.params["target_relative_path"] != second_job.params["target_relative_path"]
+        assert task_id in str(first_job.params["target_relative_path"])
+        assert pending.json()["task_id"] in str(second_job.params["target_relative_path"])
+        result = run_file_management_download(JobContext.from_job(first_job))
+        assert result["sha256"] == file_sha256(paths.site_dir("demo") / result["relative_path"])
+        task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
+        queue = client.get("/api/file-management/downloads", params={"site_id": "demo"})
+        assert queue.status_code == 200
+        completed = next(item for item in queue.json() if item["task_id"] == task_id)
+        assert completed["result"]["artifact_id"].startswith("fa1_")
+        artifact = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
+        assert artifact.status_code == 200
+        assert artifact.content == b"remote artifact"
         pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
         assert pending_cancel.status_code == 200
         assert pending_cancel.json()["status"] == TaskState.CANCELLED.value
@@ -448,3 +454,44 @@ def test_download_task_recovery_scans_past_other_modules_and_validates_source(tm
 
     assert [task.task_id for task in tasks] == ["file-task-old"]
     assert service.download_task("demo", "file-task-external") is None
+
+
+def test_download_task_recovery_keeps_older_active_task_ahead_of_recent_history(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    repository = task_service.repository("demo")
+    repository.save(
+        TaskSnapshot(
+            task_id="active-download",
+            task_type="file_management_download",
+            task_name="仍在运行的下载",
+            status=TaskState.RUNNING,
+            created_time="2026-07-15T00:00:00.000Z",
+            updated_time="2026-07-15T00:00:00.000Z",
+            owner="web_file_management",
+            source="local",
+            site_name="demo",
+        )
+    )
+    for index in range(100):
+        timestamp = f"2026-07-15T12:{index // 60:02d}:{index % 60:02d}.000Z"
+        repository.save(
+            TaskSnapshot(
+                task_id=f"completed-download-{index:03d}",
+                task_type="file_management_download",
+                task_name="历史下载",
+                status=TaskState.COMPLETED,
+                created_time=timestamp,
+                updated_time=timestamp,
+                owner="web_file_management",
+                source="local",
+                site_name="demo",
+            )
+        )
+    service = FileManagementApplicationService(paths, task_service=task_service, process_adapter=object())
+
+    tasks = service.list_download_tasks("demo", limit=100)
+
+    assert len(tasks) == 100
+    assert tasks[0].task_id == "active-download"
+    assert {task.task_id for task in tasks} >= {"active-download"}
