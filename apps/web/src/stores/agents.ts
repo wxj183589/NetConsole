@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { archiveAgent, createAgent, listAgents, probeAgent, setAgentEnabled, updateAgent } from '../api/agents'
 import type { AgentFormValue, AgentItem, AgentSocketEvent, AgentStatus } from '../types/agent'
+import { resolveWebSocketUrl } from '../platform/runtime'
 
 export const useAgentStore = defineStore('agents', () => {
   const agents = ref<AgentItem[]>([])
@@ -65,8 +66,7 @@ export const useAgentStore = defineStore('agents', () => {
   function connectSocket(): void {
     if (socket && socket.readyState <= WebSocket.OPEN) return
     reconnectEnabled = true
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    socket = new WebSocket(`${scheme}://${window.location.host}/ws/agents`)
+    socket = new WebSocket(resolveWebSocketUrl('/ws/agents'))
     socket.onopen = () => {
       socketConnected.value = true
       void refresh()
