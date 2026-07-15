@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from typing import TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.wireless_dashboard import (
     WirelessDashboardAgentsDTO,
@@ -42,10 +42,11 @@ def _dashboard(request: Request, site_id: str) -> WirelessDashboardDTO:
 
 
 def _query(callback: Callable[[], T]) -> T:
-    try:
+    with map_api_errors(
+        "无线综合看板数据暂时不可读取",
+        io_detail="无线综合看板数据暂时不可读取",
+    ):
         return callback()
-    except (sqlite3.Error, OSError) as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="无线综合看板数据暂时不可读取") from exc
 
 
 @router.get("", response_model=WirelessDashboardDTO)

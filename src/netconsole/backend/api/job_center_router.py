@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.job_center import JobCenterLogTailDTO, JobCenterSummaryDTO, JobCenterTaskDTO
 from netconsole.services.job_center.query_service import JobCenterQueryService
 
@@ -64,10 +63,8 @@ def logs(
 
 
 def _query(callback):
-    try:
+    with map_api_errors("任务数据库暂时不可读"):
         return callback()
-    except sqlite3.OperationalError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="任务数据库暂时不可读") from exc
 
 
 __all__ = ["router"]

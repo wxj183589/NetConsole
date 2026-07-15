@@ -43,6 +43,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
+from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
@@ -59,6 +60,7 @@ from netconsole.services.rail_transit.train_communication_query_service import T
 from netconsole.services.rail_transit.wireless_dashboard_query_service import WirelessDashboardQueryService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
+from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -234,6 +236,10 @@ def create_app(
     app.state.job_center_query_service = JobCenterQueryService(paths)
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
+    app.state.traffic_web_application_service = TrafficWebApplicationService(
+        traffic_service,
+        agent_service,
+    )
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_management_service = device_management_service
     app.state.config_collection_service = config_collection_service
@@ -258,6 +264,12 @@ def create_app(
             OnlineMrAgentControllerService(paths, profile_controller=agent_service),
             enabled=online_mr_agent_executor_enabled,
         )
+    )
+    app.state.online_mr_api_facade = OnlineMrApiFacade(
+        paths,
+        app.state.online_mr_query_service,
+        app.state.online_mr_web_control_service,
+        app.state.online_mr_agent_web_control_service,
     )
     app.state.train_communication_query_service = TrainCommunicationQueryService(
         paths,

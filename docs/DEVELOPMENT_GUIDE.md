@@ -35,6 +35,9 @@ Vue 页面
 - 只做鉴权、参数校验、调用 Application Service 和响应映射；
 - 不直接访问 Repository、SQLite、SSH、SNMP、Agent 运行目录或设备文件；
 - 长任务进入 Task/Job 体系，不能阻塞 WebHost。
+- Service 与 Facade 只在 `src/netconsole/backend/api/main.py:create_app()` 组合一次并注入 `app.state`，Router 不提供 fallback 或逐请求构造；
+- 跨 Router 共用的纯 DTO 映射进入最小 presentation helper，Router 不导入 sibling Router 私有函数；
+- SQLite/OSError 等基础设施异常由共享 API 错误映射或稳定领域错误转换，正式 Router 不直接导入底层异常类型。
 
 ### Application Service
 
@@ -85,6 +88,7 @@ Electron 仅在后续独立阶段建设，只允许：
 - 不把没有环境的真实验收写成已通过；
 - 多分支集成前由指挥中心统一检查冲突、迁移矩阵和文档；
 - 最终集成执行 Python 全量测试、前端测试与构建、Ruff、文档链接检查及受影响的 Go 测试；
+- API 边界变更必须运行 `tests/test_api_router_boundary.py`，临时债务表保持为空；
 - 纯文档任务只运行文档定向校验和链接检查，除非它与代码改动一起进入集成批次。
 
 ## 禁止的捷径

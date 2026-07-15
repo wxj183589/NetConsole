@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.file_management import (
@@ -40,14 +39,13 @@ def _site_id(request: Request, supplied: str) -> str:
 
 
 def _call(callback):
-    try:
-        return callback()
-    except FileReferenceNotFound as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except FileManagementError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="文件索引暂时不可读取") from exc
+    with map_api_errors("文件索引暂时不可读取"):
+        try:
+            return callback()
+        except FileReferenceNotFound as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except FileManagementError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.get("/status", response_model=FileManagementStatusDTO)

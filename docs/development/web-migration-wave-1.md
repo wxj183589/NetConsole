@@ -27,8 +27,22 @@
 | 文件管理 Web | 已集成 | 提交 `8925b7ad`；局点本地文件分类与受控下载，不做设备远程文件、删除、上传或重命名 |
 | Web 双轨基础设施 | 已完成 | 提交 `588a941`；统一导航注册、正式路由归属、Feature Gate、响应式 Desktop WebHost、前后端构建身份和 Qt/Web 能力矩阵 |
 | Launcher / Core Runtime 第一阶段启动子项 | 已完成 | 四模式、隔离 Qt 能力探测、无 Qt Browser/Server、Core-owned WebHost、普通启动单实例；Server 仅允许回环绑定；Native Bridge、EmbeddedLayout 和 Qt 页面服务容器统一延期 |
+| Phase 0.5 D 组合根与静态守卫 | 已集成 | 上游 `8b7a85ac`/`6a097420`，集成 `2843f199`/`1301ff92`；复用现有 `create_app()`，不新增运行容器 |
+| Phase 0.5 A Online MR API 边界 | 已集成 | 上游 `7e3487e5`/`143ea3c3`，集成 `9e7d9660`/`58a7a319`；三个 Router 共用无副作用当前局点 Facade，LOCAL/AGENT 生命周期不变 |
+| Phase 0.5 B Traffic Web 边界 | 已集成 | 上游 `6c8de0d6`/`73cbf48d`，集成 `b2bea6a1`/`bacab1f9`；执行端、分页、取消与重试进入 Web Application Service |
+| Phase 0.5 C 基础资料策略边界 | 已集成 | 上游 `240c5bf1`，集成 `8cdc8435`；复用既有 Import Service 的 `get_import_policy()`，Guard 与写开关不变 |
+| Phase 0.5 E 中央接线与债务清零 | 已完成 | 本集成提交；单例 Facade/Web Service 接线、共享 API 错误映射、Traffic presentation helper、正式 Router 静态债务清零；最终 SHA 由集成 Worker 报告给主控 |
 
 ## 已完成验证
+
+- Phase 0.5 A-D/E 直接相关与中央接线定向测试：16 个测试文件、107 项通过；静态 Router 边界债务为零。
+- `src/netconsole/backend/api/` 全部正式 `*_router.py` 搜索确认无 `sqlite3` import/catch；共享错误映射保留原数据库/I/O HTTP 状态和消息。
+- Phase 0.5 本轮修改 Python 文件 Ruff、`py_compile`、`compileall` 通过；`pip check` 无破损依赖，`git diff --check` 通过。
+- 文档结构与相对链接测试：4 项通过；`docs/README.md` 已索引 Traffic Web 边界文档。
+- 前端源码未改，仍完成全量 Vitest：30 个文件、74 项通过；`vue-tsc -b` 与 Vite 生产构建通过，临时 `node_modules` 联接和 `dist` 已清理。
+- Python 单进程全量在 57% 无失败摘要退出，复现既有 Qt 累计状态基线；按排序测试文件稳定拆成 8 个独立进程，`2267 collected` 全部核对：2264 项通过、2 项按既有条件跳过，1 项真实 PyInstaller 发布验收按本任务明确非目标未运行。发布数据清单项在临时前端构建存在时已单独复验通过，未把 PyInstaller 项记录为通过。
+- 受影响 Go 文件为 0，因此未运行 Go 测试；本批次未修改 Go Agent、Traffic 协议或构建发布代码。
+- 对 `29624b2c..HEAD` 及任务 E 工作区执行最终只读架构复核，覆盖 Router 构造、当前局点、导入策略、Agent 能力、取消/重试、重复实例、跨局点、Online MR 恢复/生命周期、Traffic 协议、基础资料写保护、凭据/绝对路径和兼容写法；未发现 P1/P2。
 
 - 质量基线相关 pytest：50 项通过。
 - 质量基线修改文件 Ruff：通过。
@@ -58,6 +72,10 @@
 - Launcher/Core Runtime 独立只读评审发现非回环无鉴权绑定 P1 和 Qt probe 导入链污染 P2；现已限制 Server 仅绑定 loopback、拆出轻量 probe 并补发布 import graph 断言，复核后无遗留 P1/P2。修改范围 Ruff、全量 `compileall`、`git diff --check` 通过；全仓 Ruff 仍有 141 个既有错误，未扩大本阶段范围处理。
 
 ## 当前安全与功能限制
+
+- Phase 0.5 A-D/E 未连接真实 AC、MR、Agent 或生产数据；只使用 `tmp_path`、Fake 和本地测试链路，不把定向/全量结果解释为现场验收。
+- 本批次不修改 Vue 源码、Go Agent、依赖锁、设备命令、Traffic 协议或基础资料写入开关；受影响 Go 文件为 0。
+- 集成分支只在本地提交，不推送、不合入 `main`；最终提交 SHA 由集成 Worker 报告给主控。
 
 - 设备管理不返回凭据，不提供浏览器终端；编辑仅生成预览，尚不落库。
 - 网络工具沿用现有 Traffic Run；Agent 旧 `ping_probe` 只提供终态，尚无结构化逐样本结果。

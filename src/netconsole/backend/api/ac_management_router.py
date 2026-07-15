@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.ac_management import (
     AcApDetailDTO,
     AcApPageDTO,
@@ -151,14 +150,16 @@ def _required(value, message: str):
 
 
 def _query(callback):
-    try:
-        return callback()
-    except sqlite3.OperationalError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AC 数据库暂时不可读") from exc
-    except (OSError, UnicodeError) as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置快照文件不可读") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    with map_api_errors(
+        "AC 数据库暂时不可读",
+        io_detail="配置快照文件不可读",
+        io_errors=(OSError, UnicodeError),
+        io_status_code=status.HTTP_404_NOT_FOUND,
+    ):
+        try:
+            return callback()
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

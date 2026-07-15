@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import queue
-from pathlib import PurePosixPath, PureWindowsPath
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 
+from netconsole.backend.api.traffic_presentation import (
+    execution_target_from_request,
+    traffic_run_dto,
+)
 from netconsole.models.api.traffic import (
     FpingStartRequest,
     IperfClientStartRequest,
@@ -13,7 +16,6 @@ from netconsole.models.api.traffic import (
     TrafficCancelResponse,
     TrafficEventDTO,
     TrafficExecutionTargetDTO,
-    TrafficExecutionTargetRequest,
     TrafficPingSampleDTO,
     TrafficRetryResponse,
     TrafficRunDTO,
@@ -21,18 +23,14 @@ from netconsole.models.api.traffic import (
     TrafficSummaryDTO,
 )
 from netconsole.models.task_state import TaskState
-from netconsole.models.traffic_test import ExecutionTargetDTO, ExecutionTargetKind, HighFrequencyPingConfig, TrafficTestType
+from netconsole.models.traffic_test import ExecutionTargetKind, HighFrequencyPingConfig, TrafficTestType
 from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfServerConfig
-from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventStreamClosed, TrafficEventStreamOverflow
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
 ws_router = APIRouter(tags=["traffic"])
-
-_ACTIVE_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING}
-
 
 def traffic_web_service(request: Request) -> TrafficWebApplicationService:
     return request.app.state.traffic_web_application_service
@@ -52,7 +50,7 @@ async def start_iperf_server(body: IperfServerStartRequest, request: Request) ->
             interval_seconds=body.interval_seconds,
             one_off=body.one_off,
         ),
-        _execution_target(body.execution_target),
+        execution_target_from_request(body.execution_target),
         parent_task_id=body.parent_task_id,
         correlation_id=body.correlation_id,
     )
@@ -80,7 +78,7 @@ async def start_iperf_client(body: IperfClientStartRequest, request: Request) ->
             udp_bitrate_mbps=body.udp_bitrate_mbps,
             udp_report_threshold_mbps=body.udp_report_threshold_mbps,
         ),
-        _execution_target(body.execution_target),
+        execution_target_from_request(body.execution_target),
         parent_task_id=body.parent_task_id,
         correlation_id=body.correlation_id,
     )
@@ -99,7 +97,7 @@ async def start_fping(body: FpingStartRequest, request: Request) -> TrafficStart
             continuous=body.continuous,
             source_address=body.source_address,
         ),
-        _execution_target(body.execution_target),
+        execution_target_from_request(body.execution_target),
         parent_task_id=body.parent_task_id,
         correlation_id=body.correlation_id,
     )
@@ -278,35 +276,6 @@ async def _send_catchup(
     return last_event_sequence, last_sample_sequence
 
 
-def traffic_run_dto(run: object) -> TrafficRunDTO:
-    return TrafficRunDTO(
-        id=run.traffic_run_id,
-        traffic_run_id=run.traffic_run_id,
-        controller_task_id=run.controller_task_id,
-        test_type=run.test_type,
-        role=run.role,
-        executor_kind=run.executor_kind,
-        agent_id=run.agent_id,
-        normalized_config=dict(run.normalized_config),
-        status=run.status,
-        created_at=run.created_at,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        updated_at=run.updated_at,
-        summary=dict(run.summary),
-        error_code=run.error_code,
-        error_message=run.error_message,
-        raw_reference=_public_reference(run.raw_reference),
-        result_reference=_public_reference(run.result_reference),
-        retry_of_traffic_run_id=run.retry_of_traffic_run_id,
-        parent_task_id=run.parent_task_id,
-        correlation_id=run.correlation_id,
-        last_event_sequence=run.last_event_sequence,
-        sync_state=run.sync_state,
-        cancellable=run.status in _ACTIVE_STATES,
-    )
-
-
 def ping_sample_dto(sample: object) -> TrafficPingSampleDTO:
     return TrafficPingSampleDTO(
         traffic_run_id=sample.traffic_run_id,
@@ -321,23 +290,3 @@ def ping_sample_dto(sample: object) -> TrafficPingSampleDTO:
         error_code=sample.error_code,
         error_message=sample.error_message,
     )
-
-
-def _execution_target(value: TrafficExecutionTargetRequest) -> ExecutionTargetDTO:
-    try:
-        return ExecutionTargetDTO(
-            kind=value.kind,
-            agent_id=value.agent_id.strip(),
-            display_name=value.display_name.strip(),
-        )
-    except ValueError as exc:
-        raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, str(exc)) from exc
-
-
-def _public_reference(value: object) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if text.casefold().startswith("file://") or PureWindowsPath(text).is_absolute() or PurePosixPath(text).is_absolute():
-        return ""
-    return text

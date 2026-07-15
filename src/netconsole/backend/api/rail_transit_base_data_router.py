@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
@@ -324,12 +323,11 @@ async def import_preview(
 
 
 def _query(callback):
-    try:
-        return callback()
-    except sqlite3.OperationalError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="轨道交通基础资料数据库暂时不可读") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    with map_api_errors("轨道交通基础资料数据库暂时不可读"):
+        try:
+            return callback()
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) -> None:

@@ -3,13 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.backend.api.traffic_presentation import (
+    execution_target_from_request,
+    traffic_run_dto,
+)
 from netconsole.models.api.network_tools import TcpPortTestStartRequest
 from netconsole.models.api.traffic import TrafficStartResponse
 from netconsole.models.traffic_test import TcpPortTestConfig
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
-
-from .traffic_router import _execution_target, traffic_run_dto
-
 
 router = APIRouter(prefix="/network-tools", tags=["network-tools"])
 
@@ -36,7 +37,7 @@ async def start_tcp_port_test(body: TcpPortTestStartRequest, request: Request) -
             timeout_ms=body.timeout_ms,
             count=body.count,
         ),
-        _execution_target(body.execution_target),
+        execution_target_from_request(body.execution_target),
     )
     return TrafficStartResponse(run=traffic_run_dto(run))
 

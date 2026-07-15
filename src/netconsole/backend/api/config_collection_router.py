@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.config_collection import (
     ConfigActionRequest,
@@ -133,18 +132,18 @@ def download_artifact(request: Request, artifact_id: str) -> FileResponse:
 
 
 def _query(callback):
-    try:
-        return callback()
-    except HTTPException:
-        raise
-    except (FileNotFoundError, KeyError, UnicodeError) as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc) or "配置资源不存在") from exc
-    except sqlite3.OperationalError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="配置中心数据库暂时不可读") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="配置中心后台任务暂时不可用") from exc
+    with map_api_errors(
+        "配置中心数据库暂时不可读",
+        io_detail="配置中心后台任务暂时不可用",
+    ):
+        try:
+            return callback()
+        except HTTPException:
+            raise
+        except (FileNotFoundError, KeyError, UnicodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc) or "配置资源不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import ast
+import sqlite3
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
+from netconsole.backend.api.error_mapping import map_api_errors
 
 ROUTER_ROOT = Path(__file__).resolve().parents[1] / "src" / "netconsole" / "backend" / "api"
 FORBIDDEN_IMPORTS = {
@@ -20,31 +25,7 @@ FORBIDDEN_IMPORTS = {
 CONSTRUCTOR_SUFFIXES = ("Database", "Parser", "PathResolver", "Repository", "Service")
 SQLITE_DEPENDENCY = "sqlite3 exception mapping dependency"
 
-# Phase 0.5 当前分支证据：A/B/C 业务债务和既有 SQLite 映射；E 集成后删除已消失项。
-TEMPORARY_WAVE_DEBT = {
-    "ac_management_router.py": {SQLITE_DEPENDENCY},
-    "ac_mesh_link_router.py": {SQLITE_DEPENDENCY},
-    "config_collection_router.py": {SQLITE_DEPENDENCY},
-    "device_management_router.py": {SQLITE_DEPENDENCY},
-    "file_management_router.py": {SQLITE_DEPENDENCY},
-    "job_center_router.py": {SQLITE_DEPENDENCY},
-    "mesh_analysis_router.py": {SQLITE_DEPENDENCY},
-    "online_mr_router.py": {"stateful SiteManager.get_current_site"},
-    "online_mr_control_router.py": {"stateful SiteManager.get_current_site"},
-    "online_mr_agent_control_router.py": {"private router site helper"},
-    "traffic_router.py": {
-        "agent execution-target orchestration",
-        "run filtering and pagination",
-        "traffic controller-task cancellation and retry",
-    },
-    "rail_transit_base_data_router.py": {
-        "import policy assembly",
-        "import service guard access",
-        SQLITE_DEPENDENCY,
-    },
-    "train_communication_router.py": {SQLITE_DEPENDENCY},
-    "wireless_dashboard_router.py": {SQLITE_DEPENDENCY},
-}
+TEMPORARY_WAVE_DEBT: dict[str, set[str]] = {}
 
 
 def _qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
@@ -217,3 +198,15 @@ def test_router_boundary_rejects_sqlite_direct_symbol_import(tmp_path: Path) -> 
     router = tmp_path / "sqlite_symbol_router.py"
     router.write_text("from sqlite3 import OperationalError\n", encoding="utf-8")
     assert _findings(router) == {SQLITE_DEPENDENCY}
+
+
+def test_shared_api_error_mapping_keeps_database_and_io_contracts() -> None:
+    with pytest.raises(HTTPException) as database_error:
+        with map_api_errors("数据库暂时不可读"):
+            raise sqlite3.OperationalError("locked")
+    assert (database_error.value.status_code, database_error.value.detail) == (503, "数据库暂时不可读")
+
+    with pytest.raises(HTTPException) as io_error:
+        with map_api_errors("数据库暂时不可读", io_detail="文件暂时不可读", io_status_code=404):
+            raise OSError("denied")
+    assert (io_error.value.status_code, io_error.value.detail) == (404, "文件暂时不可读")

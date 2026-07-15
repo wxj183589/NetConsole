@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from typing import TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAlignmentDTO,
@@ -44,12 +44,11 @@ def _site_id(request: Request, supplied: str) -> str:
 
 
 def _query(callback: Callable[[], T]) -> T:
-    try:
-        return callback()
-    except MeshAnalysisQueryError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except sqlite3.Error as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Mesh 分析结果暂时不可读取") from exc
+    with map_api_errors("Mesh 分析结果暂时不可读取"):
+        try:
+            return callback()
+        except MeshAnalysisQueryError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/summary", response_model=MeshAnalysisSummaryDTO)

@@ -26,6 +26,7 @@
 | [仓库目录规范](development/repository-layout.md) | 根目录白名单、应用边界、运行数据和新增文件检查 | 所有开发/维护人员 | `AGENTS.md`、实际目录和构建脚本 | 顶层布局、目录职责或迁移映射变化 |
 | [测试基线](TEST_BASELINE.md) | 定向测试、测试数据隔离和合并前全量门槛 | 所有开发/维护人员 | pytest、Vitest、Ruff、构建与文档检查 | 测试隔离、执行顺序或最终门槛变化 |
 | [Web 双轨迁移第一批更新记录](development/web-migration-wave-1.md) | 当前并行任务、提交、验证、延期项和合并门槛 | Web 迁移指挥与集成 | 独立工作树提交、测试和集成分支 | 第一批任务状态、测试或范围变化 |
+| [Traffic Web 应用边界](development/api-boundary-wave-1/traffic-web-boundary.md) | Traffic 执行端、查询分页、取消/重试和 Router 展示映射边界 | Traffic Web/API 开发 | `TrafficWebApplicationService`、Traffic Router、组合根 | Traffic Web 用例或 REST/WebSocket 契约变化 |
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
 | [表格与 UI 规范](ui_table_guidelines.md) | 表格、列宽、滚动、主题和 1080p | Qt UI 开发 | UI helpers/widgets、相关测试 | 公共控件、页面布局或主题规则变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |

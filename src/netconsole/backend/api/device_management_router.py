@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.device_management import (
     DeviceConnectionTestDTO,
@@ -82,14 +81,17 @@ def start_connection_test(
     device_uuid: str,
     payload: DeviceConnectionTestRequestDTO,
 ) -> DeviceConnectionTestDTO:
-    try:
-        return _service(request).start_connection_test(device_uuid, payload.protocol)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except (OSError, RuntimeError, sqlite3.Error) as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="连接测试任务暂时无法创建") from exc
+    with map_api_errors(
+        "连接测试任务暂时无法创建",
+        io_detail="连接测试任务暂时无法创建",
+        io_errors=(OSError, RuntimeError),
+    ):
+        try:
+            return _service(request).start_connection_test(device_uuid, payload.protocol)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.get(
@@ -109,12 +111,11 @@ def _not_found(callback, message: str):
 
 
 def _query(callback):
-    try:
-        return callback()
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except sqlite3.OperationalError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="设备数据库暂时不可读") from exc
+    with map_api_errors("设备数据库暂时不可读"):
+        try:
+            return callback()
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

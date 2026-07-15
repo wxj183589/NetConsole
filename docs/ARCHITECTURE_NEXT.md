@@ -66,6 +66,8 @@ FastAPI ----┘
 
 API 是永久边界。接口变更必须兼容现有调用方，必要时版本化；不得让 Electron 绕过 FastAPI 直接调用 Python 内部业务对象。
 
+截至 Phase 0.5 第一批，18 个正式 Router 的静态 Application 边界守卫已无临时债务。现有 `src/netconsole/backend/api/main.py:create_app()` 继续作为唯一组合根，集中创建并注入共享 Task、Agent、Traffic、Online MR、Network Tools 和基础资料 Service；没有新增 `ApiRuntimeServices` 类、第二套容器或空 composition 包。该状态只覆盖首批 API 边界，不表示所有 Qt 页面或 legacy handler 已迁移。
+
 ## 当前目录与目标职责映射
 
 当前不做大规模搬目录。以下映射用于约束新代码放置，不代表需要立即创建空目录：

@@ -97,6 +97,15 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
     assert app.state.config_collection_service.process_adapter is app.state.device_management_service.process_adapter
     assert app.state.file_management_service.process_adapter is app.state.device_management_service.process_adapter
     assert app.state.network_tools_service.traffic_service is app.state.traffic_service
+    assert app.state.traffic_web_application_service.traffic_service is app.state.traffic_service
+    assert app.state.traffic_web_application_service.agent_service is app.state.agent_service
+    assert app.state.online_mr_api_facade.query_service is app.state.online_mr_query_service
+    assert app.state.online_mr_api_facade.local_control is app.state.online_mr_web_control_service
+    assert app.state.online_mr_api_facade.agent_control is app.state.online_mr_agent_web_control_service
+    assert (
+        app.state.rail_transit_import_preview_service.import_service
+        is app.state.rail_transit_base_data_import_service
+    )
 
 
 def test_disabled_web_features_hide_state_and_block_backend_routes(tmp_path: Path) -> None:
