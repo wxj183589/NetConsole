@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -11,7 +12,8 @@ const webRoot = resolve(projectRoot, 'apps', 'web')
 const webRequire = createRequire(resolve(webRoot, 'package.json'))
 const viteCli = resolve(dirname(webRequire.resolve('vite/package.json')), 'bin', 'vite.js')
 const pnpmCli = process.env.npm_execpath
-const devUrl = 'http://127.0.0.1:5173'
+const devPort = 5173
+const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke')
 
 if (!pnpmCli) throw new Error('请通过 pnpm dev 或 pnpm smoke:dev 启动 Electron')
@@ -74,14 +76,25 @@ async function waitForVite(vite, timeoutMs = 20_000) {
   throw new Error(`Vite did not become ready at ${devUrl}`)
 }
 
+async function assertDevPortAvailable() {
+  await new Promise((resolvePromise, reject) => {
+    const probe = createServer()
+    probe.once('error', () => reject(new Error(`Vite dev port ${devPort} is already in use`)))
+    probe.listen(devPort, '127.0.0.1', () => {
+      probe.close((cause) => cause ? reject(cause) : resolvePromise())
+    })
+  })
+}
+
 await runPnpm(['run', 'build:main'])
+await assertDevPortAvailable()
 
 const vite = spawnNode([
   viteCli,
   '--host',
   '127.0.0.1',
   '--port',
-  '5173',
+  String(devPort),
   '--strictPort',
 ], { cwd: webRoot })
 
