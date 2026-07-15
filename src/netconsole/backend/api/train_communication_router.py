@@ -85,6 +85,25 @@ def trains(
     )
 
 
+@router.get("/online", response_model=TrainCommunicationPageDTO)
+def online_trains(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> TrainCommunicationPageDTO:
+    return _query(
+        lambda: _service(request).list_trains(
+            _site_id(request, site_id),
+            active_only=True,
+            page=page,
+            page_size=page_size,
+            sort_by="updated_at",
+            sort_order="desc",
+        )
+    )
+
+
 @router.get("/trains/{train_id}", response_model=TrainCommunicationDetailDTO)
 def train_detail(
     request: Request,

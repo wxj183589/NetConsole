@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.ac_management import (
     AcApDetailDTO,
     AcApPageDTO,
+    AcActionConfirmRequestDTO,
+    AcActionPlanCreateRequestDTO,
+    AcActionPlanDTO,
     AcConfigContentDTO,
     AcConfigDiffDTO,
     AcConfigSnapshotPageDTO,
@@ -13,7 +16,17 @@ from netconsole.models.api.ac_management import (
     AcManagementSummaryDTO,
     AcOpticalDTO,
     AcRadioDTO,
+    AcExtensionApplyRequestDTO,
+    AcExtensionApplyResultDTO,
+    AcExtensionPageDTO,
+    AcExtensionPreviewDTO,
+    AcExtensionRollbackRequestDTO,
+    AcExtensionRollbackResultDTO,
+    AcRefreshRequestDTO,
+    AcTracksidePlanPageDTO,
+    AcWebTaskDTO,
 )
+from netconsole.application.ac.web_application_service import AcWebActionError, AcWebApplicationService
 from netconsole.services.ac.query_service import AcManagementQueryService
 
 
@@ -26,6 +39,13 @@ def _service(request: Request) -> AcManagementQueryService:
 
 def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
+
+
+def _web_service(request: Request) -> AcWebApplicationService:
+    service = getattr(request.app.state, "ac_web_application_service", None)
+    if service is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AC Web 服务未接线")
+    return service
 
 
 @router.get("/summary", response_model=AcManagementSummaryDTO)
@@ -143,6 +163,143 @@ def config_diff(
     return _required(result, "配置快照不存在")
 
 
+@router.get("/online-overview", response_model=AcManagementSummaryDTO)
+def online_overview(request: Request) -> AcManagementSummaryDTO:
+    return _query(lambda: _service(request).get_summary(_site_id(request)))
+
+
+@router.get("/optical", response_model=AcApPageDTO)
+def optical(
+    request: Request,
+    ac_id: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    query: str = Query(default="", max_length=200),
+    optical_status: str = Query(default="", max_length=30),
+) -> AcApPageDTO:
+    return _query(lambda: _service(request).list_aps(_site_id(request), ac_id=ac_id, page=page, page_size=page_size, query=query, optical_status=optical_status))
+
+
+@router.get("/trackside-plan", response_model=AcTracksidePlanPageDTO)
+def trackside_plan(
+    request: Request,
+    mode: str = Query(default="trackside", max_length=30),
+) -> AcTracksidePlanPageDTO:
+    return _query(lambda: _web_service(request).list_trackside_plan(_site_id(request), mode))
+
+
+@router.get("/extensions", response_model=AcExtensionPageDTO)
+def extensions(
+    request: Request,
+    search: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> AcExtensionPageDTO:
+    return _query(lambda: _web_service(request).list_extensions(_site_id(request), search=search, page=page, page_size=page_size))
+
+
+@router.post("/extensions/import-preview", response_model=AcExtensionPreviewDTO)
+async def extension_import_preview(
+    request: Request,
+    file: UploadFile = File(...),
+    import_mode: str = Query(default="standard_template", max_length=40),
+) -> AcExtensionPreviewDTO:
+    try:
+        content = await file.read(20 * 1024 * 1024 + 1)
+        if len(content) > 20 * 1024 * 1024:
+            raise ValueError("AP 扩展导入文件超过 20 MB 限制")
+        return _web_service(request).preview_extension(_site_id(request), file.filename or "", content, import_mode)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+
+@router.post("/extensions/import-apply", response_model=AcExtensionApplyResultDTO, status_code=status.HTTP_202_ACCEPTED)
+def extension_import_apply(request: Request, payload: AcExtensionApplyRequestDTO) -> AcExtensionApplyResultDTO:
+    try:
+        return _web_service(request).apply_extension(_site_id(request), payload.preview_id, payload.preview_digest, payload.explicit_confirmation)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/extensions/audits/{audit_id}/rollback", response_model=AcExtensionRollbackResultDTO)
+def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRollbackRequestDTO) -> AcExtensionRollbackResultDTO:
+    try:
+        return _web_service(request).rollback_extension(_site_id(request), audit_id, payload.explicit_confirmation)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/refresh/{refresh_kind}", response_model=AcWebTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+def refresh(request: Request, refresh_kind: str, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
+    task_types = {"ac": "ac_overview_refresh", "fit-ap": "ac_fit_ap_resources_refresh", "optical": "ac_fit_ap_optical_refresh", "trackside-plan": "trackside_ap_plan_refresh"}
+    try:
+        task_type = task_types[refresh_kind]
+        return _web_service(request).start_refresh(_site_id(request), task_type, ac_id=payload.ac_id, source=payload.source, refresh_scope=payload.refresh_scope)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="不支持的 AC 刷新类型") from exc
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/trackside-business/refresh", response_model=AcWebTaskDTO, status_code=status.HTTP_202_ACCEPTED)
+def trackside_business_refresh(request: Request, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
+    try:
+        task = _web_service(request).start_refresh(
+            _site_id(request),
+            "ac_trackside_business_refresh",
+            ac_id=payload.ac_id,
+            source=payload.source,
+            refresh_scope=payload.refresh_scope,
+        )
+        return task
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/actions/plans", response_model=AcActionPlanDTO)
+def create_action_plan(request: Request, payload: AcActionPlanCreateRequestDTO) -> AcActionPlanDTO:
+    try:
+        return _web_service(request).create_action_plan(_site_id(request), payload.target_id, payload.action_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get("/actions/plans/{plan_id}", response_model=AcActionPlanDTO)
+def action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
+    try:
+        return _web_service(request).preview_action_plan(plan_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/actions/plans/{plan_id}/confirm", response_model=AcActionPlanDTO)
+def confirm_action_plan(request: Request, plan_id: str, payload: AcActionConfirmRequestDTO) -> AcActionPlanDTO:
+    try:
+        return _web_service(request).confirm_action_plan(plan_id, payload.plan_digest, payload.confirm_token)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post("/actions/plans/{plan_id}/execute", response_model=AcActionPlanDTO, status_code=status.HTTP_202_ACCEPTED)
+def execute_action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
+    try:
+        return _web_service(request).execute_action_plan(plan_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get("/actions/plans/{plan_id}/audit")
+def action_audit(request: Request, plan_id: str) -> dict[str, object]:
+    try:
+        return _web_service(request).action_audit(plan_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
 def _required(value, message: str):
     if value is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
@@ -160,6 +317,11 @@ def _query(callback):
             return callback()
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+def _raise_web_error(exc: AcWebActionError) -> None:
+    status_code = status.HTTP_409_CONFLICT if exc.code in {"PLAN_TAMPERED", "PLAN_EXPIRED", "PLAN_ALREADY_CONFIRMED", "CONFIRMATION_REQUIRED", "PREVIEW_TAMPERED", "PREVIEW_EXPIRED", "PREVIEW_ALREADY_APPLIED", "ALREADY_ROLLED_BACK"} else status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
 __all__ = ["router"]

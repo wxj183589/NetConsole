@@ -62,7 +62,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert after_config == before_config
 
 
-def test_ac_management_router_keeps_only_mesh_link_refresh_as_controlled_post(tmp_path: Path) -> None:
+def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     app = create_app(
         RuntimeMode.SERVER,
@@ -79,8 +79,18 @@ def test_ac_management_router_keeps_only_mesh_link_refresh_as_controlled_post(tm
     }
 
     assert routes
-    assert {path for path, method in routes if method == "POST"} == {"/api/ac-management/mesh-links/refresh"}
-    assert all(method == "GET" for path, method in routes if not path.startswith("/api/ac-management/mesh-links"))
+    assert {path for path, method in routes if method == "POST"} == {
+        "/api/ac-management/mesh-links/refresh",
+        "/api/ac-management/extensions/import-preview",
+        "/api/ac-management/extensions/import-apply",
+        "/api/ac-management/extensions/audits/{audit_id}/rollback",
+        "/api/ac-management/refresh/{refresh_kind}",
+        "/api/ac-management/trackside-business/refresh",
+        "/api/ac-management/actions/plans",
+        "/api/ac-management/actions/plans/{plan_id}/confirm",
+        "/api/ac-management/actions/plans/{plan_id}/execute",
+    }
+    assert all(method in {"GET", "POST"} for _path, method in routes)
     assert "client_count" not in str(app.openapi()).casefold()
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
     assert all("delete" not in path for path, _method in routes)

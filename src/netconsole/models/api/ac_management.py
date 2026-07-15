@@ -164,6 +164,122 @@ class AcConfigDiffDTO(ApiModel):
     truncated: bool = False
 
 
+class AcExtensionDTO(ApiModel):
+    id: int
+    ap_name: str = ""
+    ap_mac_display: str = ""
+    ap_mac_norm: str = ""
+    station_name: str = ""
+    section_name: str = ""
+    section_start_station: str = ""
+    section_end_station: str = ""
+    line_side: str = ""
+    direction: str = ""
+    mileage_text: str = ""
+    location_desc: str = ""
+    remark: str = ""
+    match_status: str = "unmatched"
+    updated_at: str = ""
+
+
+class AcExtensionPageDTO(ApiModel):
+    items: list[AcExtensionDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+
+
+class AcTracksidePlanDTO(ApiModel):
+    station_name: str
+    ap_count: int = 0
+    planned_count: int = 0
+    actual_count: int = 0
+    remark: str = ""
+    mode: str = "trackside"
+    updated_at: str = ""
+
+
+class AcTracksidePlanPageDTO(ApiModel):
+    items: list[AcTracksidePlanDTO] = Field(default_factory=list)
+    total: int = 0
+    mode: str = "trackside"
+
+
+class AcWebTaskDTO(ApiModel):
+    task_id: str
+    task_type: str
+    status: str = "PENDING"
+    message: str = ""
+
+
+class AcActionPlanDTO(ApiModel):
+    plan_id: str
+    site_id: str
+    target_id: str
+    action_id: str
+    action_label: str
+    plan_digest: str
+    confirm_token: str
+    expires_at: float
+    status: str = "PREVIEW"
+    command_summary: list[str] = Field(default_factory=list)
+    task_id: str = ""
+
+
+class AcActionConfirmRequestDTO(ApiModel):
+    plan_digest: str
+    confirm_token: str
+
+
+class AcActionPlanCreateRequestDTO(ApiModel):
+    target_id: str
+    action_id: str
+
+
+class AcExtensionPreviewDTO(ApiModel):
+    preview_id: str
+    file_name: str
+    template_type: str = ""
+    confidence_score: int = 0
+    low_confidence: bool = False
+    summary: dict[str, int] = Field(default_factory=dict)
+    row_count: int = 0
+    preview_digest: str
+
+
+class AcExtensionApplyRequestDTO(ApiModel):
+    preview_id: str
+    preview_digest: str
+    explicit_confirmation: bool = False
+
+
+class AcExtensionApplyResultDTO(ApiModel):
+    audit_id: str
+    status: str
+    preview_id: str
+    total_rows: int = 0
+    success_rows: int = 0
+    updated_rows: int = 0
+    skipped_rows: int = 0
+    error_rows: int = 0
+
+
+class AcExtensionRollbackRequestDTO(ApiModel):
+    explicit_confirmation: bool = False
+
+
+class AcExtensionRollbackResultDTO(ApiModel):
+    audit_id: str
+    status: str
+    restored_rows: int = 0
+
+
+class AcRefreshRequestDTO(ApiModel):
+    ac_id: str = ""
+    source: str = "auto"
+    refresh_scope: str = "all"
+
+
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
@@ -177,4 +293,18 @@ __all__ = [
     "AcOpticalDTO",
     "AcOverviewDTO",
     "AcRadioDTO",
+    "AcActionConfirmRequestDTO",
+    "AcActionPlanCreateRequestDTO",
+    "AcActionPlanDTO",
+    "AcExtensionApplyRequestDTO",
+    "AcExtensionApplyResultDTO",
+    "AcExtensionDTO",
+    "AcExtensionPageDTO",
+    "AcExtensionPreviewDTO",
+    "AcExtensionRollbackRequestDTO",
+    "AcExtensionRollbackResultDTO",
+    "AcRefreshRequestDTO",
+    "AcTracksidePlanDTO",
+    "AcTracksidePlanPageDTO",
+    "AcWebTaskDTO",
 ]
