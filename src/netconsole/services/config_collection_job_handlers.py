@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from queue import Empty, Queue
+import re
 import subprocess
 import sys
 from threading import Thread
@@ -24,6 +25,94 @@ CONFIG_WEB_SAVE_TASK = "config_web_save_force"
 CONFIG_WEB_EXPORT_DIFF_TASK = "config_web_export_diff"
 CONFIG_WEB_EXPORT_SNAPSHOTS_TASK = "config_web_export_snapshots"
 CONFIG_WEB_EXPORT_TASKS = frozenset({CONFIG_WEB_EXPORT_DIFF_TASK, CONFIG_WEB_EXPORT_SNAPSHOTS_TASK})
+_IRREVERSIBLE_CHECKPOINT_VERSION = 1
+_CONFIG_WEB_TASK_ID_RE = re.compile(r"^config-web-[0-9a-f]{32}$")
+
+
+def irreversible_checkpoint_path(paths, task_id: str) -> Path:
+    if _CONFIG_WEB_TASK_ID_RE.fullmatch(str(task_id or "")) is None:
+        raise ValueError("配置任务标识无效")
+    root = (paths.runtime_cache_dir / "config_irreversible").resolve()
+    path = (root / f"{task_id}.json").resolve()
+    if root not in path.parents:
+        raise ValueError("配置检查点路径无效")
+    return path
+
+
+def write_irreversible_checkpoint(context: JobContext, payload: dict[str, object]) -> None:
+    path = irreversible_checkpoint_path(context.paths, context.job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "version": _IRREVERSIBLE_CHECKPOINT_VERSION,
+        "task_id": context.job_id,
+        "task_type": context.task_type,
+        "site_name": str(context.params.get("site_name") or ""),
+        **payload,
+    }
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_irreversible_checkpoint(paths, task_id: str) -> dict[str, object] | None:
+    path = irreversible_checkpoint_path(paths, task_id)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != _IRREVERSIBLE_CHECKPOINT_VERSION
+        or value.get("task_id") != task_id
+    ):
+        return None
+    return value
+
+
+def remove_irreversible_checkpoint(paths, task_id: str) -> None:
+    try:
+        irreversible_checkpoint_path(paths, task_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def interrupted_irreversible_result(checkpoint: dict[str, object]) -> dict[str, object]:
+    operation = str(checkpoint.get("operation") or "")
+    completed_items = [dict(item) for item in checkpoint.get("completed_items") or [] if isinstance(item, dict)]
+    failed_items = [dict(item) for item in checkpoint.get("failed_items") or [] if isinstance(item, dict)]
+    current_item = checkpoint.get("current_item")
+    pending_items = list(checkpoint.get("pending_items") or [])
+    unknown_items = [current_item] if current_item not in (None, "", {}) else []
+    result: dict[str, object] = {
+        "total": int(checkpoint.get("total") or 0),
+        "failed": len(failed_items),
+        "failed_items": failed_items,
+        "unknown_items": unknown_items,
+        "not_started_items": pending_items,
+        "interrupted": str(checkpoint.get("status") or "running") != "completed",
+        "partial_success": True,
+        "cancel_policy": "before_batch_only",
+    }
+    if operation == "save_force":
+        result.update(
+            saved=len(completed_items),
+            snapshot_ids=[
+                int(snapshot_id)
+                for item in completed_items
+                for snapshot_id in item.get("snapshot_ids") or []
+            ],
+        )
+    elif operation == "delete_snapshots":
+        result.update(
+            deleted=len(completed_items),
+            deleted_snapshot_ids=[int(item["snapshot_id"]) for item in completed_items],
+        )
+    else:
+        raise ValueError("配置检查点操作无效")
+    return result
 
 
 def config_web_save_force(context: JobContext) -> dict[str, object]:
@@ -35,23 +124,60 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
     service = ConfigLifecycleService(str(context.params.get("site_name") or ""), database, context.paths)
     saved_snapshot_ids: list[int] = []
     failed_items: list[dict[str, str]] = []
+    completed_items: list[dict[str, object]] = []
     total = len(device_uuids)
     context.check_cancelled()
+    write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "save_force",
+            "status": "running",
+            "total": total,
+            "completed_items": completed_items,
+            "failed_items": failed_items,
+            "current_item": None,
+            "pending_items": device_uuids,
+        },
+    )
     for index, device_uuid in enumerate(device_uuids, start=1):
         context.progress("config_save_force_irreversible", index - 1, total, f"正在保存设备配置 {index}/{total}")
+        write_irreversible_checkpoint(
+            context,
+            {
+                "operation": "save_force",
+                "status": "running",
+                "total": total,
+                "completed_items": completed_items,
+                "failed_items": failed_items,
+                "current_item": {"device_uuid": device_uuid},
+                "pending_items": device_uuids[index:],
+            },
+        )
         device = devices.get_by_uuid(device_uuid)
         if device is None or str(device.device_vendor or "").upper() != "H3C":
             failed_items.append({"device_uuid": device_uuid, "error": "H3C 设备不存在"})
-            continue
-        result = service.save_force(device)
-        if result.success:
-            saved_snapshot_ids.extend(int(item.id) for item in result.snapshots if item.id is not None)
         else:
-            failed_items.append({"device_uuid": device_uuid, "error": str(result.error_message or "保存配置失败")})
+            item_result = service.save_force(device)
+            if item_result.success:
+                item_snapshot_ids = [int(item.id) for item in item_result.snapshots if item.id is not None]
+                saved_snapshot_ids.extend(item_snapshot_ids)
+                completed_items.append({"device_uuid": device_uuid, "snapshot_ids": item_snapshot_ids})
+            else:
+                failed_items.append({"device_uuid": device_uuid, "error": str(item_result.error_message or "保存配置失败")})
+        write_irreversible_checkpoint(
+            context,
+            {
+                "operation": "save_force",
+                "status": "running",
+                "total": total,
+                "completed_items": completed_items,
+                "failed_items": failed_items,
+                "current_item": None,
+                "pending_items": device_uuids[index:],
+            },
+        )
     context.progress("config_save_force", total, total, "设备配置保存完成")
-    if failed_items and not saved_snapshot_ids:
-        raise RuntimeError(f"保存配置失败：{failed_items[0]['error']}")
-    return {
+    result = {
         "total": total,
         "saved": total - len(failed_items),
         "failed": len(failed_items),
@@ -60,6 +186,22 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         "partial_success": bool(failed_items),
         "cancel_policy": "before_batch_only",
     }
+    write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "save_force",
+            "status": "completed",
+            "total": total,
+            "completed_items": completed_items,
+            "failed_items": failed_items,
+            "current_item": None,
+            "pending_items": [],
+            "result": result,
+        },
+    )
+    if failed_items and not saved_snapshot_ids:
+        raise RuntimeError(f"保存配置失败：{failed_items[0]['error']}")
+    return result
 
 
 def config_web_export_diff(context: JobContext) -> dict[str, object]:

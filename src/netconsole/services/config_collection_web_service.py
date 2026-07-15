@@ -39,6 +39,9 @@ from netconsole.services.config_collection_job_handlers import (
     CONFIG_WEB_EXPORT_SNAPSHOTS_TASK,
     CONFIG_WEB_EXPORT_TASKS,
     CONFIG_WEB_SAVE_TASK,
+    interrupted_irreversible_result,
+    read_irreversible_checkpoint,
+    remove_irreversible_checkpoint,
 )
 from netconsole.services.config_lifecycle_service import safe_device_name
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
@@ -337,12 +340,16 @@ class ConfigCollectionApplicationService:
 
     def list_tasks(self, site_name: str, limit: int = 100) -> list[ConfigTaskStatusDTO]:
         selected_limit = max(1, min(int(limit), 200))
-        return [self._task_dto(snapshot, site_name=site_name) for snapshot in self._scan_tasks(site_name, selected_limit)]
+        return [
+            self._task_dto(self._recover_irreversible_snapshot(site_name, snapshot), site_name=site_name)
+            for snapshot in self._scan_tasks(site_name, selected_limit)
+        ]
 
     def get_task(self, site_name: str, task_id: str, diff_filter: str = "all") -> ConfigTaskStatusDTO | None:
         snapshot = self.task_service.repository(site_name).get(str(task_id))
         if not self._is_web_task(snapshot, site_name):
             return None
+        snapshot = self._recover_irreversible_snapshot(site_name, snapshot)
         return self._task_dto(snapshot, diff_filter=diff_filter, site_name=site_name)
 
     def open_artifact(self, site_name: str, artifact_id: str) -> tuple[Path, str]:
@@ -434,11 +441,56 @@ class ConfigCollectionApplicationService:
                 }
             )
         job = BackgroundJob(job_id=task_id, task_type=task_type, params=params)
-        self.process_adapter.start_job(job)
+        on_complete = None
+        if task_type in IRREVERSIBLE_CONFIG_TASK_TYPES:
+            def on_complete(_completion) -> None:
+                self._finalize_irreversible_task(site_name, task_id)
+
+        self.process_adapter.start_job(job, on_complete=on_complete)
         snapshot = self.task_service.repository(site_name).get(task_id)
         if snapshot is None:
             raise RuntimeError("配置任务创建后未写入任务中心")
         return self._task_dto(snapshot, site_name=site_name)
+
+    def _finalize_irreversible_task(self, site_name: str, task_id: str) -> None:
+        checkpoint = read_irreversible_checkpoint(self.paths, task_id)
+        if checkpoint is None:
+            return
+        snapshot = self.task_service.repository(site_name).get(task_id)
+        if not self._is_web_task(snapshot, site_name) or snapshot.task_type not in IRREVERSIBLE_CONFIG_TASK_TYPES:
+            return
+        if checkpoint.get("site_name") != site_name or checkpoint.get("task_type") != snapshot.task_type:
+            return
+        if snapshot.status is TaskState.COMPLETED:
+            remove_irreversible_checkpoint(self.paths, task_id)
+            return
+        checkpoint_status = str(checkpoint.get("status") or "running")
+        if snapshot.status is TaskState.CANCELLED or checkpoint_status == "running":
+            result = (
+                dict(checkpoint.get("result") or {})
+                if checkpoint_status == "completed"
+                else interrupted_irreversible_result(checkpoint)
+            )
+            self.task_service.record_external_event(
+                task_id,
+                "finished",
+                {
+                    "message": "不可逆批次被宿主中断，已保留结构化执行结果",
+                    "result": result,
+                },
+                source="local",
+                site_name=site_name,
+            )
+        remove_irreversible_checkpoint(self.paths, task_id)
+
+    def _recover_irreversible_snapshot(self, site_name: str, snapshot: TaskSnapshot) -> TaskSnapshot:
+        if (
+            snapshot.task_type in IRREVERSIBLE_CONFIG_TASK_TYPES
+            and snapshot.status in TERMINAL_TASK_STATES
+        ):
+            self._finalize_irreversible_task(site_name, snapshot.task_id)
+            return self.task_service.repository(site_name).get(snapshot.task_id) or snapshot
+        return snapshot
 
     def _issue_confirmation(
         self,

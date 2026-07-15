@@ -14,17 +14,80 @@ config_snapshot_pair_load_content = legacy_handler(legacy_tasks._config_snapshot
 
 def config_snapshot_delete_many(context):
     context.check_cancelled()
-    result = legacy_tasks._config_snapshot_delete_many(
-        context.params,
-        context.progress_callback,
-        None,
+    repository, service = legacy_tasks._config_snapshot_service(context.params)
+    snapshot_ids = [int(value) for value in context.params.get("snapshot_ids") or [] if int(value or 0) > 0]
+    total = len(snapshot_ids)
+    completed_items = []
+    failed_items = []
+    config_collection_job_handlers.write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "delete_snapshots",
+            "status": "running",
+            "total": total,
+            "completed_items": completed_items,
+            "failed_items": failed_items,
+            "current_item": None,
+            "pending_items": snapshot_ids,
+        },
     )
-    failed_items = list(result.get("failed_items") or [])
-    if failed_items and int(result.get("deleted") or 0) == 0:
+    for index, snapshot_id in enumerate(snapshot_ids, start=1):
+        context.progress("config_snapshot_delete_irreversible", index - 1, max(total, 1), f"正在删除配置快照 {index}/{total}")
+        config_collection_job_handlers.write_irreversible_checkpoint(
+            context,
+            {
+                "operation": "delete_snapshots",
+                "status": "running",
+                "total": total,
+                "completed_items": completed_items,
+                "failed_items": failed_items,
+                "current_item": {"snapshot_id": snapshot_id},
+                "pending_items": snapshot_ids[index:],
+            },
+        )
+        try:
+            service.delete_snapshot(repository.get(snapshot_id))
+            completed_items.append({"snapshot_id": snapshot_id})
+        except Exception as exc:
+            failed_items.append({"snapshot_id": snapshot_id, "error": str(exc)})
+        config_collection_job_handlers.write_irreversible_checkpoint(
+            context,
+            {
+                "operation": "delete_snapshots",
+                "status": "running",
+                "total": total,
+                "completed_items": completed_items,
+                "failed_items": failed_items,
+                "current_item": None,
+                "pending_items": snapshot_ids[index:],
+            },
+        )
+    context.progress("config_snapshot_delete_many", max(total, 1), max(total, 1), "配置快照删除完成")
+    result = {
+        "total": total,
+        "deleted": len(completed_items),
+        "failed": len(failed_items),
+        "failed_items": failed_items,
+        "deleted_snapshot_ids": [int(item["snapshot_id"]) for item in completed_items],
+        "partial_success": bool(failed_items),
+        "cancel_policy": "before_batch_only",
+    }
+    config_collection_job_handlers.write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "delete_snapshots",
+            "status": "completed",
+            "total": total,
+            "completed_items": completed_items,
+            "failed_items": failed_items,
+            "current_item": None,
+            "pending_items": [],
+            "result": result,
+        },
+    )
+    if failed_items and len(completed_items) == 0:
         details = "；".join(f"{item['snapshot_id']}: {item['error']}" for item in failed_items)
         raise RuntimeError(f"配置快照删除全部失败：{details}")
-    result["partial_success"] = bool(failed_items)
-    result["cancel_policy"] = "before_batch_only"
     return result
 
 

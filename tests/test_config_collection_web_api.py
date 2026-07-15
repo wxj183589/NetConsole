@@ -32,6 +32,7 @@ from netconsole.services.job_center.job_context import BackgroundTaskCancelled, 
 from netconsole.services.job_center.job_events import cancelled_event, error_event, finished_event, progress_event
 from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
+from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.worker_protocol import encode_event
 
@@ -73,7 +74,7 @@ class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
         super().__init__(task_service)
         self.cancel_next = False
 
-    def start_job(self, job: JobSpec, **_kwargs) -> str:
+    def start_job(self, job: JobSpec, **kwargs) -> str:
         self.jobs.append(job)
         launch = self.task_service.prepare(job)
         self.task_service.mark_running(job.job_id)
@@ -90,6 +91,18 @@ class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
             self._event(job.job_id, error_event(job.job_id, str(exc)))
             exit_code = 1
         self.task_service.complete(launch.job.job_id, exit_code)
+        callback = kwargs.get("on_complete")
+        if callable(callback):
+            callback(
+                LocalProcessCompletion(
+                    job_id=job.job_id,
+                    task_type=job.task_type,
+                    exit_code=exit_code,
+                    payload=None,
+                    cancelled=exit_code == 2,
+                    forced=False,
+                )
+            )
         self.cancel_next = False
         return launch.job.job_id
 
@@ -796,6 +809,73 @@ def test_config_running_irreversible_task_rejects_cancel(tmp_path: Path) -> None
 
     status = service.get_task("demo", task.id)
     assert status is not None and status.status == TaskState.RUNNING.value
+
+
+def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_partial(tmp_path: Path) -> None:
+    _app, paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    task_id = "config-web-" + "a" * 32
+    job = JobSpec(
+        job_id=task_id,
+        task_type="config_snapshot_delete_many",
+        params={
+            "site_name": "demo",
+            "owner": "web_config_collection",
+            "task_source": "local",
+            "task_name": "删除配置快照",
+        },
+    )
+    launch = task_service.prepare(job)
+    task_service.mark_running(task_id)
+    context = JobContext.from_job(
+        JobSpec(
+            job_id=task_id,
+            task_type=job.task_type,
+            params={
+                **job.params,
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+            },
+        )
+    )
+    config_collection_job_handlers.write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "delete_snapshots",
+            "status": "running",
+            "total": 3,
+            "completed_items": [{"snapshot_id": 11}],
+            "failed_items": [],
+            "current_item": {"snapshot_id": 12},
+            "pending_items": [13],
+        },
+    )
+    task_service.request_cancel(task_id)
+    task_service.record_external_event(
+        task_id,
+        "cancelled",
+        {"message": "宿主已终止 Worker"},
+        source="local",
+        site_name="demo",
+    )
+
+    refreshed = ConfigCollectionApplicationService(paths, task_service, _FakeProcessAdapter(task_service))
+    recovered = refreshed.get_task("demo", task_id)
+
+    assert recovered is not None and recovered.status == TaskState.COMPLETED.value
+    assert recovered.result == {
+        "total": 3,
+        "failed": 0,
+        "failed_items": [],
+        "unknown_items": [{"snapshot_id": 12}],
+        "not_started_items": [13],
+        "interrupted": True,
+        "partial_success": True,
+        "cancel_policy": "before_batch_only",
+        "deleted": 1,
+        "deleted_snapshot_ids": [11],
+    }
+    assert config_collection_job_handlers.read_irreversible_checkpoint(paths, launch.job.job_id) is None
 
 
 def test_config_export_forwards_progress_before_worker_finishes(
