@@ -76,3 +76,18 @@ export interface AcActionPlan {
   command_summary: string[]
   task_id: string
 }
+
+export interface AcActionAudit {
+  plan_id: string
+  target_id: string
+  action_id: string
+  commands: string[]
+  plan_digest: string
+  status: string
+  task_id: string
+  task_status: string
+  result_summary: Record<string, unknown>
+  executor: string
+  real_device_task: boolean
+  audit: boolean
+}

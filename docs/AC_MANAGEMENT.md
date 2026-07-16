@@ -23,7 +23,8 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，前端列显隐、手工列宽及横向滚动；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
-- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源和所选 AP 深度 BSSID；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；
+- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；
+- 真实 AC 写操作：仅迁移 Qt 当前“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 默认关闭，启用后必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 在线监控：车载 MR 状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、AP 在线与光衰关联、最近快照和切换事件；可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
@@ -91,9 +92,9 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ## 尚未完成的 Qt 对等能力
 
-- FIT-AP 光衰刷新在主页面的完整任务入口与状态交付；
-- 固化新上线 AP、开启 AP 远程登录和批量命令；
-- `save force`、配置采集任务和其他设备写操作；
+- Qt AC 资源页的批量删除、AP 信息导出和 OmniPeek 名称表导出；
+- AP 扩展信息与轨旁规划的全部 Qt 导入、导出和编辑入口；
+- 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - 导出及现有 Qt AC 工作流。
 
 上述能力和真实设备验收完成前不替换 Qt AC 页面。

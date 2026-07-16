@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { AcActionPlan, AcExtensionPage, AcExtensionPreview, AcTracksidePlanPage, AcWebTask } from '../types/acWebParity'
+import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcTracksidePlanPage, AcWebTask } from '../types/acWebParity'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
@@ -48,7 +48,7 @@ export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'tracksi
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
-export function startAcResourceRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail', acId: string, apId = ''): Promise<AcWebTask> {
+export function startAcResourceRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail' | 'optical', acId: string, apId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/refresh/${kind}`, {
     method: 'POST',
     body: JSON.stringify({ ac_id: acId, ap_id: apId }),
@@ -89,4 +89,12 @@ export function confirmAcActionPlan(plan: AcActionPlan): Promise<AcActionPlan> {
 
 export function executeAcActionPlan(planId: string): Promise<AcActionPlan> {
   return apiRequest<AcActionPlan>(`${root}/actions/plans/${encodeURIComponent(planId)}/execute`, { method: 'POST' })
+}
+
+export function getAcActionPlan(planId: string): Promise<AcActionPlan> {
+  return apiRequest<AcActionPlan>(`${root}/actions/plans/${encodeURIComponent(planId)}`)
+}
+
+export function getAcActionAudit(planId: string): Promise<AcActionAudit> {
+  return apiRequest<AcActionAudit>(`${root}/actions/plans/${encodeURIComponent(planId)}/audit`)
 }

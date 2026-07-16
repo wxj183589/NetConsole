@@ -67,7 +67,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 模块 | UI 对等 | 功能对等 | 导入/导出 | 实时任务、停止与恢复 | 自动测试证据 | 人工验收 | 真实设备验收 | 当前缺口 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 设备管理 | Qt 操作区、表格、表单、详情、分组、导入导出、终端和紧凑任务摘要已形成 Electron 实现 | 真实 CRUD/分组、已保存设备与未保存表单连接测试、采集、诊断、终端受控启动 | CSV 重复策略与确认；诊断 ZIP；CSV/模板/SecureCRT/OmniPeek 实际 Artifact；公共 capability DTO | 公共 Task 持久化与轮询；统一任务窗口负责停止、日志、Artifact、重试和恢复；页面不再私建任务系统 | `tests/test_device_management_web_api.py`、`tests/test_device_import_export.py`、`tests/test_local_process_adapter.py`、`tests/test_job_center_web_api.py`、`DeviceManagementView.mount.test.ts` | CRUD、导入导出、任务窗口及 SecureCRT/Xshell/PuTTY 为 `MANUAL_DESKTOP_PENDING` | SSH/Telnet/SNMP、采集、光模块和诊断待真实设备 | `IMPLEMENTED_UNVERIFIED`；人工软件流程通过后再按剩余项升级为 `REAL_DEVICE_PENDING` |
-| AC 管理 | FIT-AP 主页面已接 AC 信息、普通资源和 AP 详情深度更新，其他子页部分 | AC 信息、FIT-AP 普通更新、单 AP 深度更新为真实任务；动作仍待迁移 | 部分 | 三类更新均接进度、取消、失败、部分失败和重启恢复 | AC parser/repository/job/API/Vue 定向测试 | `NOT_STARTED` | `REAL_DEVICE_PENDING` | 光衰主入口、真实写操作、其余 Qt 子页和现场验收 |
+| AC 管理 | FIT-AP 主页面已接 AC 信息、普通资源、AP 详情深度和光衰更新；受控页已接 Qt 两项 AC 写操作 | 四类采集与两项固定写操作均为真实任务，无 AC Fake 执行 | 部分 | 进度、取消、失败、部分失败、重启恢复和动作审计已接入 | AC parser/repository/job/API/Vue 定向测试 | `NOT_STARTED` | `REAL_DEVICE_PENDING` | 批量删除、AP/OmniPeek 导出、扩展/规划完整编辑导入导出、其余 Qt 子页和现场验收 |
 | 轨道交通 | 部分 | 只读/部分/Fake 混合 | 部分 | 部分 | 现有 Rail/Online MR/Mesh 定向测试 | `NOT_STARTED` | 列车下电期间冻结 | 不得以聚合看板代替 Qt 业务页 |
 | 配置采集中心 | 部分 | 部分真实 | 已有 | 已有部分 | 现有 Config 定向测试 | `NOT_STARTED` | 待真实设备 | Qt 全操作、错误和恢复对照 |
 | 文件管理 | 部分 | 部分真实 | 受控下载已有 | 部分 | 现有 File 定向测试 | `NOT_STARTED` | 待 SFTP 设备 | 双窗格、传输队列和异常恢复 |

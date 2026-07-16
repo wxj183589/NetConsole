@@ -8,7 +8,7 @@ import type { AcAp, AcConfigSnapshot } from '../../types/acManagement'
 
 const store = useAcManagementStore()
 const route = useRoute()
-const activeTab = ref('aps')
+const activeTab = ref(route.name === 'ac-optical' ? 'optical' : 'aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
 const configSearch = ref('')
@@ -53,6 +53,7 @@ const taskLabel = computed(() => ({
   ac_info_refresh: 'AC 信息更新',
   ac_fit_ap_resources_refresh: 'FIT-AP 资源更新',
   ac_fit_ap_detail_refresh: 'FIT-AP 深度更新',
+  ac_fit_ap_optical_refresh: 'FIT-AP 光衰更新',
 }[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
@@ -202,6 +203,7 @@ function diffLineClass(line: string): string {
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
+        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
       </div>
     </div>
 
@@ -220,6 +222,9 @@ function diffLineClass(line: string): string {
       </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_detail_refresh'" class="task-result">
         已深度更新选中 AP，BSSID {{ taskCollection.bbssid_rows_parsed || 0 }} 条，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条。
+      </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_optical_refresh'" class="task-result">
+        已更新 {{ taskCollection.optical_rows_updated || 0 }} 条光衰记录，失败 {{ taskCollection.failed_aps || 0 }} 个 AP。
       </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
         已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
@@ -343,6 +348,29 @@ function diffLineClass(line: string): string {
             <span>共 {{ store.snapshotTotal }} 条</span>
             <el-pagination :current-page="store.snapshotPage" :page-size="store.snapshotPageSize" layout="prev, pager, next" :total="store.snapshotTotal" @current-change="store.setSnapshotPage" />
           </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="FIT-AP 光衰" name="optical">
+          <div class="config-toolbar">
+            <div><h3>FIT-AP 光衰</h3><p>显示 AC 关联的 AP 侧光模块结果；刷新通过持久化后台任务执行。</p></div>
+            <div class="toolbar-actions">
+              <el-select v-model="store.filters.optical_status" clearable placeholder="光衰状态" style="width: 155px" @change="store.applyFilters">
+                <el-option label="正常" value="normal" /><el-option label="告警" value="warning" /><el-option label="严重" value="critical" />
+                <el-option label="无数据" value="no_data" /><el-option label="未关联 AP 离线" value="unrelated" />
+              </el-select>
+              <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
+            </div>
+          </div>
+          <el-table :data="store.aps" stripe height="calc(100vh - 405px)" empty-text="暂无 FIT-AP 光衰数据">
+            <el-table-column prop="name" label="AP 名称" min-width="190" />
+            <el-table-column prop="status" label="AP 状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+            <el-table-column prop="switch_name" label="关联交换机" min-width="160" />
+            <el-table-column prop="switch_interface" label="关联端口" min-width="170" />
+            <el-table-column prop="optical_rx_power" label="Rx Power" width="120"><template #default="{ row }">{{ display(row.optical_rx_power) }}</template></el-table-column>
+            <el-table-column prop="optical_status" label="光衰状态" width="130"><template #default="{ row }"><el-tag :type="statusType(row.optical_status)">{{ opticalLabel(row.optical_status) }}</el-tag></template></el-table-column>
+            <el-table-column prop="updated_at" label="更新时间" min-width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
+            <el-table-column label="操作" width="82" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template></el-table-column>
+          </el-table>
         </el-tab-pane>
       </el-tabs>
     </div>

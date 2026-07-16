@@ -175,15 +175,18 @@ def test_extension_import_is_durable_idempotent_atomic_and_conflict_aware(tmp_pa
     assert exc_info.value.code == "BASE_DATA_ROLLBACK_CONFLICT"
 
 
-def test_action_plan_persists_revalidates_site_and_target_and_records_fake_task(tmp_path: Path) -> None:
+def test_action_plan_persists_revalidates_target_and_starts_real_fixed_command_task(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     service, _normal, _export, tasks = _service(paths)
-    plan = service.create_action_plan("demo", "ac-1", "save_config")
-    assert plan.command_summary == ["save force"]
+    plan = service.create_action_plan("demo", "ac-1", "persist_auto_ap")
+    assert plan.command_summary == ["system-view", "wlan auto-ap persistent all", "save force", "return", "quit"]
+    with pytest.raises(AcWebActionError) as unsupported:
+        service.create_action_plan("demo", "ac-1", "save_config")
+    assert unsupported.value.code == "ACTION_NOT_ALLOWED"
 
-    restarted, _normal2, _export2, _tasks2 = _service(paths, tasks)
+    restarted, normal, _export2, _tasks2 = _service(paths, tasks)
     with pytest.raises(AcWebActionError) as altered_request:
         restarted.confirm_action_plan("demo", plan.plan_id, "0" * 64, plan.confirm_token)
     assert altered_request.value.code == "PLAN_TAMPERED"
@@ -200,21 +203,45 @@ def test_action_plan_persists_revalidates_site_and_target_and_records_fake_task(
         restarted.execute_action_plan("demo", plan.plan_id)
     assert stale.value.code == "TARGET_STALE"
 
-    valid = restarted.create_action_plan("demo", "ac-1", "save_config")
+    valid = restarted.create_action_plan("demo", "ac-1", "enable_ap_remote_login")
     restarted.confirm_action_plan("demo", valid.plan_id, valid.plan_digest, valid.confirm_token)
     executed = restarted.execute_action_plan("demo", valid.plan_id)
+    job = normal.jobs[executed.task_id]
     snapshot = tasks.repository("demo").get(executed.task_id)
-    assert executed.status == "FAKE_COMPLETED"
-    assert snapshot is not None and snapshot.source == "fake"
-    assert snapshot.result["real_device_called"] is False
+    assert executed.status == "EXECUTING"
+    assert job.task_type == "ac_command_action_execute"
+    assert job.params["action"] == "enable_ap_remote_login"
+    assert job.params["command_sequence"] == list(executed.command_summary)
+    assert snapshot is not None and snapshot.source == "local" and snapshot.owner == "web_ac"
+    normal.complete(
+        executed.task_id,
+        {
+            "success": True,
+            "action": "enable_ap_remote_login",
+            "commands": list(executed.command_summary),
+            "command_results": [{"command": command, "success": True} for command in executed.command_summary],
+            "collect_run_uuid": "run-action-1",
+        },
+    )
+    assert restarted.preview_action_plan("demo", valid.plan_id).status == "COMPLETED"
+    audit = restarted.action_audit("demo", valid.plan_id)
+    assert audit["executor"] == "LOCAL"
+    assert audit["real_device_task"] is True
+    assert audit["result_summary"]["success"] is True
     with pytest.raises(AcWebActionError):
         restarted.execute_action_plan("demo", valid.plan_id)
+
+    cancel_plan = restarted.create_action_plan("demo", "ac-1", "persist_auto_ap")
+    restarted.confirm_action_plan("demo", cancel_plan.plan_id, cancel_plan.plan_digest, cancel_plan.confirm_token)
+    cancelling = restarted.execute_action_plan("demo", cancel_plan.plan_id)
+    restarted.cancel_task("demo", cancelling.task_id)
+    assert restarted.preview_action_plan("demo", cancel_plan.plan_id).status == "CANCELLED"
     SiteManager(paths).init_site_database("other")
     with pytest.raises(AcWebActionError) as crossed:
         restarted.preview_action_plan("other", valid.plan_id)
     assert crossed.value.code == "PLAN_SITE_MISMATCH"
 
-    tampered = restarted.create_action_plan("demo", "ac-1", "save_config")
+    tampered = restarted.create_action_plan("demo", "ac-1", "persist_auto_ap")
     tampered_path = restarted._plan_path(tampered.plan_id)
     tampered_payload = json.loads(tampered_path.read_text(encoding="utf-8"))
     tampered_payload["commands"] = ["display current-configuration"]
@@ -225,7 +252,7 @@ def test_action_plan_persists_revalidates_site_and_target_and_records_fake_task(
         )
     assert altered_plan.value.code == "PLAN_TAMPERED"
 
-    expired = restarted.create_action_plan("demo", "ac-1", "save_config")
+    expired = restarted.create_action_plan("demo", "ac-1", "persist_auto_ap")
     expired_path = restarted._plan_path(expired.plan_id)
     expired_payload = json.loads(expired_path.read_text(encoding="utf-8"))
     expired_payload["expires_at"] = 0
@@ -309,6 +336,13 @@ def test_fit_ap_refresh_starts_real_collect_job_with_fixed_parameters(tmp_path: 
     detail_job = normal.jobs[detail_started.task_id]
     assert detail_job.task_type == "ac_fit_ap_detail_refresh"
     assert detail_job.params["ap_uuid"] == "ap-online"
+
+    optical_started = service.start_refresh("demo", "optical", ac_id="ac-1")
+    optical_job = normal.jobs[optical_started.task_id]
+    assert optical_job.task_type == "ac_fit_ap_optical_refresh"
+    assert optical_job.params["mode"] == "collect"
+    assert optical_job.params["source"] == "auto"
+    assert optical_job.params["refresh_scope"] == "all"
 
     with pytest.raises(AcWebActionError) as wrong_ap:
         service.start_refresh("demo", "ap-detail", ac_id="ac-1", ap_id="missing-ap")
@@ -445,7 +479,7 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
     with client:
         client.app.state.feature_gate.features["web.ac_dangerous_actions"].update(visible=False, enabled=False, client_package=False)
         blocked_action = client.post(
-            "/api/ac-management/actions/plans", json={"target_id": "ac-1", "action_id": "save_config"}
+            "/api/ac-management/actions/plans", json={"target_id": "ac-1", "action_id": "persist_auto_ap"}
         )
         client.app.state.feature_gate.features["web.ac_extensions_preview"].update(visible=False, enabled=False, client_package=False)
         blocked_preview = client.post(

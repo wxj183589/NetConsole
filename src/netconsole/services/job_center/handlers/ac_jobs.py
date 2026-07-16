@@ -346,7 +346,11 @@ def ac_command_action_execute(context: JobContext) -> dict[str, object]:
         raise BackgroundTaskCancelled(str(exc)) from exc
     if not result.success:
         raise RuntimeError(result.error_message or "AC 命令动作执行失败")
-    return result.to_payload()
+    return {
+        **result.to_payload(),
+        "plan_id": str(params.get("plan_id") or ""),
+        "plan_digest": str(params.get("plan_digest") or ""),
+    }
 
 
 def ac_mesh_link_refresh(context: JobContext) -> dict[str, object]:

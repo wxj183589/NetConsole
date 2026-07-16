@@ -22,7 +22,7 @@ import type { AcWebTask } from '../types/acWebParity'
 
 const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh'])
+const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh'])
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
@@ -190,7 +190,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     await Promise.all([refreshAps(), refreshSnapshots(), refreshSelected()])
   }
 
-  async function startRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail', apId = ''): Promise<void> {
+  async function startRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail' | 'optical', apId = ''): Promise<void> {
     if (!filters.ac_id || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
     error.value = ''
@@ -208,6 +208,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   const startAcInfoRefresh = () => startRefresh('ac')
   const startFitApRefresh = () => startRefresh('fit-ap')
   const startFitApDetailRefresh = () => selected.value ? startRefresh('ap-detail', selected.value.ap.id) : Promise.resolve()
+  const startOpticalRefresh = () => startRefresh('optical')
 
   async function cancelRefreshTask(): Promise<void> {
     if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
@@ -374,6 +375,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     startAcInfoRefresh,
     startFitApRefresh,
     startFitApDetailRefresh,
+    startOpticalRefresh,
     cancelRefreshTask,
     recoverRefreshTask,
     setAcId,

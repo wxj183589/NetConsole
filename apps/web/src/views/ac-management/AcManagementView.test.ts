@@ -7,6 +7,7 @@ describe('AC Management resource view', () => {
     expect(source).toContain('更新 FIT-AP 资源')
     expect(source).toContain('更新 AC 信息')
     expect(source).toContain('深度更新')
+    expect(source).toContain('更新光衰')
     expect(source).toContain('取消任务')
     expect(source).toContain('FIT-AP 资源')
     expect(source).toContain('AC 连接记录')

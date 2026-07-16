@@ -43,7 +43,6 @@ from netconsole.services.rail_transit.import_preview_service import RailTransitI
 
 ACTION_DEFINITIONS = {
     "persist_auto_ap": ("固化新 AP", ("system-view", "wlan auto-ap persistent all", "save force", "return", "quit")),
-    "save_config": ("save force", ("save force",)),
     "enable_ap_remote_login": ("开启 AP 远程登录", ("screen-length disable", "system-view", "probe", "wlan ap-execute all exec-console enable", "return", "quit")),
 }
 _PLAN_ID = re.compile(r"^ac-plan-[0-9a-f]{32}$")
@@ -71,10 +70,12 @@ class AcWebApplicationService:
         "ac": ("ac_info_refresh", "更新 AC 信息"),
         "fit-ap": ("ac_fit_ap_resources_refresh", "更新 FIT-AP 资源"),
         "ap-detail": ("ac_fit_ap_detail_refresh", "深度更新 FIT-AP"),
+        "optical": ("ac_fit_ap_optical_refresh", "更新 FIT-AP 光衰"),
     }
     _TASK_ACTIONS = {
         **{task_type: task_type for task_type in _LOCAL_REBUILD_TASKS},
         **{task_type: task_type for task_type, _task_name in _REFRESH_TASKS.values()},
+        "ac_command_action_execute": "ac_command_action_execute",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -199,6 +200,8 @@ class AcWebApplicationService:
         }
         if ap_uuid:
             params["ap_uuid"] = ap_uuid
+        if refresh_kind == "optical":
+            params.update(source="auto", refresh_scope="all")
         self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
         return self._task_dto(site_id, task_id)
 
@@ -270,6 +273,7 @@ class AcWebApplicationService:
             if float(plan["expires_at"]) <= time.time() and plan["status"] == "PREVIEW":
                 plan["status"] = "EXPIRED"
                 self._save_plan(plan)
+            self._refresh_plan_status(site_id, plan)
             return self._plan_dto(plan)
 
     def confirm_action_plan(self, site_id: str, plan_id: str, plan_digest: str, confirm_token: str) -> AcActionPlanDTO:
@@ -294,67 +298,60 @@ class AcWebApplicationService:
                 raise AcWebActionError("CONFIRMATION_REQUIRED", "执行前必须完成二次确认")
             self._validate_plan(plan, str(plan["digest"]), str(plan["token"]))
             self._revalidate_target(plan)
-            plan["status"] = "FAKE_EXECUTING"
-            self._save_plan(plan)
-            label, _commands = self._action(str(plan["action_id"]))
-            task_id = f"ac-web-fake-action-{uuid4().hex}"
-            try:
-                self.task_service.create_external_task(
-                    task_id=task_id,
-                    task_type="ac_web_fake_action",
-                    task_name=f"Fake AC 动作 · {label}",
-                    source="fake",
-                    site_name=site_id,
-                    owner="web_ac_action",
-                    device=str(plan["target_id"]),
-                )
-                self.task_service.record_external_event(
-                    task_id,
-                    "state",
-                    {"state": "RUNNING", "stage": "fake_executor", "message": "Fake Executor 已接收固定 AC 动作"},
-                    source="fake",
-                    site_name=site_id,
-                )
-                self.task_service.record_external_event(
-                    task_id,
-                    "finished",
-                    {
-                        "message": "Fake AC 动作结束，未连接真实设备",
-                        "result": {
-                            "fake": True,
-                            "executor": "FAKE",
-                            "real_device_called": False,
-                            "plan_id": str(plan["plan_id"]),
-                            "plan_digest": str(plan["digest"]),
-                            "action_id": str(plan["action_id"]),
-                            "target_id": str(plan["target_id"]),
-                        },
-                    },
-                    source="fake",
-                    site_name=site_id,
-                )
-            except Exception:
-                plan["status"] = "FAKE_FAILED"
-                self._save_plan(plan)
-                raise
-            plan["status"] = "FAKE_COMPLETED"
+            label, commands = self._action(str(plan["action_id"]))
+            task_id = f"ac-web-action-{uuid4().hex}"
+            plan["status"] = "EXECUTING"
             plan["task_id"] = task_id
             self._save_plan(plan)
+            try:
+                self.process_adapter.start_job(
+                    BackgroundJob(
+                        job_id=task_id,
+                        task_type="ac_command_action_execute",
+                        params={
+                            "site_name": site_id,
+                            "db_path": str(self.paths.site_db_path(site_id)),
+                            "app_root": str(self.paths.app_root),
+                            "data_root": str(self.paths.data_root),
+                            "task_name": label,
+                            "owner": self._OWNER,
+                            "task_source": "local",
+                            "device_uuid": str(plan["target_id"]),
+                            "ac_uuid": str(plan["target_id"]),
+                            "action": str(plan["action_id"]),
+                            "command_sequence": list(commands),
+                            "confirm_required": True,
+                            "source": "cli",
+                            "plan_id": str(plan["plan_id"]),
+                            "plan_digest": str(plan["digest"]),
+                        },
+                    )
+                )
+            except Exception:
+                plan["status"] = "START_FAILED"
+                self._save_plan(plan)
+                raise
             return self._plan_dto(plan)
 
     def action_audit(self, site_id: str, plan_id: str) -> dict[str, object]:
-        plan = self._plan_data(plan_id, self._site(site_id))
-        return {
-            "plan_id": plan["plan_id"],
-            "target_id": plan["target_id"],
-            "action_id": plan["action_id"],
-            "plan_digest": plan["digest"],
-            "status": plan["status"],
-            "task_id": plan["task_id"],
-            "executor": "FAKE",
-            "real_device_called": False,
-            "audit": True,
-        }
+        site_id = self._site(site_id)
+        with self._lock(plan_id):
+            plan = self._plan_data(plan_id, site_id)
+            snapshot = self._refresh_plan_status(site_id, plan)
+            return {
+                "plan_id": plan["plan_id"],
+                "target_id": plan["target_id"],
+                "action_id": plan["action_id"],
+                "commands": list(plan["commands"]),
+                "plan_digest": plan["digest"],
+                "status": plan["status"],
+                "task_id": plan["task_id"],
+                "task_status": snapshot.status.value if snapshot is not None else "",
+                "result_summary": self._result_summary(snapshot.result) if snapshot is not None else {},
+                "executor": "LOCAL",
+                "real_device_task": bool(plan["task_id"]),
+                "audit": True,
+            }
 
     def preview_extension(self, site_id: str, file_name: str, content: bytes, content_type: str = "") -> AcExtensionPreviewDTO:
         site_id = self._site(site_id)
@@ -557,10 +554,23 @@ class AcWebApplicationService:
     @staticmethod
     def _result_summary(result: dict[str, object]) -> dict[str, object]:
         summary: dict[str, object] = {}
-        for key in ("count", "row_count", "uses_trackside_plan", "offline_ap_stats"):
+        for key in (
+            "count",
+            "row_count",
+            "uses_trackside_plan",
+            "offline_ap_stats",
+            "success",
+            "action",
+            "collect_run_uuid",
+            "error_code",
+            "error_message",
+            "confirm_required",
+            "plan_id",
+            "plan_digest",
+        ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):
-                summary[key] = value
+                summary[key] = redact_web_task_text(value) if isinstance(value, str) else value
         for key in ("rows", "overview_rows", "resources", "optical_rows", "offline_ap_ledger_rows"):
             value = result.get(key)
             if isinstance(value, list):
@@ -582,10 +592,28 @@ class AcWebApplicationService:
                     "https_port",
                     "https_port_persisted",
                     "target_ap_uuid",
+                    "partial_success",
+                    "refresh_scope",
+                    "optical_rows_updated",
+                    "failed_aps",
                     "error_message",
                 )
                 if key in collection
             }
+        commands = result.get("commands")
+        if isinstance(commands, list):
+            summary["commands"] = [str(command) for command in commands]
+        command_results = result.get("command_results")
+        if isinstance(command_results, list):
+            summary["command_results"] = [
+                {
+                    "command": str(item.get("command") or ""),
+                    "success": bool(item.get("success")),
+                    "error_message": redact_web_task_text(str(item.get("error_message") or "")),
+                }
+                for item in command_results
+                if isinstance(item, dict)
+            ]
         return summary
 
     def _site(self, site_id: str) -> str:
@@ -625,6 +653,23 @@ class AcWebApplicationService:
         current = self._target(str(plan["site_id"]), str(plan["target_id"]))
         if self._fingerprint(current) != plan.get("target_fingerprint"):
             raise AcWebActionError("TARGET_STALE", "目标 AC 已变化，请重新创建动作计划")
+
+    def _refresh_plan_status(self, site_id: str, plan: dict[str, object]):
+        task_id = str(plan.get("task_id") or "")
+        if not task_id:
+            return None
+        snapshot = self.task_service.repository(site_id).get(task_id)
+        if snapshot is None or not self._authorized_task(snapshot):
+            return None
+        status = {
+            TaskState.COMPLETED: "COMPLETED",
+            TaskState.FAILED: "FAILED",
+            TaskState.CANCELLED: "CANCELLED",
+        }.get(snapshot.status, "EXECUTING")
+        if plan.get("status") != status:
+            plan["status"] = status
+            self._save_plan(plan)
+        return snapshot
 
     def _plan_data(self, plan_id: str, site_id: str) -> dict[str, object]:
         path = self._plan_path(plan_id)

@@ -102,16 +102,7 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
-    FeatureItem(
-        "web.ac_optical",
-        "光衰（Web）",
-        "web.ac_management",
-        "page",
-        default_visible=False,
-        default_enabled=False,
-        default_client_package=False,
-        status=FeatureStatus.DEVELOPMENT,
-    ),
+    FeatureItem("web.ac_optical", "光衰（Web）", "web.ac_management", "page"),
     FeatureItem(
         "web.ac_extensions",
         "AP 扩展信息（Web）",
@@ -127,7 +118,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.ac_extensions_rollback", "AP 扩展导入回滚（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.ac_extensions_export", "AP 扩展导出（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.ac_refresh", "AC/FIT-AP 设备更新（Web）", "web.ac_management", "action"),
-    FeatureItem("web.ac_dangerous_actions", "AC 高风险动作 Fake 闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_dangerous_actions", "AC 高风险动作真实闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
         "web.ac_config_snapshots",
         "AC 配置快照与对比（Web）",
