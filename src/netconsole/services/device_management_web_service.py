@@ -9,13 +9,14 @@ import math
 import os
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import threading
 import zipfile
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import BinaryIO
 import uuid
 from threading import RLock
@@ -50,6 +51,7 @@ from netconsole.models.api.device_management import (
     DeviceExternalTerminalSettingsDTO,
     DeviceExternalTerminalSettingsUpdateDTO,
     DeviceExportRequestDTO,
+    DeviceFormConnectionTestRequestDTO,
     DeviceGroupAssignmentDTO,
     DeviceGroupAssignmentRequestDTO,
     DeviceGroupDeleteDTO,
@@ -145,6 +147,8 @@ DEVICE_OPTICAL_REFRESH_TASK_TYPE = "device_optical_refresh"
 DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
 DEVICE_IMPORT_TASK_TYPE = "device_csv_import"
 DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE = "omnipeek_name_table_preview"
+DEVICE_FORM_TEST_CHANNEL_TIMEOUT_SECONDS = 10.0
+DEVICE_FORM_TEST_CHANNEL_MAX_BYTES = 64 * 1024
 DEVICE_TASK_TYPES = frozenset(
     {
         DEVICE_CONNECTION_TEST_TASK_TYPE,
@@ -188,6 +192,7 @@ class DeviceManagementWebService:
         self._terminal_tokens: dict[str, dict[str, object]] = {}
         self._export_processes: dict[str, subprocess.Popen[str]] = {}
         self._export_artifacts: dict[str, dict[str, object]] = {}
+        self._form_test_channels: dict[str, socket.socket] = {}
         self._reconciled_import_sites: set[str] = set()
 
     def current_site_id(self) -> str:
@@ -198,6 +203,7 @@ class DeviceManagementWebService:
                 self._reconcile_import_audits(selected)
                 self._cleanup_expired_import_previews(selected)
                 self._cleanup_stale_securecrt_templates(selected)
+                self._cleanup_unowned_diagnostic_temps(selected)
                 self._reconciled_import_sites.add(selected)
         return selected
 
@@ -761,12 +767,14 @@ class DeviceManagementWebService:
         for value in selected_uuids:
             self._require_device(devices, value)
         task_id = f"device-diagnostic-{uuid.uuid4().hex}"
+        artifact_id = f"device-diagnostic-{uuid.uuid4().hex}"
         job = BackgroundJob(
             job_id=task_id,
             task_type=DEVICE_DIAGNOSTIC_TASK_TYPE,
             params={
                 "site_name": site,
                 "device_uuids": selected_uuids,
+                "artifact_id": artifact_id,
                 "task_name": f"设备诊断信息下载 · {len(selected_uuids)} 台",
                 "owner": WEB_TASK_OWNER,
                 "task_source": "local",
@@ -1087,8 +1095,21 @@ class DeviceManagementWebService:
 
     def open_export_artifact(self, task_id: str, artifact_id: str) -> tuple[Path, str]:
         snapshot = self._require_web_export_task(task_id)
+        return self._open_task_artifact(snapshot, artifact_id)
+
+    def open_diagnostic_artifact(
+        self, task_id: str, artifact_id: str
+    ) -> tuple[Path, str]:
+        snapshot = self._require_web_task(
+            task_id, frozenset({DEVICE_DIAGNOSTIC_TASK_TYPE})
+        )
+        return self._open_task_artifact(snapshot, artifact_id)
+
+    def _open_task_artifact(
+        self, snapshot: TaskSnapshot, artifact_id: str
+    ) -> tuple[Path, str]:
         if snapshot.status is not TaskState.COMPLETED:
-            raise ValueError("导出任务尚未完成")
+            raise ValueError("文件任务尚未完成")
         result = dict(snapshot.result or {})
         if str(result.get("artifact_id") or "") != artifact_id or not bool(result.get("available")):
             raise KeyError(artifact_id)
@@ -1187,6 +1208,7 @@ class DeviceManagementWebService:
                 daemon=True,
             ).start()
         else:
+            self._close_form_test_channel(task_id)
             cancel_job = getattr(self.process_adapter, "cancel_job", None)
             if not callable(cancel_job) or not cancel_job(task_id):
                 self.task_service.cancel_task(task_id)
@@ -1342,6 +1364,21 @@ class DeviceManagementWebService:
 
     def _artifact_root(self, site: str) -> Path:
         return self._controlled_root(site, WEB_ARTIFACT_DIR)
+
+    def _cleanup_unowned_diagnostic_temps(self, site: str) -> None:
+        repository = self.task_service.repository(site)
+        for path in self._artifact_root(site).glob(
+            ".device-diagnostic-*.device-diagnostic-*.tmp"
+        ):
+            parts = path.name.split(".")
+            task_id = parts[2] if len(parts) == 4 else ""
+            snapshot = repository.get(task_id) if task_id else None
+            if snapshot is None or snapshot.status in {
+                TaskState.COMPLETED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            }:
+                self._remove_controlled_file(path, path.parent)
 
     @staticmethod
     def _validate_upload_filename(filename: str) -> str:
@@ -2306,6 +2343,124 @@ class DeviceManagementWebService:
                     )
             self._export_artifacts.pop(task_id, None)
 
+    def start_form_connection_test(
+        self, payload: DeviceFormConnectionTestRequestDTO
+    ) -> DeviceConnectionTestDTO:
+        site = self.current_site_id()
+        devices, groups, _facts = self._repositories(site)
+        existing = (
+            self._require_device(devices, payload.device_uuid)
+            if payload.device_uuid
+            else None
+        )
+        write_payload = DeviceWriteRequestDTO.model_validate(
+            payload.model_dump(exclude={"protocol", "device_uuid"})
+        )
+        device = self._device_from_write(write_payload, existing, groups)
+        protocol = payload.protocol.upper()
+        self._validate_protocol_enabled(device, protocol)
+        task_id = f"device-form-test-{protocol.lower()}-{uuid.uuid4().hex}"
+        token = secrets.token_urlsafe(32)
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            server.settimeout(DEVICE_FORM_TEST_CHANNEL_TIMEOUT_SECONDS)
+            port = int(server.getsockname()[1])
+            with self._mutation_lock:
+                self._form_test_channels[task_id] = server
+            threading.Thread(
+                target=self._serve_form_test_device,
+                args=(task_id, server, token, device),
+                name=f"device-form-secret-{task_id}",
+                daemon=True,
+            ).start()
+            job = BackgroundJob(
+                job_id=task_id,
+                task_type=DEVICE_CONNECTION_TEST_TASK_TYPE,
+                params={
+                    "site_name": site,
+                    "device_uuid": str(existing.device_uuid or "")
+                    if existing is not None
+                    else "",
+                    "protocol": protocol,
+                    "task_name": f"设备表单连接测试 · {device.name} · {protocol}",
+                    "owner": WEB_TASK_OWNER,
+                    "task_source": "local",
+                    "device": str(existing.device_uuid or "")
+                    if existing is not None
+                    else "",
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "_form_test": True,
+                    "_form_secret_port": port,
+                    "_form_secret_token": token,
+                    "_emit_log_events": True,
+                    "_cancel_grace_ms": 1000,
+                },
+            )
+            self.process_adapter.start_job(
+                job,
+                on_complete=lambda _completion: self._close_form_test_channel(
+                    task_id
+                ),
+            )
+            snapshot = self.task_service.repository(site).get(task_id)
+            if snapshot is None:
+                raise RuntimeError("表单连接测试任务创建后未写入任务中心")
+            return self._connection_test_dto(snapshot, device)
+        except Exception:
+            self._close_form_test_channel(task_id)
+            try:
+                server.close()
+            except OSError:
+                pass
+            raise
+
+    def _serve_form_test_device(
+        self,
+        task_id: str,
+        server: socket.socket,
+        token: str,
+        device: Device,
+    ) -> None:
+        try:
+            connection, _address = server.accept()
+            with connection:
+                connection.settimeout(DEVICE_FORM_TEST_CHANNEL_TIMEOUT_SECONDS)
+                with connection.makefile("rwb") as stream:
+                    received = stream.readline(512).decode("ascii", errors="ignore").strip()
+                    if not secrets.compare_digest(received, token):
+                        raise ValueError("表单连接测试一次性凭证无效")
+                    encoded = json.dumps(
+                        device.to_record(), ensure_ascii=False
+                    ).encode("utf-8")
+                    if len(encoded) > DEVICE_FORM_TEST_CHANNEL_MAX_BYTES:
+                        raise ValueError("表单连接测试参数过大")
+                    stream.write(encoded + b"\n")
+                    stream.flush()
+        except Exception:
+            app_logger.log_warning(
+                "DEVICE_FORM_TEST_SECRET_CHANNEL_CLOSED",
+                f"task_id={task_id}",
+            )
+        finally:
+            self._close_form_test_channel(task_id, expected=server)
+
+    def _close_form_test_channel(
+        self, task_id: str, *, expected: socket.socket | None = None
+    ) -> None:
+        with self._mutation_lock:
+            server = self._form_test_channels.get(task_id)
+            if expected is not None and server is not expected:
+                return
+            self._form_test_channels.pop(task_id, None)
+        if server is not None:
+            try:
+                server.close()
+            except OSError:
+                pass
+
     def start_connection_test(self, device_uuid: str, protocol: str) -> DeviceConnectionTestDTO:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
@@ -2400,6 +2555,10 @@ class DeviceManagementWebService:
                     pass
 
     async def stop(self) -> None:
+        with self._mutation_lock:
+            form_task_ids = tuple(self._form_test_channels)
+        for task_id in form_task_ids:
+            self._close_form_test_channel(task_id)
         await self.stop_exports()
         await asyncio.to_thread(self.process_adapter.shutdown)
 
@@ -2630,18 +2789,21 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     site = SiteManager(context.paths).validate_site_name(str(context.params.get("site_name") or ""))
     device_uuid = str(context.params.get("device_uuid") or "")
     protocol = str(context.params.get("protocol") or "").upper()
-    repository = DeviceRepository(Database(context.paths.site_db_path(site)))
-    device = repository.get_by_uuid(device_uuid)
-    if device is None:
-        raise KeyError(f"设备不存在：{device_uuid}")
-    if bool(context.params.get("_requires_sensitive_bootstrap")):
-        bootstrap = context.consume_sensitive_bootstrap()
-        if bootstrap.pop("protocol", "") != protocol:
-            raise RuntimeError("设备连接测试敏感启动数据不匹配")
-        for field, value in bootstrap.items():
-            if field in _DEVICE_SECRET_FIELDS:
-                setattr(device, field, value)
-        device.password = device.ssh_password or device.telnet_password
+    if context.params.get("_form_test") is True:
+        device = _receive_form_test_device(context)
+    else:
+        repository = DeviceRepository(Database(context.paths.site_db_path(site)))
+        device = repository.get_by_uuid(device_uuid)
+        if device is None:
+            raise KeyError(f"设备不存在：{device_uuid}")
+        if bool(context.params.get("_requires_sensitive_bootstrap")):
+            bootstrap = context.consume_sensitive_bootstrap()
+            if bootstrap.pop("protocol", "") != protocol:
+                raise RuntimeError("设备连接测试敏感启动数据不匹配")
+            for field, value in bootstrap.items():
+                if field in _DEVICE_SECRET_FIELDS:
+                    setattr(device, field, value)
+            device.password = device.ssh_password or device.telnet_password
     DeviceManagementWebService._validate_protocol_enabled(device, protocol)
     context.check_cancelled()
     context.progress("connect", 0, 1, f"正在执行 {protocol} 连接测试")
@@ -2707,6 +2869,27 @@ def _connection_sensitive_bootstrap(
         if value:
             values[field] = value
     return values
+
+
+def _receive_form_test_device(context: JobContext) -> Device:
+    port = int(context.params.get("_form_secret_port") or 0)
+    token = str(context.params.get("_form_secret_token") or "")
+    if not 1 <= port <= 65535 or not 32 <= len(token) <= 256:
+        raise ValueError("表单连接测试一次性通道参数无效")
+    with socket.create_connection(
+        ("127.0.0.1", port), timeout=DEVICE_FORM_TEST_CHANNEL_TIMEOUT_SECONDS
+    ) as connection:
+        connection.settimeout(DEVICE_FORM_TEST_CHANNEL_TIMEOUT_SECONDS)
+        with connection.makefile("rwb") as stream:
+            stream.write(token.encode("ascii") + b"\n")
+            stream.flush()
+            encoded = stream.readline(DEVICE_FORM_TEST_CHANNEL_MAX_BYTES + 1)
+    if not encoded or len(encoded) > DEVICE_FORM_TEST_CHANNEL_MAX_BYTES:
+        raise ValueError("表单连接测试一次性通道响应无效")
+    payload = json.loads(encoded.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("表单连接测试设备参数无效")
+    return Device.from_mapping(payload)
 
 
 def run_device_csv_import(context: JobContext) -> dict[str, object]:
@@ -2871,7 +3054,7 @@ def run_device_diagnostic_download(context: JobContext) -> dict[str, object]:
     context.progress(
         "device_diagnostic_download", len(devices), len(devices), "设备诊断信息下载完成"
     )
-    return {
+    summary = {
         "total": len(results),
         "success": sum(1 for result in results if result.success),
         "failed": sum(1 for result in results if not result.success),
@@ -2879,6 +3062,7 @@ def run_device_diagnostic_download(context: JobContext) -> dict[str, object]:
             {
                 "device_id": result.device_id,
                 "device_name": result.device_name,
+                "timestamp": result.timestamp,
                 "status": result.status,
                 "error_message": result.error_message or "",
                 "elapsed_ms": result.elapsed_ms,
@@ -2886,6 +3070,96 @@ def run_device_diagnostic_download(context: JobContext) -> dict[str, object]:
             for result in results
         ],
     }
+    artifact_id = str(context.params.get("artifact_id") or "")
+    if (
+        not artifact_id.startswith("device-diagnostic-")
+        or len(artifact_id) != 50
+        or any(character not in "0123456789abcdef" for character in artifact_id[18:])
+    ):
+        raise ValueError("诊断 Artifact 标识无效")
+    artifact_root = _diagnostic_artifact_root(context.paths, site)
+    artifact_name = f"{artifact_id}.zip"
+    artifact_path = artifact_root / artifact_name
+    if artifact_path.exists():
+        raise FileExistsError("诊断 Artifact 已存在")
+    temp_path = artifact_root / f".{artifact_id}.{context.job_id}.tmp"
+    artifact_sha256 = ""
+    artifact_size = 0
+    try:
+        with zipfile.ZipFile(temp_path, "x", zipfile.ZIP_DEFLATED) as archive:
+            for result in results:
+                context.check_cancelled()
+                if not result.success or not result.file_path:
+                    continue
+                source, archive_name = _controlled_diagnostic_source(
+                    context.paths, site, result.file_path
+                )
+                archive.write(source, archive_name)
+            archive.writestr(
+                "diagnostic_summary.json",
+                json.dumps(summary, ensure_ascii=False, indent=2),
+            )
+        attach_export_metadata(
+            temp_path,
+            effective_suffix=".zip",
+            export_type="device_diagnostics",
+            payload={"source_module": "devices"},
+        )
+        artifact_sha256 = DeviceManagementWebService._file_sha256(temp_path)
+        artifact_size = temp_path.stat().st_size
+        context.check_cancelled()
+        os.replace(temp_path, artifact_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return {
+        **summary,
+        "artifact_id": artifact_id,
+        "artifact_name": artifact_name,
+        "available": True,
+        "sha256": artifact_sha256,
+        "size_bytes": artifact_size,
+    }
+
+
+def _diagnostic_artifact_root(paths: PathResolver, site: str) -> Path:
+    files_root = paths.site_files_dir(site)
+    if files_root.is_symlink():
+        raise ValueError("设备文件根目录不允许使用符号链接")
+    files_root.mkdir(parents=True, exist_ok=True)
+    controlled_files_root = files_root.resolve()
+    raw_artifact_root = files_root / WEB_ARTIFACT_DIR
+    if raw_artifact_root.exists() and raw_artifact_root.is_symlink():
+        raise ValueError("诊断 Artifact 目录不允许使用符号链接")
+    raw_artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_root = raw_artifact_root.resolve()
+    if not artifact_root.is_relative_to(controlled_files_root):
+        raise ValueError("诊断 Artifact 目录越界")
+    return artifact_root
+
+
+def _controlled_diagnostic_source(
+    paths: PathResolver, site: str, relative_path: str
+) -> tuple[Path, str]:
+    relative = PurePosixPath(str(relative_path or ""))
+    if (
+        not relative.parts
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or any(":" in part for part in relative.parts)
+    ):
+        raise ValueError("诊断结果文件路径无效")
+    diagnostics_root = paths.config_center_raw_logs_root(site)
+    if diagnostics_root.is_symlink():
+        raise ValueError("诊断结果目录不允许使用符号链接")
+    controlled_root = diagnostics_root.resolve(strict=True)
+    source = paths.site_dir(site).joinpath(*relative.parts)
+    if source.is_symlink():
+        raise ValueError("诊断结果文件不允许使用符号链接")
+    resolved = source.resolve(strict=True)
+    if not resolved.is_file() or not resolved.is_relative_to(controlled_root):
+        raise ValueError("诊断结果文件越界")
+    archive_name = f"diagnostics/{resolved.relative_to(controlled_root).as_posix()}"
+    return resolved, archive_name
 
 
 def _protocol_from_task_id(task_id: str) -> str:

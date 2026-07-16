@@ -24,6 +24,7 @@ from netconsole.models.api.device_management import (
     DeviceExternalTerminalSettingsDTO,
     DeviceExternalTerminalSettingsUpdateDTO,
     DeviceExportRequestDTO,
+    DeviceFormConnectionTestRequestDTO,
     DeviceGroupAssignmentDTO,
     DeviceGroupAssignmentRequestDTO,
     DeviceGroupDeleteDTO,
@@ -233,6 +234,12 @@ def batch_diagnostic_download(request: Request, payload: DeviceBatchRefreshReque
     return _query(lambda: _service(request).start_diagnostic_download(payload.device_uuids))
 
 
+@router.get("/diagnostics/{task_id}/download", response_class=FileResponse, dependencies=[Depends(require_feature("web.device_management_collect"))])
+def download_diagnostics(request: Request, task_id: str, artifact_id: str = Query(min_length=8, max_length=160)) -> FileResponse:
+    path, filename = _not_found(lambda: _service(request).open_diagnostic_artifact(task_id, artifact_id), "诊断任务或文件不存在")
+    return FileResponse(path, filename=filename)
+
+
 @router.get("/external-terminal/settings", response_model=DeviceExternalTerminalSettingsDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
 def external_terminal_settings(request: Request) -> DeviceExternalTerminalSettingsDTO:
     return _query(lambda: _service(request).get_external_terminal_settings())
@@ -293,6 +300,36 @@ def device_history(
         ),
         "设备或历史记录不存在",
     )
+
+
+@router.post(
+    "/connection-tests/form",
+    response_model=DeviceConnectionTestDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.device_connection_test")),
+        Depends(require_feature("web.device_management_write")),
+    ],
+)
+def start_form_connection_test(
+    request: Request,
+    payload: DeviceFormConnectionTestRequestDTO,
+) -> DeviceConnectionTestDTO:
+    with map_api_errors(
+        "表单连接测试任务暂时无法创建",
+        io_detail="表单连接测试任务暂时无法创建",
+        io_errors=(OSError, RuntimeError),
+    ):
+        try:
+            return _service(request).start_form_connection_test(payload)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
 
 
 @router.post(

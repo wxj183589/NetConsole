@@ -1,27 +1,17 @@
-# Device Management
+# 设备管理
 
-The first NetConsole desktop stage only implements device management.
+设备管理以现有设备主库为唯一持久化事实源。Electron 正式桌面入口通过共享 Python Application Service 和 FastAPI 使用同一 Repository；Qt 在迁移验收完成前继续作为事实源与回退入口，不维护第二套设备业务逻辑或数据库。
 
-Supported workflows:
+当前真实能力包括：
 
-- Device list
-- Add device
-- View device details
-- Edit device
-- Delete device
-- Refresh
-- Search by name, sysname, IP address, station, and remark
-- Filter by vendor and device type
-- Import `.csv`
-- Export `.csv`
-- Export CSV template
+- 搜索、厂商/类型/分组/连接状态筛选、排序、分页和当前页多选；
+- 新增、编辑、复制、单删/批删、设备分组，以及凭据保持/替换/显式清除三态；
+- 已保存设备和未保存表单的 SSH/Telnet/SNMP 连接测试；
+- 详情、接口、光模块、LLDP、轨旁 AP 业务、历史分页和批量详情采集；
+- CSV 上传预览、错误/重复策略、确认、单事务导入和审计；
+- CSV（含/不含凭据）、导入模板、SecureCRT 会话、OmniPeek 名称表和诊断 ZIP Artifact；
+- SecureCRT、Xshell、PuTTY 白名单配置与受控启动。
 
-The CSV template is a simplified Chinese-header file for manual entry and includes one example device row. The CSV export is a complete English-header file for backup and re-import.
+秘密字段不会由详情或写入响应回显。未保存表单测试只通过一次性回环通道把当前凭据交给正式后台 worker，凭据不写入 Task 参数、日志或数据库。导出和诊断文件先在受控目录生成并记录 SHA-256/大小，再由 Electron 受管下载选择保存位置；只有 Native Bridge 为本次桌面会话返回的授权句柄可用于打开或定位目录。
 
-The add/edit dialog stores SSH and Telnet connection settings. A device can enable either or both protocols.
-
-The Device Details entry is available from the toolbar and from each row's action buttons. It opens a read-only window with Overview, Interfaces, and LLDP Neighbors tabs. Demo Device Facts, Interfaces, and LLDP data are generated only when `.local/data/sites/demo/db/devices.db` is first created. If an existing demo database is already present, delete it manually and restart the application to regenerate the latest demo data.
-
-SNMP fields are reserved configuration fields only. SNMPv1, SNMPv2c, and SNMPv3 can be enabled independently. SNMP collection is not implemented in this stage.
-
-The UI text is provided by `src/netconsole/core/i18n.py` and currently supports `zh_CN` and `en_US`.
+完整 Qt 事实源、入口矩阵、自动化证据、共享任务窗口依赖和人工/真实设备边界见 `docs/development/parity/device-management.md`。

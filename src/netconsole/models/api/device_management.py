@@ -213,6 +213,11 @@ class DeviceWriteRequestDTO(ApiModel):
     )
 
 
+class DeviceFormConnectionTestRequestDTO(DeviceWriteRequestDTO):
+    protocol: DeviceConnectionProtocol
+    device_uuid: str = Field(default="", max_length=64)
+
+
 class DeviceWriteDTO(ApiModel):
     action: Literal["created", "updated", "duplicated"]
     device: DeviceDetailItemDTO

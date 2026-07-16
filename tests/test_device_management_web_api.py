@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from dataclasses import replace
 from pathlib import Path
 from threading import Barrier, Event
+from time import monotonic, sleep
 from types import SimpleNamespace
 from urllib.parse import unquote
 
@@ -33,6 +34,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
+from netconsole.infrastructure.desktop import LocalDesktopAdapter
 from netconsole.models.api.device_management import (
     DeviceExportRequestDTO,
     DeviceImportConfirmRequestDTO,
@@ -152,8 +154,10 @@ def _write_import_csv(
         csv.writer(handle).writerows((TEMPLATE_FIELDS, row))
 
 
-def _fixture(tmp_path: Path):
-    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "local")
+def _fixture(tmp_path: Path, *, app_root: Path | None = None):
+    paths = PathResolver(
+        app_root=app_root or tmp_path / "app", data_root=tmp_path / "local"
+    )
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     devices = DeviceRepository(database)
@@ -558,13 +562,202 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
     assert "private-community" not in str(snmp)
 
 
+def test_unsaved_form_connection_tests_use_one_time_secret_channel(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    password = "form-password-must-not-be-persisted"
+    community = "form-community-must-not-be-persisted"
+    observed: list[tuple[str, str | None]] = []
+
+    def fake_connection(device: Device):
+        protocol = "SSH" if device.ssh_enabled else "TELNET"
+        observed.append(
+            (
+                protocol,
+                device.ssh_password if protocol == "SSH" else device.telnet_password,
+            )
+        )
+        return SimpleNamespace(
+            success=True,
+            status="ok",
+            message="connected",
+            method="primary_direct",
+            host=device.primary_address,
+            port=device.ssh_port if protocol == "SSH" else device.telnet_port,
+            elapsed_ms=3,
+            prompt="<FORM-SW>",
+            error_type=None,
+            suggestion=None,
+        )
+
+    def fake_snmp(_self, device: Device, **_kwargs):
+        observed.append(("SNMP", device.snmp_ro_community))
+        return DeviceSnmpProfileResult(
+            status="success",
+            sys_name="FORM-SW",
+            model="S6520",
+            os_family="Comware",
+            interface_count=48,
+            latency_ms=4,
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.netmiko_connection.test_device_connection",
+        fake_connection,
+    )
+    monkeypatch.setattr(
+        "netconsole.services.device_snmp_detect_service.DeviceSnmpDetectService.detect",
+        fake_snmp,
+    )
+    payload = {
+        "name": "未保存表单设备",
+        "primary_address": "198.51.100.88",
+        "ssh_enabled": True,
+        "ssh_password": password,
+        "telnet_enabled": True,
+        "telnet_password": password,
+        "snmp_enabled": True,
+        "snmp_v2c_enabled": True,
+        "snmp_ro_community": community,
+    }
+
+    for protocol in ("SSH", "TELNET", "SNMP"):
+        started = client.post(
+            "/api/device-management/connection-tests/form",
+            json={**payload, "protocol": protocol},
+        )
+        assert started.status_code == 202
+        assert password not in started.text
+        assert community not in started.text
+        job = adapter.jobs[-1]
+        serialized_params = json.dumps(job.params, ensure_ascii=False)
+        assert password not in serialized_params
+        assert community not in serialized_params
+        result = run_device_connection_test(
+            JobContext(
+                job.job_id,
+                job.task_type,
+                job.params,
+                None,
+                lambda: False,
+                service.paths,
+            )
+        )
+        assert result["success"] is True
+        assert result["protocol"] == protocol
+        assert password not in json.dumps(result, ensure_ascii=False)
+        assert community not in json.dumps(result, ensure_ascii=False)
+
+    assert observed == [
+        ("SSH", password),
+        ("TELNET", password),
+        ("SNMP", community),
+    ]
+    assert not list(service._form_test_channels)
+
+    forged = client.post(
+        "/api/device-management/connection-tests/form",
+        json={**payload, "protocol": "SSH", "command": "whoami"},
+    )
+    assert forged.status_code == 422
+
+
+def test_unsaved_form_connection_test_cancel_closes_secret_channel(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    secret = "cancelled-form-secret"
+    started = client.post(
+        "/api/device-management/connection-tests/form",
+        json={
+            "name": "待取消表单测试",
+            "primary_address": "198.51.100.89",
+            "protocol": "SSH",
+            "ssh_enabled": True,
+            "ssh_password": secret,
+            "telnet_enabled": False,
+        },
+    )
+    assert started.status_code == 202
+    task_id = started.json()["task_id"]
+    assert task_id in service._form_test_channels
+    assert secret not in json.dumps(adapter.jobs[-1].params, ensure_ascii=False)
+
+    cancelled = client.post(f"/api/device-management/tasks/{task_id}/cancel")
+
+    assert cancelled.status_code == 200
+    assert adapter.cancelled == [task_id]
+    assert task_id not in service._form_test_channels
+
+
+def test_edit_form_connection_test_preserves_or_clears_existing_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    observed: list[str | None] = []
+
+    def fake_connection(device: Device):
+        observed.append(device.ssh_password)
+        return SimpleNamespace(
+            success=True,
+            status="ok",
+            message="connected",
+            method="primary_direct",
+            host=device.primary_address,
+            port=device.ssh_port,
+            elapsed_ms=2,
+            prompt="<MR-EDIT>",
+            error_type=None,
+            suggestion=None,
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.netmiko_connection.test_device_connection",
+        fake_connection,
+    )
+    base = {
+        "device_uuid": str(mr.device_uuid),
+        "name": mr.name,
+        "primary_address": mr.primary_address,
+        "protocol": "SSH",
+        "ssh_enabled": True,
+        "telnet_enabled": False,
+    }
+
+    for request_payload in (
+        base,
+        {**base, "clear_secret_fields": ["ssh_password"]},
+    ):
+        started = client.post(
+            "/api/device-management/connection-tests/form", json=request_payload
+        )
+        assert started.status_code == 202
+        job = adapter.jobs[-1]
+        run_device_connection_test(
+            JobContext(
+                job.job_id,
+                job.task_type,
+                job.params,
+                None,
+                lambda: False,
+                service.paths,
+            )
+        )
+
+    assert observed == ["secret-password", None]
+    assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
+
+
 def test_router_exposes_device_management_parity_endpoints_without_arbitrary_terminal_or_secret_routes(tmp_path: Path) -> None:
     client, *_rest = _fixture(tmp_path)
     paths = client.app.openapi()["paths"]
     device_paths = {path: methods for path, methods in paths.items() if path.startswith("/api/device-management")}
 
     posts = {path for path, methods in device_paths.items() if "post" in methods}
+    gets = {path for path, methods in device_paths.items() if "get" in methods}
     assert {
+        "/api/device-management/connection-tests/form",
         "/api/device-management/devices/{device_uuid}/connection-tests",
         "/api/device-management/devices",
         "/api/device-management/devices/{device_uuid}/duplicate",
@@ -581,6 +774,7 @@ def test_router_exposes_device_management_parity_endpoints_without_arbitrary_ter
         "/api/device-management/diagnostic-download",
         "/api/device-management/devices/{device_uuid}/external-terminal",
     }.issubset(posts)
+    assert "/api/device-management/diagnostics/{task_id}/download" in gets
     assert not any("password" in path or "secret" in path or path.endswith("/shell") for path in device_paths)
 
 
@@ -673,6 +867,82 @@ def test_securecrt_optional_template_is_uploaded_to_controlled_staging(
     )
     assert rejected.status_code == 422
     assert not list(service._artifact_root("demo").glob(".securecrt-template-*.ini"))
+
+
+def test_all_qt_device_export_formats_complete_in_real_export_process(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, _sw = _fixture(
+        tmp_path, app_root=Path(__file__).resolve().parents[1]
+    )
+    mr.device_type = "Cloud-AP"
+    mr.mac_address = "74ad-cb9d-3320"
+    devices.update(mr)
+
+    def complete(path: str, payload: dict[str, object]) -> tuple[dict[str, object], bytes]:
+        started = client.post(path, json=payload)
+        assert started.status_code == 202, started.text
+        task_id = started.json()["task_id"]
+        deadline = monotonic() + 15
+        task: dict[str, object] = {}
+        while monotonic() < deadline:
+            response = client.get(f"/api/device-management/exports/{task_id}")
+            assert response.status_code == 200, response.text
+            task = response.json()
+            if task["task_status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+                break
+            sleep(0.05)
+        assert task["task_status"] == "COMPLETED", task
+        assert task["available"] is True
+        downloaded = client.get(
+            f"/api/device-management/exports/{task_id}/download",
+            params={"artifact_id": task["artifact_id"]},
+        )
+        assert downloaded.status_code == 200, downloaded.text
+        return task, downloaded.content
+
+    try:
+        _csv_task, csv_without_secrets = complete(
+            "/api/device-management/exports/csv",
+            {"device_uuids": [str(mr.device_uuid)], "include_credentials": False},
+        )
+        assert b"secret-password" not in csv_without_secrets
+        assert "MR2" in csv_without_secrets.decode("utf-8-sig")
+
+        _secret_csv_task, csv_with_secrets = complete(
+            "/api/device-management/exports/csv",
+            {"device_uuids": [str(mr.device_uuid)], "include_credentials": True},
+        )
+        assert "secret-password" in csv_with_secrets.decode("utf-8-sig")
+
+        _template_task, template = complete(
+            "/api/device-management/exports/template", {}
+        )
+        assert "设备名称" in template.decode("utf-8-sig")
+
+        _securecrt_task, securecrt = complete(
+            "/api/device-management/exports/securecrt",
+            {"device_uuids": [str(mr.device_uuid)]},
+        )
+        securecrt_path = tmp_path / "securecrt.zip"
+        securecrt_path.write_bytes(securecrt)
+        with zipfile.ZipFile(securecrt_path) as archive:
+            assert "_netconsole_manifest.json" in archive.namelist()
+            assert any(name.endswith(".ini") for name in archive.namelist())
+
+        _omnipeek_task, omnipeek = complete(
+            "/api/device-management/exports/omnipeek",
+            {
+                "device_uuids": [str(mr.device_uuid)],
+                "line_name": "测试线路",
+                "include_device_mr": True,
+            },
+        )
+        omnipeek_text = omnipeek.decode("utf-8")
+        assert '<NameTable Version="3.0">' in omnipeek_text
+        assert "74:AD:CB:9D:33:20" in omnipeek_text
+    finally:
+        asyncio.run(service.stop_exports())
 
 
 def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp_path: Path) -> None:
@@ -1659,18 +1929,29 @@ def test_device_export_finalizer_rejects_another_artifact_in_controlled_root(tmp
     assert not target.exists()
 
 
-def test_diagnostic_task_result_does_not_expose_file_path(tmp_path: Path, monkeypatch) -> None:
-    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+def test_diagnostic_task_creates_downloadable_controlled_artifact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
 
     class FakeDiagnosticDownloadService:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
+        def __init__(self, site: str, paths: PathResolver) -> None:
+            self.site = site
+            self.paths = paths
 
         def download(self, _device: Device) -> SimpleNamespace:
+            path = self.paths.config_center_raw_logs_dir(
+                self.site, "20260717", "diagnostic"
+            ) / "MR-02_diag_20260717_120000.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("display diagnostic-information\nOK\n", encoding="utf-8")
             return SimpleNamespace(
                 device_id=mr.id,
                 device_name=mr.name,
-                file_path=r"C:\\outside\\diagnostic.txt",
+                timestamp="20260717_120000",
+                file_path=path.resolve().relative_to(
+                    self.paths.site_dir(self.site).resolve()
+                ).as_posix(),
                 status="success",
                 error_message=None,
                 elapsed_ms=2,
@@ -1681,18 +1962,87 @@ def test_diagnostic_task_result_does_not_expose_file_path(tmp_path: Path, monkey
         "netconsole.services.device_management_web_service.DiagnosticDownloadService",
         FakeDiagnosticDownloadService,
     )
+    started = client.post(
+        "/api/device-management/diagnostic-download",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert started.status_code == 202
+    job = adapter.jobs[-1]
     result = run_device_diagnostic_download(
         JobContext(
-            "device-diagnostic-safe-result",
-            "device_diagnostic_download",
-            {"site_name": "demo", "device_uuids": [str(mr.device_uuid)]},
+            job.job_id,
+            job.task_type,
+            job.params,
             None,
             lambda: False,
             service.paths,
         )
     )
     assert "file_path" not in result["results"][0]
-    assert "outside" not in str(result)
+    assert result["available"] is True
+    artifact = service._artifact_root("demo") / str(result["artifact_name"])
+    assert artifact.is_file()
+    with zipfile.ZipFile(artifact) as archive:
+        names = archive.namelist()
+        assert "diagnostic_summary.json" in names
+        assert "_netconsole_manifest.json" in names
+        assert any(name.endswith("MR-02_diag_20260717_120000.txt") for name in names)
+        assert json.loads(archive.read("diagnostic_summary.json"))["success"] == 1
+
+    service.task_service.record_external_event(
+        job.job_id,
+        "finished",
+        {"result": result},
+        site_name="demo",
+    )
+    task = client.get(f"/api/device-management/tasks/{job.job_id}")
+    assert task.status_code == 200
+    assert task.json()["available"] is True
+    downloaded = client.get(
+        f"/api/device-management/diagnostics/{job.job_id}/download",
+        params={"artifact_id": result["artifact_id"]},
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == artifact.read_bytes()
+    assert client.get(
+        f"/api/device-management/exports/{job.job_id}/download",
+        params={"artifact_id": result["artifact_id"]},
+    ).status_code != 200
+
+
+def test_restart_cleanup_preserves_active_diagnostic_temp_and_removes_terminal_orphan(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    started = client.post(
+        "/api/device-management/diagnostic-download",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert started.status_code == 202
+    job = adapter.jobs[-1]
+    artifact_id = str(job.params["artifact_id"])
+    root = service._artifact_root("demo")
+    active_temp = root / f".{artifact_id}.{job.job_id}.tmp"
+    orphan_temp = root / (
+        ".device-diagnostic-" + "a" * 32 + ".device-diagnostic-orphan.tmp"
+    )
+    active_temp.write_bytes(b"active")
+    orphan_temp.write_bytes(b"orphan")
+
+    service._reconciled_import_sites.clear()
+    service.current_site_id()
+
+    assert active_temp.exists()
+    assert not orphan_temp.exists()
+    service.task_service.record_external_event(
+        job.job_id,
+        "cancelled",
+        {"message": "restart cleanup test", "cancelled": True},
+        site_name="demo",
+    )
+    service._reconciled_import_sites.clear()
+    service.current_site_id()
+    assert not active_temp.exists()
 
 
 def test_import_completion_never_restores_whole_database_and_preserves_audit(
@@ -1914,7 +2264,7 @@ def test_large_external_terminal_batch_requires_scoped_single_use_confirmation(
 def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_executables(
     tmp_path: Path,
 ) -> None:
-    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     settings = client.get("/api/device-management/external-terminal/settings")
     assert settings.status_code == 200
     assert settings.json()["securecrt_path"].endswith("SecureCRT.exe")
@@ -1936,6 +2286,21 @@ def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_execut
     assert updated.json()["terminal_type"] == "xshell"
     assert updated.json()["xshell_path"] == str(xshell.resolve())
 
+    desktop_adapter = service.desktop_action_service.adapter
+    assert isinstance(desktop_adapter, _FakeDesktopAdapter)
+    for terminal_type, expected_name in (
+        ("xshell", "Xshell.exe"),
+        ("putty", "putty.exe"),
+    ):
+        launched = client.post(
+            f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
+            json={"terminal_type": terminal_type},
+        )
+        assert launched.status_code == 200
+        assert launched.json()["success"] is True
+        assert desktop_adapter.terminal_calls[-1].executable.name == expected_name
+        assert "secret-password" not in launched.text
+
     command_interpreter = tmp_path / "cmd.exe"
     command_interpreter.write_bytes(b"not allowed")
     rejected = client.put(
@@ -1950,6 +2315,68 @@ def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_execut
         client.get("/api/device-management/external-terminal/settings").status_code
         == 422
     )
+
+
+def test_securecrt_xshell_and_putty_use_local_adapter_without_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    executables = {
+        "securecrt": tmp_path / "SecureCRT.exe",
+        "xshell": tmp_path / "Xshell.exe",
+        "putty": tmp_path / "putty.exe",
+    }
+    for executable in executables.values():
+        executable.write_bytes(b"fake executable")
+    configured = client.put(
+        "/api/device-management/external-terminal/settings",
+        json={
+            "terminal_type": "securecrt",
+            "securecrt_path": str(executables["securecrt"]),
+            "xshell_path": str(executables["xshell"]),
+            "putty_path": str(executables["putty"]),
+            "pass_password": False,
+        },
+    )
+    assert configured.status_code == 200
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class FakeProcess:
+        pass
+
+    def fake_popen(args: list[str], **kwargs: object) -> FakeProcess:
+        calls.append((args, kwargs))
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        "netconsole.infrastructure.desktop.local_adapter.subprocess.Popen",
+        fake_popen,
+    )
+    monkeypatch.setattr(
+        "netconsole.infrastructure.desktop.local_adapter.shutdown_manager.register_process",
+        lambda *_args, **_kwargs: None,
+    )
+    service.desktop_action_service.adapter = LocalDesktopAdapter()
+
+    for terminal_type in ("securecrt", "xshell", "putty"):
+        response = client.post(
+            f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
+            json={"terminal_type": terminal_type},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["success"] is True
+
+    assert [Path(args[0]).name for args, _kwargs in calls] == [
+        "SecureCRT.exe",
+        "Xshell.exe",
+        "putty.exe",
+    ]
+    assert all(kwargs["shell"] is False for _args, kwargs in calls)
+    assert all(Path(str(kwargs["cwd"])).is_dir() for _args, kwargs in calls)
+    assert "/SSH2" in calls[0][0]
+    assert "-url" in calls[1][0]
+    assert "-ssh" in calls[2][0]
+    assert "secret-password" not in json.dumps(calls, ensure_ascii=False, default=str)
 
 
 def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type(

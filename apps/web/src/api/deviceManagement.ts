@@ -9,6 +9,7 @@ import type {
   DeviceExternalTerminalBatch,
   DeviceExternalTerminalConfirmation,
   DeviceExternalTerminalSettings,
+  DeviceFormConnectionTestRequest,
   DeviceGroup,
   DeviceImportPreview,
   DeviceHistoryPage,
@@ -128,6 +129,13 @@ export function confirmDeviceImport(previewToken: string, duplicateStrategy: 're
   return apiRequest<DeviceTaskReference>('/api/device-management/imports/confirm', { method: 'POST', body: JSON.stringify({ preview_token: previewToken, duplicate_strategy: duplicateStrategy }) })
 }
 
+export function startDeviceFormConnectionTest(payload: DeviceFormConnectionTestRequest): Promise<DeviceConnectionTest> {
+  return apiRequest<DeviceConnectionTest>('/api/device-management/connection-tests/form', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function startDeviceCsvExport(payload: DeviceExportRequest): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/csv', { method: 'POST', body: JSON.stringify(payload) })
 }
@@ -168,6 +176,17 @@ export function deviceExportDownloadRequest(
     apiPath: `/api/device-management/exports/${encodeURIComponent(taskId)}/download`,
     query: { artifact_id: artifactId },
     suggestedName,
+  }
+}
+
+export function deviceDiagnosticDownloadRequest(
+  taskId: string,
+  artifactId: string,
+): BackendDownloadRequest {
+  return {
+    apiPath: `/api/device-management/diagnostics/${encodeURIComponent(taskId)}/download`,
+    query: { artifact_id: artifactId },
+    suggestedName: '设备诊断信息.zip',
   }
 }
 

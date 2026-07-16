@@ -46,7 +46,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 模块 | Qt 导航路径 | Qt 页面类/源码 | Electron 路由/组件 | Qt 可见操作与业务能力 | Application Service / FastAPI | Electron 当前状态 | 当前状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Dashboard | 首页 | 主窗口聚合入口 | `/` / `DashboardView.vue` | 全局状态入口 | 当前仅导航和状态壳 | 占位内容，未形成 Qt 对等首页 | `UI_ONLY` |
-| 设备管理 | 设备管理 | `DeviceManagementPage`：`src/netconsole/ui/pages/device_management_page.py`；相关 Dialog/Widget 见专项文档 | `/network/devices` / `DeviceManagementView.vue` | 列表、筛选、分页、当前页选择、CRUD、分组、连接测试、采集、详情/历史、终端、CSV/SecureCRT/OmniPeek | `DeviceManagementWebService`；`device_management_router.py` | 真实数据库、Task、Export Process 和 Desktop Action 已接入；页面任务私有持久化已删除，统一任务窗口依赖尚未合入，未保存表单连接测试尚缺一次性秘密注入契约 | `PARTIAL / BLOCKED_ON_TASK_WINDOW` |
+| 设备管理 | 设备管理 | `DeviceManagementPage`：`src/netconsole/ui/pages/device_management_page.py`；相关 Dialog/Widget 见专项文档 | `/network/devices` / `DeviceManagementView.vue` | 列表、筛选、分页、当前页选择、CRUD、分组、连接测试、采集、详情/历史、终端、CSV/SecureCRT/OmniPeek | `DeviceManagementWebService`；`device_management_router.py` | 真实数据库、Task、Export Process 和 Desktop Action 已接入；未保存表单通过不落盘的一次性回环秘密通道测试；诊断与全部导出产生受控 Artifact；页面任务私有持久化已删除，统一任务窗口依赖尚未合入 | `PARTIAL / BLOCKED_ON_TASK_WINDOW` |
 | AC 管理 | AC 管理及其子页 | `AcManagementPage`、`TracksideApPlanPage`、`TracksideApServicePage` | `/ac-management/*` / `views/ac-management/` | FIT-AP、光衰、扩展、Mesh、规划和受控 AC 操作 | AC Query/Application Service；AC Router | 查询、部分受控动作和 Fake 能力并存，独立页面仍缺失 | `PARTIAL` |
 | 轨道交通 | 轨道交通及其子页 | `RailTransitPage`、`CarNetworkDiagnosticPage`、`OnlineMrCollectionPage`、`MeshLogAnalysisPage` 等 | `/rail-transit/*` / `views/rail-transit/` | 基础资料、在线列车、车地通信、车内检测、Online MR、Mesh 分析和报告 | Rail/Online MR/Mesh Application Service；相关 Router | 只读、部分控制和 Fake 状态并存，尚未逐模块完成纵向闭环 | `PARTIAL` |
 | 配置采集中心 | 配置采集中心 | `ConfigCollectionCenterPage`：`src/netconsole/ui/pages/config_collection_center_page.py` | `/config-center` / `ConfigCollectionView.vue` | 采集、保存、比较、历史、导出和目录动作 | `ConfigCollectionApplicationService`；Config Router | 多项真实操作已接入，尚未完成 Qt 全量人工对照 | `PARTIAL` |
@@ -66,7 +66,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 
 | 模块 | UI 对等 | 功能对等 | 导入/导出 | 实时任务、停止与恢复 | 自动测试证据 | 人工验收 | 真实设备验收 | 当前缺口 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 设备管理 | 第一批已实现，待逐项对照 | 真实 CRUD/分组/已保存设备连接测试/采集/终端链路；未保存表单连接测试待补 | CSV 重复策略与确认、CSV/模板/SecureCRT/OmniPeek 实际 Artifact | 后端 Task 持久化、页面当前会话轮询/取消；统一任务窗口重启恢复待共享分支 | `tests/test_device_management_web_api.py`、`tests/test_device_import_export.py`、`tests/test_desktop_action_service.py`、`DeviceManagementView.test.ts` | `NOT_STARTED` | SSH/Telnet/SNMP、采集、光模块、诊断下载均待现场设备 | `BLOCKED_ON_TASK_WINDOW`；未保存表单测试；人工同数据对照与现场结果 |
+| 设备管理 | 模块侧纵向闭环已实现，待统一任务窗口与人工对照 | 真实 CRUD/分组/已保存及未保存表单连接测试/采集/终端链路；表单秘密仅经一次性回环通道 | CSV 重复策略与确认；诊断 ZIP；CSV/模板/SecureCRT/OmniPeek 实际 Artifact；Electron 授权路径打开/定位 | 后端 Task 持久化、页面当前会话轮询/取消；统一任务窗口重启恢复待共享分支 | `tests/test_device_management_web_api.py`、`tests/test_device_import_export.py`、`tests/test_desktop_action_service.py`、`DeviceManagementView.test.ts` | `NOT_STARTED` | SSH/Telnet/SNMP、采集、光模块、诊断下载及三类终端软件均待现场/本机验证 | `BLOCKED_ON_TASK_WINDOW`；人工同数据对照与现场结果 |
 | AC 管理 | 部分 | 部分/Fake | 部分 | 部分 | 现有 AC 定向测试 | `NOT_STARTED` | `NOT_STARTED` | 规划、光衰独立页、真实写操作和现场验收 |
 | 轨道交通 | 部分 | 只读/部分/Fake 混合 | 部分 | 部分 | 现有 Rail/Online MR/Mesh 定向测试 | `NOT_STARTED` | 列车下电期间冻结 | 不得以聚合看板代替 Qt 业务页 |
 | 配置采集中心 | 部分 | 部分真实 | 已有 | 已有部分 | 现有 Config 定向测试 | `NOT_STARTED` | 待真实设备 | Qt 全操作、错误和恢复对照 |
@@ -81,5 +81,5 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 
 1. 一次只把一个 Qt 模块做成完整纵向切片，不横向增加只读页面。
 2. 自动测试先定向；进入集成和合并前再运行全量 Python、Vue、Electron、Ruff、构建和文档检查。
-3. 当前设备管理只能标记 `PARTIAL / BLOCKED_ON_TASK_WINDOW`。共享依赖和未保存表单连接测试补齐、人工对照通过但现场设备未通过时，才升级为 `REAL_DEVICE_PENDING`；全部通过后才能升级为 `COMPLETE`。
+3. 当前设备管理只能标记 `PARTIAL / BLOCKED_ON_TASK_WINDOW`。未保存表单连接测试已完成模块侧真实 Job 链路；统一任务窗口依赖合入并完成人工对照、但现场设备未通过时，才升级为 `REAL_DEVICE_PENDING`；全部通过后才能升级为 `COMPLETE`。
 4. 浏览器开发入口不得产生独立导航、业务分支、发布包或验收矩阵；Native 功能只在 Electron 中开放。

@@ -183,6 +183,11 @@ export interface DeviceWriteRequest {
   clear_secret_fields?: DeviceSecretField[]
 }
 
+export interface DeviceFormConnectionTestRequest extends DeviceWriteRequest {
+  protocol: DeviceConnectionProtocol
+  device_uuid?: string
+}
+
 export interface DeviceConnectionTest {
   task_id: string
   task_status: string

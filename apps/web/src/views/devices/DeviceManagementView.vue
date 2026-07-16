@@ -8,6 +8,7 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, R
 import { isFeatureEnabled } from '../../features'
 import {
   cancelDeviceTask,
+  deviceDiagnosticDownloadRequest,
   deviceExportDownloadRequest,
   getDevice,
   getDeviceConnectionTest,
@@ -32,6 +33,7 @@ import {
   startBatchConnectionTests,
   startDeviceCsvExport,
   startDeviceConnectionTest,
+  startDeviceFormConnectionTest,
   startDeviceDiagnosticDownload,
   startDeviceOpticalRefresh,
   startDeviceTemplateExport,
@@ -82,6 +84,9 @@ const connectionLoading = ref(false)
 const writeVisible = ref(false)
 const writeMode = ref<'create' | 'edit'>('create')
 const writeLoading = ref(false)
+const writeConnectionLoading = ref(false)
+const writeConnectionTest = ref<DeviceConnectionTest | null>(null)
+const writeTestProtocol = ref<DeviceConnectionProtocol>('SSH')
 const selectedUuids = ref<string[]>([])
 const deviceTable = ref<TableInstance>()
 const groupVisible = ref(false)
@@ -111,6 +116,7 @@ function openTaskWindow(): void {
   if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'devices' })
   else void router.push({ name: 'tasks', query: { module: 'devices' } })
 }
+const downloadedArtifactAccess = ref<Record<string, string>>({})
 const terminalSettingsVisible = ref(false)
 const terminalSettingsLoading = ref(false)
 const terminalLaunchVisible = ref(false)
@@ -146,6 +152,7 @@ const secretClears = reactive<Record<DeviceSecretField, boolean>>({
 })
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let pollTimer: number | undefined
+let writeTestPollTimer: number | undefined
 let taskPollTimer: number | undefined
 let omniPeekPollGeneration = 0
 let componentActive = true
@@ -153,6 +160,14 @@ let componentActive = true
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const testTerminal = computed(() => connectionTest.value && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(connectionTest.value.task_status))
 const testActive = computed(() => Boolean(connectionTest.value && !testTerminal.value))
+const writeTestTerminal = computed(() => Boolean(writeConnectionTest.value && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(writeConnectionTest.value.task_status)))
+const availableWriteTestProtocols = computed<DeviceConnectionProtocol[]>(() => {
+  const protocols: DeviceConnectionProtocol[] = []
+  if (writeForm.ssh_enabled) protocols.push('SSH')
+  if (writeForm.telnet_enabled) protocols.push('TELNET')
+  if (writeForm.snmp_enabled && (writeForm.snmp_v1_enabled || writeForm.snmp_v2c_enabled || writeForm.snmp_v3_enabled)) protocols.push('SNMP')
+  return protocols
+})
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const historyColumns = computed(() => {
   const kind = historyPage.value?.kind
@@ -176,6 +191,7 @@ onBeforeUnmount(() => {
   omniPeekPollGeneration += 1
   document.removeEventListener('click', closeContextMenu)
   stopPolling()
+  stopWriteTestPolling()
   stopTaskPolling()
 })
 
@@ -359,9 +375,31 @@ async function downloadTrackedTask(task: DeviceTaskReference): Promise<void> {
     diagnostic_download: '设备诊断信息.zip',
   }
   const result = await downloadBackendResource(
-    deviceExportDownloadRequest(task.task_id, task.artifact_id, names[task.action] || '设备管理导出.zip'),
+    task.action === 'diagnostic_download'
+      ? deviceDiagnosticDownloadRequest(task.task_id, task.artifact_id)
+      : deviceExportDownloadRequest(task.task_id, task.artifact_id, names[task.action] || '设备管理导出.zip'),
   )
   if (result.status === 'failed') ElMessage.error(result.error || '设备导出下载失败')
+  const access = result.status === 'saved'
+    ? ('capabilityId' in result && typeof result.capabilityId === 'string' && result.capabilityId)
+      || ('savedPath' in result && typeof result.savedPath === 'string' && result.savedPath)
+      || ''
+    : ''
+  if (access) {
+    downloadedArtifactAccess.value = { ...downloadedArtifactAccess.value, [task.task_id]: access }
+    ElMessage.success('文件已保存，可直接打开或定位所在目录')
+  }
+}
+
+async function useDownloadedArtifact(task: DeviceTaskReference, reveal: boolean): Promise<void> {
+  const access = downloadedArtifactAccess.value[task.task_id]
+  if (!desktopHost.value || !access) return
+  const result = reveal
+    ? await getPlatformAdapter().showItemInFolder(access)
+    : await getPlatformAdapter().openPath(access)
+  if (!result.success) {
+    ElMessage.error(result.error || (reveal ? '定位文件失败' : '打开文件失败'))
+  }
 }
 
 function currentDeviceWriteValues(): DeviceWriteRequest | null {
@@ -550,6 +588,7 @@ function openCreate(): void {
     snmpv3_username: '', snmpv3_security_level: 'noAuthNoPriv', snmpv3_auth_protocol: 'SHA', snmpv3_auth_password: '', snmpv3_priv_protocol: 'AES128', snmpv3_priv_password: '', snmp_context_name: '', snmp_timeout_ms: 2000, snmp_retries: 1,
     https_port: null, remark: '',
   })
+  resetWriteConnectionTest()
   writeVisible.value = true
 }
 
@@ -559,7 +598,14 @@ function openEdit(): void {
   writeMode.value = 'edit'
   resetSecretClears()
   Object.assign(writeForm, values)
+  resetWriteConnectionTest()
   writeVisible.value = true
+}
+
+function resetWriteConnectionTest(): void {
+  stopWriteTestPolling()
+  writeConnectionTest.value = null
+  writeTestProtocol.value = availableWriteTestProtocols.value[0] || 'SSH'
 }
 
 function resetSecretClears(): void {
@@ -592,6 +638,87 @@ function deviceWritePayload(): DeviceWriteRequest {
   if (clearSecretFields.length) payload.clear_secret_fields = clearSecretFields
   else delete payload.clear_secret_fields
   return payload
+}
+
+async function testWriteConnection(): Promise<void> {
+  const protocols = availableWriteTestProtocols.value
+  if (!protocols.length) {
+    ElMessage.warning('请先启用 SSH、Telnet 或 SNMP')
+    return
+  }
+  if (!protocols.includes(writeTestProtocol.value)) writeTestProtocol.value = protocols[0]
+  writeConnectionLoading.value = true
+  try {
+    const result = await startDeviceFormConnectionTest({
+      ...deviceWritePayload(),
+      protocol: writeTestProtocol.value,
+      device_uuid: writeMode.value === 'edit' ? detail.value?.device.device_uuid : undefined,
+    })
+    writeConnectionTest.value = result
+    trackTasks([{
+      task_id: result.task_id,
+      task_status: result.task_status,
+      action: 'connection_test',
+      artifact_id: '',
+      available: false,
+      sha256: '',
+      size_bytes: 0,
+      message: result.message,
+    }])
+    startWriteTestPolling()
+    ElMessage.success(`${writeTestProtocol.value} 表单连接测试任务已提交`)
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '表单连接测试任务提交失败'))
+  } finally {
+    writeConnectionLoading.value = false
+  }
+}
+
+function startWriteTestPolling(): void {
+  stopWriteTestPolling()
+  writeTestPollTimer = window.setInterval(() => void refreshWriteConnectionTest(), 1500)
+}
+
+function stopWriteTestPolling(): void {
+  if (writeTestPollTimer !== undefined) window.clearInterval(writeTestPollTimer)
+  writeTestPollTimer = undefined
+}
+
+async function refreshWriteConnectionTest(): Promise<void> {
+  if (!writeConnectionTest.value) return
+  try {
+    writeConnectionTest.value = await getDeviceConnectionTest(writeConnectionTest.value.task_id)
+    if (writeTestTerminal.value) {
+      stopWriteTestPolling()
+      if (writeConnectionTest.value.success && writeConnectionTest.value.system_name) {
+        writeForm.system_name = writeConnectionTest.value.system_name
+      }
+    }
+  } catch (cause) {
+    stopWriteTestPolling()
+    ElMessage.error(errorMessage(cause, '表单连接测试状态刷新失败'))
+  }
+}
+
+async function cancelWriteConnectionTest(): Promise<void> {
+  if (!writeConnectionTest.value || writeTestTerminal.value) return
+  try {
+    const task = await cancelDeviceTask(writeConnectionTest.value.task_id)
+    trackTasks([task])
+    writeConnectionTest.value = {
+      ...writeConnectionTest.value,
+      task_status: task.task_status,
+      message: task.message,
+    }
+    ElMessage.success('已请求停止表单连接测试')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '表单连接测试停止失败'))
+  }
+}
+
+function closeWriteDialog(): void {
+  stopWriteTestPolling()
+  clearWriteSecrets()
 }
 
 async function saveWrite(): Promise<void> {
@@ -1279,8 +1406,9 @@ function errorMessage(cause: unknown, fallback: string): string {
       <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="clearWriteSecrets">
+    <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="closeWriteDialog">
       <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
+      <el-alert v-if="writeConnectionTest" :title="`${writeConnectionTest.protocol || writeTestProtocol} · ${writeConnectionTest.task_status} · ${writeConnectionTest.message || '等待结果'}`" :type="writeConnectionTest.success === true ? 'success' : writeConnectionTest.success === false ? 'error' : 'info'" :description="`Task ID: ${writeConnectionTest.task_id}${writeConnectionTest.suggestion ? `；建议：${writeConnectionTest.suggestion}` : ''}`" show-icon :closable="false" />
       <el-form label-width="118px" class="device-write-form">
         <div class="form-grid">
           <section class="form-section"><h3>基础信息</h3>
@@ -1333,7 +1461,7 @@ function errorMessage(cause: unknown, fallback: string): string {
           </div>
         </div></section>
       </el-form>
-      <template #footer><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></template>
+      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-button :icon="Connection" :loading="writeConnectionLoading" :disabled="!availableWriteTestProtocols.length || Boolean(writeConnectionTest && !writeTestTerminal) || !isFeatureEnabled('web.device_connection_test') || !isFeatureEnabled('web.device_management_write')" @click="testWriteConnection">测试表单连接</el-button><el-button v-if="writeConnectionTest && !writeTestTerminal" type="danger" plain @click="cancelWriteConnectionTest">停止测试</el-button></div><div><el-button @click="writeVisible = false">取消</el-button><el-button type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">
@@ -1416,6 +1544,8 @@ function errorMessage(cause: unknown, fallback: string): string {
 .command-row + .command-row { margin-top: 8px; }
 .command-row code { overflow-wrap: anywhere; }
 .device-write-form { max-height: 70vh; padding: 18px 4px 0; overflow-y: auto; }
+.write-footer, .write-test-actions { display: flex; align-items: center; gap: 8px; }
+.write-footer { justify-content: space-between; flex-wrap: wrap; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-grid.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-section { padding: 14px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }

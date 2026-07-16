@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。本分支完成第一批写入与导入安全收口，但统一任务窗口的取消、Artifact 授权和重启恢复改动仍由 `codex/electron-task-center-window@fe2c54e8` 单写，尚未进入本分支，因此当前状态为 `PARTIAL / BLOCKED_ON_TASK_WINDOW`，不是 `COMPLETE`。
+设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。本分支完成写入、未保存表单连接测试、诊断 Artifact、全部 Qt 导入导出格式和终端受控启动的模块侧闭环；统一任务窗口的跨页面任务列表、Artifact 一次性授权和重启恢复改动仍由 `codex/electron-task-center-window@fe2c54e8` 单写，尚未进入本分支，因此当前状态为 `PARTIAL / BLOCKED_ON_TASK_WINDOW`，不是 `COMPLETE`。
 
 普通浏览器不再是正式产品入口。本页仍可在源码开发服务器中联调真实 API（包括受控写操作），但不形成独立页面、业务分支、发布包或验收链；外部终端、原生文件选择和受管下载只以 Electron Desktop 为正式行为基准。
 
@@ -27,7 +27,7 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 
 - 筛选：关键词、厂商、设备类型、分组；Electron 额外提供连接状态、排序字段和升降序，不改变 Qt 语义。
 - Qt 表格列：选择、名称、分组、系统名、站点、主地址、备用地址、协议、更新时间。
-- Electron 保留上述列并显示厂商/类型和最近连接状态；额外列不能替代 Qt 列。
+- Electron 按上述顺序保留全部 Qt 列，并在其后追加最近连接状态与操作列；厂商/类型仍作为筛选和详情字段，不冒充主表额外列。
 - 选择行为：表头全选当前页、逐行多选、清空、反选；翻页后按当前页数据重新同步。
 - 行为：双击/详情入口、编辑、删除；右键包含详情、复制设备、外部终端、编辑、删除、复制当前单元格/名称/主地址/备用地址/系统名/站点/整行/设备信息。
 
@@ -65,7 +65,7 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 | 右键详情、复制、外部终端、编辑、删除 | 对应真实入口齐全；复制当前单元格/名称/主备地址/系统名/站点/整行/设备信息使用系统剪贴板 | 已实现，待人工对照 |
 | 新增、编辑、复制 | 真实 Repository 写入；表单校验失败返回 422 并显示错误，成功刷新列表/详情；复制生成新 UUID | 已实现，待人工对照 |
 | 秘密字段编辑 | 保持/替换/显式清除三态；DTO 严格白名单；API/日志/任务不回显 | 已实现，待人工对照 |
-| `DeviceDialog` 测试连接 | Electron 对已保存设备提供 SSH/Telnet/SNMP 真实任务；尚未支持使用未保存表单及秘密测试 | 缺口，需一次性秘密注入契约 |
+| `DeviceDialog` 测试连接 | 新增/编辑对话框直接提交当前未保存字段；SSH/Telnet/SNMP 均进入正式 Job，凭据只经进程内一次性回环通道传给 worker，不写 Task 参数、响应、日志或数据库；编辑态空秘密保持旧值，显式清除立即用于本次测试但不写库 | 已实现，真实设备待验收 |
 | 单删、批删及取消 | 二次确认后签发绑定设备集合的短期一次性 token；取消不写库 | 已实现，待人工对照 |
 | 分组新增、重命名、删除、批量设置/清空 | 真实 Device Group Repository；删除后设备回到未分组 | 已实现，待人工对照 |
 | 单台/批量连接测试 | 正式 SSH/Telnet/SNMP worker、持久 Task、超时/失败/取消；真实设备待验收 | `REAL_DEVICE_PENDING` 前置未满足 |
@@ -73,13 +73,14 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 | 详情概览、接口、光模块、LLDP、轨旁 AP 业务 | 五个真实数据 Tab；空数据和加载/失败状态齐全 | 已实现，待人工对照 |
 | 接口/光模块/LLDP 历史分页 | 真实历史 API，支持页码和 20/50/100/200 页大小 | 已实现，待人工对照 |
 | 刷新详情、刷新光模块、AC Web | 正式后台任务；HTTPS URL 只通过 Electron 白名单外链动作 | 已实现，真实设备待验收 |
-| 诊断下载 | 正式诊断服务、持久 Task、受控 ZIP Artifact、取消/失败清理 | 已实现，真实设备待验收 |
+| 诊断下载 | 正式诊断服务、持久 Task、受控 ZIP Artifact（原始诊断文件、摘要、manifest、SHA-256/大小）；取消/失败清理，重启清理仅回收无活动 Task 归属的临时包 | 已实现，真实设备待验收 |
 | CSV 导入 | 受控上传、预览错误/重复行、拒绝/跳过/仍新增、确认/取消、备份、单事务、审计和重启清理 | 已实现，待人工对照 |
 | CSV（含/不含凭据）与模板导出 | 独立 Export Process 生成真实 CSV Artifact；敏感导出二次确认 | 已实现，待人工对照 |
 | SecureCRT 会话导出 | 内置或受控 `.ini` 模板生成真实 ZIP Artifact；敏感模板成功/失败均清理 | 已实现，待人工对照 |
 | OmniPeek 预览/选择/强制异常项/导出 | 后台真实预览与 `.nam` Artifact；异常项需显式强制 | 已实现，待人工对照 |
 | SecureCRT/Xshell/PuTTY 配置和单/批量启动 | 严格终端类型、设备 ID、可执行文件名白名单；`shell=False`；超过 20 台需一次性 token | 已实现，真实本机软件待验收 |
-| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页仅保留当前会话轮询，不再自建浏览器任务存储 | `BLOCKED_ON_TASK_WINDOW` |
+| 文件下载、打开、所在目录 | FastAPI 按 Task/Artifact/SHA-256/大小验证；Electron 受管下载成功后只使用 Native Bridge 返回的当前会话授权句柄调用 `openPath`/`showItemInFolder`，不向桥提交 Renderer 自造路径；重启后授权失效需重新下载 | 模块侧已实现；诊断下载路由待共享 allowlist 合入 |
+| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页仅保留当前会话轮询，不再自建浏览器任务存储；表单秘密通道在取消/完成/宿主停止时关闭，重启中断时不恢复秘密而安全失败 | `BLOCKED_ON_TASK_WINDOW` |
 
 Qt 的窗口置顶、窗口几何和 Qt 专属子窗口生命周期属于外壳行为，不复制为第二套 Vue 业务状态；Electron 对应能力由正式桌面壳统一承担。采集日志的持久查看、统一停止和 Artifact 一次性授权也归统一任务窗口，设备页不再复制一套。
 
@@ -117,7 +118,7 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 | 列表/详情/历史 | `GET /api/device-management/devices`、`GET /devices/{uuid}`、`GET /devices/{uuid}/history` |
 | CRUD/复制/删除 | `POST /devices`、`PUT /devices/{uuid}`、`POST /devices/{uuid}/duplicate`、`POST /devices/delete-confirmation`、`POST /devices/batch-delete` |
 | 分组 | `GET/POST /groups`、`PATCH/DELETE /groups/{id}`、`POST /groups/assign` |
-| 连接/采集/诊断 | `POST /devices/{uuid}/connection-tests`、`POST /devices/batch-connection-tests`、`POST /devices/batch-refresh-details`、`POST /devices/{uuid}/refresh-optical`、`POST /diagnostic-download` |
+| 连接/采集/诊断 | `POST /connection-tests/form`、`POST /devices/{uuid}/connection-tests`、`POST /devices/batch-connection-tests`、`POST /devices/batch-refresh-details`、`POST /devices/{uuid}/refresh-optical`、`POST /diagnostic-download`、`GET /diagnostics/{task}/download` |
 | 导入 | `POST /imports/preview`、`POST /imports/confirm` |
 | 导出 | `POST /exports/csv`、`/template`、`/securecrt`、`/securecrt-with-template`、`/omnipeek-preview`、`/omnipeek`；`GET /exports/{task}` 和受控下载 |
 | 任务 | `GET /tasks/{task}`、`POST /tasks/{task}/cancel` |
@@ -135,7 +136,7 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 ## 自动化证据
 
-- `tests/test_device_management_web_api.py`：真实临时 SQLite、CRUD、筛选排序分页、分组、删除 token、凭据边界、连接/采集/光模块/诊断任务、导入预览确认、CSV/SecureCRT/OmniPeek Artifact、终端白名单和任务隔离。
+- `tests/test_device_management_web_api.py`：真实临时 SQLite、CRUD、筛选排序分页、分组、删除 token、凭据边界、已保存/未保存表单连接、采集/光模块/诊断 ZIP、导入预览确认；CSV 含/不含凭据、模板、SecureCRT、OmniPeek 均实际启动独立 Export Process 并经 API 下载；三类终端经 `LocalDesktopAdapter` 以 `shell=False` 启动。
 - `tests/test_desktop_action_service.py`：动态登记终端动作、审计字段和命令解释器拒绝。
 - `tests/test_web_architecture.py`：Desktop 使用非 Qt `LocalDesktopAdapter`，Server 不具备本机动作。
 - `apps/web/src/views/devices/DeviceManagementView.test.ts`：页面状态、筛选、详情 Tab、选择、真实 CRUD、凭据三态、当前会话任务轮询、受控下载、终端和 OmniPeek 预览入口。
@@ -162,11 +163,11 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 ## 未完成验收
 
-- 统一任务窗口：`BLOCKED_ON_TASK_WINDOW`。本分支已删除设备页面 `sessionStorage` 任务系统；待集成 `codex/electron-task-center-window@fe2c54e8` 后，设备任务必须消费统一任务列表、取消和 Artifact 一次性授权契约，冲突解决时保留本分支的页面存储删除结果。
-- Qt `DeviceDialog` 的“测试连接”可使用尚未保存的表单和凭据；当前 Electron 只对已持久化设备提供 SSH/Telnet/SNMP 真实任务测试。若不新增持久化秘密副本，需要共享任务执行层提供不落 Task 参数/日志的一次性秘密注入契约；在此之前不得标记完整对等。
+- 统一任务窗口：`BLOCKED_ON_TASK_WINDOW`。本分支已删除设备页面 `sessionStorage` 任务系统；待集成 `codex/electron-task-center-window@fe2c54e8` 后，设备任务必须消费统一任务列表、取消和 Artifact 一次性授权契约，冲突解决时保留本分支的页面存储删除结果。模块下载结果同时兼容基线 `savedPath` 和共享分支 `capabilityId`，打开/定位只回传该授权值；共享分支需在 `apps/desktop_electron/src/shared/validation.ts` 的 `DOWNLOAD_ENDPOINTS` 增加 `/api/device-management/diagnostics/{task}/download` 严格规则（仅允许并要求 `artifact_id`），其现有 `OPENABLE_ARTIFACT_SUFFIXES` 已包含 `.nam`。不得回退为 Renderer 任意路径或 Python 任意程序执行。
+- 未保存表单连接测试在应用进程重启时不会持久化或恢复秘密；后台 Task 会安全失败/取消并由统一任务窗口呈现，用户需重新提交。这是凭据不落盘边界，不以第二套秘密存储换取自动续跑。
 - 人工 Qt/Electron 对照：`NOT_STARTED`，不能由自动化代替。
 - 真实设备：SSH/Telnet/SNMP、H3C 详情、光模块和诊断下载待现场设备验证。
 - SecureCRT/Xshell/PuTTY：需要用户本机实际安装路径与交互验证。
 - 截图：待人工验收时存入版本化文档资产目录，再在本文登记；临时剪贴板路径不得写入仓库。
 
-共享依赖与表单测试缺口补齐并完成人工软件流程后，若只剩现场设备，状态才可升级为 `REAL_DEVICE_PENDING`；所有必需现场项通过后才能升级为 `COMPLETE`。
+共享任务窗口依赖补齐并完成人工软件流程后，若只剩现场设备，状态才可升级为 `REAL_DEVICE_PENDING`；所有必需现场项通过后才能升级为 `COMPLETE`。
