@@ -4,11 +4,13 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import csv
 import hashlib
+from io import BytesIO
 import json
 import os
 import sys
 import zipfile
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
@@ -28,8 +30,13 @@ from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
-from netconsole.models.api.device_management import DeviceImportConfirmRequestDTO
+from netconsole.models.api.device_management import (
+    DeviceImportConfirmRequestDTO,
+    DeviceSecureCrtExportRequestDTO,
+    DeviceTaskReferenceDTO,
+)
 from netconsole.models.device import Device
 from netconsole.models.snmp_models import DeviceSnmpProfileResult
 from netconsole.models.task_snapshot import TaskSnapshot
@@ -39,6 +46,8 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_management_web_service import (
     DEVICE_CONNECTION_TEST_TASK_TYPE,
+    DEVICE_OPTICAL_REFRESH_TASK_TYPE,
+    DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE,
     DEVICE_IMPORT_CLAIM_GRACE_SECONDS,
     DEVICE_IMPORT_PREVIEW_TTL_SECONDS,
     DEVICE_IMPORT_TASK_TYPE,
@@ -49,6 +58,7 @@ from netconsole.services.device_management_web_service import (
     run_device_connection_test,
     run_device_detail_collect,
     run_device_diagnostic_download,
+    run_device_optical_refresh,
 )
 from netconsole.services.device_import_export import TEMPLATE_FIELDS
 from netconsole.services.job_center.job_context import JobContext
@@ -98,7 +108,7 @@ class _FakeDesktopAdapter:
 def _desktop_actions(
     tmp_path: Path, *device_uuids: str
 ) -> tuple[DesktopActionService, _FakeDesktopAdapter]:
-    executable = tmp_path / "registered-terminal.exe"
+    executable = tmp_path / "SecureCRT.exe"
     executable.write_bytes(b"fake executable")
     adapter = _FakeDesktopAdapter()
     terminals = {
@@ -163,6 +173,9 @@ def _fixture(tmp_path: Path):
     adapter = _CapturingProcessAdapter(tasks)
     desktop_actions, _desktop_adapter = _desktop_actions(
         tmp_path, str(mr.device_uuid), str(sw.device_uuid)
+    )
+    SettingsStore(paths).set_value(
+        "external_terminal/securecrt_path", str(tmp_path / "SecureCRT.exe")
     )
     service = DeviceManagementWebService(
         paths,
@@ -267,10 +280,42 @@ def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
     assert body["recent_collection"]["collect_type"] == "device_detail"
     assert body["recent_tasks"][0]["task_id"] == "device-test-ssh-failed"
     assert body["connection_commands"][0]["command"] == "ssh -p 22 192.0.2.12"
+    assert body["device"]["web_url"] == "https://192.0.2.12:443"
     assert "***" in response.text
     assert "secret-password" not in response.text
     assert "telnet-secret" not in response.text
     assert "raw_log" not in response.text
+
+
+def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) -> None:
+    client, _service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
+    for collected_at, link_status in (
+        ("2026-07-16T10:00:00", "DOWN"),
+        ("2026-07-16T11:00:00", "UP"),
+    ):
+        facts.append_interface_history(
+            {
+                "device_uuid": str(mr.device_uuid),
+                "interface_name": "GE1/0/1",
+                "collected_at": collected_at,
+                "link_status": link_status,
+            }
+        )
+
+    response = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/history",
+        params={
+            "kind": "interface",
+            "object_name": "GE1/0/1",
+            "page": 1,
+            "page_size": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert response.json()["total_pages"] == 2
+    assert response.json()["items"][0]["link_status"] == "UP"
 
 
 def test_edit_preview_is_whitelisted_validated_and_never_persists(tmp_path: Path) -> None:
@@ -524,11 +569,104 @@ def test_router_exposes_device_management_parity_endpoints_without_arbitrary_ter
         "/api/device-management/exports/csv",
         "/api/device-management/exports/template",
         "/api/device-management/exports/securecrt",
+        "/api/device-management/exports/securecrt-with-template",
         "/api/device-management/exports/omnipeek",
+        "/api/device-management/exports/omnipeek-preview",
         "/api/device-management/diagnostic-download",
         "/api/device-management/devices/{device_uuid}/external-terminal",
     }.issubset(posts)
     assert not any("password" in path or "secret" in path or path.endswith("/shell") for path in device_paths)
+
+
+def test_omnipeek_export_requires_real_background_preview_and_selection(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    started = client.post(
+        "/api/device-management/exports/omnipeek-preview",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert started.status_code == 202
+    task_id = started.json()["task_id"]
+    assert adapter.jobs[-1].task_type == DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE
+    assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
+    assert adapter.jobs[-1].params["selected_device_uuids"] == [
+        str(mr.device_uuid)
+    ]
+
+    pending = service.task_service.repository("demo").get(task_id)
+    assert pending is not None
+    service.task_service.repository("demo").save(
+        replace(
+            pending,
+            status=TaskState.COMPLETED,
+            result={
+                "items": [
+                    {
+                        "key": "device-mr2",
+                        "role": "onboard_mr",
+                        "name": "MR2",
+                        "physical_mac": "0011-2233-4455",
+                        "selected": True,
+                        "force_export": False,
+                        "status": "正常",
+                        "warnings": [],
+                    }
+                ],
+                "source_counts": {"设备管理": 1},
+                "stats": {"total": 1, "selected": 1, "abnormal": 0},
+            },
+        )
+    )
+    preview = client.get(
+        f"/api/device-management/exports/omnipeek-preview/{task_id}"
+    )
+    assert preview.status_code == 200
+    assert preview.json()["ready"] is True
+    assert preview.json()["items"][0]["key"] == "device-mr2"
+    assert "secret-password" not in preview.text
+
+
+def test_securecrt_optional_template_is_uploaded_to_controlled_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_start_export(site, export_type, extension, payload, action):
+        captured.update(
+            site=site,
+            export_type=export_type,
+            extension=extension,
+            payload=payload,
+            action=action,
+        )
+        return DeviceTaskReferenceDTO(
+            task_id="device-export-securecrt-template",
+            task_status="PENDING",
+            action="securecrt_sessions",
+        )
+
+    monkeypatch.setattr(service, "_start_export", fake_start_export)
+    response = client.post(
+        "/api/device-management/exports/securecrt-with-template",
+        data={"selection": json.dumps({"device_uuids": [str(mr.device_uuid)]})},
+        files={"file": ("session.ini", b"S:\\Hostname=%HOST%", "text/plain")},
+    )
+
+    assert response.status_code == 202
+    template = Path(str(captured["payload"]["template_ini"]))
+    assert template.is_relative_to(service._artifact_root("demo"))
+    assert template.read_bytes() == b"S:\\Hostname=%HOST%"
+    service._remove_controlled_file(template, service._artifact_root("demo"))
+
+    rejected = client.post(
+        "/api/device-management/exports/securecrt-with-template",
+        data={"selection": "{}"},
+        files={"file": ("session.txt", b"unsafe", "text/plain")},
+    )
+    assert rejected.status_code == 422
+    assert not list(service._artifact_root("demo").glob(".securecrt-template-*.ini"))
 
 
 def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp_path: Path) -> None:
@@ -562,11 +700,31 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     assert removed_group.json() == {"deleted": True}
     assert devices.get_by_uuid(str(sw.device_uuid)).group_id is None
 
-    rejected_secret = client.post(
+    secret_value = "must-not-be-echoed"
+    accepted_secret = client.post(
         "/api/device-management/devices",
-        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_password": "must-not-be-accepted"},
+        json={"name": "Web-secret", "primary_address": "192.0.2.32", "ssh_password": secret_value},
     )
-    assert rejected_secret.status_code == 422
+    assert accepted_secret.status_code == 201
+    secret_uuid = accepted_secret.json()["device"]["device_uuid"]
+    assert secret_value not in accepted_secret.text
+    assert "password" not in accepted_secret.text.lower()
+    assert devices.get_by_uuid(secret_uuid).ssh_password == secret_value
+
+    preserved_secret = client.put(
+        f"/api/device-management/devices/{secret_uuid}",
+        json={"name": "Web-secret-updated", "primary_address": "192.0.2.33", "ssh_password": ""},
+    )
+    assert preserved_secret.status_code == 200
+    assert secret_value not in preserved_secret.text
+    assert "password" not in preserved_secret.text.lower()
+    assert devices.get_by_uuid(secret_uuid).ssh_password == secret_value
+
+    detail = client.get(f"/api/device-management/devices/{secret_uuid}")
+    assert detail.status_code == 200
+    assert detail.json()["device"]["ssh_secret_configured"] is True
+    assert secret_value not in detail.text
+    assert "password" not in detail.text.lower()
 
     token = client.post("/api/device-management/devices/delete-confirmation", json={"device_uuids": [created_uuid]})
     assert token.status_code == 200
@@ -1083,6 +1241,35 @@ def test_device_export_spawn_failure_uses_fixed_worker_and_cleans_job_files(tmp_
     assert "output_path" not in reference.model_dump()
 
 
+def test_securecrt_spawn_and_sensitive_cleanup_failure_still_marks_task_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    def fail_popen(*_args: object, **_kwargs: object) -> None:
+        raise OSError("worker unavailable")
+
+    def fail_cleanup(*_args: object, **_kwargs: object) -> None:
+        raise OSError("template locked")
+
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.subprocess.Popen",
+        fail_popen,
+    )
+    monkeypatch.setattr(service, "_cleanup_export_files", fail_cleanup)
+    reference = service.start_securecrt_export(
+        DeviceSecureCrtExportRequestDTO(device_uuids=[str(mr.device_uuid)]),
+        template_name="session.ini",
+        template_stream=BytesIO(b"S:\\Hostname=%HOST%"),
+    )
+
+    assert reference.task_status == TaskState.FAILED.value
+    assert reference.task_id not in service._export_artifacts
+    snapshot = service.task_service.repository("demo").get(reference.task_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.FAILED
+
+
 def test_device_export_lifecycle_stop_uses_task_site_and_marks_cancelled(tmp_path: Path) -> None:
     _client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     now = datetime.now(UTC).isoformat()
@@ -1312,6 +1499,41 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
     assert adapter.jobs[-1].params["task_source"] == "local"
     collect_task_id = refreshed.json()["tasks"][0]["task_id"]
+    duplicate_refresh = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert duplicate_refresh.status_code == 422
+    assert "正在运行" in duplicate_refresh.text
+    blocked_optical = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
+    )
+    assert blocked_optical.status_code == 422
+    assert "详情采集任务正在运行" in blocked_optical.text
+    service.task_service.record_external_event(
+        collect_task_id,
+        "cancelled",
+        {"message": "测试结束详情采集", "cancelled": True},
+        site_name="demo",
+    )
+    optical = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
+    )
+    assert optical.status_code == 202
+    assert adapter.jobs[-1].task_type == DEVICE_OPTICAL_REFRESH_TASK_TYPE
+    job_count = len(adapter.jobs)
+    repeated_optical = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
+    )
+    assert repeated_optical.status_code == 202
+    assert repeated_optical.json()["task_id"] == optical.json()["task_id"]
+    assert len(adapter.jobs) == job_count
+    blocked_refresh = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert blocked_refresh.status_code == 422
+    assert "正在运行" in blocked_refresh.text
     diagnostic = client.post(
         "/api/device-management/diagnostic-download",
         json={"device_uuids": [str(mr.device_uuid)]},
@@ -1320,7 +1542,7 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     detail = client.get(
         f"/api/device-management/devices/{mr.device_uuid}"
     ).json()
-    assert {collect_task_id, diagnostic.json()["task_id"]} <= {
+    assert {collect_task_id, optical.json()["task_id"], diagnostic.json()["task_id"]} <= {
         task["task_id"] for task in detail["recent_tasks"]
     }
 
@@ -1337,7 +1559,7 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     desktop_adapter = service.desktop_action_service.adapter
     assert isinstance(desktop_adapter, _FakeDesktopAdapter)
     assert [call.executable.name for call in desktop_adapter.terminal_calls] == [
-        "registered-terminal.exe"
+        "SecureCRT.exe"
     ]
     assert "secret-password" not in terminal.text
 
@@ -1348,6 +1570,114 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
         )
         assert forged.status_code == 422
     assert len(desktop_adapter.terminal_calls) == 1
+
+    batch_terminal = client.post(
+        "/api/device-management/external-terminal/launch",
+        json={
+            "device_uuids": [str(mr.device_uuid), str(_sw.device_uuid)],
+            "terminal_type": "securecrt",
+        },
+    )
+    assert batch_terminal.status_code == 200
+    assert batch_terminal.json()["success"] == 2
+    assert batch_terminal.json()["failed"] == 0
+    assert len(desktop_adapter.terminal_calls) == 3
+
+
+def test_large_external_terminal_batch_requires_scoped_single_use_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    device_uuids = [str(mr.device_uuid)]
+    for index in range(20):
+        created = devices.create(
+            Device(
+                name=f"批量终端-{index + 1}",
+                primary_address=f"198.51.100.{index + 1}",
+                ssh_enabled=True,
+                ssh_username="admin",
+                ssh_password="secret",
+            )
+        )
+        device_uuids.append(str(created.device_uuid))
+
+    rejected = client.post(
+        "/api/device-management/external-terminal/launch",
+        json={"device_uuids": device_uuids, "terminal_type": "securecrt"},
+    )
+    assert rejected.status_code == 422
+    assert "确认 token" in rejected.text
+
+    confirmation = client.post(
+        "/api/device-management/external-terminal/confirmation",
+        json={"device_uuids": device_uuids, "terminal_type": "securecrt"},
+    )
+    assert confirmation.status_code == 200
+    token = confirmation.json()["confirmation_token"]
+    launched = client.post(
+        "/api/device-management/external-terminal/launch",
+        json={
+            "device_uuids": device_uuids,
+            "terminal_type": "securecrt",
+            "confirmation_token": token,
+        },
+    )
+    assert launched.status_code == 200
+    assert launched.json()["success"] == 21
+    desktop_adapter = service.desktop_action_service.adapter
+    assert isinstance(desktop_adapter, _FakeDesktopAdapter)
+    assert len(desktop_adapter.terminal_calls) == 21
+
+    replayed = client.post(
+        "/api/device-management/external-terminal/launch",
+        json={
+            "device_uuids": device_uuids,
+            "terminal_type": "securecrt",
+            "confirmation_token": token,
+        },
+    )
+    assert replayed.status_code == 422
+
+
+def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_executables(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    settings = client.get("/api/device-management/external-terminal/settings")
+    assert settings.status_code == 200
+    assert settings.json()["securecrt_path"].endswith("SecureCRT.exe")
+
+    xshell = tmp_path / "Xshell.exe"
+    putty = tmp_path / "putty.exe"
+    xshell.write_bytes(b"fake executable")
+    putty.write_bytes(b"fake executable")
+    updated = client.put(
+        "/api/device-management/external-terminal/settings",
+        json={
+            **settings.json(),
+            "terminal_type": "xshell",
+            "xshell_path": str(xshell),
+            "putty_path": str(putty),
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["terminal_type"] == "xshell"
+    assert updated.json()["xshell_path"] == str(xshell.resolve())
+
+    command_interpreter = tmp_path / "cmd.exe"
+    command_interpreter.write_bytes(b"not allowed")
+    rejected = client.put(
+        "/api/device-management/external-terminal/settings",
+        json={**updated.json(), "securecrt_path": str(command_interpreter)},
+    )
+    assert rejected.status_code == 422
+    assert "文件名不匹配" in rejected.text
+
+    service.desktop_action_service.runtime_mode = RuntimeMode.SERVER
+    assert (
+        client.get("/api/device-management/external-terminal/settings").status_code
+        == 422
+    )
 
 
 def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type(
@@ -1438,3 +1768,43 @@ def test_device_detail_collect_handler_uses_formal_collector_without_real_device
     assert result["total"] == 2
     assert result["success"] == 2
     assert result["failed"] == 0
+
+
+def test_device_optical_refresh_handler_uses_formal_service(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    calls: list[str] = []
+
+    def fake_refresh(device: Device, site: str, *, repository, paths):
+        calls.append(str(device.device_uuid))
+        assert site == "demo"
+        assert repository is not None
+        assert paths is service.paths
+        return SimpleNamespace(
+            success=True,
+            device_uuid=str(device.device_uuid),
+            collect_run_uuid="optical-run",
+            interfaces_updated=1,
+            optical_modules_updated=2,
+            error_message="",
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_optical_refresh_service.refresh_h3c_device_optical",
+        fake_refresh,
+    )
+    result = run_device_optical_refresh(
+        JobContext(
+            "device-optical-handler",
+            DEVICE_OPTICAL_REFRESH_TASK_TYPE,
+            {"site_name": "demo", "device_uuid": str(mr.device_uuid)},
+            None,
+            lambda: False,
+            service.paths,
+        )
+    )
+
+    assert calls == [str(mr.device_uuid)]
+    assert result["success"] is True
+    assert result["optical_modules_updated"] == 2

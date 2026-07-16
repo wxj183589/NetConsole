@@ -10,7 +10,7 @@ from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.infrastructure.desktop import BrowserDesktopAdapter, UnavailableDesktopAdapter
+from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api import AgentStatusDTO, ApiResponse, ErrorDetail, ErrorResponse, TaskDTO, TaskEventDTO
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
@@ -100,7 +100,7 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
         is app.state.desktop_action_service
     )
     expected_desktop_adapter = (
-        BrowserDesktopAdapter
+            LocalDesktopAdapter
         if runtime_mode is RuntimeMode.DESKTOP
         else UnavailableDesktopAdapter
     )

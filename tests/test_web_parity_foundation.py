@@ -224,7 +224,12 @@ def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> N
 
 
 def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
-    matrix = (Path(__file__).resolve().parents[1] / "docs" / "WEB_QT_PARITY_MATRIX.md").read_text(encoding="utf-8")
+    matrix = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "development"
+        / "qt-electron-parity-matrix.md"
+    ).read_text(encoding="utf-8")
     for title in (
         "设备管理",
         "AC 管理",
@@ -243,12 +248,61 @@ def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
         assert title in matrix
     for state in (
         "NOT_STARTED",
+        "UI_ONLY",
         "READ_ONLY",
-        "PREVIEW_ONLY",
-        "CONTROLLED_WRITE",
-        "FAKE_ACCEPTED",
-        "REAL_ACCEPTED",
-        "REPLACE_READY",
-        "EXCLUDED",
+        "FAKE",
+        "PARTIAL",
+        "IMPLEMENTED_UNVERIFIED",
+        "REAL_DEVICE_PENDING",
+        "COMPLETE",
+        "BLOCKED",
     ):
         assert state in matrix
+    for legacy_state in (
+        "IN_PROGRESS",
+        "CONTROLLED_WRITE",
+        "FAKE_ACCEPTED",
+        "FOUNDATION_READY",
+        "FUTURE_REBUILD",
+    ):
+        assert f"`{legacy_state}`" not in matrix
+    assert "| 设备管理 | 设备管理 |" in matrix
+    assert "| `IMPLEMENTED_UNVERIFIED` |" in matrix
+
+
+def test_module_migration_matrix_uses_canonical_states_and_electron_product() -> None:
+    matrix = (
+        Path(__file__).resolve().parents[1] / "docs" / "WEB_MIGRATION_MATRIX.md"
+    ).read_text(encoding="utf-8")
+    for legacy_state in (
+        "IN_PROGRESS",
+        "CONTROLLED_WRITE",
+        "FAKE_ACCEPTED",
+        "FOUNDATION_READY",
+        "FUTURE_REBUILD",
+    ):
+        assert f"`{legacy_state}`" not in matrix
+    assert "先将 Electron 设为默认入口" in matrix
+    assert "普通浏览器只保留源码开发、诊断和 API 联调用途" in matrix
+
+
+def test_current_architecture_docs_do_not_reintroduce_legacy_parity_states() -> None:
+    docs_root = Path(__file__).resolve().parents[1] / "docs"
+    content = "\n".join(
+        (docs_root / name).read_text(encoding="utf-8")
+        for name in (
+            "ARCHITECTURE_NEXT.md",
+            "ELECTRON_DESKTOP.md",
+            "WEB_ARCHITECTURE.md",
+            "WEB_MIGRATION_PLAN.md",
+            "WEB_MIGRATION_MATRIX.md",
+        )
+    )
+    for legacy_state in (
+        "FOUNDATION_READY",
+        "EXCLUDED/FUTURE_REBUILD",
+        "FAKE_ACCEPTED",
+        "CONTROLLED_WRITE",
+        "IN_PROGRESS",
+    ):
+        assert legacy_state not in content

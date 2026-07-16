@@ -24,6 +24,7 @@ describe('preload bridge', () => {
       'getBackendStatus',
       'getRuntimeConfig',
       'onBackendStatusChanged',
+      'openExternalUrl',
       'openPath',
       'reportRendererReady',
       'selectDirectory',
@@ -56,6 +57,7 @@ describe('preload bridge', () => {
       apiPath: 'https://example.com/report.zip',
       suggestedName: 'report.zip',
     })).toThrow()
+    expect(() => bridge.openExternalUrl('http://192.0.2.10/')).toThrow()
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 })

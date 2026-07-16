@@ -133,6 +133,35 @@ def test_fake_adapter_covers_every_allowed_action_with_registered_targets(tmp_pa
     )
 
 
+def test_application_service_can_launch_a_validated_dynamic_terminal(tmp_path: Path) -> None:
+    service, adapter, controlled, _artifact = _fixture(tmp_path)
+    launch = RegisteredLaunch(
+        controlled / "bin" / "SecureCRT.exe",
+        ("/SSH2", "/P", "22", "192.0.2.10"),
+    )
+
+    result = service.launch_terminal("terminal.securecrt", "device-2", launch)
+
+    assert result.success is True
+    assert adapter.calls[-1] == (
+        "launch_registered_terminal",
+        RegisteredLaunch(
+            (controlled / "bin" / "SecureCRT.exe").resolve(),
+            ("/SSH2", "/P", "22", "192.0.2.10"),
+            (controlled / "bin").resolve(),
+        ),
+    )
+
+    command = controlled / "bin" / "cmd.exe"
+    command.write_bytes(b"cmd")
+    rejected = service.launch_terminal(
+        "terminal.securecrt",
+        "device-2",
+        RegisteredLaunch(command, ("/c", "calc")),
+    )
+    assert rejected.code == "forbidden_executable"
+
+
 @pytest.mark.parametrize(
     "forged_id",
     [

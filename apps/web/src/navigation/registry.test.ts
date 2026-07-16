@@ -68,4 +68,9 @@ describe('Web navigation registry', () => {
     expect(new Set(ids).size).toBe(ids.length)
     expect(new Set(routes).size).toBe(routes.length)
   })
+
+  it('keeps device management at implemented but unverified', () => {
+    const device = flattenNavigation().find((item) => item.navigation_id === 'devices')
+    expect(device?.parity_state).toBe('IMPLEMENTED_UNVERIFIED')
+  })
 })

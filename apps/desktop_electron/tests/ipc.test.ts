@@ -36,6 +36,7 @@ function createHarness(overrides: {
   const shell = {
     openPath: vi.fn(async () => ''),
     showItemInFolder: vi.fn(),
+    openExternal: vi.fn(async () => undefined),
   }
   registerDesktopIpc({
     ipcMain,
@@ -102,6 +103,17 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!
 
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
+  })
+
+  it('opens only credential-free HTTPS urls in the system browser', async () => {
+    const { ipcMain, sender, shell } = createHarness()
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openExternalUrl)!
+
+    await expect(handler({ sender }, 'https://192.0.2.10:8443')).resolves.toEqual({ success: true })
+    await expect(handler({ sender }, 'http://192.0.2.10/')).resolves.toEqual({ success: false, error: '桌面操作失败' })
+    await expect(handler({ sender }, 'https://admin:secret@192.0.2.10/')).resolves.toEqual({ success: false, error: '桌面操作失败' })
+    expect(shell.openExternal).toHaveBeenCalledOnce()
+    expect(shell.openExternal).toHaveBeenCalledWith('https://192.0.2.10:8443/')
   })
 
   it('rejects arbitrary backend download URLs at the main-process boundary', async () => {

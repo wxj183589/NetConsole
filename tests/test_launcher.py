@@ -111,8 +111,8 @@ def test_admin_network_manager_keeps_legacy_qt_child_path(monkeypatch) -> None:
         ("web", launcher.CapabilityReport(), launcher.ShellMode.BROWSER),
         ("server", launcher.CapabilityReport(), launcher.ShellMode.NONE),
         ("auto", launcher.CapabilityReport(qt_widgets_available=True), launcher.ShellMode.QT),
-        ("auto", launcher.CapabilityReport(external_browser_available=True), launcher.ShellMode.BROWSER),
-        ("auto", launcher.CapabilityReport(), launcher.ShellMode.NONE),
+        ("auto", launcher.CapabilityReport(external_browser_available=True), None),
+        ("auto", launcher.CapabilityReport(), None),
     ],
 )
 def test_shell_mode_resolution(mode, report, expected) -> None:
@@ -246,7 +246,7 @@ print('qt_imported=false')
     assert "qt_imported=false" in result.stdout
 
 
-def test_auto_qt_initialization_failure_falls_back_once(tmp_path: Path, monkeypatch) -> None:
+def test_auto_qt_initialization_failure_does_not_open_browser(tmp_path: Path, monkeypatch) -> None:
     import netconsole.launcher.runtime_supervisor as supervisor_module
 
     opened: list[str] = []
@@ -265,9 +265,9 @@ def test_auto_qt_initialization_failure_falls_back_once(tmp_path: Path, monkeypa
 
     result = launcher._launch_once(launcher.LaunchOptions("auto", "127.0.0.1", 8000, ()), PathResolver(tmp_path))
 
-    assert result == 0
-    assert len(_FakeRuntime.instances) == 1
-    assert opened == [_FakeRuntime.instances[0].base_url]
+    assert result == 2
+    assert _FakeRuntime.instances == []
+    assert opened == []
 
 
 def test_qt_probe_import_does_not_load_core_runtime(tmp_path: Path) -> None:
