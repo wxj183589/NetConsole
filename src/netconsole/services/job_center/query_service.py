@@ -169,16 +169,20 @@ class JobCenterQueryService:
         started = str(row.get("started_time") or "")
         finished = str(row.get("finished_time") or "")
         result_path = str(row.get("result_path") or "")
+        task_type = str(row.get("task_type") or "")
+        task_id = str(row["task_id"])
+        site_name = str(row.get("site_name") or "")
+        artifact_download = cls._artifact_download(task_type, task_id, site_name, result)
         return JobCenterTaskDTO(
-            id=str(row["task_id"]),
-            type=str(row.get("task_type") or ""),
+            id=task_id,
+            type=task_type,
             name=str(row.get("task_name") or row.get("task_type") or ""),
             status=status,
             progress=max(0, min(int(row.get("progress") or 0), 100)),
             phase=str(row.get("phase") or row.get("stage") or ""),
             stage=str(row.get("stage") or ""),
             message=str(row.get("message") or ""),
-            site_name=str(row.get("site_name") or ""),
+            site_name=site_name,
             owner=str(row.get("owner") or ""),
             executor=executor.upper(),
             source=source,
@@ -204,7 +208,34 @@ class JobCenterQueryService:
             records_count=cls._optional_int(result.get("records_count")),
             raw_output_reference=cls._first_text(result, "raw_output_reference"),
             parser_version=cls._first_text(result, "parser_version"),
+            module=cls._module(task_type),
+            cancellable=source == "local" and status in cls._ACTIVE_STATES,
+            cancel_reason="" if source == "local" and status in cls._ACTIVE_STATES else "任务 owner 未授权停止或任务已结束",
+            artifact_download=artifact_download,
+            artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
         )
+
+    @staticmethod
+    def _module(task_type: str) -> str:
+        if task_type.startswith("device_"):
+            return "devices"
+        if task_type.startswith("config_"):
+            return "config"
+        if task_type.startswith("file_"):
+            return "files"
+        return "other"
+
+    @staticmethod
+    def _artifact_download(task_type: str, task_id: str, site_name: str, result: dict[str, Any]) -> dict[str, object] | None:
+        artifact_id = str(result.get("artifact_id") or "")
+        name = str(result.get("display_name") or result.get("filename") or result.get("name") or "任务文件")
+        if task_type.startswith("device_") and artifact_id:
+            return {"apiPath": f"/api/device-management/exports/{task_id}/download", "query": {"artifact_id": artifact_id}, "suggestedName": name}
+        if task_type.startswith("config_") and artifact_id:
+            return {"apiPath": f"/api/config-collection/artifacts/{artifact_id}", "suggestedName": name}
+        if task_type.startswith("file_") and result.get("available"):
+            return {"apiPath": f"/api/file-management/downloads/{task_id}/file", "query": {"site_id": site_name}, "suggestedName": name}
+        return None
 
     @staticmethod
     def _optional_int(value: object) -> int | None:

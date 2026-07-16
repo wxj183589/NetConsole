@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 
 import { isFeatureEnabled } from '../../features'
 import {
@@ -35,6 +36,7 @@ import type {
 import { downloadBackendResource } from '../../platform/runtime'
 
 const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
+const router = useRouter()
 const devicePage = ref<ConfigDevicePage>(emptyPage)
 const snapshots = ref<ConfigSnapshot[]>([])
 const tasks = ref<ConfigTaskStatus[]>([])
@@ -58,8 +60,13 @@ const activeTaskIds = ref(new Set<string>())
 const handledTerminalTasks = new Set<string>()
 let pollTimer: ReturnType<typeof setInterval> | undefined
 
-const visibleTasks = computed(() => tasks.value.slice(0, 20))
 const hasActiveTasks = computed(() => activeTaskIds.value.size > 0)
+const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
+
+function openTaskWindow(): void {
+  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'config' })
+  else void router.push({ name: 'tasks', query: { module: 'config' } })
+}
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -514,19 +521,9 @@ function formatBytes(value: number): string {
       </div>
     </div>
 
-    <div class="content-card task-card">
-      <div class="card-heading"><div><h2>配置任务</h2><p>任务来自 Task Center，刷新页面后可恢复</p></div><div class="heading-actions"><el-button :disabled="!isFeatureEnabled('web.config_collection_open_directory')" @click="openResultDirectory">结果目录</el-button><el-button :loading="hasActiveTasks" @click="loadTasks">刷新任务</el-button></div></div>
-      <el-table :data="visibleTasks" stripe empty-text="暂无配置任务" @row-click="openTask">
-        <el-table-column prop="device_name" label="设备" min-width="170" />
-        <el-table-column prop="type" label="任务类型" min-width="250" />
-        <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="taskType(row)">{{ taskStatusLabel(row) }}</el-tag></template></el-table-column>
-        <el-table-column label="进度" width="150"><template #default="{ row }"><el-progress :percentage="row.progress" :stroke-width="7" /></template></el-table-column>
-        <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatTime(row.finished_time || row.created_time) }}</template></el-table-column>
-        <el-table-column label="错误" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ taskFailureText(row) }}</template></el-table-column>
-        <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button v-if="!isTerminal(row.status)" link type="danger" @click.stop="cancelTask(row)">取消</el-button></template></el-table-column>
-      </el-table>
+    <div class="content-card task-card compact-task-summary">
+      <div class="card-heading"><div><h2>配置任务</h2><p>运行中 {{ activeTaskIds.size }} 项 / 失败 {{ failedTaskCount }} 项</p></div><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
-
     <div v-if="resultText || resultDiff" class="content-card result-card">
       <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiff" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部差异" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /></el-select><el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载 Artifact</el-button><el-button @click="resultText = ''; resultDiff = ''; resultArtifactId = ''; resultArtifactName = ''">清空</el-button></div></div>
       <pre v-if="resultText" class="code-panel">{{ resultText }}</pre>

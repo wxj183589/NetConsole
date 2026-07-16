@@ -1,5 +1,7 @@
 # Job Center 使用说明
 
+Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理、配置采集和文件管理主页只保留运行中/失败数量与打开入口；停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。关闭任务窗口不改变后台任务生命周期。
+
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
 > 2026-07-14 代码核对：Registry 当前注册 88 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler及两个 Online MR Agent 包同步/导入 handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。

@@ -9,6 +9,7 @@ import {
   validateChooseSavePathOptions,
   validateRendererReadyReport,
   validateSelectFileOptions,
+  validateTaskWindowContext,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -23,6 +24,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
     getAppInfo: () => ipcRenderer.invoke(DESKTOP_IPC.getAppInfo) as ReturnType<NetConsoleDesktopBridge['getAppInfo']>,
     getBackendStatus: () => ipcRenderer.invoke(DESKTOP_IPC.getBackendStatus) as ReturnType<NetConsoleDesktopBridge['getBackendStatus']>,
     getRuntimeConfig: () => ipcRenderer.invoke(DESKTOP_IPC.getRuntimeConfig) as ReturnType<NetConsoleDesktopBridge['getRuntimeConfig']>,
+    openTaskWindow: (context) => ipcRenderer.invoke(
+      DESKTOP_IPC.openTaskWindow,
+      validateTaskWindowContext(context),
+    ) as ReturnType<NetConsoleDesktopBridge['openTaskWindow']>,
     selectFile: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.selectFile,
       validateSelectFileOptions(options),

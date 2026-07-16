@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh, View } from '@element-plus/icons-vue'
 
@@ -8,16 +8,19 @@ import NcStatusTag from '../../components/NcStatusTag.vue'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
+import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 
 const store = useTaskStore()
 const router = useRouter()
+const route = useRoute()
 const filter = ref('all')
+const moduleFilter = ref('all')
 const keyword = ref('')
 const drawerVisible = ref(false)
 
 const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
-  return store.tasks.filter((task) => matchesFilter(task) && (!search || taskSearchText(task).includes(search)))
+  return store.tasks.filter((task) => matchesFilter(task) && (moduleFilter.value === 'all' || task.module === moduleFilter.value) && (!search || taskSearchText(task).includes(search)))
 })
 
 watch(drawerVisible, (visible) => store.setDetailVisible(visible))
@@ -25,6 +28,12 @@ watch(drawerVisible, (visible) => store.setDetailVisible(visible))
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
+  const status = typeof route.query.status === 'string' ? route.query.status : ''
+  const module = typeof route.query.module === 'string' ? route.query.module : ''
+  if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
+  if (['devices', 'config', 'files'].includes(module)) moduleFilter.value = module
+  const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : typeof route.query.task === 'string' ? route.query.task : ''
+  if (taskId) void store.selectTask(taskId).then(() => { drawerVisible.value = true }).catch(() => undefined)
 })
 
 onBeforeUnmount(() => {
@@ -94,13 +103,31 @@ function acceptanceCommand(task: TaskItem): string {
 function openOnlineMr(task: TaskItem): void {
   void router.push({ name: 'online-mr-realtime', query: { session_id: task.session_id } })
 }
+
+async function cancelSelected(): Promise<void> {
+  try { await store.requestCancel(); ElMessage.success('已请求停止任务') }
+  catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : '停止任务失败') }
+}
+
+async function downloadArtifact(): Promise<void> {
+  if (!store.selected?.artifact_download) return
+  const result = await downloadBackendResource(store.selected.artifact_download)
+  if (result.status === 'saved' && result.savedPath) {
+    lastSavedPath.value = result.savedPath
+    ElMessage.success('Artifact 已保存')
+  } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+}
+
+const lastSavedPath = ref('')
+const openSaved = () => getPlatformAdapter().openPath(lastSavedPath.value)
+const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedPath.value)
 </script>
 
 <template>
   <section class="job-center">
     <el-alert
-      title="只读任务监控"
-      description="本页只查询任务快照、结构化事件和 Online MR 映射，不提供停止、强停、删除或重试操作。"
+      title="统一任务中心"
+      description="任务动作由后端 owner/capability 授权；不支持的动作会禁用并说明原因。关闭窗口不会停止后台任务。"
       type="info"
       :closable="false"
       show-icon
@@ -132,6 +159,7 @@ function openOnlineMr(task: TaskItem): void {
             <el-option label="已中断" value="aborted" />
             <el-option label="有告警" value="warning" />
           </el-select>
+          <el-select v-model="moduleFilter" style="width: 135px"><el-option label="全部模块" value="all" /><el-option label="设备管理" value="devices" /><el-option label="配置采集" value="config" /><el-option label="文件管理" value="files" /></el-select>
           <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
         </div>
       </div>
@@ -201,6 +229,13 @@ function openOnlineMr(task: TaskItem): void {
           <el-button type="primary" @click="openOnlineMr(store.selected)">查看 Online MR 实时展示</el-button>
           <el-button :icon="CopyDocument" @click="copyText(store.selected.session_id, 'Session ID 已复制')">复制 Session ID</el-button>
           <el-button :icon="CopyDocument" @click="copyText(acceptanceCommand(store.selected), '验收命令已复制')">复制验收命令</el-button>
+        </div>
+        <div class="association-actions">
+          <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
+          <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
+          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">Artifact 下载</el-button></span></el-tooltip>
+          <el-button :disabled="!lastSavedPath" @click="openSaved">打开文件</el-button>
+          <el-button :disabled="!lastSavedPath" @click="revealSaved">打开所在目录</el-button>
         </div>
 
         <section class="log-section">

@@ -40,4 +40,13 @@ describe('Electron shell product contract', () => {
     expect(devSource).toContain("electron.once('exit', finish)")
     expect(devSource).toContain("electron.once('close', finish)")
   })
+
+  it('keeps one hide-on-close task window without stopping the backend', () => {
+    expect(source).toContain('let taskWindow: BrowserWindow | undefined')
+    expect(source).toContain("url.searchParams.set('task_window', '1')")
+    expect(source).toContain('taskWindow?.hide()')
+    expect(source).toContain('if (allowQuit) return')
+    expect(source.indexOf('taskWindow?.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
+    expect(source).toContain('taskWindow.destroy()')
+  })
 })

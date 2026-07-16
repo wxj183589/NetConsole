@@ -11,6 +11,7 @@ function bridge(runtime = {
     getAppInfo: vi.fn(async () => ({ version: '1.3.8', platform: 'win32', isPackaged: false })),
     getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: runtime.apiBaseUrl })),
     getRuntimeConfig: vi.fn(async () => runtime),
+    openTaskWindow: vi.fn(async () => ({ success: true })),
     selectFile: vi.fn(async () => ({ cancelled: true, paths: [] })),
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     chooseSavePath: vi.fn(async () => ({ cancelled: true })),

@@ -48,6 +48,13 @@ export interface TaskItem {
   records_count: number | null
   raw_output_reference: string
   parser_version: string
+  module?: string
+  cancellable?: boolean
+  cancel_reason?: string
+  retryable?: boolean
+  retry_reason?: string
+  artifact_download?: { apiPath: string; query?: Record<string, string>; suggestedName: string } | null
+  artifact_reason?: string
 }
 
 export interface TaskLogLine {

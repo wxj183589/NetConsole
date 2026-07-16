@@ -4,6 +4,7 @@ import type {
   FileFilter,
   RendererReadyReport,
   SelectFileOptions,
+  TaskWindowContext,
 } from './bridge'
 
 const MAX_FILTERS = 20
@@ -16,6 +17,26 @@ const SENSITIVE_QUERY_KEY_RE = /(?:token|password|secret|authorization|community
 const MAX_QUERY_FIELDS = 32
 const MAX_QUERY_VALUE_LENGTH = 2_000
 const MAX_API_PATH_LENGTH = 4_096
+
+export function validateTaskWindowContext(value: unknown): TaskWindowContext {
+  if (value === undefined) return {}
+  const record = asRecord(value, 'task window context')
+  rejectUnknownKeys(record, ['taskId', 'module', 'status'])
+  const result: TaskWindowContext = {}
+  if (record.taskId !== undefined) {
+    if (typeof record.taskId !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(record.taskId)) throw new TypeError('taskId is invalid')
+    result.taskId = record.taskId
+  }
+  if (record.module !== undefined) {
+    if (!['devices', 'config', 'files'].includes(String(record.module))) throw new TypeError('module is invalid')
+    result.module = record.module as TaskWindowContext['module']
+  }
+  if (record.status !== undefined) {
+    if (!['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(String(record.status))) throw new TypeError('status is invalid')
+    result.status = record.status as TaskWindowContext['status']
+  }
+  return result
+}
 
 export function validateSelectFileOptions(value: unknown): SelectFileOptions {
   if (value === undefined) return {}

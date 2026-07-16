@@ -1,10 +1,11 @@
-import type { AppInfo, BackendStatus, DesktopRuntimeConfig } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopRuntimeConfig, TaskWindowContext } from '../shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
   validateExternalUrl,
   validateRendererReadyReport,
   validateSelectFileOptions,
+  validateTaskWindowContext,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
@@ -55,6 +56,8 @@ export interface DesktopIpcDependencies {
   dialog: DialogLike
   shell: ShellLike
   window: unknown
+  windowForEvent?: (event: IpcEventLike) => unknown
+  openTaskWindow?: (value: TaskWindowContext) => Promise<void> | void
   appInfo: AppInfo
   backend: BackendLike
   pathRegistry?: GrantedPathRegistry
@@ -80,14 +83,21 @@ export function registerDesktopIpc(
   })
   for (const channel of DESKTOP_HANDLED_CHANNELS) dependencies.ipcMain.removeHandler(channel)
 
-  const trusted = <T>(handler: (value?: unknown) => T | Promise<T>) => (
+  const trusted = <T>(handler: (value: unknown, event: IpcEventLike) => T | Promise<T>) => (
     event: IpcEventLike,
     value?: unknown,
   ): T | Promise<T> => {
     if (!dependencies.isTrustedSender(event)) throw new Error('拒绝来自未知渲染进程的桌面请求')
-    return handler(value)
+    return handler(value, event)
   }
 
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.openTaskWindow,
+    trusted(async (value) => {
+      await dependencies.openTaskWindow?.(validateTaskWindowContext(value))
+      return { success: true }
+    }),
+  )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.getAppInfo,
     trusted(() => ({ ...dependencies.appInfo })),
@@ -146,7 +156,7 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.downloadBackendResource,
-    trusted((value) => downloadManager.download(value)),
+    trusted((value, event) => downloadManager.download(value, dependencies.windowForEvent?.(event) ?? dependencies.window)),
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,

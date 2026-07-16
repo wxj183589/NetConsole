@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 
 import {
   cancelFileDownload,
@@ -21,6 +22,7 @@ import { downloadBackendResource } from '../../platform/runtime'
 import type { FileConnection, FileDownloadTask, FileRemoteDevice, ManagedFile, ManagedFileCategory, RemoteFileEntry, RemoteFilePage } from '../../types/fileManagement'
 
 const storageKey = 'netconsole.file-management.download-tasks'
+const router = useRouter()
 const siteId = ref('')
 const category = ref<ManagedFileCategory>('')
 const search = ref('')
@@ -43,6 +45,11 @@ const filter = reactive({ site_id: '', category: '' as ManagedFileCategory, sear
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => tasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(task.status)))
+const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
+function openTaskWindow(): void {
+  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'files' })
+  else void router.push({ name: 'tasks', query: { module: 'files' } })
+}
 const remoteItems = computed(() => {
   const items = remotePage.value?.items || []
   if (!remoteMeshOnly.value) return items
@@ -303,15 +310,8 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
       <p class="result-count">远程 entry 仅在服务端会话内有效，浏览器不提交远程路径。</p>
     </div>
 
-    <div class="content-card">
-      <div class="section-heading"><h2>下载任务</h2><span>页面重载后会按任务 ID 恢复状态</span></div>
-      <el-table :data="tasks" border empty-text="暂无下载任务">
-        <el-table-column prop="task_id" label="任务 ID" min-width="220" show-overflow-tooltip />
-        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column label="进度" width="180"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /></template></el-table-column>
-        <el-table-column prop="message" label="信息" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="150"><template #default="{ row }"><el-button v-if="row.status === 'COMPLETED' && row.result" link type="primary" @click="saveDownload(row)">下载文件</el-button><el-button v-if="['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(row.status)" link type="warning" @click="cancelTask(row)">取消</el-button></template></el-table-column>
-      </el-table>
+    <div class="content-card compact-task-summary">
+      <div class="section-heading"><h2>下载任务</h2><span>运行中 {{ activeTasks.length }} 项 / 失败 {{ failedTaskCount }} 项</span><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
   </section>
 </template>

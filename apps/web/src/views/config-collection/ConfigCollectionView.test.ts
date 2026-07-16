@@ -7,7 +7,9 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain('listConfigDevices')
     expect(source).toContain('listConfigSnapshots')
     expect(source).toContain('listConfigTasks')
-    expect(source).toContain('刷新页面后可恢复')
+    expect(source).toContain('打开任务窗口')
+    expect(source).toContain("openTaskWindow({ module: 'config' })")
+    expect(source).not.toContain(':data="visibleTasks"')
     expect(source).toContain('document.hidden')
     expect(source).toContain('onBeforeUnmount')
   })
@@ -19,7 +21,7 @@ describe('Configuration Collection Center view', () => {
     expect(source).toContain("isFeatureEnabled('web.config_collection_delete')")
     expect(source).toContain("isFeatureEnabled('web.config_collection_save_force')")
     expect(source).toContain("isFeatureEnabled('web.config_collection_export')")
-    expect(source).toContain("isFeatureEnabled('web.config_collection_open_directory')")
+    expect(source).toContain("isFeatureEnabled('web.config_collection_export')")
   })
 
   it('uses server confirmation tokens, fixed save plan and controlled artifacts', () => {

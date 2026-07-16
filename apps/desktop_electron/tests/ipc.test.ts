@@ -26,6 +26,7 @@ class FakeIpcMain {
 function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
   onRendererReady?: (healthOk: boolean) => void
+  openTaskWindow?: (value: unknown) => void
 } = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
@@ -57,6 +58,7 @@ function createHarness(overrides: {
     isTrustedSender: (event) => event.sender === sender,
     logger: overrides.logger,
     onRendererReady: overrides.onRendererReady,
+    openTaskWindow: overrides.openTaskWindow,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry }
 }
@@ -103,6 +105,17 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!
 
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
+  })
+
+  it('opens the task window only with the strict filter DTO', async () => {
+    const openTaskWindow = vi.fn()
+    const { ipcMain, sender } = createHarness({ openTaskWindow })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openTaskWindow)!
+
+    await expect(handler({ sender }, { taskId: 'task-1', module: 'devices', status: 'RUNNING' })).resolves.toEqual({ success: true })
+    await expect(handler({ sender }, { module: 'unknown' })).rejects.toThrow('module is invalid')
+    await expect(handler({ sender }, { taskId: '../unsafe' })).rejects.toThrow('taskId is invalid')
+    expect(openTaskWindow).toHaveBeenCalledOnce()
   })
 
   it('opens only credential-free HTTPS urls in the system browser', async () => {

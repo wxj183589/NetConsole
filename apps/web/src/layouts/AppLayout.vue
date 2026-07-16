@@ -91,6 +91,10 @@ function toggleSidebar(): void {
 }
 
 function selectNavigation(path: string): void {
+  if (path === '/tasks' && window.netconsoleDesktop && route.query.task_window !== '1') {
+    void window.netconsoleDesktop.openTaskWindow({})
+    return
+  }
   void router.push(path)
   if (mobile.value) drawerOpen.value = false
 }

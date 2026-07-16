@@ -1,5 +1,11 @@
 # Electron Desktop 基础架构
 
+## 统一任务窗口
+
+Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`，提供单实例任务窗口。主窗口只通过严格的 `taskId/module/status` DTO 打开或恢复该窗口；关闭窗口仅隐藏，不取消后台任务，应用退出时再与主窗口、受管后端一并有序关闭。
+
+任务动作以后端 owner capability 为准。未授权动作保持禁用并说明原因；Artifact 只携带不透明标识和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存，不向 Renderer 暴露服务端绝对路径。
+
 ## 当前状态
 
 Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。当前正式处于 **Electron 与 Qt 并行迁移阶段**：Qt 仍是生产与回退入口，Electron 是可运行的新宿主基础；这不是安装包发布完成，也不表示任何 Qt 业务模块已经达到替换门槛。

@@ -59,7 +59,7 @@ describe('Job Center polling store', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(getTask).toHaveBeenCalledTimes(detailCalls)
     expect(getTaskLogs).toHaveBeenCalledTimes(logCalls)
-    expect('requestCancel' in store).toBe(false)
+    expect('requestCancel' in store).toBe(true)
     vi.useRealTimers()
   })
 

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
 import { isFeatureEnabled } from '../../features'
@@ -63,6 +64,7 @@ import type {
 } from '../../types/deviceManagement'
 
 const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
+const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const pageData = ref<DevicePage>(emptyPage())
@@ -104,6 +106,12 @@ const omniPeekSelectedKeys = ref<string[]>([])
 const omniPeekForceKeys = ref<string[]>([])
 const omniPeekTable = ref<TableInstance>()
 const trackedTasks = ref<DeviceTaskReference[]>([])
+const activeTrackedTaskCount = computed(() => trackedTasks.value.filter((task) => !isTaskTerminal(task)).length)
+const failedTrackedTaskCount = computed(() => trackedTasks.value.filter((task) => task.task_status === 'FAILED').length)
+function openTaskWindow(): void {
+  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'devices' })
+  else void router.push({ name: 'tasks', query: { module: 'devices' } })
+}
 const terminalSettingsVisible = ref(false)
 const terminalSettingsLoading = ref(false)
 const terminalLaunchVisible = ref(false)
@@ -1168,22 +1176,9 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
     </div>
 
-    <div v-if="trackedTasks.length" class="content-card task-card">
-      <div class="task-card-heading"><strong>本页任务</strong><span>刷新页面后仍会恢复最近 30 个任务</span></div>
-      <el-table :data="trackedTasks" size="small" max-height="240">
-        <el-table-column prop="action" label="动作" min-width="150" />
-        <el-table-column prop="task_status" label="状态" width="110" />
-        <el-table-column prop="task_id" label="Task ID" min-width="260" show-overflow-tooltip />
-        <el-table-column prop="message" label="消息" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="150">
-          <template #default="{ row }">
-            <el-button v-if="row.available" link type="primary" :disabled="!isFeatureEnabled('web.device_management_export')" @click="downloadTrackedTask(row)">下载</el-button>
-            <el-button v-if="!isTaskTerminal(row)" link type="danger" :disabled="!isTaskActionEnabled(row)" @click="cancelTrackedTask(row)">停止</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+    <div class="content-card task-card compact-task-summary">
+      <div class="task-card-heading"><strong>本页任务</strong><span>运行中 {{ activeTrackedTaskCount }} 项 / 失败 {{ failedTrackedTaskCount }} 项</span><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
-
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <el-empty v-if="isEmpty" description="没有符合条件的设备" />

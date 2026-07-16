@@ -40,6 +40,13 @@ class JobCenterTaskDTO(ApiModel):
     records_count: int | None = None
     raw_output_reference: str = ""
     parser_version: str = ""
+    module: str = ""
+    cancellable: bool = False
+    cancel_reason: str = ""
+    retryable: bool = False
+    retry_reason: str = "当前任务 owner 未提供统一重试能力"
+    artifact_download: dict[str, object] | None = None
+    artifact_reason: str = "当前任务 owner 未提供可下载 Artifact"
 
 
 class JobCenterSummaryDTO(ApiModel):

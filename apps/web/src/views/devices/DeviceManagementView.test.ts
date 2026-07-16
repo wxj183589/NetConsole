@@ -88,7 +88,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain('deviceExportDownloadRequest(task.task_id, task.artifact_id')
     expect(source).toContain('downloadBackendResource')
     expect(source).not.toContain('window.location.assign')
-    expect(source).toContain(':disabled="!isTaskActionEnabled(row)"')
+    expect(source).toContain("openTaskWindow({ module: 'devices' })")
+    expect(source).not.toContain(':data="trackedTasks"')
   })
 
   it('builds edit values and launches only configured desktop terminals', () => {

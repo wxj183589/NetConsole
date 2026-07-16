@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { getTask, getTaskLogs, listTasks } from '../api/tasks'
+import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
 import type { TaskItem, TaskLogLine } from '../types/task'
 import { activeTaskStatuses } from '../utils/taskStatus'
 
@@ -88,6 +88,12 @@ export const useTaskStore = defineStore('tasks', () => {
     await refreshLogs()
   }
 
+  async function requestCancel(): Promise<void> {
+    if (!selected.value?.cancellable) return
+    selected.value = await cancelTask(selected.value.id)
+    await refresh()
+  }
+
   function setDetailVisible(value: boolean): void {
     detailVisible = value
     if (!value) setLogsExpanded(false)
@@ -150,6 +156,7 @@ export const useTaskStore = defineStore('tasks', () => {
     refreshSelected,
     refreshLogs,
     manualRefresh,
+    requestCancel,
     setDetailVisible,
     setLogsExpanded,
     startPolling,

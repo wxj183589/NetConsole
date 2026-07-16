@@ -26,6 +26,7 @@ describe('preload bridge', () => {
       'onBackendStatusChanged',
       'openExternalUrl',
       'openPath',
+      'openTaskWindow',
       'reportRendererReady',
       'selectDirectory',
       'selectFile',

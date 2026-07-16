@@ -69,10 +69,17 @@ export interface RendererReadyReport {
   healthOk: boolean
 }
 
+export interface TaskWindowContext {
+  taskId?: string
+  module?: 'devices' | 'config' | 'files'
+  status?: 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+}
+
 export interface NetConsoleDesktopBridge {
   getAppInfo(): Promise<AppInfo>
   getBackendStatus(): Promise<BackendStatus>
   getRuntimeConfig(): Promise<DesktopRuntimeConfig>
+  openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
@@ -88,6 +95,7 @@ export const DESKTOP_IPC = Object.freeze({
   getAppInfo: 'netconsole:desktop:get-app-info',
   getBackendStatus: 'netconsole:desktop:get-backend-status',
   getRuntimeConfig: 'netconsole:desktop:get-runtime-config',
+  openTaskWindow: 'netconsole:desktop:open-task-window',
   selectFile: 'netconsole:desktop:select-file',
   selectDirectory: 'netconsole:desktop:select-directory',
   chooseSavePath: 'netconsole:desktop:choose-save-path',
@@ -106,6 +114,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.getAppInfo,
   DESKTOP_IPC.getBackendStatus,
   DESKTOP_IPC.getRuntimeConfig,
+  DESKTOP_IPC.openTaskWindow,
   DESKTOP_IPC.selectFile,
   DESKTOP_IPC.selectDirectory,
   DESKTOP_IPC.chooseSavePath,

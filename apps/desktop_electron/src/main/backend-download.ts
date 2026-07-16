@@ -54,10 +54,10 @@ export class BackendDownloadManager {
     this.logger = options.logger ?? (() => undefined)
   }
 
-  async download(value: unknown): Promise<BackendDownloadResult> {
+  async download(value: unknown, window = this.options.window): Promise<BackendDownloadResult> {
     if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
     const request = validateBackendDownloadRequest(value)
-    const selection = await this.options.dialog.showSaveDialog(this.options.window, {
+    const selection = await this.options.dialog.showSaveDialog(window, {
       defaultPath: request.suggestedName,
       ...(request.filters ? { filters: request.filters } : {}),
     })

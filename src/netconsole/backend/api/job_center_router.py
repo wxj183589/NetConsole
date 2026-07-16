@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.job_center import JobCenterLogTailDTO, JobCenterSummaryDTO, JobCenterTaskDTO
 from netconsole.services.job_center.query_service import JobCenterQueryService
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
 router = APIRouter(prefix="/job-center", tags=["job-center"])
@@ -16,6 +17,10 @@ def _service(request: Request) -> JobCenterQueryService:
 
 def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
+
+
+def _task_service(request: Request) -> TaskApplicationService:
+    return request.app.state.task_service
 
 
 @router.get("/tasks", response_model=list[JobCenterTaskDTO])
@@ -60,6 +65,19 @@ def logs(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return result
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=JobCenterTaskDTO)
+def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
+    task = _service(request).get_task(_site_id(request), task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    if not task.cancellable or not _task_service(request).cancel_task(task_id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=task.cancel_reason or "任务当前不可停止")
+    updated = _service(request).get_task(_site_id(request), task_id)
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    return updated
 
 
 def _query(callback):

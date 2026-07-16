@@ -117,6 +117,9 @@ def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path
     assert payload["error_summary"] == "Agent 包设备身份已按本地映射"
     assert payload["has_warning"] is True
     assert payload["package_path"].endswith("session-12.zip")
+    assert payload["cancellable"] is False
+    assert payload["retryable"] is False
+    assert payload["artifact_download"] is None
     assert "result" not in payload
     assert "must-not-leak" not in detail.text
     assert logs.status_code == 200
@@ -139,7 +142,16 @@ def test_job_center_logs_missing_and_unknown_task_are_explicit(tmp_path: Path) -
     assert missing.json()["detail"] == "任务不存在"
 
 
-def test_job_center_router_exposes_get_only_operations(tmp_path: Path) -> None:
+def test_job_center_rejects_cancel_without_owner_capability(tmp_path: Path) -> None:
+    app, _db_path = _app_with_tasks(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.post("/api/job-center/tasks/online-mr-task/cancel")
+
+    assert response.status_code == 409
+
+
+def test_job_center_router_exposes_only_owner_checked_cancel_mutation(tmp_path: Path) -> None:
     app, _db_path = _app_with_tasks(tmp_path)
     routes = {
         (path, method.upper())
@@ -149,6 +161,9 @@ def test_job_center_router_exposes_get_only_operations(tmp_path: Path) -> None:
     }
 
     assert routes
-    assert {method for _path, method in routes} == {"GET"}
+    assert {method for _path, method in routes} == {"GET", "POST"}
+    assert {(path, method) for path, method in routes if method == "POST"} == {
+        ("/api/job-center/tasks/{task_id}/cancel", "POST")
+    }
     assert all(not path.endswith(("/stop", "/force-stop", "/retry")) for path, _method in routes)
     assert all("delete" not in path for path, _method in routes)

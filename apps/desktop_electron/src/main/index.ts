@@ -20,6 +20,7 @@ import {
 app.enableSandbox()
 
 let mainWindow: BrowserWindow | undefined
+let taskWindow: BrowserWindow | undefined
 let backend: PythonBackendManager | undefined
 let allowQuit = false
 let requestedExitCode = 0
@@ -76,6 +77,10 @@ async function startDesktop(): Promise<void> {
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
   mainWindow = createMainWindow(Boolean(config.devServerUrl), developmentMenu)
+  mainWindow.on('closed', () => {
+    mainWindow = undefined
+    if (!allowQuit) requestExit(0)
+  })
   installRendererDiagnostics(mainWindow, {
     logger,
     getRetryUrl: () => rendererUrl,
@@ -93,6 +98,8 @@ async function startDesktop(): Promise<void> {
     dialog,
     shell,
     window: mainWindow,
+    windowForEvent: (event) => BrowserWindow.fromWebContents(event.sender as Electron.WebContents) ?? mainWindow,
+    openTaskWindow,
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
@@ -101,8 +108,8 @@ async function startDesktop(): Promise<void> {
     backend,
     pathRegistry,
     isTrustedSender: (event) => Boolean(
-      mainWindow
-      && isTrustedRendererSender(event, mainWindow, [...rendererOrigins]),
+      (mainWindow && isTrustedRendererSender(event, mainWindow, [...rendererOrigins]))
+      || (taskWindow && isTrustedRendererSender(event, taskWindow, [...rendererOrigins])),
     ),
     onRendererReady: handleRendererReady,
     logger,
@@ -192,6 +199,28 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
   return window
 }
 
+async function openTaskWindow(context: { taskId?: string; module?: string; status?: string }): Promise<void> {
+  if (!mainWindow || !rendererUrl) throw new Error('任务窗口尚未就绪')
+  if (!taskWindow || taskWindow.isDestroyed()) {
+    taskWindow = createMainWindow(Boolean(process.env.NETCONSOLE_WEB_DEV_SERVER_URL))
+    taskWindow.setTitle('NetConsole 任务中心')
+    taskWindow.on('close', (event) => {
+      if (allowQuit) return
+      event.preventDefault()
+      taskWindow?.hide()
+    })
+  }
+  const url = new URL('/tasks', rendererUrl)
+  url.searchParams.set('task_window', '1')
+  if (context.taskId) url.searchParams.set('task_id', context.taskId)
+  if (context.module) url.searchParams.set('module', context.module)
+  if (context.status) url.searchParams.set('status', context.status)
+  await taskWindow.loadURL(url.toString())
+  if (taskWindow.isMinimized()) taskWindow.restore()
+  taskWindow.show()
+  taskWindow.focus()
+}
+
 async function loadStatusPage(
   window: BrowserWindow,
   title: string,
@@ -263,6 +292,7 @@ function beginShutdownAndExit(): void {
     traceSmoke('EXIT_REQUESTED')
     allowQuit = true
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+    if (taskWindow && !taskWindow.isDestroyed()) taskWindow.destroy()
     app.releaseSingleInstanceLock()
     app.exit(requestedExitCode)
     traceSmoke('EXIT_RETURNED')
