@@ -1,6 +1,6 @@
 # Web 双轨迁移第一批更新记录
 
-更新时间：2026-07-15
+更新时间：2026-07-16
 
 ## 目标与边界
 
@@ -21,10 +21,12 @@
 | --- | --- | --- |
 | Online MR Agent 远程控制与 Fake E2E | 已完成 | 提交 `a84a130e`；真实设备验收继续冻结 |
 | 质量与测试基线 | 已完成 | 提交 `6a7bda2b`；隔离测试数据、移除脆弱数量断言、更新 Web 架构断言、跳过依赖目录文档扫描 |
-| 设备管理 Web | 已集成 | 提交 `02c6bda4`；列表、筛选、详情、后台连接测试、受控编辑预览，不暴露凭据 |
-| 网络工具 Web | 已集成 | 提交 `267d5a1b`；复用 Traffic Run、fping/iPerf，补充本地/Agent TCP 端口测试 |
-| 配置采集中心 Web | 已集成 | 提交 `b480c8c4`；复用 Config Lifecycle、Snapshot、既有 diff/load Job 与受控 Artifact，仅新增一个只读 fetch 薄 handler |
-| 文件管理 Web | 已集成 | 提交 `8925b7ad`；局点本地文件分类与受控下载，不做设备远程文件、删除、上传或重命名 |
+| 设备管理 Web | 已完成并集成 | 在既有只读页上补齐设备/分组 CRUD、批量刷新、诊断、导入预览与确认、CSV/模板/SecureCRT/OmniPeek 导出；高风险动作默认关闭 |
+| 网络工具 Web | 已完成并集成 | 补齐 IPv4/IPv6/VLSM/子网/汇总/反掩码、Ping/fping/TCP 任务、结果分页与导出；无线扫描 Web 默认关闭，等待真实硬件验收 |
+| 配置采集中心 Web | 已完成并集成 | 补齐快照对比、删除确认、`save force` 预览确认、报告导出、受控目录动作、Artifact 下载和中断恢复；扩展动作默认关闭 |
+| 文件管理 Web | 已完成并集成 | 保留本地白名单浏览/下载，新增默认关闭的设备候选、只读 SFTP 会话、远程导航、下载队列、取消和 Artifact；不提供上传、删除或重命名 |
+| AC / 轨道交通补齐 | 已完成并集成 | AP 扩展导入/回滚/导出、轨旁规划只读、本地重算、AC 高风险动作 Fake 计划；车内诊断、MESH 导入、Online MR/MESH 报告与任务恢复均走共享 Task/Export，全部默认关闭等待真实验收 |
+| Electron Desktop 基础 | 已完成并集成 | 提交 `d74595e8` 集成安全 main/preload、动态回环 Python、白名单 Native Bridge、统一 Runtime Adapter、受管下载和退出屏障；Qt 继续保留 |
 | Web 双轨基础设施 | 已完成 | 提交 `588a941`；统一导航注册、正式路由归属、Feature Gate、响应式 Desktop WebHost、前后端构建身份和 Qt/Web 能力矩阵 |
 | Launcher / Core Runtime 第一阶段启动子项 | 已完成 | 四模式、隔离 Qt 能力探测、无 Qt Browser/Server、Core-owned WebHost、普通启动单实例；Server 仅允许回环绑定；Native Bridge、EmbeddedLayout 和 Qt 页面服务容器统一延期 |
 | Phase 0.5 D 组合根与静态守卫 | 已集成 | 上游 `8b7a85ac`/`6a097420`，集成 `2843f199`/`1301ff92`；复用现有 `create_app()`，不新增运行容器 |
@@ -34,6 +36,11 @@
 | Phase 0.5 E 中央接线与债务清零 | 已完成 | 本集成提交；单例 Facade/Web Service 接线、共享 API 错误映射、Traffic presentation helper、正式 Router 静态债务清零；最终 SHA 由集成 Worker 报告给主控 |
 
 ## 已完成验证
+
+- 2026-07-16 最终集成定向回归：后端 183 项、Web 39 个文件/107 项、Electron 10 个文件/56 项通过；Web 与 Electron main/preload 生产构建通过。
+- Python 全量收集 2391 项；六个稳定分片与两个按测试文件隔离重跑分片共同覆盖全部用例，2389 项通过、2 项按既有条件跳过。分片宿主发生的 `KeyboardInterrupt`/Qt native abort 已通过 40 个文件逐文件重跑全部通过，未记录为业务失败。
+- 文档结构与相对链接 4 项通过；安全只读复审关闭任务 DTO 路径/凭据、下载取消、Feature Gate 自洽、文件远程设备候选和组合根生命周期问题，最终无 P1/P2。
+- 修改范围 Ruff 通过；全仓 Ruff 为 140 个既有错误，相比合入前 `main` 的 141 个未增加。本轮不为清零旧基线扩展到无关旧模块。
 
 - Phase 0.5 A-D/E 直接相关与中央接线定向测试：16 个测试文件、107 项通过；静态 Router 边界债务为零。
 - `src/netconsole/backend/api/` 全部正式 `*_router.py` 搜索确认无 `sqlite3` import/catch；共享错误映射保留原数据库/I/O HTTP 状态和消息。
@@ -74,13 +81,12 @@
 ## 当前安全与功能限制
 
 - Phase 0.5 A-D/E 未连接真实 AC、MR、Agent 或生产数据；只使用 `tmp_path`、Fake 和本地测试链路，不把定向/全量结果解释为现场验收。
-- 本批次不修改 Vue 源码、Go Agent、依赖锁、设备命令、Traffic 协议或基础资料写入开关；受影响 Go 文件为 0。
-- 集成分支只在本地提交，不推送、不合入 `main`；最终提交 SHA 由集成 Worker 报告给主控。
+- Phase 0.5 A-D/E 本身未修改 Vue、Go Agent、设备命令、Traffic 协议或基础资料写入开关；后续 Web 对等收尾已修改 Vue 和 Electron 锁文件。受影响 Go 文件仍为 0，因此未重复运行 Go 测试。
 
-- 设备管理不返回凭据，不提供浏览器终端；编辑仅生成预览，尚不落库。
-- 网络工具沿用现有 Traffic Run；Agent 旧 `ping_probe` 只提供终态，尚无结构化逐样本结果。
-- 配置中心不提供 `save force`、远程删除或任意路径读取；任务消息、错误和结果会递归遮蔽路径与凭据值。
-- 文件管理首版只浏览和下载局点本地文件；下载任务验证并审计原文件，不复制永久副本；`parsed/cache/tmp/runtime`、SQLite/DB/WAL/SHM/journal 和未知格式不进入索引。
+- 设备管理不返回凭据；正式 CRUD、导入导出、诊断和桌面联动均有独立 Feature Gate，扩展动作默认不进入客户包。
+- 网络工具沿用现有 Traffic/Task/Export；Agent 旧 `ping_probe` 只提供终态，尚无结构化逐样本结果。无线扫描 Web 仅完成 Fake，未做真实网卡验收。
+- 配置中心的删除、`save force`、导出和目录动作均默认关闭并要求确认或受控目录映射；任务消息、错误和结果会递归遮蔽路径与凭据值。
+- 文件管理本地索引继续排除 `parsed/cache/tmp/runtime`、SQLite/DB/WAL/SHM/journal 和未知格式；远程模块只读 SFTP，不提供上传、删除、重命名或 WinSCP 任意启动。
 - 四个新 Web 页面及其受控动作同时在 Vue 导航/按钮和 FastAPI 路由执行 Feature Gate；后端禁用时直接返回 404，不能靠直连 URL 绕过。
 - 设备管理在每次请求时读取当前局点，Qt 切换局点后无需重启 WebHost；设备连接测试和配置采集对同设备活动任务幂等复用。
 - 活动任务的“查询并启动”由服务级锁形成原子临界区；并发请求只启动一个 Worker。`raw` 仅接受日志、结构化文本和抓包后缀，`imports` 仅接受已识别归档格式。

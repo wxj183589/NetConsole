@@ -4,6 +4,7 @@
 
 ### 本次修复
 
+- 收口第一批 Web 对等整改：设备管理补齐受控 CRUD、导入导出与诊断，网络工具补齐 Ping/fping/TCP、无线扫描与 Artifact 导出，配置中心补齐历史删除、`save force`、报告和目录动作，文件管理补齐只读 SFTP 下载，AC/轨交补齐 AP 扩展、车内诊断、MESH 导入和报告闭环。所有新增高风险入口均独立 Feature Gate、默认关闭且仅完成 Fake 验收；Qt 页面继续保留，真实 AC/MR/无线硬件验收未开始。
 - 修复 Electron 开发态文件管理、配置快照与 MESH Artifact 下载仍落入 Vite 固定 `127.0.0.1:8000` 的问题：三类入口统一使用 Runtime Adapter；Electron main 通过当前动态回环后端与内存令牌流式保存并原子替换，Browser 继续使用相对代理下载。主窗口新增同源及编码 `/api`/`/ws` 导航拦截、非桥接 Chromium 下载拒绝、Renderer/preload 故障状态与脱敏诊断。退出时先拒绝新下载、取消并等待在途写入清理；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 再发送 `exit`，全部受管清理完成后 Electron 才退出。默认菜单、窗口标题和迁移期页脚同步收口。本轮未启动 Online MR 完整操作闭环迁移，Qt 仍是生产与回退入口；人工原生对话框与关闭残留仍需在本地主工作区点击验收。
 - 新增可运行的 Electron Desktop 安全基础：复用唯一 Vue/FastAPI，使用 sandboxed 单文件 preload、白名单 IPC、动态回环 Python 后端、通过 stdin 传递的每次启动临时会话令牌与优雅退出控制管道；Vue 增加 Browser/Electron Runtime Adapter 和最小桌面状态区。当前处于 Electron 与 Qt 并行迁移阶段，只完成源码开发/生产资源模式；Electron 安装包、签名、升级、托盘与业务模块替换尚未完成。
 - 启动架构第一阶段的 Launcher/WebHost 子项改为无 Qt Launcher：新增 `auto/qt/web/server`，完成轻量能力探测后创建唯一 FastAPI Core Runtime，再启动 Qt、本机浏览器或无 Shell Server；`web/server` 通用导入链不加载 PySide6，Qt WebConsoleHost 复用 Launcher 服务，普通启动增加单实例和启动诊断。Server 在远程鉴权完成前只允许回环绑定，Qt probe 使用不加载 FastAPI/Core 的轻量入口。旧 `--web-shell`、Qt 页面及提权网络管理入口继续兼容；Native Bridge、EmbeddedLayout 和旧 Qt 页面服务容器统一尚未完成。
