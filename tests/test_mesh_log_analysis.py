@@ -33,11 +33,24 @@ from netconsole.services.network_tools.trackside_bssid_resolver import Trackside
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def _collect_qt_cycles_on_test_thread():
-    """避免后续后台线程承担 Qt/Matplotlib 循环引用的析构。"""
+    """在离开 MESH 模块前由 GUI 测试线程统一析构 Qt 图表对象。"""
 
     yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    application = QApplication.instance()
+    if application is not None:
+        widgets = list(application.topLevelWidgets())
+        for widget in widgets:
+            try:
+                widget.close()
+                widget.deleteLater()
+            except RuntimeError:
+                continue
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     gc.collect()
 
 
