@@ -53,8 +53,8 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 <template>
   <section class="communication-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · MONITOR + CONTROL</p><h1>在线列车车地通信检测</h1><p>主体保持只读聚合；本地主程序 WebHost 按独立安全开关提供 LOCAL 与 AGENT Online MR 受控入口。</p></div>
-      <el-tag type="info">只读监控 + 受控执行入口</el-tag>
+      <div><p class="eyebrow">RAIL TRANSIT · TRAIN COMMUNICATION</p><h1>在线列车车地通信检测</h1><p>统一展示 CT/TC、当前轨旁 AP、RSSI、fping、丢包、iPerf 与光衰异常，并提供 Online MR 采集入口。</p></div>
+      <el-tag type="info">CT / TC 实时状态</el-tag>
     </header>
 
     <el-alert v-if="store.error" :title="store.error" type="warning" show-icon :closable="false" />

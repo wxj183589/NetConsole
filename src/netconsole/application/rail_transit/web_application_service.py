@@ -38,6 +38,9 @@ class RailTransitWebApplicationService:
         "mesh_log_import": "MESH 原始日志导入分析",
         "car_network_diagnostic": "车内通信检测",
         "trackside_ap_optical_update": "轨旁 AP 光衰更新",
+        "vehicle_mr_online_refresh_all": "列车在线状态刷新",
+        "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
+        "vehicle_mr_mapping_save": "列车 MR 映射保存",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
     _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
@@ -196,6 +199,23 @@ class RailTransitWebApplicationService:
                 "ap_mac": str(ap_mac or "").strip(),
                 "ap_name": str(ap_name or "").strip(),
             },
+        )
+
+    def start_vehicle_mr_online_refresh(self, site_id: str) -> RailTransitTaskDTO:
+        return self._start_task(self._site(site_id), "vehicle_mr_online_refresh_all", {})
+
+    def start_vehicle_mr_ap_mapping_refresh(self, site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
+        return self._start_task(
+            self._site(site_id),
+            "vehicle_mr_ap_mapping_refresh",
+            {"train_id": str(train_id or "").strip()},
+        )
+
+    def save_vehicle_mr_mappings(self, site_id: str, mappings: list[dict[str, object]]) -> RailTransitTaskDTO:
+        return self._start_task(
+            self._site(site_id),
+            "vehicle_mr_mapping_save",
+            {"mappings": [dict(row) for row in mappings]},
         )
 
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:

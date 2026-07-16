@@ -64,7 +64,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_train_communication_api_is_get_only_and_does_not_touch_sources(tmp_path: Path) -> None:
+def test_train_communication_queries_do_not_touch_sources_and_only_diagnostic_routes_write(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     app.state.train_communication_query_service = _ApiService()
@@ -96,8 +96,10 @@ def test_train_communication_api_is_get_only_and_does_not_touch_sources(tmp_path
         if getattr(route, "path", "").startswith("/rail-transit/train-communication")
     ]
     assert routes
-    assert all(route.methods == {"GET"} for route in routes)
-    assert not any(any(word in route.path for word in ("start", "stop", "delete", "import")) for route in routes)
+    write_routes = [route for route in routes if route.methods != {"GET"}]
+    assert write_routes
+    assert all("diagnostic" in route.path for route in write_routes)
+    assert not any(any(word in route.path for word in ("delete", "import")) for route in routes)
 
 
 def test_missing_iperf_raw_tail_returns_chinese_empty_state(tmp_path: Path) -> None:

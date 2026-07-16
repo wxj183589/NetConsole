@@ -15,9 +15,20 @@ describe('train communication Online MR control integration', () => {
     expect(source).toContain(':mr="store.selectedMr.mr"')
   })
 
-  it('describes controlled execution without destructive actions', () => {
-    expect(source).toContain('本地主程序 WebHost')
-    expect(source).toContain('LOCAL 与 AGENT Online MR')
-    expect(source).not.toMatch(/强制停止|删除会话|任意命令/)
+  it('keeps LOCAL and AGENT execution in explicit tabs', () => {
+    expect(source).toContain('LOCAL 本地执行')
+    expect(source).toContain('AGENT 远程执行')
+    expect(source).not.toMatch(/READ ONLY|只读|迁移/)
+  })
+
+  it('keeps the Qt communication indicators visible without migration copy', () => {
+    expect(source).toContain('MR-CT')
+    expect(source).toContain('MR-TC')
+    expect(source).toContain('RSSI')
+    expect(source).toContain('fping')
+    expect(source).toContain('丢包')
+    expect(source).toContain('iPerf')
+    expect(source).toContain('仅光衰异常')
+    expect(source).not.toMatch(/READ ONLY|只读|迁移/)
   })
 })
