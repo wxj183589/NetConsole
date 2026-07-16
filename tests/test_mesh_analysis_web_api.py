@@ -16,7 +16,7 @@ def _fingerprint(path: Path) -> tuple[int, str]:
     return path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_mesh_analysis_api_is_get_only_and_keeps_analysis_files_unchanged(tmp_path: Path) -> None:
+def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> None:
     paths, session_id, detail, raw, report = create_mesh_analysis_fixture(tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
@@ -59,7 +59,10 @@ def test_mesh_analysis_api_is_get_only_and_keeps_analysis_files_unchanged(tmp_pa
     routes = [route for route in mesh_analysis_router.routes if getattr(route, "path", "").startswith("/rail-transit/mesh-analysis")]
     assert routes
     post_paths = {route.path for route in routes if route.methods == {"POST"}}
-    assert post_paths == {"/rail-transit/mesh-analysis/sessions/{session_id}/report"}
+    assert post_paths == {
+        "/rail-transit/mesh-analysis/profiles",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/report",
+    }
     assert all(route.methods in ({"GET"}, {"POST"}) for route in routes)
     generated_report_paths = post_paths | {
         "/rail-transit/mesh-analysis/report-artifacts/{artifact_id}/download"
@@ -70,3 +73,25 @@ def test_mesh_analysis_api_is_get_only_and_keeps_analysis_files_unchanged(tmp_pa
         for route in routes
         if route.path not in generated_report_paths
     )
+
+
+def test_mesh_profile_api_lists_persisted_profiles_and_creates_real_profile(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        before = client.get("/api/rail-transit/mesh-analysis/profiles")
+        created = client.post(
+            "/api/rail-transit/mesh-analysis/profiles",
+            json={"display_name": "列车02-MR-TC", "notes": "离线分析"},
+        )
+        after = client.get("/api/rail-transit/mesh-analysis/profiles")
+
+    assert before.status_code == 200
+    assert before.json()[0]["display_name"] == "列车01-MR-CT"
+    assert created.status_code == 201
+    assert created.json()["display_name"] == "列车02-MR-TC"
+    assert created.json()["safe_folder_name"] == "列车02-MR-TC"
+    assert {item["display_name"] for item in after.json()} == {"列车01-MR-CT", "列车02-MR-TC"}

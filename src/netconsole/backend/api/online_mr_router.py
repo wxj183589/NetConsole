@@ -167,18 +167,15 @@ async def mesh_analysis_import(
     request: Request,
     files: list[UploadFile] = File(...),
     mr_id: str = Form(default=""),
-    display_name: str = Form(default=""),
-    safe_folder_name: str = Form(default=""),
-    linked_device_id: int | None = Form(default=None),
-    notes: str = Form(default=""),
 ) -> RailTransitTaskDTO:
     service = _rail_service(request)
     site_id = _facade(request).current_site_id()
     staging = None
     try:
         submitted = await request.form()
-        if "site_id" in submitted or "relative_folder_path" in submitted:
-            raise RailTransitWebError("BROWSER_SITE_FORBIDDEN", "Browser 不得提交局点或运行目录")
+        forbidden = {"site_id", "relative_folder_path", "display_name", "safe_folder_name", "linked_device_id", "notes"}
+        if forbidden.intersection(submitted):
+            raise RailTransitWebError("BROWSER_PROFILE_FORBIDDEN", "Browser 只能提交正式 MESH MR profile 标识")
         staging, staged = await asyncio.to_thread(
             service.stage_mesh_uploads,
             site_id,
@@ -186,13 +183,7 @@ async def mesh_analysis_import(
         )
         return service.start_mesh_import(
             site_id,
-            profile={
-                "mr_id": mr_id,
-                "display_name": display_name,
-                "safe_folder_name": safe_folder_name,
-                "linked_device_id": linked_device_id,
-                "notes": notes,
-            },
+            mr_id=mr_id,
             staging_dir=staging,
             uploads=staged,
         )

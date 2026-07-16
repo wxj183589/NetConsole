@@ -24,6 +24,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
+from netconsole.services.mesh_storage_service import MeshStorageService
 
 
 RAIL_FEATURE_IDS = (
@@ -73,18 +74,14 @@ def _enable_features(app) -> None:
 def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, normal, _export, _tasks = _service(paths)
+    profile = MeshStorageService("demo", paths).create_mr_profile("车载 MR-01")
     staging = service.create_mesh_staging("demo")
     staged = staging / "001-fixture.log"
     staged.write_bytes(b"fixture log")
 
     started = service.start_mesh_import(
         "demo",
-        profile={
-            "mr_id": "MR-01",
-            "display_name": "车载 MR-01",
-            "safe_folder_name": "MR-01",
-            "relative_folder_path": "../../browser-value-must-be-ignored",
-        },
+        mr_id=profile.mr_id,
         staging_dir=staging,
         uploads=[staged],
     )
@@ -103,7 +100,7 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
         "error_message",
         "result_summary",
     }
-    assert job.params["profile"]["relative_folder_path"] == "files/rail_transit/mr_raw_mesh/MR-01"
+    assert job.params["profile"]["relative_folder_path"] == f"files/rail_transit/mr_raw_mesh/{profile.safe_folder_name}"
     assert Path(job.params["files"][0]).is_relative_to(paths.runtime_cache_dir)
 
     cancelled = service.cancel_task("demo", started.task_id)
@@ -120,7 +117,7 @@ def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(tmp_path
     with pytest.raises(RailTransitWebError) as invalid_type:
         service.start_mesh_import(
             "demo",
-            profile={"mr_id": "MR-01", "display_name": "MR-01"},
+            mr_id="MR-01",
             staging_dir=staging,
             uploads=[csv],
         )
@@ -139,7 +136,7 @@ def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(tmp_path
         with pytest.raises(RailTransitWebError) as symlink_error:
             service.start_mesh_import(
                 "demo",
-                profile={"mr_id": "MR-01", "display_name": "MR-01"},
+                mr_id="MR-01",
                 staging_dir=staging,
                 uploads=[link],
             )
@@ -601,6 +598,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         query_service=app.state.online_mr_query_service,
         mesh_query_service=app.state.mesh_analysis_query_service,
     )
+    profile = MeshStorageService("demo", paths).create_mr_profile("MR 1")
     _enable_features(app)
 
     assert "site_id" not in OnlineMrReportRequestDTO.model_fields
@@ -618,7 +616,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         blocked_mesh = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
-            data={"mr_id": "mr-1", "display_name": "MR 1", "safe_folder_name": "mr-1"},
+            data={"mr_id": profile.mr_id},
         )
         client.app.state.feature_gate.features["web.online_mr_report_export"].update(visible=False, enabled=False, client_package=False)
         blocked_online_report = client.post("/api/online-mr/sessions/missing/report", json={})
@@ -632,7 +630,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         blocked_mesh_without_control = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
-            data={"mr_id": "mr-1", "display_name": "MR 1", "safe_folder_name": "mr-1"},
+            data={"mr_id": profile.mr_id},
         )
         client.app.state.feature_gate.features["web.online_mr_report_export"].update(visible=True, enabled=True, client_package=True)
         blocked_online_report_without_control = client.post("/api/online-mr/sessions/missing/report", json={})
@@ -643,21 +641,19 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={
-                "mr_id": "mr-1",
-                "display_name": "MR 1",
-                "safe_folder_name": "mr-1",
+                "mr_id": profile.mr_id,
                 "site_id": r"..\..\escaped",
             },
         )
         oversized = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("oversized.log", b"x" * (20 * 1024 * 1024 + 1), "text/plain")},
-            data={"mr_id": "mr-1", "display_name": "MR 1", "safe_folder_name": "mr-1"},
+            data={"mr_id": profile.mr_id},
         )
         accepted = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
-            data={"mr_id": "mr-1", "display_name": "MR 1", "safe_folder_name": "mr-1"},
+            data={"mr_id": profile.mr_id},
         )
         cancelled = client.post(f"/api/online-mr/tasks/{accepted.json()['task_id']}/cancel")
 

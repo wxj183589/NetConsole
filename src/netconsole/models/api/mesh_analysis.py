@@ -13,6 +13,25 @@ class MeshAnalysisWarningDTO(ApiModel):
     severity: str = "warning"
 
 
+class MeshProfileDTO(ApiModel):
+    mr_id: str
+    display_name: str
+    safe_folder_name: str
+    linked_device_id: int | None = None
+    source_file_count: int = 0
+    sample_count: int = 0
+    link_record_count: int = 0
+    session_count: int = 0
+    event_count: int = 0
+    notes: str = ""
+
+
+class MeshProfileCreateRequestDTO(ApiModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    linked_mr_id: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=1000)
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     session_count: int = 0

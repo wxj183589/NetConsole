@@ -32,10 +32,6 @@ export interface OnlineMrTimelineEvent {
 
 export interface MeshImportProfile {
   mr_id: string
-  display_name: string
-  safe_folder_name: string
-  linked_device_id?: number
-  notes?: string
 }
 
 export interface OnlineTrainRow {

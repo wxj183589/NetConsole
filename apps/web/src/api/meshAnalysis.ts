@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type {
   MeshAlignment, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact,
   MeshChannelBusy, MeshLinkDetail, MeshRawSource, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
-  MeshTimelineItem, Page,
+  MeshTimelineItem, MeshProfile, Page,
 } from '../types/meshAnalysis'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
@@ -16,6 +16,8 @@ function qs(values: Record<string, string | number | boolean | null | undefined>
 }
 
 export const getMeshAnalysisSummary = (): Promise<MeshAnalysisSummary> => apiRequest(`${root}/summary`)
+export const listMeshProfiles = (): Promise<MeshProfile[]> => apiRequest(`${root}/profiles`)
+export const createMeshProfile = (payload: { display_name: string; linked_mr_id?: string; notes?: string }): Promise<MeshProfile> => apiRequest(`${root}/profiles`, { method: 'POST', body: JSON.stringify(payload) })
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
 export const getMeshAnalysisSession = (id: string): Promise<MeshSessionDetail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}`)
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/links${qs(values)}`)

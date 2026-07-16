@@ -41,13 +41,10 @@ describe('rail transit Web parity API client', () => {
 
     await importMeshAnalysis([file], {
       mr_id: 'mr-1',
-      display_name: 'MR 1',
-      safe_folder_name: 'mr-1',
-      notes: 'fixture',
     })
 
     const form = fetchMock.mock.calls[0][1].body as FormData
-    expect([...form.keys()].sort()).toEqual(['display_name', 'files', 'mr_id', 'notes', 'safe_folder_name'])
+    expect([...form.keys()].sort()).toEqual(['files', 'mr_id'])
     expect(form.has('site_id')).toBe(false)
     expect(form.has('relative_folder_path')).toBe(false)
   })

@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { meshArtifactDownloadRequest } from '../../api/meshAnalysis'
 import source from './MeshAnalysisView.vue?raw'
 
-describe('Mesh analysis read-only view', () => {
-  it('shows persisted results without exposing parser or write actions', () => {
+describe('Mesh analysis view', () => {
+  it('shows persisted results and real import and report actions', () => {
     expect(source).toContain('Mesh 原始日志分析')
     expect(source).toContain('主 / 备链路')
     expect(source).toContain('主链路时间线')
@@ -16,7 +16,14 @@ describe('Mesh analysis read-only view', () => {
     expect(source).toContain('<el-pagination')
     expect(source).not.toContain('peer_radio_mac')
     expect(source).not.toContain('归属来源')
-    expect(source).not.toMatch(/>s*(重新分析|删除|生成报告|导出)s*</)
+    expect(source).toContain('importMeshAnalysis')
+    expect(source).toContain('createMeshProfile')
+    expect(source).toContain('exportMeshAnalysisReport')
+    expect(source).toContain('cancelRailTransitTask')
+    expect(source).toContain('recoverRailTransitTasks')
+    expect(source).toContain('生成分析报告')
+    expect(source).not.toMatch(/READ ONLY|只读|迁移/)
+    expect(source).not.toMatch(/>s*删除s*</)
   })
 
   it('keeps raw tail collapsed behind an explicit action and stops polling on unmount', () => {

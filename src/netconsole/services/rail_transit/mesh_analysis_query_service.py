@@ -30,6 +30,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshDataSourceDTO,
     MeshLinkDetailDTO,
     MeshLinkPageDTO,
+    MeshProfileDTO,
     MeshLinkTimelineDTO,
     MeshRawTailDTO,
     MeshReportArtifactDTO,
@@ -109,6 +110,28 @@ class MeshAnalysisQueryService:
             return str(SiteManager(self.paths).get_current_site() or "demo")
         except (OSError, ValueError, KeyError):
             return "demo"
+
+    def list_profiles(self, site_id: str) -> list[MeshProfileDTO]:
+        catalog = self.paths.mesh_catalog_path(site_id)
+        if not catalog.is_file():
+            return []
+        with closing(self._connect_readonly(catalog)) as conn:
+            rows = conn.execute("SELECT * FROM mr_profiles ORDER BY display_name COLLATE NOCASE").fetchall()
+        return [
+            MeshProfileDTO(
+                mr_id=str(row["mr_id"]),
+                display_name=str(row["display_name"]),
+                safe_folder_name=str(row["safe_folder_name"]),
+                linked_device_id=row["linked_device_id"],
+                source_file_count=int(row["source_file_count"] or 0),
+                sample_count=int(row["sample_count"] or 0),
+                link_record_count=int(row["link_record_count"] or 0),
+                session_count=int(row["session_count"] or 0),
+                event_count=int(row["event_count"] or 0),
+                notes=str(row["notes"] or ""),
+            )
+            for row in rows
+        ]
 
     def get_summary(self, site_id: str) -> MeshAnalysisSummaryDTO:
         sessions = self._session_rows(site_id)

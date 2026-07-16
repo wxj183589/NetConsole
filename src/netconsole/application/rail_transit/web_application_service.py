@@ -22,6 +22,9 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
 
 
@@ -130,27 +133,31 @@ class RailTransitWebApplicationService:
         self,
         site_id: str,
         *,
-        profile: dict[str, object],
+        mr_id: str,
         staging_dir: Path,
         uploads: list[Path],
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         try:
             staged = self._validated_staged_files(site_id, staging_dir, uploads)
-            mr_id = str(profile.get("mr_id") or "").strip()
-            display_name = str(profile.get("display_name") or "").strip()
-            if not mr_id or not display_name:
-                raise RailTransitWebError("PROFILE_REQUIRED", "MESH 导入缺少 MR 身份")
-            safe_folder = self._safe_name(str(profile.get("safe_folder_name") or mr_id))
-            if not safe_folder:
+            selected_mr_id = str(mr_id or "").strip()
+            profile = MeshCatalogRepository(self.paths.mesh_catalog_path(site_id)).get_profile(selected_mr_id)
+            if profile is None:
+                raise RailTransitWebError("PROFILE_NOT_FOUND", "MESH MR profile 不存在，请先创建或刷新基础资料")
+            safe_folder = str(profile.safe_folder_name or "").strip()
+            if not safe_folder or safe_folder in {".", ".."} or Path(safe_folder).name != safe_folder:
                 raise RailTransitWebError("PROFILE_INVALID", "MESH MR 目录名无效")
+            self._require_within(
+                self.paths.mesh_mr_root(site_id, safe_folder).resolve(),
+                self.paths.site_mesh_root(site_id).resolve(),
+            )
             profile_payload = {
-                "mr_id": mr_id,
-                "display_name": display_name,
+                "mr_id": profile.mr_id,
+                "display_name": profile.display_name,
                 "safe_folder_name": safe_folder,
                 "relative_folder_path": f"files/rail_transit/mr_raw_mesh/{safe_folder}",
-                "linked_device_id": profile.get("linked_device_id"),
-                "notes": str(profile.get("notes") or ""),
+                "linked_device_id": profile.linked_device_id,
+                "notes": profile.notes,
             }
             return self._start_task(
                 site_id,
@@ -161,6 +168,34 @@ class RailTransitWebApplicationService:
         except Exception:
             self._cleanup_staging(site_id, staging_dir)
             raise
+
+    def create_mesh_profile(
+        self,
+        site_id: str,
+        *,
+        display_name: str,
+        linked_mr_id: str = "",
+        notes: str = "",
+    ):
+        site_id = self._site(site_id)
+        name = str(display_name or "").strip()
+        if not name:
+            raise RailTransitWebError("PROFILE_REQUIRED", "请输入 MESH MR 名称")
+        linked_device_id = None
+        selected_mr_id = str(linked_mr_id or "").strip()
+        if selected_mr_id:
+            detail = RailTransitBaseDataQueryService(self.paths).get_mr(site_id, selected_mr_id)
+            if detail is None or detail.mr.device_id is None:
+                raise RailTransitWebError("PROFILE_DEVICE_NOT_FOUND", "所选基础资料 MR 不存在或未绑定设备")
+            linked_device_id = int(detail.mr.device_id)
+        try:
+            return MeshStorageService(site_id, self.paths).create_mr_profile(
+                name,
+                notes=str(notes or "").strip(),
+                linked_device_id=linked_device_id,
+            )
+        except ValueError as exc:
+            raise RailTransitWebError("PROFILE_CONFLICT", str(exc)) from exc
 
     def start_car_network_diagnostic(self, site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
         selected_train = str(train_id or "").strip()

@@ -31,10 +31,6 @@ export function importMeshAnalysis(files: File[], profile: MeshImportProfile): P
   const form = new FormData()
   files.forEach((file) => form.append('files', file))
   form.append('mr_id', profile.mr_id)
-  form.append('display_name', profile.display_name)
-  form.append('safe_folder_name', profile.safe_folder_name)
-  if (profile.linked_device_id !== undefined) form.append('linked_device_id', String(profile.linked_device_id))
-  if (profile.notes !== undefined) form.append('notes', profile.notes)
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/mesh-analysis/import`, { method: 'POST', body: form })
 }
 

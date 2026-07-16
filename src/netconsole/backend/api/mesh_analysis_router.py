@@ -20,6 +20,8 @@ from netconsole.models.api.mesh_analysis import (
     MeshChannelBusyPageDTO,
     MeshDataSourceDTO,
     MeshLinkPageDTO,
+    MeshProfileCreateRequestDTO,
+    MeshProfileDTO,
     MeshRawTailDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
@@ -68,6 +70,33 @@ def _query(callback: Callable[[], T]) -> T:
 @router.get("/summary", response_model=MeshAnalysisSummaryDTO)
 def summary(request: Request, site_id: str = Query(default="", max_length=100)) -> MeshAnalysisSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request, site_id)))
+
+
+@router.get("/profiles", response_model=list[MeshProfileDTO])
+def profiles(request: Request) -> list[MeshProfileDTO]:
+    return _query(lambda: _service(request).list_profiles(_current_site_id(request)))
+
+
+@router.post(
+    "/profiles",
+    response_model=MeshProfileDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> MeshProfileDTO:
+    try:
+        profile = _rail_service(request).create_mesh_profile(
+            _current_site_id(request),
+            display_name=payload.display_name,
+            linked_mr_id=payload.linked_mr_id,
+            notes=payload.notes,
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if exc.code == "PROFILE_CONFLICT" else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return MeshProfileDTO.model_validate(profile, from_attributes=True)
 
 
 @router.get("/sessions", response_model=MeshAnalysisSessionPageDTO)

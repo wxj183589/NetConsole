@@ -16,6 +16,11 @@ export interface MeshAnalysisSummary {
   latest_analysis_time: string | null
 }
 
+export interface MeshProfile {
+  mr_id: string; display_name: string; safe_folder_name: string; linked_device_id: number | null
+  source_file_count: number; sample_count: number; link_record_count: number; session_count: number; event_count: number; notes: string
+}
+
 export interface MeshAnalysisSession {
   session_id: string
   site_id: string
