@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import gc
 import json
 import os
 import sqlite3
@@ -30,6 +31,14 @@ from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
+
+
+@pytest.fixture(autouse=True)
+def _collect_qt_cycles_on_test_thread():
+    """避免后续后台线程承担 Qt/Matplotlib 循环引用的析构。"""
+
+    yield
+    gc.collect()
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
