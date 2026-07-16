@@ -51,6 +51,11 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.file_management"].parent_id == "module.file_management"
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
+    form_test = FEATURE_BY_ID["web.device_form_connection_test"]
+    assert form_test.parent_id == "web.device_management"
+    assert form_test.status is FeatureStatus.DEVELOPMENT
+    assert form_test.default_enabled is False
+    assert form_test.default_client_package is False
     for feature_id in (
         "web.device_management_write",
         "web.device_management_collect",

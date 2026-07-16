@@ -71,6 +71,8 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 class _CapturingProcessAdapter:
+    supports_runtime_bootstrap = True
+
     def __init__(self, tasks: TaskApplicationService) -> None:
         self.tasks = tasks
         self.jobs = []
@@ -80,12 +82,16 @@ class _CapturingProcessAdapter:
         self.second_start_entered = Event()
         self.release_start = Event()
         self.cancelled: list[str] = []
-        self.sensitive_bootstraps: list[dict[str, str] | None] = []
+        self.bootstrap_buffers: list[bytearray] = []
+        self.pending_bootstraps: dict[str, bytearray] = {}
 
-    def start_job(self, job, **kwargs) -> str:
+    def start_job(self, job, *, runtime_bootstrap=None, **kwargs) -> str:
         self.jobs.append(job)
-        self.sensitive_bootstraps.append(kwargs.get("sensitive_bootstrap"))
         self.completions.append(kwargs.get("on_complete"))
+        if runtime_bootstrap is not None:
+            assert isinstance(runtime_bootstrap, bytearray)
+            self.bootstrap_buffers.append(runtime_bootstrap)
+            self.pending_bootstraps[job.job_id] = bytearray(runtime_bootstrap)
         if len(self.jobs) > 1:
             self.second_start_entered.set()
         if self.block_start:
@@ -98,7 +104,39 @@ class _CapturingProcessAdapter:
 
     def cancel_job(self, task_id: str) -> bool:
         self.cancelled.append(task_id)
+        bootstrap = self.pending_bootstraps.pop(task_id, None)
+        if bootstrap is not None:
+            bootstrap[:] = b"\x00" * len(bootstrap)
         return any(job.job_id == task_id for job in self.jobs)
+
+    def take_bootstrap(self, task_id: str) -> bytearray:
+        return self.pending_bootstraps.pop(task_id)
+
+
+class _RuntimeBootstrapContext:
+    def __init__(self, job, paths: PathResolver, bootstrap: bytearray) -> None:
+        self.job_id = job.job_id
+        self.task_type = job.task_type
+        self.params = job.params
+        self.paths = paths
+        self._bootstrap: bytearray | None = bootstrap
+        self.progress_events: list[tuple[object, ...]] = []
+
+    def consume_runtime_bootstrap(self) -> bytearray:
+        if self._bootstrap is None:
+            raise RuntimeError("bootstrap 已消费")
+        bootstrap = self._bootstrap
+        self._bootstrap = None
+        return bootstrap
+
+    def should_cancel(self) -> bool:
+        return False
+
+    def check_cancelled(self) -> None:
+        return None
+
+    def progress(self, *values) -> None:
+        self.progress_events.append(values)
 
 
 class _FakeDesktopAdapter:
@@ -202,6 +240,7 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
         "web.device_management_import",
         "web.device_management_export",
         "web.device_management_desktop",
+        "web.device_form_connection_test",
     ):
         state = dict(app.state.feature_gate.features[feature_id])
         app.state.feature_gate.features[feature_id] = {
@@ -389,7 +428,6 @@ def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path
     }
     assert "secret-password" not in str(adapter.jobs[0].to_dict())
     assert "private-community" not in str(adapter.jobs[0].to_dict())
-    assert adapter.sensitive_bootstraps[0]["ssh_password"] == "secret-password"
 
 
 def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
@@ -562,11 +600,12 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
     assert "private-community" not in str(snmp)
 
 
-def test_unsaved_form_connection_tests_use_one_time_secret_channel(
+def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
     tmp_path: Path, monkeypatch
 ) -> None:
     client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
-    password = "form-password-must-not-be-persisted"
+    ssh_password = "form-ssh-password-must-not-be-persisted"
+    telnet_password = "form-telnet-password-must-not-be-persisted"
     community = "form-community-must-not-be-persisted"
     observed: list[tuple[str, str | None]] = []
 
@@ -595,6 +634,7 @@ def test_unsaved_form_connection_tests_use_one_time_secret_channel(
         observed.append(("SNMP", device.snmp_ro_community))
         return DeviceSnmpProfileResult(
             status="success",
+            error_message=f"response mentioned {community}",
             sys_name="FORM-SW",
             model="S6520",
             os_family="Comware",
@@ -614,9 +654,9 @@ def test_unsaved_form_connection_tests_use_one_time_secret_channel(
         "name": "未保存表单设备",
         "primary_address": "198.51.100.88",
         "ssh_enabled": True,
-        "ssh_password": password,
+        "ssh_password": ssh_password,
         "telnet_enabled": True,
-        "telnet_password": password,
+        "telnet_password": telnet_password,
         "snmp_enabled": True,
         "snmp_v2c_enabled": True,
         "snmp_ro_community": community,
@@ -628,33 +668,56 @@ def test_unsaved_form_connection_tests_use_one_time_secret_channel(
             json={**payload, "protocol": protocol},
         )
         assert started.status_code == 202
-        assert password not in started.text
+        assert ssh_password not in started.text
+        assert telnet_password not in started.text
         assert community not in started.text
         job = adapter.jobs[-1]
         serialized_params = json.dumps(job.params, ensure_ascii=False)
-        assert password not in serialized_params
+        assert ssh_password not in serialized_params
+        assert telnet_password not in serialized_params
         assert community not in serialized_params
-        result = run_device_connection_test(
-            JobContext(
-                job.job_id,
-                job.task_type,
-                job.params,
-                None,
-                lambda: False,
-                service.paths,
-            )
-        )
+        assert "token" not in serialized_params.lower()
+        assert all(value == 0 for value in adapter.bootstrap_buffers[-1])
+        job_file = service.paths.runtime_cache_dir / "background_jobs" / f"{job.job_id}.json"
+        disk_job = job_file.read_text(encoding="utf-8")
+        assert ssh_password not in disk_job
+        assert telnet_password not in disk_job
+        assert community not in disk_job
+        worker_bootstrap = adapter.take_bootstrap(job.job_id)
+        bootstrap_payload = json.loads(bytes(worker_bootstrap).decode("utf-8"))
+        if protocol == "SSH":
+            assert "telnet_password" not in bootstrap_payload
+            assert "snmp_ro_community" not in bootstrap_payload
+        elif protocol == "TELNET":
+            assert "ssh_password" not in bootstrap_payload
+            assert "snmp_ro_community" not in bootstrap_payload
+        else:
+            assert "ssh_password" not in bootstrap_payload
+            assert "telnet_password" not in bootstrap_payload
+        context = _RuntimeBootstrapContext(job, service.paths, worker_bootstrap)
+        result = run_device_connection_test(context)  # type: ignore[arg-type]
         assert result["success"] is True
         assert result["protocol"] == protocol
-        assert password not in json.dumps(result, ensure_ascii=False)
+        assert ssh_password not in json.dumps(result, ensure_ascii=False)
+        assert telnet_password not in json.dumps(result, ensure_ascii=False)
         assert community not in json.dumps(result, ensure_ascii=False)
+        assert context._bootstrap is None
+        assert all(value == 0 for value in worker_bootstrap)
+        with pytest.raises(RuntimeError, match="已消费"):
+            context.consume_runtime_bootstrap()
 
     assert observed == [
-        ("SSH", password),
-        ("TELNET", password),
+        ("SSH", ssh_password),
+        ("TELNET", telnet_password),
         ("SNMP", community),
     ]
-    assert not list(service._form_test_channels)
+    for path in service.paths.data_root.rglob("*"):
+        if not path.is_file():
+            continue
+        persisted = path.read_bytes()
+        assert ssh_password.encode("utf-8") not in persisted
+        assert telnet_password.encode("utf-8") not in persisted
+        assert community.encode("utf-8") not in persisted
 
     forged = client.post(
         "/api/device-management/connection-tests/form",
@@ -663,7 +726,7 @@ def test_unsaved_form_connection_tests_use_one_time_secret_channel(
     assert forged.status_code == 422
 
 
-def test_unsaved_form_connection_test_cancel_closes_secret_channel(
+def test_unsaved_form_connection_test_cancel_clears_runtime_bootstrap(
     tmp_path: Path,
 ) -> None:
     client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
@@ -681,14 +744,86 @@ def test_unsaved_form_connection_test_cancel_closes_secret_channel(
     )
     assert started.status_code == 202
     task_id = started.json()["task_id"]
-    assert task_id in service._form_test_channels
+    assert task_id in adapter.pending_bootstraps
     assert secret not in json.dumps(adapter.jobs[-1].params, ensure_ascii=False)
+    pending = adapter.pending_bootstraps[task_id]
 
     cancelled = client.post(f"/api/device-management/tasks/{task_id}/cancel")
 
     assert cancelled.status_code == 200
     assert adapter.cancelled == [task_id]
-    assert task_id not in service._form_test_channels
+    assert task_id not in adapter.pending_bootstraps
+    assert all(value == 0 for value in pending)
+
+
+def test_unsaved_form_connection_test_clears_worker_secrets_on_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    secret = "failed-form-secret"
+    observed_devices = []
+
+    def fail_connection(device):
+        observed_devices.append(device)
+        assert device.ssh_password == secret
+        raise TimeoutError(f"connection timed out with {secret}")
+
+    monkeypatch.setattr(
+        "netconsole.services.netmiko_connection.test_device_connection",
+        fail_connection,
+    )
+    started = client.post(
+        "/api/device-management/connection-tests/form",
+        json={
+            "name": "失败清理设备",
+            "primary_address": "198.51.100.91",
+            "protocol": "SSH",
+            "ssh_enabled": True,
+            "ssh_password": secret,
+            "telnet_enabled": False,
+        },
+    )
+    assert started.status_code == 202
+    job = adapter.jobs[-1]
+    worker_bootstrap = adapter.take_bootstrap(job.job_id)
+
+    with pytest.raises(RuntimeError, match="timed out") as captured:
+        run_device_connection_test(  # type: ignore[arg-type]
+            _RuntimeBootstrapContext(job, service.paths, worker_bootstrap)
+        )
+
+    assert secret not in str(captured.value)
+    assert all(value == 0 for value in worker_bootstrap)
+    assert observed_devices[0].ssh_password is None
+    assert observed_devices[0].password is None
+
+
+def test_unsaved_form_connection_test_is_blocked_without_shared_runtime(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    adapter.supports_runtime_bootstrap = False
+    secret = "blocked-form-secret"
+
+    response = client.post(
+        "/api/device-management/connection-tests/form",
+        json={
+            "name": "等待共享运行时",
+            "primary_address": "198.51.100.90",
+            "protocol": "SSH",
+            "ssh_enabled": True,
+            "ssh_password": secret,
+            "telnet_enabled": False,
+        },
+    )
+
+    assert response.status_code == 503
+    assert "暂时无法创建" in response.text
+    assert secret not in response.text
+    assert not adapter.jobs
+    for path in service.paths.data_root.rglob("*"):
+        if path.is_file():
+            assert secret.encode("utf-8") not in path.read_bytes()
 
 
 def test_edit_form_connection_test_preserves_or_clears_existing_secret(
@@ -734,16 +869,10 @@ def test_edit_form_connection_test_preserves_or_clears_existing_secret(
         )
         assert started.status_code == 202
         job = adapter.jobs[-1]
-        run_device_connection_test(
-            JobContext(
-                job.job_id,
-                job.task_type,
-                job.params,
-                None,
-                lambda: False,
-                service.paths,
-            )
+        context = _RuntimeBootstrapContext(
+            job, service.paths, adapter.take_bootstrap(job.job_id)
         )
+        run_device_connection_test(context)  # type: ignore[arg-type]
 
     assert observed == ["secret-password", None]
     assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"

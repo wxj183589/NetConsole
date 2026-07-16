@@ -10,7 +10,7 @@
 
 | 模块 | 当前 Qt | 当前 Electron/Vue | 当前结论 | 长期去向 |
 | --- | --- | --- | --- | --- |
-| 设备管理 | 生产入口 | 真实闭环已实现，待人工/设备验收 | `IMPLEMENTED_UNVERIFIED` | Electron + Vue + FastAPI，达到 `COMPLETE` 后替换 Qt |
+| 设备管理 | 生产入口 | CRUD/导入导出/诊断已实现；表单测试 Runtime bootstrap、统一任务窗口与诊断 allowlist 仍阻塞 | `PARTIAL` | Electron + Vue + FastAPI，达到 `COMPLETE` 后替换 Qt |
 | AC 管理 | 生产入口 | 只读与部分受控能力 | `PARTIAL` | Vue + FastAPI，写操作需权限/确认/审计 |
 | 轨道交通 | 生产入口/回退 | 主业务展示与部分控制已覆盖 | `PARTIAL` | Vue 主入口，补齐真实设备闭环 |
 | 网络工具 | 生产入口 | Ping/fping/iPerf/端口能力部分覆盖 | `PARTIAL` | 本地与 Agent 统一任务模型 |

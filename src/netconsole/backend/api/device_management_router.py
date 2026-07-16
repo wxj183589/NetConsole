@@ -307,7 +307,7 @@ def device_history(
     response_model=DeviceConnectionTestDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.device_connection_test")),
+        Depends(require_feature("web.device_form_connection_test")),
         Depends(require_feature("web.device_management_write")),
     ],
 )

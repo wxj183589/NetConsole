@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。本分支完成写入、未保存表单连接测试、诊断 Artifact、全部 Qt 导入导出格式和终端受控启动的模块侧闭环；统一任务窗口的跨页面任务列表、Artifact 一次性授权和重启恢复改动仍由 `codex/electron-task-center-window@fe2c54e8` 单写，尚未进入本分支，因此当前状态为 `PARTIAL / BLOCKED_ON_TASK_WINDOW`，不是 `COMPLETE`。
+设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。CRUD、分组、已保存设备连接测试、诊断 Artifact、Qt 导入导出格式和终端受控启动已有模块实现；未保存表单测试只完成共享 Runtime 消费端契约，因 `codex/electron-task-center-window@c3532f90` 尚无非序列化 worker bootstrap 而默认阻断。统一任务窗口、Artifact capability 和重启恢复也尚未合入本分支，因此当前状态为 `PARTIAL / BLOCKED_ON_JOB_RUNTIME / BLOCKED_ON_TASK_WINDOW`，不是 `COMPLETE` 或 `REAL_DEVICE_PENDING`。
 
 普通浏览器不再是正式产品入口。本页仍可在源码开发服务器中联调真实 API（包括受控写操作），但不形成独立页面、业务分支、发布包或验收链；外部终端、原生文件选择和受管下载只以 Electron Desktop 为正式行为基准。
 
@@ -65,7 +65,7 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 | 右键详情、复制、外部终端、编辑、删除 | 对应真实入口齐全；复制当前单元格/名称/主备地址/系统名/站点/整行/设备信息使用系统剪贴板 | 已实现，待人工对照 |
 | 新增、编辑、复制 | 真实 Repository 写入；表单校验失败返回 422 并显示错误，成功刷新列表/详情；复制生成新 UUID | 已实现，待人工对照 |
 | 秘密字段编辑 | 保持/替换/显式清除三态；DTO 严格白名单；API/日志/任务不回显 | 已实现，待人工对照 |
-| `DeviceDialog` 测试连接 | 新增/编辑对话框直接提交当前未保存字段；SSH/Telnet/SNMP 均进入正式 Job，凭据只经进程内一次性回环通道传给 worker，不写 Task 参数、响应、日志或数据库；编辑态空秘密保持旧值，显式清除立即用于本次测试但不写库 | 已实现，真实设备待验收 |
+| `DeviceDialog` 测试连接 | 新增/编辑对话框保留入口；模块只接受共享 Runtime 的 `runtime_bootstrap`，按当前协议裁剪字段，worker 单次读取并清零；旧回环 token/端口已删除。共享 Runtime 未提供该能力时不创建 Task | `BLOCKED_ON_JOB_RUNTIME` |
 | 单删、批删及取消 | 二次确认后签发绑定设备集合的短期一次性 token；取消不写库 | 已实现，待人工对照 |
 | 分组新增、重命名、删除、批量设置/清空 | 真实 Device Group Repository；删除后设备回到未分组 | 已实现，待人工对照 |
 | 单台/批量连接测试 | 正式 SSH/Telnet/SNMP worker、持久 Task、超时/失败/取消；真实设备待验收 | `REAL_DEVICE_PENDING` 前置未满足 |
@@ -80,7 +80,7 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 | OmniPeek 预览/选择/强制异常项/导出 | 后台真实预览与 `.nam` Artifact；异常项需显式强制 | 已实现，待人工对照 |
 | SecureCRT/Xshell/PuTTY 配置和单/批量启动 | 严格终端类型、设备 ID、可执行文件名白名单；`shell=False`；超过 20 台需一次性 token | 已实现，真实本机软件待验收 |
 | 文件下载、打开、所在目录 | FastAPI 按 Task/Artifact/SHA-256/大小验证；Electron 受管下载成功后只使用 Native Bridge 返回的当前会话授权句柄调用 `openPath`/`showItemInFolder`，不向桥提交 Renderer 自造路径；重启后授权失效需重新下载 | 模块侧已实现；诊断下载路由待共享 allowlist 合入 |
-| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页仅保留当前会话轮询，不再自建浏览器任务存储；表单秘密通道在取消/完成/宿主停止时关闭，重启中断时不恢复秘密而安全失败 | `BLOCKED_ON_TASK_WINDOW` |
+| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页已删除 `trackedTasks`、私有任务轮询/取消和本页任务表，只消费公共 tasks store 的紧凑摘要并打开统一任务窗口 | `BLOCKED_ON_TASK_WINDOW` |
 
 Qt 的窗口置顶、窗口几何和 Qt 专属子窗口生命周期属于外壳行为，不复制为第二套 Vue 业务状态；Electron 对应能力由正式桌面壳统一承担。采集日志的持久查看、统一停止和 Artifact 一次性授权也归统一任务窗口，设备页不再复制一套。
 
@@ -130,16 +130,17 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 ## Feature Registry
 
-页面和动作继续由以下 Feature 控制：`web.device_management`、`web.device_connection_test`、`web.device_management_write`、`web.device_management_collect`、`web.device_management_import`、`web.device_management_export`、`web.device_management_desktop`。
+页面和动作继续由以下 Feature 控制：`web.device_management`、`web.device_connection_test`、`web.device_form_connection_test`、`web.device_management_write`、`web.device_management_collect`、`web.device_management_import`、`web.device_management_export`、`web.device_management_desktop`。
 
-这些功能在客户包中可见并默认启用；`web.device_management_desktop` 的具体按钮还必须满足 Electron host 检查。Feature Gate 不再用来掩盖 Qt 已有能力。
+除 `web.device_form_connection_test` 外，这些功能在客户包中可见并按既有策略启用；表单连接测试在共享 Runtime 接线前 `default_enabled=false`、`default_client_package=false`。`web.device_management_desktop` 的具体按钮还必须满足 Electron host 检查。
 
 ## 自动化证据
 
-- `tests/test_device_management_web_api.py`：真实临时 SQLite、CRUD、筛选排序分页、分组、删除 token、凭据边界、已保存/未保存表单连接、采集/光模块/诊断 ZIP、导入预览确认；CSV 含/不含凭据、模板、SecureCRT、OmniPeek 均实际启动独立 Export Process 并经 API 下载；三类终端经 `LocalDesktopAdapter` 以 `shell=False` 启动。
+- `tests/test_device_management_web_api.py`：真实临时 SQLite、CRUD、筛选排序分页、分组、删除 token、凭据边界、已保存连接测试、表单 bootstrap 消费契约与缺失 Runtime 阻断、采集/光模块/诊断 ZIP、导入预览确认；CSV 含/不含凭据、模板、SecureCRT、OmniPeek 均实际启动独立 Export Process 并经 API 下载；三类终端经 `LocalDesktopAdapter` 以 `shell=False` 启动。
 - `tests/test_desktop_action_service.py`：动态登记终端动作、审计字段和命令解释器拒绝。
 - `tests/test_web_architecture.py`：Desktop 使用非 Qt `LocalDesktopAdapter`，Server 不具备本机动作。
-- `apps/web/src/views/devices/DeviceManagementView.test.ts`：页面状态、筛选、详情 Tab、选择、真实 CRUD、凭据三态、当前会话任务轮询、受控下载、终端和 OmniPeek 预览入口。
+- `apps/web/src/views/devices/DeviceManagementView.mount.test.ts`：真实挂载设备页，验证编辑保存成功/校验失败反馈、凭据保持/替换/清除、表单测试提交与统一任务窗口停止入口、关闭表单秘密清理，以及诊断公共 Artifact DTO → `capabilityId` → 打开/定位。
+- `apps/web/src/views/devices/DeviceManagementView.test.ts`：仅作为源码静态护栏，禁止重新引入页面私有任务系统或 `savedPath`。
 - `apps/web/src/navigation/registry.test.ts`、`tests/test_web_parity_foundation.py`：导航归属和迁移状态枚举。
 
 自动测试使用真实临时数据库、真实 FastAPI/Application Service 和可控连接/桌面适配器；不把生产设备凭据或正式 `.local/data` 带入测试。
@@ -163,11 +164,12 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 ## 未完成验收
 
-- 统一任务窗口：`BLOCKED_ON_TASK_WINDOW`。本分支已删除设备页面 `sessionStorage` 任务系统；待集成 `codex/electron-task-center-window@fe2c54e8` 后，设备任务必须消费统一任务列表、取消和 Artifact 一次性授权契约，冲突解决时保留本分支的页面存储删除结果。模块下载结果同时兼容基线 `savedPath` 和共享分支 `capabilityId`，打开/定位只回传该授权值；共享分支需在 `apps/desktop_electron/src/shared/validation.ts` 的 `DOWNLOAD_ENDPOINTS` 增加 `/api/device-management/diagnostics/{task}/download` 严格规则（仅允许并要求 `artifact_id`），其现有 `OPENABLE_ARTIFACT_SUFFIXES` 已包含 `.nam`。不得回退为 Renderer 任意路径或 Python 任意程序执行。
-- 未保存表单连接测试在应用进程重启时不会持久化或恢复秘密；后台 Task 会安全失败/取消并由统一任务窗口呈现，用户需重新提交。这是凭据不落盘边界，不以第二套秘密存储换取自动续跑。
+- 未保存表单连接测试：`BLOCKED_ON_JOB_RUNTIME`。共享分支需让 `LocalProcessAdapter.start_job(..., runtime_bootstrap=bytearray)` 仅以内存参数接收最多 64 KiB 数据，以受控 stdin/匿名管道同步交给 worker 后立即关闭写端并清零父进程缓冲；`JobContext.consume_runtime_bootstrap()` 只允许读取一次并返回可清零 `bytearray`，取消、启动失败、超时和宿主关闭必须关闭管道并清零。Job JSON、Task params/result/event/log/DTO 不得出现秘密；不得恢复旧 token/端口或新增秘密文件。
+- 统一任务窗口：`BLOCKED_ON_TASK_WINDOW`。本分支已删除设备页 `trackedTasks`、私有轮询/取消和大任务区，提交后调用正式 `openTaskWindow({taskId,module:'devices',status})` 并从公共 tasks store 恢复紧凑摘要。待合入 `codex/electron-task-center-window@c3532f90`；冲突解决不得恢复页面任务系统。
+- 诊断 Artifact：`BLOCKED_ON_TASK_WINDOW`。共享 `JobCenterQueryService._artifact_download()` 需为 `owner=web_device_management + task_type=device_diagnostic_download` 返回 `/api/device-management/diagnostics/{task}/download`、必需 `artifact_id` 和受控显示名；`apps/desktop_electron/src/shared/validation.ts` 的 `DOWNLOAD_ENDPOINTS` 需加入同一路由并仅允许且要求 `artifact_id`。模块只消费公共 `artifact_download` DTO 和 `capabilityId`，没有 `savedPath` 回退。
 - 人工 Qt/Electron 对照：`NOT_STARTED`，不能由自动化代替。
 - 真实设备：SSH/Telnet/SNMP、H3C 详情、光模块和诊断下载待现场设备验证。
-- SecureCRT/Xshell/PuTTY：需要用户本机实际安装路径与交互验证。
+- SecureCRT/Xshell/PuTTY：`MANUAL_DESKTOP_PENDING`，需要用户本机实际安装路径与交互验证，不标为真实设备。
 - 截图：待人工验收时存入版本化文档资产目录，再在本文登记；临时剪贴板路径不得写入仓库。
 
 共享任务窗口依赖补齐并完成人工软件流程后，若只剩现场设备，状态才可升级为 `REAL_DEVICE_PENDING`；所有必需现场项通过后才能升级为 `COMPLETE`。

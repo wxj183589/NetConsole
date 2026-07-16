@@ -21,7 +21,6 @@ import type {
   DeviceWriteRequest,
   DeviceWriteResponse,
 } from '../types/deviceManagement'
-import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 function queryString(values: DeviceListQuery): string {
   const params = new URLSearchParams()
@@ -165,41 +164,6 @@ export function getOmniPeekPreview(taskId: string): Promise<DeviceOmniPeekPrevie
 
 export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: string; include_device_mr?: boolean; selected_item_keys?: string[]; excluded_item_keys?: string[]; force_export_keys?: string[] }): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek', { method: 'POST', body: JSON.stringify(payload) })
-}
-
-export function deviceExportDownloadRequest(
-  taskId: string,
-  artifactId: string,
-  suggestedName: string,
-): BackendDownloadRequest {
-  return {
-    apiPath: `/api/device-management/exports/${encodeURIComponent(taskId)}/download`,
-    query: { artifact_id: artifactId },
-    suggestedName,
-  }
-}
-
-export function deviceDiagnosticDownloadRequest(
-  taskId: string,
-  artifactId: string,
-): BackendDownloadRequest {
-  return {
-    apiPath: `/api/device-management/diagnostics/${encodeURIComponent(taskId)}/download`,
-    query: { artifact_id: artifactId },
-    suggestedName: '设备诊断信息.zip',
-  }
-}
-
-export function getDeviceExportTask(taskId: string): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>(`/api/device-management/exports/${encodeURIComponent(taskId)}`)
-}
-
-export function getDeviceTask(taskId: string): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>(`/api/device-management/tasks/${encodeURIComponent(taskId)}`)
-}
-
-export function cancelDeviceTask(taskId: string): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>(`/api/device-management/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }
 
 export function startDeviceDiagnosticDownload(deviceUuids: string[]): Promise<DeviceTaskReference> {

@@ -32,16 +32,14 @@ describe('Device Management Web view', () => {
     expect(source).toContain('清除已保存值')
     expect(source).toContain('startDeviceFormConnectionTest')
     expect(source).toContain('测试表单连接')
-    expect(source).toContain('cancelWriteConnectionTest')
+    expect(source).toContain("isFeatureEnabled('web.device_form_connection_test')")
   })
 
-  it('submits background connection tests and restores status by task id', () => {
+  it('submits background connection tests to the public task center', () => {
     expect(source).toContain('startDeviceConnectionTest')
     expect(source).toContain("startTest('SSH')")
     expect(source).toContain("startTest('TELNET')")
     expect(source).toContain("startTest('SNMP')")
-    expect(source).toContain("searchParams.set('task_id', taskId)")
-    expect(source).toContain("get('task_id')")
     expect(source).toContain('getDeviceConnectionTest')
     expect(source).toContain("isFeatureEnabled('web.device_connection_test')")
     expect(source).toContain('testActive')
@@ -88,22 +86,21 @@ describe('Device Management Web view', () => {
     }
   })
 
-  it('keeps page task tracking transient and supports polling, cancellation and controlled downloads', () => {
+  it('statically guards against a page-private task system and path capabilities', () => {
     expect(source).not.toContain('sessionStorage')
     expect(source).not.toContain('taskStorageKey')
-    expect(source).toContain('getDeviceTask(task.task_id)')
-    expect(source).toContain('cancelDeviceTask(task.task_id)')
-    expect(source).toContain('deviceExportDownloadRequest(task.task_id, task.artifact_id')
-    expect(source).toContain('deviceDiagnosticDownloadRequest(task.task_id, task.artifact_id)')
+    expect(source).not.toContain('trackedTasks')
+    expect(source).not.toContain('refreshTrackedTasks')
+    expect(source).not.toContain('cancelDeviceTask')
+    expect(source).toContain('useTaskStore')
+    expect(source).toContain('taskStore.refresh()')
+    expect(source).toContain('openTaskWindow')
     expect(source).toContain('downloadBackendResource')
-    expect(source).toContain("'capabilityId' in result")
-    expect(source).toContain("'savedPath' in result")
-    expect(source).toContain('getPlatformAdapter().openPath(access)')
-    expect(source).toContain('getPlatformAdapter().showItemInFolder(access)')
-    expect(source).toContain('downloadedArtifactAccess[row.task_id]')
+    expect(source).toContain('result.capabilityId')
+    expect(source).not.toContain('savedPath')
+    expect(source).toContain('getPlatformAdapter().openPath(savedArtifactCapability.value)')
+    expect(source).toContain('getPlatformAdapter().showItemInFolder(savedArtifactCapability.value)')
     expect(source).not.toContain('window.location.assign')
-    expect(source).toContain("openTaskWindow({ module: 'devices' })")
-    expect(source).not.toContain(':data="trackedTasks"')
   })
 
   it('builds edit values and launches only configured desktop terminals', () => {
