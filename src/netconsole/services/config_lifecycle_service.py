@@ -3,8 +3,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
@@ -176,9 +179,23 @@ class ConfigLifecycleService:
         return compare_named_config_text(
             self.snapshot_text(left_snapshot),
             self.snapshot_text(right_snapshot),
-            str(left_snapshot.type or "left"),
-            str(right_snapshot.type or "right"),
+            self.snapshot_label(left_snapshot),
+            self.snapshot_label(right_snapshot),
         )
+
+    def snapshot_label(self, snapshot: ConfigSnapshot) -> str:
+        device = DeviceRepository(self.repository.database).get_by_uuid(snapshot.device_uuid)
+        device_name = str(
+            (device.name or device.system_name or device.device_uuid)
+            if device is not None
+            else snapshot.device_uuid
+        )
+        type_label = {
+            "running": "运行配置",
+            "saved": "保存配置",
+            "diff": "差异",
+        }.get(str(snapshot.type or ""), str(snapshot.type or "配置"))
+        return f"{device_name} · {type_label} · {snapshot.timestamp}"
 
     def compare_latest_running_between_devices(self, device_a: Device, device_b: Device) -> MultiDeviceCompareResult:
         running_a = self.list_device_snapshots(device_a, "running")
@@ -187,7 +204,12 @@ class ConfigLifecycleService:
             raise ValueError("Both devices must have running snapshots before comparison.")
         text_a = self.snapshot_text(running_a[0])
         text_b = self.snapshot_text(running_b[0])
-        diff = compare_named_config_text(text_a, text_b, str(device_a.name or "device_a"), str(device_b.name or "device_b"))
+        diff = compare_named_config_text(
+            text_a,
+            text_b,
+            self.snapshot_label(running_a[0]),
+            self.snapshot_label(running_b[0]),
+        )
         return MultiDeviceCompareResult(
             device_a=str(device_a.name or ""),
             device_b=str(device_b.name or ""),
@@ -242,18 +264,58 @@ class ConfigLifecycleService:
                 archive.writestr("failed_devices.txt", "\n".join(failures) + "\n")
 
     def delete_snapshot(self, snapshot: ConfigSnapshot) -> None:
-        paths = [self._safe_managed_file(snapshot.file_path, self.paths.config_center_snapshots_root(self.site_name))]
-        if snapshot.id is not None:
-            self.repository.delete(int(snapshot.id))
-        if snapshot.raw_log_path and self.repository.raw_log_reference_count(snapshot.raw_log_path) == 0:
-            raw_path = self._safe_managed_file(snapshot.raw_log_path, self.paths.config_center_raw_logs_root(self.site_name))
-            paths.extend([raw_path, raw_path.with_suffix(".jsonl") if raw_path is not None else None])
-        for path in (candidate for candidate in paths if candidate is not None):
+        snapshot_path = self._safe_managed_file(
+            snapshot.file_path,
+            self.paths.config_center_snapshots_root(self.site_name),
+        )
+        if snapshot_path is None:
+            raise ValueError("配置快照路径不在受控目录内")
+
+        paths = [snapshot_path]
+        if (
+            snapshot.raw_log_path
+            and self.repository.raw_log_reference_count(snapshot.raw_log_path) <= 1
+        ):
+            raw_path = self._safe_managed_file(
+                snapshot.raw_log_path,
+                self.paths.config_center_raw_logs_root(self.site_name),
+            )
+            if raw_path is not None:
+                paths.extend((raw_path, raw_path.with_suffix(".jsonl")))
+
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for path in dict.fromkeys(paths):
+                try:
+                    mode = path.stat().st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise ValueError(f"拒绝删除非普通配置文件：{path}")
+                pending = path.with_name(
+                    f".{path.name}.netconsole-delete-{uuid4().hex}.pending"
+                )
+                os.replace(path, pending)
+                staged.append((path, pending))
+        except (OSError, ValueError):
+            self._restore_staged_files(staged)
+            raise
+
+        try:
+            if snapshot.id is not None:
+                self.repository.delete(int(snapshot.id))
+        except Exception:
+            self._restore_staged_files(staged)
+            raise
+
+        for original, pending in staged:
             try:
-                if path.exists() and path.is_file():
-                    path.unlink()
+                pending.unlink()
             except OSError as exc:
-                app_logger.log_warning("CONFIG_SNAPSHOT_FILE_DELETE_FAILED", f"path={path} error={exc}")
+                app_logger.log_warning(
+                    "CONFIG_SNAPSHOT_PENDING_DELETE_FAILED",
+                    f"original={original} pending={pending} error={exc}",
+                )
 
     def device_config_dir(self, device: Device) -> Path:
         return self._device_config_dir(device)
@@ -357,6 +419,21 @@ class ConfigLifecycleService:
             return None
         resolved = candidate.resolve()
         return resolved if resolved_root in resolved.parents and not resolved.is_symlink() else None
+
+    @staticmethod
+    def _restore_staged_files(staged: list[tuple[Path, Path]]) -> None:
+        failures: list[str] = []
+        for original, pending in reversed(staged):
+            if not pending.exists():
+                continue
+            try:
+                os.replace(pending, original)
+            except OSError as exc:
+                failures.append(f"{pending} -> {original}: {exc}")
+        if failures:
+            detail = "; ".join(failures)
+            app_logger.log_error("CONFIG_SNAPSHOT_DELETE_ROLLBACK_FAILED", detail)
+            raise RuntimeError(f"配置快照删除回滚失败：{detail}")
 
     def _batch_log_paths(self, item: BatchConfigItemResult) -> list[Path]:
         paths: list[Path] = []

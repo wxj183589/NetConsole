@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
 from netconsole.services.config_lifecycle_service import (
     BatchConfigItemResult,
@@ -101,8 +104,6 @@ def test_delete_snapshot_keeps_shared_raw_log_until_last_snapshot_is_deleted(tmp
 
     service.delete_snapshot(snapshot)
 
-    import pytest
-
     with pytest.raises(KeyError):
         repository.get(int(snapshot.id or 0))
     assert not snapshot_path.exists()
@@ -121,6 +122,102 @@ def test_delete_snapshot_keeps_shared_raw_log_until_last_snapshot_is_deleted(tmp
 
     with pytest.raises(KeyError):
         repository.get(int(missing_snapshot.id or 0))
+
+
+def test_delete_snapshot_restores_files_when_database_delete_fails(tmp_path, monkeypatch):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = ConfigSnapshotRepository(db)
+    service = ConfigLifecycleService("demo", db, paths, repository)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    raw_log_path = "files/config_center/raw_logs/20260618/SW01/run.log"
+    snapshot = service._write_snapshot(
+        device,
+        "running",
+        "20260618_101200",
+        "running",
+        raw_log_path=raw_log_path,
+    )
+    snapshot_path = paths.site_dir("demo") / snapshot.file_path
+    raw_log = paths.site_dir("demo") / raw_log_path
+    raw_log.parent.mkdir(parents=True, exist_ok=True)
+    raw_log.write_text("raw", encoding="utf-8")
+    raw_jsonl = raw_log.with_suffix(".jsonl")
+    raw_jsonl.write_text("{}", encoding="utf-8")
+
+    def fail_delete(_snapshot_id):
+        raise RuntimeError("database locked")
+
+    monkeypatch.setattr(repository, "delete", fail_delete)
+
+    with pytest.raises(RuntimeError, match="database locked"):
+        service.delete_snapshot(snapshot)
+
+    assert repository.get(int(snapshot.id or 0)) == snapshot
+    assert snapshot_path.read_text(encoding="utf-8") == "running"
+    assert raw_log.read_text(encoding="utf-8") == "raw"
+    assert raw_jsonl.read_text(encoding="utf-8") == "{}"
+    assert not list(paths.config_center_root("demo").rglob("*.pending"))
+
+
+def test_delete_snapshot_restores_staged_files_when_raw_log_rename_fails(tmp_path, monkeypatch):
+    import netconsole.services.config_lifecycle_service as service_module
+
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = ConfigSnapshotRepository(db)
+    service = ConfigLifecycleService("demo", db, paths, repository)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    raw_log_path = "files/config_center/raw_logs/20260618/SW01/run.log"
+    snapshot = service._write_snapshot(device, "running", "20260618_101200", "running", raw_log_path=raw_log_path)
+    snapshot_path = paths.site_dir("demo") / snapshot.file_path
+    raw_log = paths.site_dir("demo") / raw_log_path
+    raw_log.parent.mkdir(parents=True, exist_ok=True)
+    raw_log.write_text("raw", encoding="utf-8")
+    real_replace = service_module.os.replace
+
+    def fail_raw_rename(source, target):
+        if Path(source) == raw_log and ".netconsole-delete-" in Path(target).name:
+            raise PermissionError("raw log is locked")
+        real_replace(source, target)
+
+    monkeypatch.setattr(service_module.os, "replace", fail_raw_rename)
+
+    with pytest.raises(PermissionError, match="raw log is locked"):
+        service.delete_snapshot(snapshot)
+
+    assert repository.get(int(snapshot.id or 0)) == snapshot
+    assert snapshot_path.exists()
+    assert raw_log.exists()
+    assert not list(paths.config_center_root("demo").rglob("*.pending"))
+
+
+def test_delete_snapshot_keeps_failed_cleanup_in_controlled_pending_name(tmp_path, monkeypatch):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    repository = ConfigSnapshotRepository(db)
+    service = ConfigLifecycleService("demo", db, paths, repository)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    snapshot = service._write_snapshot(device, "running", "20260618_101200", "running")
+    original_unlink = Path.unlink
+
+    def fail_pending_unlink(path, *args, **kwargs):
+        if ".netconsole-delete-" in path.name:
+            raise PermissionError("antivirus scan")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_pending_unlink)
+
+    service.delete_snapshot(snapshot)
+
+    with pytest.raises(KeyError):
+        repository.get(int(snapshot.id or 0))
+    pending = list(paths.config_center_snapshots_root("demo").rglob("*.pending"))
+    assert len(pending) == 1
+    assert pending[0].name.startswith(f".{Path(snapshot.file_path).name}.netconsole-delete-")
 
 
 def test_delete_snapshot_never_unlinks_raw_log_outside_config_center(tmp_path):
@@ -326,8 +423,9 @@ def test_compare_latest_running_between_devices_uses_snapshot_files(tmp_path):
     db = Database(paths.site_db_path("demo"))
     db.initialize()
     service = ConfigLifecycleService("demo", db, paths)
-    device_a = Device(id=1, device_uuid="123e4567-e89b-42d3-a456-426614174001", name="SW-A")
-    device_b = Device(id=2, device_uuid="123e4567-e89b-42d3-a456-426614174002", name="SW-B")
+    devices = DeviceRepository(db)
+    device_a = devices.create(Device(device_uuid="123e4567-e89b-42d3-a456-426614174001", name="SW-A", ip_address="192.0.2.11"))
+    device_b = devices.create(Device(device_uuid="123e4567-e89b-42d3-a456-426614174002", name="SW-B", ip_address="192.0.2.12"))
     service._write_snapshot(device_a, "running", "20260618_101200", "sysname SW-A\nvlan 10\n")
     service._write_snapshot(device_b, "running", "20260618_101200", "sysname SW-B\nvlan 20\n")
 
@@ -339,6 +437,25 @@ def test_compare_latest_running_between_devices_uses_snapshot_files(tmp_path):
     assert "+vlan 20" in result.diff.raw_diff
     assert "vlan 10" in result.structure_diff["only_in_a"]
     assert "vlan 20" in result.structure_diff["only_in_b"]
+    assert "--- SW-A · 运行配置 · 20260618_101200" in result.diff.raw_diff
+    assert "+++ SW-B · 运行配置 · 20260618_101200" in result.diff.raw_diff
+
+
+def test_compare_snapshots_uses_device_type_and_timestamp_labels(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    devices = DeviceRepository(db)
+    device_a = devices.create(Device(name="SW-A", ip_address="192.0.2.11"))
+    device_b = devices.create(Device(name="SW-B", ip_address="192.0.2.12"))
+    service = ConfigLifecycleService("demo", db, paths)
+    left = service._write_snapshot(device_a, "saved", "20260618_101200", "sysname SW-A\n")
+    right = service._write_snapshot(device_b, "running", "20260619_121500", "sysname SW-B\n")
+
+    result = service.compare_snapshots(left, right)
+
+    assert "--- SW-A · 保存配置 · 20260618_101200" in result.raw_diff
+    assert "+++ SW-B · 运行配置 · 20260619_121500" in result.raw_diff
 
 
 def test_batch_config_download_keeps_failures_isolated():

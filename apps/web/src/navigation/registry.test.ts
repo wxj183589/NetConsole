@@ -77,6 +77,6 @@ describe('Web navigation registry', () => {
 
   it('keeps configuration collection pending real-device acceptance', () => {
     const config = flattenNavigation().find((item) => item.navigation_id === 'config')
-    expect(config?.parity_state).toBe('REAL_DEVICE_PENDING')
+    expect(config?.parity_state).toBe('IMPLEMENTED_UNVERIFIED')
   })
 })

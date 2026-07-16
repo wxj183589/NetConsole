@@ -386,8 +386,9 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
 
     assert result["kind"] == "snapshot_pair"
     assert result["raw_diff"]
-    assert result["left_label"] == "running"
-    assert result["right_label"] == "saved"
+    assert result["left_label"] == "SW-01 · 运行配置 · 20260715_101500"
+    assert result["right_label"] == "SW-01 · 保存配置 · 20260715_101500"
+    assert result["raw_diff"].startswith("--- SW-01 · 运行配置 · 20260715_101500")
     assert any(row["status"] == "+" and row["right_text"] == "vlan 10" for row in result["diff_rows"])
     assert result["diff_summary"] == {"added": 1, "removed": 0, "modified": 0}
     assert "diff_file" in result
@@ -722,7 +723,8 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     diff_path, diff_name = service.open_artifact("demo", diff_artifact_id)
     assert diff_name.endswith(".diff")
     diff_text = diff_path.read_text(encoding="utf-8")
-    assert "--- running" in diff_text and "+++ saved" in diff_text
+    assert "--- SW-01 · 运行配置 · 20260715_101500" in diff_text
+    assert "+++ SW-01 · 保存配置 · 20260715_101500" in diff_text
     assert "+vlan 10" in diff_text
     assert diff_status.result["hash"] == hashlib.sha256(diff_path.read_bytes()).hexdigest()
     assert diff_status.result["size"] == diff_path.stat().st_size

@@ -52,6 +52,9 @@ const tasks = ref<ConfigTaskStatus[]>([])
 const selectedDevices = ref<ConfigDevice[]>([])
 const selectedDevice = ref<ConfigDevice | null>(null)
 const selectedSnapshots = ref<ConfigSnapshot[]>([])
+type SnapshotChoice = { device: ConfigDevice; snapshot: ConfigSnapshot }
+const leftSnapshotChoice = ref<SnapshotChoice | null>(null)
+const rightSnapshotChoice = ref<SnapshotChoice | null>(null)
 const search = ref('')
 const groupFilter = ref('')
 const snapshotType = ref('')
@@ -263,12 +266,15 @@ async function downloadResultArtifact(): Promise<void> {
 }
 
 async function compareSnapshots(): Promise<void> {
-  if (selectedSnapshots.value.length !== 2) {
-    ElMessage.info('请选择两个快照进行比较')
+  if (!leftSnapshotChoice.value || !rightSnapshotChoice.value) {
+    ElMessage.info('请分别选择左右快照进行比较')
     return
   }
   try {
-    const task = await submitSnapshotConfigDiff(selectedSnapshots.value[0].id, selectedSnapshots.value[1].id)
+    const task = await submitSnapshotConfigDiff(
+      leftSnapshotChoice.value.snapshot.id,
+      rightSnapshotChoice.value.snapshot.id,
+    )
     addTaskReferences([task])
     focusedTaskId.value = task.id
     ElMessage.success('快照差异任务已提交')
@@ -298,11 +304,14 @@ async function deleteSelectedSnapshots(): Promise<void> {
     return
   }
   try {
-    const preview = await issueSnapshotDelete(selectedSnapshots.value.map((snapshot) => snapshot.id))
+    const deletedIds = new Set(selectedSnapshots.value.map((snapshot) => snapshot.id))
+    const preview = await issueSnapshotDelete([...deletedIds])
     await ElMessageBox.confirm(preview.summary, '删除快照', { type: 'warning' })
     const task = await confirmSnapshotDelete(preview)
     addTaskReferences([task])
     focusedTaskId.value = task.id
+    if (leftSnapshotChoice.value && deletedIds.has(leftSnapshotChoice.value.snapshot.id)) leftSnapshotChoice.value = null
+    if (rightSnapshotChoice.value && deletedIds.has(rightSnapshotChoice.value.snapshot.id)) rightSnapshotChoice.value = null
     ElMessage.success('快照删除任务已提交')
   } catch (cause) {
     if (cause !== 'cancel' && cause !== 'close') ElMessage.error(cause instanceof Error ? cause.message : '快照删除任务提交失败')
@@ -310,12 +319,15 @@ async function deleteSelectedSnapshots(): Promise<void> {
 }
 
 async function exportSelectedDiff(): Promise<void> {
-  if (selectedSnapshots.value.length !== 2) {
-    ElMessage.info('请选择两个快照导出差异')
+  if (!leftSnapshotChoice.value || !rightSnapshotChoice.value) {
+    ElMessage.info('请分别选择左右快照导出差异')
     return
   }
   try {
-    const task = await submitConfigDiffExport(selectedSnapshots.value[0].id, selectedSnapshots.value[1].id)
+    const task = await submitConfigDiffExport(
+      leftSnapshotChoice.value.snapshot.id,
+      rightSnapshotChoice.value.snapshot.id,
+    )
     addTaskReferences([task])
     focusedTaskId.value = task.id
     ElMessage.success('配置差异导出任务已提交')
@@ -365,6 +377,30 @@ async function changeDiffFilter(value: ConfigDiffFilter): Promise<void> {
   diffFilter.value = value
   currentDiffChange.value = 0
   await scrollToCurrentDiff()
+}
+
+function chooseSnapshot(snapshot: ConfigSnapshot, side: 'left' | 'right'): void {
+  if (!selectedDevice.value) return
+  const choice = { device: selectedDevice.value, snapshot }
+  if (side === 'left') leftSnapshotChoice.value = choice
+  else rightSnapshotChoice.value = choice
+}
+
+function clearSnapshotChoice(side: 'left' | 'right'): void {
+  if (side === 'left') leftSnapshotChoice.value = null
+  else rightSnapshotChoice.value = null
+}
+
+function snapshotChoiceLabel(choice: SnapshotChoice | null): string {
+  if (!choice) return '未选择'
+  return `${choice.device.name || choice.device.system_name || choice.device.device_uuid} · ${snapshotTypeLabel(choice.snapshot.type)} · ${choice.snapshot.timestamp}`
+}
+
+function snapshotTypeLabel(type: string): string {
+  if (type === 'running') return '运行配置'
+  if (type === 'saved') return '保存配置'
+  if (type === 'diff') return '差异'
+  return type || '配置'
 }
 
 async function openTaskWindow(): Promise<void> {
@@ -543,13 +579,18 @@ function formatBytes(value: number): string {
       </div>
 
       <div class="content-card snapshot-card">
-        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 选两个快照可比较</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="selectedSnapshots.length !== 2 || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较快照</el-button><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button><el-button :disabled="selectedSnapshots.length !== 2 || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedDiff">导出差异</el-button><el-button :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedSnapshots">导出 ZIP</el-button><el-button :icon="Delete" :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_delete')" @click="deleteSelectedSnapshots">删除历史</el-button></div></div>
+        <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 左右选择在切换设备或类型后仍保留</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button><el-button :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedSnapshots">导出 ZIP</el-button><el-button :icon="Delete" :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_delete')" @click="deleteSelectedSnapshots">删除历史</el-button></div></div>
+        <div class="comparison-basket" aria-label="配置快照左右选择篮">
+          <div class="snapshot-choice" data-testid="left-snapshot-choice"><span>左侧快照</span><strong>{{ snapshotChoiceLabel(leftSnapshotChoice) }}</strong><el-button link :disabled="!leftSnapshotChoice" @click="clearSnapshotChoice('left')">清除</el-button></div>
+          <div class="snapshot-choice" data-testid="right-snapshot-choice"><span>右侧快照</span><strong>{{ snapshotChoiceLabel(rightSnapshotChoice) }}</strong><el-button link :disabled="!rightSnapshotChoice" @click="clearSnapshotChoice('right')">清除</el-button></div>
+          <div class="comparison-actions"><el-button type="primary" :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较左右快照</el-button><el-button :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedDiff">导出左右差异</el-button></div>
+        </div>
         <el-table v-loading="snapshotLoading" :data="snapshots" row-key="id" stripe height="calc(100vh - 430px)" @selection-change="selectedSnapshots = $event">
           <el-table-column type="selection" width="48" />
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
           <el-table-column label="采集时间" min-width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
           <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template></el-table-column>
+          <el-table-column label="操作" width="260" fixed="right"><template #default="{ row }"><el-button link @click.stop="chooseSnapshot(row, 'left')">设为左侧</el-button><el-button link @click.stop="chooseSnapshot(row, 'right')">设为右侧</el-button><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template></el-table-column>
         </el-table>
       </div>
     </div>
@@ -588,6 +629,11 @@ function formatBytes(value: number): string {
 .card-heading small { display: block; margin-top: 4px; color: #8793a5; font-size: 11px; }
 .heading-actions { display: flex; align-items: center; gap: 8px; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; color: #718096; font-size: 12px; }
+.comparison-basket { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; gap: 10px; align-items: stretch; padding: 12px 16px; border-bottom: 1px solid #edf1f6; background: #f8fafc; }
+.snapshot-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 42px; padding: 8px 10px; border: 1px solid #dfe7f1; border-radius: 8px; background: #fff; }
+.snapshot-choice span { color: #718096; font-size: 12px; }
+.snapshot-choice strong { overflow: hidden; color: #172033; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.comparison-actions { display: flex; align-items: center; gap: 8px; }
 .result-card { margin-top: 16px; }
 .code-panel { max-height: 470px; margin: 0; padding: 16px; overflow: auto; color: #d9e2ed; background: #101827; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre; }
 .diff-panel { color: #e6edf5; }
@@ -604,6 +650,7 @@ function formatBytes(value: number): string {
 .diff-row.is-removed { color: #ffd8dc; background: #4a2428; }
 .diff-row.is-modified { color: #fff0c2; background: #4a3a1f; }
 @media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1200px) { .comparison-basket { grid-template-columns: 1fr 1fr; } .comparison-actions { grid-column: 1 / -1; } }
 @media (max-width: 1200px) { .toolbar { grid-template-columns: minmax(260px, 1fr) 210px; } .toolbar-actions { grid-column: 1 / -1; justify-content: flex-start; } }
 @media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .toolbar-actions { grid-column: auto; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } }
 </style>

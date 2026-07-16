@@ -35,8 +35,8 @@ def config_compare_latest_running_between_devices(context: JobContext) -> dict[s
         raise ValueError("两台设备都需要先采集 running 配置。")
     left_text = service.snapshot_text(left_snapshots[0])
     right_text = service.snapshot_text(right_snapshots[0])
-    left_label = _device_label(left_device, "device_a")
-    right_label = _device_label(right_device, "device_b")
+    left_label = service.snapshot_label(left_snapshots[0])
+    right_label = service.snapshot_label(right_snapshots[0])
     result = _diff_payload("two_devices", left_label, right_label, left_text, right_text)
     result["structure_diff"] = structure_diff(left_text, right_text)
     result["diff_file"] = str(_write_diff_file(context, "two_devices_diff", str(result["raw_diff"])))
@@ -297,8 +297,8 @@ def _snapshot_diff_payload(
 ) -> dict[str, object]:
     return _diff_payload(
         kind,
-        str(left.type or "left"),
-        str(right.type or "right"),
+        service.snapshot_label(left),
+        service.snapshot_label(right),
         service.snapshot_text(left),
         service.snapshot_text(right),
     )

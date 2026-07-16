@@ -100,7 +100,7 @@ def test_config_compare_tab_shows_running_on_left_and_saved_on_right(tmp_path):
     page.compare_latest_snapshots()
     process_qt_until(lambda: page.background_job_id is None)
 
-    assert "运行中 ↔ 已保存" in page.diff_viewer.summary_label.text()
+    assert "SW01 · 运行配置 · 20260618_101200 ↔ SW01 · 保存配置 · 20260618_101200" in page.diff_viewer.summary_label.text()
     rows = page.diff_viewer.table.rowCount()
     left_values = [page.diff_viewer.table.item(row, 1).text() for row in range(rows)]
     right_values = [page.diff_viewer.table.item(row, 4).text() for row in range(rows)]
