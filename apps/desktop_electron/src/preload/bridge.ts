@@ -4,6 +4,7 @@ import type { BackendStatus, NetConsoleDesktopBridge } from '../shared/bridge'
 import { DESKTOP_IPC } from '../shared/bridge'
 import {
   validateBridgePath,
+  validateExternalUrl,
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
   validateRendererReadyReport,
@@ -43,6 +44,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.showItemInFolder,
       validateBridgePath(path),
     ) as ReturnType<NetConsoleDesktopBridge['showItemInFolder']>,
+    openExternalUrl: (url) => ipcRenderer.invoke(
+      DESKTOP_IPC.openExternalUrl,
+      validateExternalUrl(url),
+    ) as ReturnType<NetConsoleDesktopBridge['openExternalUrl']>,
     onBackendStatusChanged: (listener) => {
       const wrapped = (_event: IpcRendererEvent, value: unknown) => listener(value as BackendStatus)
       ipcRenderer.on(DESKTOP_IPC.backendStatusChanged, wrapped)

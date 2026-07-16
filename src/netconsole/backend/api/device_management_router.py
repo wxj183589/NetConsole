@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
@@ -8,6 +8,7 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.device_management import (
     DeviceConnectionTestDTO,
     DeviceConnectionTestRequestDTO,
+    DeviceBatchConnectionRequestDTO,
     DeviceBatchRefreshRequestDTO,
     DeviceDeleteDTO,
     DeviceDeleteRequestDTO,
@@ -17,16 +18,24 @@ from netconsole.models.api.device_management import (
     DeviceEditPreviewDTO,
     DeviceEditPreviewRequestDTO,
     DeviceExternalTerminalActionDTO,
+    DeviceExternalTerminalBatchDTO,
+    DeviceExternalTerminalBatchRequestDTO,
+    DeviceExternalTerminalConfirmationDTO,
+    DeviceExternalTerminalConfirmationRequestDTO,
     DeviceExternalTerminalRequestDTO,
+    DeviceExternalTerminalSettingsDTO,
+    DeviceExternalTerminalSettingsUpdateDTO,
     DeviceExportRequestDTO,
     DeviceGroupAssignmentDTO,
     DeviceGroupAssignmentRequestDTO,
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
+    DeviceHistoryPageDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
     DeviceOmniPeekExportRequestDTO,
+    DeviceOmniPeekPreviewDTO,
     DevicePageDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskBatchDTO,
@@ -133,6 +142,19 @@ def batch_refresh_details(request: Request, payload: DeviceBatchRefreshRequestDT
     return _query(lambda: _service(request).start_batch_refresh(payload))
 
 
+@router.post("/devices/batch-connection-tests", response_model=DeviceTaskBatchDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_connection_test"))])
+def batch_connection_tests(request: Request, payload: DeviceBatchConnectionRequestDTO) -> DeviceTaskBatchDTO:
+    return _query(lambda: _service(request).start_batch_connection_tests(payload))
+
+
+@router.post("/devices/{device_uuid}/refresh-optical", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_management_collect"))])
+def refresh_optical(request: Request, device_uuid: str) -> DeviceTaskReferenceDTO:
+    return _not_found(
+        lambda: _service(request).start_optical_refresh(device_uuid),
+        "设备不存在",
+    )
+
+
 @router.post("/imports/preview", response_model=DeviceImportPreviewDTO, dependencies=[Depends(require_feature("web.device_management_import"))])
 def preview_import(request: Request, file: UploadFile = File(...)) -> DeviceImportPreviewDTO:
     disposition = file.headers.get("content-disposition", "")
@@ -161,9 +183,34 @@ def export_securecrt(request: Request, payload: DeviceSecureCrtExportRequestDTO)
     return _query(lambda: _service(request).start_securecrt_export(payload))
 
 
+@router.post("/exports/securecrt-with-template", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_management_export"))])
+def export_securecrt_with_template(
+    request: Request,
+    selection: str = Form(default="{}"),
+    file: UploadFile = File(...),
+) -> DeviceTaskReferenceDTO:
+    return _query(
+        lambda: _service(request).start_securecrt_export(
+            DeviceSecureCrtExportRequestDTO.model_validate_json(selection),
+            template_name=file.filename or "",
+            template_stream=file.file,
+        )
+    )
+
+
 @router.post("/exports/omnipeek", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_management_export"))])
 def export_omnipeek(request: Request, payload: DeviceOmniPeekExportRequestDTO) -> DeviceTaskReferenceDTO:
     return _query(lambda: _service(request).start_omnipeek_export(payload))
+
+
+@router.post("/exports/omnipeek-preview", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_management_export"))])
+def preview_omnipeek(request: Request, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
+    return _query(lambda: _service(request).start_omnipeek_preview(payload))
+
+
+@router.get("/exports/omnipeek-preview/{task_id}", response_model=DeviceOmniPeekPreviewDTO, dependencies=[Depends(require_feature("web.device_management_export"))])
+def omnipeek_preview(request: Request, task_id: str) -> DeviceOmniPeekPreviewDTO:
+    return _not_found(lambda: _service(request).get_omnipeek_preview(task_id), "OmniPeek 预览任务不存在")
 
 
 @router.get("/exports/{task_id}", response_model=DeviceTaskReferenceDTO, dependencies=[Depends(require_feature("web.device_management_export"))])
@@ -187,6 +234,37 @@ def batch_diagnostic_download(request: Request, payload: DeviceBatchRefreshReque
     return _query(lambda: _service(request).start_diagnostic_download(payload.device_uuids))
 
 
+@router.get("/external-terminal/settings", response_model=DeviceExternalTerminalSettingsDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
+def external_terminal_settings(request: Request) -> DeviceExternalTerminalSettingsDTO:
+    return _query(lambda: _service(request).get_external_terminal_settings())
+
+
+@router.put("/external-terminal/settings", response_model=DeviceExternalTerminalSettingsDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
+def update_external_terminal_settings(
+    request: Request,
+    payload: DeviceExternalTerminalSettingsUpdateDTO,
+) -> DeviceExternalTerminalSettingsDTO:
+    return _query(lambda: _service(request).update_external_terminal_settings(payload))
+
+
+@router.post("/external-terminal/launch", response_model=DeviceExternalTerminalBatchDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
+def batch_external_terminal(
+    request: Request,
+    payload: DeviceExternalTerminalBatchRequestDTO,
+) -> DeviceExternalTerminalBatchDTO:
+    return _query(lambda: _service(request).launch_external_terminals(payload))
+
+
+@router.post("/external-terminal/confirmation", response_model=DeviceExternalTerminalConfirmationDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
+def external_terminal_confirmation(
+    request: Request,
+    payload: DeviceExternalTerminalConfirmationRequestDTO,
+) -> DeviceExternalTerminalConfirmationDTO:
+    return _query(
+        lambda: _service(request).issue_external_terminal_confirmation(payload)
+    )
+
+
 @router.post("/devices/{device_uuid}/external-terminal", response_model=DeviceExternalTerminalActionDTO, dependencies=[Depends(require_feature("web.device_management_desktop"))])
 def external_terminal(request: Request, device_uuid: str, payload: DeviceExternalTerminalRequestDTO) -> DeviceExternalTerminalActionDTO:
     return _not_found(lambda: _service(request).external_terminal_action(device_uuid, payload), "设备不存在")
@@ -195,6 +273,27 @@ def external_terminal(request: Request, device_uuid: str, payload: DeviceExterna
 @router.get("/devices/{device_uuid}", response_model=DeviceDetailDTO)
 def device_detail(request: Request, device_uuid: str) -> DeviceDetailDTO:
     return _not_found(lambda: _service(request).get_device_detail(device_uuid), "设备不存在")
+
+
+@router.get("/devices/{device_uuid}/history", response_model=DeviceHistoryPageDTO)
+def device_history(
+    request: Request,
+    device_uuid: str,
+    kind: str = Query(pattern="^(interface|optical|lldp)$"),
+    object_name: str = Query(min_length=1, max_length=255),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceHistoryPageDTO:
+    return _not_found(
+        lambda: _service(request).get_device_history(
+            device_uuid,
+            kind,
+            object_name,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备或历史记录不存在",
+    )
 
 
 @router.post(
@@ -258,7 +357,7 @@ def cancel_task(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
 
 
 def _require_task_feature(request: Request, task: DeviceTaskReferenceDTO) -> None:
-    if task.action in {"batch_refresh_details", "diagnostic_download"}:
+    if task.action in {"batch_refresh_details", "diagnostic_download", "optical_refresh"}:
         feature_id = "web.device_management_collect"
     elif task.action == "import_csv":
         feature_id = "web.device_management_import"

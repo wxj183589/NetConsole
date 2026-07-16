@@ -7,6 +7,7 @@ from netconsole.services.device_management_web_service import (
     run_device_csv_import,
     run_device_detail_collect,
     run_device_diagnostic_download,
+    run_device_optical_refresh,
 )
 
 device_csv_import = run_device_csv_import
@@ -39,5 +40,6 @@ HANDLERS = {
     "device_group_delete": device_group_delete,
     "device_connection_test": run_device_connection_test,
     "device_detail_collect": run_device_detail_collect,
+    "device_optical_refresh": run_device_optical_refresh,
     "device_diagnostic_download": run_device_diagnostic_download,
 }

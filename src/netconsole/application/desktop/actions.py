@@ -96,6 +96,10 @@ class DesktopActionResolver:
     def terminal(self, action_id: str, object_id: str) -> RegisteredLaunch:
         return self._launch(action_id, object_id, self._terminals, "unknown_terminal_action")
 
+    def validate_launch(self, launch: RegisteredLaunch) -> RegisteredLaunch:
+        """校验由 ApplicationService 从受信配置组装的桌面启动项。"""
+        return self._validate_launch(launch)
+
     def tool(self, action_id: str, object_id: str) -> RegisteredLaunch:
         return self._launch(action_id, object_id, self._tools, "unknown_tool_action")
 
@@ -144,6 +148,9 @@ class DesktopActionResolver:
         launch = registry.get(key)
         if launch is None:
             raise DesktopActionResolutionError(unknown_code, "启动动作未登记")
+        return self._validate_launch(launch)
+
+    def _validate_launch(self, launch: RegisteredLaunch) -> RegisteredLaunch:
         raw_executable = Path(launch.executable)
         if not raw_executable.is_absolute() or _is_unc(raw_executable):
             raise DesktopActionResolutionError("invalid_executable", "登记程序必须是本机绝对路径")
@@ -236,6 +243,25 @@ class DesktopActionService:
         except DesktopActionResolutionError as exc:
             result = _rejected(exc)
         return self._audit_result("launch_registered_terminal", target, result)
+
+    def launch_terminal(
+        self,
+        action_id: str,
+        object_id: str,
+        launch: RegisteredLaunch,
+    ) -> DesktopActionResult:
+        """启动由业务服务从设备和已保存终端配置解析出的终端。"""
+        target = _audit_identifier(action_id, object_id)
+        self._audit_attempt("launch_terminal", target)
+        if rejection := self._server_rejection():
+            return self._audit_result("launch_terminal", target, rejection)
+        try:
+            result = self.adapter.launch_registered_terminal(
+                self.resolver.validate_launch(launch)
+            )
+        except DesktopActionResolutionError as exc:
+            result = _rejected(exc)
+        return self._audit_result("launch_terminal", target, result)
 
     def launch_registered_tool(self, action_id: str, object_id: str) -> DesktopActionResult:
         target = _audit_identifier(action_id, object_id)

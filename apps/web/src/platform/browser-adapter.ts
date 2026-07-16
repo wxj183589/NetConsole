@@ -19,6 +19,7 @@ export function createBrowserAdapter(apiBaseUrl = ''): PlatformAdapter {
     downloadBackendResource: async (value) => startBrowserDownload(value, baseUrl),
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     onBackendStatusChanged: () => () => undefined,
     reportRendererReady: () => undefined,
   }

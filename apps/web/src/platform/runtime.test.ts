@@ -24,6 +24,7 @@ function nativeBridge(): NetConsoleDesktopBridge {
     downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
+    openExternalUrl: vi.fn(async () => ({ success: true })),
     onBackendStatusChanged: vi.fn(() => () => undefined),
     reportRendererReady: vi.fn(),
   }

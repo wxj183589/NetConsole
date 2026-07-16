@@ -79,6 +79,7 @@ export interface NetConsoleDesktopBridge {
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openPath(path: string): Promise<NativeActionResult>
   showItemInFolder(path: string): Promise<NativeActionResult>
+  openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   reportRendererReady(report: RendererReadyReport): void
 }
@@ -93,6 +94,7 @@ export const DESKTOP_IPC = Object.freeze({
   downloadBackendResource: 'netconsole:desktop:download-backend-resource',
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
+  openExternalUrl: 'netconsole:desktop:open-external-url',
   backendStatusChanged: 'netconsole:desktop:backend-status-changed',
   rendererReady: 'netconsole:desktop:renderer-ready',
 })
@@ -110,4 +112,5 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.downloadBackendResource,
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
+  DESKTOP_IPC.openExternalUrl,
 ])

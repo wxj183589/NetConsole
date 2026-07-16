@@ -25,6 +25,7 @@ export interface PlatformAdapter {
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openPath(path: string): Promise<NativeActionResult>
   showItemInFolder(path: string): Promise<NativeActionResult>
+  openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   reportRendererReady(healthOk: boolean): void
 }

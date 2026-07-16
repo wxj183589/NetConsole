@@ -163,9 +163,7 @@ def _run_qt_shell(
             if options.mode != "auto":
                 raise
             app_logger.log_error("QT_SHELL_START_FAILED", f"error={exc.__class__.__name__}: {exc}")
-            if capabilities.external_browser_available:
-                _open_browser_shell(runtime, runtime.paths)
-            return runtime.wait()
+            return 2
         return run(web_server=runtime.web_server)
     finally:
         sys.argv = original_argv
@@ -176,7 +174,7 @@ def _run_qt_shell(
 
 
 def _capabilities_for(mode: str) -> CapabilityReport:
-    browser_available, browser_detail = _probe_external_browser() if mode in {"auto", "web"} else (False, "not-probed")
+    browser_available, browser_detail = _probe_external_browser() if mode == "web" else (False, "not-probed")
     if mode not in {"auto", "qt"}:
         return CapabilityReport(
             external_browser_available=browser_available,
@@ -202,7 +200,7 @@ def _resolve_shell_mode(mode: str, capabilities: CapabilityReport) -> ShellMode 
         return ShellMode.NONE
     if capabilities.qt_widgets_available:
         return ShellMode.QT
-    return ShellMode.BROWSER if capabilities.external_browser_available else ShellMode.NONE
+    return None
 
 
 def _probe_qt_component(component: str) -> tuple[bool, str]:

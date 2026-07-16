@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from netconsole.models.api.common import ApiModel
 
@@ -102,6 +102,36 @@ class DeviceDetailItemDTO(DeviceListItemDTO):
     location: str = ""
     mac_address: str = ""
     https_port: int | None = None
+    web_url: str = ""
+    ssh_username: str = ""
+    telnet_username: str = ""
+    tunnel_enabled: bool = False
+    tunnel1_enabled: bool = False
+    tunnel1_host: str = ""
+    tunnel1_port: int | None = None
+    tunnel1_username: str = ""
+    tunnel2_enabled: bool = False
+    tunnel2_host: str = ""
+    tunnel2_port: int | None = None
+    tunnel2_username: str = ""
+    snmp_v1_enabled: bool = False
+    snmp_v2c_enabled: bool = False
+    snmp_v3_enabled: bool = False
+    snmpv3_username: str = ""
+    snmpv3_security_level: str = "noAuthNoPriv"
+    snmpv3_auth_protocol: str = "SHA"
+    snmpv3_priv_protocol: str = "AES128"
+    snmp_context_name: str = ""
+    snmp_timeout_ms: int = 2000
+    snmp_retries: int = 1
+    ssh_secret_configured: bool = False
+    telnet_secret_configured: bool = False
+    tunnel1_secret_configured: bool = False
+    tunnel2_secret_configured: bool = False
+    snmp_ro_secret_configured: bool = False
+    snmp_rw_secret_configured: bool = False
+    snmpv3_auth_secret_configured: bool = False
+    snmpv3_priv_secret_configured: bool = False
     remark: str = ""
     created_at: str = ""
 
@@ -113,6 +143,10 @@ class DeviceDetailDTO(ApiModel):
     recent_collection: DeviceCollectionSummaryDTO | None = None
     recent_errors: list[DeviceErrorSummaryDTO] = Field(default_factory=list)
     connection_commands: list[DeviceConnectionCommandDTO] = Field(default_factory=list)
+    interfaces: list[dict[str, object | None]] = Field(default_factory=list)
+    optical_modules: list[dict[str, object | None]] = Field(default_factory=list)
+    lldp_neighbors: list[dict[str, object | None]] = Field(default_factory=list)
+    trackside_ap_business: list[dict[str, object | None]] = Field(default_factory=list)
 
 
 class DeviceEditPreviewRequestDTO(ApiModel):
@@ -147,7 +181,34 @@ class DeviceEditPreviewDTO(ApiModel):
 
 
 class DeviceWriteRequestDTO(DeviceEditPreviewRequestDTO):
-    """Web 写入字段；凭据字段故意不在 API 契约中。"""
+    """Qt 对等写入字段；秘密字段只写不读，空值在编辑时表示保留。"""
+
+    ssh_username: str = Field(default="", max_length=255)
+    ssh_password: SecretStr | None = Field(default=None, repr=False)
+    telnet_username: str = Field(default="", max_length=255)
+    telnet_password: SecretStr | None = Field(default=None, repr=False)
+    tunnel_enabled: bool = False
+    tunnel1_enabled: bool = False
+    tunnel1_host: str = Field(default="", max_length=255)
+    tunnel1_port: int | None = Field(default=22, ge=1, le=65535)
+    tunnel1_username: str = Field(default="", max_length=255)
+    tunnel1_password: SecretStr | None = Field(default=None, repr=False)
+    tunnel2_enabled: bool = False
+    tunnel2_host: str = Field(default="", max_length=255)
+    tunnel2_port: int | None = Field(default=22, ge=1, le=65535)
+    tunnel2_username: str = Field(default="", max_length=255)
+    tunnel2_password: SecretStr | None = Field(default=None, repr=False)
+    snmp_ro_community: SecretStr | None = Field(default=None, repr=False)
+    snmp_rw_community: SecretStr | None = Field(default=None, repr=False)
+    snmpv3_username: str = Field(default="", max_length=255)
+    snmpv3_security_level: Literal["noAuthNoPriv", "AuthNoPriv", "AuthPriv"] = "noAuthNoPriv"
+    snmpv3_auth_protocol: Literal["MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"] = "SHA"
+    snmpv3_auth_password: SecretStr | None = Field(default=None, repr=False)
+    snmpv3_priv_protocol: Literal["DES", "3DES", "AES128", "AES192", "AES256"] = "AES128"
+    snmpv3_priv_password: SecretStr | None = Field(default=None, repr=False)
+    snmp_context_name: str = Field(default="", max_length=255)
+    snmp_timeout_ms: int = Field(default=2000, ge=100, le=60000)
+    snmp_retries: int = Field(default=1, ge=0, le=10)
 
 
 class DeviceWriteDTO(ApiModel):
@@ -217,6 +278,20 @@ class DeviceBatchRefreshRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=200)
 
 
+class DeviceBatchConnectionRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+
+
+class DeviceHistoryPageDTO(ApiModel):
+    kind: Literal["interface", "optical", "lldp"]
+    object_name: str
+    items: list[dict[str, object | None]] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
+
+
 class DeviceImportPreviewRequestDTO(ApiModel):
     """CSV preview is multipart upload; browser paths are not accepted."""
 
@@ -242,6 +317,7 @@ class DeviceExportRequestDTO(ApiModel):
     vendor: str = Field(default="", max_length=40)
     device_type: str = Field(default="", max_length=40)
     group_filter: int | Literal["__ungrouped__"] | None = None
+    include_credentials: bool = False
 
 
 class DeviceSecureCrtExportRequestDTO(DeviceExportRequestDTO):
@@ -256,6 +332,16 @@ class DeviceOmniPeekExportRequestDTO(DeviceExportRequestDTO):
     force_export_keys: list[str] = Field(default_factory=list, max_length=5000)
 
 
+class DeviceOmniPeekPreviewDTO(ApiModel):
+    task_id: str
+    task_status: str
+    ready: bool = False
+    items: list[dict[str, object | None]] = Field(default_factory=list)
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    stats: dict[str, int] = Field(default_factory=dict)
+    message: str = ""
+
+
 class DeviceExternalTerminalRequestDTO(ApiModel):
     terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
 
@@ -267,6 +353,45 @@ class DeviceExternalTerminalActionDTO(ApiModel):
     success: Literal[True] = True
     code: str
     message: str = ""
+
+
+class DeviceExternalTerminalBatchRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    confirmation_token: str = Field(default="", max_length=256)
+
+
+class DeviceExternalTerminalConfirmationRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=21, max_length=200)
+    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+
+
+class DeviceExternalTerminalConfirmationDTO(ApiModel):
+    confirmation_token: str
+    device_uuids: list[str]
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    expires_at: str
+
+
+class DeviceExternalTerminalBatchDTO(ApiModel):
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    success: int = 0
+    failed: int = 0
+    failures: list[str] = Field(default_factory=list)
+
+
+class DeviceExternalTerminalSettingsDTO(ApiModel):
+    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    securecrt_path: str = ""
+    xshell_path: str = ""
+    putty_path: str = ""
+    pass_password: bool = False
+
+
+class DeviceExternalTerminalSettingsUpdateDTO(DeviceExternalTerminalSettingsDTO):
+    securecrt_path: str = Field(default="", max_length=1024)
+    xshell_path: str = Field(default="", max_length=1024)
+    putty_path: str = Field(default="", max_length=1024)
 
 
 class DeviceConnectionTestRequestDTO(ApiModel):

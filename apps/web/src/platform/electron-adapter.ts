@@ -20,6 +20,7 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     downloadBackendResource: (request) => bridge.downloadBackendResource(request),
     openPath: (path) => bridge.openPath(path),
     showItemInFolder: (path) => bridge.showItemInFolder(path),
+    openExternalUrl: (url) => bridge.openExternalUrl(url),
     onBackendStatusChanged: (listener) => bridge.onBackendStatusChanged((status) => {
       listener(validateBackendStatus(status))
     }),

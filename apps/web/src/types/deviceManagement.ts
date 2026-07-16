@@ -60,6 +60,36 @@ export interface DeviceDetail extends DeviceListItem {
   location: string
   mac_address: string
   https_port: number | null
+  web_url: string
+  ssh_username: string
+  telnet_username: string
+  tunnel_enabled: boolean
+  tunnel1_enabled: boolean
+  tunnel1_host: string
+  tunnel1_port: number | null
+  tunnel1_username: string
+  tunnel2_enabled: boolean
+  tunnel2_host: string
+  tunnel2_port: number | null
+  tunnel2_username: string
+  snmp_v1_enabled: boolean
+  snmp_v2c_enabled: boolean
+  snmp_v3_enabled: boolean
+  snmpv3_username: string
+  snmpv3_security_level: 'noAuthNoPriv' | 'AuthNoPriv' | 'AuthPriv'
+  snmpv3_auth_protocol: 'MD5' | 'SHA' | 'SHA224' | 'SHA256' | 'SHA384' | 'SHA512'
+  snmpv3_priv_protocol: 'DES' | '3DES' | 'AES128' | 'AES192' | 'AES256'
+  snmp_context_name: string
+  snmp_timeout_ms: number
+  snmp_retries: number
+  ssh_secret_configured: boolean
+  telnet_secret_configured: boolean
+  tunnel1_secret_configured: boolean
+  tunnel2_secret_configured: boolean
+  snmp_ro_secret_configured: boolean
+  snmp_rw_secret_configured: boolean
+  snmpv3_auth_secret_configured: boolean
+  snmpv3_priv_secret_configured: boolean
   remark: string
   created_at: string
 }
@@ -88,6 +118,10 @@ export interface DeviceDetailResponse {
   }
   recent_errors: Array<{ source: 'task' | 'collection'; time: string; message: string }>
   connection_commands: Array<{ protocol: 'SSH' | 'TELNET'; command: string }>
+  interfaces: Array<Record<string, unknown>>
+  optical_modules: Array<Record<string, unknown>>
+  lldp_neighbors: Array<Record<string, unknown>>
+  trackside_ap_business: Array<Record<string, unknown>>
 }
 
 export interface DeviceEditPreviewRequest {
@@ -111,6 +145,35 @@ export interface DeviceEditPreviewRequest {
   snmp_port?: number
   https_port?: number | null
   remark?: string
+}
+
+export interface DeviceWriteRequest extends DeviceEditPreviewRequest {
+  ssh_username?: string
+  ssh_password?: string
+  telnet_username?: string
+  telnet_password?: string
+  tunnel_enabled?: boolean
+  tunnel1_enabled?: boolean
+  tunnel1_host?: string
+  tunnel1_port?: number | null
+  tunnel1_username?: string
+  tunnel1_password?: string
+  tunnel2_enabled?: boolean
+  tunnel2_host?: string
+  tunnel2_port?: number | null
+  tunnel2_username?: string
+  tunnel2_password?: string
+  snmp_ro_community?: string
+  snmp_rw_community?: string
+  snmpv3_username?: string
+  snmpv3_security_level?: 'noAuthNoPriv' | 'AuthNoPriv' | 'AuthPriv'
+  snmpv3_auth_protocol?: 'MD5' | 'SHA' | 'SHA224' | 'SHA256' | 'SHA384' | 'SHA512'
+  snmpv3_auth_password?: string
+  snmpv3_priv_protocol?: 'DES' | '3DES' | 'AES128' | 'AES192' | 'AES256'
+  snmpv3_priv_password?: string
+  snmp_context_name?: string
+  snmp_timeout_ms?: number
+  snmp_retries?: number
 }
 
 export interface DeviceEditPreview {
@@ -184,6 +247,16 @@ export interface DeviceTaskBatch {
   tasks: DeviceTaskReference[]
 }
 
+export interface DeviceHistoryPage {
+  kind: 'interface' | 'optical' | 'lldp'
+  object_name: string
+  items: Array<Record<string, unknown>>
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
 export interface DeviceImportPreview {
   preview_token: string
   source_name: string
@@ -210,6 +283,56 @@ export interface DeviceExternalTerminalAction {
   message: string
 }
 
+export interface DeviceExternalTerminalBatch {
+  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  success: number
+  failed: number
+  failures: string[]
+}
+
+export interface DeviceExternalTerminalConfirmation {
+  confirmation_token: string
+  device_uuids: string[]
+  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  expires_at: string
+}
+
+export interface DeviceExternalTerminalSettings {
+  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  securecrt_path: string
+  xshell_path: string
+  putty_path: string
+  pass_password: boolean
+}
+
 export interface DeviceExportRequest extends DeviceListQuery {
   device_uuids?: string[]
+  include_credentials?: boolean
+}
+
+export interface DeviceOmniPeekPreviewItem {
+  key: string
+  role: 'trackside_ap' | 'onboard_mr'
+  name: string
+  physical_mac: string
+  system_name: string
+  location: string
+  source: string
+  selected: boolean
+  force_export: boolean
+  normalized_physical_mac: string
+  r1_mac: string
+  r2_mac: string
+  status: string
+  warnings: string[]
+}
+
+export interface DeviceOmniPeekPreview {
+  task_id: string
+  task_status: string
+  ready: boolean
+  items: DeviceOmniPeekPreviewItem[]
+  source_counts: Record<string, number>
+  stats: Record<string, number>
+  message: string
 }

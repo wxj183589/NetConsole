@@ -17,6 +17,7 @@ function bridge(runtime = {
     downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
+    openExternalUrl: vi.fn(async () => ({ success: true })),
     onBackendStatusChanged: vi.fn(() => () => undefined),
     reportRendererReady: vi.fn(),
   }
@@ -41,6 +42,8 @@ describe('Electron platform adapter', () => {
       apiPath: '/api/file-management/downloads/task-1/file',
       suggestedName: 'report.zip',
     })
+    await adapter.openExternalUrl('https://192.0.2.10/')
+    expect(nativeBridge.openExternalUrl).toHaveBeenCalledWith('https://192.0.2.10/')
   })
 
   it.each([

@@ -6,14 +6,20 @@ import type {
   DeviceDetailResponse,
   DeviceExportRequest,
   DeviceExternalTerminalAction,
+  DeviceExternalTerminalBatch,
+  DeviceExternalTerminalConfirmation,
+  DeviceExternalTerminalSettings,
   DeviceGroup,
   DeviceImportPreview,
   DeviceEditPreview,
   DeviceEditPreviewRequest,
+  DeviceHistoryPage,
   DeviceListQuery,
+  DeviceOmniPeekPreview,
   DevicePage,
   DeviceTaskBatch,
   DeviceTaskReference,
+  DeviceWriteRequest,
   DeviceWriteResponse,
 } from '../types/deviceManagement'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -57,11 +63,11 @@ export function listDeviceGroups(): Promise<DeviceGroup[]> {
   return apiRequest<DeviceGroup[]>('/api/device-management/groups')
 }
 
-export function createDevice(payload: DeviceEditPreviewRequest): Promise<DeviceWriteResponse> {
+export function createDevice(payload: DeviceWriteRequest): Promise<DeviceWriteResponse> {
   return apiRequest<DeviceWriteResponse>('/api/device-management/devices', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function updateDevice(deviceUuid: string, payload: DeviceEditPreviewRequest): Promise<DeviceWriteResponse> {
+export function updateDevice(deviceUuid: string, payload: DeviceWriteRequest): Promise<DeviceWriteResponse> {
   return apiRequest<DeviceWriteResponse>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}`, { method: 'PUT', body: JSON.stringify(payload) })
 }
 
@@ -97,6 +103,30 @@ export function startBatchRefreshDetails(deviceUuids: string[]): Promise<DeviceT
   return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-refresh-details', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
 
+export function startBatchConnectionTests(deviceUuids: string[]): Promise<DeviceTaskBatch> {
+  return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-connection-tests', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
+}
+
+export function startDeviceOpticalRefresh(deviceUuid: string): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/refresh-optical`, { method: 'POST' })
+}
+
+export function getDeviceHistory(
+  deviceUuid: string,
+  kind: 'interface' | 'optical' | 'lldp',
+  objectName: string,
+  page = 1,
+  pageSize = 50,
+): Promise<DeviceHistoryPage> {
+  const params = new URLSearchParams({
+    kind,
+    object_name: objectName,
+    page: String(page),
+    page_size: String(pageSize),
+  })
+  return apiRequest<DeviceHistoryPage>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/history?${params}`)
+}
+
 export function previewDeviceImport(file: File): Promise<DeviceImportPreview> {
   const form = new FormData()
   form.append('file', file)
@@ -119,7 +149,22 @@ export function startSecureCrtExport(payload: DeviceExportRequest): Promise<Devi
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/securecrt', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: string; include_device_mr?: boolean }): Promise<DeviceTaskReference> {
+export function startSecureCrtExportWithTemplate(payload: DeviceExportRequest, file: File): Promise<DeviceTaskReference> {
+  const form = new FormData()
+  form.append('selection', JSON.stringify(payload))
+  form.append('file', file)
+  return apiRequest<DeviceTaskReference>('/api/device-management/exports/securecrt-with-template', { method: 'POST', body: form })
+}
+
+export function startOmniPeekPreview(payload: DeviceExportRequest): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek-preview', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function getOmniPeekPreview(taskId: string): Promise<DeviceOmniPeekPreview> {
+  return apiRequest<DeviceOmniPeekPreview>(`/api/device-management/exports/omnipeek-preview/${encodeURIComponent(taskId)}`)
+}
+
+export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: string; include_device_mr?: boolean; selected_item_keys?: string[]; excluded_item_keys?: string[]; force_export_keys?: string[] }): Promise<DeviceTaskReference> {
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek', { method: 'POST', body: JSON.stringify(payload) })
 }
 
@@ -153,4 +198,20 @@ export function startDeviceDiagnosticDownload(deviceUuids: string[]): Promise<De
 
 export function requestExternalTerminal(deviceUuid: string, terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalAction> {
   return apiRequest<DeviceExternalTerminalAction>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/external-terminal`, { method: 'POST', body: JSON.stringify({ terminal_type: terminalType }) })
+}
+
+export function issueExternalTerminalConfirmation(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalConfirmation> {
+  return apiRequest<DeviceExternalTerminalConfirmation>('/api/device-management/external-terminal/confirmation', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType }) })
+}
+
+export function launchExternalTerminals(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell', confirmationToken = ''): Promise<DeviceExternalTerminalBatch> {
+  return apiRequest<DeviceExternalTerminalBatch>('/api/device-management/external-terminal/launch', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType, confirmation_token: confirmationToken }) })
+}
+
+export function getExternalTerminalSettings(): Promise<DeviceExternalTerminalSettings> {
+  return apiRequest<DeviceExternalTerminalSettings>('/api/device-management/external-terminal/settings')
+}
+
+export function updateExternalTerminalSettings(payload: DeviceExternalTerminalSettings): Promise<DeviceExternalTerminalSettings> {
+  return apiRequest<DeviceExternalTerminalSettings>('/api/device-management/external-terminal/settings', { method: 'PUT', body: JSON.stringify(payload) })
 }

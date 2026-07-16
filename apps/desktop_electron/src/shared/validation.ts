@@ -82,6 +82,29 @@ export function validateBridgePath(value: unknown): string {
   return candidate
 }
 
+export function validateExternalUrl(value: unknown): string {
+  if (typeof value !== 'string') throw new TypeError('url must be a string')
+  const candidate = value.trim()
+  if (!candidate || candidate.length > 2_048 || /[\u0000-\u001f]/.test(candidate)) {
+    throw new TypeError('url is invalid')
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    throw new TypeError('url is invalid')
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || !parsed.hostname
+    || parsed.username
+    || parsed.password
+  ) {
+    throw new TypeError('desktop bridge only allows credential-free HTTPS urls')
+  }
+  return parsed.href
+}
+
 export function validateRendererReadyReport(value: unknown): RendererReadyReport {
   const record = asRecord(value, 'renderer ready report')
   rejectUnknownKeys(record, ['healthOk'])

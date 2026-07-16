@@ -2,6 +2,7 @@ import type { AppInfo, BackendStatus, DesktopRuntimeConfig } from '../shared/bri
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
+  validateExternalUrl,
   validateRendererReadyReport,
   validateSelectFileOptions,
 } from '../shared/validation'
@@ -41,6 +42,7 @@ interface DialogLike {
 interface ShellLike {
   openPath(path: string): Promise<string>
   showItemInFolder(path: string): void
+  openExternal(url: string): Promise<void>
 }
 
 interface BackendLike {
@@ -165,6 +167,17 @@ export function registerDesktopIpc(
     trusted((value) => {
       try {
         dependencies.shell.showItemInFolder(registry.requireGranted(value))
+        return { success: true }
+      } catch (cause) {
+        return { success: false, error: safeActionError(cause) }
+      }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.openExternalUrl,
+    trusted(async (value) => {
+      try {
+        await dependencies.shell.openExternal(validateExternalUrl(value))
         return { success: true }
       } catch (cause) {
         return { success: false, error: safeActionError(cause) }

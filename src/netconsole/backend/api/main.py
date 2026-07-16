@@ -36,7 +36,7 @@ from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
-from netconsole.infrastructure.desktop import BrowserDesktopAdapter, UnavailableDesktopAdapter
+from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
@@ -174,7 +174,7 @@ def create_app(
     if desktop_action_service is None:
         desktop_action_service = DesktopActionService(
             runtime_mode,
-            BrowserDesktopAdapter()
+            LocalDesktopAdapter()
             if runtime_mode is RuntimeMode.DESKTOP
             else UnavailableDesktopAdapter(),
             DesktopActionResolver(
