@@ -17,7 +17,6 @@ import pytest
 from netconsole.backend.api.config_collection_router import router
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
-from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.device import Device
@@ -118,12 +117,12 @@ HANDOFF_FEATURES = (
 )
 
 
-def _enable_handoff_features(monkeypatch) -> None:
+def _enable_handoff_features(app) -> None:
     for feature_id in HANDOFF_FEATURES:
-        monkeypatch.setitem(
-            FEATURE_BY_ID,
-            feature_id,
-            FeatureItem(feature_id, feature_id, "web.config_collection", "action"),
+        app.state.feature_gate.features[feature_id].update(
+            visible=True,
+            enabled=True,
+            client_package=True,
         )
 
 
@@ -416,10 +415,9 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
 
 def test_config_collection_delete_requires_scoped_one_time_confirmation(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _enable_handoff_features(monkeypatch)
     app, _paths, device, running, _saved, adapter = _fixture(tmp_path)
+    _enable_handoff_features(app)
 
     with TestClient(app) as client:
         issued = client.post(
@@ -479,10 +477,9 @@ def test_config_confirmation_rejects_expiry_site_change_and_digest_tamper(tmp_pa
 
 def test_config_router_exposes_fixed_save_export_and_desktop_action_contracts(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _enable_handoff_features(monkeypatch)
     app, _paths, device, running, saved, adapter = _fixture(tmp_path)
+    _enable_handoff_features(app)
     opened: list[str] = []
 
     class DesktopActions:

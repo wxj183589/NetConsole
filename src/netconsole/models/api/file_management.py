@@ -45,6 +45,12 @@ class DeviceFileConnectionRequestDTO(ApiModel):
     device_id: str = Field(min_length=1, max_length=120)
 
 
+class FileRemoteDeviceDTO(ApiModel):
+    device_id: str
+    name: str
+    address: str
+
+
 class FileConnectionDTO(ApiModel):
     connection_id: str = Field(pattern=r"^fc1_[0-9a-f]{32}$")
     device_id: str
@@ -118,6 +124,7 @@ __all__ = [
     "FileDownloadTaskDTO",
     "FileManagementCapabilityDTO",
     "FileManagementStatusDTO",
+    "FileRemoteDeviceDTO",
     "ManagedFileDTO",
     "ManagedFilePageDTO",
     "RemoteFileEntryDTO",

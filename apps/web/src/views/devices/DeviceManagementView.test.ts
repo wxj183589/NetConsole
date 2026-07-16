@@ -59,7 +59,9 @@ describe('Device Management Web view', () => {
     expect(source).toContain('window.sessionStorage.setItem(taskStorageKey')
     expect(source).toContain('getDeviceTask(taskId)')
     expect(source).toContain('cancelDeviceTask(task.task_id)')
-    expect(source).toContain('downloadDeviceExport(task.task_id, task.artifact_id)')
+    expect(source).toContain('deviceExportDownloadRequest(task.task_id, task.artifact_id')
+    expect(source).toContain('downloadBackendResource')
+    expect(source).not.toContain('window.location.assign')
     expect(source).toContain(':disabled="!isTaskActionEnabled(row)"')
   })
 

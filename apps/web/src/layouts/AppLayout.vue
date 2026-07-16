@@ -20,6 +20,7 @@ import {
   visibleNavigation,
   type NavigationItem,
 } from '../navigation/registry'
+import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
 const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
@@ -195,7 +196,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           </el-menu-item>
         </template>
       </el-menu>
-      <div v-if="!sidebarCollapsed" class="sidebar-note">Qt + Web 双形态</div>
+      <div v-if="!sidebarCollapsed" class="sidebar-note">本地网络运维控制台</div>
     </el-aside>
     <el-container class="app-workspace">
       <el-header class="app-header">
@@ -203,10 +204,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" aria-label="切换导航" @click="toggleSidebar" />
           <div>
             <div class="header-title">{{ route.meta.title || 'Dashboard' }}</div>
-            <div class="header-subtitle">Qt 与 Web 共用设备、任务、配置、文件、Agent 和 Traffic 业务核心</div>
+            <div class="header-subtitle">Vue、FastAPI 与 Python ApplicationService 共用同一业务核心</div>
           </div>
         </div>
         <div class="header-status">
+          <DesktopRuntimeStatus />
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
           <span>{{ backendOnline ? 'Backend Online' : 'Backend Offline' }}</span>
           <el-divider direction="vertical" />

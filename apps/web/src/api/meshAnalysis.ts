@@ -4,6 +4,7 @@ import type {
   MeshChannelBusy, MeshLinkDetail, MeshRawSource, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
   MeshTimelineItem, Page,
 } from '../types/meshAnalysis'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/rail-transit/mesh-analysis'
 
@@ -28,4 +29,11 @@ export const getMeshAlignment = (id: string): Promise<MeshAlignment> => apiReque
 export const listMeshArtifacts = (id: string): Promise<MeshArtifact[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/artifacts`)
 export const listMeshRawSources = (id: string): Promise<MeshRawSource[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources`)
 export const getMeshRawTail = (id: string, sourceId: string): Promise<MeshRawTail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources/${encodeURIComponent(sourceId)}/tail`)
-export const meshArtifactDownloadUrl = (id: string, artifactId: string): string => `${root}/sessions/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/download`
+export const meshArtifactDownloadRequest = (
+  id: string,
+  artifactId: string,
+  suggestedName: string,
+): BackendDownloadRequest => ({
+  apiPath: `${root}/sessions/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName,
+})

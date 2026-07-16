@@ -11,12 +11,20 @@ describe('rail transit Web parity controlled view', () => {
     expect(source).toContain('cancelRailTransitTask')
     expect(source).toContain('recoverRailTransitTasks')
     expect(source).toContain('getRailTransitTask')
-    expect(source).toContain('downloadOnlineMrReport')
-    expect(source).toContain('downloadMeshAnalysisReport')
+    expect(source).toContain('onlineMrReportDownloadRequest')
+    expect(source).toContain('meshAnalysisReportDownloadRequest')
+    expect(source).toContain('downloadBackendResource')
     expect(source).toContain('localStorage')
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('onlineTrains')
     expect(source).toContain('accept=".log,.txt"')
+    for (const featureId of [
+      'web.rail_car_network_diagnostic_execute',
+      'web.mesh_analysis_import',
+      'web.online_mr_report_export',
+      'web.mesh_analysis_report_export',
+      'web.rail_task_control',
+    ]) expect(source).toContain(`isFeatureEnabled('${featureId}')`)
     expect(source).not.toContain('.csv')
     expect(source).not.toContain('site_id')
     expect(source).not.toContain('artifact_path')

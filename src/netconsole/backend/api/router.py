@@ -32,7 +32,7 @@ api_router.include_router(health_router)
 api_router.include_router(feature_router)
 api_router.include_router(
     ac_management_router,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("web.ac_management"))],
 )
 api_router.include_router(
     ac_mesh_link_router,

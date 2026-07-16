@@ -17,6 +17,7 @@ import {
   startNetworkTask,
   summarizeRoutes,
 } from '../../api/networkTools'
+import { downloadBackendResource } from '../../platform/runtime'
 import type { NetworkToolTask, ToolboxResult } from '../../types/networkTools'
 
 const calculator = ref('ipv4')
@@ -222,19 +223,12 @@ async function finishExportIfReady(): Promise<void> {
   }
   if (downloadedExportTaskId === current.id) return
   const artifact = await getNetworkExportArtifact(current.id)
+  const result = await downloadBackendResource({ apiPath: artifact.download_url, suggestedName: artifact.filename })
+  if (result.status === 'failed') throw new Error(result.error || '网络工具导出下载失败')
+  if (result.status === 'cancelled') return
   downloadedExportTaskId = current.id
   window.localStorage.removeItem(EXPORT_TASK_KEY)
-  downloadArtifact(artifact.download_url, artifact.filename)
   ElMessage.success(`导出完成，SHA-256：${artifact.sha256}`)
-}
-
-function downloadArtifact(url: string, filename: string): void {
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
 }
 </script>
 

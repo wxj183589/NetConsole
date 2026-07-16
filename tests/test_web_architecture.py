@@ -116,6 +116,11 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
     )
     assert app.state.config_collection_service.process_adapter is app.state.device_management_service.process_adapter
     assert app.state.file_management_service.process_adapter is app.state.device_management_service.process_adapter
+    assert app.state.ac_web_application_service.process_adapter is app.state.device_management_service.process_adapter
+    assert app.state.rail_transit_web_application_service.process_adapter is app.state.device_management_service.process_adapter
+    assert app.state.ac_web_application_service.export_adapter is app.state.rail_transit_web_application_service.export_adapter
+    assert app.state.ac_web_application_service.artifact_store is app.state.rail_transit_web_application_service.artifact_store
+    assert app.state.config_collection_service.desktop_action_service is app.state.desktop_action_service
     assert app.state.network_tools_service.traffic_service is app.state.traffic_service
     assert app.state.traffic_web_application_service.traffic_service is app.state.traffic_service
     assert app.state.traffic_web_application_service.agent_service is app.state.agent_service

@@ -6,7 +6,7 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, R
 import { isFeatureEnabled } from '../../features'
 import {
   cancelDeviceTask,
-  downloadDeviceExport,
+  deviceExportDownloadRequest,
   getDevice,
   getDeviceConnectionTest,
   getDeviceTask,
@@ -32,6 +32,7 @@ import {
   startSecureCrtExport,
   updateDevice,
 } from '../../api/deviceManagement'
+import { downloadBackendResource } from '../../platform/runtime'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
@@ -291,9 +292,19 @@ async function cancelTrackedTask(task: DeviceTaskReference): Promise<void> {
   }
 }
 
-function downloadTrackedTask(task: DeviceTaskReference): void {
+async function downloadTrackedTask(task: DeviceTaskReference): Promise<void> {
   if (!task.available || !task.artifact_id) return
-  window.location.assign(downloadDeviceExport(task.task_id, task.artifact_id))
+  const names: Record<string, string> = {
+    export_csv: '设备清单.csv',
+    export_template: '设备导入模板.csv',
+    securecrt_sessions: 'SecureCRT会话.zip',
+    omnipeek_name_table: 'OmniPeek名称表.nam',
+    diagnostic_download: '设备诊断信息.zip',
+  }
+  const result = await downloadBackendResource(
+    deviceExportDownloadRequest(task.task_id, task.artifact_id, names[task.action] || '设备管理导出.zip'),
+  )
+  if (result.status === 'failed') ElMessage.error(result.error || '设备导出下载失败')
 }
 
 function currentDeviceWriteValues(): DeviceEditPreviewRequest | null {

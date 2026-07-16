@@ -4,7 +4,7 @@
 
 迁移目标是让 Vue + FastAPI 成为永久主界面和业务入口，Qt 在迁移期继续承担现有生产入口与回退，完成验收后逐模块退出。
 
-本计划不授权立即创建 Electron 工程，也不授权批量改名、搬目录或删除 Qt。最终架构见 [ARCHITECTURE_NEXT.md](ARCHITECTURE_NEXT.md)，当前覆盖事实见 [WEB_MIGRATION_MATRIX.md](WEB_MIGRATION_MATRIX.md)。
+Electron 安全外壳基础已在独立目录建立；这不授权批量改名、搬目录、删除 Qt 或绕过业务迁移门槛。最终架构见 [ARCHITECTURE_NEXT.md](ARCHITECTURE_NEXT.md)，当前覆盖事实见 [WEB_MIGRATION_MATRIX.md](WEB_MIGRATION_MATRIX.md)。
 
 ## 固定迁移流程
 
@@ -28,6 +28,7 @@
 | `CONTROLLED_WRITE` | 有确认、权限、审计和任务化执行 | 否 |
 | `FAKE_ACCEPTED` | Fake E2E 已通过 | 否 |
 | `REAL_ACCEPTED` | 真实设备/Agent 场景已通过 | 否 |
+| `FOUNDATION_READY` | 宿主或基础设施可运行，尚不代表业务模块对等 | 否 |
 | `REPLACE_READY` | 功能、数据、控制、恢复、性能、安全和回退全部通过 | 是 |
 | `EXCLUDED` | 不在当前迁移范围 | 不迁移 |
 
@@ -35,14 +36,14 @@
 
 ## 当前阶段
 
-当前处于“Core/API 收敛与 Vue 并行建设期”：
+当前处于“Core/API 收敛、Vue 建设与 Electron/Qt 并行迁移期”：
 
 - Launcher/Core 生命周期第一阶段已完成，支持 Qt、Web 和 Server 模式；
 - Vue、FastAPI、Task/Session/Mapping/Artifact 与 Agent 链路已有实际能力；
 - 多个 Qt 页面仍直接持有页面级业务对象，共享 Application Service 尚未全部收敛；
 - 当前默认入口和稳定回退仍是 Qt；
 - 当前没有目标模块达到 `REPLACE_READY`；
-- Electron 尚未建设，也不是当前优先任务。
+- Electron 安全外壳、Python supervisor、白名单 Native Bridge 和 Vue 双运行时 Adapter 已形成可运行基础，但尚未进入正式安装发布，也未替代任何 Qt 业务页面。
 
 ## 执行顺序
 
@@ -78,10 +79,10 @@
 
 ### 阶段四：Electron 外壳
 
-只有在 Web 主流程稳定、API 契约成熟后才开始：
+基础外壳已提前完成，用于尽早验证生命周期、安全边界和唯一 Vue Renderer；继续扩展仍以 Web 主流程稳定、API 契约成熟为前提：
 
-- 在 `apps/desktop/` 内替换当前 Qt Web Shell；
-- 只建设窗口、托盘、进程生命周期、升级和白名单 Native Bridge；
+- Electron 独立位于 `apps/desktop_electron/`，Qt Legacy 继续位于 `apps/desktop/`，当前不互相替换；
+- 当前已具备安全窗口、Python 进程生命周期和白名单 Native Bridge，托盘、签名安装、升级仍待后续任务；
 - 复用现有 Vue 构建和 FastAPI 服务，不复制页面或业务逻辑；
 - 完成本机路径、终端启动、升级签名和安全审计后，再进入默认桌面发布。
 

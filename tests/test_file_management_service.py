@@ -39,11 +39,17 @@ def _fixture(tmp_path: Path) -> tuple[PathResolver, Path]:
     return paths, source
 
 
-def _app(service: FileManagementApplicationService) -> FastAPI:
+def _app(service: FileManagementApplicationService, *, remote_enabled: bool = False) -> FastAPI:
     app = FastAPI()
     app.state.paths = service.paths
     app.state.file_management_service = service
     app.state.feature_gate = FeatureGate(service.paths.app_root)
+    if remote_enabled:
+        app.state.feature_gate.features["web.file_management_remote"].update(
+            visible=True,
+            enabled=True,
+            client_package=True,
+        )
     app.include_router(router, prefix="/api")
     return app
 
@@ -161,6 +167,15 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         assert str(tmp_path) not in downloaded.headers.get("content-disposition", "")
         assert before_download == after_download
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"file_ref": "../outside"}).status_code == 422
+        assert client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": Device.new_uuid()},
+        ).status_code == 404
+        assert client.post(
+            "/api/file-management/desktop-actions/winscp",
+            json={"device_id": Device.new_uuid()},
+        ).status_code == 404
 
 
 def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
@@ -234,7 +249,14 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         process_adapter=FakeProcessAdapter(),
         transfer_factory=FakeTransfer,
     )
-    with TestClient(_app(service)) as client:
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        candidates = client.get("/api/file-management/devices", params={"site_id": "demo"})
+        assert candidates.status_code == 200
+        assert candidates.json() == [
+            {"device_id": device_a.device_uuid, "name": "MR-A", "address": "192.0.2.10"},
+            {"device_id": device_b.device_uuid, "name": "MR-B", "address": "192.0.2.11"},
+        ]
+        assert "password" not in candidates.text.casefold()
         connected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
         assert connected.status_code == 201
         connection_id = connected.json()["connection_id"]
@@ -300,7 +322,7 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert pending.json()["task_id"] in FakeProcessAdapter.cancelled
         cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
         assert cancelled.status_code == 422
-        assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).json()["integration_required"]
+        assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).status_code == 404
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"connection_id": connection_id, "remote_entry_id": "fe1_" + "0" * 32}).status_code == 404
 
         unsafe_job = BackgroundJob(
@@ -359,7 +381,7 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     )
     service = FileManagementApplicationService(paths, device_resolver=lambda _site, _device_id: device)
 
-    with TestClient(_app(service)) as client:
+    with TestClient(_app(service, remote_enabled=True)) as client:
         response = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device.device_uuid})
 
     assert response.status_code == 502

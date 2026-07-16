@@ -35,6 +35,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError, RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
@@ -446,7 +447,7 @@ class AcWebApplicationService:
         return path, name
 
     def _task_dto(self, site_id: str, task_id: str) -> AcWebTaskDTO:
-        snapshot = self._task_snapshot(site_id, task_id)
+        snapshot = sanitize_web_export_snapshot(self._task_snapshot(site_id, task_id))
         metadata = (
             self.artifact_store.task_metadata(
                 site_id,
@@ -465,8 +466,8 @@ class AcWebApplicationService:
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
-            message=snapshot.message,
-            error_message=snapshot.error_message,
+            message=redact_web_task_text(snapshot.message),
+            error_message=redact_web_task_text(snapshot.error_message),
             result_summary=self._result_summary(snapshot.result),
         )
 

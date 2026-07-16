@@ -27,6 +27,7 @@ import type {
   TrafficSocketMessage,
 } from '../types/traffic'
 import { activeTaskStatuses } from '../utils/taskStatus'
+import { resolveWebSocketUrl } from '../platform/runtime'
 
 const EVENT_LIMIT = 800
 const SAMPLE_LIMIT = 2000
@@ -114,11 +115,10 @@ export const useTrafficStore = defineStore('traffic', () => {
     disconnectSocket()
     reconnectEnabled = true
     socketRunId = id
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const afterEvent = events.value.at(-1)?.sequence || 0
     const afterSample = samples.value.at(-1)?.sequence || 0
     socket = new WebSocket(
-      `${scheme}://${window.location.host}/ws/traffic/${encodeURIComponent(id)}?after_event=${afterEvent}&after_sample=${afterSample}`,
+      resolveWebSocketUrl(`/ws/traffic/${encodeURIComponent(id)}?after_event=${afterEvent}&after_sample=${afterSample}`),
     )
     socket.onopen = () => {
       socketConnected.value = true

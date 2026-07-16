@@ -1,5 +1,6 @@
-import { apiDownload, apiRequest } from './client'
+import { apiRequest } from './client'
 import type { AcActionPlan, AcExtensionPage, AcExtensionPreview, AcTracksidePlanPage, AcWebTask } from '../types/acWebParity'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
 
@@ -63,9 +64,10 @@ export function recoverAcWebTasks(): Promise<AcWebTask[]> {
   return apiRequest<AcWebTask[]>(`${root}/web-tasks/recover`, { method: 'POST' })
 }
 
-export function downloadAcExtensionArtifact(artifactId: string): Promise<void> {
-  return apiDownload(`${root}/extensions/artifacts/${encodeURIComponent(artifactId)}/download`)
-}
+export const acExtensionArtifactDownloadRequest = (artifactId: string): BackendDownloadRequest => ({
+  apiPath: `${root}/extensions/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName: 'AP扩展信息.xlsx',
+})
 
 export function createAcActionPlan(targetId: string, actionId: string): Promise<AcActionPlan> {
   return apiRequest<AcActionPlan>(`${root}/actions/plans`, { method: 'POST', body: JSON.stringify({ target_id: targetId, action_id: actionId }) })

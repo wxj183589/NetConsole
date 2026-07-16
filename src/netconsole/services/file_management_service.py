@@ -21,6 +21,7 @@ from netconsole.models.api.file_management import (
     FileDownloadTaskDTO,
     FileManagementCapabilityDTO,
     FileManagementStatusDTO,
+    FileRemoteDeviceDTO,
     ManagedFileDTO,
     ManagedFilePageDTO,
     RemoteFileEntryDTO,
@@ -163,6 +164,22 @@ class FileManagementApplicationService:
             ),
             winscp=FileManagementCapabilityDTO(available=False, message=WINSCP_INTEGRATION_MESSAGE),
         )
+
+    def list_remote_devices(self, site_id: str = "") -> list[FileRemoteDeviceDTO]:
+        site = self._site_id(site_id)
+        database_path = self.paths.site_db_path(site)
+        if not database_path.is_file():
+            return []
+        devices = DeviceRepository(Database(database_path)).list()
+        return [
+            FileRemoteDeviceDTO(
+                device_id=str(device.device_uuid or device.id or ""),
+                name=str(device.name or device.system_name or device.primary_address),
+                address=str(device.primary_address or ""),
+            )
+            for device in devices
+            if (device.device_uuid or device.id) and device.primary_address and bool(device.ssh_enabled)
+        ]
 
     def connect_device(self, site_id: str, device_id: str) -> FileConnectionDTO:
         site = self._site_id(site_id)

@@ -16,6 +16,7 @@ import type {
   DeviceTaskReference,
   DeviceWriteResponse,
 } from '../types/deviceManagement'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 function queryString(values: DeviceListQuery): string {
   const params = new URLSearchParams()
@@ -122,9 +123,16 @@ export function startOmniPeekExport(payload: DeviceExportRequest & { line_name: 
   return apiRequest<DeviceTaskReference>('/api/device-management/exports/omnipeek', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function downloadDeviceExport(taskId: string, artifactId: string): string {
-  const params = new URLSearchParams({ artifact_id: artifactId })
-  return `/api/device-management/exports/${encodeURIComponent(taskId)}/download?${params.toString()}`
+export function deviceExportDownloadRequest(
+  taskId: string,
+  artifactId: string,
+  suggestedName: string,
+): BackendDownloadRequest {
+  return {
+    apiPath: `/api/device-management/exports/${encodeURIComponent(taskId)}/download`,
+    query: { artifact_id: artifactId },
+    suggestedName,
+  }
 }
 
 export function getDeviceExportTask(taskId: string): Promise<DeviceTaskReference> {

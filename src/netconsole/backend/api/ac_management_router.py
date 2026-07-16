@@ -54,12 +54,20 @@ def _web_site_id(request: Request) -> str:
     return _web_service(request).current_site_id()
 
 
-@router.get("/summary", response_model=AcManagementSummaryDTO)
+@router.get(
+    "/summary",
+    response_model=AcManagementSummaryDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def summary(request: Request) -> AcManagementSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
 
 
-@router.get("/aps", response_model=AcApPageDTO)
+@router.get(
+    "/aps",
+    response_model=AcApPageDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def list_aps(
     request: Request,
     ac_id: str = Query(default="", max_length=100),
@@ -94,7 +102,11 @@ def list_aps(
     )
 
 
-@router.get("/optical-anomalies", response_model=AcApPageDTO)
+@router.get(
+    "/optical-anomalies",
+    response_model=AcApPageDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def optical_anomalies(
     request: Request,
     ac_id: str = Query(default="", max_length=100),
@@ -109,27 +121,47 @@ def optical_anomalies(
     )
 
 
-@router.get("/aps/{ap_id}", response_model=AcApDetailDTO)
+@router.get(
+    "/aps/{ap_id}",
+    response_model=AcApDetailDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def ap_detail(request: Request, ap_id: str) -> AcApDetailDTO:
     return _required(_query(lambda: _service(request).get_ap_detail(_site_id(request), ap_id)), "AP 不存在")
 
 
-@router.get("/aps/{ap_id}/radios", response_model=list[AcRadioDTO])
+@router.get(
+    "/aps/{ap_id}/radios",
+    response_model=list[AcRadioDTO],
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def ap_radios(request: Request, ap_id: str) -> list[AcRadioDTO]:
     return _required(_query(lambda: _service(request).get_ap_radios(_site_id(request), ap_id)), "AP 不存在")
 
 
-@router.get("/aps/{ap_id}/lldp", response_model=AcLldpDTO)
+@router.get(
+    "/aps/{ap_id}/lldp",
+    response_model=AcLldpDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def ap_lldp(request: Request, ap_id: str) -> AcLldpDTO:
     return _required(_query(lambda: _service(request).get_ap_lldp(_site_id(request), ap_id)), "AP 不存在")
 
 
-@router.get("/aps/{ap_id}/optical", response_model=AcOpticalDTO)
+@router.get(
+    "/aps/{ap_id}/optical",
+    response_model=AcOpticalDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def ap_optical(request: Request, ap_id: str) -> AcOpticalDTO:
     return _required(_query(lambda: _service(request).get_ap_optical(_site_id(request), ap_id)), "AP 不存在")
 
 
-@router.get("/config-snapshots", response_model=AcConfigSnapshotPageDTO)
+@router.get(
+    "/config-snapshots",
+    response_model=AcConfigSnapshotPageDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def config_snapshots(
     request: Request,
     ac_id: str = Query(default="", max_length=100),
@@ -144,7 +176,11 @@ def config_snapshots(
     )
 
 
-@router.get("/config-snapshots/{snapshot_id}", response_model=AcConfigContentDTO)
+@router.get(
+    "/config-snapshots/{snapshot_id}",
+    response_model=AcConfigContentDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def config_snapshot(
     request: Request,
     snapshot_id: int,
@@ -155,7 +191,11 @@ def config_snapshot(
     return _required(result, "配置快照不存在")
 
 
-@router.get("/config-snapshots/{snapshot_id}/diff", response_model=AcConfigDiffDTO)
+@router.get(
+    "/config-snapshots/{snapshot_id}/diff",
+    response_model=AcConfigDiffDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+)
 def config_diff(
     request: Request,
     snapshot_id: int,
@@ -169,12 +209,20 @@ def config_diff(
     return _required(result, "配置快照不存在")
 
 
-@router.get("/online-overview", response_model=AcManagementSummaryDTO)
+@router.get(
+    "/online-overview",
+    response_model=AcManagementSummaryDTO,
+    dependencies=[Depends(require_feature("web.ac_online_overview"))],
+)
 def online_overview(request: Request) -> AcManagementSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
 
 
-@router.get("/optical", response_model=AcApPageDTO)
+@router.get(
+    "/optical",
+    response_model=AcApPageDTO,
+    dependencies=[Depends(require_feature("web.ac_optical"))],
+)
 def optical(
     request: Request,
     ac_id: str = Query(default="", max_length=100),
@@ -186,7 +234,11 @@ def optical(
     return _query(lambda: _service(request).list_aps(_site_id(request), ac_id=ac_id, page=page, page_size=page_size, query=query, optical_status=optical_status))
 
 
-@router.get("/trackside-plan", response_model=AcTracksidePlanPageDTO)
+@router.get(
+    "/trackside-plan",
+    response_model=AcTracksidePlanPageDTO,
+    dependencies=[Depends(require_feature("web.ac_trackside_ap_plan"))],
+)
 def trackside_plan(
     request: Request,
     mode: str = Query(default="unified", max_length=30),
@@ -194,7 +246,11 @@ def trackside_plan(
     return _query(lambda: _web_service(request).list_trackside_plan(_web_site_id(request), mode))
 
 
-@router.get("/extensions", response_model=AcExtensionPageDTO)
+@router.get(
+    "/extensions",
+    response_model=AcExtensionPageDTO,
+    dependencies=[Depends(require_feature("web.ac_extensions"))],
+)
 def extensions(
     request: Request,
     search: str = Query(default="", max_length=200),
@@ -388,7 +444,10 @@ def action_audit(request: Request, plan_id: str) -> dict[str, object]:
     "/extensions/export",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_extensions_export"))],
+    dependencies=[
+        Depends(require_feature("web.ac_extensions_export")),
+        Depends(require_feature("web.ac_refresh")),
+    ],
 )
 def extension_export(
     request: Request,

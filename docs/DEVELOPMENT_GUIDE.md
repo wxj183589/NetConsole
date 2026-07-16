@@ -48,14 +48,18 @@ Vue 页面
 
 ### Electron
 
-Electron 仅在后续独立阶段建设，只允许：
+Electron 安全基础已位于 `apps/desktop_electron/`，只允许：
 
 - 窗口、托盘和进程生命周期；
 - 服务启动、停止和恢复；
 - 系统通知与升级；
-- 经白名单验证的 `selectFile`、`selectDirectory`、`openArtifact`、`openFolder`、`launchTerminal`、`notification`。
+- 当前已实现的文件/目录/另存为选择器、会话内授权路径打开与定位；
+- 受管动态回环后端的安全文件下载：Renderer 只提交 `/api/...` 描述，main 注入内存令牌、弹出保存确认并流式原子落盘；
+- 后续单独评审的 `openArtifact`、受控目录、终端和通知。
 
-不得提供通用 `execute(command)`、任意 `open(path)` 或 `run(exe)`，不得在 Electron Main/Preload 中实现设备、数据库或采集业务。
+不得提供通用 `execute(command)`、任意 `open(path)` 或 `run(exe)`，不得在 Electron Main/Preload 中实现设备、数据库或采集业务。当前 `openPath` 只接受同一进程中原生对话框已经登记的路径，并拒绝程序/脚本扩展名，不是任意路径接口；受管下载也不接受任意 URL、Header、目标路径或报告规则。具体见 [Electron Desktop](ELECTRON_DESKTOP.md) 与 [Native Bridge](DESKTOP_NATIVE_BRIDGE.md)。
+
+新增受管桌面能力必须注册可等待的关闭动作，不能在仍有写入或子进程清理时直接 `app.exit()`。当前实现先拒绝新下载、取消并等待在途写入，再停止 Python；Python 仅在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 收到后再发送 `exit`，全部受管清理完成后 Electron 才退出。
 
 ## 写操作要求
 

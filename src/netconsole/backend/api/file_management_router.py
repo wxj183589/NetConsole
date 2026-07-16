@@ -9,11 +9,10 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.file_management import (
     DeviceFileConnectionRequestDTO,
     FileConnectionDTO,
-    FileDesktopActionDTO,
-    FileDesktopActionRequestDTO,
     FileDownloadRequestDTO,
     FileDownloadTaskDTO,
     FileManagementStatusDTO,
+    FileRemoteDeviceDTO,
     ManagedFilePageDTO,
     RemoteFilePageDTO,
 )
@@ -58,17 +57,39 @@ def management_status(request: Request, site_id: str = Query(default="", max_len
     return _call(lambda: _service(request).status(_site_id(request, site_id)))
 
 
-@router.post("/connections", response_model=FileConnectionDTO, status_code=status.HTTP_201_CREATED)
+@router.get(
+    "/devices",
+    response_model=list[FileRemoteDeviceDTO],
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
+def list_remote_devices(request: Request, site_id: str = Query(default="", max_length=100)) -> list[FileRemoteDeviceDTO]:
+    return _call(lambda: _service(request).list_remote_devices(_site_id(request, site_id)))
+
+
+@router.post(
+    "/connections",
+    response_model=FileConnectionDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
 def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(lambda: _service(request).connect_device(_site_id(request, site_id), payload.device_id))
 
 
-@router.delete("/connections/{connection_id}", response_model=FileConnectionDTO)
+@router.delete(
+    "/connections/{connection_id}",
+    response_model=FileConnectionDTO,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
 def disconnect_device(request: Request, connection_id: str, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(lambda: _service(request).disconnect_device(_site_id(request, site_id), connection_id))
 
 
-@router.get("/connections/{connection_id}/entries", response_model=RemoteFilePageDTO)
+@router.get(
+    "/connections/{connection_id}/entries",
+    response_model=RemoteFilePageDTO,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
 def list_remote_entries(
     request: Request,
     connection_id: str,
@@ -100,6 +121,8 @@ def start_download(
     payload: FileDownloadRequestDTO,
     site_id: str = Query(default="", max_length=100),
 ) -> FileDownloadTaskDTO:
+    if payload.connection_id or payload.remote_entry_id:
+        require_feature("web.file_management_remote")(request)
     try:
         return _service(request).submit_download(
             _site_id(request, site_id),
@@ -157,20 +180,6 @@ def cancel_download(request: Request, task_id: str, site_id: str = Query(default
 def download_file(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileResponse:
     path, name = _call(lambda: _service(request).open_download(_site_id(request, site_id), task_id))
     return FileResponse(path, filename=name)
-
-
-@router.post("/desktop-actions/winscp", response_model=FileDesktopActionDTO)
-def launch_winscp_action(
-    request: Request,
-    payload: FileDesktopActionRequestDTO,
-    site_id: str = Query(default="", max_length=100),
-) -> FileDesktopActionDTO:
-    return _call(lambda: _service(request).desktop_action("winscp", site_id=_site_id(request, site_id), device_id=payload.device_id))
-
-
-@router.post("/desktop-actions/open-result-directory", response_model=FileDesktopActionDTO)
-def open_result_directory_action(request: Request, payload: FileDesktopActionRequestDTO) -> FileDesktopActionDTO:
-    return _call(lambda: _service(request).desktop_action("open_result_dir", artifact_id=payload.artifact_id))
 
 
 def _remote_call(callback):

@@ -1,5 +1,6 @@
-import { apiDownload, apiRequest } from './client'
+import { apiRequest } from './client'
 import type { OnlineMrMetricSeries, MeshImportProfile, OnlineTrainPage, RailTransitTask } from '../types/railTransitWeb'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const onlineMrRoot = '/api/online-mr'
 const trainRoot = '/api/rail-transit/train-communication'
@@ -50,10 +51,12 @@ export function recoverRailTransitTasks(): Promise<RailTransitTask[]> {
   return apiRequest<RailTransitTask[]>(`${onlineMrRoot}/tasks/recover`, { method: 'POST' })
 }
 
-export function downloadOnlineMrReport(artifactId: string): Promise<void> {
-  return apiDownload(`${onlineMrRoot}/report-artifacts/${encodeURIComponent(artifactId)}/download`)
-}
+export const onlineMrReportDownloadRequest = (artifactId: string): BackendDownloadRequest => ({
+  apiPath: `${onlineMrRoot}/report-artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName: 'Online-MR-报告.xlsx',
+})
 
-export function downloadMeshAnalysisReport(artifactId: string): Promise<void> {
-  return apiDownload(`/api/rail-transit/mesh-analysis/report-artifacts/${encodeURIComponent(artifactId)}/download`)
-}
+export const meshAnalysisReportDownloadRequest = (artifactId: string): BackendDownloadRequest => ({
+  apiPath: `/api/rail-transit/mesh-analysis/report-artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName: 'MESH-分析报告.xlsx',
+})

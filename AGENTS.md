@@ -14,7 +14,7 @@
 - 外部 H3C 回显、MIB、历史日志和导出文件按 `utf-8-sig / utf-8` 优先，失败后尝试 `gb18030 / gbk`。
 - PowerShell/Codex 终端乱码不等于文件损坏；先检查原始字节和读取编码，不用默认 `echo`、`cat`、`Get-Content` 判断中文内容。
 
-涉及中文、路径、日志、附件或设备回显前设置：
+使用 PowerShell 执行 Windows 管理、PyCharm 启动配置或其他明确依赖 PowerShell 的命令，且涉及中文、路径、日志、附件或设备回显时设置：
 
 ```powershell
 chcp 65001 > $null
@@ -23,13 +23,22 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ```
 
+## 开发环境与命令
+
+- 目标开发环境是 Windows 11，不假设 WSL、`python3` 或 Linux 包管理器可用。
+- Codex 集成终端默认使用 Git Bash，默认生成 Bash 兼容命令；Windows 管理、PyCharm 启动配置、`.ps1` 脚本或命令输出明确需要 PowerShell 时使用 PowerShell。不使用 CMD，除非用户明确要求。
+- Git Bash 路径使用 `D:/...` 或 `/d/...`，含空格路径必须加引号；不得混用 PowerShell、Git Bash 和 CMD 语法。
+- 优先使用项目 `.venv`，例如 `.venv/Scripts/python.exe -m pytest`、`.venv/Scripts/python.exe -m pip` 和 `.venv/Scripts/python.exe -m ruff`；仅在 `.venv` 不存在或不可用时使用系统 Python。
+- Python 模块和工具统一通过 `python -m ...` 语义运行，不直接假设 `pytest`、`pip`、`ruff` 等可执行文件在 `PATH` 中。
+- Vue 与 Electron 依赖和脚本以各自 `package.json`、`pnpm-lock.yaml` 为准，使用 `pnpm`，不擅自切换包管理器或重写锁文件。
+
 ## 全局开发规则
 
 - 先梳理目标、假设和验证标准；只改当前需求范围，优先复用现有组件、Service、Repository、Parser 和路径 helper。
-- 不新增 Qt 业务页面或只供 Qt 使用的新业务逻辑；新用户功能默认按 Domain/共享规则 -> Application Service -> FastAPI -> Vue 建设，迁移期 Qt 只复用永久业务层。
+- 不新增 Qt 业务页面或只供 Qt 使用的新业务逻辑；新用户功能默认按共享规则/现有 `src/netconsole/services` Application Service -> FastAPI -> Vue 建设，迁移期 Qt 只复用永久业务层。
 - Vue、Electron 和 FastAPI Router 不得直接实现设备、数据库、采集或业务状态机；Router 只做 DTO、鉴权、Service 调用和响应映射。
-- Electron 尚未进入实现期；未经独立任务批准不创建空工程。未来只承载窗口、托盘、进程、升级和白名单 Native Bridge，不提供任意命令、路径或程序执行接口。
-- 不执行 `git reset`、`git checkout --`、`git clean`、`git stash` 等破坏性操作，不覆盖用户未提交修改。
+- Electron 安全基础已进入实现期；只承载窗口、进程生命周期、后续托盘/升级和白名单 Native Bridge，不提供任意命令、路径或程序执行接口，也不建立第二套 Renderer 或业务 Core。
+- 保留提交历史；不执行 `git reset`、`git checkout --`、`git clean`、`git stash`、`git push --force` 等破坏性或改写历史操作，不覆盖用户未提交修改。确需执行时必须先获得用户明确授权。
 - 网络、磁盘、解析、压缩、大查询和批量任务不得阻塞 UI；超过 300ms 的 IO/CPU/网络任务进入 Job Center，所有导出进入独立 Export Process。
 - UI 只负责布局、输入、轻量校验和状态绑定；Worker 不访问 QWidget，SQLite connection 不跨线程/进程共享。
 - 不擅自修改用户要求保持的设备命令、顺序或原始文本；不静默删除数据库、原始日志、会话或正式报告。
@@ -39,10 +48,18 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 重要架构或状态变化同步 docs；区分已完成、兼容层、shadow/diagnostics、部分迁移和规划。
 - 完成后运行适用验证并如实报告；提交/推送说明使用中文，未经用户要求不自动提交。
 
+## 验证与交付
+
+- 开发阶段先运行与改动直接相关的定向测试；Python 文件改动至少运行相关 pytest、修改范围 Ruff，并按需运行 `python -m py_compile`。
+- Vue 改动在 `apps/web` 运行相关 `pnpm test` 和 `pnpm build`；Electron 改动按 `docs/TEST_BASELINE.md` 运行对应 test、typecheck、build 或 smoke 命令。
+- 完整 pytest、完整前端测试/构建、Ruff、文档链接检查和受影响的 Go 测试只在集成后的真实代码组合上作为最终门槛；单个并行任务不重复跑全量套件。
+- 不得在未执行验证时声称完成；无法执行时说明原因、未验证范围和剩余风险。
+- 修改前简述实施计划；完成后列出修改文件、执行过的验证、数据库/导出/耗时任务影响和已知限制。纯文档规则修改应明确未改业务代码。
+
 ## 仓库目录约束
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](docs/development/repository-layout.md) 并说明唯一职责。
-- Desktop、Web、Agent 分别进入 `apps/desktop`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。`apps/desktop` 当前承载 Qt Web Shell，未来在同一职责目录内替换为 Electron，不并建第二套桌面工程。
+- Qt Legacy、Electron、Web、Agent 分别进入 `apps/desktop`、`apps/desktop_electron`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。本阶段不移动或改名现有 Qt 目录，`apps/desktop_electron` 只放 main/preload/shared，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。

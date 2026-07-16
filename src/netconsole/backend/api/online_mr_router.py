@@ -140,7 +140,10 @@ def artifacts(request: Request, session_id: str) -> ApiResponse[list[OnlineMrArt
     "/sessions/{session_id}/report",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.online_mr_report_export"))],
+    dependencies=[
+        Depends(require_feature("web.online_mr_report_export")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
 )
 def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO) -> RailTransitTaskDTO:
     try:
@@ -155,7 +158,10 @@ def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO)
     "/mesh-analysis/import",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
 )
 async def mesh_analysis_import(
     request: Request,
@@ -207,7 +213,10 @@ async def mesh_analysis_import(
     "/car-network-diagnostic",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_car_network_diagnostic_execute"))],
+    dependencies=[
+        Depends(require_feature("web.rail_car_network_diagnostic_execute")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
 )
 def car_network_diagnostic(request: Request, payload: RailTransitTaskRequestDTO) -> RailTransitTaskDTO:
     try:

@@ -1,25 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 
 import {
   cancelFileDownload,
   connectDeviceFiles,
   disconnectDeviceFiles,
-  fileDownloadUrl,
+  fileDownloadRequest,
   getFileDownloadTask,
   getFileManagementStatus,
   listFileDownloads,
   listManagedFiles,
+  listRemoteDevices,
   listRemoteFiles,
-  requestOpenResultDirectory,
-  requestWinScp,
   startFileDownload,
   startRemoteFileDownload,
 } from '../../api/fileManagement'
-import { listDevices } from '../../api/deviceManagement'
 import { isFeatureEnabled } from '../../features'
-import type { DeviceListItem } from '../../types/deviceManagement'
-import type { FileConnection, FileDownloadTask, ManagedFile, ManagedFileCategory, RemoteFileEntry, RemoteFilePage } from '../../types/fileManagement'
+import { downloadBackendResource } from '../../platform/runtime'
+import type { FileConnection, FileDownloadTask, FileRemoteDevice, ManagedFile, ManagedFileCategory, RemoteFileEntry, RemoteFilePage } from '../../types/fileManagement'
 
 const storageKey = 'netconsole.file-management.download-tasks'
 const siteId = ref('')
@@ -32,7 +31,7 @@ const total = ref(0)
 const localAvailable = ref(true)
 const deviceFilesMessage = ref('')
 const tasks = ref<FileDownloadTask[]>([])
-const devices = ref<DeviceListItem[]>([])
+const devices = ref<FileRemoteDevice[]>([])
 const selectedDeviceId = ref('')
 const connection = ref<FileConnection | null>(null)
 const remotePage = ref<RemoteFilePage | null>(null)
@@ -81,7 +80,14 @@ async function refresh(): Promise<void> {
     deviceFilesMessage.value = status.device_files.message
     files.value = page.items
     total.value = page.total
-    try { devices.value = (await listDevices({ page: 1, page_size: 200 })).items } catch { devices.value = [] }
+    if (isFeatureEnabled('web.file_management_remote')) {
+      try { devices.value = await listRemoteDevices(siteId.value) } catch (reason) {
+        devices.value = []
+        remoteError.value = reason instanceof Error ? reason.message : '远程设备列表加载失败'
+      }
+    } else {
+      devices.value = []
+    }
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '文件列表加载失败'
   } finally {
@@ -166,6 +172,21 @@ async function downloadRemote(): Promise<void> {
   }
 }
 
+async function saveDownload(task: FileDownloadTask): Promise<void> {
+  if (!task.result) return
+  error.value = ''
+  try {
+    const result = await downloadBackendResource(
+      fileDownloadRequest(task.task_id, task.site_id, task.result.name),
+    )
+    if (result.status === 'failed') error.value = result.error || '文件下载失败'
+    else if (result.status === 'saved') ElMessage.success('文件已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    error.value = '文件下载失败'
+  }
+}
+
 async function recoverTasks(): Promise<void> {
   try { (await listFileDownloads(siteId.value)).forEach(upsertTask) } catch { /* 本地历史仍可用于展示 */ }
   await Promise.all(tasks.value.map(async (task) => {
@@ -192,16 +213,6 @@ function scheduleTaskRefresh(): void {
 
 async function cancelTask(task: FileDownloadTask): Promise<void> {
   try { upsertTask(await cancelFileDownload(task.task_id, siteId.value)); persistTasks(); scheduleTaskRefresh() } catch (reason) { error.value = reason instanceof Error ? reason.message : '下载任务取消失败' }
-}
-
-async function openResultDirectory(task: FileDownloadTask): Promise<void> {
-  if (!task.result?.artifact_id) return
-  try { error.value = (await requestOpenResultDirectory(task.result.artifact_id)).message } catch (reason) { error.value = reason instanceof Error ? reason.message : '结果目录动作不可用' }
-}
-
-async function openWinScp(): Promise<void> {
-  if (!selectedDeviceId.value) return
-  try { error.value = (await requestWinScp(selectedDeviceId.value, siteId.value)).message } catch (reason) { error.value = reason instanceof Error ? reason.message : 'WinSCP 动作不可用' }
 }
 
 function upsertTask(task: FileDownloadTask): void {
@@ -268,20 +279,19 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
       <p class="result-count">共 {{ total }} 个文件；当前只返回受控 ref，不返回本机绝对路径。</p>
     </div>
 
-    <div class="content-card remote-card">
+    <div v-if="isFeatureEnabled('web.file_management_remote')" class="content-card remote-card">
       <div class="section-heading"><h2>设备文件</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
       <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon />
       <div class="toolbar">
         <el-select v-model="selectedDeviceId" clearable placeholder="选择设备">
-          <el-option v-for="device in devices" :key="device.device_uuid" :label="`${device.name} · ${device.primary_address}`" :value="device.device_uuid" />
+          <el-option v-for="device in devices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
         </el-select>
         <el-button type="primary" :loading="remoteLoading" :disabled="!selectedDeviceId" @click="connectDevice">连接设备</el-button>
         <el-button :disabled="!connection" @click="disconnectDevice">断开</el-button>
-        <el-button :disabled="!selectedDeviceId" @click="openWinScp">WinSCP</el-button>
         <el-button :disabled="!connection" @click="loadRemotePage(remotePage?.current_entry_id)">刷新</el-button>
         <el-button :disabled="!connection || !remotePage || remotePage.current_entry_id === connection.root_entry_id" @click="loadRemotePage(remotePage?.parent_entry_id)">上级</el-button>
         <el-button :type="remoteMeshOnly ? 'primary' : 'default'" :disabled="!connection" @click="selectMeshLogs">Mesh 日志</el-button>
-        <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">下载选中</el-button>
+        <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download') || !isFeatureEnabled('web.file_management_remote')" @click="downloadRemote">下载选中</el-button>
       </div>
       <el-table :data="remoteItems" border stripe height="360" row-key="entry_id" empty-text="暂无远程文件或尚未连接" @selection-change="selectRemote" @row-dblclick="openRemoteRow">
         <el-table-column type="selection" width="48" :selectable="isRemoteSelectable" />
@@ -300,7 +310,7 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
         <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
         <el-table-column label="进度" width="180"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /></template></el-table-column>
         <el-table-column prop="message" label="信息" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="180"><template #default="{ row }"><a v-if="row.status === 'COMPLETED'" :href="fileDownloadUrl(row.task_id, row.site_id)">下载文件</a><el-button v-if="['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(row.status)" link type="warning" @click="cancelTask(row)">取消</el-button><el-button v-if="row.status === 'COMPLETED' && row.result?.artifact_id" link @click="openResultDirectory(row)">结果目录</el-button></template></el-table-column>
+        <el-table-column label="操作" width="150"><template #default="{ row }"><el-button v-if="row.status === 'COMPLETED' && row.result" link type="primary" @click="saveDownload(row)">下载文件</el-button><el-button v-if="['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(row.status)" link type="warning" @click="cancelTask(row)">取消</el-button></template></el-table-column>
       </el-table>
     </div>
   </section>

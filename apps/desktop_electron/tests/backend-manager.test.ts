@@ -1,0 +1,231 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+
+import { describe, expect, it, vi } from 'vitest'
+
+import {
+  PythonBackendManager,
+  type ManagedChildProcess,
+  type SpawnProcess,
+} from '../src/main/backend-manager'
+import { DESKTOP_SESSION_HEADER } from '../src/shared/bridge'
+
+const TOKEN = 'electron-test-token-abcdefghijklmnopqrstuvwxyz'
+
+class FakeChild extends EventEmitter implements ManagedChildProcess {
+  readonly stdin = new PassThrough()
+  readonly stdout = new PassThrough()
+  readonly stderr = new PassThrough()
+  exitCode: number | null = null
+  readonly signals: Array<NodeJS.Signals | number | undefined> = []
+
+  constructor(
+    respondToShutdown = true,
+    private readonly respondToKill = true,
+  ) {
+    super()
+    if (respondToShutdown) {
+      this.stdin.on('data', (chunk) => {
+        if (chunk.toString('utf8').includes('"command":"shutdown"')) {
+          this.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
+          queueMicrotask(() => this.exit(0))
+        }
+      })
+    }
+  }
+
+  kill(signal?: NodeJS.Signals | number): boolean {
+    this.signals.push(signal)
+    if (!this.respondToKill) return false
+    queueMicrotask(() => this.exit(0, typeof signal === 'string' ? signal : null))
+    return true
+  }
+
+  announce(port = 43123): void {
+    this.stdout.write(`${JSON.stringify({
+      event: 'netconsole.electron_backend.listening',
+      host: '127.0.0.1',
+      port,
+    })}\n`)
+  }
+
+  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+    this.exitCode = code
+    this.emit('exit', code, signal)
+    this.stdout.end()
+    this.stderr.end()
+  }
+}
+
+function createManager(options: {
+  child?: FakeChild
+  fetchImpl?: typeof fetch
+  logger?: (event: string, detail?: string) => void
+  awaitProcessExit?: boolean
+} = {}) {
+  const child = options.child ?? new FakeChild()
+  const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
+  const spawnProcess: SpawnProcess = (command, args, spawnOptions) => {
+    spawnCalls.push({ command, args, options: spawnOptions as Record<string, unknown> })
+    queueMicrotask(() => child.announce())
+    return child
+  }
+  const manager = new PythonBackendManager({
+    executable: 'C:\\Python\\python.exe',
+    argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
+    projectRoot: 'C:\\NetConsole',
+    startupTimeoutMs: 50,
+    stopTimeoutMs: 5,
+    pollIntervalMs: 1,
+    createToken: () => TOKEN,
+    delay: async () => undefined,
+    spawnProcess,
+    fetchImpl: options.fetchImpl ?? vi.fn(async (_url, request) => {
+      expect(new Headers(request?.headers).get(DESKTOP_SESSION_HEADER)).toBe(TOKEN)
+      return new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch,
+    logger: options.logger,
+    awaitProcessExit: options.awaitProcessExit,
+  })
+  return { manager, child, spawnCalls }
+}
+
+describe('PythonBackendManager', () => {
+  it('starts once, sends the token through stdin, and uses a shell-free hidden child', async () => {
+    const { manager, child, spawnCalls } = createManager()
+    let handshake = ''
+    child.stdin.on('data', (chunk) => { handshake += chunk.toString('utf8') })
+
+    const [first, second] = await Promise.all([manager.start(), manager.start()])
+
+    expect(first).toEqual(second)
+    expect(first.baseUrl).toBe('http://127.0.0.1:43123')
+    expect(spawnCalls).toHaveLength(1)
+    expect(spawnCalls[0].args).not.toContain(TOKEN)
+    expect(spawnCalls[0].args).toContain('0')
+    expect(spawnCalls[0].options.shell).toBe(false)
+    expect(spawnCalls[0].options.windowsHide).toBe(true)
+    expect(JSON.parse(handshake).session_token).toBe(TOKEN)
+    expect(manager.getStatus()).toEqual({ state: 'ready', baseUrl: first.baseUrl })
+
+    await manager.stop()
+
+    expect(child.signals).toEqual([])
+    expect(manager.getStatus()).toEqual({ state: 'stopped' })
+  })
+
+  it('reports an unexpected exit after readiness', async () => {
+    const { manager, child } = createManager()
+    const statuses: string[] = []
+    manager.onStatusChange((status) => statuses.push(status.state))
+    await manager.waitUntilReady()
+
+    child.exit(7)
+
+    expect(manager.getStatus().state).toBe('failed')
+    expect(manager.getStatus().error).toContain('code=7')
+    expect(manager.getStatus()).not.toHaveProperty('baseUrl')
+    expect(() => manager.getRuntimeInfo()).toThrow('not ready')
+    expect(statuses).toEqual(['starting', 'ready', 'failed'])
+  })
+
+  it('stops after an acknowledgement even when Windows misses the child exit event', async () => {
+    const child = new FakeChild(false)
+    child.stdin.on('data', (chunk) => {
+      if (chunk.toString('utf8').includes('"command":"shutdown"')) {
+        child.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
+      }
+    })
+    const { manager } = createManager({ child, awaitProcessExit: false })
+
+    await manager.start()
+    await manager.stop()
+
+    expect(child.signals).toEqual([])
+    expect(manager.getStatus()).toEqual({ state: 'stopped' })
+  })
+
+  it('moves to failed when setup fails before a child is spawned', async () => {
+    const spawnProcess = vi.fn()
+    const manager = new PythonBackendManager({
+      executable: 'python.exe',
+      argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
+      projectRoot: 'C:\\NetConsole',
+      createToken: () => 'invalid',
+      spawnProcess,
+    })
+
+    await expect(manager.start()).rejects.toThrow('invalid token')
+    expect(spawnProcess).not.toHaveBeenCalled()
+    expect(manager.getStatus()).toEqual({
+      state: 'failed',
+      error: 'Python backend token generator returned an invalid token',
+    })
+  })
+
+  it('fails clearly when the child cannot start', async () => {
+    const child = new FakeChild(false)
+    const { manager } = createManager({
+      child,
+      fetchImpl: vi.fn(async () => {
+        child.emit('error', new Error('spawn failed'))
+        throw new Error('connection refused')
+      }) as typeof fetch,
+    })
+
+    await expect(manager.start()).rejects.toThrow('spawn failed')
+    expect(manager.getStatus().state).toBe('failed')
+  })
+
+  it('fails on a health timeout and stops only its owned child', async () => {
+    const child = new FakeChild(false)
+    const manager = new PythonBackendManager({
+      executable: 'python.exe',
+      argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
+      projectRoot: 'C:\\NetConsole',
+      startupTimeoutMs: 2,
+      stopTimeoutMs: 1,
+      pollIntervalMs: 1,
+      createToken: () => TOKEN,
+      spawnProcess: () => {
+        queueMicrotask(() => child.announce())
+        return child
+      },
+      fetchImpl: vi.fn(async () => { throw new Error('not ready') }) as typeof fetch,
+    })
+
+    await expect(manager.start()).rejects.toThrow('health check timed out')
+    expect(child.signals[0]).toBe('SIGKILL')
+    expect(manager.getStatus().state).toBe('failed')
+  })
+
+  it('does not report stopped when its owned child cannot be terminated', async () => {
+    const child = new FakeChild(false, false)
+    const { manager, spawnCalls } = createManager({ child })
+    await manager.start()
+
+    await expect(manager.stop()).rejects.toThrow('did not acknowledge shutdown')
+    await expect(manager.start()).rejects.toThrow('still running after a failed stop')
+
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(spawnCalls).toHaveLength(1)
+    expect(manager.getStatus().state).toBe('failed')
+  })
+
+  it('redacts a token even if the child writes it to output', async () => {
+    const logs: string[] = []
+    const { manager, child } = createManager({
+      logger: (event, detail) => logs.push(`${event} ${detail ?? ''}`),
+    })
+    const start = manager.start()
+    child.stdout.write(`session_token=${TOKEN}\n`)
+    await start
+    await manager.stop()
+
+    expect(logs.join('\n')).not.toContain(TOKEN)
+    expect(logs.join('\n')).toContain('session_token=***')
+  })
+})

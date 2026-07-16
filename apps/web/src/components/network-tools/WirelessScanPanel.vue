@@ -16,6 +16,7 @@ import {
   listWirelessTasks,
   startWirelessScan,
 } from '../../api/networkTools'
+import { downloadBackendResource } from '../../platform/runtime'
 import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun } from '../../types/networkTools'
 
 const adapters = ref<WirelessAdapter[]>([])
@@ -240,19 +241,12 @@ async function finishRecoveredTasks(): Promise<void> {
   }
   if (downloadedExportTaskId === currentExport.id) return
   const artifact = await getWirelessExportArtifact(currentExport.id)
+  const result = await downloadBackendResource({ apiPath: artifact.download_url, suggestedName: artifact.filename })
+  if (result.status === 'failed') throw new Error(result.error || '无线扫描导出下载失败')
+  if (result.status === 'cancelled') return
   downloadedExportTaskId = currentExport.id
   window.localStorage.removeItem(EXPORT_TASK_KEY)
-  downloadArtifact(artifact.download_url, artifact.filename)
   ElMessage.success(`无线扫描导出完成，SHA-256：${artifact.sha256}`)
-}
-
-function downloadArtifact(url: string, filename: string): void {
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
 }
 </script>
 

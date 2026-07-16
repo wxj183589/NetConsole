@@ -272,7 +272,10 @@ def raw_tail(
     "/sessions/{session_id}/report",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_report_export")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
 )
 def start_report(request: Request, session_id: str) -> RailTransitTaskDTO:
     try:

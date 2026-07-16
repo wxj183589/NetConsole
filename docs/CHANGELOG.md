@@ -4,6 +4,8 @@
 
 ### 本次修复
 
+- 修复 Electron 开发态文件管理、配置快照与 MESH Artifact 下载仍落入 Vite 固定 `127.0.0.1:8000` 的问题：三类入口统一使用 Runtime Adapter；Electron main 通过当前动态回环后端与内存令牌流式保存并原子替换，Browser 继续使用相对代理下载。主窗口新增同源及编码 `/api`/`/ws` 导航拦截、非桥接 Chromium 下载拒绝、Renderer/preload 故障状态与脱敏诊断。退出时先拒绝新下载、取消并等待在途写入清理；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 再发送 `exit`，全部受管清理完成后 Electron 才退出。默认菜单、窗口标题和迁移期页脚同步收口。本轮未启动 Online MR 完整操作闭环迁移，Qt 仍是生产与回退入口；人工原生对话框与关闭残留仍需在本地主工作区点击验收。
+- 新增可运行的 Electron Desktop 安全基础：复用唯一 Vue/FastAPI，使用 sandboxed 单文件 preload、白名单 IPC、动态回环 Python 后端、通过 stdin 传递的每次启动临时会话令牌与优雅退出控制管道；Vue 增加 Browser/Electron Runtime Adapter 和最小桌面状态区。当前处于 Electron 与 Qt 并行迁移阶段，只完成源码开发/生产资源模式；Electron 安装包、签名、升级、托盘与业务模块替换尚未完成。
 - 启动架构第一阶段的 Launcher/WebHost 子项改为无 Qt Launcher：新增 `auto/qt/web/server`，完成轻量能力探测后创建唯一 FastAPI Core Runtime，再启动 Qt、本机浏览器或无 Shell Server；`web/server` 通用导入链不加载 PySide6，Qt WebConsoleHost 复用 Launcher 服务，普通启动增加单实例和启动诊断。Server 在远程鉴权完成前只允许回环绑定，Qt probe 使用不加载 FastAPI/Core 的轻量入口。旧 `--web-shell`、Qt 页面及提权网络管理入口继续兼容；Native Bridge、EmbeddedLayout 和旧 Qt 页面服务容器统一尚未完成。
 - 补齐发布链遗漏的 `web_frontend_meta` 校验模块，继续强制核对 Web `index.html`、构建身份、构建时间和导航 schema，避免发布测试在收集阶段失败。
 - 修复 Desktop WebHost 可能继续加载旧 Vue `dist` 的问题：源码/冻结模式使用明确资源边界，构建生成并校验前后端 build id；Web 导航改由统一 Registry 按固定模块顺序渲染，补齐深色子菜单、侧栏折叠、窄屏抽屉和最小可操作窗口，并建立 Qt/Web 功能对等矩阵。未完成页面仍不开放占位入口，Qt 页面继续保留。
@@ -24,7 +26,7 @@
 - Python `AgentHttpClient` 新增 fping/iPerf 启动、任务查询/停止、事件和结果的强类型 DTO/方法；本阶段未创建 Traffic 数据库、应用服务、Controller 轮询、FastAPI Traffic API 或 Vue 页面。
 - 完成 Web 演进阶段 3：新增每局点 `agents.db`、Agent 配置/运行快照分离、`AgentControllerService`、会话级凭据、健康检查调度、Agent REST API、`/ws/agents` 与 Vue Agent 管理页面；本阶段不提供任何业务任务启动接口。
 - Windows Go Agent 新增向后兼容的 `GET /api/v1/capabilities`；Controller 对旧 Agent 保留未知能力，不根据操作系统猜测。Element Plus 改为按需导入，Dashboard、任务中心与 Agent 页面按路由分包，移除阶段 2 约 1 MB 单包警告。
-- 统一窗口标题为 `NetConsole v1.3.8 by WXJ`，分离 Git SSH 推送地址与关于页 HTTPS 浏览地址；修复弹出模块错误复用“设备管理”的当前页归属。
+- 统一既有 Qt 窗口标题为 `NetConsole v1.3.8 by WXJ`，分离 Git SSH 推送地址与关于页 HTTPS 浏览地址；修复弹出模块错误复用“设备管理”的当前页归属。
 - 统一轨旁 AP 规划、轨旁 AP 业务和在线解析表格的选择、复制、列宽与上下文菜单；日志中心首次进入异步加载并明确显示加载/空/错误状态，启动期不再记录逐次 geometry 噪声。
 - 网络工具移除本地网卡配置入口，工具箱移除“本机路由”；IPOP v4.1 改为用户在系统设置中配置的可选外部工具，所有正式发布包均不携带其二进制；Online MR 移除独立“收起设备列表”按钮并保留自动折叠逻辑。
 - 功能开关配置页改为仅源码开发态可见，新增可持久化“工程师打包”选项和 engineer edition；系统设置中未接入运行逻辑的参数统一禁用并标注“未实现”。

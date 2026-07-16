@@ -41,6 +41,12 @@ body { overflow: hidden; }
 .header-title { color: #111827; font-size: 20px; font-weight: 700; }
 .header-subtitle { margin-top: 4px; color: #7a8799; font-size: 12px; }
 .header-status { display: flex; align-items: center; color: #5e6a7c; font-size: 13px; }
+.desktop-runtime-tag { margin-right: 14px; cursor: pointer; }
+.desktop-runtime-panel strong { color: #172033; }
+.desktop-runtime-panel p { margin: 8px 0 12px; color: #64748b; font-size: 12px; line-height: 1.55; }
+.desktop-runtime-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.desktop-runtime-actions .el-button + .el-button { margin-left: 0; }
+.desktop-runtime-panel .desktop-runtime-hint { margin: 12px 0 0; color: #8a96a7; }
 .status-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; }
 .status-dot.online { background: #22c55e; box-shadow: 0 0 0 4px #dcfce7; }
 .status-dot.offline { background: #ef4444; box-shadow: 0 0 0 4px #fee2e2; }

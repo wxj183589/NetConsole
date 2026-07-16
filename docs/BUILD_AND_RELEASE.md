@@ -25,6 +25,20 @@ scripts/build/release.py
 - PyInstaller
 - Nuitka
 
+上述仍是 Qt Legacy 正式发布链。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链，不能用 `pnpm start` 产物替代 PyInstaller/Nuitka 发布包。
+
+Electron 基础验证：
+
+```powershell
+cd apps/desktop_electron
+pnpm install --frozen-lockfile
+pnpm test
+pnpm build
+pnpm smoke:dev
+```
+
+`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
+
 `BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
 
 桌面发布包包含现有完整 Vue Web 控制台。构建脚本在 Python 打包前执行 `apps/web` 的 `pnpm build`，并将 `apps/web/dist` 打入内部 `netconsole/assets/web` 资源。构建前先准备前端依赖：

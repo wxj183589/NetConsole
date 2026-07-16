@@ -16,10 +16,10 @@ from netconsole.application.ac.web_application_service import AcWebActionError, 
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
-from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO
+from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
@@ -31,6 +31,8 @@ from netconsole.services.rail_transit.import_preview_service import RailTransitI
 
 
 AC_FEATURE_IDS = (
+    "web.ac_extensions",
+    "web.ac_trackside_ap_plan",
     "web.ac_extensions_preview",
     "web.ac_extensions_apply",
     "web.ac_extensions_rollback",
@@ -79,13 +81,8 @@ def _service(paths, tasks=None):
     return service, normal, export, tasks
 
 
-def _enable_features(app, monkeypatch: pytest.MonkeyPatch, feature_ids=AC_FEATURE_IDS) -> None:
+def _enable_features(app, feature_ids=AC_FEATURE_IDS) -> None:
     for feature_id in feature_ids:
-        monkeypatch.setitem(
-            FEATURE_BY_ID,
-            feature_id,
-            FeatureItem(feature_id, feature_id, "web.ac_fit_ap_resources", "action"),
-        )
         app.state.feature_gate.features[feature_id] = {
             "visible": True,
             "enabled": True,
@@ -107,7 +104,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient
     )
     service, _normal, _export, _tasks = _service(paths, app.state.task_service)
     app.state.ac_web_application_service = service
-    _enable_features(app, monkeypatch)
+    _enable_features(app)
     return TestClient(app), service
 
 
@@ -339,6 +336,81 @@ def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest
     assert "output_path" not in snapshot.result
 
 
+def test_ac_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, _normal, _export, tasks = _service(paths)
+    started = service.start_extension_export("demo")
+    repository = tasks.repository("demo")
+    snapshot = repository.get(started.task_id)
+    assert snapshot is not None
+    leak = str(tmp_path / "legacy-ac-report.xlsx")
+    now = utc_now_iso()
+    repository.record(
+        replace(
+            snapshot,
+            status=TaskState.COMPLETED,
+            finished_time=now,
+            updated_time=now,
+            result_path=leak,
+            result={"output_path": leak, "row_count": 1},
+            message=f"导出完成：{leak}",
+            error_message=f"导出失败：{leak}",
+        ),
+        TaskEvent(
+            event_id="legacy-ac-web-export-path-event",
+            task_id=started.task_id,
+            type="finished",
+            time=now,
+            source="worker",
+            payload={},
+        ),
+    )
+
+    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+
+    assert leak not in serialized
+    assert "output_path" not in serialized
+    assert "<redacted-path>" in serialized
+
+
+def test_ac_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, _normal, _export, tasks = _service(paths)
+    started = service.start_local_rebuild("demo", "ac_overview_refresh", ac_id="")
+    repository = tasks.repository("demo")
+    snapshot = repository.get(started.task_id)
+    assert snapshot is not None
+    leak = str(tmp_path / "ac-rebuild.json")
+    now = utc_now_iso()
+    repository.record(
+        replace(
+            snapshot,
+            status=TaskState.FAILED,
+            finished_time=now,
+            updated_time=now,
+            message=f"读取失败：{leak}",
+            error_message="token=ac-secret Bearer bearer-secret",
+        ),
+        TaskEvent(
+            event_id="legacy-ac-local-path-event",
+            task_id=started.task_id,
+            type="failed",
+            time=now,
+            source="worker",
+            payload={},
+        ),
+    )
+
+    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+
+    assert leak not in serialized
+    assert "ac-secret" not in serialized
+    assert "bearer-secret" not in serialized
+    assert "<redacted-path>" in serialized
+    assert "token=<redacted>" in serialized
+    assert "Bearer <redacted>" in serialized
+
+
 def test_fine_grained_feature_gates_block_child_actions_independently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -356,6 +428,7 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
         client.app.state.feature_gate.features["web.ac_refresh"].update(visible=False, enabled=False, client_package=False)
         blocked_refresh = client.post("/api/ac-management/local-rebuild/optical", json={"ac_id": "ac-1"})
         blocked_task_recovery = client.post("/api/ac-management/web-tasks/recover")
+        blocked_export_without_task_control = client.post("/api/ac-management/extensions/export")
         client.app.state.feature_gate.features["web.ac_extensions_apply"].update(visible=False, enabled=False, client_package=False)
         blocked_apply = client.post(
             "/api/ac-management/extensions/import-apply",
@@ -367,6 +440,7 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
             json={"explicit_confirmation": True},
         )
         client.app.state.feature_gate.features["web.ac_extensions_export"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["web.ac_refresh"].update(visible=True, enabled=True, client_package=True)
         blocked_export = client.post("/api/ac-management/extensions/export")
         readable = client.get("/api/ac-management/extensions")
 
@@ -374,6 +448,7 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
     assert blocked_preview.status_code == 404
     assert blocked_refresh.status_code == 404
     assert blocked_task_recovery.status_code == 404
+    assert blocked_export_without_task_control.status_code == 404
     assert blocked_apply.status_code == 404
     assert blocked_rollback.status_code == 404
     assert blocked_export.status_code == 404

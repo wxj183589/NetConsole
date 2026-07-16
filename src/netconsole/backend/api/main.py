@@ -16,7 +16,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from netconsole.application.ac.web_application_service import AcWebApplicationService
 from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
+from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
+from netconsole.application.web_artifacts import WebArtifactStore
+from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core import app_logger
 from netconsole.backend.web_build import (
@@ -68,6 +72,7 @@ from netconsole.services.traffic.web_application_service import TrafficWebApplic
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
 _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
+DESKTOP_SESSION_HEADER = "x-netconsole-session"
 
 
 class DesktopSessionMiddleware:
@@ -80,10 +85,19 @@ class DesktopSessionMiddleware:
             await self.app(scope, receive, send)
             return
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        supplied_header = headers.get(DESKTOP_SESSION_HEADER.encode("ascii"), b"").decode(
+            "ascii", errors="ignore"
+        )
         cookie = SimpleCookie()
         cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
         supplied = cookie.get(DESKTOP_SESSION_COOKIE)
-        if supplied is not None and secrets.compare_digest(supplied.value, self.token):
+        header_authenticated = bool(supplied_header) and secrets.compare_digest(
+            supplied_header, self.token
+        )
+        cookie_authenticated = supplied is not None and secrets.compare_digest(
+            supplied.value, self.token
+        )
+        if header_authenticated or cookie_authenticated:
             scope.setdefault("state", {})["desktop_session_authenticated"] = True
             await self.app(scope, receive, send)
             return
@@ -165,10 +179,16 @@ def create_app(
             else UnavailableDesktopAdapter(),
             DesktopActionResolver(
                 controlled_roots=(paths.app_root, paths.data_root),
+                directories={
+                    f"config_snapshots:{site_name}": paths.config_center_snapshots_root(site_name),
+                    f"config_exports:{site_name}": paths.config_center_outputs_dir(site_name),
+                },
             ),
         )
     feature_gate = FeatureGate(paths.app_root)
     web_process_adapter = LocalProcessAdapter(task_service)
+    web_export_adapter = WebExportProcessAdapter(task_service)
+    web_artifact_store = WebArtifactStore(paths, task_service)
     device_management_service = DeviceManagementWebService(
         paths,
         task_service,
@@ -179,6 +199,7 @@ def create_app(
         paths,
         task_service,
         process_adapter=web_process_adapter,
+        desktop_action_service=desktop_action_service,
     )
     file_management_service = FileManagementApplicationService(
         paths,
@@ -209,12 +230,18 @@ def create_app(
         finally:
             cleanup = await asyncio.gather(
                 device_management_service.stop_exports(),
+                asyncio.to_thread(file_management_service.close),
+                asyncio.to_thread(web_export_adapter.shutdown),
                 asyncio.to_thread(web_process_adapter.shutdown),
                 ac_mesh_link_refresh_service.stop(),
                 traffic_service.stop(),
                 return_exceptions=True,
             )
-            for component, result in zip(("device_exports", "local_process", "ac_mesh_link", "traffic"), cleanup, strict=True):
+            for component, result in zip(
+                ("device_exports", "file_management", "web_exports", "local_process", "ac_mesh_link", "traffic"),
+                cleanup,
+                strict=True,
+            ):
                 if isinstance(result, BaseException):
                     app_logger.log_error(
                         "WEB_LIFESPAN_STOP_FAILED",
@@ -319,6 +346,24 @@ def create_app(
     app.state.rail_transit_import_preview_service = RailTransitImportPreviewService(
         app.state.rail_transit_base_data_query_service,
         import_service=app.state.rail_transit_base_data_import_service,
+    )
+    app.state.ac_web_application_service = AcWebApplicationService(
+        paths,
+        task_service,
+        process_adapter=web_process_adapter,
+        import_preview_service=app.state.rail_transit_import_preview_service,
+        base_import_service=app.state.rail_transit_base_data_import_service,
+        export_adapter=web_export_adapter,
+        artifact_store=web_artifact_store,
+    )
+    app.state.rail_transit_web_application_service = RailTransitWebApplicationService(
+        paths,
+        task_service,
+        process_adapter=web_process_adapter,
+        export_adapter=web_export_adapter,
+        query_service=app.state.online_mr_query_service,
+        mesh_query_service=app.state.mesh_analysis_query_service,
+        artifact_store=web_artifact_store,
     )
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)

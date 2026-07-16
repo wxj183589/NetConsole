@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  configArtifactUrl,
+  configArtifactDownloadRequest,
   getConfigTask,
   listConfigDevices,
   submitConfigCollection,
@@ -43,7 +43,10 @@ describe('config collection api client', () => {
     await getConfigTask('config-web/1')
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/config-collection/tasks/config-web%2F1')
-    expect(configArtifactUrl('snapshot-7')).toBe('/api/config-collection/artifacts/snapshot-7')
-    expect(configArtifactUrl('../secrets.txt')).toContain('%2F')
+    expect(configArtifactDownloadRequest('snapshot-7', 'running.cfg')).toEqual({
+      apiPath: '/api/config-collection/artifacts/snapshot-7',
+      suggestedName: 'running.cfg',
+    })
+    expect(configArtifactDownloadRequest('../secrets.txt', 'safe.txt').apiPath).toContain('%2F')
   })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { meshArtifactDownloadRequest } from '../../api/meshAnalysis'
 import source from './MeshAnalysisView.vue?raw'
 
 describe('Mesh analysis read-only view', () => {
@@ -27,5 +28,16 @@ describe('Mesh analysis read-only view', () => {
     expect(source).toContain('failureCount >= 3 ? 90_000 : 30_000')
     expect(source).not.toContain('setInterval')
     expect(source).not.toContain('absolute_path')
+  })
+
+  it('uses the unified platform download instead of navigating the renderer', () => {
+    expect(source).toContain('meshArtifactDownloadRequest')
+    expect(source).toContain('downloadBackendResource')
+    expect(source).not.toContain('meshArtifactDownloadUrl')
+    expect(source).not.toContain(':href=')
+    expect(meshArtifactDownloadRequest('会话/1', '报告/1', 'mesh.zip')).toEqual({
+      apiPath: '/api/rail-transit/mesh-analysis/sessions/%E4%BC%9A%E8%AF%9D%2F1/artifacts/%E6%8A%A5%E5%91%8A%2F1/download',
+      suggestedName: 'mesh.zip',
+    })
   })
 })

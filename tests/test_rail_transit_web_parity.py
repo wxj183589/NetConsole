@@ -16,7 +16,6 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.online_mr_router import mesh_analysis_import
 from netconsole.backend.api.task_router import task_dto
-from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskRequestDTO
@@ -27,13 +26,14 @@ from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 
 
-RAIL_FEATURE_PARENTS = {
-    "web.online_mr_report_export": "web.online_mr_realtime",
-    "web.mesh_analysis_import": "web.online_mr_realtime",
-    "web.mesh_analysis_report_export": "web.mesh_analysis",
-    "web.rail_car_network_diagnostic_execute": "web.online_mr_realtime",
-    "web.rail_task_control": "web.online_mr_realtime",
-}
+RAIL_FEATURE_IDS = (
+    "web.rail_car_network_diagnostic",
+    "web.online_mr_report_export",
+    "web.mesh_analysis_import",
+    "web.mesh_analysis_report_export",
+    "web.rail_car_network_diagnostic_execute",
+    "web.rail_task_control",
+)
 
 
 class _NoopAsyncService:
@@ -60,13 +60,8 @@ def _service(paths: PathResolver, mesh_query=None):
     return service, normal, export, tasks
 
 
-def _enable_features(app, monkeypatch: pytest.MonkeyPatch) -> None:
-    for feature_id, parent_id in RAIL_FEATURE_PARENTS.items():
-        monkeypatch.setitem(
-            FEATURE_BY_ID,
-            feature_id,
-            FeatureItem(feature_id, feature_id, parent_id, "action"),
-        )
+def _enable_features(app) -> None:
+    for feature_id in RAIL_FEATURE_IDS:
         app.state.feature_gate.features[feature_id] = {
             "visible": True,
             "enabled": True,
@@ -391,6 +386,87 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
     assert "<redacted-path>" in serialized
 
 
+def test_rail_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, export, tasks = _service(paths)
+    session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-legacy-dto")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "session_meta.json").write_text(
+        json.dumps({"session_id": "session-legacy-dto", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        encoding="utf-8",
+    )
+    started = service.start_online_mr_report("demo", "session-legacy-dto", "legacy-dto.xlsx")
+    leak = str(export.jobs[started.task_id].output_path)
+    repository = tasks.repository("demo")
+    snapshot = repository.get(started.task_id)
+    assert snapshot is not None
+    now = utc_now_iso()
+    repository.record(
+        replace(
+            snapshot,
+            status=TaskState.COMPLETED,
+            finished_time=now,
+            updated_time=now,
+            result_path=leak,
+            result={"output_path": leak, "row_count": 1},
+            message=f"导出完成：{leak}",
+            error_message=f"导出失败：{leak}",
+        ),
+        TaskEvent(
+            event_id="legacy-rail-web-export-dto-event",
+            task_id=started.task_id,
+            type="finished",
+            time=now,
+            source="worker",
+            payload={},
+        ),
+    )
+
+    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+
+    assert leak not in serialized
+    assert "output_path" not in serialized
+    assert "<redacted-path>" in serialized
+
+
+def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, tasks = _service(paths)
+    started = service.start_car_network_diagnostic("demo", train_id="列车01")
+    repository = tasks.repository("demo")
+    snapshot = repository.get(started.task_id)
+    assert snapshot is not None
+    leak = str(tmp_path / "rail-diagnostic.json")
+    now = utc_now_iso()
+    repository.record(
+        replace(
+            snapshot,
+            status=TaskState.FAILED,
+            finished_time=now,
+            updated_time=now,
+            message=f"读取失败：{leak}",
+            error_message="password=rail-secret credential=credential-secret",
+        ),
+        TaskEvent(
+            event_id="legacy-rail-local-path-event",
+            task_id=started.task_id,
+            type="failed",
+            time=now,
+            source="worker",
+            payload={},
+        ),
+    )
+
+    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+
+    assert leak not in serialized
+    assert "rail-secret" not in serialized
+    assert "credential-secret" not in serialized
+    assert "<redacted-path>" in serialized
+    assert "password=<redacted>" in serialized
+    assert "credential=<redacted>" in serialized
+
+
 def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> None:
     from test_online_mr_collection import _config
     from netconsole.services.online_mr_session_store import OnlineMrSessionStore
@@ -499,7 +575,7 @@ def test_task_recovery_is_scoped_to_allowed_owner_source_and_type(tmp_path: Path
 
 
 def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_independent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
@@ -522,7 +598,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         query_service=app.state.online_mr_query_service,
         mesh_query_service=app.state.mesh_analysis_query_service,
     )
-    _enable_features(app, monkeypatch)
+    _enable_features(app)
 
     assert "site_id" not in OnlineMrReportRequestDTO.model_fields
     assert "site_id" not in RailTransitTaskRequestDTO.model_fields
@@ -548,8 +624,19 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         blocked_mesh_report = client.post("/api/rail-transit/mesh-analysis/sessions/missing/report")
         client.app.state.feature_gate.features["web.rail_task_control"].update(visible=False, enabled=False, client_package=False)
         blocked_task_recovery = client.post("/api/online-mr/tasks/recover")
-        client.app.state.feature_gate.features["web.rail_task_control"].update(visible=True, enabled=True, client_package=True)
+        client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=True, enabled=True, client_package=True)
+        blocked_car_without_control = client.post("/api/online-mr/car-network-diagnostic", json={"train_id": "train-1"})
         client.app.state.feature_gate.features["web.mesh_analysis_import"].update(visible=True, enabled=True, client_package=True)
+        blocked_mesh_without_control = client.post(
+            "/api/online-mr/mesh-analysis/import",
+            files={"files": ("fixture.log", b"mesh", "text/plain")},
+            data={"mr_id": "mr-1", "display_name": "MR 1", "safe_folder_name": "mr-1"},
+        )
+        client.app.state.feature_gate.features["web.online_mr_report_export"].update(visible=True, enabled=True, client_package=True)
+        blocked_online_report_without_control = client.post("/api/online-mr/sessions/missing/report", json={})
+        client.app.state.feature_gate.features["web.mesh_analysis_report_export"].update(visible=True, enabled=True, client_package=True)
+        blocked_mesh_report_without_control = client.post("/api/rail-transit/mesh-analysis/sessions/missing/report")
+        client.app.state.feature_gate.features["web.rail_task_control"].update(visible=True, enabled=True, client_package=True)
         rejected_site = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
@@ -577,6 +664,10 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     assert blocked_online_report.json()["detail"] == "功能未启用"
     assert blocked_mesh_report.json()["detail"] == "功能未启用"
     assert blocked_task_recovery.json()["detail"] == "功能未启用"
+    assert blocked_car_without_control.status_code == 404
+    assert blocked_mesh_without_control.status_code == 404
+    assert blocked_online_report_without_control.status_code == 404
+    assert blocked_mesh_report_without_control.status_code == 404
     assert rejected_site.status_code == 422
     assert oversized.status_code == 422
     assert accepted.status_code == 202

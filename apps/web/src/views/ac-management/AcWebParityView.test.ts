@@ -13,11 +13,21 @@ describe('AC Web parity controlled view', () => {
     expect(source).toContain('recoverAcWebTasks')
     expect(source).toContain('getAcWebTask')
     expect(source).toContain('cancelAcWebTask')
-    expect(source).toContain('downloadAcExtensionArtifact')
+    expect(source).toContain('acExtensionArtifactDownloadRequest')
+    expect(source).toContain('downloadBackendResource')
+    expect(source).toContain('ElMessageBox.confirm')
     expect(source).toContain('localStorage')
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('listAcTracksidePlan')
     expect(source).toContain('本地重算只读取当前数据库与缓存，不连接真实 AC')
+    for (const featureId of [
+      'web.ac_extensions_preview',
+      'web.ac_extensions_apply',
+      'web.ac_extensions_rollback',
+      'web.ac_extensions_export',
+      'web.ac_refresh',
+      'web.ac_dangerous_actions',
+    ]) expect(source).toContain(`isFeatureEnabled('${featureId}')`)
     expect(source).not.toContain('site_id')
     expect(source).not.toContain('artifact_path')
     expect(source).not.toContain('source:')

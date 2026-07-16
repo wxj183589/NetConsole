@@ -64,6 +64,12 @@ export interface FileConnection {
   message: string
 }
 
+export interface FileRemoteDevice {
+  device_id: string
+  name: string
+  address: string
+}
+
 export interface RemoteFileEntry {
   entry_id: string
   name: string

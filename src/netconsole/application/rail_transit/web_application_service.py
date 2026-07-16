@@ -20,6 +20,7 @@ from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
 
@@ -381,6 +382,7 @@ class RailTransitWebApplicationService:
         )
 
     def _task_dto(self, site_id: str, snapshot) -> RailTransitTaskDTO:
+        snapshot = sanitize_web_export_snapshot(snapshot)
         metadata = self.artifact_store.task_metadata(
             site_id,
             snapshot.task_id,
@@ -396,8 +398,8 @@ class RailTransitWebApplicationService:
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
-            message=snapshot.message,
-            error_message=snapshot.error_message,
+            message=redact_web_task_text(snapshot.message),
+            error_message=redact_web_task_text(snapshot.error_message),
             result_summary=self._result_summary(snapshot.result),
         )
 

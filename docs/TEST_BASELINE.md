@@ -18,6 +18,8 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 3. 对应 Vue 组件、API client 或 Store 的 Vitest。
 4. 前端 `npm run build`，以及适用的 Ruff、Go 或文档链接检查。
 
+Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run typecheck` 和 `pnpm run build:main`；触及启动链、preload 或 Vue runtime adapter 时运行 `pnpm smoke:dev`。该冒烟覆盖源码图形环境，不替代 Windows 安装包、签名、升级或目标系统实机验收。
+
 测试断言应验证必要能力和业务契约，不硬编码会随正常扩展变化的全局任务总数或路由总数。
 
 ## 合并前

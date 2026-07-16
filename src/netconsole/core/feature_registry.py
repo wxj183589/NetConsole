@@ -52,8 +52,13 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.config_collection_fetch", "配置采集（Web）", "web.config_collection", "action"),
     FeatureItem("web.config_collection_diff", "配置比较（Web）", "web.config_collection", "action"),
     FeatureItem("web.config_collection_download", "配置文件下载（Web）", "web.config_collection", "action"),
+    FeatureItem("web.config_collection_delete", "配置历史删除（Web）", "web.config_collection", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.config_collection_save_force", "设备保存配置（Web）", "web.config_collection", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.config_collection_export", "配置报告导出（Web）", "web.config_collection", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.config_collection_open_directory", "打开配置结果目录（Web）", "web.config_collection", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.file_management", "文件管理（Web）", "module.file_management", "page"),
     FeatureItem("web.file_management_download", "文件下载（Web）", "web.file_management", "action"),
+    FeatureItem("web.file_management_remote", "设备文件只读浏览（Web）", "web.file_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.network_tools", "网络工具（Web）", "module.network_tools", "page"),
     FeatureItem("web.network_tools_toolbox", "小工具与连通性检测（Web）", "web.network_tools", "page"),
     FeatureItem(
@@ -109,6 +114,12 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
+    FeatureItem("web.ac_extensions_preview", "AP 扩展导入预览（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_extensions_apply", "AP 扩展导入确认（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_extensions_rollback", "AP 扩展导入回滚（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_extensions_export", "AP 扩展导出（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_refresh", "AC 本地重算（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_dangerous_actions", "AC 高风险动作 Fake 闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
         "web.ac_config_snapshots",
         "AC 配置快照与对比（Web）",
@@ -135,6 +146,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.collection_notes", "online_mr.collection_note", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.agent_packages", "online_mr.agent_packages.entry", "rail.online_mr_collection", "action"),
     FeatureItem("web.online_mr_realtime", "车载 MR 实时展示", "rail.online_mr_collection", "page"),
+    FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_realtime", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
     FeatureItem("web.train_communication_monitoring", "在线列车通信检测", "module.rail_transit", "page"),
     FeatureItem(
@@ -152,6 +164,9 @@ FEATURES: tuple[FeatureItem, ...] = (
         status=FeatureStatus.DEVELOPMENT,
     ),
     FeatureItem("web.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "page"),
+    FeatureItem("web.mesh_analysis_import", "MESH 原始日志导入（Web）", "web.mesh_analysis", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.mesh_analysis_report_export", "MESH 分析报告导出（Web）", "web.mesh_analysis", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
     FeatureItem(
         "web.rail_train_online",
@@ -173,6 +188,7 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
+    FeatureItem("web.rail_car_network_diagnostic_execute", "车内通信检测执行（Web）", "web.rail_car_network_diagnostic", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
         "web.rail_trackside_ap_business",
         "轨旁 AP 业务（Web）",
@@ -222,6 +238,12 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("system.changelog", "system.changelog", "module.system_settings", "page"),
     FeatureItem("system.open_source", "system.open_source", "module.system_settings", "page"),
     FeatureItem("system.web_console", "system.web_console", "module.system_settings", "action"),
+    FeatureItem(
+        "desktop.native_bridge",
+        "Electron Desktop 本机桥接",
+        "module.system_settings",
+        "action",
+    ),
     FeatureItem("system.feature_flags", "system.feature_flags", "module.feature_switch", "page", internal_only=True),
     FeatureItem(
         "web.command_reference",

@@ -10,6 +10,10 @@ from netconsole.models.task_snapshot import TaskSnapshot
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\r\n\"']+|\\\\[^\r\n\"']+)"
 )
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b((?:x-agent-token|authorization|token|password|credential|secret|community)\s*[:=]\s*(?:bearer\s+)?)\S+"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _PATH_KEYS = {
     "db_path",
     "generated_files",
@@ -28,8 +32,14 @@ def is_web_export_task(task_type: str) -> bool:
     return str(task_type or "").startswith("web_export_")
 
 
+def redact_web_task_text(value: object) -> str:
+    redacted = _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(value or ""))
+    redacted = _SECRET_VALUE_RE.sub(r"\1<redacted>", redacted)
+    return _BEARER_RE.sub("Bearer <redacted>", redacted)
+
+
 def redact_web_export_text(value: object) -> str:
-    return _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(value or ""))
+    return redact_web_task_text(value)
 
 
 def sanitize_web_export_value(value: Any) -> Any:
@@ -69,6 +79,7 @@ def sanitize_web_export_snapshot(snapshot: TaskSnapshot) -> TaskSnapshot:
 __all__ = [
     "is_web_export_task",
     "redact_web_export_text",
+    "redact_web_task_text",
     "sanitize_web_export_event",
     "sanitize_web_export_snapshot",
     "sanitize_web_export_value",

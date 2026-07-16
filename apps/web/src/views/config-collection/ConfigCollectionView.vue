@@ -6,8 +6,8 @@ import { ElMessageBox } from 'element-plus'
 
 import { isFeatureEnabled } from '../../features'
 import {
-  configArtifactUrl,
   cancelConfigTask,
+  configArtifactDownloadRequest,
   confirmSaveForce,
   confirmSnapshotDelete,
   getConfigDirectory,
@@ -32,6 +32,7 @@ import type {
   ConfigTaskReference,
   ConfigTaskStatus,
 } from '../../types/configCollection'
+import { downloadBackendResource } from '../../platform/runtime'
 
 const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
 const devicePage = ref<ConfigDevicePage>(emptyPage)
@@ -50,6 +51,7 @@ const resultTitle = ref('')
 const resultText = ref('')
 const resultDiff = ref('')
 const resultArtifactId = ref('')
+const resultArtifactName = ref('')
 const diffFilter = ref<'all' | 'added' | 'removed'>('all')
 const focusedTaskId = ref('')
 const activeTaskIds = ref(new Set<string>())
@@ -211,6 +213,33 @@ async function compareLatest(): Promise<void> {
   }
 }
 
+async function downloadArtifact(snapshot: ConfigSnapshot): Promise<void> {
+  try {
+    const result = await downloadBackendResource(
+      configArtifactDownloadRequest(snapshot.artifact_id, snapshot.filename),
+    )
+    if (result.status === 'failed') ElMessage.error(result.error || '配置文件下载失败')
+    else if (result.status === 'saved') ElMessage.success('配置文件已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    ElMessage.error('配置文件下载失败')
+  }
+}
+
+async function downloadResultArtifact(): Promise<void> {
+  if (!resultArtifactId.value) return
+  try {
+    const result = await downloadBackendResource(
+      configArtifactDownloadRequest(resultArtifactId.value, resultArtifactName.value || 'config-artifact.zip'),
+    )
+    if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+    else if (result.status === 'saved') ElMessage.success('Artifact 已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
+  } catch {
+    ElMessage.error('Artifact 下载失败')
+  }
+}
+
 async function compareSnapshots(): Promise<void> {
   if (selectedSnapshots.value.length !== 2) {
     ElMessage.info('请选择两个快照进行比较')
@@ -352,6 +381,7 @@ async function openResultDirectory(): Promise<void> {
 function showTaskResult(task: ConfigTaskStatus): void {
   resultArtifactId.value = typeof task.result?.artifact_id === 'string' ? task.result.artifact_id : ''
   const result = task.result || {}
+  resultArtifactName.value = typeof result.display_name === 'string' ? result.display_name : ''
   const failedItems = Array.isArray(result.failed_items) ? result.failed_items : []
   const unknownItems = Array.isArray(result.unknown_items) ? result.unknown_items : []
   const notStartedItems = Array.isArray(result.not_started_items) ? result.not_started_items : []
@@ -479,7 +509,7 @@ function formatBytes(value: number): string {
           <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
           <el-table-column label="采集时间" min-width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
           <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" tag="a" :disabled="!isFeatureEnabled('web.config_collection_download')" :href="isFeatureEnabled('web.config_collection_download') ? configArtifactUrl(row.artifact_id) : undefined" target="_blank" @click.stop>下载</el-button></template></el-table-column>
+          <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template></el-table-column>
         </el-table>
       </div>
     </div>
@@ -498,7 +528,7 @@ function formatBytes(value: number): string {
     </div>
 
     <div v-if="resultText || resultDiff" class="content-card result-card">
-      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiff" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部差异" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /></el-select><el-button v-if="resultArtifactId" tag="a" :href="configArtifactUrl(resultArtifactId)" target="_blank">下载 Artifact</el-button><el-button @click="resultText = ''; resultDiff = ''; resultArtifactId = ''">清空</el-button></div></div>
+      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiff" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部差异" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /></el-select><el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载 Artifact</el-button><el-button @click="resultText = ''; resultDiff = ''; resultArtifactId = ''; resultArtifactName = ''">清空</el-button></div></div>
       <pre v-if="resultText" class="code-panel">{{ resultText }}</pre>
       <pre v-else class="code-panel diff-panel">{{ resultDiff }}</pre>
     </div>

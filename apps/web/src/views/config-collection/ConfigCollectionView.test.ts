@@ -24,7 +24,9 @@ describe('Configuration Collection Center view', () => {
 
   it('uses server confirmation tokens, fixed save plan and controlled artifacts', () => {
     expect(source).toContain('采集 running / saved')
-    expect(source).toContain('configArtifactUrl(row.artifact_id)')
+    expect(source).toContain('configArtifactDownloadRequest(snapshot.artifact_id, snapshot.filename)')
+    expect(source).toContain('downloadBackendResource')
+    expect(source).not.toContain('tag="a"')
     expect(source).toContain('保存配置')
     expect(source).toContain('issueSnapshotDelete')
     expect(source).toContain('confirmSnapshotDelete')

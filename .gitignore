@@ -43,6 +43,9 @@ apps/web/*.tsbuildinfo
 apps/web/src/**/*.js
 apps/web/src/**/*.d.ts
 !apps/web/src/env.d.ts
+apps/desktop_electron/node_modules/
+apps/desktop_electron/dist/
+apps/desktop_electron/*.tsbuildinfo
 
 # Agent build/runtime output
 .local/agent/

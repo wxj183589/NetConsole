@@ -1,13 +1,14 @@
 import { apiRequest } from './client'
 import type {
   FileConnection,
-  FileDesktopAction,
   FileDownloadTask,
   FileManagementStatus,
+  FileRemoteDevice,
   ManagedFileCategory,
   ManagedFilePage,
   RemoteFilePage,
 } from '../types/fileManagement'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/file-management'
 
@@ -61,14 +62,18 @@ export function cancelFileDownload(taskId: string, siteId = ''): Promise<FileDow
   return apiRequest(`${root}/downloads/${encodeURIComponent(taskId)}/cancel${qs({ site_id: siteId })}`, { method: 'POST' })
 }
 
-export function requestWinScp(deviceId: string, siteId = ''): Promise<FileDesktopAction> {
-  return apiRequest(`${root}/desktop-actions/winscp${qs({ site_id: siteId })}`, { method: 'POST', body: JSON.stringify({ device_id: deviceId }) })
+export function listRemoteDevices(siteId = ''): Promise<FileRemoteDevice[]> {
+  return apiRequest(`${root}/devices${qs({ site_id: siteId })}`)
 }
 
-export function requestOpenResultDirectory(artifactId: string): Promise<FileDesktopAction> {
-  return apiRequest(`${root}/desktop-actions/open-result-directory`, { method: 'POST', body: JSON.stringify({ artifact_id: artifactId }) })
-}
-
-export function fileDownloadUrl(taskId: string, siteId = ''): string {
-  return `${root}/downloads/${encodeURIComponent(taskId)}/file${qs({ site_id: siteId })}`
+export function fileDownloadRequest(
+  taskId: string,
+  siteId: string,
+  suggestedName: string,
+): BackendDownloadRequest {
+  return {
+    apiPath: `${root}/downloads/${encodeURIComponent(taskId)}/file`,
+    ...(siteId ? { query: { site_id: siteId } } : {}),
+    suggestedName,
+  }
 }
