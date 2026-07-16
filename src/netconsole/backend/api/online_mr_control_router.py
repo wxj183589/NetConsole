@@ -58,4 +58,16 @@ def stop(request: Request, operation_id: str) -> OnlineMrWebOperationDTO:
     return _facade(request).stop_local(operation_id)
 
 
+@router.post("/{operation_id}/force-stop", response_model=OnlineMrWebOperationDTO)
+def force_stop(request: Request, operation_id: str) -> OnlineMrWebOperationDTO:
+    require_local_desktop_session(request)
+    return _facade(request).force_stop_local(operation_id)
+
+
+@router.post("/recover", response_model=list[OnlineMrWebOperationDTO])
+def recover(request: Request) -> list[OnlineMrWebOperationDTO]:
+    require_local_desktop_session(request)
+    return _facade(request).recover_local()
+
+
 __all__ = ["require_local_desktop_session", "router"]

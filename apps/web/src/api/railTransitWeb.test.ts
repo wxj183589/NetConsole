@@ -7,6 +7,7 @@ import {
   exportOnlineMrReport,
   getCarNetworkDiagnosticTask,
   importMeshAnalysis,
+  queryOnlineMrTimeline,
   recoverCarNetworkDiagnostics,
   recoverRailTransitTasks,
   startCarNetworkDiagnostic,
@@ -64,5 +65,14 @@ describe('rail transit Web parity API client', () => {
       '/api/online-mr/tasks/task-3/cancel',
       '/api/online-mr/tasks/recover',
     ])
+  })
+
+  it('reads Online MR timeline through the session analysis boundary', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await queryOnlineMrTimeline('session/1', 300)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/sessions/session%2F1/timeline?limit=300&offset=0')
   })
 })

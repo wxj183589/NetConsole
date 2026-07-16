@@ -150,7 +150,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.collection_notes", "online_mr.collection_note", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.agent_packages", "online_mr.agent_packages.entry", "rail.online_mr_collection", "action"),
     FeatureItem("web.online_mr_realtime", "车载 MR 实时展示", "rail.online_mr_collection", "page"),
-    FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_realtime", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_analysis", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
     FeatureItem("web.train_communication_monitoring", "在线列车通信检测", "module.rail_transit", "page"),
     FeatureItem(
@@ -170,7 +170,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "page"),
     FeatureItem("web.mesh_analysis_import", "MESH 原始日志导入（Web）", "web.mesh_analysis", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.mesh_analysis_report_export", "MESH 分析报告导出（Web）", "web.mesh_analysis", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
-    FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
     FeatureItem("web.rail_train_online", "列车在线情况（Web）", "module.rail_transit", "page", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_train_online_refresh", "列车在线状态与 AP 映射刷新（Web）", "web.rail_train_online", "action", status=FeatureStatus.DEVELOPMENT),
@@ -193,9 +193,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         "车载 MR 收集分析（Web）",
         "module.rail_transit",
         "page",
-        default_visible=False,
-        default_enabled=False,
-        default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
     FeatureItem(

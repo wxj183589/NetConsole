@@ -3,12 +3,16 @@ import { describe, expect, it } from 'vitest'
 import source from './OnlineMrLocalControl.vue?raw'
 
 describe('Online MR local control', () => {
-  it('exposes only local normal start and stop controls', () => {
+  it('exposes local start, normal stop, force stop and restart recovery controls', () => {
     expect(source).toContain('本地 Online MR 采集')
     expect(source).toContain('启动本地采集')
     expect(source).toContain('正常停止并落盘')
     expect(source).toContain("executor: 'LOCAL'")
-    expect(source).not.toMatch(/强制停止|删除会话|删除采集包|Agent 启动|Agent 停止/)
+    expect(source).toContain('强制停止')
+    expect(source).toContain('重启恢复')
+    expect(source).toContain('forceStopOnlineMrControl')
+    expect(source).toContain('recoverOnlineMrControl')
+    expect(source).not.toMatch(/删除会话|删除采集包|Agent 启动|Agent 停止/)
     expect(source).not.toMatch(/username|password|command|output_dir|database_path|agent_url/)
   })
 

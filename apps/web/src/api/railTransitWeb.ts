@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { OnlineMrMetricSeries, MeshImportProfile, OnlineTrainPage, RailTransitTask } from '../types/railTransitWeb'
+import type { OnlineMrMetricSeries, OnlineMrTimelineEvent, MeshImportProfile, OnlineTrainPage, RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const onlineMrRoot = '/api/online-mr'
@@ -41,6 +41,10 @@ export function importMeshAnalysis(files: File[], profile: MeshImportProfile): P
 export function queryOnlineMrMetrics(sessionId: string, metricTypes = ['rssi']): Promise<OnlineMrMetricSeries[]> {
   const query = new URLSearchParams({ metric_types: metricTypes.join(',') })
   return apiRequest<ApiResponse<OnlineMrMetricSeries[]>>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/metrics?${query}`).then((response) => response.data)
+}
+
+export function queryOnlineMrTimeline(sessionId: string, limit = 500): Promise<OnlineMrTimelineEvent[]> {
+  return apiRequest<ApiResponse<OnlineMrTimelineEvent[]>>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${limit}&offset=0`).then((response) => response.data)
 }
 
 export function exportOnlineMrReport(sessionId: string, outputName = ''): Promise<RailTransitTask> {

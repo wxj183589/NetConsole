@@ -16,6 +16,8 @@ class _ControlService:
         self.enabled = enabled
         self.started = 0
         self.stopped = 0
+        self.force_stopped = 0
+        self.recovered = 0
         self.operation = OnlineMrWebOperationDTO(
             operation_id="task-1",
             task_id="task-1",
@@ -47,6 +49,16 @@ class _ControlService:
         assert operation_id == "task-1" and site_id is None
         self.stopped += 1
         return self.operation.model_copy(update={"state": "stopped", "phase": "TERMINAL"})
+
+    def force_stop(self, operation_id: str, *, site_id: str | None = None):
+        assert operation_id == "task-1" and site_id is None
+        self.force_stopped += 1
+        return self.operation.model_copy(update={"state": "aborted", "phase": "TERMINAL", "data_integrity": "partial"})
+
+    def recover(self, site_id: str):
+        assert site_id == "demo"
+        self.recovered += 1
+        return [self.operation]
 
 
 def _app(tmp_path: Path, service: _ControlService, *, mode: RuntimeMode = RuntimeMode.DESKTOP):
@@ -86,18 +98,23 @@ def test_control_api_requires_desktop_cookie_and_loopback(tmp_path: Path) -> Non
         assert response.json()["error"]["code"] == "ONLINE_MR_WEB_LOCAL_ONLY"
 
 
-def test_control_api_start_stop_status_and_detail(tmp_path: Path) -> None:
+def test_control_api_start_stop_force_stop_recover_status_and_detail(tmp_path: Path) -> None:
     service = _ControlService()
     with _authorized_client(_app(tmp_path, service)) as client:
         status = client.get("/api/rail-transit/online-mr-control/status")
         started = client.post("/api/rail-transit/online-mr-control/start", json=_payload())
         detail = client.get("/api/rail-transit/online-mr-control/task-1")
         stopped = client.post("/api/rail-transit/online-mr-control/task-1/stop")
+        forced = client.post("/api/rail-transit/online-mr-control/task-1/force-stop")
+        recovered = client.post("/api/rail-transit/online-mr-control/recover")
 
-    assert status.status_code == started.status_code == detail.status_code == stopped.status_code == 200
+    assert status.status_code == started.status_code == detail.status_code == stopped.status_code == forced.status_code == recovered.status_code == 200
     assert started.json()["owner"] == "web_local"
     assert stopped.json()["state"] == "stopped"
     assert service.started == service.stopped == 1
+    assert forced.json()["data_integrity"] == "partial"
+    assert recovered.json()[0]["operation_id"] == "task-1"
+    assert service.force_stopped == service.recovered == 1
 
 
 def test_control_api_rejects_unknown_sensitive_fields_and_agent_executor(tmp_path: Path) -> None:

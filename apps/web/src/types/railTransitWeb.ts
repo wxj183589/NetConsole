@@ -25,6 +25,11 @@ export interface OnlineMrMetricSeries {
   summary: { count: number; minimum: number | null; maximum: number | null; average: number | null }
 }
 
+export interface OnlineMrTimelineEvent {
+  event_id: string; session_id: string; local_time: string | null; device_time: string | null
+  source: string; event_type: string; severity: string | null; title: string; payload: Record<string, unknown>
+}
+
 export interface MeshImportProfile {
   mr_id: string
   display_name: string

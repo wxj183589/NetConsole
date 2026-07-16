@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { getOnlineMrControlOperation, getOnlineMrControlStatus, startOnlineMrControl, stopOnlineMrControl } from '../api/onlineMrControl'
+import { forceStopOnlineMrControl, getOnlineMrControlOperation, getOnlineMrControlStatus, recoverOnlineMrControl, startOnlineMrControl, stopOnlineMrControl } from '../api/onlineMrControl'
 import type { OnlineMrControlMr, OnlineMrControlOperation, OnlineMrStartConfig } from '../types/onlineMrControl'
 
 const props = defineProps<{ siteId: string; mr: OnlineMrControlMr }>()
@@ -10,6 +10,7 @@ const enabled = ref(false)
 const loading = ref(false)
 const starting = ref(false)
 const stopping = ref(false)
+const forceStopping = ref(false)
 const error = ref('')
 const operation = ref<OnlineMrControlOperation | null>(null)
 let timer: number | null = null
@@ -24,8 +25,8 @@ const config = reactive({
 })
 
 const active = computed(() => ['preparing', 'starting', 'running', 'stopping'].includes(operation.value?.state || ''))
-const canStart = computed(() => enabled.value && !active.value && !starting.value && !stopping.value && props.mr.device_id !== null)
-const canStop = computed(() => enabled.value && active.value && operation.value?.state !== 'stopping' && !stopping.value)
+const canStart = computed(() => enabled.value && !active.value && !starting.value && !stopping.value && !forceStopping.value && props.mr.device_id !== null)
+const canStop = computed(() => enabled.value && active.value && operation.value?.state !== 'stopping' && !stopping.value && !forceStopping.value)
 const statusLabel = computed(() => ({
   preparing: '正在准备', starting: '正在启动', running: '采集中', stopping: '正在停止并落盘', stopped: '已停止',
   completed_with_warnings: '已完成，有告警', failed: '失败', aborted: '已中断',
@@ -80,6 +81,27 @@ async function stop(): Promise<void> {
     if (cause !== 'cancel' && cause !== 'close') error.value = cause instanceof Error ? cause.message : '停止失败'
   } finally { stopping.value = false; schedule() }
 }
+async function forceStop(): Promise<void> {
+  if (!canStop.value || !operation.value) return
+  forceStopping.value = true
+  error.value = ''
+  try {
+    await ElMessageBox.confirm('强制停止可能无法完成全部 writer flush；系统会保留原始会话并标记为 partial。仅在正常停止无响应时继续。', '强制停止本地采集', { confirmButtonText: '确认强制停止', cancelButtonText: '取消', type: 'error' })
+    operation.value = await forceStopOnlineMrControl(operation.value.operation_id)
+    ElMessage.warning('采集已强制停止；请检查数据完整性与原始会话')
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') error.value = cause instanceof Error ? cause.message : '强制停止失败'
+  } finally { forceStopping.value = false; schedule() }
+}
+async function recover(): Promise<void> {
+  if (!enabled.value) return
+  try {
+    const rows = await recoverOnlineMrControl()
+    operation.value = selectForMr(rows) || operation.value
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : 'Online MR 重启恢复失败'
+  }
+}
 async function copyAcceptance(): Promise<void> {
   if (!acceptanceCommand.value) return
   await navigator.clipboard.writeText(acceptanceCommand.value)
@@ -90,7 +112,12 @@ function clearTimer(): void { if (timer !== null) window.clearTimeout(timer); ti
 function visibilityChanged(): void { if (document.hidden) clearTimer(); else void refresh() }
 
 watch(() => props.mr.mr_id, () => { operation.value = null; config.fping.target = props.mr.management_ip || ''; void refresh() })
-onMounted(() => { config.fping.target = props.mr.management_ip || ''; document.addEventListener('visibilitychange', visibilityChanged); void refresh() })
+onMounted(async () => {
+  config.fping.target = props.mr.management_ip || ''
+  document.addEventListener('visibilitychange', visibilityChanged)
+  await refresh()
+  await recover()
+})
 onBeforeUnmount(() => { document.removeEventListener('visibilitychange', visibilityChanged); clearTimer() })
 </script>
 
@@ -124,7 +151,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', visibil
           </el-form>
         </el-collapse-item>
       </el-collapse>
-      <div class="control-actions"><el-button type="primary" :loading="starting" :disabled="!canStart" @click="start">启动本地采集</el-button><el-button type="warning" :loading="stopping" :disabled="!canStop" @click="stop">正常停止并落盘</el-button><el-button :loading="loading" @click="refresh">刷新状态</el-button></div>
+      <div class="control-actions"><el-button type="primary" :loading="starting" :disabled="!canStart" @click="start">启动本地采集</el-button><el-button type="warning" :loading="stopping" :disabled="!canStop" @click="stop">正常停止并落盘</el-button><el-button type="danger" plain :loading="forceStopping" :disabled="!canStop" @click="forceStop">强制停止</el-button><el-button :loading="loading" @click="refresh">刷新状态</el-button><el-button @click="recover">重启恢复</el-button></div>
       <el-alert v-if="operation?.state === 'stopping'" title="正在等待 Traffic flush、SSH collector/writer 关闭、metadata 写入和原子打包。" type="warning" show-icon :closable="false" />
       <el-descriptions v-if="operation" :column="3" border class="operation-detail"><el-descriptions-item label="阶段">{{ operation.phase }}</el-descriptions-item><el-descriptions-item label="Task / Mapping">{{ operation.task_status || '无数据' }} / {{ operation.mapping_status }}</el-descriptions-item><el-descriptions-item label="Session">{{ operation.session_status || '待生成' }}</el-descriptions-item><el-descriptions-item label="fping / iPerf">{{ operation.fping_status }} / {{ operation.iperf_status }}</el-descriptions-item><el-descriptions-item label="数据完整性">{{ operation.data_integrity }}</el-descriptions-item><el-descriptions-item label="采集包">{{ operation.package_path_reference || operation.package_status }}</el-descriptions-item></el-descriptions>
       <div v-if="acceptanceCommand" class="acceptance"><code>{{ acceptanceCommand }}</code><el-button link type="primary" @click="copyAcceptance">复制验收命令</el-button></div>

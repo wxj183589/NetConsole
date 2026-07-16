@@ -136,6 +136,36 @@ class OnlineMrWebControlService:
                 ) from exc
         return self._operation_dto(operation)
 
+    def force_stop(self, operation_id: str, *, site_id: str | None = None) -> OnlineMrWebOperationDTO:
+        self._require_enabled()
+        with ONLINE_MR_WEB_START_LOCK:
+            try:
+                operation = self.application_service.force_stop_operation(
+                    operation_id,
+                    site_id=site_id,
+                    stop_reason="web_user_force_stop",
+                )
+            except OnlineMrApplicationError as exc:
+                status_code = 404 if "NOT_FOUND" in str(exc.code) else 409
+                raise OnlineMrWebControlError(
+                    OnlineMrWebControlErrorCode.STOP_FAILED,
+                    exc.message,
+                    status_code=status_code,
+                ) from exc
+        return self._operation_dto(operation)
+
+    def recover(self, site_id: str) -> list[OnlineMrWebOperationDTO]:
+        self._require_enabled()
+        try:
+            operations = self.application_service.recover_mappings(site_id=site_id)
+        except OnlineMrApplicationError as exc:
+            raise OnlineMrWebControlError(exc.code, exc.message, status_code=409) from exc
+        return [
+            self._operation_dto(operation)
+            for operation in operations
+            if operation.executor_kind is OnlineMrExecutorKind.LOCAL
+        ]
+
     def build_start_request(
         self,
         request: OnlineMrWebStartRequestDTO,

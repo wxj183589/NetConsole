@@ -117,6 +117,12 @@ class OnlineMrApiFacade:
     def stop_local(self, operation_id: str):
         return self.local_control.stop(operation_id)
 
+    def force_stop_local(self, operation_id: str):
+        return self.local_control.force_stop(operation_id)
+
+    def recover_local(self):
+        return self.local_control.recover(self.current_site_id())
+
     def agent_capabilities(self):
         return self.agent_control.capabilities(self.current_site_id())
 

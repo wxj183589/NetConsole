@@ -22,6 +22,7 @@ class _ProcessAdapter:
         self.jobs = []
         self.active: set[str] = set()
         self.cancelled: list[str] = []
+        self.forced: list[str] = []
 
     def start_job(self, job, *, on_complete=None) -> str:
         del on_complete
@@ -43,6 +44,12 @@ class _ProcessAdapter:
     def wait(self, job_id: str, timeout: float | None = None) -> bool:
         del timeout
         return job_id not in self.active
+
+    def force_stop_job(self, job_id: str, *, timeout_seconds: float = 1.0) -> bool:
+        del timeout_seconds
+        self.forced.append(job_id)
+        self.active.discard(job_id)
+        return True
 
 
 def _service(tmp_path: Path, *, enabled: bool = True):
@@ -113,6 +120,19 @@ def test_web_control_normal_stop_is_idempotent_and_uses_application_service(tmp_
     assert stopped_again.operation_id == stopped.operation_id
     assert adapter.cancelled == [started.operation_id]
     assert application.get_operation(started.operation_id, site_id="demo").phase == "TERMINAL"
+
+
+def test_web_control_force_stop_and_restart_recovery_use_application_service(tmp_path: Path) -> None:
+    control, application, _adapter, device_id = _service(tmp_path)
+    started = control.start(_request(device_id), current_site_id="demo")
+
+    forced = control.force_stop(started.operation_id, site_id="demo")
+    recovered = control.recover("demo")
+
+    assert forced.state == "aborted"
+    assert forced.data_integrity == "unknown"
+    assert application.get_operation(started.operation_id, site_id="demo").force_stopped is True
+    assert recovered == []
 
 
 def test_web_control_rejects_disabled_site_mismatch_and_unbound_mr(tmp_path: Path) -> None:

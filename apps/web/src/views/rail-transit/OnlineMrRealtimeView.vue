@@ -5,13 +5,23 @@ import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
+import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
+import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
+import { getTrainCommunicationSummary, listTrainCommunications } from '../../api/trainCommunication'
 import { useOnlineMrStore } from '../../stores/onlineMr'
+import type { MrCommunicationStatus } from '../../types/trainCommunication'
 
 const store = useOnlineMrStore()
 const route = useRoute()
 const expanded = ref('')
 const rawTab = ref('mesh_link')
 const fpingSource = ref('fping_summary')
+const controlMrs = ref<MrCommunicationStatus[]>([])
+const controlMrId = ref('')
+const controlError = ref('')
+const controlSiteId = ref('')
+const executorTab = ref('local')
+const controlMr = computed(() => controlMrs.value.find((item) => item.mr_id === controlMrId.value) || null)
 const selectedId = computed({
   get: () => store.selected?.session_id || '',
   set: (value: string) => value && void store.selectSession(value),
@@ -88,8 +98,30 @@ function handleVisibility(): void {
   else store.startPolling()
 }
 
+async function loadControlMrs(): Promise<void> {
+  try {
+    const [summary, page] = await Promise.all([
+      getTrainCommunicationSummary(),
+      listTrainCommunications({ page: 1, page_size: 200, sort_by: 'train_no', sort_order: 'asc' }),
+    ])
+    controlSiteId.value = summary.site_id
+    controlMrs.value = page.items.flatMap((train) => train.mrs)
+    const requestedMr = typeof route.query.mr_id === 'string' ? route.query.mr_id : ''
+    const requestedDevice = typeof route.query.device_id === 'string' ? route.query.device_id : ''
+    controlMrId.value = controlMrs.value.find((item) => item.mr_id === requestedMr)?.mr_id
+      || controlMrs.value.find((item) => String(item.device_id) === requestedDevice)?.mr_id
+      || controlMrId.value
+      || controlMrs.value[0]?.mr_id
+      || ''
+    controlError.value = ''
+  } catch (cause) {
+    controlError.value = cause instanceof Error ? cause.message : '正式 MR 列表加载失败'
+  }
+}
+
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibility)
+  await loadControlMrs()
   const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
   if (requestedSession) await store.selectSession(requestedSession)
   store.startPolling()
@@ -103,18 +135,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="online-mr-web" v-loading="store.loading">
-    <el-alert
-      title="只读实时展示"
-      description="启动、停止、强停和最终化仍由 Qt 页面负责；本页只读取当前局点的会话状态、view 与 raw 事实文件。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-
     <div class="mr-toolbar">
       <div>
-        <h2>车载 MR 实时展示</h2>
-        <p>当前局点会话 · 2 秒状态轮询 · 原始日志按需刷新</p>
+        <p class="eyebrow">RAIL TRANSIT · ONLINE MR COLLECTION</p>
+        <h2>车载 MR 实时收集</h2>
+        <p>配置、启动、SSH 采集、fping/iPerf、正常停止、强停、恢复与会话交付。</p>
       </div>
       <div class="mr-toolbar-actions">
         <el-select v-model="selectedId" filterable placeholder="选择最近会话" style="width: 310px">
@@ -128,6 +153,16 @@ onBeforeUnmount(() => {
         <el-button :icon="Refresh" @click="store.refreshOverview">刷新</el-button>
       </div>
     </div>
+
+    <section class="content-card collection-control">
+      <div class="control-selector">
+        <div><h3>采集控制</h3><p>从基础资料选择正式 MR；连接凭据由后端设备库受控读取。</p></div>
+        <div class="mr-toolbar-actions"><el-select v-model="controlMrId" filterable placeholder="选择列车 MR" style="width: 330px"><el-option v-for="mr in controlMrs" :key="mr.mr_id" :label="`${mr.train_name} · ${mr.mr_role} · ${mr.mr_name}`" :value="mr.mr_id" /></el-select><el-button :icon="Refresh" @click="loadControlMrs">刷新 MR</el-button></div>
+      </div>
+      <el-alert v-if="controlError" :title="controlError" type="error" :closable="false" show-icon />
+      <el-tabs v-if="controlMr && controlSiteId" v-model="executorTab" type="border-card"><el-tab-pane label="LOCAL 本地执行" name="local"><OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" /></el-tab-pane><el-tab-pane label="AGENT 远程执行" name="agent"><OnlineMrAgentControlPanel :site-id="controlSiteId" :mr="controlMr" /></el-tab-pane></el-tabs>
+      <el-empty v-else description="当前局点没有已登记且绑定设备的 MR" />
+    </section>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="mr-error" />
     <el-empty v-if="!store.selected && !store.loading" description="当前局点暂无 Online MR 会话" />
@@ -255,11 +290,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.online-mr-web { max-width: 1680px; margin: 0 auto; }
+.online-mr-web { max-width: 1680px; margin: 0 auto; }.eyebrow { margin: 0 0 4px !important; color: var(--el-color-primary) !important; font-size: 12px !important; font-weight: 700; letter-spacing: .08em; }
 .mr-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 18px 0; }
 .mr-toolbar h2, .mr-panel-title h3, .mr-delivery h3 { margin: 0; }
 .mr-toolbar p, .mr-panel-title p { margin: 5px 0 0; color: #7b8798; font-size: 12px; }
 .mr-toolbar-actions { display: flex; gap: 10px; }
+.collection-control { margin-bottom: 16px; padding: 16px; }.control-selector { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }.control-selector h3 { margin: 0 0 5px; }.control-selector p { margin: 0; color: var(--el-text-color-secondary); }.collection-control .el-alert { margin-bottom: 12px; }
 .mr-error { margin-bottom: 16px; }
 .mr-status-grid { display: grid; grid-template-columns: repeat(5, minmax(160px, 1fr)); gap: 14px; margin-bottom: 16px; }
 .mr-status-card { min-height: 116px; padding: 17px 18px; background: #fff; border: 1px solid #dfe7f1; border-top: 3px solid #7d91ad; border-radius: 10px; }
@@ -290,4 +326,5 @@ onBeforeUnmount(() => {
   .mr-status-grid { grid-template-columns: repeat(3, 1fr); }
   .mr-two-column { grid-template-columns: 1fr; }
 }
+@media (max-width: 900px) { .mr-toolbar,.control-selector { align-items: flex-start; flex-direction: column; }.mr-toolbar-actions { flex-wrap: wrap; } }
 </style>

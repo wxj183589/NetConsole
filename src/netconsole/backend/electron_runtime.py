@@ -57,6 +57,7 @@ def build_app(options: ElectronRuntimeOptions, session_token: str) -> FastAPI:
     app = create_app(
         RuntimeMode.DESKTOP,
         desktop_session_token=session_token,
+        online_mr_web_control_enabled=True,
     )
     if options.renderer_origin:
         app.add_middleware(
