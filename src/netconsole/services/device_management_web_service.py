@@ -36,8 +36,6 @@ from netconsole.models.api.device_management import (
     DeviceConnectionTestDTO,
     DeviceDetailDTO,
     DeviceDetailItemDTO,
-    DeviceEditPreviewDTO,
-    DeviceEditPreviewRequestDTO,
     DeviceBatchRefreshRequestDTO,
     DeviceDeleteDTO,
     DeviceDeleteRequestDTO,
@@ -607,6 +605,7 @@ class DeviceManagementWebService:
         errors: list[str] = []
         warnings: list[str] = []
         columns: list[str] = []
+        duplicate_rows: list[int] = []
         row_count = 0
         mapped_rows: list[tuple[int, dict[str, object | None]]] = []
         try:
@@ -627,11 +626,16 @@ class DeviceManagementWebService:
                     for device in importer.repository.list()
                     if str(device.primary_address or "").strip()
                 }
-                conflicts = sum(
-                    1 for _line, row in mapped_rows if str(row.get("primary_address") or "").strip().casefold() in existing_addresses
-                )
-                if conflicts:
-                    warnings.append(f"有 {conflicts} 行主用地址已存在，确认后仍将按新增设备处理")
+                duplicate_rows = [
+                    line
+                    for line, row in mapped_rows
+                    if str(row.get("primary_address") or "").strip().casefold()
+                    in existing_addresses
+                ]
+                if duplicate_rows:
+                    warnings.append(
+                        f"有 {len(duplicate_rows)} 行主用地址已存在，请选择重复处理策略"
+                    )
         except Exception as exc:
             errors.append(str(exc) or exc.__class__.__name__)
         token = secrets.token_urlsafe(32)
@@ -649,6 +653,7 @@ class DeviceManagementWebService:
                 "columns": columns,
                 "errors": errors,
                 "warnings": warnings,
+                "duplicate_rows": duplicate_rows,
             },
         )
         return DeviceImportPreviewDTO(
@@ -659,6 +664,7 @@ class DeviceManagementWebService:
             columns=columns,
             errors=errors,
             warnings=warnings,
+            duplicate_rows=duplicate_rows,
         )
 
     def confirm_import(self, payload: DeviceImportConfirmRequestDTO) -> DeviceTaskReferenceDTO:
@@ -697,6 +703,7 @@ class DeviceManagementWebService:
                     "source_file": str(preview.get("source_name") or path.name),
                     "source_sha256": preview.get("sha256"),
                     "backup_reference": str(backup_path),
+                    "duplicate_strategy": payload.duplicate_strategy,
                 },
             )
             job = BackgroundJob(
@@ -711,6 +718,7 @@ class DeviceManagementWebService:
                     "task_source": "local",
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
+                    "duplicate_strategy": payload.duplicate_strategy,
                     "_cancel_grace_ms": 1000,
                 },
             )
@@ -1191,6 +1199,7 @@ class DeviceManagementWebService:
         groups: DeviceGroupRepository,
     ) -> Device:
         values = payload.model_dump()
+        clear_secret_fields = set(values.pop("clear_secret_fields", ()))
         secret_fields = (
             "ssh_password",
             "telnet_password",
@@ -1204,7 +1213,11 @@ class DeviceManagementWebService:
         for field in secret_fields:
             secret = getattr(payload, field)
             raw = secret.get_secret_value() if secret is not None else ""
-            if existing is not None and not raw:
+            if field in clear_secret_fields:
+                if raw:
+                    raise ValueError(f"{field} 不能同时替换和清除")
+                values[field] = None
+            elif existing is not None and not raw:
                 values.pop(field, None)
             else:
                 values[field] = raw or None
@@ -1243,20 +1256,18 @@ class DeviceManagementWebService:
         values["tunnel1_enabled"] = tunnel1_enabled
         values["tunnel2_enabled"] = tunnel2_enabled
         values["tunnel_enabled"] = tunnel1_enabled or tunnel2_enabled
-        if values["ssh_enabled"]:
-            values["protocol"] = "SSH"
-            values["port"] = values.get("ssh_port") or 22
-            values["username"] = values.get("ssh_username") or None
-            if "ssh_password" in values:
-                values["password"] = values.get("ssh_password")
-        elif values["telnet_enabled"]:
-            values["protocol"] = "Telnet"
-            values["port"] = values.get("telnet_port") or 23
-            values["username"] = values.get("telnet_username") or None
-            if "telnet_password" in values:
-                values["password"] = values.get("telnet_password")
         record = existing.to_record() if existing is not None else {}
         record.update(values)
+        if record["ssh_enabled"]:
+            record["protocol"] = "SSH"
+            record["port"] = record.get("ssh_port") or 22
+            record["username"] = record.get("ssh_username") or None
+            record["password"] = record.get("ssh_password") or None
+        elif record["telnet_enabled"]:
+            record["protocol"] = "Telnet"
+            record["port"] = record.get("telnet_port") or 23
+            record["username"] = record.get("telnet_username") or None
+            record["password"] = record.get("telnet_password") or None
         if existing is None:
             record.pop("id", None)
             record.pop("device_uuid", None)
@@ -1788,7 +1799,6 @@ class DeviceManagementWebService:
             exit_code is None
             or int(exit_code) != 0
             or bool(result.get("errors"))
-            or int(result.get("skipped") or 0) > 0
         )
         audit: dict[str, object] = {
             "status": "CANCELLED" if cancelled else "FAILED" if failed else "APPLIED",
@@ -2296,31 +2306,6 @@ class DeviceManagementWebService:
                     )
             self._export_artifacts.pop(task_id, None)
 
-    def preview_edit(self, device_uuid: str, payload: DeviceEditPreviewRequestDTO) -> DeviceEditPreviewDTO:
-        site = self.current_site_id()
-        device_repository, group_repository, _ = self._repositories(site)
-        self._require_device(device_repository, device_uuid)
-        values = payload.model_dump()
-        for field in ("name", "system_name", "station", "location", "device_vendor", "device_type", "primary_address", "backup_address", "remark"):
-            values[field] = str(values[field] or "").strip()
-        normalized = DeviceEditPreviewRequestDTO.model_validate(values)
-        errors: list[str] = []
-        warnings: list[str] = []
-        if not normalized.ssh_enabled and not normalized.telnet_enabled:
-            errors.append("至少启用 SSH 或 Telnet 之一")
-        if normalized.device_vendor not in DEVICE_VENDORS:
-            errors.append("设备厂商不在受支持白名单中")
-        if normalized.device_type not in DEVICE_TYPES:
-            errors.append("设备类型不在受支持白名单中")
-        if normalized.group_id is not None:
-            try:
-                group_repository.get(normalized.group_id)
-            except KeyError:
-                errors.append("设备分组不存在")
-        if normalized.backup_address and normalized.backup_address == normalized.primary_address:
-            warnings.append("备用地址与主地址相同")
-        return DeviceEditPreviewDTO(valid=not errors, normalized=normalized, errors=errors, warnings=warnings)
-
     def start_connection_test(self, device_uuid: str, protocol: str) -> DeviceConnectionTestDTO:
         site = self.current_site_id()
         device_repository, _, _ = self._repositories(site)
@@ -2743,7 +2728,13 @@ def run_device_csv_import(context: JobContext) -> dict[str, object]:
         DeviceRepository(database),
         DeviceGroupRepository(database, site),
     )
-    result = service.import_csv_atomic(path, check_cancelled=context.check_cancelled)
+    result = service.import_csv_atomic(
+        path,
+        check_cancelled=context.check_cancelled,
+        duplicate_strategy=str(
+            context.params.get("duplicate_strategy") or "create_new"
+        ),
+    )
     context.progress("device_csv_import", 1, 1, "设备 CSV 导入完成")
     return {
         "created": result.created,

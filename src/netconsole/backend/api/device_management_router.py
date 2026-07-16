@@ -15,8 +15,6 @@ from netconsole.models.api.device_management import (
     DeviceDeletionTokenDTO,
     DeviceDetailDTO,
     DeviceDeletionTokenRequestDTO,
-    DeviceEditPreviewDTO,
-    DeviceEditPreviewRequestDTO,
     DeviceExternalTerminalActionDTO,
     DeviceExternalTerminalBatchDTO,
     DeviceExternalTerminalBatchRequestDTO,
@@ -295,19 +293,6 @@ def device_history(
         ),
         "设备或历史记录不存在",
     )
-
-
-@router.post(
-    "/devices/{device_uuid}/edit-preview",
-    response_model=DeviceEditPreviewDTO,
-    dependencies=[Depends(require_feature("web.device_edit_preview")), Depends(require_feature("web.device_management_write"))],
-)
-def edit_preview(
-    request: Request,
-    device_uuid: str,
-    payload: DeviceEditPreviewRequestDTO,
-) -> DeviceEditPreviewDTO:
-    return _not_found(lambda: _service(request).preview_edit(device_uuid, payload), "设备不存在")
 
 
 @router.post(

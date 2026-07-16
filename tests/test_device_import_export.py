@@ -401,6 +401,38 @@ def test_atomic_import_rolls_back_devices_and_groups_on_insert_failure(tmp_path)
     assert groups.find_by_name("Atomic Group") is None
 
 
+def test_atomic_import_applies_explicit_duplicate_address_strategy(tmp_path):
+    repository, _groups, service = make_group_service(tmp_path)
+    repository.create(Device(name="Existing", primary_address="192.168.30.1"))
+    csv_path = tmp_path / "duplicates.csv"
+    write_rows(
+        csv_path,
+        [
+            TEMPLATE_FIELDS,
+            template_row(
+                **{
+                    TEMPLATE_FIELDS[0]: "Duplicate",
+                    TEMPLATE_FIELDS[1]: "192.168.30.1",
+                }
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="第 2 行主用地址已存在"):
+        service.import_csv_atomic(csv_path, duplicate_strategy="reject")
+    assert len(repository.list()) == 1
+
+    skipped = service.import_csv_atomic(csv_path, duplicate_strategy="skip")
+    assert skipped.created == 0
+    assert skipped.skipped == 1
+    assert len(repository.list()) == 1
+
+    created = service.import_csv_atomic(csv_path, duplicate_strategy="create_new")
+    assert created.created == 1
+    assert created.skipped == 0
+    assert len(repository.list()) == 2
+
+
 def test_web_device_csv_export_honors_selection_and_omits_credentials(tmp_path):
     repository, _groups, _service = make_group_service(tmp_path)
     selected = repository.create(

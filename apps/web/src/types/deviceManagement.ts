@@ -1,5 +1,14 @@
 export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'ERROR'
 export type DeviceConnectionProtocol = 'SSH' | 'TELNET' | 'SNMP'
+export type DeviceSecretField =
+  | 'ssh_password'
+  | 'telnet_password'
+  | 'tunnel1_password'
+  | 'tunnel2_password'
+  | 'snmp_ro_community'
+  | 'snmp_rw_community'
+  | 'snmpv3_auth_password'
+  | 'snmpv3_priv_password'
 
 export interface DeviceCapability {
   ssh: boolean
@@ -124,7 +133,7 @@ export interface DeviceDetailResponse {
   trackside_ap_business: Array<Record<string, unknown>>
 }
 
-export interface DeviceEditPreviewRequest {
+export interface DeviceWriteRequest {
   name: string
   system_name?: string
   station?: string
@@ -145,9 +154,6 @@ export interface DeviceEditPreviewRequest {
   snmp_port?: number
   https_port?: number | null
   remark?: string
-}
-
-export interface DeviceWriteRequest extends DeviceEditPreviewRequest {
   ssh_username?: string
   ssh_password?: string
   telnet_username?: string
@@ -174,14 +180,7 @@ export interface DeviceWriteRequest extends DeviceEditPreviewRequest {
   snmp_context_name?: string
   snmp_timeout_ms?: number
   snmp_retries?: number
-}
-
-export interface DeviceEditPreview {
-  valid: boolean
-  normalized: DeviceEditPreviewRequest
-  errors: string[]
-  warnings: string[]
-  persistence: 'preview_only'
+  clear_secret_fields?: DeviceSecretField[]
 }
 
 export interface DeviceConnectionTest {
@@ -265,6 +264,7 @@ export interface DeviceImportPreview {
   columns: string[]
   errors: string[]
   warnings: string[]
+  duplicate_rows: number[]
   persistence: 'preview_only'
 }
 

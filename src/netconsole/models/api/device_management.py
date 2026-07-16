@@ -9,6 +9,16 @@ from netconsole.models.api.common import ApiModel
 
 DeviceConnectionStatus = Literal["UNKNOWN", "TESTING", "REACHABLE", "UNREACHABLE", "ERROR"]
 DeviceConnectionProtocol = Literal["SSH", "TELNET", "SNMP"]
+DeviceSecretField = Literal[
+    "ssh_password",
+    "telnet_password",
+    "tunnel1_password",
+    "tunnel2_password",
+    "snmp_ro_community",
+    "snmp_rw_community",
+    "snmpv3_auth_password",
+    "snmpv3_priv_password",
+]
 
 
 class DeviceCapabilityDTO(ApiModel):
@@ -149,7 +159,9 @@ class DeviceDetailDTO(ApiModel):
     trackside_ap_business: list[dict[str, object | None]] = Field(default_factory=list)
 
 
-class DeviceEditPreviewRequestDTO(ApiModel):
+class DeviceWriteRequestDTO(ApiModel):
+    """Qt 对等写入字段；秘密字段只写不读，清除必须显式声明。"""
+
     name: str = Field(min_length=1, max_length=120)
     system_name: str = Field(default="", max_length=120)
     station: str = Field(default="", max_length=120)
@@ -170,19 +182,6 @@ class DeviceEditPreviewRequestDTO(ApiModel):
     snmp_port: int = Field(default=161, ge=1, le=65535)
     https_port: int | None = Field(default=None, ge=1, le=65535)
     remark: str = Field(default="", max_length=1000)
-
-
-class DeviceEditPreviewDTO(ApiModel):
-    valid: bool
-    normalized: DeviceEditPreviewRequestDTO
-    errors: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    persistence: Literal["preview_only"] = "preview_only"
-
-
-class DeviceWriteRequestDTO(DeviceEditPreviewRequestDTO):
-    """Qt 对等写入字段；秘密字段只写不读，空值在编辑时表示保留。"""
-
     ssh_username: str = Field(default="", max_length=255)
     ssh_password: SecretStr | None = Field(default=None, repr=False)
     telnet_username: str = Field(default="", max_length=255)
@@ -209,6 +208,9 @@ class DeviceWriteRequestDTO(DeviceEditPreviewRequestDTO):
     snmp_context_name: str = Field(default="", max_length=255)
     snmp_timeout_ms: int = Field(default=2000, ge=100, le=60000)
     snmp_retries: int = Field(default=1, ge=0, le=10)
+    clear_secret_fields: list[DeviceSecretField] = Field(
+        default_factory=list, max_length=8
+    )
 
 
 class DeviceWriteDTO(ApiModel):
@@ -304,11 +306,13 @@ class DeviceImportPreviewDTO(ApiModel):
     columns: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    duplicate_rows: list[int] = Field(default_factory=list)
     persistence: Literal["preview_only"] = "preview_only"
 
 
 class DeviceImportConfirmRequestDTO(ApiModel):
     preview_token: str = Field(min_length=16, max_length=256)
+    duplicate_strategy: Literal["reject", "skip", "create_new"] = "reject"
 
 
 class DeviceExportRequestDTO(ApiModel):

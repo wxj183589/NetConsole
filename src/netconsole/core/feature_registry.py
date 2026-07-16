@@ -42,7 +42,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.job_center", "任务中心", None, "page"),
     FeatureItem("web.device_management", "设备管理（Web）", "module.devices", "page"),
     FeatureItem("web.device_connection_test", "设备连接测试（Web）", "web.device_management", "action"),
-    FeatureItem("web.device_edit_preview", "设备编辑预览（Web）", "web.device_management", "action"),
     FeatureItem("web.device_management_write", "设备管理写操作（Web）", "web.device_management", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.device_management_collect", "设备采集与诊断（Web）", "web.device_management", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.device_management_import", "设备导入（Web）", "web.device_management", "action", status=FeatureStatus.DEVELOPMENT),

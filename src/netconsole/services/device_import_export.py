@@ -137,9 +137,16 @@ class DeviceImportExportService:
         return self._import_rows(mapped_rows)
 
     def import_csv_atomic(
-        self, path: Path, *, check_cancelled: Callable[[], None] | None = None
+        self,
+        path: Path,
+        *,
+        check_cancelled: Callable[[], None] | None = None,
+        duplicate_strategy: str = "create_new",
     ) -> ImportResult:
         """全量校验后，在一个 SQLite 事务中写入分组和设备。"""
+
+        if duplicate_strategy not in {"reject", "skip", "create_new"}:
+            raise ValueError("不支持的设备重复处理策略")
 
         try:
             validate_csv_import(
@@ -167,12 +174,20 @@ class DeviceImportExportService:
 
         now = datetime.now().isoformat(timespec="seconds")
         created = 0
+        skipped = 0
         groups_created = 0
         database = self.repository.database
         with database.connect() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                for _line_number, source_payload in mapped_rows:
+                existing_addresses = {
+                    str(row["primary_address"] or "").strip().casefold()
+                    for row in conn.execute(
+                        "SELECT primary_address FROM devices WHERE primary_address IS NOT NULL"
+                    ).fetchall()
+                    if str(row["primary_address"] or "").strip()
+                }
+                for line_number, source_payload in mapped_rows:
                     if check_cancelled is not None:
                         check_cancelled()
                     payload = {
@@ -180,6 +195,15 @@ class DeviceImportExportService:
                         for key, value in source_payload.items()
                         if value is not None
                     }
+                    address = str(payload.get("primary_address") or "").strip().casefold()
+                    if address in existing_addresses:
+                        if duplicate_strategy == "reject":
+                            raise ValueError(
+                                f"第 {line_number} 行主用地址已存在：{address}"
+                            )
+                        if duplicate_strategy == "skip":
+                            skipped += 1
+                            continue
                     group_name = str(payload.pop("group_name", "") or "").strip()
                     if group_name and self.group_repository is not None:
                         row = conn.execute(
@@ -215,12 +239,16 @@ class DeviceImportExportService:
                         [record[column] for column in columns],
                     )
                     created += 1
+                    existing_addresses.add(address)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
         return ImportResult(
-            created=created, skipped=0, errors=[], groups_created=groups_created
+            created=created,
+            skipped=skipped,
+            errors=[],
+            groups_created=groups_created,
         )
 
     def _validate_all_rows(self, rows: list[tuple[int, dict[str, object | None]]]) -> None:

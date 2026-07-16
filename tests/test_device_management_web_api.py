@@ -58,6 +58,7 @@ from netconsole.services.device_management_web_service import (
     WEB_TASK_OWNER,
     DeviceManagementWebService,
     run_device_connection_test,
+    run_device_csv_import,
     run_device_detail_collect,
     run_device_diagnostic_download,
     run_device_optical_refresh,
@@ -322,30 +323,31 @@ def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) 
     assert response.json()["items"][0]["link_status"] == "UP"
 
 
-def test_edit_preview_is_whitelisted_validated_and_never_persists(tmp_path: Path) -> None:
+def test_real_edit_is_validated_and_persisted(
+    tmp_path: Path,
+) -> None:
     client, _service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
     payload = {
         "name": "  MR-NEW  ",
         "primary_address": "192.0.2.99",
-        "backup_address": "192.0.2.99",
         "device_vendor": "H3C",
         "device_type": "AC",
         "ssh_enabled": True,
         "telnet_enabled": False,
     }
 
-    response = client.post(f"/api/device-management/devices/{mr.device_uuid}/edit-preview", json=payload)
-    rejected = client.post(
-        f"/api/device-management/devices/{mr.device_uuid}/edit-preview",
-        json={**payload, "password": "must-not-be-accepted"},
+    response = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}", json=payload
+    )
+    rejected = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={**payload, "device_vendor": "unsupported"},
     )
 
     assert response.status_code == 200
-    assert response.json()["normalized"]["name"] == "MR-NEW"
-    assert response.json()["warnings"] == ["备用地址与主地址相同"]
-    assert response.json()["persistence"] == "preview_only"
+    assert response.json()["device"]["name"] == "MR-NEW"
     assert rejected.status_code == 422
-    assert devices.get_by_uuid(str(mr.device_uuid)).name == "MR2"
+    assert devices.get_by_uuid(str(mr.device_uuid)).name == "MR-NEW"
 
 
 def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path) -> None:
@@ -563,7 +565,6 @@ def test_router_exposes_device_management_parity_endpoints_without_arbitrary_ter
 
     posts = {path for path, methods in device_paths.items() if "post" in methods}
     assert {
-        "/api/device-management/devices/{device_uuid}/edit-preview",
         "/api/device-management/devices/{device_uuid}/connection-tests",
         "/api/device-management/devices",
         "/api/device-management/devices/{device_uuid}/duplicate",
@@ -731,6 +732,60 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(tmp
     assert secret_value not in detail.text
     assert "password" not in detail.text.lower()
 
+    replacement = "replacement-must-not-be-echoed"
+    replaced_secret = client.put(
+        f"/api/device-management/devices/{secret_uuid}",
+        json={
+            "name": "Web-secret-updated",
+            "primary_address": "192.0.2.33",
+            "ssh_password": replacement,
+        },
+    )
+    assert replaced_secret.status_code == 200
+    assert replacement not in replaced_secret.text
+    assert devices.get_by_uuid(secret_uuid).ssh_password == replacement
+
+    conflicting_clear = client.put(
+        f"/api/device-management/devices/{secret_uuid}",
+        json={
+            "name": "Web-secret-updated",
+            "primary_address": "192.0.2.33",
+            "ssh_password": "new-value",
+            "clear_secret_fields": ["ssh_password"],
+        },
+    )
+    assert conflicting_clear.status_code == 422
+    assert devices.get_by_uuid(secret_uuid).ssh_password == replacement
+
+    forged_clear = client.put(
+        f"/api/device-management/devices/{secret_uuid}",
+        json={
+            "name": "Web-secret-updated",
+            "primary_address": "192.0.2.33",
+            "clear_secret_fields": ["password"],
+        },
+    )
+    assert forged_clear.status_code == 422
+    assert devices.get_by_uuid(secret_uuid).ssh_password == replacement
+
+    cleared_secret = client.put(
+        f"/api/device-management/devices/{secret_uuid}",
+        json={
+            "name": "Web-secret-updated",
+            "primary_address": "192.0.2.33",
+            "clear_secret_fields": ["ssh_password"],
+        },
+    )
+    assert cleared_secret.status_code == 200
+    assert devices.get_by_uuid(secret_uuid).ssh_password is None
+    assert devices.get_by_uuid(secret_uuid).password is None
+    assert (
+        client.get(f"/api/device-management/devices/{secret_uuid}").json()[
+            "device"
+        ]["ssh_secret_configured"]
+        is False
+    )
+
     token = client.post("/api/device-management/devices/delete-confirmation", json={"device_uuids": [created_uuid]})
     assert token.status_code == 200
     deleted = client.post(
@@ -752,6 +807,7 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     body = preview.json()
     assert body["row_count"] == 1
     assert body["persistence"] == "preview_only"
+    assert body["duplicate_rows"] == []
     assert body["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert "password" not in preview.text.lower()
     assert str(tmp_path) not in preview.text
@@ -765,11 +821,92 @@ def test_import_preview_confirm_creates_backup_and_uses_task_center(tmp_path: Pa
     assert adapter.jobs[-1].task_type == "device_csv_import"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
     assert adapter.jobs[-1].params["task_source"] == "local"
+    assert adapter.jobs[-1].params["duplicate_strategy"] == "reject"
     assert adapter.completions[-1] is not None
     adapter.completions[-1](SimpleNamespace(exit_code=0, cancelled=False, payload={"result": {"created": 1, "skipped": 0, "errors": []}}))
     assert not list(service._import_staging_root("demo").glob("*"))
     backups = list(service.paths.site_backups_dir("demo").glob("device-import-*.sqlite"))
     assert backups
+
+
+def test_import_worker_without_web_strategy_preserves_qt_append_behavior(
+    tmp_path: Path,
+) -> None:
+    _client, service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "qt-import.csv"
+    _write_import_csv(source, name="Qt 重复设备", address=str(mr.primary_address))
+    before = len(devices.list())
+
+    result = run_device_csv_import(
+        JobContext(
+            "qt-device-import",
+            DEVICE_IMPORT_TASK_TYPE,
+            {
+                "site_name": "demo",
+                "path": str(source),
+                "db_path": str(service.paths.site_db_path("demo")),
+            },
+            None,
+            lambda: False,
+            service.paths,
+        )
+    )
+
+    assert result["created"] == 1
+    assert result["skipped"] == 0
+    assert len(devices.list()) == before + 1
+
+
+def test_import_preview_reports_duplicate_rows_and_passes_selected_strategy(
+    tmp_path: Path,
+) -> None:
+    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    source = tmp_path / "duplicate.csv"
+    _write_import_csv(source, name="重复设备", address=str(mr.primary_address))
+
+    preview = client.post(
+        "/api/device-management/imports/preview",
+        files={"file": (source.name, source.read_bytes(), "text/csv")},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["duplicate_rows"] == [2]
+
+    rejected_strategy = client.post(
+        "/api/device-management/imports/confirm",
+        json={
+            "preview_token": preview.json()["preview_token"],
+            "duplicate_strategy": "overwrite",
+        },
+    )
+    assert rejected_strategy.status_code == 422
+
+    confirmed = client.post(
+        "/api/device-management/imports/confirm",
+        json={
+            "preview_token": preview.json()["preview_token"],
+            "duplicate_strategy": "skip",
+        },
+    )
+    assert confirmed.status_code == 202
+    assert adapter.jobs[-1].params["duplicate_strategy"] == "skip"
+    assert adapter.completions[-1] is not None
+    adapter.completions[-1](
+        SimpleNamespace(
+            exit_code=0,
+            cancelled=False,
+            payload={"result": {"created": 0, "skipped": 1, "errors": []}},
+        )
+    )
+    assert not list(service._import_staging_root("demo").glob("*"))
+    audit_files = list(
+        (service.paths.site_imports_dir("demo") / "device_import_audit").glob(
+            "device-import-*.json"
+        )
+    )
+    assert len(audit_files) == 1
+    audit = json.loads(audit_files[0].read_text(encoding="utf-8"))
+    assert audit["status"] == "APPLIED"
+    assert audit["skipped_count"] == 1
 
 
 def test_import_preview_survives_service_restart_before_confirmation(

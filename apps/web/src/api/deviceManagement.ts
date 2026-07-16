@@ -11,8 +11,6 @@ import type {
   DeviceExternalTerminalSettings,
   DeviceGroup,
   DeviceImportPreview,
-  DeviceEditPreview,
-  DeviceEditPreviewRequest,
   DeviceHistoryPage,
   DeviceListQuery,
   DeviceOmniPeekPreview,
@@ -39,13 +37,6 @@ export function listDevices(query: DeviceListQuery = {}): Promise<DevicePage> {
 
 export function getDevice(deviceUuid: string): Promise<DeviceDetailResponse> {
   return apiRequest<DeviceDetailResponse>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}`)
-}
-
-export function previewDeviceEdit(deviceUuid: string, payload: DeviceEditPreviewRequest): Promise<DeviceEditPreview> {
-  return apiRequest<DeviceEditPreview>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/edit-preview`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
 }
 
 export function startDeviceConnectionTest(deviceUuid: string, protocol: DeviceConnectionProtocol): Promise<DeviceConnectionTest> {
@@ -133,8 +124,8 @@ export function previewDeviceImport(file: File): Promise<DeviceImportPreview> {
   return apiRequest<DeviceImportPreview>('/api/device-management/imports/preview', { method: 'POST', body: form })
 }
 
-export function confirmDeviceImport(previewToken: string): Promise<DeviceTaskReference> {
-  return apiRequest<DeviceTaskReference>('/api/device-management/imports/confirm', { method: 'POST', body: JSON.stringify({ preview_token: previewToken }) })
+export function confirmDeviceImport(previewToken: string, duplicateStrategy: 'reject' | 'skip' | 'create_new'): Promise<DeviceTaskReference> {
+  return apiRequest<DeviceTaskReference>('/api/device-management/imports/confirm', { method: 'POST', body: JSON.stringify({ preview_token: previewToken, duplicate_strategy: duplicateStrategy }) })
 }
 
 export function startDeviceCsvExport(payload: DeviceExportRequest): Promise<DeviceTaskReference> {

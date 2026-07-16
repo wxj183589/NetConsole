@@ -26,7 +26,6 @@ import {
   duplicateDevice,
   issueDeviceDeleteToken,
   previewDeviceImport,
-  previewDeviceEdit,
   launchExternalTerminals,
   renameDeviceGroup,
   startBatchRefreshDetails,
@@ -49,8 +48,6 @@ import type {
   DeviceConnectionStatus,
   DeviceConnectionTest,
   DeviceDetailResponse,
-  DeviceEditPreview,
-  DeviceEditPreviewRequest,
   DeviceExportRequest,
   DeviceExternalTerminalSettings,
   DeviceImportPreview,
@@ -59,6 +56,7 @@ import type {
   DeviceOmniPeekPreview,
   DeviceOmniPeekPreviewItem,
   DevicePage,
+  DeviceSecretField,
   DeviceTaskReference,
   DeviceWriteRequest,
 } from '../../types/deviceManagement'
@@ -76,11 +74,11 @@ const detailTab = ref('overview')
 const historyVisible = ref(false)
 const historyLoading = ref(false)
 const historyPage = ref<DeviceHistoryPage | null>(null)
+const historyKind = ref<'interface' | 'optical' | 'lldp'>('interface')
+const historyObjectName = ref('')
+const historyPageSize = ref(50)
 const connectionTest = ref<DeviceConnectionTest | null>(null)
 const connectionLoading = ref(false)
-const previewVisible = ref(false)
-const previewLoading = ref(false)
-const previewResult = ref<DeviceEditPreview | null>(null)
 const writeVisible = ref(false)
 const writeMode = ref<'create' | 'edit'>('create')
 const writeLoading = ref(false)
@@ -95,6 +93,7 @@ const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
 const importLoading = ref(false)
 const importPreview = ref<DeviceImportPreview | null>(null)
+const importDuplicateStrategy = ref<'reject' | 'skip' | 'create_new'>('reject')
 const secureCrtVisible = ref(false)
 const secureCrtTemplateFile = ref<File | null>(null)
 const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
@@ -134,14 +133,22 @@ const filters = reactive({
   page: 1,
   page_size: 50,
 })
-const editForm = reactive<DeviceEditPreviewRequest>({ name: '', primary_address: '' })
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const secretClears = reactive<Record<DeviceSecretField, boolean>>({
+  ssh_password: false,
+  telnet_password: false,
+  tunnel1_password: false,
+  tunnel2_password: false,
+  snmp_ro_community: false,
+  snmp_rw_community: false,
+  snmpv3_auth_password: false,
+  snmpv3_priv_password: false,
+})
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let pollTimer: number | undefined
 let taskPollTimer: number | undefined
 let omniPeekPollGeneration = 0
 let componentActive = true
-const taskStorageKey = 'netconsole.device-management.task-ids'
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const testTerminal = computed(() => connectionTest.value && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(connectionTest.value.task_status))
@@ -161,7 +168,6 @@ const historyColumns = computed(() => {
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   await loadDevices()
-  await restoreTrackedTasks()
   await restoreConnectionTest()
 })
 
@@ -300,14 +306,6 @@ function isTaskActionEnabled(task: DeviceTaskReference): boolean {
   return isFeatureEnabled('web.device_management_export')
 }
 
-function persistTrackedTasks(): void {
-  try {
-    window.sessionStorage.setItem(taskStorageKey, JSON.stringify(trackedTasks.value.map((task) => task.task_id)))
-  } catch {
-    // 浏览器禁用会话存储时仍允许当前页面继续轮询。
-  }
-}
-
 function trackTasks(tasks: DeviceTaskReference[]): void {
   for (const task of tasks) {
     const index = trackedTasks.value.findIndex((item) => item.task_id === task.task_id)
@@ -315,33 +313,7 @@ function trackTasks(tasks: DeviceTaskReference[]): void {
     else trackedTasks.value.unshift(task)
   }
   trackedTasks.value = trackedTasks.value.slice(0, 30)
-  persistTrackedTasks()
   if (trackedTasks.value.some((task) => !isTaskTerminal(task))) startTaskPolling()
-}
-
-async function restoreTrackedTasks(): Promise<void> {
-  let taskIds: string[] = []
-  try {
-    const parsed = JSON.parse(window.sessionStorage.getItem(taskStorageKey) || '[]')
-    taskIds = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
-  } catch {
-    taskIds = []
-  }
-  const restored = await Promise.allSettled(taskIds.slice(0, 30).map((taskId) => getDeviceTask(taskId)))
-  const succeeded = restored.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
-  const failedIds = taskIds.filter((_taskId, index) => restored[index]?.status === 'rejected')
-  trackTasks(succeeded)
-  if (failedIds.length) {
-    try {
-      const retained = [...new Set([
-        ...trackedTasks.value.map((task) => task.task_id),
-        ...failedIds,
-      ])].slice(0, 30)
-      window.sessionStorage.setItem(taskStorageKey, JSON.stringify(retained))
-    } catch {
-      // 瞬时恢复失败不影响当前页面；下次进入页面仍会重试现有任务。
-    }
-  }
 }
 
 function startTaskPolling(): void {
@@ -447,16 +419,34 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
 
 async function openHistory(kind: 'interface' | 'optical' | 'lldp', objectName: string): Promise<void> {
   if (!detail.value || !objectName) return
-  historyVisible.value = true
-  historyLoading.value = true
+  historyKind.value = kind
+  historyObjectName.value = objectName
   historyPage.value = null
+  historyVisible.value = true
+  await loadHistoryPage(1)
+}
+
+async function loadHistoryPage(page = 1): Promise<void> {
+  if (!detail.value || !historyObjectName.value) return
+  historyLoading.value = true
   try {
-    historyPage.value = await getDeviceHistory(detail.value.device.device_uuid, kind, objectName)
+    historyPage.value = await getDeviceHistory(
+      detail.value.device.device_uuid,
+      historyKind.value,
+      historyObjectName.value,
+      page,
+      historyPageSize.value,
+    )
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '设备历史加载失败'))
   } finally {
     historyLoading.value = false
   }
+}
+
+async function changeHistoryPageSize(pageSize: number): Promise<void> {
+  historyPageSize.value = pageSize
+  await loadHistoryPage(1)
 }
 
 async function refreshDetailData(): Promise<void> {
@@ -477,53 +467,6 @@ async function refreshOpticalData(): Promise<void> {
     ElMessage.success('设备光模块刷新任务已提交')
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '设备光模块刷新失败'))
-  }
-}
-
-function currentDevicePreviewValues(): DeviceEditPreviewRequest | null {
-  if (!detail.value) return null
-  const device = detail.value.device
-  return {
-    name: device.name,
-    system_name: device.system_name,
-    station: device.station,
-    location: device.location,
-    group_id: device.group_id,
-    device_vendor: device.device_vendor,
-    device_type: device.device_type,
-    primary_address: device.primary_address,
-    backup_address: device.backup_address,
-    ssh_enabled: device.capabilities.ssh,
-    ssh_port: device.capabilities.ssh_port || 22,
-    telnet_enabled: device.capabilities.telnet,
-    telnet_port: device.capabilities.telnet_port || 23,
-    snmp_enabled: device.capabilities.snmp,
-    snmp_v1_enabled: device.snmp_v1_enabled,
-    snmp_v2c_enabled: device.snmp_v2c_enabled,
-    snmp_v3_enabled: device.snmp_v3_enabled,
-    snmp_port: device.capabilities.snmp_port || 161,
-    https_port: device.https_port,
-    remark: device.remark,
-  }
-}
-
-function openPreview(): void {
-  const values = currentDevicePreviewValues()
-  if (!values) return
-  Object.assign(editForm, values)
-  previewResult.value = null
-  previewVisible.value = true
-}
-
-async function validatePreview(): Promise<void> {
-  if (!detail.value) return
-  previewLoading.value = true
-  try {
-    previewResult.value = await previewDeviceEdit(detail.value.device.device_uuid, { ...editForm })
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, '编辑预览校验失败'))
-  } finally {
-    previewLoading.value = false
   }
 }
 
@@ -598,6 +541,7 @@ async function editSelected(): Promise<void> {
 
 function openCreate(): void {
   writeMode.value = 'create'
+  resetSecretClears()
   Object.assign(writeForm, {
     name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
@@ -613,8 +557,18 @@ function openEdit(): void {
   const values = currentDeviceWriteValues()
   if (!values) return
   writeMode.value = 'edit'
+  resetSecretClears()
   Object.assign(writeForm, values)
   writeVisible.value = true
+}
+
+function resetSecretClears(): void {
+  for (const field of Object.keys(secretClears) as DeviceSecretField[]) secretClears[field] = false
+}
+
+function setSecretCleared(field: DeviceSecretField, cleared: boolean): void {
+  secretClears[field] = cleared
+  if (cleared) writeForm[field] = ''
 }
 
 function clearWriteSecrets(): void {
@@ -628,17 +582,29 @@ function clearWriteSecrets(): void {
     snmpv3_auth_password: '',
     snmpv3_priv_password: '',
   })
+  resetSecretClears()
+}
+
+function deviceWritePayload(): DeviceWriteRequest {
+  const payload: DeviceWriteRequest = { ...writeForm }
+  const clearSecretFields = (Object.keys(secretClears) as DeviceSecretField[]).filter((field) => secretClears[field])
+  for (const field of clearSecretFields) delete payload[field]
+  if (clearSecretFields.length) payload.clear_secret_fields = clearSecretFields
+  else delete payload.clear_secret_fields
+  return payload
 }
 
 async function saveWrite(): Promise<void> {
   writeLoading.value = true
   try {
-    if (writeMode.value === 'create') await createDevice({ ...writeForm })
-    else if (detail.value) await updateDevice(detail.value.device.device_uuid, { ...writeForm })
+    const editedUuid = writeMode.value === 'edit' ? detail.value?.device.device_uuid : undefined
+    if (writeMode.value === 'create') await createDevice(deviceWritePayload())
+    else if (editedUuid) await updateDevice(editedUuid, deviceWritePayload())
     writeVisible.value = false
     clearWriteSecrets()
     ElMessage.success(writeMode.value === 'create' ? '设备已创建' : '设备已保存')
     await loadDevices(true)
+    if (editedUuid && detailVisible.value) detail.value = await getDevice(editedUuid)
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '设备保存失败'))
   } finally {
@@ -778,7 +744,7 @@ async function runImportPreview(): Promise<void> {
 async function confirmImport(): Promise<void> {
   if (!importPreview.value || importPreview.value.errors.length) return
   try {
-    trackTasks([await confirmDeviceImport(importPreview.value.preview_token)])
+    trackTasks([await confirmDeviceImport(importPreview.value.preview_token, importDuplicateStrategy.value)])
     closeImportDialog()
     ElMessage.success('CSV 导入任务已提交')
   } catch (cause) {
@@ -801,6 +767,7 @@ function closeImportDialog(): void {
   importVisible.value = false
   importFile.value = null
   importPreview.value = null
+  importDuplicateStrategy.value = 'reject'
   if (importFileInput.value) importFileInput.value.value = ''
 }
 
@@ -1182,7 +1149,7 @@ function errorMessage(cause: unknown, fallback: string): string {
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <el-empty v-if="isEmpty" description="没有符合条件的设备" />
-      <el-table ref="deviceTable" v-else :data="pageData.items" row-key="device_uuid" stripe height="calc(100vh - 380px)" empty-text="暂无设备" @selection-change="onSelectionChange" @row-contextmenu="showContextMenu">
+      <el-table ref="deviceTable" v-else :data="pageData.items" row-key="device_uuid" stripe height="calc(100vh - 380px)" empty-text="暂无设备" @selection-change="onSelectionChange" @row-dblclick="openDetail" @row-contextmenu="showContextMenu">
         <el-table-column type="selection" width="44" fixed="left" />
         <el-table-column prop="name" label="名称" min-width="180" fixed="left" show-overflow-tooltip />
         <el-table-column prop="group_name" label="分组" min-width="120" />
@@ -1229,7 +1196,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <template v-else-if="detail">
           <div class="detail-heading">
             <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <div class="heading-actions"><el-button v-if="detail.device.web_url" :disabled="!desktopHost" @click="openDeviceWeb">打开设备 Web</el-button><el-button :icon="FolderOpened" :disabled="!desktopHost || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal">外部终端</el-button><el-button :icon="Edit" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management_write')" @click="openPreview">编辑预览</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.device_management_write')" @click="openEdit">正式编辑</el-button></div>
+            <div class="heading-actions"><el-button v-if="detail.device.web_url" :disabled="!desktopHost" @click="openDeviceWeb">打开设备 Web</el-button><el-button :icon="FolderOpened" :disabled="!desktopHost || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal">外部终端</el-button><el-button type="primary" :icon="Edit" :disabled="!isFeatureEnabled('web.device_management_write')" @click="openEdit">编辑</el-button></div>
           </div>
           <el-tabs v-model="detailTab" class="device-detail-tabs">
             <el-tab-pane label="概览" name="overview">
@@ -1298,30 +1265,22 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-table :data="historyPage?.items || []" max-height="620" empty-text="暂无历史数据">
           <el-table-column v-for="column in historyColumns" :key="column[1]" :label="column[0]" :prop="column[1]" min-width="140" show-overflow-tooltip />
         </el-table>
+        <el-pagination
+          v-if="historyPage?.total"
+          :current-page="historyPage.page"
+          :page-size="historyPage.page_size"
+          :total="historyPage.total"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next"
+          @current-change="loadHistoryPage"
+          @size-change="changeHistoryPageSize"
+        />
       </div>
       <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="previewVisible" title="受控编辑预览" width="min(760px, 94vw)">
-      <el-alert title="仅校验和预览，不保存设备或凭据" type="info" show-icon :closable="false" />
-      <el-form label-width="100px" class="preview-form">
-        <el-form-item label="设备名称"><el-input v-model="editForm.name" /></el-form-item>
-        <el-form-item label="系统名"><el-input v-model="editForm.system_name" /></el-form-item>
-        <el-form-item label="主地址"><el-input v-model="editForm.primary_address" /></el-form-item>
-        <el-form-item label="备用地址"><el-input v-model="editForm.backup_address" /></el-form-item>
-        <el-form-item label="站点"><el-input v-model="editForm.station" /></el-form-item>
-        <el-form-item label="位置"><el-input v-model="editForm.location" /></el-form-item>
-        <el-form-item label="连接能力">
-          <el-checkbox v-model="editForm.ssh_enabled">SSH</el-checkbox><el-checkbox v-model="editForm.telnet_enabled">Telnet</el-checkbox><el-checkbox v-model="editForm.snmp_enabled">SNMP</el-checkbox>
-        </el-form-item>
-        <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="3" /></el-form-item>
-      </el-form>
-      <el-alert v-if="previewResult" :title="previewResult.valid ? '校验通过（尚未保存）' : '校验未通过'" :description="[...previewResult.errors, ...previewResult.warnings].join('；') || '字段符合当前设备表单规则'" :type="previewResult.valid ? 'success' : 'error'" show-icon :closable="false" />
-      <template #footer><el-button @click="previewVisible = false">关闭</el-button><el-button type="primary" :loading="previewLoading" :disabled="!isFeatureEnabled('web.device_edit_preview') || !isFeatureEnabled('web.device_management_write')" @click="validatePreview">校验预览</el-button></template>
-    </el-dialog>
-
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="clearWriteSecrets">
-      <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；服务端响应、任务参数和日志不会回传秘密。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
+      <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
       <el-form label-width="118px" class="device-write-form">
         <div class="form-grid">
           <section class="form-section"><h3>基础信息</h3>
@@ -1341,17 +1300,17 @@ function errorMessage(cause: unknown, fallback: string): string {
           </section>
           <section class="form-section"><h3>SSH 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.ssh_username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.ssh_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.device.ssh_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.ssh_secret_configured" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
           <section class="form-section"><h3>Telnet 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.telnet_username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.telnet_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.telnet_password" :placeholder="writeMode === 'edit' && detail?.device.telnet_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.telnet_secret_configured" :model-value="secretClears.telnet_password" @change="setSecretCleared('telnet_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
         </div>
 
         <section class="form-section full-width"><h3>SSH 隧道</h3><div class="form-grid two-columns">
-          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.tunnel1_secret_configured ? '已配置；留空保留' : ''" /></el-form-item></div>
-          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.tunnel2_secret_configured ? '已配置；留空保留' : ''" /></el-form-item></div>
+          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.device.tunnel1_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
+          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.device.tunnel2_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
         </div></section>
 
         <section class="form-section full-width"><h3>SNMP</h3><div class="form-grid two-columns">
@@ -1360,16 +1319,16 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="端口"><el-input-number v-model="writeForm.snmp_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="超时(ms)"><el-input-number v-model="writeForm.snmp_timeout_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item label="重试"><el-input-number v-model="writeForm.snmp_retries" :min="0" :max="10" /></el-form-item>
-            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
-            <el-form-item label="读写团体字"><el-input v-model="writeForm.snmp_rw_community" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.snmp_rw_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
+            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="读写团体字"><el-input v-model="writeForm.snmp_rw_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_rw_community" :placeholder="writeMode === 'edit' && detail?.device.snmp_rw_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmp_rw_secret_configured" :model-value="secretClears.snmp_rw_community" @change="setSecretCleared('snmp_rw_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </div>
           <div v-if="writeForm.snmp_v3_enabled">
             <el-form-item label="v3 用户名"><el-input v-model="writeForm.snmpv3_username" /></el-form-item>
             <el-form-item label="安全级别"><el-select v-model="writeForm.snmpv3_security_level" style="width:100%"><el-option v-for="level in ['noAuthNoPriv', 'AuthNoPriv', 'AuthPriv']" :key="level" :label="level" :value="level" /></el-select></el-form-item>
             <el-form-item v-if="writeForm.snmpv3_security_level !== 'noAuthNoPriv'" label="认证协议"><el-select v-model="writeForm.snmpv3_auth_protocol" style="width:100%"><el-option v-for="protocol in ['MD5', 'SHA', 'SHA224', 'SHA256', 'SHA384', 'SHA512']" :key="protocol" :label="protocol" :value="protocol" /></el-select></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level !== 'noAuthNoPriv'" label="认证密码"><el-input v-model="writeForm.snmpv3_auth_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_auth_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
+            <el-form-item v-if="writeForm.snmpv3_security_level !== 'noAuthNoPriv'" label="认证密码"><el-input v-model="writeForm.snmpv3_auth_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmpv3_auth_password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_auth_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmpv3_auth_secret_configured" :model-value="secretClears.snmpv3_auth_password" @change="setSecretCleared('snmpv3_auth_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
             <el-form-item v-if="writeForm.snmpv3_security_level === 'AuthPriv'" label="加密协议"><el-select v-model="writeForm.snmpv3_priv_protocol" style="width:100%"><el-option v-for="protocol in ['DES', '3DES', 'AES128', 'AES192', 'AES256']" :key="protocol" :label="protocol" :value="protocol" /></el-select></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level === 'AuthPriv'" label="加密密码"><el-input v-model="writeForm.snmpv3_priv_password" type="password" show-password autocomplete="new-password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_priv_secret_configured ? '已配置；留空保留' : ''" /></el-form-item>
+            <el-form-item v-if="writeForm.snmpv3_security_level === 'AuthPriv'" label="加密密码"><el-input v-model="writeForm.snmpv3_priv_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmpv3_priv_password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_priv_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmpv3_priv_secret_configured" :model-value="secretClears.snmpv3_priv_password" @change="setSecretCleared('snmpv3_priv_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
             <el-form-item label="Context"><el-input v-model="writeForm.snmp_context_name" /></el-form-item>
           </div>
         </div></section>
@@ -1401,7 +1360,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-alert title="先预览再确认；服务端校验 SHA-256 并以单事务提交。备份只供人工恢复，任务失败不会覆盖同期数据。" type="info" show-icon :closable="false" />
       <input ref="importFileInput" class="visually-hidden" type="file" accept=".csv,text/csv" @change="onImportFileChange" />
       <div class="import-file-picker"><el-button :disabled="!isFeatureEnabled('web.device_management_import')" @click="chooseImportFile">选择 CSV 文件</el-button><span>{{ importFile?.name || '尚未选择文件' }}</span></div>
-      <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /></div>
+      <div v-if="importPreview" class="import-summary"><p>{{ importPreview.source_name }} · {{ importPreview.row_count }} 行 · {{ importPreview.source_sha256 }}</p><el-alert v-for="item in importPreview.errors" :key="item" :title="item" type="error" :closable="false" /><el-alert v-for="item in importPreview.warnings" :key="item" :title="item" type="warning" :closable="false" /><el-form-item v-if="importPreview.duplicate_rows.length" label="重复地址"><el-select v-model="importDuplicateStrategy" style="width:100%"><el-option label="拒绝导入（安全默认）" value="reject" /><el-option label="跳过重复行" value="skip" /><el-option label="仍新增为独立设备" value="create_new" /></el-select><span class="field-warning">涉及 CSV 行：{{ importPreview.duplicate_rows.join('、') }}</span></el-form-item></div>
       <template #footer><el-button @click="closeImportDialog">关闭</el-button><el-button :loading="importLoading" :disabled="!importFile || !isFeatureEnabled('web.device_management_import')" @click="runImportPreview">预览</el-button><el-button type="primary" :disabled="!importPreview || !!importPreview.errors.length || !isFeatureEnabled('web.device_management_import')" @click="confirmImport">确认导入</el-button></template>
     </el-dialog>
 
@@ -1456,7 +1415,6 @@ function errorMessage(cause: unknown, fallback: string): string {
 .command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: #f4f7fa; border-radius: 7px; }
 .command-row + .command-row { margin-top: 8px; }
 .command-row code { overflow-wrap: anywhere; }
-.preview-form { margin-top: 18px; }
 .device-write-form { max-height: 70vh; padding: 18px 4px 0; overflow-y: auto; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-grid.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
