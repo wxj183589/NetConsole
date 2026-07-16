@@ -22,6 +22,7 @@ from netconsole.backend.api.rail_transit_base_data_router import router as rail_
 from netconsole.backend.api.task_router import router as task_router
 from netconsole.backend.api.task_router import ws_router as task_ws_router
 from netconsole.backend.api.train_communication_router import router as train_communication_router
+from netconsole.backend.api.trackside_ap_business_router import router as trackside_ap_business_router
 from netconsole.backend.api.wireless_dashboard_router import router as wireless_dashboard_router
 from netconsole.backend.api.traffic_router import router as traffic_router
 from netconsole.backend.api.traffic_router import ws_router as traffic_ws_router
@@ -80,6 +81,10 @@ api_router.include_router(
 api_router.include_router(
     train_communication_router,
     dependencies=[Depends(require_feature("web.train_communication_monitoring"))],
+)
+api_router.include_router(
+    trackside_ap_business_router,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business"))],
 )
 api_router.include_router(
     mesh_analysis_router,

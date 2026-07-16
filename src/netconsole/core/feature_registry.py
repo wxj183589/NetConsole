@@ -193,16 +193,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         status=FeatureStatus.DEVELOPMENT,
     ),
     FeatureItem("web.rail_car_network_diagnostic_execute", "车内通信检测执行（Web）", "web.rail_car_network_diagnostic", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
-    FeatureItem(
-        "web.rail_trackside_ap_business",
-        "轨旁 AP 业务（Web）",
-        "module.rail_transit",
-        "page",
-        default_visible=False,
-        default_enabled=False,
-        default_client_package=False,
-        status=FeatureStatus.DEVELOPMENT,
-    ),
+    FeatureItem("web.rail_trackside_ap_business", "轨旁 AP 业务（Web）", "module.rail_transit", "page", status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.rail_trackside_ap_business_update", "轨旁 AP 光衰更新（Web）", "web.rail_trackside_ap_business", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
         "web.online_mr_analysis",
         "车载 MR 收集分析（Web）",

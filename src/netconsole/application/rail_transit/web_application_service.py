@@ -37,6 +37,7 @@ class RailTransitWebApplicationService:
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
         "car_network_diagnostic": "车内通信检测",
+        "trackside_ap_optical_update": "轨旁 AP 光衰更新",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
     _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
@@ -176,6 +177,26 @@ class RailTransitWebApplicationService:
 
     def recover_car_network_diagnostics(self, site_id: str) -> list[RailTransitTaskDTO]:
         return [task for task in self.recover_tasks(site_id) if task.action == "car_network_diagnostic"]
+
+    def start_trackside_ap_update(
+        self,
+        site_id: str,
+        *,
+        station: str = "",
+        ap_uuid: str = "",
+        ap_mac: str = "",
+        ap_name: str = "",
+    ) -> RailTransitTaskDTO:
+        return self._start_task(
+            self._site(site_id),
+            "trackside_ap_optical_update",
+            {
+                "station": str(station or "").strip(),
+                "ap_uuid": str(ap_uuid or "").strip(),
+                "ap_mac": str(ap_mac or "").strip(),
+                "ap_name": str(ap_name or "").strip(),
+            },
+        )
 
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:
         site_id = self._site(site_id)
