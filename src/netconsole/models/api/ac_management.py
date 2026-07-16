@@ -9,6 +9,7 @@ class AcOverviewDTO(ApiModel):
     id: str
     name: str
     management_ip: str = ""
+    web_url: str = ""
     model: str = ""
     software_version: str = ""
     cpu_usage: str = ""

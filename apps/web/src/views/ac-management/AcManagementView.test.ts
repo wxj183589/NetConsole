@@ -6,6 +6,9 @@ describe('AC Management resource view', () => {
   it('shows real refresh, connection record, radio fields, optical relation and config diff', () => {
     expect(source).toContain('更新 FIT-AP 资源')
     expect(source).toContain('更新 AC 信息')
+    expect(source).toContain('打开 AC Web')
+    expect(source).toContain('getPlatformAdapter().openExternalUrl')
+    expect(source).toContain("getRuntimeConfig().hostType === 'electron'")
     expect(source).toContain('深度更新')
     expect(source).toContain('更新光衰')
     expect(source).toContain('批量删除')

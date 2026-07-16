@@ -30,6 +30,7 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert summary.online_aps == 2
     assert summary.offline_aps == 1
     assert summary.unauthenticated_aps == 1
+    assert summary.acs[0].web_url == "https://10.0.0.1:443"
     assert online.total == 1
     assert offline.total == 1
     assert unauthenticated.total == 1
@@ -37,9 +38,9 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert detail is not None
     assert [radio.radio_id for radio in detail.radios] == [1, 2]
     assert all(radio.radio_id != 3 for radio in detail.radios)
+    assert [radio.clients for radio in detail.radios] == [3, 1]
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
-    assert "client" not in str(detail.model_dump()).casefold()
     assert _fingerprint(db_path) == before
 
 

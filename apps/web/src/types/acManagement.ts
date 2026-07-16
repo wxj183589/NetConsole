@@ -2,6 +2,7 @@ export interface AcOverview {
   id: string
   name: string
   management_ip: string
+  web_url?: string
   model: string
   software_version: string
   cpu_usage?: string

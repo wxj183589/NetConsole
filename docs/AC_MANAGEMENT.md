@@ -31,6 +31,8 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 
 Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留。单 AP 深度更新执行 Qt 既有 bulk 命令序列并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
+Electron 的“打开 AC Web”复用 Qt 相同的 HTTPS URL 规则：优先使用已采集端口，缺失或无效时回退 443；Python DTO 生成受控 URL，Vue 只通过现有 Electron 外部 URL Bridge 打开。
+
 ## 光衰关联规则
 
 光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 和统一 severity 规则，Vue 不重复计算。Web 展示状态为：

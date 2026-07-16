@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, Setting, View } from '@element-plus/icons-vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 
 import { isFeatureEnabled } from '../../features'
+import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
 import type { AcAp, AcConfigSnapshot } from '../../types/acManagement'
 
@@ -17,6 +18,7 @@ const configSearch = ref('')
 const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
 const metadataInput = ref<HTMLInputElement | null>(null)
+const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 
 interface TableColumn { key: string; label: string; width: number; sortable?: boolean }
 
@@ -147,6 +149,13 @@ async function chooseMetadataFile(event: Event): Promise<void> {
   if (file) await store.startFitApMetadataImport(file)
 }
 
+async function openAcWeb(): Promise<void> {
+  const url = store.activeAc?.web_url || ''
+  if (!url || !desktopHost.value) return
+  const result = await getPlatformAdapter().openExternalUrl(url)
+  if (!result.success) ElMessage.error(result.error || '无法打开 AC Web 管理地址')
+}
+
 function handleSort(event: { prop: string; order: 'ascending' | 'descending' | null }): void {
   const sortMap: Record<string, string> = {
     name: 'name',
@@ -251,6 +260,11 @@ function diffLineClass(line: string): string {
         <el-select :model-value="store.filters.ac_id" placeholder="选择 AC" style="width: 220px" @change="store.setAcId">
           <el-option v-for="ac in store.summary?.acs || []" :key="ac.id" :label="`${ac.name} (${ac.management_ip || '--'})`" :value="ac.id" />
         </el-select>
+        <el-button
+          v-if="isFeatureEnabled('web.ac_open_web')"
+          :disabled="!desktopHost || !store.activeAc?.web_url"
+          @click="openAcWeb"
+        >打开 AC Web</el-button>
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>

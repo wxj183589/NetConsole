@@ -30,6 +30,7 @@ from netconsole.models.api.ac_management import (
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.config_lifecycle_service import compare_config_text, extract_h3c_configuration_body
+from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.fit_ap_link_info import lldp_display_status
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.utils.interface_normalize import normalize_interface_name
@@ -91,11 +92,14 @@ class AcManagementQueryService:
                 summary.get("updated_at"),
                 *(row.get("updated_at") for row in resources),
             )
+            management_ip = str(ac.get("primary_address") or "")
+            https_port = effective_https_port(ac.get("https_port"))[0]
             overviews.append(
                 AcOverviewDTO(
                     id=ac_id,
                     name=str(ac.get("name") or ac_id),
-                    management_ip=str(ac.get("primary_address") or ""),
+                    management_ip=management_ip,
+                    web_url=build_https_url(management_ip, https_port) or "",
                     model=str(summary.get("model") or ac.get("model") or ""),
                     software_version=str(summary.get("software_version") or ac.get("software_version") or ""),
                     cpu_usage=str(summary.get("cpu_usage") or ""),
