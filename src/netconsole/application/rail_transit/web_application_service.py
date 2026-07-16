@@ -36,7 +36,7 @@ class RailTransitWebApplicationService:
 
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
-        "car_network_refresh_all": "车内通信检测刷新",
+        "car_network_diagnostic": "车内通信检测",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
     _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
@@ -159,7 +159,23 @@ class RailTransitWebApplicationService:
             raise
 
     def start_car_network_diagnostic(self, site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
-        return self._start_task(self._site(site_id), "car_network_refresh_all", {"train_id": str(train_id or "").strip()})
+        selected_train = str(train_id or "").strip()
+        if not selected_train:
+            raise RailTransitWebError("TRAIN_REQUIRED", "请选择要检测的列车")
+        return self._start_task(self._site(site_id), "car_network_diagnostic", {"train_id": selected_train})
+
+    def get_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
+        task = self.get_task(site_id, task_id)
+        if task.action != "car_network_diagnostic":
+            raise RailTransitWebError("TASK_NOT_FOUND", "车内通信检测任务不存在")
+        return task
+
+    def cancel_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
+        self.get_car_network_diagnostic(site_id, task_id)
+        return self.cancel_task(site_id, task_id)
+
+    def recover_car_network_diagnostics(self, site_id: str) -> list[RailTransitTaskDTO]:
+        return [task for task in self.recover_tasks(site_id) if task.action == "car_network_diagnostic"]
 
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:
         site_id = self._site(site_id)

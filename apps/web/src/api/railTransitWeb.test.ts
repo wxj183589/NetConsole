@@ -1,25 +1,36 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  cancelCarNetworkDiagnostic,
   cancelRailTransitTask,
   exportMeshAnalysisReport,
   exportOnlineMrReport,
+  getCarNetworkDiagnosticTask,
   importMeshAnalysis,
+  recoverCarNetworkDiagnostics,
   recoverRailTransitTasks,
   startCarNetworkDiagnostic,
 } from './railTransitWeb'
 
 describe('rail transit Web parity API client', () => {
-  it('uses the Online MR diagnostic route without a browser-supplied site', async () => {
+  it('uses the train communication diagnostic lifecycle without a browser-supplied site', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-1' }) })
     vi.stubGlobal('fetch', fetchMock)
 
     await startCarNetworkDiagnostic('train-1')
+    await getCarNetworkDiagnosticTask('task-1')
+    await cancelCarNetworkDiagnostic('task-1')
+    await recoverCarNetworkDiagnostics()
     await exportOnlineMrReport('session-1', 'report.xlsx')
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/car-network-diagnostic')
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ train_id: 'train-1' })
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ output_name: 'report.xlsx' })
+    expect(fetchMock.mock.calls.slice(0, 4).map((call) => call[0])).toEqual([
+      '/api/rail-transit/train-communication/trains/train-1/diagnostics',
+      '/api/rail-transit/train-communication/diagnostics/task-1',
+      '/api/rail-transit/train-communication/diagnostics/task-1/cancel',
+      '/api/rail-transit/train-communication/diagnostics/recover',
+    ])
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined()
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({ output_name: 'report.xlsx' })
   })
 
   it('uploads only whitelisted profile fields and no site or relative path', async () => {

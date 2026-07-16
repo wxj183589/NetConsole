@@ -22,10 +22,6 @@ class OnlineMrReportRequestDTO(ApiModel):
     output_name: str = ""
 
 
-class RailTransitTaskRequestDTO(ApiModel):
-    train_id: str = ""
-
-
 class OnlineMrTimelineQueryDTO(ApiModel):
     limit: int = 500
     offset: int = 0
@@ -35,5 +31,4 @@ __all__ = [
     "OnlineMrReportRequestDTO",
     "OnlineMrTimelineQueryDTO",
     "RailTransitTaskDTO",
-    "RailTransitTaskRequestDTO",
 ]

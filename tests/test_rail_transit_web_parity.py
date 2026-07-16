@@ -18,7 +18,7 @@ from netconsole.backend.api.online_mr_router import mesh_analysis_import
 from netconsole.backend.api.task_router import task_dto
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskRequestDTO
+from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -434,6 +434,8 @@ def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> N
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, _export, tasks = _service(paths)
     started = service.start_car_network_diagnostic("demo", train_id="列车01")
+    assert _normal.jobs[started.task_id].task_type == "car_network_diagnostic"
+    assert _normal.jobs[started.task_id].params["train_id"] == "列车01"
     repository = tasks.repository("demo")
     snapshot = repository.get(started.task_id)
     assert snapshot is not None
@@ -602,7 +604,6 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     _enable_features(app)
 
     assert "site_id" not in OnlineMrReportRequestDTO.model_fields
-    assert "site_id" not in RailTransitTaskRequestDTO.model_fields
     assert "site_id" not in inspect.signature(mesh_analysis_import).parameters
     assert "relative_folder_path" not in inspect.signature(mesh_analysis_import).parameters
     upload_source = inspect.getsource(mesh_analysis_import)
@@ -612,7 +613,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
 
     with TestClient(app) as client:
         client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=False, enabled=False, client_package=False)
-        blocked_car = client.post("/api/online-mr/car-network-diagnostic", json={"train_id": "train-1"})
+        blocked_car = client.post("/api/rail-transit/train-communication/trains/train-1/diagnostics")
         client.app.state.feature_gate.features["web.mesh_analysis_import"].update(visible=False, enabled=False, client_package=False)
         blocked_mesh = client.post(
             "/api/online-mr/mesh-analysis/import",
@@ -626,7 +627,7 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         client.app.state.feature_gate.features["web.rail_task_control"].update(visible=False, enabled=False, client_package=False)
         blocked_task_recovery = client.post("/api/online-mr/tasks/recover")
         client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=True, enabled=True, client_package=True)
-        blocked_car_without_control = client.post("/api/online-mr/car-network-diagnostic", json={"train_id": "train-1"})
+        blocked_car_without_control = client.post("/api/rail-transit/train-communication/trains/train-1/diagnostics")
         client.app.state.feature_gate.features["web.mesh_analysis_import"].update(visible=True, enabled=True, client_package=True)
         blocked_mesh_without_control = client.post(
             "/api/online-mr/mesh-analysis/import",

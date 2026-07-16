@@ -19,7 +19,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrTimelineEventDTO,
 )
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
-from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskDTO, RailTransitTaskRequestDTO
+from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskDTO
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 
 
@@ -207,24 +207,6 @@ async def mesh_analysis_import(
     finally:
         for upload in files:
             await upload.close()
-
-
-@router.post(
-    "/car-network-diagnostic",
-    response_model=RailTransitTaskDTO,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[
-        Depends(require_feature("web.rail_car_network_diagnostic_execute")),
-        Depends(require_feature("web.rail_task_control")),
-    ],
-)
-def car_network_diagnostic(request: Request, payload: RailTransitTaskRequestDTO) -> RailTransitTaskDTO:
-    try:
-        return _rail_service(request).start_car_network_diagnostic(
-            _facade(request).current_site_id(), train_id=payload.train_id
-        )
-    except RailTransitWebError as exc:
-        _raise_rail_error(exc)
 
 
 @router.get(

@@ -11,8 +11,20 @@ export function listOnlineTrains(page = 1, pageSize = 50): Promise<OnlineTrainPa
   return apiRequest<OnlineTrainPage>(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
 }
 
-export function startCarNetworkDiagnostic(trainId = ''): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${onlineMrRoot}/car-network-diagnostic`, { method: 'POST', body: JSON.stringify({ train_id: trainId }) })
+export function startCarNetworkDiagnostic(trainId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${trainRoot}/trains/${encodeURIComponent(trainId)}/diagnostics`, { method: 'POST' })
+}
+
+export function getCarNetworkDiagnosticTask(taskId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${trainRoot}/diagnostics/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelCarNetworkDiagnostic(taskId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${trainRoot}/diagnostics/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
+export function recoverCarNetworkDiagnostics(): Promise<RailTransitTask[]> {
+  return apiRequest<RailTransitTask[]>(`${trainRoot}/diagnostics/recover`, { method: 'POST' })
 }
 
 export function importMeshAnalysis(files: File[], profile: MeshImportProfile): Promise<RailTransitTask> {
