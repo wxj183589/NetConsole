@@ -19,6 +19,39 @@ CSV_META_MARKER = "#NETCONSOLE_META"
 CONTRACT_SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = {1}
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
+_ARTIFACT_MEDIA_TYPES = {
+    ".cfg": "text/plain",
+    ".conf": "text/plain",
+    ".csv": "text/csv",
+    ".diff": "text/plain",
+    ".gz": "application/gzip",
+    ".html": "text/html",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".log": "text/plain",
+    ".md": "text/markdown",
+    ".nam": "text/plain",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".tar.gz": "application/gzip",
+    ".tgz": "application/gzip",
+    ".txt": "text/plain",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".zip": "application/zip",
+    ".zip.gz": "application/gzip",
+}
+
+
+def artifact_media_type(filename: object) -> str:
+    name = Path(str(filename or "")).name.casefold()
+    suffix = next(
+        (value for value in (".tar.gz", ".zip.gz") if name.endswith(value)),
+        Path(name).suffix,
+    )
+    return _ARTIFACT_MEDIA_TYPES.get(suffix, "application/octet-stream")
 
 
 class ImportValidationError(ValueError):

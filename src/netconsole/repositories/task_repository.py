@@ -87,10 +87,15 @@ class TaskRepository:
 
         run_sqlite_with_retry(operation)
 
-    def record(self, snapshot: TaskSnapshot, event: TaskEvent) -> None:
+    def record(self, snapshot: TaskSnapshot, event: TaskEvent) -> bool:
+        recorded = False
+
         def operation() -> None:
+            nonlocal recorded
             with self._connect() as conn:
-                self._upsert(conn, snapshot)
+                if not self._upsert(conn, snapshot):
+                    conn.rollback()
+                    return
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO task_events (
@@ -107,8 +112,10 @@ class TaskRepository:
                     ),
                 )
                 conn.commit()
+                recorded = True
 
         run_sqlite_with_retry(operation)
+        return recorded
 
     def record_once(self, snapshot: TaskSnapshot, event: TaskEvent) -> bool:
         """Atomically persist a snapshot/event pair only once by event id."""
@@ -126,7 +133,9 @@ class TaskRepository:
                 if exists is not None:
                     conn.rollback()
                     return
-                self._upsert(conn, snapshot)
+                if not self._upsert(conn, snapshot):
+                    conn.rollback()
+                    return
                 conn.execute(
                     """
                     INSERT INTO task_events (
@@ -273,8 +282,8 @@ class TaskRepository:
         return changed
 
     @staticmethod
-    def _upsert(conn, snapshot: TaskSnapshot) -> None:
-        conn.execute(
+    def _upsert(conn, snapshot: TaskSnapshot) -> bool:
+        cursor = conn.execute(
             """
             INSERT INTO task_snapshots (
                 task_id, task_type, task_name, created_time, started_time, finished_time,
@@ -302,6 +311,8 @@ class TaskRepository:
                 site_name=excluded.site_name,
                 owner_pid=excluded.owner_pid,
                 updated_time=excluded.updated_time
+            WHERE excluded.status != 'STOPPING'
+               OR task_snapshots.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
             """,
             (
                 snapshot.task_id,
@@ -328,6 +339,7 @@ class TaskRepository:
                 snapshot.updated_time,
             ),
         )
+        return cursor.rowcount > 0
 
     @classmethod
     def _snapshot_from_row(cls, row: dict[str, object]) -> TaskSnapshot:

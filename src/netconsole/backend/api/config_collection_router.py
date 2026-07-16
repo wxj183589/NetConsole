@@ -21,6 +21,7 @@ from netconsole.models.api.config_collection import (
     ConfigTaskStatusDTO,
 )
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.file_contract import artifact_media_type
 
 
 router = APIRouter(prefix="/config-collection", tags=["config-collection"])
@@ -219,7 +220,7 @@ def directory_info(request: Request, directory_kind: str = Query(default="config
 )
 def download_artifact(request: Request, artifact_id: str) -> FileResponse:
     path, filename = _query(lambda: _service(request).open_artifact(_site_id(request), artifact_id))
-    return FileResponse(path, filename=filename)
+    return FileResponse(path, filename=filename, media_type=artifact_media_type(filename))
 
 
 def _query(callback):

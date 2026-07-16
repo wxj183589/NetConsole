@@ -17,13 +17,24 @@ const filter = ref('all')
 const moduleFilter = ref('all')
 const keyword = ref('')
 const drawerVisible = ref(false)
+const lastSavedCapability = ref('')
+let downloadGeneration = 0
+
+function clearSavedCapability(): void {
+  downloadGeneration += 1
+  lastSavedCapability.value = ''
+}
 
 const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return store.tasks.filter((task) => matchesFilter(task) && (moduleFilter.value === 'all' || task.module === moduleFilter.value) && (!search || taskSearchText(task).includes(search)))
 })
 
-watch(drawerVisible, (visible) => store.setDetailVisible(visible))
+watch(drawerVisible, (visible) => {
+  store.setDetailVisible(visible)
+  if (!visible) clearSavedCapability()
+})
+watch(() => store.selected?.id, clearSavedCapability)
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -37,6 +48,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearSavedCapability()
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
 })
@@ -105,25 +117,29 @@ function openOnlineMr(task: TaskItem): void {
 }
 
 async function cancelSelected(): Promise<void> {
+  clearSavedCapability()
   try { await store.requestCancel(); ElMessage.success('已请求停止任务') }
   catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : '停止任务失败') }
 }
 
 async function downloadArtifact(): Promise<void> {
   if (!store.selected?.artifact_download) return
+  const taskId = store.selected.id
+  clearSavedCapability()
+  const generation = downloadGeneration
   const artifact = store.selected.artifact_download
   const result = await downloadBackendResource({
     apiPath: artifact.api_path,
     query: artifact.query,
     suggestedName: artifact.display_name,
   })
+  if (generation !== downloadGeneration || store.selected?.id !== taskId || !drawerVisible.value) return
   if (result.status === 'saved') {
     lastSavedCapability.value = result.capabilityId || ''
     ElMessage.success('Artifact 已保存')
   } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
 }
 
-const lastSavedCapability = ref('')
 const openSaved = () => getPlatformAdapter().openPath(lastSavedCapability.value)
 const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapability.value)
 </script>
@@ -234,8 +250,10 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapabil
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">Artifact 下载</el-button></span></el-tooltip>
-          <el-button :disabled="!lastSavedCapability" @click="openSaved">打开文件</el-button>
-          <el-button :disabled="!lastSavedCapability" @click="revealSaved">打开所在目录</el-button>
+          <template v-if="lastSavedCapability">
+            <el-button @click="openSaved">打开文件</el-button>
+            <el-button @click="revealSaved">打开所在目录</el-button>
+          </template>
         </div>
 
         <section class="log-section">

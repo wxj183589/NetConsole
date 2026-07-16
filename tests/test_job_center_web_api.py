@@ -266,7 +266,7 @@ def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path
     assert "must-not-leak" not in detail.text
     assert logs.status_code == 200
     assert logs.json()["lines"][0]["message"] == "采集运行中"
-    assert logs.json()["lines"][1]["message"] == "failed at <redacted-path>"
+    assert logs.json()["lines"][1]["message"] == "failed at <redacted-path> and <redacted-path>"
     assert "C:\\private" not in logs.text
     assert "server\\share" not in logs.text
     assert "must-not-leak" not in logs.text
@@ -303,6 +303,7 @@ def test_job_center_redacts_all_renderer_visible_task_text(tmp_path: Path) -> No
             device=r"device \\server\share\device.cfg",
             agent=r"agent C:\private\agent.json",
             error_message=r"error \\server\share\error.txt",
+            source=r"worker C:\private\source.exe",
             result={
                 "session_id": r"C:\private\session",
                 "executor_kind": r"\\server\share\executor",
@@ -330,6 +331,7 @@ def test_job_center_redacts_all_renderer_visible_task_text(tmp_path: Path) -> No
         "error_code",
         "error_summary",
         "parser_version",
+        "source",
     ):
         assert "redacted-path" in payload[field].casefold()
     renderer_text = "\n".join(_text_values(payload))
@@ -375,6 +377,53 @@ def test_job_center_redacts_nested_and_direct_log_paths(
     assert "redacted-path" in renderer_text.casefold()
     assert "C:\\" not in renderer_text
     assert r"\\server" not in renderer_text
+
+
+def test_job_center_path_redaction_preserves_business_text(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    repository = TaskRepository(db_path)
+    message = (
+        '业务 ID task-42 读取 "C:\\Program Files\\NetConsole\\report 01.csv" 完成 '
+        r"42 条记录，时间 2026-07-17T01:02:03Z；另一路径 \\server\share\raw.log 已归档"
+    )
+    repository.record(
+        repository.get("quiet-task"),
+        TaskEvent(
+            event_id="event-preserve-business-text",
+            task_id="quiet-task",
+            type="log",
+            time="2026-07-17T01:02:03Z",
+            source="worker",
+            payload={"message": message},
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/job-center/tasks/quiet-task/logs")
+
+    text = response.json()["lines"][-1]["message"]
+    assert text.count("<redacted-path>") == 2
+    assert "业务 ID task-42" in text
+    assert "42 条记录" in text
+    assert "2026-07-17T01:02:03Z" in text
+    assert "已归档" in text
+    assert "C:\\" not in text
+    assert r"\\server" not in text
+
+
+def test_task_source_write_boundary_rejects_uncontrolled_value(tmp_path: Path) -> None:
+    service = TaskApplicationService(paths=PathResolver(tmp_path), site_name="demo")
+
+    with pytest.raises(ValueError, match="source"):
+        service.prepare(
+            BackgroundJob(
+                job_id="invalid-source",
+                task_type="demo_task",
+                params={"site_name": "demo", "task_source": r"C:\private\worker.exe"},
+            )
+        )
+
+    assert service.repository("demo").get("invalid-source") is None
 
 
 def test_job_center_rejects_cancel_without_owner_capability(tmp_path: Path) -> None:
@@ -481,6 +530,61 @@ def test_job_center_device_export_cancel_rejects_terminal_race(tmp_path: Path) -
         response = client.post(f"/api/job-center/tasks/{task_id}/cancel")
         persisted = TaskRepository(db_path).get(task_id)
         assert response.status_code == 409
+        assert persisted is not None and persisted.status is TaskState.COMPLETED
+        assert not cancel_path.exists()
+
+
+def test_job_center_device_export_cancel_cas_blocks_terminal_overwrite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    task_id = "device-export-cas-race"
+    cancel_path, _process = _install_device_export(app, db_path, task_id=task_id)
+    service = app.state.device_management_service
+    entered = threading.Event()
+    release = threading.Event()
+    original = service.task_service.record_external_event
+
+    def delayed_record(selected_id, event_type, payload, **kwargs):
+        if selected_id == task_id and event_type == "state" and payload.get("state") == "STOPPING":
+            entered.set()
+            assert release.wait(2)
+        return original(selected_id, event_type, payload, **kwargs)
+
+    class ForbiddenGraceThread:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("CAS 失败后不得启动 grace-stop")
+
+    monkeypatch.setattr(service.task_service, "record_external_event", delayed_record)
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.threading",
+        SimpleNamespace(Thread=ForbiddenGraceThread, Event=threading.Event),
+    )
+    result: dict[str, object] = {}
+
+    with TestClient(app) as client:
+        worker = threading.Thread(
+            target=lambda: result.setdefault(
+                "response", client.post(f"/api/job-center/tasks/{task_id}/cancel")
+            )
+        )
+        worker.start()
+        try:
+            assert entered.wait(2)
+            original(
+                task_id,
+                "finished",
+                {"result": {"available": False}},
+                site_name="demo",
+            )
+        finally:
+            release.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        response = result["response"]
+        assert response.status_code == 409
+        persisted = TaskRepository(db_path).get(task_id)
         assert persisted is not None and persisted.status is TaskState.COMPLETED
         assert not cancel_path.exists()
 
@@ -595,17 +699,19 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     file = payloads["file-artifact"]["artifact_download"]
     assert device == {
         "artifact_id": "device-abc", "display_name": "设备_清单.csv", "size_bytes": len(b"device export"),
-        "media_type": "application/vnd.ms-excel",
+        "media_type": "text/csv",
         "api_path": "/api/device-management/exports/device-artifact/download", "query": {"artifact_id": "device-abc"},
     }
     assert device_history["display_name"] == "设备清单.csv"
     assert device_history["display_name"] != historical_device_result["artifact_name"]
     assert config["display_name"].startswith("配置_快照_") and config["display_name"].endswith(".zip")
     assert config["size_bytes"] == 34
+    assert config["media_type"] == "application/zip"
     assert config["api_path"].endswith(f"/artifacts/{config_id}")
     assert file["artifact_id"] == file_ref
     assert file["display_name"] == "中文报告.zip"
     assert file["size_bytes"] == len(b"capture")
+    assert file["media_type"] == "application/zip"
     assert file["api_path"] == "/api/file-management/downloads/file-artifact/file"
     for payload in payloads.values():
         assert not {"result_path", "output_dir", "package_path", "session_path", "raw_output_reference"} & payload.keys()

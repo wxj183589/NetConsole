@@ -74,13 +74,15 @@ export class GrantedPathRegistry {
     path: string,
     purpose: CapabilityPurpose = 'artifact-download',
     actions: readonly CapabilityAction[] = ['open', 'reveal'],
-  ): string {
+  ): string | undefined {
     const normalized = normalizeAbsolutePath(path)
+    const effectiveActions = new Set(isOpenableArtifactFileName(basename(normalized)) ? actions : [])
+    if (!effectiveActions.size) return undefined
     const capabilityId = randomUUID()
     this.capabilities.set(capabilityId, {
       path: normalized,
       purpose,
-      actions: new Set(isOpenableArtifactFileName(basename(normalized)) ? actions : []),
+      actions: effectiveActions,
       fileType: validateArtifactFileName(basename(normalized)),
       expiresAt: this.now() + (this.options.ttlMs ?? 15 * 60 * 1_000),
     })

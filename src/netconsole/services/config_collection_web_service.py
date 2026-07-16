@@ -311,11 +311,18 @@ class ConfigCollectionApplicationService:
         }:
             raise ValueError("任务已进入不可逆批次，不能再取消")
         cancel = getattr(self.process_adapter, "cancel_job", None)
-        if callable(cancel):
-            cancel(task.task_id)
-        else:
-            self.task_service.cancel_task(task.task_id)
-        return self._task_dto(self.task_service.repository(site_name).get(task.task_id) or task, site_name=site_name)
+        if not callable(cancel):
+            raise ValueError("配置任务没有受管取消接收端")
+        try:
+            accepted = cancel(task.task_id)
+        except Exception as exc:
+            raise ValueError("配置任务取消接收端调用失败") from exc
+        if accepted is not True:
+            raise ValueError("配置任务取消接收端未接受请求")
+        updated = self.task_service.repository(site_name).get(task.task_id)
+        if updated is None or updated.status not in {TaskState.STOPPING, TaskState.CANCELLED}:
+            raise ValueError("配置任务 owner 未确认停止请求")
+        return self._task_dto(updated, site_name=site_name)
 
     def directory_info(self, site_name: str, directory_kind: str) -> ConfigDirectoryDTO:
         kind = str(directory_kind or "").strip()

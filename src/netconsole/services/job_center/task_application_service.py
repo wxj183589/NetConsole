@@ -71,7 +71,7 @@ class TaskApplicationService:
             device=self._first_text(params, "device", "device_name", "device_uuid", "device_id"),
             agent=self._first_text(params, "agent", "agent_name", "agent_id"),
             result_path=str(params.get("result_path") or ""),
-            source=str(params.get("task_source") or "local"),
+            source=self._task_source(params.get("task_source"), default="local"),
             site_name=site_name,
             owner_pid=os.getpid(),
         )
@@ -113,7 +113,7 @@ class TaskApplicationService:
             owner=owner,
             device=device,
             agent=agent,
-            source=str(source or "external"),
+            source=self._task_source(source, default="external"),
             site_name=selected_site,
             owner_pid=0,
         )
@@ -159,7 +159,11 @@ class TaskApplicationService:
             payload=safe_payload,
         )
         updated = self._apply_event(snapshot, event.type, event.payload, selected_time)
-        repository.record(updated, event)
+        if not repository.record(updated, event):
+            current = repository.get(task_id)
+            if current is None:
+                raise KeyError(task_id)
+            return current
         self._job_sites[task_id] = selected_site
         self.events.publish(event.to_dict())
         if updated.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
@@ -482,6 +486,13 @@ class TaskApplicationService:
             ),
             "",
         )
+
+    @staticmethod
+    def _task_source(value: object, *, default: str) -> str:
+        source = str(value or default).strip().casefold()
+        if source not in {"local", "agent", "external", "fake"}:
+            raise ValueError("任务 source 无效")
+        return source
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:

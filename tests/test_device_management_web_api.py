@@ -1097,9 +1097,7 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
     assert "设备清单.csv" in disposition
     assert artifact_id not in disposition
     assert int(downloaded.headers["content-length"]) == artifact.stat().st_size
-    assert downloaded.headers["content-type"].startswith(
-        ("application/vnd.ms-excel", "text/csv")
-    )
+    assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
 
     save_task("device-export-duplicate-name")
     duplicate = client.get(
@@ -1270,9 +1268,7 @@ def test_device_export_production_result_separates_physical_and_display_names(
     assert downloaded.status_code == 200
     assert str(result["display_name"]) in unquote(downloaded.headers["content-disposition"])
     assert int(downloaded.headers["content-length"]) == result["size_bytes"]
-    assert downloaded.headers["content-type"].startswith(
-        ("application/vnd.ms-excel", "text/csv")
-    )
+    assert downloaded.headers["content-type"] == "text/csv; charset=utf-8"
 
 
 def test_device_management_parent_feature_gate_blocks_write_actions(tmp_path: Path) -> None:

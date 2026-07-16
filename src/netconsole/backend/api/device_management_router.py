@@ -44,6 +44,7 @@ from netconsole.models.api.device_management import (
     DeviceWriteRequestDTO,
 )
 from netconsole.services.device_management_web_service import DeviceManagementWebService
+from netconsole.services.file_contract import artifact_media_type
 
 
 router = APIRouter(
@@ -221,7 +222,7 @@ def export_status(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
 @router.get("/exports/{task_id}/download", response_class=FileResponse, dependencies=[Depends(require_feature("web.device_management_export"))])
 def download_export(request: Request, task_id: str, artifact_id: str = Query(min_length=8, max_length=160)) -> FileResponse:
     path, filename = _not_found(lambda: _service(request).open_export_artifact(task_id, artifact_id), "导出任务或文件不存在")
-    return FileResponse(path, filename=filename)
+    return FileResponse(path, filename=filename, media_type=artifact_media_type(filename))
 
 
 @router.post("/devices/{device_uuid}/diagnostic-download", response_model=DeviceTaskReferenceDTO, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_feature("web.device_management_collect"))])

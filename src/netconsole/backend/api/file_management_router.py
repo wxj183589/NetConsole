@@ -21,6 +21,7 @@ from netconsole.services.file_management_service import (
     FileManagementError,
     FileReferenceNotFound,
 )
+from netconsole.services.file_contract import artifact_media_type
 
 
 router = APIRouter(prefix="/file-management", tags=["file-management"])
@@ -179,7 +180,7 @@ def cancel_download(request: Request, task_id: str, site_id: str = Query(default
 )
 def download_file(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileResponse:
     path, name = _call(lambda: _service(request).open_download(_site_id(request, site_id), task_id))
-    return FileResponse(path, filename=name)
+    return FileResponse(path, filename=name, media_type=artifact_media_type(name))
 
 
 def _remote_call(callback):

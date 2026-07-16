@@ -1,19 +1,322 @@
-import { describe, expect, it } from 'vitest'
+import { createRenderer, defineComponent, h, nextTick } from 'vue'
+import { createPinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import source from './JobCenterView.vue?raw'
+import { useTaskStore } from '../../stores/tasks'
+import type { TaskItem } from '../../types/task'
+import JobCenterView from './JobCenterView.vue'
 
-describe('Job Center unified task view', () => {
-  it('exposes filters, capabilities and lazy logs', () => {
-    expect(source).toContain('统一任务中心')
-    expect(source).toContain('查看 Online MR 实时展示')
-    expect(source).toContain('显示日志')
-    expect(source).toContain('停止 / 取消')
-    expect(source).toContain('Artifact 下载')
-    expect(source).toContain('moduleFilter')
-    expect(source).toContain('artifact.display_name')
-    expect(source).toContain('result.capabilityId')
-    expect(source).toContain("lastSavedCapability.value = result.capabilityId || ''")
-    expect(source).toContain(':disabled="!lastSavedCapability"')
-    expect(source).not.toContain('savedPath')
+const platformMocks = vi.hoisted(() => ({
+  download: vi.fn(),
+  open: vi.fn(),
+  reveal: vi.fn(),
+}))
+
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource: platformMocks.download,
+  getPlatformAdapter: () => ({
+    openPath: platformMocks.open,
+    showItemInFolder: platformMocks.reveal,
+  }),
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
+  useRouter: () => ({ push: vi.fn() }),
+}))
+
+vi.mock('element-plus', async () => {
+  const { defineComponent, h } = await import('vue')
+  const passthrough = (tag: string) => defineComponent({
+    inheritAttrs: false,
+    setup(_props, { attrs, slots }) {
+      return () => h(tag, attrs, slots.default?.())
+    },
+  })
+  const empty = defineComponent(() => () => h('empty-component'))
+  return {
+    ElAlert: passthrough('alert'),
+    ElButton: passthrough('button'),
+    ElDescriptions: passthrough('descriptions'),
+    ElDescriptionsItem: passthrough('descriptions-item'),
+    ElDrawer: passthrough('drawer'),
+    ElEmpty: empty,
+    ElInput: empty,
+    ElLoadingDirective: {},
+    ElMessage: { error: vi.fn(), success: vi.fn() },
+    ElOption: empty,
+    ElProgress: empty,
+    ElSelect: passthrough('select'),
+    ElTable: empty,
+    ElTableColumn: empty,
+    ElTooltip: passthrough('tooltip'),
+  }
+})
+
+vi.mock('@element-plus/icons-vue', () => ({
+  CopyDocument: {},
+  Refresh: {},
+  View: {},
+}))
+
+vi.mock('../../components/NcStatusTag.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return { default: defineComponent(() => () => h('status-tag')) }
+})
+
+vi.mock('element-plus/es', async () => {
+  const { defineComponent, h } = await import('vue')
+  const passthrough = (tag: string) => defineComponent({
+    inheritAttrs: false,
+    setup(_props, { attrs, slots }) {
+      return () => h(tag, attrs, slots.default?.())
+    },
+  })
+  const empty = defineComponent(() => () => h('empty-component'))
+  return {
+    ElAlert: passthrough('alert'),
+    ElButton: passthrough('button'),
+    ElMessage: { error: vi.fn(), success: vi.fn() },
+    ElDescriptions: passthrough('descriptions'),
+    ElDescriptionsItem: passthrough('descriptions-item'),
+    ElDrawer: passthrough('drawer'),
+    ElEmpty: empty,
+    ElInput: empty,
+    ElLoadingDirective: {},
+    ElOption: empty,
+    ElProgress: empty,
+    ElSelect: passthrough('select'),
+    ElTable: empty,
+    ElTableColumn: empty,
+    ElTooltip: passthrough('tooltip'),
+  }
+})
+
+interface HostNode {
+  type: string
+  text: string
+  parent: HostNode | null
+  children: HostNode[]
+  props: Record<string, unknown>
+}
+
+function node(type: string, text = ''): HostNode {
+  return { type, text, parent: null, children: [], props: {} }
+}
+
+const renderer = createRenderer<HostNode, HostNode>({
+  patchProp(element, key, _previous, next) {
+    if (next == null) delete element.props[key]
+    else element.props[key] = next
+  },
+  insert(child, parent, anchor) {
+    child.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(child)
+    else parent.children.splice(index, 0, child)
+  },
+  remove(child) {
+    if (!child.parent) return
+    const index = child.parent.children.indexOf(child)
+    if (index >= 0) child.parent.children.splice(index, 1)
+    child.parent = null
+  },
+  createElement(type) {
+    return node(type)
+  },
+  createText(text) {
+    return node('#text', text)
+  },
+  createComment(text) {
+    return node('#comment', text)
+  },
+  setText(target, text) {
+    target.text = text
+  },
+  setElementText(target, text) {
+    target.text = text
+    target.children = []
+  },
+  parentNode(target) {
+    return target.parent
+  },
+  nextSibling(target) {
+    if (!target.parent) return null
+    const index = target.parent.children.indexOf(target)
+    return target.parent.children[index + 1] ?? null
+  },
+  querySelector() {
+    return null
+  },
+  setScopeId() {},
+  cloneNode(target) {
+    return { ...target, parent: null, children: [...target.children], props: { ...target.props } }
+  },
+  insertStaticContent(content, parent, anchor) {
+    const target = node('#static', content)
+    target.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(target)
+    else parent.children.splice(index, 0, target)
+    return [target, target]
+  },
+})
+
+function task(id: string): TaskItem {
+  return {
+    id,
+    type: 'device_export',
+    name: `任务 ${id}`,
+    status: 'COMPLETED',
+    progress: 100,
+    phase: '',
+    stage: '',
+    message: '',
+    site_name: '',
+    owner: 'device_export_process',
+    executor: 'local-process',
+    source: 'local',
+    device_id: '',
+    device_name: '',
+    agent: '',
+    mr_name: '',
+    session_id: '',
+    mapping_state: 'MAPPED',
+    created_time: '',
+    started_time: '',
+    finished_time: '',
+    updated_time: '',
+    duration_seconds: 0,
+    error_code: '',
+    error_summary: '',
+    has_warning: false,
+    snapshot_id: null,
+    records_count: null,
+    parser_version: '',
+    cancellable: true,
+    artifact_download: {
+      artifact_id: `artifact-${id}`,
+      display_name: `设备-${id}.xlsx`,
+      size_bytes: 42,
+      media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      api_path: `/api/device-management/exports/${id}/download`,
+      query: {},
+    },
+  }
+}
+
+function descendants(root: HostNode): HostNode[] {
+  return root.children.flatMap((child) => [child, ...descendants(child)])
+}
+
+function textContent(target: HostNode): string {
+  return target.text + target.children.map(textContent).join('')
+}
+
+function findButton(root: HostNode, label: string): HostNode | undefined {
+  return descendants(root).find((target) => target.type === 'button' && textContent(target).includes(label))
+}
+
+async function click(target: HostNode): Promise<void> {
+  const handler = target.props.onClick as (() => unknown) | undefined
+  expect(handler).toBeTypeOf('function')
+  await handler?.()
+  await nextTick()
+}
+
+describe('Job Center saved artifact capability lifecycle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('document', {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('only renders authorized actions and clears stale capabilities on every lifecycle boundary', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'startPolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'stopPolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'requestCancel').mockResolvedValue(undefined)
+    store.selected = task('A')
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+
+    const drawer = descendants(root).find((target) => target.type === 'drawer')
+    const showDrawer = drawer?.props['onUpdate:modelValue'] as ((value: boolean) => void) | undefined
+    expect(showDrawer).toBeTypeOf('function')
+    showDrawer?.(true)
+    await nextTick()
+
+    expect(findButton(root, '打开文件')).toBeUndefined()
+    expect(findButton(root, '打开所在目录')).toBeUndefined()
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-A' })
+    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '打开文件')!)
+    await click(findButton(root, '打开所在目录')!)
+    expect(platformMocks.open).toHaveBeenCalledWith('cap-A')
+    expect(platformMocks.reveal).toHaveBeenCalledWith('cap-A')
+
+    let finishDownload: (result: { status: 'failed'; error: string }) => void = () => undefined
+    platformMocks.download.mockReturnValueOnce(new Promise((resolve) => { finishDownload = resolve }))
+    const failedDownload = (findButton(root, 'Artifact 下载')!.props.onClick as () => Promise<void>)()
+    await nextTick()
+    expect(findButton(root, '打开文件')).toBeUndefined()
+    finishDownload({ status: 'failed', error: '取消保存' })
+    await failedDownload
+    await nextTick()
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'cancelled' })
+    await click(findButton(root, 'Artifact 下载')!)
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved' })
+    await click(findButton(root, 'Artifact 下载')!)
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-A2' })
+    await click(findButton(root, 'Artifact 下载')!)
+    store.selected = task('B')
+    await nextTick()
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    let finishStaleDownload: (result: { status: 'saved'; capabilityId: string }) => void = () => undefined
+    store.selected = task('A')
+    await nextTick()
+    platformMocks.download.mockReturnValueOnce(new Promise((resolve) => { finishStaleDownload = resolve }))
+    const staleDownload = (findButton(root, 'Artifact 下载')!.props.onClick as () => Promise<void>)()
+    store.selected = task('B')
+    await nextTick()
+    finishStaleDownload({ status: 'saved', capabilityId: 'stale-cap-A' })
+    await staleDownload
+    await nextTick()
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-B' })
+    await click(findButton(root, 'Artifact 下载')!)
+    showDrawer?.(false)
+    await nextTick()
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    showDrawer?.(true)
+    await nextTick()
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-B2' })
+    await click(findButton(root, 'Artifact 下载')!)
+    await click(findButton(root, '停止 / 取消')!)
+    expect(findButton(root, '打开文件')).toBeUndefined()
+
+    app.unmount()
   })
 })

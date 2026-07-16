@@ -169,7 +169,7 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         assert source.name in disposition
         assert str(tmp_path) not in disposition
         assert int(downloaded.headers["content-length"]) == source.stat().st_size
-        assert downloaded.headers["content-type"] == "application/octet-stream"
+        assert downloaded.headers["content-type"] == "text/plain; charset=utf-8"
         assert before_download == after_download
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"file_ref": "../outside"}).status_code == 422
         assert client.post(
@@ -331,14 +331,7 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert artifact.content == b"remote artifact"
         assert "diag_a.tar.gz" in unquote(artifact.headers["content-disposition"])
         assert int(artifact.headers["content-length"]) == len(b"remote artifact")
-        assert artifact.headers["content-type"].startswith(
-            (
-                "application/gzip",
-                "application/x-gzip",
-                "application/x-tar",
-                "application/octet-stream",
-            )
-        )
+        assert artifact.headers["content-type"] == "application/gzip"
 
         binary_started = client.post(
             "/api/file-management/downloads",

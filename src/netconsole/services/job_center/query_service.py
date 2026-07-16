@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import mimetypes
 import re
 import sqlite3
 from contextlib import closing
@@ -31,6 +30,7 @@ from netconsole.services.device_management_web_service import (
     WEB_TASK_OWNER,
     device_export_display_name,
 )
+from netconsole.services.file_contract import artifact_media_type
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
 
@@ -203,7 +203,7 @@ class JobCenterQueryService:
             site_name=site_name,
             owner=owner,
             executor=redact_web_task_text(executor).upper(),
-            source=source,
+            source=redact_web_task_text(source),
             device_id=redact_web_task_text(row.get("device_id") or ""),
             device_name=redact_web_task_text(row.get("device_name") or row.get("device") or ""),
             agent=redact_web_task_text(row.get("agent") or ""),
@@ -293,7 +293,7 @@ class JobCenterQueryService:
             artifact_id=artifact_id,
             display_name=display_name,
             size_bytes=max(0, JobCenterQueryService._optional_int(size) or 0),
-            media_type=mimetypes.guess_type(display_name)[0] or "application/octet-stream",
+            media_type=artifact_media_type(display_name),
             api_path=api_path,
             query=query or {},
         )

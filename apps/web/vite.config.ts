@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
 import { defineConfig } from 'vite'
+import type { Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
@@ -13,6 +14,24 @@ const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 const versionSource = readFileSync(resolve(projectRoot, 'src/netconsole/core/version.py'), 'utf8')
 const appVersion = versionSource.match(/^APP_VERSION\s*=\s*["']([^"']+)["']/m)?.[1]
 const navigationSchemaVersion = 1
+const elementPlusResolver = ElementPlusResolver({ importStyle: process.env.VITEST ? false : 'css' })
+
+function vuePlugin(): Plugin {
+  const plugin = vue()
+  if (!process.env.VITEST || !plugin.transform || typeof plugin.transform === 'function') return plugin
+  const transform = plugin.transform
+  plugin.transform = {
+    ...transform,
+    handler(code, id, options) {
+      return transform.handler.call(this, code, id, {
+        moduleType: options?.moduleType ?? 'js',
+        ...options,
+        ssr: false,
+      })
+    },
+  }
+  return plugin
+}
 
 if (!appVersion) throw new Error('无法从 src/netconsole/core/version.py 读取 APP_VERSION')
 
@@ -55,13 +74,13 @@ function webBuildMetaPlugin() {
 
 export default defineConfig({
   plugins: [
-    vue(),
+    vuePlugin(),
     AutoImport({
-      resolvers: [ElementPlusResolver()],
+      resolvers: [elementPlusResolver],
       dts: false,
     }),
     Components({
-      resolvers: [ElementPlusResolver()],
+      resolvers: [elementPlusResolver],
       dts: false,
     }),
     webBuildMetaPlugin(),

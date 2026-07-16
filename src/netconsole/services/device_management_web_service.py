@@ -1160,12 +1160,18 @@ class DeviceManagementWebService:
                 except OSError as exc:
                     raise ValueError("导出任务取消请求清理失败") from exc
                 return self._task_reference(latest)
-            self.task_service.record_external_event(
+            updated = self.task_service.record_external_event(
                 task_id,
                 "state",
                 {"state": TaskState.STOPPING.value, "message": "已请求停止导出任务"},
                 site_name=snapshot.site_name,
             )
+            if updated.status is not TaskState.STOPPING:
+                try:
+                    cancel_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ValueError("导出任务取消请求清理失败") from exc
+                return self._task_reference(updated)
             threading.Thread(
                 target=self._stop_export_after_grace,
                 args=(task_id, snapshot.site_name, process),

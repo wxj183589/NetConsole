@@ -7,8 +7,11 @@ from typing import Any
 from netconsole.models.task_snapshot import TaskSnapshot
 
 
-_ABSOLUTE_PATH_RE = re.compile(
-    r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\r\n\"']+|\\\\[^\r\n\"']+)"
+_QUOTED_ABSOLUTE_PATH_RE = re.compile(
+    r'''(?ix)(?P<quote>["'])(?:file://|[a-z]:[\\/]|\\\\)[^"'\r\n]*?(?P=quote)'''
+)
+_UNQUOTED_ABSOLUTE_PATH_RE = re.compile(
+    r'''(?ix)(?<![A-Za-z0-9_])(?:file://|[a-z]:[\\/]|\\\\[^\\/\s]+[\\/])[^\s"'<>|,;，；。!?！?)\]}]*'''
 )
 _SECRET_VALUE_RE = re.compile(
     r"(?i)\b((?:x-agent-token|authorization|token|password|credential|secret|community)\s*[:=]\s*(?:bearer\s+)?)\S+"
@@ -33,7 +36,8 @@ def is_web_export_task(task_type: str) -> bool:
 
 
 def redact_web_task_text(value: object) -> str:
-    redacted = _ABSOLUTE_PATH_RE.sub("<redacted-path>", str(value or ""))
+    redacted = _QUOTED_ABSOLUTE_PATH_RE.sub("<redacted-path>", str(value or ""))
+    redacted = _UNQUOTED_ABSOLUTE_PATH_RE.sub("<redacted-path>", redacted)
     redacted = _SECRET_VALUE_RE.sub(r"\1<redacted>", redacted)
     return _BEARER_RE.sub("Bearer <redacted>", redacted)
 

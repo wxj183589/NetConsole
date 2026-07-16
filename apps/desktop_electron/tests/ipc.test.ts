@@ -87,18 +87,11 @@ describe('desktop IPC', () => {
     const open = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
     const reveal = ipcMain.handlers.get(DESKTOP_IPC.showItemInFolder)!
 
-    expect(await open(event, pathRegistry.grantCapability(selectedFile))).toEqual({ success: true })
-    const revealCapability = pathRegistry.grantCapability(selectedFile)
+    expect(await open(event, pathRegistry.grantCapability(selectedFile)!)).toEqual({ success: true })
+    const revealCapability = pathRegistry.grantCapability(selectedFile)!
     expect(await reveal(event, revealCapability)).toEqual({ success: true })
-    const dangerousCapability = pathRegistry.grantCapability(resolve('danger.exe'))
-    expect(await open(event, dangerousCapability)).toEqual({
-      success: false,
-      error: '文件授权用途不匹配',
-    })
-    expect(await reveal(event, dangerousCapability)).toEqual({
-      success: false,
-      error: '文件授权用途不匹配',
-    })
+    expect(pathRegistry.grantCapability(resolve('danger.exe'))).toBeUndefined()
+    expect(pathRegistry.grantCapability(selectedFile, 'artifact-download', [])).toBeUndefined()
     expect(await open(event, resolve('not-granted.txt'))).toEqual({
       success: false,
       error: '文件授权标识无效',
@@ -110,15 +103,15 @@ describe('desktop IPC', () => {
   it('expires, evicts and isolates capability purpose and actions', () => {
     let now = 1_000
     const registry = new GrantedPathRegistry({ now: () => now, ttlMs: 10, maxCapabilities: 2 })
-    const first = registry.grantCapability(resolve('first.zip'))
-    const second = registry.grantCapability(resolve('second.zip'))
-    const third = registry.grantCapability(resolve('third.zip'))
+    const first = registry.grantCapability(resolve('first.zip'))!
+    const second = registry.grantCapability(resolve('second.zip'))!
+    const third = registry.grantCapability(resolve('third.zip'))!
 
     expect(() => registry.requireCapability(first, 'artifact-download', 'open')).toThrow('已失效')
     expect(registry.requireCapability(second, 'artifact-download', 'reveal')).toBe(resolve('second.zip'))
     expect(registry.requireCapability(third, 'artifact-download', 'open')).toBe(resolve('third.zip'))
 
-    const isolated = registry.grantCapability(resolve('selected.txt'), 'selected-file', ['open'])
+    const isolated = registry.grantCapability(resolve('selected.txt'), 'selected-file', ['open'])!
     expect(() => registry.requireCapability(isolated, 'artifact-download', 'open')).toThrow('用途不匹配')
     expect(() => registry.requireCapability(isolated, 'selected-file', 'reveal')).toThrow('用途不匹配')
     now += 10

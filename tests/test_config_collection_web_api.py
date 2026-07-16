@@ -34,6 +34,7 @@ from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
 from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.worker_protocol import encode_event
 
 
@@ -624,6 +625,46 @@ def test_config_get_and_cancel_reject_site_owner_source_and_type_mismatches(tmp_
         assert service.cancel_task("demo", task_id) is None
 
 
+@pytest.mark.parametrize("receiver", ["missing", "false", "error", "no-process"])
+def test_config_cancel_fails_closed_without_live_owner_receiver(
+    tmp_path: Path,
+    receiver: str,
+) -> None:
+    app, paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    service = app.state.config_collection_service
+    task_id = f"config-cancel-{receiver}"
+    service.task_service.repository("demo").save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type="config_web_snapshot_fetch",
+            task_name="配置采集",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T01:00:00Z",
+            updated_time="2026-07-17T01:00:01Z",
+            owner="web_config_collection",
+            source="local",
+            site_name="demo",
+        )
+    )
+
+    def fail(_task_id: str) -> bool:
+        raise RuntimeError("receiver failed")
+
+    service.process_adapter = {
+        "missing": None,
+        "false": SimpleNamespace(cancel_job=lambda _task_id: False),
+        "error": SimpleNamespace(cancel_job=fail),
+        "no-process": LocalProcessAdapter(service.task_service),
+    }[receiver]
+
+    with pytest.raises(ValueError, match="取消接收端"):
+        service.cancel_task("demo", task_id)
+
+    persisted = service.task_service.repository("demo").get(task_id)
+    assert persisted is not None and persisted.status is TaskState.RUNNING
+    assert not (paths.runtime_cache_dir / "background_jobs" / f"{task_id}.cancel").exists()
+
+
 def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_cancel(
     tmp_path: Path,
     monkeypatch,
@@ -677,17 +718,14 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     assert diff_download.status_code == 200
     assert diff_name in unquote(diff_download.headers["content-disposition"])
     assert int(diff_download.headers["content-length"]) == diff_path.stat().st_size
-    assert diff_download.headers["content-type"] == "application/octet-stream"
+    assert diff_download.headers["content-type"] == "text/plain; charset=utf-8"
     assert zip_download.status_code == 200
     assert zip_name in unquote(zip_download.headers["content-disposition"])
     assert str(zip_status.result["artifact_id"]) not in unquote(
         zip_download.headers["content-disposition"]
     )
     assert int(zip_download.headers["content-length"]) == zip_path.stat().st_size
-    assert zip_download.headers["content-type"] in {
-        "application/zip",
-        "application/x-zip-compressed",
-    }
+    assert zip_download.headers["content-type"] == "application/zip"
 
     refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
     recovered = refreshed.get_task("demo", zip_task.id)
