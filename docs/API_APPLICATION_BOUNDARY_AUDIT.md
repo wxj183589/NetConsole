@@ -74,7 +74,7 @@ Router 不再直接依赖 `sqlite3` 异常类型；共享 API 错误映射统一
 | `config_collection_router.py` | `PASS` | 查询、采集、diff、Task 和 Artifact 均调用组合根注入的 `ConfigCollectionApplicationService`；缺失接线返回稳定 503。 | 保持唯一组合根注入。 |
 | `device_management_router.py` | `PASS` | 设备列表、详情、操作预览和任务均经 `DeviceManagementWebService`；无直接 Repository 或设备连接。 | 保持 Service 用例边界。 |
 | `feature_router.py` | `PASS` | 只读取集中 Feature Registry 并输出 DTO；未形成第二套 Feature 规则。 | 无。 |
-| `file_management_router.py` | `PASS` | 列表、下载任务、路径解析和白名单均经 `FileManagementApplicationService`；107-109 行仅流式返回 Service 已核准文件。 | 保持 Artifact streaming 边界；无需新建 File Service。 |
+| `file_management_router.py` | `PASS` | 本地/远程目录、下载队列、路径解析和白名单均经 `FileManagementApplicationService`；Router 仅流式返回 Service 已核准的受控文件。 | 设备文件使用独立 `device_file_ref`，不得伪装 Artifact；保持现有 File Service。 |
 | `job_center_router.py` | `PASS` | 任务、摘要和日志均经 `JobCenterQueryService`；无直接 Task Repository 或日志文件读取。 | 无。 |
 | `mesh_analysis_router.py` | `PASS` | SQL、统计、raw tail 和 Artifact 解析全部委托 `MeshAnalysisQueryService`；下载仅返回 Service 白名单结果。 | 无。 |
 | `network_tools_router.py` | `PASS` | TCP 端口测试经组合根注入的 `NetworkToolsApplicationService`；执行目标与 Traffic DTO 使用共享 presentation helper。 | 保持与 Traffic Router 的 DTO 契约一致。 |

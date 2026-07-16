@@ -54,7 +54,7 @@ class LocalFilePageDTO(ApiModel):
     items: list[LocalFileEntryDTO] = Field(default_factory=list)
     total: int = 0
     page: int = Field(default=1, ge=1)
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=500, ge=1, le=500)
     has_more: bool = False
 
 
@@ -86,6 +86,10 @@ class FileRemoteDeviceDTO(ApiModel):
     device_id: str
     name: str
     address: str
+    group_id: int | None = None
+    group_name: str = ""
+    device_type: str = ""
+    station: str = ""
 
 
 class FileConnectionDTO(ApiModel):
@@ -118,7 +122,7 @@ class RemoteFilePageDTO(ApiModel):
     items: list[RemoteFileEntryDTO] = Field(default_factory=list)
     total: int = 0
     page: int = Field(default=1, ge=1)
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=500, ge=1, le=500)
     has_more: bool = False
 
 
@@ -149,6 +153,11 @@ class FileDownloadResultDTO(ApiModel):
     device_id: str = ""
     remote_entry_id: str = Field(default="", pattern=r"^(|fe1_[0-9a-f]{32})$")
     target_kind: str = ""
+    mesh_import_status: str = ""
+    mesh_imported_count: int = Field(default=0, ge=0)
+    mesh_duplicate_count: int = Field(default=0, ge=0)
+    mesh_parsed_record_count: int = Field(default=0, ge=0)
+    mesh_import_error: str = ""
 
 
 class FileDownloadTaskDTO(ApiModel):

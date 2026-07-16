@@ -67,3 +67,5 @@ Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a downl
 - 通过路径选择接口绕过 Artifact/Application Service 权限。
 
 未来 `openArtifact`、受控 `openFolder`、`launchTerminal` 和 `notification` 必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。WinSCP、IPOP 与通用外部程序不在当前白名单。
+
+文件管理模块已实现 `fda1_*`、60 秒有效、一次性消费的强类型动作契约，但当前共享 Bridge 尚未消费。最小依赖见 [文件管理对等规格](development/parity/file-management.md)；在 main/preload/shared 完成独立白名单和测试前，原结果目录与 WinSCP 必须保持 `BLOCKED_ON_TASK_WINDOW`，不得回退到 Renderer 路径、任意程序/argv 或含密码 URL。

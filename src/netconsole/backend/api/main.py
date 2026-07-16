@@ -208,6 +208,7 @@ def create_app(
         task_service=task_service,
         process_adapter=web_process_adapter,
         site_name=site_name,
+        mesh_auto_import_enabled=feature_gate.is_enabled("file.mesh_auto_import"),
     )
     owns_online_mr_application_service = (
         online_mr_application_service is None

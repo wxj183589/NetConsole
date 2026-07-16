@@ -73,7 +73,7 @@ def list_local_entries(
     directory_id: str = Query(default="", max_length=80),
     device_id: str = Query(default="", max_length=120),
     page: int = Query(default=1, ge=1),
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(default=500, ge=1, le=500),
 ) -> LocalFilePageDTO:
     return _call(
         lambda: _service(request).list_local_files(
@@ -158,7 +158,7 @@ def list_remote_entries(
     entry_id: str = Query(default="", max_length=80),
     site_id: str = Query(default="", max_length=100),
     page: int = Query(default=1, ge=1),
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(default=500, ge=1, le=500),
 ) -> RemoteFilePageDTO:
     return _remote_call(
         lambda: _service(request).list_remote_files(

@@ -16,7 +16,6 @@ from uuid import uuid4
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
-from netconsole.models.device import Device
 from netconsole.models.api.file_management import (
     FileConnectionDTO,
     FileDesktopActionDTO,
@@ -34,8 +33,10 @@ from netconsole.models.api.file_management import (
     RemoteFileEntryDTO,
     RemoteFilePageDTO,
 )
-from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
+from netconsole.models.device import Device
+from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
@@ -49,10 +50,10 @@ from netconsole.services.file_transfer_service import (
     parent_remote_path,
     safe_device_name,
 )
+from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 if TYPE_CHECKING:
-    from netconsole.models.task_snapshot import TaskSnapshot
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
     from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -77,6 +78,7 @@ ACTIVE_DOWNLOAD_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNI
 TERMINAL_DOWNLOAD_STATES = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
 DOWNLOAD_DESCRIPTOR_EVENT = "file_management_descriptor"
 DOWNLOAD_HIDDEN_EVENT = "file_management_hidden"
+DOWNLOAD_WAITING_EVENT = "file_management_waiting"
 MESH_HISTORY_LOG_PATTERN = re.compile(r"^\d{4}_\d{2}_\d{2}_\d+meshlog\.log\.gz$", re.IGNORECASE)
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
@@ -165,6 +167,7 @@ class FileManagementApplicationService:
         site_name: str = "demo",
         device_resolver: DeviceResolver | None = None,
         transfer_factory: TransferServiceFactory = FileTransferService,
+        mesh_auto_import_enabled: bool = True,
     ) -> None:
         self.paths = paths
         self.site_name = str(site_name or "demo")
@@ -172,6 +175,7 @@ class FileManagementApplicationService:
         self.process_adapter = process_adapter
         self._device_resolver = device_resolver
         self._transfer_factory = transfer_factory
+        self._mesh_auto_import_enabled = bool(mesh_auto_import_enabled)
         self._sessions: dict[str, _RemoteSession] = {}
         self._sessions_lock = threading.RLock()
         self._local_entries: dict[str, _LocalEntry] = {}
@@ -182,15 +186,30 @@ class FileManagementApplicationService:
         self._target_lock = threading.RLock()
         self._reserved_targets: set[str] = set()
         self._parts_cleaned: set[str] = set()
+        self._queue_lock = threading.RLock()
+        self._queue_sites: set[str] = {self.site_name}
+        self._queue_stop = threading.Event()
+        self._queue_thread: threading.Thread | None = None
         self._owns_process_adapter = False
         if self.task_service is not None and self.process_adapter is None:
             from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 
             self.process_adapter = LocalProcessAdapter(self.task_service)
             self._owns_process_adapter = True
+        if self.task_service is not None and callable(getattr(self.process_adapter, "start_job", None)):
+            self._queue_thread = threading.Thread(
+                target=self._run_download_queue,
+                name="file-management-download-queue",
+                daemon=True,
+            )
+            self._queue_thread.start()
 
     def close(self) -> None:
         """幂等关闭全部 Web 会话；FastAPI lifespan 必须在 shutdown 调用。"""
+        self._queue_stop.set()
+        if self._queue_thread is not None and self._queue_thread is not threading.current_thread():
+            self._queue_thread.join(timeout=1.0)
+        self._queue_thread = None
         with self._sessions_lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
@@ -211,6 +230,8 @@ class FileManagementApplicationService:
     def status(self, site_id: str = "") -> FileManagementStatusDTO:
         site = self._site_id(site_id)
         self._cleanup_stale_parts_once(site)
+        with self._queue_lock:
+            self._queue_sites.add(site)
         device_db_exists = self.paths.site_db_path(site).is_file()
         return FileManagementStatusDTO(
             site_id=site,
@@ -232,15 +253,19 @@ class FileManagementApplicationService:
         directory_id: str = "",
         device_id: str = "",
         page: int = 1,
-        limit: int = 200,
+        limit: int = 500,
     ) -> LocalFilePageDTO:
         """浏览下载目录；客户端永远只接收会话内 opaque 引用。"""
         site = self._site_id(site_id)
+        with self._queue_lock:
+            self._queue_sites.add(site)
         self._cleanup_stale_parts_once(site)
-        root = self._local_root(site, device_id)
+        root = self._local_root(site)
         root.mkdir(parents=True, exist_ok=True)
         root_id = self._remember_local_entry(site, root, root)
-        current_id = str(directory_id or root_id)
+        default_path = self._default_local_path(site, device_id) if str(device_id or "").strip() else root
+        default_path.mkdir(parents=True, exist_ok=True)
+        current_id = str(directory_id or self._remember_local_entry(site, root, default_path))
         current = self._local_entry(site, current_id)
         if current.root != root or not current.path.is_dir():
             raise FileReferenceNotFound("本地目录引用不存在或不属于当前受控目录")
@@ -300,9 +325,11 @@ class FileManagementApplicationService:
         name: str,
     ) -> LocalFilePageDTO:
         site = self._site_id(site_id)
-        root = self._local_root(site, device_id)
+        root = self._local_root(site)
         root.mkdir(parents=True, exist_ok=True)
-        current_id = str(directory_id or self._remember_local_entry(site, root, root))
+        default_path = self._default_local_path(site, device_id) if str(device_id or "").strip() else root
+        default_path.mkdir(parents=True, exist_ok=True)
+        current_id = str(directory_id or self._remember_local_entry(site, root, default_path))
         current = self._local_entry(site, current_id)
         if current.root != root or not current.path.is_dir():
             raise FileReferenceNotFound("本地目录引用不存在或不属于当前受控目录")
@@ -328,12 +355,22 @@ class FileManagementApplicationService:
         database_path = self.paths.site_db_path(site)
         if not database_path.is_file():
             return []
-        devices = DeviceRepository(Database(database_path)).list()
+        database = Database(database_path)
+        devices = DeviceRepository(database).list()
+        groups = {
+            int(group.id): group.name
+            for group in DeviceGroupRepository(database, site).list()
+            if group.id is not None
+        }
         return [
             FileRemoteDeviceDTO(
                 device_id=str(device.device_uuid or device.id or ""),
                 name=str(device.name or device.system_name or device.primary_address),
                 address=str(device.primary_address or ""),
+                group_id=device.group_id,
+                group_name=groups.get(int(device.group_id), "") if device.group_id is not None else "",
+                device_type=str(device.device_type or ""),
+                station=str(device.station or ""),
             )
             for device in devices
             if (device.device_uuid or device.id) and device.primary_address and bool(device.ssh_enabled)
@@ -389,7 +426,7 @@ class FileManagementApplicationService:
         entry_id: str = "",
         *,
         page: int = 1,
-        limit: int = 200,
+        limit: int = 500,
     ) -> RemoteFilePageDTO:
         session = self._session(site_id, connection_id)
         with session.lock:
@@ -464,6 +501,8 @@ class FileManagementApplicationService:
         if self.task_service is None:
             return []
         site = self._site_id(site_id)
+        with self._queue_lock:
+            self._queue_sites.add(site)
         self._cleanup_stale_parts_once(site)
         requested = max(1, min(int(limit), 200))
         page_size = min(200, max(50, requested))
@@ -513,6 +552,15 @@ class FileManagementApplicationService:
             raise FileReferenceNotFound("下载任务不存在")
         if task.status not in {TaskState.PENDING.value, TaskState.STARTING.value, TaskState.RUNNING.value, TaskState.STOPPING.value}:
             raise FileManagementError("下载任务当前不可停止")
+        repository = self.task_service.repository(task.site_id) if self.task_service is not None else None
+        if repository is not None and self._task_waiting(repository, task.task_id):
+            self.task_service.record_external_event(
+                task.task_id,
+                "cancelled",
+                {"message": "排队下载已取消"},
+                site_name=task.site_id,
+            )
+            return self.download_task(task.site_id, task.task_id) or task
         if self.process_adapter is None or not self.process_adapter.cancel_job(task.task_id):
             raise FileManagementError("下载任务当前不可停止")
         return self.download_task(site_id, task.task_id) or task
@@ -671,6 +719,7 @@ class FileManagementApplicationService:
                     "remote_category": entry.remote_file.category,
                     "target_relative_path": target.relative_to(self.paths.site_dir(site).resolve()).as_posix(),
                     "target_kind": target_kind,
+                    "mesh_auto_import": target_kind == "mr_raw" and self._mesh_auto_import_enabled,
                 }
         return self._start_download(site, descriptor)
 
@@ -717,33 +766,28 @@ class FileManagementApplicationService:
     def _start_download(self, site: str, descriptor: dict[str, object]) -> FileDownloadTaskDTO:
         if self.task_service is None or self.process_adapter is None:
             raise RuntimeError("文件下载任务宿主未接线")
+        with self._queue_lock:
+            self._queue_sites.add(site)
         task_id = uuid4().hex
-        params = {
-            **descriptor,
-            "site_name": site,
-            "task_name": self._descriptor_task_name(descriptor),
-            "task_source": "local",
-            "file_source": descriptor.get("source_kind", ""),
-            "owner": "web_file_management",
-            "app_root": str(self.paths.app_root),
-            "data_root": str(self.paths.data_root),
-        }
-        job = BackgroundJob(
-            job_id=task_id,
-            task_type="file_management_download",
-            params=params,
-        )
+        params = self._job_params(site, descriptor)
+        job = BackgroundJob(job_id=task_id, task_type="file_management_download", params=params)
         protected_descriptor = _protect_descriptor(descriptor, site, task_id)
-        try:
-            self.process_adapter.start_job(job)
-        except Exception as exc:
-            raise RuntimeError("文件下载任务启动失败") from exc
-        self._record_task_metadata(
-            site,
-            task_id,
-            DOWNLOAD_DESCRIPTOR_EVENT,
-            {"protected_descriptor": protected_descriptor},
-        )
+        with self._queue_lock:
+            repository = self.task_service.repository(site)
+            active = [snapshot for snapshot in repository.list(statuses=ACTIVE_DOWNLOAD_STATES, limit=1000) if self._is_download_snapshot(snapshot)]
+            if active:
+                self._persist_waiting_download(site, task_id, params, protected_descriptor)
+            else:
+                try:
+                    self.process_adapter.start_job(job)
+                except Exception as exc:
+                    raise RuntimeError("文件下载任务启动失败") from exc
+                self._record_task_metadata(
+                    site,
+                    task_id,
+                    DOWNLOAD_DESCRIPTOR_EVENT,
+                    {"protected_descriptor": protected_descriptor},
+                )
         return self.download_task(site, task_id) or FileDownloadTaskDTO(
             task_id=task_id,
             site_id=site,
@@ -752,13 +796,62 @@ class FileManagementApplicationService:
             message="已创建文件下载任务",
         )
 
+    def _persist_waiting_download(
+        self,
+        site: str,
+        task_id: str,
+        params: dict[str, object],
+        protected_descriptor: str,
+    ) -> None:
+        if self.task_service is None:
+            raise RuntimeError("文件下载任务宿主未接线")
+        now = utc_now_iso()
+        snapshot = TaskSnapshot(
+            task_id=task_id,
+            task_type="file_management_download",
+            task_name=str(params.get("task_name") or "文件下载"),
+            status=TaskState.PENDING,
+            created_time=now,
+            updated_time=now,
+            owner="web_file_management",
+            device=str(params.get("device_name") or ""),
+            source="local",
+            site_name=site,
+            owner_pid=0,
+            message="等待前序文件下载完成",
+        )
+        repository = self.task_service.repository(site)
+        repository.record(
+            snapshot,
+            TaskEvent(
+                event_id=uuid4().hex,
+                task_id=task_id,
+                type=DOWNLOAD_DESCRIPTOR_EVENT,
+                time=now,
+                source="file_management",
+                payload={"protected_descriptor": protected_descriptor},
+            ),
+        )
+        repository.record(
+            snapshot,
+            TaskEvent(
+                event_id=uuid4().hex,
+                task_id=task_id,
+                type=DOWNLOAD_WAITING_EVENT,
+                time=now,
+                source="file_management",
+                payload={"waiting": True, "message": "等待前序文件下载完成"},
+            ),
+        )
+
     def retry_download(self, site_id: str, task_id: str) -> FileDownloadTaskDTO:
         site = self._site_id(site_id)
         task = self.download_task(site, task_id)
         if task is None:
             raise FileReferenceNotFound("下载任务不存在")
-        if task.status not in {TaskState.FAILED.value, TaskState.CANCELLED.value}:
-            raise FileManagementError("只有失败或已取消的下载可以重试")
+        mesh_import_failed = task.result is not None and task.result.mesh_import_status == "failed"
+        if task.status not in {TaskState.FAILED.value, TaskState.CANCELLED.value} and not mesh_import_failed:
+            raise FileManagementError("只有失败、已取消或 MESH 导入失败的下载可以重试")
         descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else None
         if descriptor is None:
             raise FileManagementError("旧下载任务没有可恢复的下载描述")
@@ -782,9 +875,17 @@ class FileManagementApplicationService:
             raise FileManagementError("只能清理已完成或失败的下载记录")
         repository = self.task_service.repository(site)
         cleared = 0
-        for snapshot in repository.list(statuses={TaskState(value) for value in requested}, limit=1000):
+        query_statuses = {TaskState(value) for value in requested}
+        if TaskState.FAILED.value in requested:
+            query_statuses.add(TaskState.COMPLETED)
+        for snapshot in repository.list(statuses=query_statuses, limit=1000):
             if not self._is_download_snapshot(snapshot) or self._task_hidden(repository, snapshot.task_id):
                 continue
+            if snapshot.status is TaskState.COMPLETED:
+                if TaskState.COMPLETED.value in requested:
+                    pass
+                elif str((snapshot.result or {}).get("mesh_import_status") or "") != "failed":
+                    continue
             self._record_task_metadata(site, snapshot.task_id, DOWNLOAD_HIDDEN_EVENT, {"hidden": True})
             cleared += 1
         return FileDownloadClearDTO(cleared_count=cleared)
@@ -827,6 +928,11 @@ class FileManagementApplicationService:
                         device_id=str(result.get("device_id") or ""),
                         remote_entry_id=str(result.get("remote_entry_id") or ""),
                         target_kind=str(result.get("target_kind") or descriptor.get("target_kind") or ""),
+                        mesh_import_status=str(result.get("mesh_import_status") or ""),
+                        mesh_imported_count=max(0, int(result.get("mesh_imported_count") or 0)),
+                        mesh_duplicate_count=max(0, int(result.get("mesh_duplicate_count") or 0)),
+                        mesh_parsed_record_count=max(0, int(result.get("mesh_parsed_record_count") or 0)),
+                        mesh_import_error=str(result.get("mesh_import_error") or ""),
                     )
                 except (TypeError, ValueError):
                     result_dto = None
@@ -835,10 +941,15 @@ class FileManagementApplicationService:
             message = "文件下载失败"
         elif snapshot.status is TaskState.CANCELLED:
             message = "文件下载已取消"
+        elif result_dto is not None and result_dto.mesh_import_status == "failed":
+            message = "文件下载完成，MESH 自动导入失败"
         total = max(0, int(snapshot.total or descriptor.get("remote_size") or 0))
         current = max(0, int(snapshot.current or (total if snapshot.status is TaskState.COMPLETED else 0)))
         speed = self._average_speed(snapshot.started_time, snapshot.finished_time or snapshot.updated_time, current)
-        retryable = snapshot.status in {TaskState.FAILED, TaskState.CANCELLED} and bool(descriptor)
+        mesh_import_failed = result_dto is not None and result_dto.mesh_import_status == "failed"
+        retryable = (
+            snapshot.status in {TaskState.FAILED, TaskState.CANCELLED} or mesh_import_failed
+        ) and bool(descriptor)
         return FileDownloadTaskDTO(
             task_id=snapshot.task_id,
             site_id=site,
@@ -983,6 +1094,7 @@ class FileManagementApplicationService:
         size = output.stat().st_size
         digest = file_sha256(output)
         context.progress("file_verify", 1, 1, f"已校验 {remote_file.name}")
+        mesh_import = self._auto_import_mesh(context, site, device, output, target_kind)
         return {
             "result_kind": "device_file",
             "name": display_name,
@@ -992,7 +1104,51 @@ class FileManagementApplicationService:
             "device_id": device_id,
             "remote_entry_id": remote_entry_id,
             "target_kind": target_kind,
+            **mesh_import,
         }
+
+    def _auto_import_mesh(
+        self,
+        context: JobContext,
+        site: str,
+        device: Device,
+        path: Path,
+        target_kind: str,
+    ) -> dict[str, object]:
+        if target_kind != "mr_raw" or not bool(context.params.get("mesh_auto_import")):
+            return {}
+        try:
+            context.check_cancelled()
+            profile = MeshStorageService(site, context.paths).ensure_mr_profile_for_device(device)
+            context.progress("mesh_auto_import", 0, 1, "正在自动导入 MESH 日志")
+
+            def should_cancel() -> bool:
+                context.check_cancelled()
+                return False
+
+            result = MeshImportService(site, context.paths).import_files(
+                profile,
+                [path],
+                should_cancel=should_cancel,
+            )
+            context.check_cancelled()
+            context.progress("mesh_auto_import", 1, 1, "MESH 日志自动导入完成")
+            status = "duplicate" if result.duplicate_count and not result.imported_count else "completed"
+            return {
+                "mesh_import_status": status,
+                "mesh_imported_count": result.imported_count,
+                "mesh_duplicate_count": result.duplicate_count,
+                "mesh_parsed_record_count": result.parsed_record_count,
+            }
+        except Exception as exc:
+            from netconsole.services.job_center.job_context import BackgroundTaskCancelled
+
+            if isinstance(exc, BackgroundTaskCancelled):
+                raise
+            return {
+                "mesh_import_status": "failed",
+                "mesh_import_error": "MESH 日志格式不受支持或解析失败",
+            }
 
     def _resolve_device(self, site: str, device_id: str) -> Device:
         value = str(device_id or "").strip()
@@ -1077,9 +1233,10 @@ class FileManagementApplicationService:
     def _new_remote_entry_id() -> str:
         return f"fe1_{uuid4().hex}"
 
-    def _local_root(self, site: str, device_id: str = "") -> Path:
-        if not str(device_id or "").strip():
-            return self.paths.file_downloads_root(site).resolve()
+    def _local_root(self, site: str) -> Path:
+        return self.paths.file_downloads_root(site).resolve()
+
+    def _default_local_path(self, site: str, device_id: str) -> Path:
         device = self._resolve_device(site, device_id)
         return self.paths.device_file_download_dir(
             site,
@@ -1229,6 +1386,95 @@ class FileManagementApplicationService:
             event.get("type") == DOWNLOAD_HIDDEN_EVENT and bool(dict(event.get("payload") or {}).get("hidden"))
             for event in repository.list_events(task_id, limit=2000)
         )
+
+    @staticmethod
+    def _task_waiting(repository, task_id: str) -> bool:
+        waiting = False
+        for event in repository.list_events(task_id, limit=2000):
+            if event.get("type") == DOWNLOAD_WAITING_EVENT:
+                waiting = bool(dict(event.get("payload") or {}).get("waiting"))
+        return waiting
+
+    def _run_download_queue(self) -> None:
+        while not self._queue_stop.wait(0.5):
+            if self.task_service is None or self.process_adapter is None:
+                return
+            try:
+                with self._queue_lock:
+                    sites = tuple(self._queue_sites)
+                for site in sites:
+                    self._dispatch_next_waiting(self._site_id(site))
+            except Exception:
+                continue
+
+    def _dispatch_next_waiting(self, site: str) -> None:
+        if self.task_service is None or self.process_adapter is None:
+            return
+        with self._queue_lock:
+            repository = self.task_service.repository(site)
+            active = [
+                snapshot
+                for snapshot in repository.list(statuses=ACTIVE_DOWNLOAD_STATES, limit=1000)
+                if self._is_download_snapshot(snapshot)
+            ]
+            if any(not self._task_waiting(repository, snapshot.task_id) for snapshot in active):
+                return
+            waiting = sorted(
+                (snapshot for snapshot in active if self._task_waiting(repository, snapshot.task_id)),
+                key=lambda snapshot: (snapshot.created_time, snapshot.task_id),
+            )
+            if not waiting:
+                return
+            snapshot = waiting[0]
+            descriptor = self._task_descriptor(repository, snapshot.task_id)
+            if descriptor is None:
+                self.task_service.record_external_event(
+                    snapshot.task_id,
+                    "error",
+                    {"message": "下载恢复描述不可用"},
+                    site_name=site,
+                )
+                return
+            job = BackgroundJob(
+                job_id=snapshot.task_id,
+                task_type="file_management_download",
+                params=self._job_params(site, descriptor),
+            )
+            try:
+                self.process_adapter.start_job(job)
+            except Exception:
+                self.task_service.record_external_event(
+                    snapshot.task_id,
+                    "error",
+                    {"message": "文件下载任务恢复启动失败"},
+                    site_name=site,
+                )
+            finally:
+                latest = repository.get(snapshot.task_id)
+                if latest is not None:
+                    repository.record(
+                        latest,
+                        TaskEvent(
+                            event_id=uuid4().hex,
+                            task_id=snapshot.task_id,
+                            type=DOWNLOAD_WAITING_EVENT,
+                            time=utc_now_iso(),
+                            source="file_management",
+                            payload={"waiting": False},
+                        ),
+                    )
+
+    def _job_params(self, site: str, descriptor: dict[str, object]) -> dict[str, object]:
+        return {
+            **descriptor,
+            "site_name": site,
+            "task_name": self._descriptor_task_name(descriptor),
+            "task_source": "local",
+            "file_source": descriptor.get("source_kind", ""),
+            "owner": "web_file_management",
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+        }
 
     def _active_remote_keys(self, site: str) -> set[tuple[str, str]]:
         if self.task_service is None:

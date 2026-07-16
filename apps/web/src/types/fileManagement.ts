@@ -30,10 +30,35 @@ export interface ManagedFilePage {
   total: number
 }
 
+export interface LocalFileEntry {
+  entry_id: string
+  name: string
+  is_dir: boolean
+  size_bytes: number | null
+  modified_at: string | null
+  file_type: string
+  downloadable: boolean
+}
+
+export interface LocalFilePage {
+  site_id: string
+  root_entry_id: string
+  current_entry_id: string
+  parent_entry_id: string
+  current_label: string
+  items: LocalFileEntry[]
+  total: number
+  page: number
+  limit: number
+  has_more: boolean
+}
+
 export type FileDownloadStatus = 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 export interface FileDownloadResult {
+  result_kind: 'managed_file' | 'device_file'
   file_ref: string
+  device_file_ref: string
   name: string
   size_bytes: number
   artifact_id: string
@@ -41,6 +66,12 @@ export interface FileDownloadResult {
   sha256: string
   device_id: string
   remote_entry_id: string
+  target_kind: 'device_file' | 'mr_raw' | ''
+  mesh_import_status: '' | 'completed' | 'duplicate' | 'failed'
+  mesh_imported_count: number
+  mesh_duplicate_count: number
+  mesh_parsed_record_count: number
+  mesh_import_error: string
 }
 
 export interface FileDownloadTask {
@@ -50,7 +81,24 @@ export interface FileDownloadTask {
   progress: number
   stage: string
   message: string
+  batch_id: string
+  source_kind: 'managed_file' | 'remote' | ''
+  device_name: string
+  remote_name: string
+  downloaded_bytes: number
+  total_bytes: number
+  speed_bytes_per_second: number
+  created_at: string
+  updated_at: string
+  retryable: boolean
+  retry_reason: string
   result: FileDownloadResult | null
+}
+
+export interface FileDownloadBatch {
+  batch_id: string
+  tasks: FileDownloadTask[]
+  failures: string[]
 }
 
 export interface FileConnection {
@@ -68,6 +116,10 @@ export interface FileRemoteDevice {
   device_id: string
   name: string
   address: string
+  group_id: number | null
+  group_name: string
+  device_type: string
+  station: string
 }
 
 export interface RemoteFileEntry {
@@ -87,10 +139,16 @@ export interface RemoteFilePage {
   parent_entry_id: string
   current_label: string
   items: RemoteFileEntry[]
+  total: number
+  page: number
+  limit: number
+  has_more: boolean
 }
 
 export interface FileDesktopAction {
   action: string
+  action_ref: string
+  expires_at: string
   accepted: boolean
   integration_required: boolean
   message: string

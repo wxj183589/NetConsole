@@ -106,6 +106,11 @@ def test_local_file_index_excludes_databases_runtime_files_and_unknown_formats(t
 
 def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_directory_creation(tmp_path: Path) -> None:
     paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-LOCAL", device_type="MR", primary_address="192.0.2.80")
+    )
     root = paths.file_downloads_root("demo")
     root.mkdir(parents=True)
     (root / "b.txt").write_text("b", encoding="utf-8")
@@ -126,6 +131,15 @@ def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_director
     assert nested.parent_entry_id == first.current_entry_id
     created = service.create_local_directory("demo", directory_id=nested.current_entry_id, name="新 目录")
     assert "新_目录" in {item.name for item in created.items}
+    device_default = service.list_local_files("demo", device_id=device.device_uuid)
+    assert device_default.current_entry_id != device_default.root_entry_id
+    assert device_default.parent_entry_id == device_default.root_entry_id
+    site_root = service.list_local_files(
+        "demo",
+        directory_id=device_default.parent_entry_id,
+        device_id=device.device_uuid,
+    )
+    assert site_root.current_entry_id == site_root.root_entry_id
     with pytest.raises(FileReferenceNotFound):
         service.list_local_files("demo", directory_id="fl1_" + "0" * 32)
 
@@ -219,6 +233,46 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         ).status_code == 404
 
 
+def test_completed_mesh_import_failure_can_be_retried_and_cleared_as_failed(tmp_path: Path) -> None:
+    paths, source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+
+    class FakeProcessAdapter:
+        def start_job(self, job: BackgroundJob) -> str:
+            task_service.prepare(job)
+            return job.job_id
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=FakeProcessAdapter(),
+    )
+    file_ref = next(item.file_ref for item in service.list_files("demo").items if item.name == source.name)
+    task = service.submit_download("demo", file_ref)
+    result = {
+        "download_ref": file_ref,
+        "name": source.name,
+        "size_bytes": source.stat().st_size,
+        "mesh_import_status": "failed",
+        "mesh_import_error": "MESH 自动导入失败",
+    }
+    task_service.record_external_event(task.task_id, "finished", {"result": result}, site_name="demo")
+
+    completed = service.download_task("demo", task.task_id)
+    assert completed is not None
+    assert completed.status == TaskState.COMPLETED.value
+    assert completed.retryable is True
+    assert completed.result is not None
+    assert completed.result.mesh_import_status == "failed"
+
+    retried = service.retry_download("demo", task.task_id)
+    assert retried.task_id != task.task_id
+    cleared = service.clear_downloads("demo", [TaskState.FAILED.value])
+    assert cleared.cleared_count == 1
+    assert task.task_id not in {item.task_id for item in service.list_download_tasks("demo")}
+    service.close()
+
+
 def test_remote_file_web_flow_uses_session_entries_persistent_device_file_results_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
@@ -301,8 +355,24 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         candidates = client.get("/api/file-management/devices", params={"site_id": "demo"})
         assert candidates.status_code == 200
         assert candidates.json() == [
-            {"device_id": device_a.device_uuid, "name": "MR-A", "address": "192.0.2.10"},
-            {"device_id": device_b.device_uuid, "name": "MR-B", "address": "192.0.2.11"},
+            {
+                "device_id": device_a.device_uuid,
+                "name": "MR-A",
+                "address": "192.0.2.10",
+                "group_id": None,
+                "group_name": "",
+                "device_type": "MR",
+                "station": "",
+            },
+            {
+                "device_id": device_b.device_uuid,
+                "name": "MR-B",
+                "address": "192.0.2.11",
+                "group_id": None,
+                "group_name": "",
+                "device_type": "MR",
+                "station": "",
+            },
         ]
         assert "password" not in candidates.text.casefold()
         connected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
@@ -357,10 +427,13 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
             json={"connection_id": connection_id, "remote_entry_id": remote_entry_id},
         )
         assert pending.status_code == 202
-        second_job = captured[-1]
-        assert first_job.params["target_relative_path"] != second_job.params["target_relative_path"]
+        assert len(captured) == 1
+        pending_descriptor = service._task_descriptor(task_service.repository("demo"), pending.json()["task_id"])
+        assert pending_descriptor is not None
+        assert service._task_waiting(task_service.repository("demo"), pending.json()["task_id"])
+        assert first_job.params["target_relative_path"] != pending_descriptor["target_relative_path"]
         assert str(first_job.params["target_relative_path"]).startswith("files/file_manager/downloads/MR-A/")
-        assert str(second_job.params["target_relative_path"]).startswith("files/file_manager/downloads/MR-A/")
+        assert str(pending_descriptor["target_relative_path"]).startswith("files/file_manager/downloads/MR-A/")
         batch = client.post(
             "/api/file-management/downloads/batch",
             params={"site_id": "demo"},
@@ -427,18 +500,11 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
         assert pending_cancel.status_code == 200
         assert pending_cancel.json()["status"] == TaskState.CANCELLED.value
-        assert pending.json()["task_id"] in FakeProcessAdapter.cancelled
-        restarted = FileManagementApplicationService(
-            paths,
-            task_service=task_service,
-            process_adapter=FakeProcessAdapter(),
+        batch_cancel = client.post(
+            f"/api/file-management/downloads/{batch.json()['tasks'][0]['task_id']}/cancel",
+            params={"site_id": "demo"},
         )
-        recovered = next(item for item in restarted.list_download_tasks("demo") if item.task_id == pending.json()["task_id"])
-        assert recovered.remote_name == "diag_a.tar.gz"
-        assert recovered.retryable is True
-        retried = restarted.retry_download("demo", recovered.task_id)
-        assert retried.task_id != recovered.task_id
-        assert captured[-1].params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+        assert batch_cancel.status_code == 200
         cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
         assert cancelled.status_code == 422
         assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).status_code == 404
@@ -465,6 +531,18 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
     service.close()
     service.close()
     assert all(not instance.connected and instance.disconnect_calls == 1 for instance in session_instances)
+    restarted = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=FakeProcessAdapter(),
+    )
+    recovered = next(item for item in restarted.list_download_tasks("demo") if item.task_id == pending.json()["task_id"])
+    assert recovered.remote_name == "diag_a.tar.gz"
+    assert recovered.retryable is True
+    retried = restarted.retry_download("demo", recovered.task_id)
+    assert retried.task_id != recovered.task_id
+    assert next(job for job in captured if job.job_id == retried.task_id).params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+    restarted.close()
 
 
 def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, monkeypatch) -> None:
@@ -538,6 +616,109 @@ def test_desktop_action_contract_is_opaque_one_time_and_never_contains_password(
     assert not hasattr(command, "password")
     with pytest.raises(FileReferenceNotFound):
         service.consume_desktop_action(prepared.action_ref)
+
+
+def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    mr = repository.create(Device(name="MR-01", device_type="MR", primary_address="192.0.2.51"))
+    ac = repository.create(Device(name="AC-01", device_type="AC", primary_address="192.0.2.52"))
+    service = FileManagementApplicationService(paths)
+    local = service.list_local_files("demo", device_id=ac.device_uuid)
+    created = service.create_local_directory(
+        "demo",
+        directory_id=local.current_entry_id,
+        device_id=ac.device_uuid,
+        name="manual",
+    )
+    manual = next(item for item in created.items if item.name == "manual")
+
+    mr_target, mr_kind = service._download_target(
+        "demo",
+        mr,
+        RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-07-16 12:00:00", "meshlog"),
+        manual.entry_id,
+    )
+    regular_target, regular_kind = service._download_target(
+        "demo",
+        ac,
+        RemoteDeviceFile("diag.tar.gz", "flash:/diagfile/diag.tar.gz", 1, None, "diag"),
+        manual.entry_id,
+    )
+
+    assert mr_kind == "mr_raw"
+    assert mr_target.name == "MR-01-2026_07_16-meshlog.log"
+    assert paths.site_mesh_root("demo").resolve() in mr_target.parents
+    assert regular_kind == "device_file"
+    assert regular_target.parent.name == "manual"
+    assert paths.file_downloads_root("demo").resolve() in regular_target.parents
+
+
+def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-02", device_type="MR", primary_address="192.0.2.53")
+    )
+    imported: list[Path] = []
+
+    class FakeTransfer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def connect(self, _device):
+            return "flash:/"
+
+        def disconnect(self):
+            pass
+
+        def download(self, _remote_path, local_path, progress_callback=None, **_kwargs):
+            target = Path(local_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("mesh", encoding="utf-8")
+            if progress_callback:
+                progress_callback(4, 4)
+            return target
+
+    class FakeImport:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def import_files(self, _profile, files, **_kwargs):
+            imported.extend(files)
+            return SimpleNamespace(imported_count=1, duplicate_count=0, parsed_record_count=7)
+
+    monkeypatch.setattr("netconsole.services.file_management_service.FileTransferService", FakeTransfer)
+    monkeypatch.setattr("netconsole.services.file_management_service.MeshImportService", FakeImport)
+    target = paths.site_mesh_root("demo") / "MR-02" / "raw" / "MR-02-2026_07_16-meshlog.log"
+    relative = target.relative_to(paths.site_dir("demo")).as_posix()
+    job = BackgroundJob(
+        job_id="mesh-auto-import",
+        task_type="file_management_download",
+        params={
+            "site_name": "demo",
+            "device_id": device.device_uuid,
+            "remote_entry_id": "fe1_" + "1" * 32,
+            "remote_path": "flash:/meshlog.log",
+            "remote_name": "meshlog.log",
+            "remote_category": "meshlog",
+            "target_relative_path": relative,
+            "target_kind": "mr_raw",
+            "mesh_auto_import": True,
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+        },
+    )
+
+    result = run_file_management_download(JobContext.from_job(job))
+
+    assert result["mesh_import_status"] == "completed"
+    assert result["mesh_imported_count"] == 1
+    assert result["mesh_parsed_record_count"] == 7
+    assert imported == [target.resolve()]
 
 
 def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:

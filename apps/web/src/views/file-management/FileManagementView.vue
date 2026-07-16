@@ -1,127 +1,213 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 
 import {
   cancelFileDownload,
+  clearFileDownloads,
   connectDeviceFiles,
+  createLocalDirectory,
   disconnectDeviceFiles,
   fileDownloadRequest,
-  getFileDownloadTask,
   getFileManagementStatus,
   listFileDownloads,
-  listManagedFiles,
+  listLocalFiles,
   listRemoteDevices,
   listRemoteFiles,
-  startFileDownload,
-  startRemoteFileDownload,
+  localFileDownloadRequest,
+  prepareFileDesktopAction,
+  retryFileDownload,
+  startRemoteFileDownloadBatch,
 } from '../../api/fileManagement'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource } from '../../platform/runtime'
-import type { FileConnection, FileDownloadTask, FileRemoteDevice, ManagedFile, ManagedFileCategory, RemoteFileEntry, RemoteFilePage } from '../../types/fileManagement'
+import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import type {
+  FileConnection,
+  FileDownloadTask,
+  FileRemoteDevice,
+  LocalFileEntry,
+  LocalFilePage,
+  RemoteFileEntry,
+  RemoteFilePage,
+} from '../../types/fileManagement'
+import {
+  activeDownloadTasks,
+  formatBytes,
+  formatSpeed,
+  mergeDownloadTasks,
+  selectableRemoteFiles,
+  summarizeDownloadBatches,
+} from './fileManagementModel'
+import { createFileManagementTranslator } from './fileManagementI18n'
 
-const storageKey = 'netconsole.file-management.download-tasks'
+const t = createFileManagementTranslator()
+
 const router = useRouter()
 const siteId = ref('')
-const category = ref<ManagedFileCategory>('')
-const search = ref('')
 const loading = ref(false)
 const error = ref('')
-const files = ref<ManagedFile[]>([])
-const total = ref(0)
-const localAvailable = ref(true)
+const localError = ref('')
+const remoteError = ref('')
+const queueError = ref('')
 const deviceFilesMessage = ref('')
-const tasks = ref<FileDownloadTask[]>([])
+const localPage = ref<LocalFilePage | null>(null)
+const localLoading = ref(false)
+const localPageNumber = ref(1)
 const devices = ref<FileRemoteDevice[]>([])
 const selectedDeviceId = ref('')
+const deviceSearch = ref('')
+const deviceGroup = ref('')
+const allowSftpSetup = ref(false)
 const connection = ref<FileConnection | null>(null)
 const remotePage = ref<RemoteFilePage | null>(null)
-const remoteSelected = ref<RemoteFileEntry[]>([])
-const remoteMeshOnly = ref(false)
 const remoteLoading = ref(false)
-const remoteError = ref('')
-const filter = reactive({ site_id: '', category: '' as ManagedFileCategory, search: '' })
+const remotePageNumber = ref(1)
+const remoteSelected = ref<RemoteFileEntry[]>([])
+const remoteTable = ref<{ clearSelection(): void; toggleRowSelection(row: RemoteFileEntry, selected: boolean): void } | null>(null)
+const tasks = ref<FileDownloadTask[]>([])
+const savedPaths = new Map<string, string>()
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
-const activeTasks = computed(() => tasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(task.status)))
-const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
+const activeTasks = computed(() => activeDownloadTasks(tasks.value))
+const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) || null)
+const deviceGroups = computed(() => [...new Set(devices.value.map((device) => device.group_name || '未分组'))].sort((a, b) => a.localeCompare(b)))
+const filteredDevices = computed(() => {
+  const query = deviceSearch.value.trim().toLocaleLowerCase()
+  return devices.value.filter((device) => {
+    const group = device.group_name || '未分组'
+    return (!deviceGroup.value || group === deviceGroup.value)
+      && (!query || `${device.name} ${device.address} ${device.station} ${group} ${device.device_type}`.toLocaleLowerCase().includes(query))
+  })
+})
+const batchSummaries = computed(() => summarizeDownloadBatches(tasks.value).slice(0, 5))
+
 function openTaskWindow(): void {
   if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'files' })
   else void router.push({ name: 'tasks', query: { module: 'files' } })
 }
-const remoteItems = computed(() => {
-  const items = remotePage.value?.items || []
-  if (!remoteMeshOnly.value) return items
-  return items.filter((item) => !item.is_dir && /meshlog\.log(?:\.gz)?$/i.test(item.name))
-})
 
-onMounted(async () => {
-  restoreTasks()
-  await refresh()
-  await recoverTasks()
-  scheduleTaskRefresh()
-})
+onMounted(() => void initialize())
 
 onBeforeUnmount(() => {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
-  const connectionId = connection.value?.connection_id
-  if (connectionId) void disconnectDeviceFiles(connectionId, siteId.value).catch(() => undefined)
+  if (connection.value) void disconnectDeviceFiles(connection.value.connection_id, siteId.value).catch(() => undefined)
 })
 
-async function refresh(): Promise<void> {
-  if (loading.value) return
+async function initialize(): Promise<void> {
   loading.value = true
   error.value = ''
-  filter.site_id = siteId.value.trim()
-  filter.category = category.value
-  filter.search = search.value.trim()
   try {
-    const [status, page] = await Promise.all([
-      getFileManagementStatus(filter.site_id),
-      listManagedFiles({ site_id: filter.site_id, category: filter.category, search: filter.search, limit: 500 }),
-    ])
+    const status = await getFileManagementStatus(siteId.value)
     siteId.value = status.site_id
-    localAvailable.value = status.local_files.available
     deviceFilesMessage.value = status.device_files.message
-    files.value = page.items
-    total.value = page.total
     if (isFeatureEnabled('web.file_management_remote')) {
       try { devices.value = await listRemoteDevices(siteId.value) } catch (reason) {
         devices.value = []
-        remoteError.value = reason instanceof Error ? reason.message : '远程设备列表加载失败'
+        remoteError.value = messageOf(reason, '设备列表读取失败')
       }
-    } else {
-      devices.value = []
     }
+    await Promise.all([loadLocal('', 1), recoverTasks()])
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '文件列表加载失败'
+    error.value = messageOf(reason, '文件管理初始化失败')
   } finally {
     loading.value = false
   }
 }
 
-async function download(file: ManagedFile): Promise<void> {
+async function refreshAll(): Promise<void> {
+  await initialize()
+  if (connection.value) await loadRemote(remotePage.value?.current_entry_id || connection.value.root_entry_id, remotePageNumber.value)
+}
+
+async function loadLocal(directoryId = '', page = 1): Promise<void> {
+  localLoading.value = true
+  localError.value = ''
   try {
-    upsertTask(await startFileDownload(file.file_ref, siteId.value))
-    persistTasks()
-    scheduleTaskRefresh()
+    localPage.value = await listLocalFiles({
+      site_id: siteId.value,
+      directory_id: directoryId,
+      device_id: selectedDeviceId.value,
+      page,
+      limit: 500,
+    })
+    localPageNumber.value = localPage.value.page
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '文件下载任务创建失败'
+    localError.value = messageOf(reason, '本地目录读取失败')
+  } finally {
+    localLoading.value = false
   }
+}
+
+async function deviceChanged(): Promise<void> {
+  await disconnectDevice()
+  await loadLocal('', 1)
+}
+
+async function openLocal(row: LocalFileEntry): Promise<void> {
+  if (row.is_dir) {
+    await loadLocal(row.entry_id, 1)
+    return
+  }
+  try {
+    const result = await downloadBackendResource(localFileDownloadRequest(row.entry_id, siteId.value, row.name))
+    if (result.status === 'saved' && result.savedPath) {
+      const opened = await getPlatformAdapter().openPath(result.savedPath)
+      if (!opened.success) localError.value = opened.error || '文件打开失败'
+    } else if (result.status === 'failed') {
+      localError.value = result.error || '文件打开失败'
+    }
+  } catch (reason) {
+    localError.value = messageOf(reason, '文件打开失败')
+  }
+}
+
+async function createDirectory(): Promise<void> {
+  if (!localPage.value) return
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新目录名称', '新建目录', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPattern: /\S+/,
+      inputErrorMessage: '目录名不能为空',
+    })
+    localPage.value = await createLocalDirectory({
+      site_id: siteId.value,
+      directory_id: localPage.value.current_entry_id,
+      device_id: selectedDeviceId.value,
+      name: value,
+    })
+    ElMessage.success('目录已创建')
+  } catch (reason) {
+    if (reason !== 'cancel' && reason !== 'close') localError.value = messageOf(reason, '目录创建失败')
+  }
+}
+
+async function prepareLocalOpen(): Promise<void> {
+  if (!localPage.value) return
+  await showDesktopDependency('open_local', { local_entry_id: localPage.value.current_entry_id })
 }
 
 async function connectDevice(): Promise<void> {
   if (!selectedDeviceId.value) return
+  try {
+    if (allowSftpSetup.value) {
+      await ElMessageBox.confirm(
+        '设备未启用 SFTP 时将执行 Qt 同等的 H3C SFTP 配置命令。请确认你有设备写入权限。',
+        '允许设备侧启用 SFTP',
+        { type: 'warning', confirmButtonText: '确认并连接', cancelButtonText: '取消' },
+      )
+    }
+  } catch { return }
   remoteLoading.value = true
   remoteError.value = ''
   try {
-    if (connection.value) await disconnectDeviceFiles(connection.value.connection_id, siteId.value)
-    connection.value = await connectDeviceFiles(selectedDeviceId.value, siteId.value)
-    await loadRemotePage(connection.value.root_entry_id)
+    await disconnectDevice()
+    connection.value = await connectDeviceFiles(selectedDeviceId.value, siteId.value, allowSftpSetup.value)
+    await loadRemote(connection.value.root_entry_id, 1)
   } catch (reason) {
-    remoteError.value = reason instanceof Error ? reason.message : '设备文件连接失败'
+    remoteError.value = messageOf(reason, '设备文件连接失败')
     connection.value = null
     remotePage.value = null
   } finally {
@@ -130,22 +216,26 @@ async function connectDevice(): Promise<void> {
 }
 
 async function disconnectDevice(): Promise<void> {
-  if (!connection.value) return
-  try { await disconnectDeviceFiles(connection.value.connection_id, siteId.value) } catch { /* 会话已由服务端清理时仍清空页面状态 */ }
+  if (connection.value) {
+    try { await disconnectDeviceFiles(connection.value.connection_id, siteId.value) } catch { /* 后端会话失效也应清空页面 */ }
+  }
   connection.value = null
   remotePage.value = null
   remoteSelected.value = []
+  remoteTable.value?.clearSelection()
 }
 
-async function loadRemotePage(entryId = ''): Promise<void> {
+async function loadRemote(entryId = '', page = 1): Promise<void> {
   if (!connection.value) return
   remoteLoading.value = true
   remoteError.value = ''
   try {
-    remotePage.value = await listRemoteFiles(connection.value.connection_id, entryId, siteId.value)
+    remotePage.value = await listRemoteFiles(connection.value.connection_id, entryId, siteId.value, page, 500)
+    remotePageNumber.value = remotePage.value.page
     remoteSelected.value = []
+    remoteTable.value?.clearSelection()
   } catch (reason) {
-    remoteError.value = reason instanceof Error ? reason.message : '远程目录读取失败'
+    remoteError.value = messageOf(reason, '远程目录读取失败')
   } finally {
     remoteLoading.value = false
   }
@@ -155,96 +245,141 @@ function selectRemote(rows: RemoteFileEntry[]): void {
   remoteSelected.value = rows.filter((row) => !row.is_dir && row.downloadable)
 }
 
-function isRemoteSelectable(row: RemoteFileEntry): boolean {
-  return row.downloadable
-}
-
-function openRemoteRow(row: RemoteFileEntry): void {
-  if (row.is_dir) void loadRemotePage(row.entry_id)
-}
-
-function selectMeshLogs(): void {
-  remoteMeshOnly.value = !remoteMeshOnly.value
-  remoteSelected.value = remoteMeshOnly.value ? remoteItems.value.filter((row) => !row.is_dir && row.downloadable) : []
-}
-
-async function downloadRemote(): Promise<void> {
-  if (!connection.value || !remoteSelected.value.length) return
-  try {
-    for (const row of remoteSelected.value) upsertTask(await startRemoteFileDownload(connection.value.connection_id, row.entry_id, siteId.value))
-    persistTasks()
-    scheduleTaskRefresh()
-  } catch (reason) {
-    remoteError.value = reason instanceof Error ? reason.message : '远程下载任务创建失败'
+function selectAllRemote(meshOnly = false): void {
+  remoteTable.value?.clearSelection()
+  for (const row of selectableRemoteFiles(remotePage.value?.items || [], meshOnly)) {
+    remoteTable.value?.toggleRowSelection(row, true)
   }
 }
 
-async function saveDownload(task: FileDownloadTask): Promise<void> {
-  if (!task.result) return
-  error.value = ''
+function clearRemoteSelection(): void {
+  remoteTable.value?.clearSelection()
+  remoteSelected.value = []
+}
+
+async function openRemote(row: RemoteFileEntry): Promise<void> {
+  if (row.is_dir) {
+    await loadRemote(row.entry_id, 1)
+    return
+  }
+  if (row.downloadable) {
+    remoteTable.value?.toggleRowSelection(row, !remoteSelected.value.some((item) => item.entry_id === row.entry_id))
+  }
+}
+
+async function downloadRemote(): Promise<void> {
+  if (!connection.value || !remoteSelected.value.length || !localPage.value) return
+  remoteError.value = ''
   try {
-    const result = await downloadBackendResource(
-      fileDownloadRequest(task.task_id, task.site_id, task.result.name),
+    const batch = await startRemoteFileDownloadBatch(
+      connection.value.connection_id,
+      remoteSelected.value.map((row) => row.entry_id),
+      siteId.value,
+      localPage.value.current_entry_id,
     )
-    if (result.status === 'failed') error.value = result.error || '文件下载失败'
-    else if (result.status === 'saved') ElMessage.success('文件已保存')
-    else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
-  } catch {
-    error.value = '文件下载失败'
+    tasks.value = mergeDownloadTasks(tasks.value, batch.tasks)
+    if (batch.failures.length) remoteError.value = batch.failures.join('；')
+    clearRemoteSelection()
+    scheduleTaskRefresh()
+  } catch (reason) {
+    remoteError.value = messageOf(reason, '批量下载创建失败')
+  }
+}
+
+async function prepareWinscp(): Promise<void> {
+  if (!selectedDeviceId.value) return
+  await showDesktopDependency('winscp', { device_id: selectedDeviceId.value })
+}
+
+async function showDesktopDependency(
+  action: 'winscp' | 'open_local' | 'open_result_dir',
+  values: { device_id?: string; local_entry_id?: string; task_id?: string },
+): Promise<void> {
+  try {
+    const result = await prepareFileDesktopAction(action, { site_id: siteId.value, ...values })
+    ElMessage.warning(result.message)
+  } catch (reason) {
+    error.value = messageOf(reason, '桌面动作登记失败')
   }
 }
 
 async function recoverTasks(): Promise<void> {
-  try { (await listFileDownloads(siteId.value)).forEach(upsertTask) } catch { /* 本地历史仍可用于展示 */ }
-  await Promise.all(tasks.value.map(async (task) => {
-    try { upsertTask(await getFileDownloadTask(task.task_id, siteId.value)) } catch { /* 任务已过期时保留本地历史 */ }
-  }))
-  persistTasks()
+  queueError.value = ''
+  try {
+    tasks.value = mergeDownloadTasks([], await listFileDownloads(siteId.value, 100))
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载队列恢复失败')
+  }
+  scheduleTaskRefresh()
 }
 
 async function refreshTasks(): Promise<void> {
-  try { (await listFileDownloads(siteId.value)).forEach(upsertTask) } catch {
-    await Promise.all(activeTasks.value.map(async (task) => {
-      try { upsertTask(await getFileDownloadTask(task.task_id, siteId.value)) } catch { /* 任务状态仍可在 Job Center 查询 */ }
-    }))
+  try {
+    tasks.value = mergeDownloadTasks(tasks.value, await listFileDownloads(siteId.value, 100))
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载队列刷新失败')
   }
-  persistTasks()
   scheduleTaskRefresh()
 }
 
 function scheduleTaskRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
-  if (!activeTasks.value.length) return
-  refreshTimer = setTimeout(() => void refreshTasks(), 1_500)
+  refreshTimer = activeTasks.value.length ? setTimeout(() => void refreshTasks(), 1_500) : null
 }
 
 async function cancelTask(task: FileDownloadTask): Promise<void> {
-  try { upsertTask(await cancelFileDownload(task.task_id, siteId.value)); persistTasks(); scheduleTaskRefresh() } catch (reason) { error.value = reason instanceof Error ? reason.message : '下载任务取消失败' }
-}
-
-function upsertTask(task: FileDownloadTask): void {
-  const index = tasks.value.findIndex((item) => item.task_id === task.task_id)
-  if (index < 0) tasks.value.unshift(task)
-  else tasks.value[index] = task
-  tasks.value = tasks.value.slice(0, 50)
-}
-
-function restoreTasks(): void {
   try {
-    const values = JSON.parse(localStorage.getItem(storageKey) || '[]') as unknown
-    if (Array.isArray(values)) tasks.value = values.filter((value): value is FileDownloadTask => Boolean(value && typeof value === 'object' && 'task_id' in value))
-  } catch { tasks.value = [] }
+    tasks.value = mergeDownloadTasks(tasks.value, [await cancelFileDownload(task.task_id, siteId.value)])
+    scheduleTaskRefresh()
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载取消失败')
+  }
 }
 
-function persistTasks(): void {
-  localStorage.setItem(storageKey, JSON.stringify(tasks.value))
+async function retryTask(task: FileDownloadTask): Promise<void> {
+  try {
+    tasks.value = mergeDownloadTasks(tasks.value, [await retryFileDownload(task.task_id, siteId.value)])
+    scheduleTaskRefresh()
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载重试失败')
+  }
 }
 
-function formatBytes(value: number | null): string {
-  if (value === null || value === undefined) return '-'
-  if (value < 1024) return `${value} B`
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
-  return `${(value / 1024 ** 2).toFixed(1)} MB`
+async function clearTasks(status: 'COMPLETED' | 'FAILED'): Promise<void> {
+  try {
+    await clearFileDownloads([status], siteId.value)
+    await recoverTasks()
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载记录清理失败')
+  }
+}
+
+async function deliverTask(task: FileDownloadTask, action: 'save' | 'open' | 'folder'): Promise<void> {
+  if (!task.result) return
+  queueError.value = ''
+  try {
+    let savedPath = savedPaths.get(task.task_id)
+    if (!savedPath) {
+      const result = await downloadBackendResource(fileDownloadRequest(task.task_id, task.site_id, task.result.name))
+      if (result.status === 'failed') {
+        queueError.value = result.error || '下载结果交付失败'
+        return
+      }
+      if (result.status === 'cancelled' || result.status === 'started') return
+      savedPath = result.savedPath
+      if (savedPath) savedPaths.set(task.task_id, savedPath)
+    }
+    if (!savedPath || action === 'save') {
+      if (savedPath) ElMessage.success('文件已保存')
+      return
+    }
+    const result = action === 'open'
+      ? await getPlatformAdapter().openPath(savedPath)
+      : await getPlatformAdapter().showItemInFolder(savedPath)
+    if (!result.success) queueError.value = result.error || '桌面打开失败'
+  } catch (reason) {
+    queueError.value = messageOf(reason, '下载结果交付失败')
+  }
 }
 
 function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'warning' | 'info' {
@@ -253,69 +388,138 @@ function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'w
   if (status === 'CANCELLED') return 'warning'
   return 'info'
 }
+
+function messageOf(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback
+}
 </script>
 
 <template>
-  <section class="file-management-page">
+  <section class="file-management-page" v-loading="loading">
     <header class="page-heading">
-      <div><p class="eyebrow">CONTROLLED FILES / TRANSFER QUEUE</p><h1>文件管理</h1><p>按局点浏览本地文件与受控设备目录；只允许下载，不上传、不删除、不重命名。</p></div>
-      <el-button :loading="loading" @click="refresh">刷新</el-button>
+      <div>
+        <p class="eyebrow">LOCAL / DEVICE FILES</p>
+        <h1>文件管理</h1>
+        <p>本地下载目录与设备 SFTP 双栏管理；设备侧保持只读，仅迁移 Qt 已验证的下载能力。</p>
+      </div>
+      <el-button :loading="loading" @click="refreshAll">{{ t('refreshAll') }}</el-button>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <el-alert v-if="deviceFilesMessage" :title="deviceFilesMessage" type="info" :closable="false" show-icon />
-    <el-alert v-if="!localAvailable" title="当前局点暂无本地文件目录" type="info" :closable="false" show-icon />
+    <el-alert v-if="deviceFilesMessage && isFeatureEnabled('web.file_management_remote')" :title="deviceFilesMessage" type="info" :closable="false" show-icon />
 
-    <div class="content-card" v-loading="loading">
-      <div class="toolbar">
-        <el-input v-model="siteId" clearable placeholder="局点（留空为当前）" @keyup.enter="refresh" />
-        <el-select v-model="category" clearable placeholder="文件分类" @change="refresh">
-          <el-option label="全部" value="" /><el-option label="Session" value="session" /><el-option label="Raw" value="raw" /><el-option label="ZIP / 采集包" value="package" /><el-option label="报告 / Artifact" value="artifact" />
-        </el-select>
-        <el-input v-model="search" clearable placeholder="搜索文件名或相对路径" @keyup.enter="refresh" />
-        <el-button type="primary" @click="refresh">查询</el-button>
+    <div class="device-toolbar content-card">
+      <el-input v-model="deviceSearch" clearable placeholder="搜索设备 / IP / 分组 / 类型" />
+      <el-select v-model="deviceGroup" clearable placeholder="全部分组">
+        <el-option v-for="group in deviceGroups" :key="group" :label="group" :value="group" />
+      </el-select>
+      <el-select v-model="selectedDeviceId" clearable filterable placeholder="选择设备（决定默认本地目录）" @change="deviceChanged">
+        <el-option v-for="device in filteredDevices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
+      </el-select>
+      <span>{{ selectedDevice ? `当前设备：${selectedDevice.name}` : '当前为局点下载根目录' }}</span>
+      <template v-if="isFeatureEnabled('web.file_management_remote')">
+        <el-checkbox v-model="allowSftpSetup">必要时允许设备侧启用 SFTP</el-checkbox>
+        <el-button type="primary" :disabled="!selectedDeviceId || !!connection" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
+        <el-button :disabled="!connection" @click="disconnectDevice">{{ t('disconnect') }}</el-button>
+        <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions')" :disabled="!selectedDeviceId" @click="prepareWinscp">{{ t('winscp') }}</el-button>
+      </template>
+    </div>
+
+    <div class="panes">
+      <article class="content-card pane">
+        <div class="section-heading"><h2>本地</h2><span>{{ localPage?.current_label || '下载目录' }}</span></div>
+        <el-alert v-if="localError" :title="localError" type="error" :closable="false" show-icon />
+        <div class="toolbar">
+          <el-button :disabled="!localPage || localPage.current_entry_id === localPage.root_entry_id" @click="loadLocal(localPage?.parent_entry_id, 1)">{{ t('back') }}</el-button>
+          <el-button :disabled="!localPage" @click="loadLocal(localPage?.root_entry_id, 1)">{{ t('root') }}</el-button>
+          <el-button :loading="localLoading" :disabled="!localPage" @click="loadLocal(localPage?.current_entry_id, localPageNumber)">{{ t('refresh') }}</el-button>
+          <el-button v-if="isFeatureEnabled('web.file_management_local_write')" :disabled="!localPage" @click="createDirectory">{{ t('newDirectory') }}</el-button>
+          <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions')" :disabled="!localPage" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
+        </div>
+        <el-table :data="localPage?.items || []" border stripe height="430" empty-text="当前目录为空" v-loading="localLoading" @row-dblclick="openLocal">
+          <el-table-column prop="name" label="名称" min-width="220" show-overflow-tooltip />
+          <el-table-column label="类型" width="90"><template #default="{ row }">{{ row.is_dir ? '目录' : row.file_type }}</template></el-table-column>
+          <el-table-column label="大小" width="105"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
+          <el-table-column prop="modified_at" label="修改时间" width="170" />
+        </el-table>
+        <el-pagination
+          v-if="localPage && localPage.total > localPage.limit"
+          v-model:current-page="localPageNumber"
+          small layout="prev, pager, next, total" :page-size="localPage.limit" :total="localPage.total"
+          @current-change="(page: number) => loadLocal(localPage?.current_entry_id, page)"
+        />
+        <p class="hint">双击目录进入；双击文件会通过受控下载桥保存后打开。</p>
+      </article>
+
+      <article v-if="isFeatureEnabled('web.file_management_remote')" class="content-card pane">
+        <div class="section-heading"><h2>设备</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
+        <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon />
+        <div class="toolbar">
+          <el-button :disabled="!connection || !remotePage || remotePage.current_entry_id === connection.root_entry_id" @click="loadRemote(remotePage?.parent_entry_id, 1)">{{ t('up') }}</el-button>
+          <el-button :disabled="!connection" @click="loadRemote(connection?.root_entry_id, 1)">{{ t('root') }}</el-button>
+          <el-button :disabled="!connection" :loading="remoteLoading" @click="loadRemote(remotePage?.current_entry_id, remotePageNumber)">{{ t('refresh') }}</el-button>
+          <el-button :disabled="!connection" @click="selectAllRemote(false)">{{ t('selectAll') }}</el-button>
+          <el-button :disabled="!connection" @click="clearRemoteSelection">{{ t('clearSelection') }}</el-button>
+          <el-button :disabled="!connection" @click="selectAllRemote(true)">{{ t('meshLogs') }}</el-button>
+          <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">{{ t('downloadSelected') }}（{{ remoteSelected.length }}）</el-button>
+        </div>
+        <el-table
+          ref="remoteTable" :data="remotePage?.items || []" border stripe height="430" row-key="entry_id"
+          empty-text="暂无远程文件或尚未连接" v-loading="remoteLoading"
+          @selection-change="selectRemote" @row-dblclick="openRemote"
+        >
+          <el-table-column type="selection" width="46" :selectable="(row: RemoteFileEntry) => !row.is_dir && row.downloadable" />
+          <el-table-column prop="name" label="名称" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="category" label="分类" width="90" />
+          <el-table-column label="大小" width="105"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
+          <el-table-column prop="modified_at" label="修改时间" width="170" />
+        </el-table>
+        <el-pagination
+          v-if="remotePage && remotePage.total > remotePage.limit"
+          v-model:current-page="remotePageNumber"
+          small layout="prev, pager, next, total" :page-size="remotePage.limit" :total="remotePage.total"
+          @current-change="(page: number) => loadRemote(remotePage?.current_entry_id, page)"
+        />
+        <p class="hint">远程目录和文件只使用会话 opaque 引用；不提供删除或远程建目录。</p>
+      </article>
+    </div>
+
+    <article class="content-card">
+      <div class="section-heading">
+        <div><h2>{{ t('queue') }}</h2><span>状态由现有 TaskRepository 恢复；设备文件与 Artifact 分离。</span></div>
+        <div class="toolbar compact">
+          <el-button type="primary" plain @click="openTaskWindow">打开任务窗口</el-button>
+          <el-button @click="refreshTasks">{{ t('refresh') }}</el-button>
+          <el-button @click="clearTasks('COMPLETED')">{{ t('clearCompleted') }}</el-button>
+          <el-button @click="clearTasks('FAILED')">{{ t('clearFailed') }}</el-button>
+        </div>
       </div>
-      <el-table :data="files" border stripe height="460" empty-text="暂无符合条件的本地文件">
-        <el-table-column prop="name" label="文件名" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="category" label="分类" width="120" />
-        <el-table-column prop="relative_path" label="相对路径" min-width="320" show-overflow-tooltip />
-        <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-        <el-table-column prop="modified_at" label="修改时间" width="180" />
-        <el-table-column label="操作" width="100" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="!row.downloadable || !isFeatureEnabled('web.file_management_download')" @click="download(row)">下载</el-button></template></el-table-column>
-      </el-table>
-      <p class="result-count">共 {{ total }} 个文件；当前只返回受控 ref，不返回本机绝对路径。</p>
-    </div>
-
-    <div v-if="isFeatureEnabled('web.file_management_remote')" class="content-card remote-card">
-      <div class="section-heading"><h2>设备文件</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
-      <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon />
-      <div class="toolbar">
-        <el-select v-model="selectedDeviceId" clearable placeholder="选择设备">
-          <el-option v-for="device in devices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
-        </el-select>
-        <el-button type="primary" :loading="remoteLoading" :disabled="!selectedDeviceId" @click="connectDevice">连接设备</el-button>
-        <el-button :disabled="!connection" @click="disconnectDevice">断开</el-button>
-        <el-button :disabled="!connection" @click="loadRemotePage(remotePage?.current_entry_id)">刷新</el-button>
-        <el-button :disabled="!connection || !remotePage || remotePage.current_entry_id === connection.root_entry_id" @click="loadRemotePage(remotePage?.parent_entry_id)">上级</el-button>
-        <el-button :type="remoteMeshOnly ? 'primary' : 'default'" :disabled="!connection" @click="selectMeshLogs">Mesh 日志</el-button>
-        <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download') || !isFeatureEnabled('web.file_management_remote')" @click="downloadRemote">下载选中</el-button>
+      <el-alert v-if="queueError" :title="queueError" type="error" :closable="false" show-icon />
+      <div v-if="batchSummaries.length" class="batch-summaries">
+        <el-tag v-for="batch in batchSummaries" :key="batch.batchId" effect="plain">
+          {{ batch.batchId.slice(0, 10) }}：{{ batch.completed }}/{{ batch.total }} 完成，{{ batch.failed }} 失败，{{ batch.cancelled }} 取消，{{ batch.active }} 进行中
+        </el-tag>
       </div>
-      <el-table :data="remoteItems" border stripe height="360" row-key="entry_id" empty-text="暂无远程文件或尚未连接" @selection-change="selectRemote" @row-dblclick="openRemoteRow">
-        <el-table-column type="selection" width="48" :selectable="isRemoteSelectable" />
-        <el-table-column prop="name" label="名称" min-width="240" show-overflow-tooltip />
-        <el-table-column prop="category" label="分类" width="110" />
-        <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-        <el-table-column prop="modified_at" label="修改时间" width="180" />
+      <el-table :data="tasks" border stripe empty-text="暂无下载任务">
+        <el-table-column label="文件" min-width="210"><template #default="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${row.result.mesh_import_status}` : '' }}</small></template></el-table-column>
+        <el-table-column label="批次" width="105"><template #default="{ row }">{{ row.batch_id ? row.batch_id.slice(0, 10) : '-' }}</template></el-table-column>
+        <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
+        <el-table-column label="进度" min-width="210"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template></el-table-column>
+        <el-table-column prop="message" label="信息" min-width="220" show-overflow-tooltip />
+        <el-table-column label="操作" width="300" fixed="right"><template #default="{ row }">
+          <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
+          <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
+          <template v-if="row.status === 'COMPLETED' && row.result">
+            <el-button link type="primary" @click="deliverTask(row, 'save')">{{ t('save') }}</el-button>
+            <el-button link type="primary" @click="deliverTask(row, 'open')">{{ t('open') }}</el-button>
+            <el-button link type="primary" @click="deliverTask(row, 'folder')">{{ t('containingFolder') }}</el-button>
+          </template>
+        </template></el-table-column>
       </el-table>
-      <p class="result-count">远程 entry 仅在服务端会话内有效，浏览器不提交远程路径。</p>
-    </div>
-
-    <div class="content-card compact-task-summary">
-      <div class="section-heading"><h2>下载任务</h2><span>运行中 {{ activeTasks.length }} 项 / 失败 {{ failedTaskCount }} 项</span><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
-    </div>
+    </article>
   </section>
 </template>
 
 <style scoped>
-.file-management-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.toolbar,.section-heading{display:flex;align-items:center;gap:12px}.page-heading,.section-heading{justify-content:space-between}.page-heading h1,.section-heading h2{margin:2px 0 6px}.page-heading p,.section-heading span,.result-count{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.content-card{padding:14px 16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px;overflow:hidden}.toolbar{flex-wrap:wrap;margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:150px}.result-count{padding-top:12px;font-size:12px}.section-heading{margin-bottom:12px}.section-heading h2{margin:0}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
+.file-management-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.section-heading,.device-toolbar,.toolbar{display:flex;align-items:center;gap:10px}.page-heading,.section-heading{justify-content:space-between}.page-heading h1,.section-heading h2{margin:2px 0 6px}.page-heading p,.section-heading span,.hint{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.content-card{padding:14px 16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px;overflow:hidden}.device-toolbar{flex-wrap:wrap}.device-toolbar .el-input{width:250px}.device-toolbar .el-select{width:210px}.panes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.pane{min-width:0}.toolbar{flex-wrap:wrap;margin-bottom:10px}.toolbar.compact{margin:0}.hint{padding-top:10px;font-size:12px}.batch-summaries{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.el-pagination{justify-content:flex-end;padding-top:10px}strong,small{display:block}small{margin-top:4px;color:var(--el-text-color-secondary)}@media(max-width:1200px){.panes{grid-template-columns:1fr}}@media(max-width:760px){.page-heading,.section-heading{align-items:flex-start;flex-direction:column}.device-toolbar .el-input,.device-toolbar .el-select{width:100%}}
 </style>

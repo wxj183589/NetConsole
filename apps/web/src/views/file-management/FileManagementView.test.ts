@@ -1,43 +1,56 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import source from './FileManagementView.vue?raw'
+import {
+  clearFileDownloads,
+  connectDeviceFiles,
+  createLocalDirectory,
+  listLocalFiles,
+  prepareFileDesktopAction,
+  retryFileDownload,
+  startRemoteFileDownloadBatch,
+} from '../../api/fileManagement'
 
-describe('file management read-only view', () => {
-  it('supports category filtering, empty/error states and controlled download', () => {
-    expect(source).toContain('Session')
-    expect(source).toContain('Raw')
-    expect(source).toContain('ZIP / 采集包')
-    expect(source).toContain('报告 / Artifact')
-    expect(source).toContain('暂无符合条件的本地文件')
-    expect(source).toContain('el-alert v-if="error"')
-    expect(source).toContain('startFileDownload')
-    expect(source).toContain('fileDownloadRequest')
-    expect(source).toContain('downloadBackendResource')
-    expect(source).not.toContain(':href=')
-    expect(source).toContain("isFeatureEnabled('web.file_management_download')")
-    expect(source).not.toMatch(/>\s*(上传|删除|重命名)\s*</)
+describe('file management API contract', () => {
+  it('uses opaque dual-pane references and one batch request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [], tasks: [], failures: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listLocalFiles({ site_id: 'demo', directory_id: 'fl1_opaque', device_id: 'device-1', page: 2, limit: 200 })
+    await createLocalDirectory({ site_id: 'demo', directory_id: 'fl1_opaque', device_id: 'device-1', name: 'logs' })
+    await startRemoteFileDownloadBatch('fc1_session', ['fe1_a', 'fe1_b'], 'demo', 'fl1_opaque')
+
+    expect(fetchMock.mock.calls[0][0]).toContain('directory_id=fl1_opaque')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ directory_id: 'fl1_opaque', device_id: 'device-1', name: 'logs' })
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      connection_id: 'fc1_session',
+      remote_entry_ids: ['fe1_a', 'fe1_b'],
+      local_directory_id: 'fl1_opaque',
+    })
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('remote_path')
   })
 
-  it('recovers task status by opaque task id and stops polling on unmount', () => {
-    expect(source).toContain('localStorage')
-    expect(source).toContain('recoverTasks')
-    expect(source).toContain('getFileDownloadTask')
-    expect(source).toContain('onBeforeUnmount')
-    expect(source).toContain('clearTimeout')
-    expect(source).toContain('disconnectDeviceFiles(connectionId')
-    expect(source).not.toContain('absolute_path')
+  it('sends explicit SFTP setup consent and persistent queue actions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await connectDeviceFiles('device-1', 'demo', true)
+    await retryFileDownload('task-1', 'demo')
+    await clearFileDownloads(['COMPLETED', 'FAILED'], 'demo')
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ device_id: 'device-1', allow_sftp_setup: true })
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/file-management/downloads/task-1/retry?site_id=demo')
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ statuses: ['COMPLETED', 'FAILED'] })
   })
 
-  it('keeps remote browsing behind its own gate and excludes unsupported desktop actions', () => {
-    expect(source).toContain('connectDeviceFiles')
-    expect(source).toContain('listRemoteDevices')
-    expect(source).not.toContain("from '../../api/deviceManagement'")
-    expect(source).toContain('listRemoteFiles')
-    expect(source).toContain('startRemoteFileDownload')
-    expect(source).toContain('Mesh 日志')
-    expect(source).toContain("isFeatureEnabled('web.file_management_remote')")
-    expect(source).not.toContain('requestWinScp')
-    expect(source).not.toContain('requestOpenResultDirectory')
-    expect(source).not.toMatch(/>\s*(上传|删除|重命名)\s*</)
+  it('prepares a typed desktop action without argv, path or password', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ action_ref: 'fda1_opaque' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await prepareFileDesktopAction('winscp', { site_id: 'demo', device_id: 'device-1' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/file-management/desktop-actions/winscp?site_id=demo')
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).toEqual({ device_id: 'device-1' })
+    expect(JSON.stringify(body)).not.toMatch(/password|argv|path/i)
   })
 })
