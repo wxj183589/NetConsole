@@ -130,6 +130,9 @@ from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideIn
 from netconsole.core.optical_severity_engine import display_optical_status
 
 
+pytestmark = pytest.mark.usefixtures("qt_module_lifecycle")
+
+
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
 AC_FIXTURES = FIXTURES / "ac"
 

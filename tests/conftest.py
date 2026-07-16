@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import gc
 import os
 import tempfile
 
@@ -31,6 +32,32 @@ def qt_application() -> Iterator[QApplication]:
     application.setQuitOnLastWindowClosed(False)
     _QT_APPLICATION = application
     yield application
+
+
+@pytest.fixture(scope="module")
+def qt_module_lifecycle() -> Iterator[None]:
+    """模块结束时在 pytest 主线程统一回收遗留的 Qt 顶层对象。"""
+
+    yield
+    application = QApplication.instance()
+    if application is None:
+        return
+    widgets = list(application.topLevelWidgets())
+    for widget in widgets:
+        try:
+            if callable(getattr(widget, "request_app_exit", None)):
+                widget.hide()
+            else:
+                widget.close()
+        except RuntimeError:
+            continue
+    for widget in widgets:
+        try:
+            widget.deleteLater()
+        except RuntimeError:
+            continue
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    gc.collect()
 
 
 @pytest.fixture

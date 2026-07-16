@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gzip
-import gc
 import json
 import os
 import sqlite3
@@ -33,25 +32,7 @@ from netconsole.services.network_tools.trackside_bssid_resolver import Trackside
 from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _collect_qt_cycles_on_test_thread():
-    """在离开 MESH 模块前由 GUI 测试线程统一析构 Qt 图表对象。"""
-
-    yield
-    from PySide6.QtCore import QCoreApplication, QEvent
-    from PySide6.QtWidgets import QApplication
-
-    application = QApplication.instance()
-    if application is not None:
-        widgets = list(application.topLevelWidgets())
-        for widget in widgets:
-            try:
-                widget.close()
-                widget.deleteLater()
-            except RuntimeError:
-                continue
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-    gc.collect()
+pytestmark = pytest.mark.usefixtures("qt_module_lifecycle")
 
 
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
