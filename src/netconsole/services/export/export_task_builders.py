@@ -704,6 +704,7 @@ def app_logs_csv_spec(
     offset: int = 0,
     limit: int = 0,
     snapshot_size: int | None = None,
+    redact_web: bool = False,
     title: str = "",
     open_dir_on_success: bool = True,
 ) -> ExportTaskSpec:
@@ -725,7 +726,25 @@ def app_logs_csv_spec(
             "offset": max(0, int(offset)),
             "limit": max(0, int(limit)),
             "snapshot_size": max(0, int(snapshot_size)),
+            "redact_web": bool(redact_web),
         },
+    )
+
+
+def open_source_notices_spec(
+    output_path: str | Path,
+    *,
+    base_dir: str | Path,
+    format: str,
+    title: str = "",
+) -> ExportTaskSpec:
+    if format not in {"txt", "xlsx"}:
+        raise ValueError("开源许可导出格式仅支持 txt/xlsx")
+    return ExportTaskSpec(
+        task_type="open_source_notices",
+        output_path=str(output_path),
+        title=title,
+        payload={"base_dir": str(base_dir), "format": format},
     )
 
 

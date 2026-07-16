@@ -22,6 +22,7 @@ from netconsole.backend.api.online_mr_agent_control_router import router as onli
 from netconsole.backend.api.rail_transit_base_data_router import router as rail_transit_base_data_router
 from netconsole.backend.api.task_router import router as task_router
 from netconsole.backend.api.task_router import ws_router as task_ws_router
+from netconsole.backend.api.system_maintenance_router import router as system_maintenance_router
 from netconsole.backend.api.train_communication_router import router as train_communication_router
 from netconsole.backend.api.trackside_ap_business_router import router as trackside_ap_business_router
 from netconsole.backend.api.vehicle_mr_online_router import router as vehicle_mr_online_router
@@ -105,6 +106,10 @@ api_router.include_router(
 api_router.include_router(
     wireless_dashboard_router,
     dependencies=[Depends(require_feature("web.rail_transit_wireless_dashboard"))],
+)
+api_router.include_router(
+    system_maintenance_router,
+    dependencies=[Depends(require_feature("web.logs"))],
 )
 ws_router = APIRouter()
 ws_router.include_router(task_ws_router)

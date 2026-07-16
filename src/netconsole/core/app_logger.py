@@ -30,16 +30,16 @@ def configure_path_resolver(paths: PathResolver) -> None:
     _paths = paths
 
 
-def log_info(event: str, detail: str = "") -> None:
-    _write_log("INFO", event, detail)
+def log_info(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    _write_log("INFO", event, detail, log_path=log_path)
 
 
-def log_warning(event: str, detail: str = "") -> None:
-    _write_log("WARNING", event, detail)
+def log_warning(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    _write_log("WARNING", event, detail, log_path=log_path)
 
 
-def log_error(event: str, detail: str = "") -> None:
-    _write_log("ERROR", event, detail)
+def log_error(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    _write_log("ERROR", event, detail, log_path=log_path)
 
 
 def read_logs(keyword: str | None = None, level: str | None = None) -> list[dict[str, str]]:
@@ -61,8 +61,8 @@ def iter_logs(keyword: str | None = None, level: str | None = None):
     return iter_paginated_log_file(_log_path(), keyword=keyword, level=level, parser=_parse_line)
 
 
-def clear_logs() -> None:
-    path = _log_path()
+def clear_logs(log_path: Path | None = None) -> None:
+    path = log_path or _log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("", encoding="utf-8")
 
@@ -81,8 +81,8 @@ def sanitize_detail(detail: object) -> str:
     return _sanitize_detail(detail)
 
 
-def _write_log(level: str, event: str, detail: str = "") -> None:
-    path = _log_path()
+def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    path = log_path or _log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     safe_event = _clean_cell(event).upper()
@@ -108,7 +108,7 @@ def _sanitize_detail(detail: object) -> str:
     for key in sorted(_SENSITIVE_KEYS, key=len, reverse=True):
         text = re.sub(
             rf"({re.escape(key)}\s*[:=]\s*)[^,;|\s]+",
-            rf"\1***",
+            r"\1***",
             text,
             flags=re.IGNORECASE,
         )

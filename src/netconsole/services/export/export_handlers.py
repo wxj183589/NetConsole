@@ -15,6 +15,7 @@ from netconsole.services.export.common_exporters import (
     export_mib_product_compare,
     export_omnipeek_name_table_task,
     export_online_mr_report_xlsx,
+    export_open_source_notices,
     export_app_logs_csv,
     export_car_network_point_table,
     export_command_reference_markdown,
@@ -50,6 +51,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "copy_logs",
     "copy_file",
     "app_logs_csv",
+    "open_source_notices",
     "device_csv",
     "device_template_csv",
     "securecrt_sessions",
@@ -94,6 +96,8 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = copy_file_export(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "app_logs_csv":
         row_count = export_app_logs_csv(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "open_source_notices":
+        row_count = export_open_source_notices(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "device_csv":
         row_count = export_device_csv(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "device_template_csv":

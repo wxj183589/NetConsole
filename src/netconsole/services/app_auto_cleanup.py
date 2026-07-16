@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from netconsole.core.paths import PathResolver
 
@@ -118,7 +119,13 @@ class AppCleanupService:
             item.status = "可清理" if item.file_count else "无需清理"
         return items
 
-    def cleanup_items(self, items: list[CleanupItem], retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
+    def cleanup_items(
+        self,
+        items: list[CleanupItem],
+        retention_days: int = APP_CLEANUP_RETENTION_DAYS,
+        *,
+        should_cancel: Callable[[], None] | None = None,
+    ) -> AppCleanupResult:
         days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
         cutoff = datetime.now() - timedelta(days=days)
         result = AppCleanupResult(retention_days=days, cutoff=cutoff)
@@ -126,6 +133,8 @@ class AppCleanupService:
         seen: set[Path] = set()
         for item in items:
             for candidate in item.candidates:
+                if should_cancel is not None:
+                    should_cancel()
                 resolved = _safe_resolve(candidate.path)
                 if resolved is None or resolved in seen:
                     continue

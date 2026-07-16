@@ -254,11 +254,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         "日志中心（Web）",
         "module.logs",
         "page",
-        default_visible=False,
-        default_enabled=False,
-        default_client_package=False,
-        status=FeatureStatus.DEVELOPMENT,
     ),
+    FeatureItem("web.logs_export", "日志导出（Web）", "web.logs", "action"),
     FeatureItem(
         "web.system_settings",
         "系统设置（Web）",

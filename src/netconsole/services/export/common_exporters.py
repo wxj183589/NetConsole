@@ -191,6 +191,7 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
     limit = max(0, int(payload.get("limit") or 0))
     snapshot_value = payload.get("snapshot_size")
     snapshot_size = None if snapshot_value in (None, "") else max(0, int(snapshot_value))
+    redact_web = bool(payload.get("redact_web"))
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     _emit(progress, "write_logs", 0, 0, "正在导出日志")
@@ -211,6 +212,10 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
             if limit and count >= limit:
                 break
             display = display_log_row(row)
+            if redact_web:
+                from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
+
+                display = {key: redact_system_maintenance_text(value) for key, value in display.items()}
             writer.writerow(
                 [
                     display.get("time", ""),
@@ -226,6 +231,56 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
                 _emit(progress, "write_logs", count, 0, f"正在导出日志 {count} 条")
                 _check_cancel(should_cancel)
     return count
+
+
+def export_open_source_notices(
+    path: Path,
+    payload: Mapping[str, Any],
+    progress: ProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> int:
+    from netconsole.services.open_source_notice_service import OpenSourceNoticeService
+
+    service = OpenSourceNoticeService(Path(str(payload.get("base_dir") or "")))
+    _emit(progress, "scan_dependencies", 0, 1, "正在扫描运行依赖")
+    components = service.list_components()
+    _check_cancel(should_cancel)
+    rows = [component.__dict__ for component in components]
+    if str(payload.get("format") or "") == "xlsx":
+        return export_table_xlsx(
+            path,
+            {
+                "columns": [
+                    {"key": key, "title": title, "text": True}
+                    for key, title in zip(
+                        ("name", "version", "license", "purpose", "homepage", "note"),
+                        ("组件名称", "版本", "许可证", "用途", "项目地址", "备注"),
+                        strict=True,
+                    )
+                ],
+                "source": {"type": "inline_rows", "rows": rows, "inline_reason": "small_static_notice"},
+                "sheet_name": "开源许可",
+                "freeze_header": True,
+                "auto_filter": True,
+                "auto_width": True,
+            },
+            progress,
+            should_cancel,
+        )
+    text = ["NetConsole 开源许可说明", ""]
+    for component in components:
+        text.extend(
+            (
+                f"组件名称：{component.name}",
+                f"版本：{component.version or '-'}",
+                f"许可证：{component.license or '-'}",
+                f"用途：{component.purpose or '-'}",
+                f"项目地址：{component.homepage or '-'}",
+                f"备注：{component.note or '-'}",
+                "",
+            )
+        )
+    return export_markdown_text(path, {"text": "\n".join(text)}, progress, should_cancel)
 
 
 def export_command_reference_markdown(

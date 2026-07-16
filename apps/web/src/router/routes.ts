@@ -33,6 +33,7 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'agents', name: 'agents', component: () => import('../views/agents/AgentListView.vue'), meta: { navigationId: 'agents', featureId: 'web.agent_management', moduleId: 'agents', title: 'Agent 管理', desktopOnly: false } },
       { path: 'settings', name: 'system-settings', component: () => import('../views/settings/SystemSettingsView.vue'), meta: { navigationId: 'settings', featureId: 'web.system_settings', moduleId: 'settings', title: '系统设置', desktopOnly: true } },
       { path: 'command-reference', name: 'command-reference', component: () => import('../views/command-reference/CommandReferenceView.vue'), meta: { navigationId: 'command-reference', featureId: 'web.command_reference', moduleId: 'command-reference', title: '命令说明', desktopOnly: false } },
+      { path: 'logs', name: 'logs', component: () => import('../views/system/SystemMaintenanceView.vue'), meta: { navigationId: 'logs', featureId: 'web.logs', moduleId: 'logs', title: '应用日志与安全维护', desktopOnly: false } },
     ],
   },
 ]

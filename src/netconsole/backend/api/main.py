@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from netconsole.application.ac.web_application_service import AcWebApplicationService
 from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
+from netconsole.application.system_maintenance import SystemMaintenanceApplicationService
 from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.router import api_router, ws_router
@@ -186,6 +187,8 @@ def create_app(
                 directories={
                     f"config_snapshots:{site_name}": paths.config_center_snapshots_root(site_name),
                     f"config_exports:{site_name}": paths.config_center_outputs_dir(site_name),
+                    "system_logs": paths.logs_dir,
+                    "system_cache": paths.runtime_cache_dir,
                 },
             ),
         )
@@ -193,6 +196,14 @@ def create_app(
     web_process_adapter = LocalProcessAdapter(task_service)
     web_export_adapter = WebExportProcessAdapter(task_service)
     web_artifact_store = WebArtifactStore(paths, task_service)
+    system_maintenance_service = SystemMaintenanceApplicationService(
+        paths,
+        task_service,
+        process_adapter=web_process_adapter,
+        export_adapter=web_export_adapter,
+        artifact_store=web_artifact_store,
+        desktop_action_service=desktop_action_service,
+    )
     device_management_service = DeviceManagementWebService(
         paths,
         task_service,
@@ -229,12 +240,32 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        async def schedule_auto_cleanup() -> None:
+            await asyncio.sleep(8)
+            try:
+                await asyncio.to_thread(
+                    system_maintenance_service.start_cleanup,
+                    site_name,
+                    dry_run=False,
+                    automatic=True,
+                )
+            except Exception as exc:
+                app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
+
+        auto_cleanup_task = (
+            asyncio.create_task(schedule_auto_cleanup())
+            if runtime_mode is RuntimeMode.DESKTOP and desktop_session_token
+            else None
+        )
         try:
             await agent_service.start()
             await traffic_service.start()
             file_management_service.start()
             yield
         finally:
+            if auto_cleanup_task is not None:
+                auto_cleanup_task.cancel()
+                await asyncio.gather(auto_cleanup_task, return_exceptions=True)
             try:
                 # 文件下载队列必须先退出，之后才能关闭它共用的 LocalProcessAdapter。
                 await asyncio.to_thread(file_management_service.close)
@@ -312,6 +343,7 @@ def create_app(
         web_artifact_store,
     )
     app.state.file_management_service = file_management_service
+    app.state.system_maintenance_service = system_maintenance_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
     app.state.online_mr_application_service = online_mr_application_service

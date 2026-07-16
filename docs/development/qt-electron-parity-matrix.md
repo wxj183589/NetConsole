@@ -56,7 +56,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 任务中心 | Qt 中分散任务进度 | 多个进度 Dialog/Worker | `/tasks` / `JobCenterView.vue` | 列表、详情、日志、取消、恢复 | `TaskApplicationService`、`JobCenterQueryService`；Job Router | 通用任务中心真实可用，但需随业务模块逐项验收 | `PARTIAL` |
 | Agent 管理 | 无完整 Qt 一级入口 | Online MR Agent 相关 Dialog | `/agents` / `AgentListView.vue` | Profile、健康、工具、任务、包和远程执行入口 | Agent Controller Service；Agent Router | 真实 Controller 路径与 Fake 验收并存，真实 Agent 环境未通过 | `PARTIAL` |
 | 命令说明 | 命令说明 | `CommandReferencePage` | `/command-reference` / `CommandReferenceView.vue`（Feature/导航关闭） | 实时搜索、模块/设备/厂商/协议/类别/风险筛选、Qt 事实详情、复制、刷新、Markdown 导出 | `CommandReferenceApplicationService`；`command_reference_router.py`；真实 Export Process 与公共 `WebArtifactStore` 已接通 | 页面和 Artifact 已实现；共享 TaskWindow `module` allowlist、任务中心模块筛选/取消 owner capability 与全局 locale runtime 尚未接入，当前为 `BLOCKED_ON_TASK_WINDOW` | `PARTIAL` |
-| 日志中心 | 日志 | `AppLogPage` | 规划 `/logs`，未注册正式组件 | 日志分页、筛选和查看 | 未形成永久 API/页面闭环 | 未开始 | `NOT_STARTED` |
+| 应用日志与安全维护 | 日志；设置 → 磁盘清理/更新日志/开源许可/关于 | `AppLogPage`、`DiskCleanupDialog`、`ChangelogDialog`、`OpenSourceNoticeDialog`、`AboutDialog` | `/logs` / `SystemMaintenanceView.vue` | 日志搜索、级别、分页、刷新、复制、清空和导出；白名单扫描/清理；更新日志；依赖扫描、复制、外链和 TXT/XLSX 导出；关于信息 | `SystemMaintenanceApplicationService`；System Maintenance Router；现有 Job/Export Process | 真实查询、清空、白名单清理、扫描、取消/恢复和语义化本机请求已接入；任务窗口与 Artifact 等待组合验证 | `BLOCKED` |
 | 系统设置 | 设置 | `SettingsPage` | `/settings` / `SystemSettingsView.vue`，仅 Electron Desktop 正式可达 | 当前已接线的主题、语言、主题色；iperf/fping/IPOP；三类终端路径、会话根、端口/编码；保存/重载/默认恢复；局点与维护入口 | `SettingsApplicationService` / Settings Router / 严格 Native Bridge | 设置文件读写、冲突/损坏/失败回滚、外观预览与离页恢复已闭环；全局 i18n 和桌面人工仍未完成 | `PARTIAL` |
 | 功能开关 | 功能开关配置 | `FeatureFlagsPage` | 集成在 `/settings`；仅源码开发态显示 | 四个布尔状态完整读写、影响预览、确认、恢复 | 中央 Feature Registry / Gate / customer profile | 自动化闭环；打包态强制隐藏并拒绝 API | `IMPLEMENTED_UNVERIFIED` |
 | SNMP Center | SNMP 中心 | `SnmpCenterPage` 及 SNMP 子页 | 无 Electron 正式入口 | 旧 SNMP 中心能力 | 保留历史代码 | 当前不迁移；如重启需独立立项 | `BLOCKED` |
@@ -76,7 +76,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | Agent 管理 | 部分 | 部分/Fake | Agent 包已有 | 部分 | Agent Controller/Fake 测试 | `NOT_STARTED` | `NOT_STARTED` | 真实 Agent、多 Controller 和现场失败恢复 |
 | 系统设置、功能开关 | 设置表单与内部开关页已实现；不迁移 Qt 明示未实现控件 | 真实 `settings.json`、中央 Feature profile 与严格 DTO；外观有预览/确认/失败及离页恢复 | 不适用 | 不适用 | SettingsStore/API、Vue mount、Electron IPC 定向测试 | `MANUAL_DESKTOP_PENDING` | 外部工具为 `REAL_DEVICE_PENDING` | `PARTIAL`；全局业务模块语言消费为 `BLOCKED_ON_GLOBAL_I18N` |
 | 命令说明 | 页面已实现，入口阻塞 | 250ms 实时搜索、竞态保护、筛选、Qt 事实详情、复制与刷新已实现 | Markdown ExportJob 与公共 Artifact 已实现；公开名不含 UUID/内部路径 | URL 或严格命名 localStorage 恢复当前任务 ID；模块串行轮询 `/exports/{task_id}` 并在完成、失败、取消或卸载时释放；Electron 通过正式 PlatformAdapter 仅传共享类型当前允许的 `taskId/status`，浏览器才回退 `/tasks` | `tests/test_command_reference_web_api.py`、`tests/test_command_reference.py`、真实挂载 `CommandReferenceView.test.ts`、公共 Job Center Artifact 测试 | `NOT_STARTED` | 不适用 | `BLOCKED_ON_TASK_WINDOW`：共享 bridge validator/类型和 Job Center module/owner capability 尚无 `command-reference`，因此模块不得伪造 module 已接通；全局 locale runtime 合入后模块翻译器需改为消费共享动态 locale |
-| 日志中心 | 否 | 否 | 否 | 否 | 无对等证据 | `NOT_STARTED` | 不适用 | 尚未迁移 |
+| 应用日志与安全维护 | 是（待人工对照） | 真实服务 | Export Process 已实现，公共 source whitelist 未登记 | 真实任务、取消与恢复 | `test_system_maintenance_web.py`、System Maintenance Vue/API 定向测试与 Web build | `NOT_STARTED` | 不适用 | `BLOCKED_ON_TASK_WINDOW`；解除后进入 `REAL_DEVICE_PENDING`，仍需 Electron 人工复制、清理、导出、错误/取消/重启恢复验收 |
 | SNMP Center、无线勘测 | 不迁移 | 不迁移 | 不迁移 | 不迁移 | 不纳入 | 不纳入 | 不纳入 | `BLOCKED` |
 
 ## 系统设置 Qt 事实矩阵
@@ -108,3 +108,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 2. 自动测试先定向；进入集成和合并前再运行全量 Python、Vue、Electron、Ruff、构建和文档检查。
 3. 当前设备管理标记为 `IMPLEMENTED_UNVERIFIED`。共享 Runtime bootstrap、统一任务窗口和诊断 Artifact allowlist 已接通；本机 CRUD、导入导出、任务窗口和终端人工流程通过，且剩余项仅为真实网络设备时，才升级为 `REAL_DEVICE_PENDING`；全部现场项通过后才能升级为 `COMPLETE`。
 4. 浏览器开发入口不得产生独立导航、业务分支、发布包或验收矩阵；Native 功能只在 Electron 中开放。
+
+### 应用日志与安全维护共享集成依赖
+
+本模块不复制 `WebArtifactStore`、Artifact manifest 或任务状态。统一任务窗口需在 `src/netconsole/application/web_artifacts.py` 的 `_source_root()` 固定映射中，把 `system_logs_current`、`system_logs_all`、`system_open_source_txt`、`system_open_source_xlsx` 四个 source 均解析到 `paths.site_files_dir(site_id) / "system_maintenance" / "outputs"`。TXT 在内部使用已允许的 `.md` Artifact，下载响应仅把文件名声明为 `.txt`，无需放宽公共后缀白名单。该映射未进入 main 前，模块导出接口明确返回 `BLOCKED_ON_TASK_WINDOW`，不得建立模块自有 Artifact store/gateway 规避。

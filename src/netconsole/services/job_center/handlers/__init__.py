@@ -14,6 +14,7 @@ def builtin_handlers() -> dict[str, JobHandler]:
         online_mr_jobs,
         rail_transit_jobs,
         snmp_jobs,
+        system_maintenance_jobs,
         traffic_jobs,
         wifi_survey_jobs,
     )
@@ -29,6 +30,7 @@ def builtin_handlers() -> dict[str, JobHandler]:
         online_mr_jobs.HANDLERS,
         rail_transit_jobs.HANDLERS,
         snmp_jobs.HANDLERS,
+        system_maintenance_jobs.HANDLERS,
         traffic_jobs.HANDLERS,
         wifi_survey_jobs.HANDLERS,
     ):
