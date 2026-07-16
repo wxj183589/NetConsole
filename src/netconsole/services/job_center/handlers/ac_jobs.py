@@ -13,6 +13,7 @@ from netconsole.services.ac import (
     AcCommandCancelled,
     AcCommandRequest,
     AcCommandService,
+    AcFitApDetailRefreshRequest,
     AcOpticalRefreshCancelled,
     AcOpticalIdentityAdapter,
     AcOpticalIdentityShadowReport,
@@ -191,6 +192,54 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
     return result.to_payload()
 
 
+def ac_info_refresh(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    site_name = str(params.get("site_name") or "demo")
+    database = Database(Path(str(params.get("db_path") or context.paths.site_db_path(site_name))))
+    service = AcService(AcResourceService(DeviceRepository(database), AcRepository(database), context.paths))
+    request = AcResourceRefreshRequest(
+        device_uuid=str(params.get("device_uuid") or params.get("ac_uuid") or ""),
+        site_name=site_name,
+        source="cli",
+    )
+    try:
+        result = service.refresh_ac_info(
+            request,
+            progress_callback=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except AcResourceRefreshCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    if not result.success:
+        raise RuntimeError(result.error_message or "AC 信息更新失败")
+    return result.to_payload()
+
+
+def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    site_name = str(params.get("site_name") or "demo")
+    database = Database(Path(str(params.get("db_path") or context.paths.site_db_path(site_name))))
+    service = AcService(AcResourceService(DeviceRepository(database), AcRepository(database), context.paths))
+    request = AcFitApDetailRefreshRequest(
+        device_uuid=str(params.get("device_uuid") or params.get("ac_uuid") or ""),
+        ap_uuid=str(params.get("ap_uuid") or ""),
+        site_name=site_name,
+    )
+    try:
+        result = service.refresh_ap_detail(
+            request,
+            progress_callback=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except AcResourceRefreshCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    if not result.success:
+        raise RuntimeError(result.error_message or "FIT-AP 深度更新失败")
+    return result.to_payload()
+
+
 def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     params = dict(context.params)
@@ -311,6 +360,8 @@ HANDLERS = {
         "fit_ap_extension_commit",
         "ac_overview_refresh",
         "ac_fit_ap_resources_refresh",
+        "ac_info_refresh",
+        "ac_fit_ap_detail_refresh",
         "ac_fit_ap_optical_refresh",
         "ac_command_action_execute",
         "ac_mesh_link_refresh",

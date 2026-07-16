@@ -48,6 +48,17 @@ SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS = {
     "display wlan ap all lldp",
 }
 
+SAFE_AC_FIT_AP_DETAIL_COLLECT_COMMANDS = {
+    "screen-length disable",
+    "display wlan ap all",
+    "display wlan ap all address",
+    "display wlan ap all radio",
+    "display wlan ap all radio verbose filter bbssid",
+    "display wlan ap all connection-record",
+    "display wlan ap all radio type",
+    "display wlan ap all lldp",
+}
+
 SAFE_AC_INFO_COLLECT_COMMANDS = {
     "screen-length disable",
     "display cpu-usage",
@@ -125,6 +136,7 @@ CONTEXT_COMMANDS = {
     "device_collect": SAFE_DEVICE_COMMANDS,
     "ac_collect": SAFE_AC_COMMANDS,
     "ac_fit_ap_resource_collect": SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS,
+    "ac_fit_ap_detail_collect": SAFE_AC_FIT_AP_DETAIL_COLLECT_COMMANDS,
     "ac_info_collect": SAFE_AC_INFO_COLLECT_COMMANDS,
     "fit_ap_collect": SAFE_FIT_AP_COMMANDS,
     "fit_ap_optical_collect": SAFE_FIT_AP_OPTICAL_COMMANDS,

@@ -224,6 +224,7 @@ def collect_h3c_fit_ap_resources(
     paths: PathResolver | None = None,
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
+    target_ap_uuid: str = "",
 ) -> AcResourceCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -240,10 +241,16 @@ def collect_h3c_fit_ap_resources(
     relative_raw_log_path = f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}/{ac_device.device_uuid}.log" if persist_raw_logs else ""
     result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
 
+    deep_refresh = bool(str(target_ap_uuid or "").strip())
+    target_resource = (
+        repository.get_fit_ap_resource_by_uuid(str(ac_device.device_uuid), str(target_ap_uuid))
+        if deep_refresh
+        else None
+    )
     fact_repository.create_collect_run(
         {
             "collect_run_uuid": collect_run_uuid,
-            "collect_type": "fit_ap_resources",
+            "collect_type": "fit_ap_detail" if deep_refresh else "fit_ap_resources",
             "status": "running",
             "started_at": started_at,
             "raw_log_dir": f"files/rail_transit/trackside_ap/raw/ac/{collect_run_uuid}" if persist_raw_logs else None,
@@ -260,14 +267,19 @@ def collect_h3c_fit_ap_resources(
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+    if deep_refresh and target_resource is None:
+        message = "FIT-AP target does not exist in the selected AC"
+        fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
+        _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
     try:
         profile = H3cAcCommandProfile(ac_device)
         command_results, outputs = _execute_h3c_ac_command_list(
             ac_device,
             collect_run_uuid,
-            profile.fit_ap_resource_commands,
-            "ac_fit_ap_resource_collect",
+            profile.fit_ap_detail_commands if deep_refresh else profile.fit_ap_resource_commands,
+            "ac_fit_ap_detail_collect" if deep_refresh else "ac_fit_ap_resource_collect",
             progress,
             should_cancel,
         )
@@ -275,6 +287,9 @@ def collect_h3c_fit_ap_resources(
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
         summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
+        if target_resource is not None:
+            target_name = str(target_resource.get("ap_name") or "").strip().casefold()
+            resources = [row for row in resources if str(row.get("ap_name") or "").strip().casefold() == target_name]
         dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
         progress("正在写入数据库...")
         if dynamic_summary_updated:
@@ -298,12 +313,15 @@ def collect_h3c_fit_ap_resources(
         )
         resources_persisted = bool(resource_commands_ok and resources)
         if resources_persisted:
-            repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+            if deep_refresh:
+                repository.upsert_fit_ap_resource(str(ac_device.device_uuid), resources[0])
+            else:
+                repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
         unauth_result = next((result for result in command_results if result.command == "display wlan ap unauthenticated"), None)
         unauthenticated_updated = False
         unauthenticated_rows_updated = 0
         unauthenticated_error = None
-        if unauth_result and unauth_result.success:
+        if not deep_refresh and unauth_result and unauth_result.success:
             unauth_summary = parse_wlan_ap_unauthenticated_summary(unauth_result.output)
             unauth_rows = parse_wlan_ap_unauthenticated_rows(unauth_result.output)
             metadata = {
@@ -320,13 +338,22 @@ def collect_h3c_fit_ap_resources(
             unauthenticated_updated = True
             unauthenticated_rows_updated = len(unauth_rows)
             app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))
-        elif unauth_result:
+        elif not deep_refresh and unauth_result:
             unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
             app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
-        bbssid_rows = len(parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", "")))
-        lldp_rows = len(parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", "")))
-        status = "success" if dynamic_summary_updated or resources_persisted else "failed"
+        bbssid = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
+        lldp = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
+        if target_resource is not None:
+            target_name = str(target_resource.get("ap_name") or "")
+            bbssid_rows = int(target_name in bbssid)
+            lldp_rows = int(target_name in lldp)
+        else:
+            bbssid_rows = len(bbssid)
+            lldp_rows = len(lldp)
+        status = "success" if (resources_persisted if deep_refresh else dynamic_summary_updated or resources_persisted) else "failed"
         error_message = _command_error_summary([result for result in command_results if result.command not in FIT_AP_RESOURCE_OPTIONAL_COMMANDS])
+        if deep_refresh and not resources_persisted and not error_message:
+            error_message = "目标 FIT-AP 未从 AC 回显中解析到"
         fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         if status == "success":
             app_logger.log_info("FIT_AP_RESOURCE_UPDATED", _detail(ac_device, collect_run_uuid, count=len(resources)))
@@ -335,7 +362,8 @@ def collect_h3c_fit_ap_resources(
         else:
             app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
             app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no data parsed"))
-        progress(f"FIT-AP资源更新完成：AP {len(resources) if resources_persisted else 0} 条，未认证AP {unauthenticated_rows_updated} 条，BSSID {bbssid_rows} 条，LLDP {lldp_rows} 条")
+        label = "FIT-AP深度更新" if deep_refresh else "FIT-AP资源更新"
+        progress(f"{label}完成：AP {len(resources) if resources_persisted else 0} 条，未认证AP {unauthenticated_rows_updated} 条，BSSID {bbssid_rows} 条，LLDP {lldp_rows} 条")
         return AcResourceCollectResult(
             status == "success",
             str(ac_device.device_uuid),

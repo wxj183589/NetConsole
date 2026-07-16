@@ -49,6 +49,11 @@ const configLines = computed(() => (store.configContent?.content || '').split('\
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
 const taskCollection = computed(() => (store.refreshTask?.result_summary.collection || {}) as Record<string, unknown>)
+const taskLabel = computed(() => ({
+  ac_info_refresh: 'AC 信息更新',
+  ac_fit_ap_resources_refresh: 'FIT-AP 资源更新',
+  ac_fit_ap_detail_refresh: 'FIT-AP 深度更新',
+}[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
   if (!needle) return []
@@ -195,6 +200,7 @@ function diffLineClass(line: string): string {
           <el-option v-for="ac in store.summary?.acs || []" :key="ac.id" :label="`${ac.name} (${ac.management_ip || '--'})`" :value="ac.id" />
         </el-select>
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
+        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
       </div>
     </div>
@@ -203,20 +209,35 @@ function diffLineClass(line: string): string {
     <div v-if="store.refreshTask" class="task-panel">
       <div class="task-heading">
         <div>
-          <strong>FIT-AP 更新任务 · {{ store.refreshTask.status }}</strong>
+          <strong>{{ taskLabel }} · {{ store.refreshTask.status }}</strong>
           <p>{{ store.refreshTask.message || store.refreshTask.error_message || store.refreshTask.stage || '等待任务事件…' }}</p>
         </div>
         <el-button v-if="taskActive" type="danger" plain @click="store.cancelRefreshTask">取消任务</el-button>
       </div>
       <el-progress :percentage="store.refreshTask.progress" :status="store.refreshTask.status === 'FAILED' ? 'exception' : store.refreshTask.status === 'COMPLETED' ? 'success' : undefined" />
-      <p v-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
+      <p v-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_info_refresh'" class="task-result">
+        AC 信息已持久化；HTTPS 端口 {{ taskCollection.https_port || '未解析' }}。
+      </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_detail_refresh'" class="task-result">
+        已深度更新选中 AP，BSSID {{ taskCollection.bbssid_rows_parsed || 0 }} 条，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条。
+      </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
         已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
       </p>
       <el-alert v-if="Array.isArray(taskCollection.failed_commands) && taskCollection.failed_commands.length" :title="`部分命令失败：${taskCollection.failed_commands.join('、')}`" type="warning" :closable="false" show-icon />
     </div>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
-    <div v-else class="summary-grid">
+    <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">
+      <el-descriptions-item label="AC 型号">{{ display(store.activeAc.model) }}</el-descriptions-item>
+      <el-descriptions-item label="软件版本">{{ display(store.activeAc.software_version) }}</el-descriptions-item>
+      <el-descriptions-item label="CPU 使用率">{{ display(store.activeAc.cpu_usage) }}</el-descriptions-item>
+      <el-descriptions-item label="内存使用率">{{ display(store.activeAc.memory_usage) }}</el-descriptions-item>
+      <el-descriptions-item label="管理地址">{{ display(store.activeAc.management_ip) }}</el-descriptions-item>
+      <el-descriptions-item label="HTTPS 端口">{{ display(store.activeAc.https_port) }}</el-descriptions-item>
+    </el-descriptions>
+
+    <div v-if="store.activeAc" class="summary-grid">
       <article><span>AP 总数</span><strong>{{ store.activeAc?.ap_total || 0 }}</strong></article>
       <article class="success"><span>在线 AP</span><strong>{{ store.activeAc?.online_aps || 0 }}</strong></article>
       <article class="danger"><span>离线 AP</span><strong>{{ store.activeAc?.offline_aps || 0 }}</strong></article>
@@ -331,7 +352,10 @@ function diffLineClass(line: string): string {
         <template v-if="store.selected">
           <div class="detail-heading">
             <div><h2>{{ store.selected.ap.name }}</h2><p>{{ store.selected.ap.ip || '--' }} · {{ store.selected.ap.mac || '--' }}</p></div>
-            <el-tag :type="statusType(store.selected.ap.status)" size="large">{{ statusLabel(store.selected.ap.status) }}</el-tag>
+            <div class="toolbar-actions">
+              <el-tag :type="statusType(store.selected.ap.status)" size="large">{{ statusLabel(store.selected.ap.status) }}</el-tag>
+              <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="taskActive" @click="store.startFitApDetailRefresh">深度更新</el-button>
+            </div>
           </div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="型号">{{ display(store.selected.ap.model) }}</el-descriptions-item>
@@ -432,6 +456,7 @@ function diffLineClass(line: string): string {
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }
 .page-toolbar p, .config-toolbar p, .detail-heading p { margin: 5px 0 0; color: #718096; font-size: 12px; }
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.ac-info-strip { margin-bottom: 12px; }
 .summary-grid { display: grid; grid-template-columns: repeat(6, minmax(125px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-grid article { padding: 15px 17px; background: #fff; border: 1px solid #dfe7f1; border-top: 3px solid #71839a; border-radius: 10px; }
 .summary-grid article.success { border-top-color: #28a06b; }

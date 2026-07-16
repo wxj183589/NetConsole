@@ -7,8 +7,17 @@ from netconsole.models.device import Device
 from netconsole.models.snmp_models import SnmpCollectionRequest, SnmpCollectionResult, SnmpCollectionTarget, SnmpProfile
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.ac.ac_models import AcResourceRefreshRequest, AcResourceRefreshResult, AcResourceSnapshot
-from netconsole.services.h3c_ac_collect_service import AcResourceCollectResult, collect_h3c_fit_ap_resources
+from netconsole.services.ac.ac_models import (
+    AcFitApDetailRefreshRequest,
+    AcResourceRefreshRequest,
+    AcResourceRefreshResult,
+    AcResourceSnapshot,
+)
+from netconsole.services.h3c_ac_collect_service import (
+    AcResourceCollectResult,
+    collect_h3c_ac_info,
+    collect_h3c_fit_ap_resources,
+)
 from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
 
 
@@ -29,6 +38,8 @@ class AcResourceService:
         paths: PathResolver,
         *,
         cli_collector=collect_h3c_fit_ap_resources,
+        detail_cli_collector=collect_h3c_fit_ap_resources,
+        info_collector=collect_h3c_ac_info,
         snmp_collection_service: SnmpCollectionService | None = None,
         snmp_resource_mapper: SnmpResourceMapper | None = None,
     ) -> None:
@@ -36,6 +47,8 @@ class AcResourceService:
         self.ac_repository = ac_repository
         self.paths = paths
         self.cli_collector = cli_collector
+        self.detail_cli_collector = detail_cli_collector
+        self.info_collector = info_collector
         self.snmp_collection_service = snmp_collection_service
         self.snmp_resource_mapper = snmp_resource_mapper
 
@@ -60,6 +73,74 @@ class AcResourceService:
         if source == "snmp":
             return self._refresh_snmp(device, request, progress_callback, should_cancel)
         return self._refresh_cli(device, request, progress_callback, should_cancel)
+
+    def refresh_ac_info(
+        self,
+        request: AcResourceRefreshRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        should_cancel: CancelCallback | None = None,
+    ) -> AcResourceRefreshResult:
+        device = self._load_device(request.device_uuid)
+        self._progress(progress_callback, "ac_info_collect", 0, 2, "正在通过 H3C CLI 更新 AC 信息...")
+        result: AcResourceCollectResult = self.info_collector(
+            device,
+            request.site_name,
+            repository=self.ac_repository,
+            paths=self.paths,
+            progress=lambda message: self._progress(progress_callback, "ac_info_collect", 1, 2, message),
+            should_cancel=should_cancel,
+        )
+        if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
+            raise AcResourceRefreshCancelled("用户已取消更新")
+        self._progress(progress_callback, "ac_info_collect", 2, 2, "AC 信息已持久化")
+        return AcResourceRefreshResult(
+            success=result.success,
+            source="cli",
+            snapshot=self.load_snapshot(request.device_uuid),
+            collect_run_uuid=result.collect_run_uuid,
+            raw_log_path=result.raw_log_path,
+            failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
+            summary_updated=result.summary_updated,
+            https_port=result.https_port,
+            https_port_persisted=result.https_port_persisted,
+            error_message=str(result.error_message or ""),
+        )
+
+    def refresh_ap_detail(
+        self,
+        request: AcFitApDetailRefreshRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        should_cancel: CancelCallback | None = None,
+    ) -> AcResourceRefreshResult:
+        device = self._load_device(request.device_uuid)
+        self._progress(progress_callback, "ac_fit_ap_detail_collect", 0, 2, "正在深度更新选中的 FIT-AP...")
+        result: AcResourceCollectResult = self.detail_cli_collector(
+            device,
+            request.site_name,
+            repository=self.ac_repository,
+            paths=self.paths,
+            progress=lambda message: self._progress(progress_callback, "ac_fit_ap_detail_collect", 1, 2, message),
+            should_cancel=should_cancel,
+            target_ap_uuid=request.ap_uuid,
+        )
+        if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
+            raise AcResourceRefreshCancelled("用户已取消更新")
+        self._progress(progress_callback, "ac_fit_ap_detail_collect", 2, 2, "FIT-AP 深度信息已持久化")
+        return AcResourceRefreshResult(
+            success=result.success,
+            source="cli",
+            snapshot=self.load_snapshot(request.device_uuid),
+            collect_run_uuid=result.collect_run_uuid,
+            raw_log_path=result.raw_log_path,
+            fit_ap_resources_updated=result.fit_ap_resources_updated,
+            bbssid_rows_parsed=result.bbssid_rows_parsed,
+            lldp_rows_parsed=result.lldp_rows_parsed,
+            failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
+            target_ap_uuid=request.ap_uuid,
+            error_message=str(result.error_message or ""),
+        )
 
     def _refresh_cli(
         self,

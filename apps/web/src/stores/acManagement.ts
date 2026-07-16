@@ -20,8 +20,9 @@ import type {
 } from '../types/acManagement'
 import type { AcWebTask } from '../types/acWebParity'
 
-const ACTIVE_TASK_KEY = 'netconsole.ac.fit-ap-active-task'
+const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh'])
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
@@ -189,20 +190,24 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     await Promise.all([refreshAps(), refreshSnapshots(), refreshSelected()])
   }
 
-  async function startFitApRefresh(): Promise<void> {
+  async function startRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail', apId = ''): Promise<void> {
     if (!filters.ac_id || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
     refreshStarting.value = true
     error.value = ''
     try {
-      refreshTask.value = await startAcResourceRefresh('fit-ap', filters.ac_id)
+      refreshTask.value = await startAcResourceRefresh(kind, filters.ac_id, apId)
       window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'FIT-AP 资源更新启动失败'
+      error.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新启动失败'
     } finally {
       refreshStarting.value = false
     }
   }
+
+  const startAcInfoRefresh = () => startRefresh('ac')
+  const startFitApRefresh = () => startRefresh('fit-ap')
+  const startFitApDetailRefresh = () => selected.value ? startRefresh('ap-detail', selected.value.ap.id) : Promise.resolve()
 
   async function cancelRefreshTask(): Promise<void> {
     if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
@@ -210,7 +215,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
       refreshTask.value = await cancelAcWebTask(refreshTask.value.task_id)
       scheduleTask()
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : '取消 FIT-AP 更新失败'
+      error.value = cause instanceof Error ? cause.message : '取消 AC / FIT-AP 更新失败'
     }
   }
 
@@ -219,7 +224,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     try {
       const tasks = await recoverAcWebTasks()
       refreshTask.value = tasks.find((item) => item.task_id === saved)
-        || tasks.find((item) => item.action === 'ac_fit_ap_resources_refresh')
+        || tasks.find((item) => REFRESH_ACTIONS.has(item.action))
         || null
       if (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status)) scheduleTask()
     } catch {
@@ -237,7 +242,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
         scheduleTask()
       }
     } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : 'FIT-AP 更新任务读取失败'
+      error.value = cause instanceof Error ? cause.message : 'AC / FIT-AP 更新任务读取失败'
     }
   }
 
@@ -366,7 +371,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     loadMoreConfig,
     loadDiff,
     manualRefresh,
+    startAcInfoRefresh,
     startFitApRefresh,
+    startFitApDetailRefresh,
     cancelRefreshTask,
     recoverRefreshTask,
     setAcId,

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
 
 
@@ -24,6 +25,10 @@ def _fingerprint(path: Path) -> tuple[str, int]:
 
 def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: Path) -> None:
     paths, db_path, files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE ac_ap_summary SET cpu_usage = '16%', memory_usage = '47%' WHERE ac_device_uuid = 'ac-1'")
+        conn.execute("UPDATE devices SET https_port = 10443 WHERE device_uuid = 'ac-1'")
+        conn.commit()
     app = create_app(
         RuntimeMode.SERVER,
         paths=paths,
@@ -49,6 +54,9 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
 
     assert summary.status_code == 200
     assert summary.json()["ap_total"] == 3
+    assert summary.json()["acs"][0]["cpu_usage"] == "16%"
+    assert summary.json()["acs"][0]["memory_usage"] == "47%"
+    assert summary.json()["acs"][0]["https_port"] == 10443
     assert aps.json()["items"][0]["id"] == "ap-offline"
     assert detail.status_code == 200
     assert len(detail.json()["radios"]) == 2

@@ -715,7 +715,7 @@
       "risk_level": "read_only",
       "interactive_input": false,
       "is_cli": true,
-      "source_locations": ["netconsole/services/h3c_ac_collect_service.py"],
+      "source_locations": ["src/netconsole/services/h3c_ac_collect_service.py"],
       "zte_adaptation_status": "not_applicable",
       "comware_command": "display wlan ap all",
       "zte_command": "",
@@ -863,8 +863,8 @@
       "zte_adaptation_status": "not_applicable",
       "comware_command": "display wlan ap all radio verbose filter bbssid",
       "zte_command": "",
-      "parser_status": "H3C 已实现",
-      "notes": "普通 FIT-AP 更新不执行全量 verbose；仅供单 AP 深度更新读取目标 AP 的既有 BSSID。"
+      "parser_status": "自动契约已验证，REAL_DEVICE_PENDING",
+      "notes": "普通 FIT-AP 更新不执行全量 verbose；深度更新执行既有 bulk 命令后只持久化用户选择的 AP，不猜测未证实的 name 作用域 verbose 命令。"
     },
     {
       "id": "ac_display_wlan_ap_all_lldp",

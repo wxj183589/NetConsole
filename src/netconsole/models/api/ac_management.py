@@ -11,6 +11,9 @@ class AcOverviewDTO(ApiModel):
     management_ip: str = ""
     model: str = ""
     software_version: str = ""
+    cpu_usage: str = ""
+    memory_usage: str = ""
+    https_port: int | None = None
     ap_total: int = 0
     online_aps: int = 0
     offline_aps: int = 0
@@ -303,6 +306,7 @@ class AcLocalRebuildRequestDTO(ApiModel):
 
 class AcRefreshRequestDTO(ApiModel):
     ac_id: str = Field(min_length=1, max_length=100)
+    ap_id: str = Field(default="", max_length=100)
 
 
 __all__ = [

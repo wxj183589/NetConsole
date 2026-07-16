@@ -98,6 +98,9 @@ class AcManagementQueryService:
                     management_ip=str(ac.get("primary_address") or ""),
                     model=str(summary.get("model") or ac.get("model") or ""),
                     software_version=str(summary.get("software_version") or ac.get("software_version") or ""),
+                    cpu_usage=str(summary.get("cpu_usage") or ""),
+                    memory_usage=str(summary.get("memory_usage") or ""),
+                    https_port=self._optional_int(ac.get("https_port")),
                     ap_total=total,
                     online_aps=online,
                     offline_aps=offline,
@@ -599,6 +602,7 @@ class AcManagementQueryService:
                     "device_uuid": device_uuid,
                     "name": device.get("name") or device_uuid,
                     "primary_address": device.get("primary_address") or "",
+                    "https_port": device.get("https_port"),
                     "model": summary.get("model") or "",
                     "software_version": summary.get("software_version") or "",
                     "summary": summary,
@@ -609,7 +613,7 @@ class AcManagementQueryService:
     @staticmethod
     def _safe_devices(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         return conn.execute(
-            "SELECT device_uuid, name, system_name, primary_address, device_type FROM devices ORDER BY name"
+            "SELECT device_uuid, name, system_name, primary_address, https_port, device_type FROM devices ORDER BY name"
         ).fetchall()
 
     @staticmethod
@@ -816,6 +820,13 @@ class AcManagementQueryService:
             return int(value) if value is not None else int(default)
         except (TypeError, ValueError):
             return int(default)
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        try:
+            return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _latest_text(*values: object) -> str:

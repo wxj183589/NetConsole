@@ -460,6 +460,24 @@ def test_fit_ap_resource_refresh_persists_radio_and_connection_fields_without_er
     assert history[0]["clients"] == 3
 
 
+def test_single_fit_ap_upsert_keeps_other_resources(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {"ap_name": "AP1", "rid1_channel": "149", "rid1_bbssid": "old-bssid"},
+            {"ap_name": "AP2", "rid1_channel": "6"},
+        ],
+    )
+
+    repository.upsert_fit_ap_resource("ac-1", {"ap_name": "AP1", "rid1_channel": "153", "rid1_bbssid": "new-bssid"})
+
+    rows = repository.list_fit_ap_resources("ac-1")
+    assert [row["ap_name"] for row in rows] == ["AP1", "AP2"]
+    assert repository.get_fit_ap_resource("ac-1", "AP1")["rid1_bbssid"] == "new-bssid"
+    assert repository.get_fit_ap_resource("ac-1", "AP2")["rid1_channel"] == "6"
+
+
 def test_fit_ap_resources_match_by_serial_number_and_keep_ap_uuid(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
@@ -1736,6 +1754,40 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     assert summary["cpu_usage"] is None
     assert summary["model"] is None
     assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+
+
+def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_target(monkeypatch, tmp_path):
+    connection = FakeConnection({
+        "display wlan ap all radio verbose filter bbssid": (
+            "AP name              RID bbssid\n"
+            "4c6f-d608-0400       1   0011-2233-4455\n"
+        ),
+    })
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [
+            {"ap_name": "4c6f-d608-0400", "rid1_bbssid": "old-bssid"},
+            {"ap_name": "AP-KEEP", "rid1_channel": "6"},
+        ],
+    )
+    target = repository.get_fit_ap_resource(ac_uuid, "4c6f-d608-0400")
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        target_ap_uuid=str(target["ap_uuid"]),
+    )
+
+    assert result.success is True
+    assert "display wlan ap all radio verbose filter bbssid" in connection.commands
+    assert "display wlan ap unauthenticated" not in connection.commands
+    assert repository.get_fit_ap_resource(ac_uuid, "4c6f-d608-0400")["rid1_bbssid"] == "0011-2233-4455"
+    assert repository.get_fit_ap_resource(ac_uuid, "AP-KEEP")["rid1_channel"] == "6"
 
 
 def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(monkeypatch, tmp_path):

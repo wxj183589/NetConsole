@@ -18,6 +18,13 @@ class AcResourceRefreshRequest:
 
 
 @dataclass(frozen=True)
+class AcFitApDetailRefreshRequest:
+    device_uuid: str
+    ap_uuid: str
+    site_name: str
+
+
+@dataclass(frozen=True)
 class AcResourceSnapshot:
     ac_device_uuid: str
     summary: dict[str, object | None] = field(default_factory=dict)
@@ -43,6 +50,10 @@ class AcResourceRefreshResult:
     bbssid_rows_parsed: int = 0
     lldp_rows_parsed: int = 0
     failed_commands: list[str] = field(default_factory=list)
+    summary_updated: bool = False
+    https_port: int | None = None
+    https_port_persisted: bool = False
+    target_ap_uuid: str = ""
     error_message: str = ""
 
     def to_payload(self) -> dict[str, object]:
@@ -58,6 +69,10 @@ class AcResourceRefreshResult:
                 "bbssid_rows_parsed": self.bbssid_rows_parsed,
                 "lldp_rows_parsed": self.lldp_rows_parsed,
                 "failed_commands": list(self.failed_commands),
+                "summary_updated": self.summary_updated,
+                "https_port": self.https_port,
+                "https_port_persisted": self.https_port_persisted,
+                "target_ap_uuid": self.target_ap_uuid,
                 "error_message": self.error_message,
             },
         }

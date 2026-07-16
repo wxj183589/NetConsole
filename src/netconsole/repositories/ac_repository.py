@@ -620,54 +620,79 @@ class AcRepository:
         with self.database.connect() as conn:
             current_uuids: list[str] = []
             for row in rows:
-                ap_uuid = self._resolve_fit_ap_entity_uuid(conn, ac_device_uuid, row)
-                current_uuids.append(ap_uuid)
-                resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
-                station = normalize_station_value(resource_data)
-                if station and not str(resource_data.get("site") or "").strip():
-                    resource_data["site"] = station
-                existing_resource = conn.execute("SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1", (ap_uuid,)).fetchone()
-                if existing_resource is not None:
-                    existing_data = dict(existing_resource)
-                    for field in FIT_AP_OPTIONAL_DETAIL_FIELDS:
-                        if resource_data.get(field) in (None, "") and existing_data.get(field) not in (None, ""):
-                            resource_data[field] = existing_data[field]
-                if _has_lldp_payload(resource_data):
-                    lldp_data = normalize_lldp_payload(
-                        {
-                            **resource_data,
-                            "lldp_source": resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp",
-                        },
-                        str(resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp"),
-                    )
-                    resource_data.update(merge_lldp_payload(dict(existing_resource) if existing_resource is not None else {}, lldp_data))
-                    resource_data["lldp_neighbor"] = resource_data.get("lldp_neighbor_name")
-                payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
-                payload["serial_number"] = self._clean_identity_value(payload.get("serial_number")) or None
-                payload["collected_at"] = payload.get("collected_at") or now
-                payload["updated_at"] = payload.get("updated_at") or now
-                columns = ", ".join(FIT_AP_RESOURCE_FIELDS)
-                placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_FIELDS)
-                updates = ", ".join(f"{field} = excluded.{field}" for field in FIT_AP_RESOURCE_FIELDS if field not in {"ac_device_uuid", "ap_uuid"})
-                conn.execute(
-                    f"""
-                    INSERT INTO ac_fit_ap_resources ({columns})
-                    VALUES ({placeholders})
-                    ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
-                    """,
-                    [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
-                )
-                self._append_resource_history(conn, payload)
-                self._upsert_ap_entity(conn, payload)
-                self._append_ap_resource_snapshot(conn, payload)
-                self._append_radio_history(conn, payload)
-                self._append_resource_lldp_history(conn, payload)
+                payload = self._upsert_fit_ap_resource(conn, ac_device_uuid, row, now)
+                current_uuids.append(str(payload["ap_uuid"]))
             if current_uuids:
                 placeholders = ", ".join("?" for _ in current_uuids)
                 conn.execute(f"DELETE FROM ac_fit_ap_resources WHERE ac_device_uuid = ? AND ap_uuid NOT IN ({placeholders})", [ac_device_uuid, *current_uuids])
             else:
                 conn.execute("DELETE FROM ac_fit_ap_resources WHERE ac_device_uuid = ?", (ac_device_uuid,))
             conn.commit()
+
+    def upsert_fit_ap_resource(
+        self,
+        ac_device_uuid: str,
+        row: dict[str, object | None],
+    ) -> dict[str, object | None]:
+        """Persist one selected AP without deleting the AC's other resources."""
+        with self.database.connect() as conn:
+            payload = self._upsert_fit_ap_resource(conn, ac_device_uuid, row, self._now())
+            conn.commit()
+        return payload
+
+    def _upsert_fit_ap_resource(
+        self,
+        conn,
+        ac_device_uuid: str,
+        row: dict[str, object | None],
+        now: str,
+    ) -> dict[str, object | None]:
+        ap_uuid = self._resolve_fit_ap_entity_uuid(conn, ac_device_uuid, row)
+        resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
+        station = normalize_station_value(resource_data)
+        if station and not str(resource_data.get("site") or "").strip():
+            resource_data["site"] = station
+        existing_resource = conn.execute(
+            "SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
+            (ap_uuid,),
+        ).fetchone()
+        if existing_resource is not None:
+            existing_data = dict(existing_resource)
+            for field in FIT_AP_OPTIONAL_DETAIL_FIELDS:
+                if resource_data.get(field) in (None, "") and existing_data.get(field) not in (None, ""):
+                    resource_data[field] = existing_data[field]
+        if _has_lldp_payload(resource_data):
+            source = resource_data.get("lldp_source") or resource_data.get("source") or "ac_bulk_lldp"
+            lldp_data = normalize_lldp_payload({**resource_data, "lldp_source": source}, str(source))
+            resource_data.update(
+                merge_lldp_payload(dict(existing_resource) if existing_resource is not None else {}, lldp_data)
+            )
+            resource_data["lldp_neighbor"] = resource_data.get("lldp_neighbor_name")
+        payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
+        payload["serial_number"] = self._clean_identity_value(payload.get("serial_number")) or None
+        payload["collected_at"] = payload.get("collected_at") or now
+        payload["updated_at"] = payload.get("updated_at") or now
+        columns = ", ".join(FIT_AP_RESOURCE_FIELDS)
+        placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_FIELDS)
+        updates = ", ".join(
+            f"{field} = excluded.{field}"
+            for field in FIT_AP_RESOURCE_FIELDS
+            if field not in {"ac_device_uuid", "ap_uuid"}
+        )
+        conn.execute(
+            f"""
+            INSERT INTO ac_fit_ap_resources ({columns})
+            VALUES ({placeholders})
+            ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
+            """,
+            [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
+        )
+        self._append_resource_history(conn, payload)
+        self._upsert_ap_entity(conn, payload)
+        self._append_ap_resource_snapshot(conn, payload)
+        self._append_radio_history(conn, payload)
+        self._append_resource_lldp_history(conn, payload)
+        return payload
 
     def list_fit_ap_resources(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
         return self._list_fit_ap_resources(ac_device_uuid, include_metadata=False)

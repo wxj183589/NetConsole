@@ -67,6 +67,8 @@ def test_ac_persist_auto_ap_commands_include_save_force_only_in_action_profile()
         "display wlan ap all connection-record",
         "display wlan ap all radio type",
     )
+    assert profile.fit_ap_detail_commands[4] == "display wlan ap all radio verbose filter bbssid"
+    assert profile.fit_ap_detail_commands[:4] == profile.fit_ap_resource_commands[:4]
 
 
 def test_parser_interfaces_keep_management_ports_and_chinese_descriptions():

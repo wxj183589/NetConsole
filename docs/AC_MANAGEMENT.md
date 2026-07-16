@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Electron AC/FIT-AP 迁移处于 `PARTIAL / REAL_DEVICE_PENDING`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 FIT-AP 资源”会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。Qt 仍保留为事实源和回退入口，AC 信息、单 AP 深度更新以及 Qt 其余按钮完成前不得标记 `COMPLETE`。
+Electron AC/FIT-AP 迁移处于 `PARTIAL / REAL_DEVICE_PENDING`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。Qt 仍保留为事实源和回退入口，Qt 其余按钮完成前不得标记 `COMPLETE`。
 
 阶段 5C-5 增加独立的 `/ac-management/mesh-links` 页面，Feature key 为 `web.ac_mesh_links`。阶段 5C-5A 再增加 Feature key `ac.mesh_link.refresh` 的受控手工刷新。该页面展示“车载 MR ↔ 轨旁 FIT-AP”的 AC Mesh-Link 快照，不把 MR 建模为无线客户端。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
 
@@ -23,12 +23,12 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，前端列显隐、手工列宽及横向滚动；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
-- 真实更新：任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；
+- 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源和所选 AP 深度 BSSID；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 在线监控：车载 MR 状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、AP 在线与光衰关联、最近快照和切换事件；可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
 
-Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留，只有后续单 AP 深度更新允许消费该既有命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
+Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留。单 AP 深度更新执行 Qt 既有 bulk 命令序列并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
 ## 光衰关联规则
 
@@ -91,8 +91,6 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ## 尚未完成的 Qt 对等能力
 
-- AC 信息真实更新；
-- 单 AP 深度更新与 BSSID 定向补采；
 - FIT-AP 光衰刷新在主页面的完整任务入口与状态交付；
 - 固化新上线 AP、开启 AP 远程登录和批量命令；
 - `save force`、配置采集任务和其他设备写操作；

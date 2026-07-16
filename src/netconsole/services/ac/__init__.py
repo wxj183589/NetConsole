@@ -1,6 +1,7 @@
 from netconsole.services.ac.ac_models import (
     AcCommandExecutionResult,
     AcCommandRequest,
+    AcFitApDetailRefreshRequest,
     AcOpticalRefreshRequest,
     AcOpticalRefreshResult,
     AcOpticalSnapshot,
@@ -26,6 +27,7 @@ __all__ = [
     "AcCommandExecutionResult",
     "AcCommandRequest",
     "AcCommandService",
+    "AcFitApDetailRefreshRequest",
     "AcApIdentityAdapter",
     "AcApIdentityShadowItem",
     "AcApIdentityShadowReport",

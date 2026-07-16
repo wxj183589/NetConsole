@@ -335,7 +335,12 @@ def local_rebuild(request: Request, rebuild_kind: str, payload: AcLocalRebuildRe
 )
 def refresh_resources(request: Request, refresh_kind: str, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
     try:
-        return _web_service(request).start_refresh(_web_site_id(request), refresh_kind, ac_id=payload.ac_id)
+        return _web_service(request).start_refresh(
+            _web_site_id(request),
+            refresh_kind,
+            ac_id=payload.ac_id,
+            ap_id=payload.ap_id,
+        )
     except AcWebActionError as exc:
         _raise_web_error(exc)
 

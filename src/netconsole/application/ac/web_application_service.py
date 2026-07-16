@@ -68,10 +68,13 @@ class AcWebApplicationService:
         "ac_trackside_business_refresh": "轨旁 AP 业务本地重算",
     }
     _REFRESH_TASKS = {
+        "ac": ("ac_info_refresh", "更新 AC 信息"),
         "fit-ap": ("ac_fit_ap_resources_refresh", "更新 FIT-AP 资源"),
+        "ap-detail": ("ac_fit_ap_detail_refresh", "深度更新 FIT-AP"),
     }
     _TASK_ACTIONS = {
         **{task_type: task_type for task_type in _LOCAL_REBUILD_TASKS},
+        **{task_type: task_type for task_type, _task_name in _REFRESH_TASKS.values()},
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -167,13 +170,19 @@ class AcWebApplicationService:
         self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
         return self._task_dto(site_id, task_id)
 
-    def start_refresh(self, site_id: str, refresh_kind: str, *, ac_id: str) -> AcWebTaskDTO:
+    def start_refresh(self, site_id: str, refresh_kind: str, *, ac_id: str, ap_id: str = "") -> AcWebTaskDTO:
         site_id = self._site(site_id)
         try:
             task_type, task_name = self._REFRESH_TASKS[refresh_kind]
         except KeyError as exc:
             raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 AC/FIT-AP 更新类型") from exc
         device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        ap_uuid = str(ap_id or "").strip()
+        if refresh_kind == "ap-detail":
+            if not ap_uuid:
+                raise AcWebActionError("AP_TARGET_REQUIRED", "FIT-AP 深度更新缺少 AP 目标")
+            if self._repository(site_id).get_fit_ap_resource_by_uuid(device_uuid, ap_uuid) is None:
+                raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "目标 FIT-AP 不属于当前 AC")
         task_id = f"ac-web-{uuid4().hex}"
         params = {
             "site_name": site_id,
@@ -188,6 +197,8 @@ class AcWebApplicationService:
             "mode": "collect",
             "source": "cli",
         }
+        if ap_uuid:
+            params["ap_uuid"] = ap_uuid
         self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
         return self._task_dto(site_id, task_id)
 
@@ -567,6 +578,10 @@ class AcWebApplicationService:
                     "bbssid_rows_parsed",
                     "lldp_rows_parsed",
                     "failed_commands",
+                    "summary_updated",
+                    "https_port",
+                    "https_port_persisted",
+                    "target_ap_uuid",
                     "error_message",
                 )
                 if key in collection

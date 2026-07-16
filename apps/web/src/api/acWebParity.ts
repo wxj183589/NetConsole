@@ -48,10 +48,10 @@ export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'tracksi
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
-export function startAcResourceRefresh(kind: 'fit-ap', acId: string): Promise<AcWebTask> {
+export function startAcResourceRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail', acId: string, apId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/refresh/${kind}`, {
     method: 'POST',
-    body: JSON.stringify({ ac_id: acId }),
+    body: JSON.stringify({ ac_id: acId, ap_id: apId }),
   })
 }
 

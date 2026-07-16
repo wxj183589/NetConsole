@@ -4,6 +4,9 @@ export interface AcOverview {
   management_ip: string
   model: string
   software_version: string
+  cpu_usage?: string
+  memory_usage?: string
+  https_port?: number | null
   ap_total: number
   online_aps: number
   offline_aps: number

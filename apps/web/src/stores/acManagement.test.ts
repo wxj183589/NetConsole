@@ -83,16 +83,18 @@ describe('AC Management polling store', () => {
     vi.mocked(startAcResourceRefresh).mockResolvedValue({
       task_id: 'task-fit-ap', action: 'ac_fit_ap_resources_refresh', status: 'QUEUED',
       progress: 0, stage: 'queued', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
     })
     const store = useAcManagementStore()
     store.filters.ac_id = 'ac-1'
 
     await store.startFitApRefresh()
 
-    expect(startAcResourceRefresh).toHaveBeenCalledWith('fit-ap', 'ac-1')
+    expect(startAcResourceRefresh).toHaveBeenCalledWith('fit-ap', 'ac-1', '')
     expect(store.refreshTask?.task_id).toBe('task-fit-ap')
     expect(window.localStorage.setItem).toHaveBeenCalledWith(
-      'netconsole.ac.fit-ap-active-task',
+      'netconsole.ac.active-task',
       'task-fit-ap',
     )
   })

@@ -14,7 +14,12 @@ from netconsole.models.snmp_models import (
     SnmpCollectionResult,
     SnmpVarBind,
 )
-from netconsole.services.ac.ac_models import AcResourceRefreshRequest, AcResourceRefreshResult, AcResourceSnapshot
+from netconsole.services.ac.ac_models import (
+    AcFitApDetailRefreshRequest,
+    AcResourceRefreshRequest,
+    AcResourceRefreshResult,
+    AcResourceSnapshot,
+)
 from netconsole.services.ac.ac_resource_service import AcResourceRefreshCancelled, AcResourceService
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.handlers import ac_jobs
@@ -186,6 +191,40 @@ def test_ac_resource_service_rejects_unmapped_snmp_and_supports_cancel(tmp_path:
         )
 
 
+def test_ac_resource_service_runs_info_and_single_ap_collectors(tmp_path: Path) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def info_collector(_device, _site_name, **_kwargs):
+        calls.append(("info", ""))
+        return SimpleNamespace(
+            success=True, collect_run_uuid="info-1", raw_log_path="", error_message=None,
+            command_results=[], summary_updated=True, https_port=10443, https_port_persisted=True,
+        )
+
+    def detail_collector(_device, _site_name, **kwargs):
+        calls.append(("detail", kwargs["target_ap_uuid"]))
+        return SimpleNamespace(
+            success=True, collect_run_uuid="detail-1", raw_log_path="", error_message=None,
+            command_results=[], fit_ap_resources_updated=1, bbssid_rows_parsed=1, lldp_rows_parsed=1,
+        )
+
+    service = AcResourceService(
+        _FakeDeviceRepository(_ac_device()),  # type: ignore[arg-type]
+        _FakeAcRepository(),  # type: ignore[arg-type]
+        PathResolver(tmp_path),
+        info_collector=info_collector,
+        detail_cli_collector=detail_collector,
+    )
+    info = service.refresh_ac_info(AcResourceRefreshRequest("ac-001", "demo"))
+    detail = service.refresh_ap_detail(AcFitApDetailRefreshRequest("ac-001", "ap-1", "demo"))
+
+    assert info.https_port == 10443
+    assert info.summary_updated is True
+    assert detail.target_ap_uuid == "ap-1"
+    assert detail.bbssid_rows_parsed == 1
+    assert calls == [("info", ""), ("detail", "ap-1")]
+
+
 def test_ac_fit_ap_resource_job_finished_failed_and_cancelled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     snapshot = AcResourceSnapshot("ac-001", {"total_aps": 1}, [{"ap_name": "AP-01"}])
     state = {"mode": "success"}
@@ -260,6 +299,47 @@ def test_ac_fit_ap_resource_job_keeps_legacy_load_mode(monkeypatch: pytest.Monke
     assert len(result.result["resources"]) == 2
 
 
+def test_ac_info_and_fit_ap_detail_jobs_deliver_collection_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    snapshot = AcResourceSnapshot("ac-001", {"cpu_usage": "16%"}, [{"ap_uuid": "ap-1", "ap_name": "AP-01"}])
+
+    class FakeAcService:
+        def __init__(self, _resource_service) -> None:
+            pass
+
+        def refresh_ac_info(self, request, **_kwargs):
+            assert request.device_uuid == "ac-001"
+            return AcResourceRefreshResult(
+                True, "cli", snapshot, summary_updated=True, https_port=10443, https_port_persisted=True
+            )
+
+        def refresh_ap_detail(self, request, **_kwargs):
+            assert request.ap_uuid == "ap-1"
+            return AcResourceRefreshResult(
+                True, "cli", snapshot, fit_ap_resources_updated=1, bbssid_rows_parsed=1, target_ap_uuid="ap-1"
+            )
+
+    monkeypatch.setattr(ac_jobs, "AcService", FakeAcService)
+    common = {
+        "device_uuid": "ac-001",
+        "site_name": "demo",
+        "db_path": str(tmp_path / "devices.db"),
+        "data_root": str(tmp_path),
+    }
+    info = run_job(BackgroundJob(job_id="ac-info-job", task_type="ac_info_refresh", params=common))
+    detail = run_job(
+        BackgroundJob(
+            job_id="ap-detail-job",
+            task_type="ac_fit_ap_detail_refresh",
+            params={**common, "ap_uuid": "ap-1"},
+        )
+    )
+
+    assert info.ok is True
+    assert info.result["collection"]["https_port"] == 10443
+    assert detail.ok is True
+    assert detail.result["collection"]["target_ap_uuid"] == "ap-1"
+
+
 def test_ac_page_resource_refresh_submits_job_without_resource_qthread() -> None:
     submitted: list[tuple[str, dict[str, object], str]] = []
     page = SimpleNamespace(
@@ -283,7 +363,13 @@ def test_ac_page_resource_refresh_submits_job_without_resource_qthread() -> None
 
 def test_ac_domain_task_registration_and_ui_static_boundaries() -> None:
     task_types = registered_task_types()
-    assert {"ac_fit_ap_resources_refresh", "ac_overview_refresh", "ac_devices_refresh"}.issubset(task_types)
+    assert {
+        "ac_info_refresh",
+        "ac_fit_ap_resources_refresh",
+        "ac_fit_ap_detail_refresh",
+        "ac_overview_refresh",
+        "ac_devices_refresh",
+    }.issubset(task_types)
     page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
     domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_resource_service.py").read_text(encoding="utf-8")
     assert "AcResourceCollectThread" not in page_source

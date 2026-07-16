@@ -292,7 +292,7 @@ def test_fit_ap_refresh_starts_real_collect_job_with_fixed_parameters(tmp_path: 
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     service, normal, _export, _tasks = _service(paths)
 
-    assert set(AcRefreshRequestDTO.model_fields) == {"ac_id"}
+    assert set(AcRefreshRequestDTO.model_fields) == {"ac_id", "ap_id"}
     started = service.start_refresh("demo", "fit-ap", ac_id="ac-1")
     job = normal.jobs[started.task_id]
 
@@ -301,6 +301,18 @@ def test_fit_ap_refresh_starts_real_collect_job_with_fixed_parameters(tmp_path: 
     assert job.params["source"] == "cli"
     assert job.params["device_uuid"] == "ac-1"
     assert started.status == "RUNNING"
+
+    ac_started = service.start_refresh("demo", "ac", ac_id="ac-1")
+    assert normal.jobs[ac_started.task_id].task_type == "ac_info_refresh"
+
+    detail_started = service.start_refresh("demo", "ap-detail", ac_id="ac-1", ap_id="ap-online")
+    detail_job = normal.jobs[detail_started.task_id]
+    assert detail_job.task_type == "ac_fit_ap_detail_refresh"
+    assert detail_job.params["ap_uuid"] == "ap-online"
+
+    with pytest.raises(AcWebActionError) as wrong_ap:
+        service.start_refresh("demo", "ap-detail", ac_id="ac-1", ap_id="missing-ap")
+    assert wrong_ap.value.code == "AP_TARGET_NOT_AUTHORIZED"
 
 
 def test_ac_local_rebuild_api_rejects_legacy_source_and_unknown_target(
