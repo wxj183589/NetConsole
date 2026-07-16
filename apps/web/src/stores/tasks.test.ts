@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useTaskStore } from './tasks'
-import { getTask, getTaskLogs, listTasks } from '../api/tasks'
+import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
 import type { TaskItem } from '../types/task'
 
 vi.mock('../api/tasks', () => ({
   listTasks: vi.fn(),
   getTask: vi.fn(),
   getTaskLogs: vi.fn(),
+  cancelTask: vi.fn(),
 }))
 
 const task: TaskItem = {
@@ -17,8 +18,7 @@ const task: TaskItem = {
   source: 'external', device_id: '12', device_name: '列车12-MR-CT', agent: '', mr_name: 'MR-12', session_id: 'session-12',
   mapping_state: 'LINKED', created_time: '2026-07-14T08:00:00Z', started_time: '2026-07-14T08:00:01Z',
   finished_time: '', updated_time: '2026-07-14T08:01:00Z', duration_seconds: 59, error_code: '', error_summary: '',
-  has_warning: false, result_path: '', output_dir: '', package_path: '', session_path: '',
-  snapshot_id: null, records_count: null, raw_output_reference: '', parser_version: '',
+  has_warning: false, snapshot_id: null, records_count: null, parser_version: '', cancellable: true,
 }
 
 describe('Job Center polling store', () => {
@@ -31,6 +31,7 @@ describe('Job Center polling store', () => {
       lines: [{ sequence: 1, time: task.updated_time, level: 'INFO', type: 'log', source: 'worker', message: '采集中' }],
       message: '',
     })
+    vi.mocked(cancelTask).mockReset().mockResolvedValue({ ...task, status: 'STOPPING' })
     vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval })
   })
 
@@ -78,5 +79,19 @@ describe('Job Center polling store', () => {
     await store.refresh()
     await store.refresh()
     expect(store.error).toContain('任务中心刷新失败')
+  })
+
+  it('handles cancel success, owner conflict and failure messages', async () => {
+    const store = useTaskStore()
+    await store.selectTask(task.id)
+    await store.requestCancel()
+    expect(store.selected?.status).toBe('STOPPING')
+
+    for (const message of ['任务当前不可停止', '后端连接失败']) {
+      vi.mocked(cancelTask).mockRejectedValueOnce(new Error(message))
+      store.selected = { ...task }
+      await expect(store.requestCancel()).rejects.toThrow(message)
+      expect(store.detailError).toBe(message)
+    }
   })
 })

@@ -81,18 +81,7 @@ async function startDesktop(): Promise<void> {
     mainWindow = undefined
     if (!allowQuit) requestExit(0)
   })
-  installRendererDiagnostics(mainWindow, {
-    logger,
-    getRetryUrl: () => rendererUrl,
-    onLoadStarted: handleRendererLoadStarted,
-    onLoadStopped: handleRendererLoadStopped,
-    showError: (title, detail, retryUrl) => loadStatusPage(
-      mainWindow!,
-      title,
-      detail,
-      retryUrl,
-    ),
-  })
+  installManagedWindowDiagnostics(mainWindow, true)
   desktopIpc = registerDesktopIpc({
     ipcMain,
     dialog,
@@ -116,8 +105,13 @@ async function startDesktop(): Promise<void> {
   })
   backend.onStatusChange((status) => {
     logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(DESKTOP_IPC.backendStatusChanged, status)
+    const publicStatus = {
+      state: status.state,
+      ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
+      ...(status.error ? { error: '本地后端不可用' } : {}),
+    }
+    for (const window of [mainWindow, taskWindow]) {
+      if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.backendStatusChanged, publicStatus)
     }
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1' && status.state === 'failed') {
       requestExit(2)
@@ -199,10 +193,20 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
   return window
 }
 
+function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): void {
+  installRendererDiagnostics(window, {
+    logger,
+    getRetryUrl: () => rendererUrl,
+    ...(smoke ? { onLoadStarted: handleRendererLoadStarted, onLoadStopped: handleRendererLoadStopped } : {}),
+    showError: (title, detail, retryUrl) => loadStatusPage(window, title, detail, retryUrl),
+  })
+}
+
 async function openTaskWindow(context: { taskId?: string; module?: string; status?: string }): Promise<void> {
   if (!mainWindow || !rendererUrl) throw new Error('任务窗口尚未就绪')
   if (!taskWindow || taskWindow.isDestroyed()) {
     taskWindow = createMainWindow(Boolean(process.env.NETCONSOLE_WEB_DEV_SERVER_URL))
+    installManagedWindowDiagnostics(taskWindow)
     taskWindow.setTitle('NetConsole 任务中心')
     taskWindow.on('close', (event) => {
       if (allowQuit) return

@@ -1,6 +1,6 @@
 # Job Center 使用说明
 
-Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理、配置采集和文件管理主页只保留运行中/失败数量与打开入口；停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。关闭任务窗口不改变后台任务生命周期。
+Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理、配置采集和文件管理主页只保留运行中/失败数量与打开入口；停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。统一 DTO 不返回服务端绝对路径。关闭任务窗口不改变后台任务生命周期。
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 

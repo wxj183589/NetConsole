@@ -104,7 +104,14 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.getBackendStatus,
-    trusted(() => dependencies.backend.getStatus()),
+    trusted(() => {
+      const status = dependencies.backend.getStatus()
+      return {
+        state: status.state,
+        ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
+        ...(status.error ? { error: '本地后端不可用' } : {}),
+      }
+    }),
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.getRuntimeConfig,
@@ -115,9 +122,9 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.selectFile,
-    trusted(async (value) => {
+    trusted(async (value, event) => {
       const options = validateSelectFileOptions(value)
-      const result = await dependencies.dialog.showOpenDialog(dependencies.window, {
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
         properties: ['openFile', ...(options.multiple ? ['multiSelections' as const] : [])],
         ...(options.filters ? { filters: options.filters } : {}),
       })
@@ -129,8 +136,8 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.selectDirectory,
-    trusted(async () => {
-      const result = await dependencies.dialog.showOpenDialog(dependencies.window, {
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
         properties: ['openDirectory'],
       })
       const selected = result.canceled ? undefined : result.filePaths[0]
@@ -142,9 +149,9 @@ export function registerDesktopIpc(
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.chooseSavePath,
-    trusted(async (value) => {
+    trusted(async (value, event) => {
       const options = validateChooseSavePathOptions(value)
-      const result = await dependencies.dialog.showSaveDialog(dependencies.window, {
+      const result = await dependencies.dialog.showSaveDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
         defaultPath: options.suggestedName,
         ...(options.filters ? { filters: options.filters } : {}),
       })

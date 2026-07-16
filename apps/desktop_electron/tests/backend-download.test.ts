@@ -51,18 +51,21 @@ describe('backend download manager', () => {
 
   it('returns cancelled without contacting the backend', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
+    const showSaveDialog = vi.fn(async () => ({ canceled: true }))
     const manager = new BackendDownloadManager({
       backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:43123', apiToken: 'x'.repeat(48) }) },
-      dialog: { showSaveDialog: vi.fn(async () => ({ canceled: true })) },
+      dialog: { showSaveDialog },
       window: {},
       pathRegistry: new GrantedPathRegistry(),
       fetchImpl,
     })
 
+    const taskWindow = { kind: 'task' }
     await expect(manager.download({
       apiPath: '/api/file-management/downloads/task-1/file',
-      suggestedName: 'result.zip',
-    })).resolves.toEqual({ status: 'cancelled' })
+      suggestedName: 'devices.xlsx',
+    }, taskWindow)).resolves.toEqual({ status: 'cancelled' })
+    expect(showSaveDialog).toHaveBeenCalledWith(taskWindow, expect.objectContaining({ defaultPath: 'devices.xlsx' }))
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

@@ -64,8 +64,7 @@ describe('AC Mesh-Link read-only polling store', () => {
       executor: 'LOCAL', source: 'local', device_id: 'ac-1', device_name: '测试 AC', agent: '', mr_name: '',
       session_id: '', mapping_state: '', created_time: '', started_time: '', finished_time: '', updated_time: '',
       duration_seconds: 0, error_code: '', error_summary: '', has_warning: false,
-      result_path: '', output_dir: '', package_path: '', session_path: '',
-      snapshot_id: null, records_count: null, raw_output_reference: '', parser_version: '',
+      snapshot_id: null, records_count: null, parser_version: '',
     })
     vi.stubGlobal('window', { setTimeout, clearTimeout })
   })

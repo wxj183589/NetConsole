@@ -181,7 +181,6 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedPath.va
         <el-table-column label="持续时间" width="105"><template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template></el-table-column>
         <el-table-column prop="session_id" label="Session" min-width="190" show-overflow-tooltip />
         <el-table-column prop="error_summary" label="错误 / 告警" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="result_path" label="输出路径" min-width="220" show-overflow-tooltip />
         <el-table-column label="操作" width="82" fixed="right">
           <template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
         </el-table-column>
@@ -214,14 +213,10 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedPath.va
           <el-descriptions-item label="错误码">{{ store.selected.error_code || '--' }}</el-descriptions-item>
           <el-descriptions-item label="消息">{{ store.selected.message || '--' }}</el-descriptions-item>
           <el-descriptions-item label="Session ID" :span="2"><code>{{ store.selected.session_id || '--' }}</code></el-descriptions-item>
-          <el-descriptions-item label="Session 路径" :span="2"><code>{{ store.selected.session_path || '--' }}</code></el-descriptions-item>
-          <el-descriptions-item label="输出目录" :span="2"><code>{{ store.selected.output_dir || store.selected.result_path || '--' }}</code></el-descriptions-item>
-          <el-descriptions-item label="采集包" :span="2"><code>{{ store.selected.package_path || '--' }}</code></el-descriptions-item>
           <template v-if="store.selected.type === 'ac_mesh_link_refresh'">
             <el-descriptions-item label="Mesh-Link 快照 ID">{{ store.selected.snapshot_id ?? '--' }}</el-descriptions-item>
             <el-descriptions-item label="链路记录数">{{ store.selected.records_count ?? '--' }}</el-descriptions-item>
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="原始回显引用" :span="2"><code>{{ store.selected.raw_output_reference || '--' }}</code></el-descriptions-item>
           </template>
         </el-descriptions>
 

@@ -27,6 +27,7 @@ function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
   onRendererReady?: (healthOk: boolean) => void
   openTaskWindow?: (value: unknown) => void
+  windowForEvent?: (event: { sender: unknown }) => unknown
 } = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
@@ -39,16 +40,18 @@ function createHarness(overrides: {
     showItemInFolder: vi.fn(),
     openExternal: vi.fn(async () => undefined),
   }
+  const dialog = {
+    showOpenDialog: vi.fn(async (_window, options) => options.properties.includes('openDirectory')
+      ? { canceled: false, filePaths: [selectedDirectory] }
+      : { canceled: false, filePaths: [selectedFile] }),
+    showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: savedFile })),
+  }
   registerDesktopIpc({
     ipcMain,
-    dialog: {
-      showOpenDialog: vi.fn(async (_window, options) => options.properties.includes('openDirectory')
-        ? { canceled: false, filePaths: [selectedDirectory] }
-        : { canceled: false, filePaths: [selectedFile] }),
-      showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: savedFile })),
-    },
+    dialog,
     shell,
     window: {},
+    windowForEvent: overrides.windowForEvent,
     appInfo: { version: '1.3.8', platform: 'win32', isPackaged: false },
     backend: {
       getStatus: () => ({ state: 'ready', baseUrl: 'http://127.0.0.1:43123' }),
@@ -60,7 +63,7 @@ function createHarness(overrides: {
     onRendererReady: overrides.onRendererReady,
     openTaskWindow: overrides.openTaskWindow,
   })
-  return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry }
+  return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
 }
 
 describe('desktop IPC', () => {
@@ -105,6 +108,18 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!
 
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
+  })
+
+  it('parents dialogs and downloads to the calling managed window', async () => {
+    const taskWindow = { kind: 'task' }
+    const { ipcMain, sender, dialog } = createHarness({ windowForEvent: () => taskWindow })
+    const event = { sender }
+
+    await ipcMain.handlers.get(DESKTOP_IPC.selectFile)!(event, {})
+    await ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!(event, { suggestedName: 'report.xlsx' })
+
+    expect(dialog.showOpenDialog).toHaveBeenCalledWith(taskWindow, expect.any(Object))
+    expect(dialog.showSaveDialog).toHaveBeenCalledWith(taskWindow, expect.any(Object))
   })
 
   it('opens the task window only with the strict filter DTO', async () => {

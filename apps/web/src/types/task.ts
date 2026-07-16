@@ -40,13 +40,8 @@ export interface TaskItem {
   error_code: string
   error_summary: string
   has_warning: boolean
-  result_path: string
-  output_dir: string
-  package_path: string
-  session_path: string
   snapshot_id: number | null
   records_count: number | null
-  raw_output_reference: string
   parser_version: string
   module?: string
   cancellable?: boolean

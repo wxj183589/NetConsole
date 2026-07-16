@@ -4,7 +4,9 @@
 
 Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`，提供单实例任务窗口。主窗口只通过严格的 `taskId/module/status` DTO 打开或恢复该窗口；关闭窗口仅隐藏，不取消后台任务，应用退出时再与主窗口、受管后端一并有序关闭。
 
-任务动作以后端 owner capability 为准。未授权动作保持禁用并说明原因；Artifact 只携带不透明标识和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存，不向 Renderer 暴露服务端绝对路径。
+任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。Artifact 只携带不透明标识、正式显示名和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 不向 Renderer 返回结果、会话、采集包或原始回显的服务端路径。
+
+主窗口和任务窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；脱敏后的后端状态广播到所有受管窗口。关闭任务窗口仍只隐藏窗口，不改变后台任务状态。
 
 ## 当前状态
 

@@ -15,6 +15,18 @@ from netconsole.models.api.job_center import (
     JobCenterSummaryDTO,
     JobCenterTaskDTO,
 )
+from netconsole.services.config_collection_job_handlers import CONFIG_WEB_EXPORT_TASKS
+from netconsole.services.config_collection_web_service import (
+    CONFIG_WEB_OWNER,
+    CONFIG_WEB_TASK_TYPES,
+    IRREVERSIBLE_CONFIG_TASK_TYPES,
+)
+from netconsole.services.device_management_web_service import (
+    DEVICE_TASK_TYPES,
+    EXPORT_TASK_TYPES,
+    WEB_TASK_OWNER,
+)
+from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
 
 class JobCenterQueryService:
@@ -158,7 +170,7 @@ class JobCenterQueryService:
     def _task_from_row(cls, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
         result = cls._json_object(row.get("result_json")) if include_result else {}
         status = str(row.get("status") or "UNKNOWN").upper()
-        error_summary = str(row.get("mapping_error_summary") or row.get("error_message") or "")
+        error_summary = redact_web_task_text(row.get("mapping_error_summary") or row.get("error_message") or "")
         error_code = str(row.get("mapping_error_code") or result.get("error_code") or "")
         if not error_code and error_summary.startswith("AC_MESH_LINK_"):
             error_code = error_summary.partition(":")[0]
@@ -168,11 +180,12 @@ class JobCenterQueryService:
             executor = "AGENT" if source.casefold() == "agent" or row.get("agent") else "LOCAL"
         started = str(row.get("started_time") or "")
         finished = str(row.get("finished_time") or "")
-        result_path = str(row.get("result_path") or "")
         task_type = str(row.get("task_type") or "")
         task_id = str(row["task_id"])
         site_name = str(row.get("site_name") or "")
-        artifact_download = cls._artifact_download(task_type, task_id, site_name, result)
+        owner = str(row.get("owner") or "")
+        cancellable, cancel_reason = cls._cancel_capability(owner, task_type, status, source)
+        artifact_download = cls._artifact_download(owner, task_type, task_id, site_name, status, result)
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
@@ -181,9 +194,9 @@ class JobCenterQueryService:
             progress=max(0, min(int(row.get("progress") or 0), 100)),
             phase=str(row.get("phase") or row.get("stage") or ""),
             stage=str(row.get("stage") or ""),
-            message=str(row.get("message") or ""),
+            message=redact_web_task_text(row.get("message") or ""),
             site_name=site_name,
-            owner=str(row.get("owner") or ""),
+            owner=owner,
             executor=executor.upper(),
             source=source,
             device_id=str(row.get("device_id") or ""),
@@ -200,40 +213,59 @@ class JobCenterQueryService:
             error_code=error_code,
             error_summary=error_summary,
             has_warning=bool(error_summary and status != "FAILED"),
-            result_path=result_path,
-            output_dir=cls._first_text(result, "output_dir", "output_path"),
-            package_path=cls._first_text(result, "package_path", "zip_path"),
-            session_path=cls._first_text(result, "session_dir", "session_path"),
             snapshot_id=cls._optional_int(result.get("snapshot_id")),
             records_count=cls._optional_int(result.get("records_count")),
-            raw_output_reference=cls._first_text(result, "raw_output_reference"),
             parser_version=cls._first_text(result, "parser_version"),
-            module=cls._module(task_type),
-            cancellable=source == "local" and status in cls._ACTIVE_STATES,
-            cancel_reason="" if source == "local" and status in cls._ACTIVE_STATES else "任务 owner 未授权停止或任务已结束",
+            module=cls._module(owner, task_type),
+            cancellable=cancellable,
+            cancel_reason=cancel_reason,
             artifact_download=artifact_download,
             artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
         )
 
     @staticmethod
-    def _module(task_type: str) -> str:
-        if task_type.startswith("device_"):
+    def _module(owner: str, task_type: str) -> str:
+        if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return "devices"
-        if task_type.startswith("config_"):
+        if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
             return "config"
-        if task_type.startswith("file_"):
+        if owner == "web_file_management" and task_type == "file_management_download":
             return "files"
         return "other"
 
     @staticmethod
-    def _artifact_download(task_type: str, task_id: str, site_name: str, result: dict[str, Any]) -> dict[str, object] | None:
+    def _cancel_capability(owner: str, task_type: str, status: str, source: str) -> tuple[bool, str]:
+        if status not in JobCenterQueryService._ACTIVE_STATES:
+            return False, "任务已结束"
+        if source != "local":
+            return False, "外部任务 owner 未提供统一停止能力"
+        if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
+            return True, ""
+        if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
+            if task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and status in {"RUNNING", "STOPPING"}:
+                return False, "任务已进入不可逆批次，不能再取消"
+            return True, ""
+        if owner == "web_file_management" and task_type == "file_management_download":
+            return True, ""
+        return False, "当前任务 owner 未接入统一停止能力"
+
+    @staticmethod
+    def _artifact_download(owner: str, task_type: str, task_id: str, site_name: str, status: str, result: dict[str, Any]) -> dict[str, object] | None:
+        if status != "COMPLETED":
+            return None
         artifact_id = str(result.get("artifact_id") or "")
-        name = str(result.get("display_name") or result.get("filename") or result.get("name") or "任务文件")
-        if task_type.startswith("device_") and artifact_id:
+        if owner == WEB_TASK_OWNER and task_type in EXPORT_TASK_TYPES and artifact_id and result.get("available"):
+            name = str(result.get("artifact_name") or "")
+            if not name:
+                return None
             return {"apiPath": f"/api/device-management/exports/{task_id}/download", "query": {"artifact_id": artifact_id}, "suggestedName": name}
-        if task_type.startswith("config_") and artifact_id:
+        if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_EXPORT_TASKS and artifact_id:
+            name = str(result.get("display_name") or "")
+            if not name:
+                return None
             return {"apiPath": f"/api/config-collection/artifacts/{artifact_id}", "suggestedName": name}
-        if task_type.startswith("file_") and result.get("available"):
+        if owner == "web_file_management" and task_type == "file_management_download" and result.get("name"):
+            name = str(result["name"])
             return {"apiPath": f"/api/file-management/downloads/{task_id}/file", "query": {"site_id": site_name}, "suggestedName": name}
         return None
 

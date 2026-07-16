@@ -48,5 +48,8 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('if (allowQuit) return')
     expect(source.indexOf('taskWindow?.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
     expect(source).toContain('taskWindow.destroy()')
+    expect(source).toContain('installManagedWindowDiagnostics(taskWindow)')
+    expect(source).toContain('for (const window of [mainWindow, taskWindow])')
+    expect(source).toContain("error: '本地后端不可用'")
   })
 })

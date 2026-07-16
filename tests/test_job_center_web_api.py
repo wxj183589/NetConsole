@@ -116,7 +116,7 @@ def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path
     assert payload["device_id"] == "12"
     assert payload["error_summary"] == "Agent 包设备身份已按本地映射"
     assert payload["has_warning"] is True
-    assert payload["package_path"].endswith("session-12.zip")
+    assert "package_path" not in payload
     assert payload["cancellable"] is False
     assert payload["retryable"] is False
     assert payload["artifact_download"] is None
@@ -149,6 +149,73 @@ def test_job_center_rejects_cancel_without_owner_capability(tmp_path: Path) -> N
         response = client.post("/api/job-center/tasks/online-mr-task/cancel")
 
     assert response.status_code == 409
+
+
+def test_job_center_routes_device_export_cancel_to_real_owner(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id="device-export-running",
+            task_type="device_export_device_csv",
+            task_name="设备导出",
+            status=TaskState.RUNNING,
+            created_time="2026-07-14T09:00:00Z",
+            updated_time="2026-07-14T09:00:01Z",
+            owner="web_device_management",
+            source="local",
+            site_name="demo",
+        )
+    )
+    cancel_path = tmp_path / "device-export.cancel"
+    app.state.device_management_service._export_artifacts["device-export-running"] = {"cancel_path": cancel_path}
+
+    with TestClient(app) as client:
+        response = client.post("/api/job-center/tasks/device-export-running/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "STOPPING"
+    assert cancel_path.read_text(encoding="utf-8") == "cancelled"
+    assert not (app.state.task_service.paths.runtime_cache_dir / "background_jobs" / "device-export-running.cancel").exists()
+
+
+def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    repository = TaskRepository(db_path)
+    fixtures = [
+        ("device-artifact", "device_export_device_csv", "web_device_management", {"artifact_id": "device-abc", "artifact_name": "devices.xlsx", "available": True}),
+        ("config-artifact", "config_web_export_snapshots", "web_config_collection", {"artifact_id": "export-0123456789abcdef0123456789abcdef", "display_name": "configs.zip", "output_path": "C:\\private\\configs.zip"}),
+        ("file-artifact", "file_management_download", "web_file_management", {"name": "capture.pcapng", "available": True, "relative_path": "private/capture.pcapng"}),
+    ]
+    for task_id, task_type, owner, result in fixtures:
+        repository.save(
+            TaskSnapshot(
+                task_id=task_id,
+                task_type=task_type,
+                task_name=task_id,
+                status=TaskState.COMPLETED,
+                created_time="2026-07-14T10:00:00Z",
+                finished_time="2026-07-14T10:00:01Z",
+                updated_time="2026-07-14T10:00:01Z",
+                owner=owner,
+                source="local",
+                site_name="demo",
+                message="saved C:\\secret\\status.log",
+                result={**result, "result_path": "C:\\secret\\result", "session_dir": "C:\\secret\\session", "raw_output_reference": "C:\\secret\\raw.log"},
+            )
+        )
+
+    with TestClient(app) as client:
+        payloads = {task_id: client.get(f"/api/job-center/tasks/{task_id}").json() for task_id, *_rest in fixtures}
+
+    assert payloads["device-artifact"]["artifact_download"]["suggestedName"] == "devices.xlsx"
+    assert payloads["device-artifact"]["artifact_download"]["apiPath"] == "/api/device-management/exports/device-artifact/download"
+    assert payloads["config-artifact"]["artifact_download"]["suggestedName"] == "configs.zip"
+    assert payloads["config-artifact"]["artifact_download"]["apiPath"].endswith("/artifacts/export-0123456789abcdef0123456789abcdef")
+    assert payloads["file-artifact"]["artifact_download"]["suggestedName"] == "capture.pcapng"
+    assert payloads["file-artifact"]["artifact_download"]["apiPath"] == "/api/file-management/downloads/file-artifact/file"
+    for payload in payloads.values():
+        assert not {"result_path", "output_dir", "package_path", "session_path", "raw_output_reference"} & payload.keys()
+        assert "C:\\secret" not in str(payload)
 
 
 def test_job_center_router_exposes_only_owner_checked_cancel_mutation(tmp_path: Path) -> None:

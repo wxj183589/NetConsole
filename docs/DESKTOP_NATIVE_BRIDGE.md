@@ -4,6 +4,8 @@
 
 `openTaskWindow` 只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 固定为 `devices/config/files`，`status` 固定为任务状态枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。主窗口和任务窗口可作为 IPC sender，文件对话框以实际调用窗口为父窗口。
 
+受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID 和正式文件名；保存完成后的本机路径仅由当前 Electron 会话内存授权，用于打开文件或定位目录。
+
 ## 当前状态
 
 Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。除桌面选择器和受控后端文件下载外，设备详情可通过独立 `openExternalUrl` 动作把无凭据 HTTPS 地址交给系统浏览器。普通 Browser/Server Mode 仅作开发诊断，没有正式本机动作能力。

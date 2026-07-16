@@ -32,13 +32,8 @@ class JobCenterTaskDTO(ApiModel):
     error_code: str = ""
     error_summary: str = ""
     has_warning: bool = False
-    result_path: str = ""
-    output_dir: str = ""
-    package_path: str = ""
-    session_path: str = ""
     snapshot_id: int | None = None
     records_count: int | None = None
-    raw_output_reference: str = ""
     parser_version: str = ""
     module: str = ""
     cancellable: bool = False

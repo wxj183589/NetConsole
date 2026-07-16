@@ -90,8 +90,15 @@ export const useTaskStore = defineStore('tasks', () => {
 
   async function requestCancel(): Promise<void> {
     if (!selected.value?.cancellable) return
-    selected.value = await cancelTask(selected.value.id)
-    await refresh()
+    try {
+      const updated = await cancelTask(selected.value.id)
+      detailError.value = ''
+      await refresh()
+      selected.value = updated
+    } catch (cause) {
+      detailError.value = cause instanceof Error ? cause.message : '停止任务失败'
+      throw cause
+    }
   }
 
   function setDetailVisible(value: boolean): void {
