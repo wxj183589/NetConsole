@@ -92,7 +92,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ## 尚未完成的 Qt 对等能力
 
-- Qt AC 资源页的 AP 信息导出和 OmniPeek 名称表导出；批量删除已通过 AP 归属校验、二次确认和持久化任务迁移；
+- Qt AC 资源页的 AP 信息导出和 OmniPeek 名称表导出；批量删除及 AP 元数据 CSV/XLSX 导入已通过持久化任务迁移；
 - FIT-AP CSV、光衰 XLSX 与 OmniPeek NAM 的 Export Process worker 已存在，但共享 `WebArtifactStore` 尚未允许对应 AC 来源，且 `.nam` 不在 Artifact 类型白名单；最小共享补丁是把三个 AC 导出来源映射到当前局点 `trackside_ap_outputs` 受控根，并允许 `.nam`，本分支不修改或复制共享 Artifact/Native Bridge；
 - AP 扩展信息与轨旁规划的全部 Qt 导入、导出和编辑入口；
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；

@@ -77,6 +77,7 @@ class AcWebApplicationService:
         **{task_type: task_type for task_type, _task_name in _REFRESH_TASKS.values()},
         "ac_command_action_execute": "ac_command_action_execute",
         "ac_fit_ap_delete_many": "ac_fit_ap_delete_many",
+        "fit_ap_metadata_import": "fit_ap_metadata_import",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -249,6 +250,56 @@ class AcWebApplicationService:
         )
         return self._task_dto(site_id, task_id)
 
+    def start_fit_ap_metadata_import(self, site_id: str, *, file_name: str, content: bytes) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        suffix = Path(str(file_name or "")).suffix.casefold()
+        if suffix not in {".csv", ".xlsx"}:
+            raise AcWebActionError("IMPORT_TYPE_INVALID", "FIT-AP 元数据只支持 CSV 或 XLSX")
+        if not content:
+            raise AcWebActionError("IMPORT_EMPTY", "FIT-AP 元数据导入文件为空")
+        if len(content) > 20 * 1024 * 1024:
+            raise AcWebActionError("IMPORT_TOO_LARGE", "FIT-AP 元数据导入文件不能超过 20 MiB")
+        task_id = f"ac-web-metadata-{uuid4().hex}"
+        input_root = self.paths.trackside_ap_outputs_dir(site_id) / "web_imports"
+        input_path = (input_root / f"{task_id}{suffix}").resolve()
+        if input_root.resolve() not in input_path.parents:
+            raise AcWebActionError("IMPORT_PATH_INVALID", "FIT-AP 元数据暂存路径无效")
+        pending = input_path.with_suffix(f"{suffix}.tmp")
+        try:
+            input_root.mkdir(parents=True, exist_ok=True)
+            pending.write_bytes(content)
+            os.replace(pending, input_path)
+        except OSError as exc:
+            pending.unlink(missing_ok=True)
+            raise AcWebActionError("IMPORT_STAGE_FAILED", "FIT-AP 元数据导入文件暂存失败") from exc
+
+        def completed(_value: LocalProcessCompletion) -> None:
+            self._cleanup_task_runtime(site_id, task_id)
+
+        try:
+            self.process_adapter.start_job(
+                BackgroundJob(
+                    job_id=task_id,
+                    task_type="fit_ap_metadata_import",
+                    params={
+                        "site_name": site_id,
+                        "db_path": str(self.paths.site_db_path(site_id)),
+                        "app_root": str(self.paths.app_root),
+                        "data_root": str(self.paths.data_root),
+                        "task_name": "导入 FIT-AP 元数据",
+                        "owner": self._OWNER,
+                        "task_source": "local",
+                        "path": str(input_path),
+                    },
+                ),
+                on_complete=completed,
+            )
+        except Exception:
+            input_path.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
+            raise
+        return self._task_dto(site_id, task_id)
+
     def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
         site_id = self._site(site_id)
         snapshot = self._task_snapshot(site_id, task_id)
@@ -267,7 +318,7 @@ class AcWebApplicationService:
         for item in repository.list(statuses=TERMINAL_TASK_STATES, limit=1000):
             if item.site_name != site_id or not self._authorized_task(item):
                 continue
-            self._cleanup_task_runtime(item.task_id)
+            self._cleanup_task_runtime(site_id, item.task_id)
             if item.task_type in self._ARTIFACT_TASK_TYPES.values():
                 self.artifact_store.recover_task(
                     site_id,
@@ -577,7 +628,7 @@ class AcWebApplicationService:
             lambda pid: True if pid not in owned_pids else self.task_service._is_process_alive(pid)
         )
 
-    def _cleanup_task_runtime(self, task_id: str) -> None:
+    def _cleanup_task_runtime(self, site_id: str, task_id: str) -> None:
         for directory, suffix in (
             (self.paths.runtime_cache_dir / "background_jobs", ".json"),
             (self.paths.runtime_cache_dir / "background_jobs", ".cancel"),
@@ -587,6 +638,14 @@ class AcWebApplicationService:
             path = (directory / f"{task_id}{suffix}").resolve()
             try:
                 if directory.resolve() in path.parents:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        import_root = self.paths.trackside_ap_outputs_dir(site_id) / "web_imports"
+        for suffix in (".csv", ".xlsx", ".csv.tmp", ".xlsx.tmp"):
+            path = (import_root / f"{task_id}{suffix}").resolve()
+            try:
+                if import_root.resolve() in path.parents:
                     path.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -607,6 +666,8 @@ class AcWebApplicationService:
             "confirm_required",
             "plan_id",
             "plan_digest",
+            "updated",
+            "skipped",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):
@@ -654,6 +715,10 @@ class AcWebApplicationService:
                 for item in command_results
                 if isinstance(item, dict)
             ]
+        errors = result.get("errors")
+        if isinstance(errors, list):
+            summary["errors"] = [redact_web_task_text(str(value)) for value in errors[:50]]
+            summary["errors_count"] = len(errors)
         return summary
 
     def _site(self, site_id: str) -> str:

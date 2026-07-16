@@ -23,7 +23,7 @@ from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many
+from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many, fit_ap_metadata_import
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
@@ -41,6 +41,7 @@ AC_FEATURE_IDS = (
     "web.ac_extensions_export",
     "web.ac_refresh",
     "web.ac_fit_ap_delete",
+    "web.ac_fit_ap_metadata_import",
     "web.ac_dangerous_actions",
 )
 CSV_CONTENT = (
@@ -420,6 +421,55 @@ def test_fit_ap_batch_delete_api_starts_persistent_job(tmp_path: Path, monkeypat
     snapshot = service.task_service.repository("demo").get(response.json()["task_id"])
     assert snapshot is not None
     assert snapshot.task_type == "ac_fit_ap_delete_many"
+
+
+def test_fit_ap_metadata_upload_runs_existing_import_job_and_cleans_staging_file(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    repository = AcRepository(Database(paths.site_db_path("demo")))
+    ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
+    assert ap is not None and ap["ap_mac"]
+    repository.upsert_fit_ap_resource("ac-1", ap)
+    content = (
+        "AP名称,AP_MAC,归属站点,里程,点位说明,方向\n"
+        f"{ap['ap_name']},{ap['ap_mac']},Web站,ZDK1+200,站台,上行\n"
+    ).encode("utf-8-sig")
+
+    with pytest.raises(AcWebActionError) as invalid_type:
+        service.start_fit_ap_metadata_import("demo", file_name="metadata.txt", content=content)
+    assert invalid_type.value.code == "IMPORT_TYPE_INVALID"
+    started = service.start_fit_ap_metadata_import("demo", file_name="metadata.csv", content=content)
+    job = normal.jobs[started.task_id]
+    input_path = Path(str(job.params["path"]))
+    assert input_path.is_file()
+    result = fit_ap_metadata_import(JobContext(job.job_id, job.task_type, job.params, None, lambda: False, paths))
+    normal.complete(job.job_id, result)
+
+    assert result["updated"] == 1
+    assert result["skipped"] == 0
+    assert not input_path.exists()
+    updated = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
+    assert updated is not None and updated["site_name"] == "Web站"
+
+
+def test_fit_ap_metadata_import_api_starts_persistent_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, service = _client(tmp_path, monkeypatch)
+    repository = AcRepository(Database(service.paths.site_db_path("demo")))
+    ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
+    assert ap is not None
+    content = (
+        f"AP名称,AP_MAC,归属站点,里程,点位说明,方向\n{ap['ap_name']},{ap['ap_mac']},Web站,,站台,上行\n"
+    ).encode("utf-8-sig")
+    with client:
+        response = client.post(
+            "/api/ac-management/fit-aps/metadata/import",
+            files={"file": ("metadata.csv", content, "text/csv")},
+        )
+
+    assert response.status_code == 202
+    snapshot = service.task_service.repository("demo").get(response.json()["task_id"])
+    assert snapshot is not None
+    assert snapshot.task_type == "fit_ap_metadata_import"
 
 
 def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest(tmp_path: Path) -> None:

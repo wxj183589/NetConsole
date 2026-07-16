@@ -16,6 +16,7 @@ const configVisible = ref(false)
 const configSearch = ref('')
 const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
+const metadataInput = ref<HTMLInputElement | null>(null)
 
 interface TableColumn { key: string; label: string; width: number; sortable?: boolean }
 
@@ -58,6 +59,7 @@ const taskLabel = computed(() => ({
   ac_fit_ap_detail_refresh: 'FIT-AP 深度更新',
   ac_fit_ap_optical_refresh: 'FIT-AP 光衰更新',
   ac_fit_ap_delete_many: 'FIT-AP 批量删除',
+  fit_ap_metadata_import: 'FIT-AP 元数据导入',
 }[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
@@ -136,6 +138,13 @@ async function deleteSelectedAps(): Promise<void> {
   }
   await store.startFitApDelete(apIds)
   if (store.refreshTask?.action === 'ac_fit_ap_delete_many') selectedApIds.value = new Set()
+}
+
+async function chooseMetadataFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) await store.startFitApMetadataImport(file)
 }
 
 function handleSort(event: { prop: string; order: 'ascending' | 'descending' | null }): void {
@@ -271,6 +280,9 @@ function diffLineClass(line: string): string {
       <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_delete_many'" class="task-result">
         已删除 {{ store.refreshTask.result_summary.count || 0 }} 个 FIT-AP。
       </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'fit_ap_metadata_import'" class="task-result">
+        已更新 {{ store.refreshTask.result_summary.updated || 0 }} 条元数据，跳过 {{ store.refreshTask.result_summary.skipped || 0 }} 条，错误 {{ store.refreshTask.result_summary.errors_count || 0 }} 条。
+      </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
         已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
       </p>
@@ -317,6 +329,13 @@ function diffLineClass(line: string): string {
             <el-button @click="selectCurrentPage">选择本页</el-button>
             <el-button @click="invertCurrentPage">反选本页</el-button>
             <el-button :disabled="!selectedApIds.size" @click="selectedApIds = new Set()">清空选择</el-button>
+            <input ref="metadataInput" type="file" accept=".csv,.xlsx" hidden @change="chooseMetadataFile">
+            <el-button
+              v-if="isFeatureEnabled('web.ac_fit_ap_metadata_import')"
+              :loading="store.refreshStarting"
+              :disabled="taskActive"
+              @click="metadataInput?.click()"
+            >导入 AP 元数据</el-button>
             <el-button
               v-if="isFeatureEnabled('web.ac_fit_ap_delete')"
               type="danger"

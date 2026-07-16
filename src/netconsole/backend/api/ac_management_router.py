@@ -368,6 +368,29 @@ def delete_fit_aps(request: Request, payload: AcFitApDeleteRequestDTO) -> AcWebT
 
 
 @router.post(
+    "/fit-aps/metadata/import",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.ac_fit_ap_metadata_import")),
+        Depends(require_feature("web.ac_refresh")),
+    ],
+)
+async def import_fit_ap_metadata(request: Request, file: UploadFile = File(...)) -> AcWebTaskDTO:
+    try:
+        content = await file.read()
+        return _web_service(request).start_fit_ap_metadata_import(
+            _web_site_id(request),
+            file_name=file.filename or "",
+            content=content,
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+    finally:
+        await file.close()
+
+
+@router.post(
     "/trackside-business/local-rebuild",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,

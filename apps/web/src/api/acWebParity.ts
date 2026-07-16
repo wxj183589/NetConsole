@@ -62,6 +62,12 @@ export function deleteAcFitAps(acId: string, apIds: string[]): Promise<AcWebTask
   })
 }
 
+export function importAcFitApMetadata(file: File): Promise<AcWebTask> {
+  const form = new FormData()
+  form.append('file', file)
+  return apiRequest<AcWebTask>(`${root}/fit-aps/metadata/import`, { method: 'POST', body: form })
+}
+
 export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
 }

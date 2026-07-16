@@ -10,7 +10,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { deleteAcFitAps, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
+import { deleteAcFitAps, importAcFitApMetadata, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
 
 vi.mock('../api/acManagement', () => ({
   getAcApDetail: vi.fn(),
@@ -23,6 +23,7 @@ vi.mock('../api/acManagement', () => ({
 vi.mock('../api/acWebParity', () => ({
   cancelAcWebTask: vi.fn(),
   deleteAcFitAps: vi.fn(),
+  importAcFitApMetadata: vi.fn(),
   getAcWebTask: vi.fn(),
   recoverAcWebTasks: vi.fn(),
   startAcResourceRefresh: vi.fn(),
@@ -42,6 +43,7 @@ describe('AC Management polling store', () => {
     vi.mocked(getAcConfigSnapshot).mockReset()
     vi.mocked(recoverAcWebTasks).mockReset().mockResolvedValue([])
     vi.mocked(deleteAcFitAps).mockReset()
+    vi.mocked(importAcFitApMetadata).mockReset()
     vi.mocked(startAcResourceRefresh).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
@@ -115,5 +117,21 @@ describe('AC Management polling store', () => {
 
     expect(deleteAcFitAps).toHaveBeenCalledWith('ac-1', ['ap-1', 'ap-2'])
     expect(store.refreshTask?.task_id).toBe('task-delete')
+  })
+
+  it('starts FIT-AP metadata import through the persistent task API', async () => {
+    vi.mocked(importAcFitApMetadata).mockResolvedValue({
+      task_id: 'task-import', action: 'fit_ap_metadata_import', status: 'QUEUED',
+      progress: 0, stage: 'queued', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    })
+    const file = new File(['metadata'], 'metadata.csv', { type: 'text/csv' })
+    const store = useAcManagementStore()
+
+    await store.startFitApMetadataImport(file)
+
+    expect(importAcFitApMetadata).toHaveBeenCalledWith(file)
+    expect(store.refreshTask?.task_id).toBe('task-import')
   })
 })

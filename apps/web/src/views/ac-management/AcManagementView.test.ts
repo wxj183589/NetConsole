@@ -9,6 +9,8 @@ describe('AC Management resource view', () => {
     expect(source).toContain('深度更新')
     expect(source).toContain('更新光衰')
     expect(source).toContain('批量删除')
+    expect(source).toContain('导入 AP 元数据')
+    expect(source).toContain('.csv,.xlsx')
     expect(source).toContain('选择本页')
     expect(source).toContain('反选本页')
     expect(source).toContain('ElMessageBox.confirm')
