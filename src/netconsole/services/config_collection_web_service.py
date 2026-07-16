@@ -612,7 +612,20 @@ class ConfigCollectionApplicationService:
             "site_name": site_name,
             "task_types": CONFIG_WEB_TASK_TYPES,
         }
-        active = repository.list_filtered(statuses=ACTIVE_TASK_STATES, limit=1000, **filters)
+        page_size = 1000
+        active: list[TaskSnapshot] = []
+        offset = 0
+        while True:
+            page = repository.list_filtered(
+                statuses=ACTIVE_TASK_STATES,
+                limit=page_size,
+                offset=offset,
+                **filters,
+            )
+            active.extend(page)
+            if len(page) < page_size:
+                break
+            offset += len(page)
         history_limit = max(0, limit - len(active))
         if history_limit == 0:
             return active

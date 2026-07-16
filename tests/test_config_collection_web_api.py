@@ -21,11 +21,11 @@ from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.device import Device
-from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.config_collection_web_service import CONFIG_WEB_OWNER, ConfigCollectionApplicationService
 from netconsole.services import config_collection_job_handlers
 from netconsole.services.config_lifecycle_service import ConfigLifecycleService
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
@@ -570,6 +570,32 @@ def test_config_task_recovery_scans_past_other_modules_and_keeps_all_active(tmp_
     assert {task.id for task in tasks} == {"config-active-a", "config-active-b"}
     tasks = app.state.config_collection_service.list_tasks("demo", limit=3)
     assert {task.id for task in tasks} == {"config-active-a", "config-active-b", "config-history"}
+
+
+def test_config_task_recovery_keeps_more_than_one_thousand_active_tasks(tmp_path: Path) -> None:
+    app, _paths, _device, _running, _saved, _adapter = _fixture(tmp_path)
+    repository = app.state.config_collection_service.task_service.repository("demo")
+    now = utc_now_iso()
+    for index in range(1001):
+        repository.save(
+            TaskSnapshot(
+                task_id=f"config-active-{index}",
+                task_type="config_web_snapshot_fetch",
+                task_name="配置采集",
+                created_time=now,
+                started_time=now,
+                status=TaskState.RUNNING,
+                progress=50,
+                owner=CONFIG_WEB_OWNER,
+                source="local",
+                site_name="demo",
+                updated_time=now,
+            )
+        )
+
+    tasks = app.state.config_collection_service.list_tasks("demo", limit=1)
+
+    assert len([task for task in tasks if task.status == TaskState.RUNNING.value]) == 1001
 
 
 def test_config_get_and_cancel_reject_site_owner_source_and_type_mismatches(tmp_path: Path) -> None:
