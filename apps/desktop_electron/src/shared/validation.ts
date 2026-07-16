@@ -11,12 +11,32 @@ const MAX_FILTERS = 20
 const MAX_EXTENSIONS = 32
 const FILTER_NAME_MAX = 80
 const EXTENSION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$/
-const INVALID_FILE_NAME_RE = /[\u0000-\u001f<>:"/\\|?*]/
+const INVALID_FILE_NAME_RE = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>:"/\\|?*]/
 const QUERY_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 const SENSITIVE_QUERY_KEY_RE = /(?:token|password|secret|authorization|community|passphrase)/i
 const MAX_QUERY_FIELDS = 32
 const MAX_QUERY_VALUE_LENGTH = 2_000
 const MAX_API_PATH_LENGTH = 4_096
+const WINDOWS_RESERVED_NAME_RE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i
+const COMPOUND_ARTIFACT_SUFFIXES = ['.tar.gz', '.zip.gz']
+const OPENABLE_ARTIFACT_SUFFIXES = [
+  '.tar.gz', '.zip.gz', '.pcapng', '.jsonl',
+  '.xlsx', '.pcap', '.diff', '.html', '.json', '.yaml',
+  '.csv', '.log', '.nam', '.pdf', '.png', '.txt', '.xls', '.yml',
+  '.cfg', '.md', '.tgz', '.zip',
+]
+const DOWNLOAD_SEGMENT = String.raw`(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+`
+const DOWNLOAD_ENDPOINTS = [
+  { pattern: new RegExp(`^/api/device-management/exports/${DOWNLOAD_SEGMENT}/download$`), query: new Set(['artifact_id']), required: new Set(['artifact_id']) },
+  { pattern: new RegExp(`^/api/config-collection/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/file-management/downloads/${DOWNLOAD_SEGMENT}/file$`), query: new Set(['site_id']), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/ac-management/extensions/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/sessions/${DOWNLOAD_SEGMENT}/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/online-mr/report-artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/report-artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/network-tools/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/network-tools/wireless-scan/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
+]
 
 export function validateTaskWindowContext(value: unknown): TaskWindowContext {
   if (value === undefined) return {}
@@ -80,9 +100,13 @@ export function validateBackendDownloadRequest(value: unknown): BackendDownloadR
     suggestedName: record.suggestedName,
     ...(record.filters === undefined ? {} : { filters: record.filters }),
   })
+  const apiPath = validateBackendApiPath(record.apiPath)
+  const query = record.query === undefined ? undefined : validateQuery(record.query)
+  validateArtifactEndpoint(apiPath, query ?? {})
+  validateArtifactFileName(saveOptions.suggestedName)
   return {
-    apiPath: validateBackendApiPath(record.apiPath),
-    ...(record.query === undefined ? {} : { query: validateQuery(record.query) }),
+    apiPath,
+    ...(query === undefined ? {} : { query }),
     ...saveOptions,
   }
 }
@@ -101,6 +125,24 @@ export function validateBridgePath(value: unknown): string {
     throw new TypeError('path is invalid')
   }
   return candidate
+}
+
+export function validateArtifactFileName(value: string): string {
+  const name = validateChooseSavePathOptions({ suggestedName: value }).suggestedName
+  if (WINDOWS_RESERVED_NAME_RE.test(name) || name.endsWith('.') || name.endsWith(' ')) {
+    throw new TypeError('suggestedName must be a safe Artifact file name')
+  }
+  const lower = name.toLocaleLowerCase()
+  const compound = COMPOUND_ARTIFACT_SUFFIXES.find((suffix) => lower.endsWith(suffix))
+  if (compound) return compound
+  const lastDot = name.lastIndexOf('.')
+  return lastDot <= 0 ? '<none>' : lower.slice(lastDot)
+}
+
+export function isOpenableArtifactFileName(value: string): boolean {
+  validateArtifactFileName(value)
+  const lower = value.toLocaleLowerCase()
+  return OPENABLE_ARTIFACT_SUFFIXES.some((suffix) => lower.endsWith(suffix))
 }
 
 export function validateCapabilityId(value: unknown): string {
@@ -194,6 +236,17 @@ function validateBackendApiPath(value: unknown): string {
     throw new TypeError('apiPath must be a safe relative /api path')
   }
   return candidate
+}
+
+function validateArtifactEndpoint(apiPath: string, query: Record<string, string>): void {
+  const endpoint = DOWNLOAD_ENDPOINTS.find(({ pattern }) => pattern.test(apiPath))
+  if (
+    !endpoint
+    || Object.keys(query).some((key) => !endpoint.query.has(key))
+    || [...(endpoint?.required ?? [])].some((key) => !query[key])
+  ) {
+    throw new TypeError('apiPath must be an approved Artifact download endpoint')
+  }
 }
 
 function validateQuery(value: unknown): Record<string, string> {

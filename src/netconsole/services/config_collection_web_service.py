@@ -43,7 +43,7 @@ from netconsole.services.config_collection_job_handlers import (
     read_irreversible_checkpoint,
     remove_irreversible_checkpoint,
 )
-from netconsole.services.config_lifecycle_service import safe_device_name
+from netconsole.services.config_lifecycle_service import safe_artifact_display_name, safe_device_name
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -710,7 +710,10 @@ class ConfigCollectionApplicationService:
             or _sha256_file(resolved) != task_hash
         ):
             raise FileNotFoundError("配置导出 Artifact 校验失败")
-        return resolved, task_display_name
+        display_name = safe_artifact_display_name(task_display_name, expected_suffix)
+        if not display_name:
+            raise FileNotFoundError("配置导出 Artifact 显示名无效")
+        return resolved, display_name
 
     def _device_context(self, site_name: str, device_id: int):
         database = self._database(site_name)

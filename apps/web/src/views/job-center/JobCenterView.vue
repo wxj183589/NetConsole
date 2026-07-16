@@ -117,8 +117,8 @@ async function downloadArtifact(): Promise<void> {
     query: artifact.query,
     suggestedName: artifact.display_name,
   })
-  if (result.status === 'saved' && result.capabilityId) {
-    lastSavedCapability.value = result.capabilityId
+  if (result.status === 'saved') {
+    lastSavedCapability.value = result.capabilityId || ''
     ElMessage.success('Artifact 已保存')
   } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
 }

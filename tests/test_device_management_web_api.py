@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,6 +34,7 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.device_management import (
+    DeviceExportRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceSecureCrtExportRequestDTO,
     DeviceTaskReferenceDTO,
@@ -1055,7 +1057,7 @@ def test_device_upload_and_export_contracts_reject_browser_paths_and_oversize_fi
 def test_device_export_download_requires_owned_completed_task_and_safe_artifact(tmp_path: Path) -> None:
     client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     artifact_root = service._artifact_root("demo")
-    artifact_id = "device-test-artifact"
+    artifact_id = f"device-{'a' * 32}"
     artifact = artifact_root / f"{artifact_id}.csv"
     artifact.write_text("name,primary_address\n安全,192.0.2.51\n", encoding="utf-8")
     now = datetime.now(UTC).isoformat()
@@ -1091,6 +1093,73 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
     assert downloaded.status_code == 200
     assert downloaded.content.startswith(b"name,primary_address")
     assert str(tmp_path) not in downloaded.text
+    disposition = unquote(downloaded.headers["content-disposition"])
+    assert "设备清单.csv" in disposition
+    assert artifact_id not in disposition
+    assert int(downloaded.headers["content-length"]) == artifact.stat().st_size
+    assert downloaded.headers["content-type"].startswith(
+        ("application/vnd.ms-excel", "text/csv")
+    )
+
+    save_task("device-export-duplicate-name")
+    duplicate = client.get(
+        "/api/device-management/exports/device-export-duplicate-name/download",
+        params={"artifact_id": artifact_id},
+    )
+    assert duplicate.status_code == 200
+    assert unquote(duplicate.headers["content-disposition"]) == disposition
+
+    save_task(
+        "device-export-sanitized-name",
+        result={
+            "artifact_id": artifact_id,
+            "artifact_name": artifact.name,
+            "display_name": "中文:设备?清单.csv",
+            "available": True,
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "size_bytes": artifact.stat().st_size,
+        },
+    )
+    sanitized = client.get(
+        "/api/device-management/exports/device-export-sanitized-name/download",
+        params={"artifact_id": artifact_id},
+    )
+    assert sanitized.status_code == 200
+    assert "中文_设备_清单.csv" in unquote(sanitized.headers["content-disposition"])
+
+    save_task(
+        "device-export-control-name",
+        result={
+            "artifact_id": artifact_id,
+            "artifact_name": artifact.name,
+            "display_name": "设备\u202eexe\x01清单.csv",
+            "available": True,
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "size_bytes": artifact.stat().st_size,
+        },
+    )
+    control_name = client.get(
+        "/api/device-management/exports/device-export-control-name/download",
+        params={"artifact_id": artifact_id},
+    )
+    assert control_name.status_code == 200
+    assert "设备_exe_清单.csv" in unquote(control_name.headers["content-disposition"])
+
+    save_task(
+        "device-export-deceptive-extension",
+        result={
+            "artifact_id": artifact_id,
+            "artifact_name": artifact.name,
+            "display_name": "设备清单.exe",
+            "available": True,
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "size_bytes": artifact.stat().st_size,
+        },
+    )
+    assert client.get(
+        "/api/device-management/exports/device-export-deceptive-extension/download",
+        params={"artifact_id": artifact_id},
+    ).status_code == 422
 
     artifact.write_text("tampered", encoding="utf-8")
     tampered = client.get(
@@ -1137,6 +1206,73 @@ def test_device_export_download_requires_owned_completed_task_and_safe_artifact(
         "/api/device-management/exports/device-export-symlink/download",
         params={"artifact_id": "device-symlink"},
     ).status_code != 200
+
+
+def test_device_export_production_result_separates_physical_and_display_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+
+    class FakeProcess:
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            _ = timeout
+            return self.returncode
+
+    class NoopThread:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.subprocess.Popen",
+        lambda *_args, **_kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(
+        "netconsole.services.device_management_web_service.threading",
+        SimpleNamespace(Thread=NoopThread, Event=Event),
+    )
+    reference = service.start_csv_export(DeviceExportRequestDTO())
+    spec = service._export_artifacts[reference.task_id]
+    target = Path(str(spec["target"]))
+    target.write_text("name,primary_address\n设备,192.0.2.10\n", encoding="utf-8")
+    result = service._finalize_export_artifact(spec, {"path": str(target), "row_count": 1})
+    service.task_service.record_external_event(
+        reference.task_id,
+        "finished",
+        {"result": result},
+        site_name="demo",
+    )
+
+    downloaded = client.get(
+        f"/api/device-management/exports/{reference.task_id}/download",
+        params={"artifact_id": result["artifact_id"]},
+    )
+
+    assert str(result["artifact_name"]) == f"{result['artifact_id']}.csv"
+    assert str(result["display_name"]).startswith("设备清单_")
+    assert str(result["display_name"]).endswith(".csv")
+    assert result["artifact_id"] not in str(result["display_name"])
+    assert downloaded.status_code == 200
+    assert str(result["display_name"]) in unquote(downloaded.headers["content-disposition"])
+    assert int(downloaded.headers["content-length"]) == result["size_bytes"]
+    assert downloaded.headers["content-type"].startswith(
+        ("application/vnd.ms-excel", "text/csv")
+    )
 
 
 def test_device_management_parent_feature_gate_blocks_write_actions(tmp_path: Path) -> None:

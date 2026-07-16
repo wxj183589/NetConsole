@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 from fastapi import FastAPI
@@ -164,7 +165,11 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         after_download = {path.relative_to(paths.site_dir("demo")).as_posix() for path in paths.site_dir("demo").rglob("*") if path.is_file()}
         assert downloaded.status_code == 200
         assert downloaded.content == source.read_bytes()
-        assert str(tmp_path) not in downloaded.headers.get("content-disposition", "")
+        disposition = unquote(downloaded.headers["content-disposition"])
+        assert source.name in disposition
+        assert str(tmp_path) not in disposition
+        assert int(downloaded.headers["content-length"]) == source.stat().st_size
+        assert downloaded.headers["content-type"] == "application/octet-stream"
         assert before_download == after_download
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"file_ref": "../outside"}).status_code == 422
         assert client.post(
@@ -187,7 +192,10 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
     device_b = repository.create(Device(name="MR-B", device_type="MR", primary_address="192.0.2.11"))
 
     class FakeTransfer:
-        payloads = {"flash:/diagfile/diag_a.tar.gz": b"remote artifact"}
+        payloads = {
+            "flash:/diagfile/diag_a.tar.gz": b"remote artifact",
+            "flash:/diagfile/启动:配置?.bin": b"binary configuration",
+        }
         instances: list["FakeTransfer"] = []
 
         def __init__(self, site_name, fake_paths, *, allow_remote_setup=True):
@@ -211,7 +219,10 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
             current = normalize_remote_path(path, root_path=self.root_path)
             if current == "flash:/":
                 return [RemoteDeviceFile("diagfile", "flash:/diagfile", None, None, "dir", is_dir=True, file_type="directory")]
-            return [RemoteDeviceFile("diag_a.tar.gz", "flash:/diagfile/diag_a.tar.gz", 15, "2026-07-15 10:00:00", "diag")]
+            return [
+                RemoteDeviceFile("diag_a.tar.gz", "flash:/diagfile/diag_a.tar.gz", 15, "2026-07-15 10:00:00", "diag"),
+                RemoteDeviceFile("启动:配置?.bin", "flash:/diagfile/启动:配置?.bin", 20, "2026-07-15 10:00:00", "bin"),
+            ]
 
         def local_path_for(self, device, remote_file):
             return FileTransferService(self.site_name, self.paths).local_path_for(device, remote_file)
@@ -276,7 +287,9 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
             params={"site_id": "demo", "entry_id": directory_id},
         )
         assert nested.status_code == 200
-        remote_entry_id = nested.json()["items"][0]["entry_id"]
+        entries = {item["name"]: item["entry_id"] for item in nested.json()["items"]}
+        remote_entry_id = entries["diag_a.tar.gz"]
+        binary_entry_id = entries["启动:配置?.bin"]
 
         second = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_b.device_uuid})
         assert second.status_code == 201
@@ -316,6 +329,44 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         artifact = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
         assert artifact.status_code == 200
         assert artifact.content == b"remote artifact"
+        assert "diag_a.tar.gz" in unquote(artifact.headers["content-disposition"])
+        assert int(artifact.headers["content-length"]) == len(b"remote artifact")
+        assert artifact.headers["content-type"].startswith(
+            (
+                "application/gzip",
+                "application/x-gzip",
+                "application/x-tar",
+                "application/octet-stream",
+            )
+        )
+
+        binary_started = client.post(
+            "/api/file-management/downloads",
+            params={"site_id": "demo"},
+            json={"connection_id": connection_id, "remote_entry_id": binary_entry_id},
+        )
+        assert binary_started.status_code == 202
+        binary_task_id = binary_started.json()["task_id"]
+        binary_job = captured[-1]
+        binary_result = run_file_management_download(JobContext.from_job(binary_job))
+        assert binary_result["name"] == "启动_配置.bin"
+        assert ":" not in str(binary_result["relative_path"])
+        assert "?" not in str(binary_result["relative_path"])
+        task_service.record_external_event(
+            binary_task_id,
+            "finished",
+            {"result": binary_result},
+            site_name="demo",
+        )
+        binary_artifact = client.get(
+            f"/api/file-management/downloads/{binary_task_id}/file",
+            params={"site_id": "demo"},
+        )
+        assert binary_artifact.status_code == 200
+        assert binary_artifact.content == b"binary configuration"
+        assert "启动_配置.bin" in unquote(binary_artifact.headers["content-disposition"])
+        assert int(binary_artifact.headers["content-length"]) == len(b"binary configuration")
+        assert binary_artifact.headers["content-type"] == "application/octet-stream"
         pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
         assert pending_cancel.status_code == 200
         assert pending_cancel.json()["status"] == TaskState.CANCELLED.value

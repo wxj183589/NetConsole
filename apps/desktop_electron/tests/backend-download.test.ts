@@ -31,7 +31,8 @@ describe('backend download manager', () => {
     const directory = await tempDirectory()
     const target = resolve(directory, 'result.zip')
     const window = { loadURL: vi.fn() }
-    const manager = downloadManager(server.origin, token, target, window)
+    const pathRegistry = new GrantedPathRegistry()
+    const manager = downloadManager(server.origin, token, target, window, pathRegistry)
 
     const result = await manager.download({
       apiPath: '/api/file-management/downloads/task-1/file',
@@ -45,9 +46,56 @@ describe('backend download manager', () => {
     expect(requestToken).toBe(token)
     expect(result).toMatchObject({ status: 'saved', capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/) })
     expect(result).not.toHaveProperty('savedPath')
+    if (!result.capabilityId) throw new Error('download capability missing')
+    expect(pathRegistry.requireCapability(result.capabilityId, 'artifact-download', 'open')).toBe(target)
+    expect(pathRegistry.requireCapability(result.capabilityId, 'artifact-download', 'reveal')).toBe(target)
     await expect(readFile(target, 'utf8')).resolves.toBe('first-second')
     expect((await readdir(directory)).some((name) => name.endsWith('.part'))).toBe(false)
     expect(window.loadURL).not.toHaveBeenCalled()
+  })
+
+  it('saves an allowed remote binary while withholding open and reveal actions', async () => {
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+      response.end('firmware')
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, 'firmware.bin')
+    const pathRegistry = new GrantedPathRegistry()
+    const manager = downloadManager(server.origin, 'b'.repeat(48), target, {}, pathRegistry)
+
+    const result = await manager.download({
+      apiPath: '/api/file-management/downloads/task-binary/file',
+      suggestedName: '设备固件.bin',
+    })
+
+    expect(result).toEqual({ status: 'saved' })
+    expect(result).not.toHaveProperty('capabilityId')
+    await expect(readFile(target, 'utf8')).resolves.toBe('firmware')
+  })
+
+  it.each([
+    ['firmware.bin', 'firmware.conf'],
+    ['README', 'README.bin'],
+    ['capture.vendor-format', 'capture.other-format'],
+    ['archive.tar.gz', 'archive.zip.gz'],
+  ])('rejects changing the Artifact type from %s to %s before download', async (suggestedName, selectedName) => {
+    const directory = await tempDirectory()
+    const fetchImpl = vi.fn<typeof fetch>()
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:43123', apiToken: 't'.repeat(48) }) },
+      dialog: { showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: resolve(directory, selectedName) })) },
+      window: {},
+      pathRegistry: new GrantedPathRegistry(),
+      fetchImpl,
+    })
+
+    await expect(manager.download({
+      apiPath: '/api/file-management/downloads/task-type/file',
+      suggestedName,
+    })).resolves.toEqual({ status: 'failed', error: '保存文件类型与 Artifact 不一致。' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(await readdir(directory)).toEqual([])
   })
 
   it('returns cancelled without contacting the backend', async () => {
@@ -320,12 +368,13 @@ function downloadManager(
   token: string,
   target: string,
   window: unknown = {},
+  pathRegistry = new GrantedPathRegistry(),
 ): BackendDownloadManager {
   return new BackendDownloadManager({
     backend: { getRuntimeInfo: () => ({ baseUrl: origin, apiToken: token }) },
     dialog: { showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: target })) },
     window,
-    pathRegistry: new GrantedPathRegistry(),
+    pathRegistry,
     createTempId: () => 'test-download',
   })
 }

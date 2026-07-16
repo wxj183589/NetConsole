@@ -9,6 +9,8 @@ import {
 } from '../shared/bridge'
 import {
   buildBackendRequestPath,
+  isOpenableArtifactFileName,
+  validateArtifactFileName,
   validateBackendDownloadRequest,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
@@ -65,6 +67,13 @@ export class BackendDownloadManager {
     if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
 
     const finalPath = normalizeAbsolutePath(selection.filePath)
+    try {
+      if (validateArtifactFileName(basename(finalPath)) !== validateArtifactFileName(request.suggestedName)) {
+        return { status: 'failed', error: '保存文件类型与 Artifact 不一致。' }
+      }
+    } catch {
+      return { status: 'failed', error: '保存文件类型与 Artifact 不一致。' }
+    }
     const finalPathKey = targetPathKey(finalPath)
     if (this.activeFinalPaths.has(finalPathKey)) {
       return { status: 'failed', error: '该目标文件已有下载正在进行。' }
@@ -112,9 +121,11 @@ export class BackendDownloadManager {
       if (!response.body) throw new Error('empty response body')
       await streamResponseToFile(response.body, tempPath)
       await rename(tempPath, finalPath)
-      const capabilityId = this.options.pathRegistry.grantCapability(finalPath)
+      const capabilityId = isOpenableArtifactFileName(basename(finalPath))
+        ? this.options.pathRegistry.grantCapability(finalPath)
+        : undefined
       this.logger('ELECTRON_BACKEND_DOWNLOAD_SAVED', `route=${route}`)
-      return { status: 'saved', capabilityId }
+      return { status: 'saved', ...(capabilityId ? { capabilityId } : {}) }
     } catch (cause) {
       await rm(tempPath, { force: true }).catch(() => undefined)
       this.logger(

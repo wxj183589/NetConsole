@@ -169,7 +169,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
-        const path = registry.requireCapability(value, true)
+        const path = registry.requireCapability(value, 'artifact-download', 'open')
         const error = await dependencies.shell.openPath(path)
         return error
           ? { success: false, error: '系统未能打开所选路径' }
@@ -183,7 +183,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC.showItemInFolder,
     trusted((value) => {
       try {
-        dependencies.shell.showItemInFolder(registry.requireCapability(value))
+        dependencies.shell.showItemInFolder(registry.requireCapability(value, 'artifact-download', 'reveal'))
         return { success: true }
       } catch (cause) {
         return { success: false, error: safeActionError(cause) }

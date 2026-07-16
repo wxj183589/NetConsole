@@ -18,7 +18,7 @@ from netconsole.models.api.job_center import (
     JobCenterSummaryDTO,
     JobCenterTaskDTO,
 )
-from netconsole.services.config_lifecycle_service import safe_device_name
+from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.config_collection_job_handlers import CONFIG_WEB_EXPORT_TASKS
 from netconsole.services.config_collection_web_service import (
     CONFIG_WEB_OWNER,
@@ -29,6 +29,7 @@ from netconsole.services.device_management_web_service import (
     DEVICE_TASK_TYPES,
     EXPORT_TASK_TYPES,
     WEB_TASK_OWNER,
+    device_export_display_name,
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
@@ -193,33 +194,33 @@ class JobCenterQueryService:
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
-            name=str(row.get("task_name") or row.get("task_type") or ""),
+            name=redact_web_task_text(row.get("task_name") or row.get("task_type") or ""),
             status=status,
             progress=max(0, min(int(row.get("progress") or 0), 100)),
-            phase=str(row.get("phase") or row.get("stage") or ""),
-            stage=str(row.get("stage") or ""),
+            phase=redact_web_task_text(row.get("phase") or row.get("stage") or ""),
+            stage=redact_web_task_text(row.get("stage") or ""),
             message=redact_web_task_text(row.get("message") or ""),
             site_name=site_name,
             owner=owner,
-            executor=executor.upper(),
+            executor=redact_web_task_text(executor).upper(),
             source=source,
-            device_id=str(row.get("device_id") or ""),
-            device_name=str(row.get("device_name") or row.get("device") or ""),
-            agent=str(row.get("agent") or ""),
-            mr_name=str(row.get("mr_name") or ""),
-            session_id=str(row.get("session_id") or result.get("session_id") or ""),
-            mapping_state=str(row.get("mapping_state") or ""),
+            device_id=redact_web_task_text(row.get("device_id") or ""),
+            device_name=redact_web_task_text(row.get("device_name") or row.get("device") or ""),
+            agent=redact_web_task_text(row.get("agent") or ""),
+            mr_name=redact_web_task_text(row.get("mr_name") or ""),
+            session_id=redact_web_task_text(row.get("session_id") or result.get("session_id") or ""),
+            mapping_state=redact_web_task_text(row.get("mapping_state") or ""),
             created_time=str(row.get("created_time") or ""),
             started_time=started,
             finished_time=finished,
             updated_time=str(row.get("updated_time") or ""),
             duration_seconds=cls._duration_seconds(started, finished),
-            error_code=error_code,
+            error_code=redact_web_task_text(error_code),
             error_summary=error_summary,
             has_warning=bool(error_summary and status != "FAILED"),
             snapshot_id=cls._optional_int(result.get("snapshot_id")),
             records_count=cls._optional_int(result.get("records_count")),
-            parser_version=cls._first_text(result, "parser_version"),
+            parser_version=redact_web_task_text(cls._first_text(result, "parser_version")),
             module=cls._module(owner, task_type),
             cancellable=cancellable,
             cancel_reason=cancel_reason,
@@ -261,7 +262,7 @@ class JobCenterQueryService:
         if artifact_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", artifact_id):
             return None
         if owner == WEB_TASK_OWNER and task_type in EXPORT_TASK_TYPES and artifact_id and result.get("available"):
-            name = JobCenterQueryService._artifact_display_name(result.get("display_name"), result.get("artifact_name"))
+            name = device_export_display_name(task_type, result.get("display_name"))
             if not name:
                 return None
             return JobCenterQueryService._artifact_dto(artifact_id, name, result.get("size_bytes"), f"/api/device-management/exports/{task_id}/download", {"artifact_id": artifact_id})
@@ -280,11 +281,11 @@ class JobCenterQueryService:
 
     @staticmethod
     def _artifact_display_name(value: object, fallback: object = "") -> str:
-        candidate = Path(str(value or fallback or "")).name
+        candidate = str(value or fallback or "").strip()
         suffix = Path(candidate).suffix.casefold()
         if not candidate or not suffix:
             return ""
-        return f"{safe_device_name(Path(candidate).stem)}.{safe_device_name(suffix.removeprefix('.'))}"
+        return safe_artifact_display_name(candidate, suffix)
 
     @staticmethod
     def _artifact_dto(artifact_id: str, display_name: str, size: object, api_path: str, query: dict[str, str] | None = None) -> JobCenterArtifactDTO:
@@ -315,7 +316,7 @@ class JobCenterQueryService:
             time=str(row.get("event_time") or ""),
             level=level,
             type=event_type,
-            source=str(row.get("source") or "service"),
+            source=redact_web_task_text(row.get("source") or "service"),
             message=message,
         )
 

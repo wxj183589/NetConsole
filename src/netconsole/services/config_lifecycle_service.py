@@ -508,10 +508,33 @@ def device_config_dir_name(device: Device) -> str:
 
 def safe_device_name(name: str) -> str:
     value = str(name or "device").strip()
-    value = re.sub(r'[\\/:*?"<>|]+', "_", value)
+    value = re.sub(
+        r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+',
+        "_",
+        value,
+    )
     value = re.sub(r"\s+", "_", value)
     value = value.strip("._ ")
     return value or "device"
+
+
+def safe_artifact_display_name(name: object, expected_suffix: str, fallback_stem: str = "") -> str:
+    suffix = f".{str(expected_suffix or '').strip().lstrip('.').casefold()}"
+    candidate = str(name or "").strip()
+    if (
+        not suffix.removeprefix(".")
+        or re.search(r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]', suffix)
+        or "/" in candidate
+        or "\\" in candidate
+    ):
+        return ""
+    if candidate and not candidate.casefold().endswith(suffix):
+        return ""
+    stem = candidate[: -len(suffix)] if candidate else fallback_stem
+    stem = safe_device_name(stem)
+    if stem.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        stem = f"_{stem}"
+    return f"{stem}{suffix}"
 
 
 def safe_device_id(value: str) -> str:

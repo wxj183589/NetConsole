@@ -12,6 +12,8 @@ describe('Job Center unified task view', () => {
     expect(source).toContain('moduleFilter')
     expect(source).toContain('artifact.display_name')
     expect(source).toContain('result.capabilityId')
+    expect(source).toContain("lastSavedCapability.value = result.capabilityId || ''")
+    expect(source).toContain(':disabled="!lastSavedCapability"')
     expect(source).not.toContain('savedPath')
   })
 })

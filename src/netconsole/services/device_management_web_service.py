@@ -81,7 +81,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.config_lifecycle_service import safe_device_name
+from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.device_group_service import DeviceGroupService
 from netconsole.services.device_import_export import DeviceImportExportService
 from netconsole.services.device_web_service import build_https_url, effective_https_port
@@ -130,6 +130,18 @@ EXPORT_TASK_TYPES = frozenset(
         "device_export_omnipeek_name_table",
     }
 )
+_DEVICE_EXPORT_DISPLAY_NAMES = {
+    "device_export_device_csv": ("设备清单", ".csv"),
+    "device_export_device_template_csv": ("设备导入模板", ".csv"),
+    "device_export_securecrt_sessions": ("SecureCRT会话", ".zip"),
+    "device_export_omnipeek_name_table": ("OmniPeek名称表", ".nam"),
+}
+def device_export_display_name(task_type: str, value: object = "") -> str:
+    contract = _DEVICE_EXPORT_DISPLAY_NAMES.get(str(task_type or ""))
+    if contract is None:
+        return ""
+    label, suffix = contract
+    return safe_artifact_display_name(value, suffix, label)
 DEVICE_COLLECT_TASK_TYPE = "device_detail_collect"
 DEVICE_OPTICAL_REFRESH_TASK_TYPE = "device_optical_refresh"
 DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
@@ -1083,7 +1095,10 @@ class DeviceManagementWebService:
             self._file_sha256(path), expected_sha256
         ):
             raise ValueError("导出文件完整性校验失败")
-        return path, path.name
+        display_name = device_export_display_name(snapshot.task_type, result.get("display_name"))
+        if not display_name:
+            raise ValueError("导出文件显示名无效")
+        return path, display_name
 
     def get_task(self, task_id: str) -> DeviceTaskReferenceDTO:
         return self._task_reference(self._require_web_task(task_id))
@@ -1098,22 +1113,65 @@ class DeviceManagementWebService:
             return self._task_reference(snapshot)
         if snapshot.task_type in EXPORT_TASK_TYPES:
             spec = self._export_artifacts.get(task_id)
-            if spec is not None:
-                Path(str(spec["cancel_path"])).write_text("cancelled", encoding="utf-8")
+            process = self._export_processes.get(task_id)
+            job_dir = (self.paths.runtime_cache_dir / "export_jobs").resolve()
+            expected_cancel = job_dir / f"{task_id}.cancel"
+            expected_job = job_dir / f"{task_id}.json"
+            if (
+                spec is None
+                or str(spec.get("task_id") or "") != task_id
+                or str(spec.get("site") or "") != snapshot.site_name
+                or str(spec.get("artifact_id") or "") == ""
+                or process is None
+                or process.poll() is not None
+            ):
+                raise ValueError("导出任务已失去受管取消接收端")
+            cancel_path = Path(str(spec.get("cancel_path") or "")).resolve()
+            job_path = Path(str(spec.get("job_path") or "")).resolve()
+            if cancel_path != expected_cancel or job_path != expected_job or not job_path.is_file():
+                raise ValueError("导出任务取消路径不受控")
+            try:
+                export_job = ExportJob.from_dict(json.loads(job_path.read_text(encoding="utf-8")))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("导出任务取消接收端无效") from exc
+            if (
+                export_job.job_id != task_id
+                or export_job.site_name != snapshot.site_name
+                or snapshot.task_type != f"device_export_{export_job.job_type}"
+                or Path(export_job.cancel_path).resolve() != expected_cancel
+                or Path(export_job.output_path).resolve()
+                != Path(str(spec.get("target") or "")).resolve()
+            ):
+                raise ValueError("导出任务取消接收端无效")
+            try:
+                cancel_path.write_text("cancelled", encoding="utf-8")
+            except OSError as exc:
+                raise ValueError("导出任务取消请求写入失败") from exc
+            if process.poll() is not None:
+                try:
+                    cancel_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ValueError("导出任务取消请求清理失败") from exc
+                raise ValueError("导出任务已结束，取消请求未被接收")
+            latest = self._require_web_export_task(task_id)
+            if latest.status not in ACTIVE_TASK_STATES:
+                try:
+                    cancel_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ValueError("导出任务取消请求清理失败") from exc
+                return self._task_reference(latest)
             self.task_service.record_external_event(
                 task_id,
                 "state",
                 {"state": TaskState.STOPPING.value, "message": "已请求停止导出任务"},
                 site_name=snapshot.site_name,
             )
-            process = self._export_processes.get(task_id)
-            if process is not None:
-                threading.Thread(
-                    target=self._stop_export_after_grace,
-                    args=(task_id, snapshot.site_name, process),
-                    name=f"device-export-cancel-{task_id}",
-                    daemon=True,
-                ).start()
+            threading.Thread(
+                target=self._stop_export_after_grace,
+                args=(task_id, snapshot.site_name, process),
+                name=f"device-export-cancel-{task_id}",
+                daemon=True,
+            ).start()
         else:
             cancel_job = getattr(self.process_adapter, "cancel_job", None)
             if not callable(cancel_job) or not cancel_job(task_id):
@@ -1917,10 +1975,14 @@ class DeviceManagementWebService:
         ).with_runtime_paths(tmp_path=str(tmp_path), cancel_path=str(cancel_path))
         job_path = job_dir / f"{task_id}.json"
         spec = {
+            "task_id": task_id,
             "site": site,
             "artifact_id": artifact_id,
             "artifact_name": target.name,
-            "display_name": f"{safe_device_name(action)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}",
+            "display_name": device_export_display_name(
+                f"device_export_{export_type}",
+                f"{_DEVICE_EXPORT_DISPLAY_NAMES[f'device_export_{export_type}'][0]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}",
+            ),
             "export_type": export_type,
             "artifact_root": artifact_root,
             "target": target,
@@ -2057,10 +2119,13 @@ class DeviceManagementWebService:
             if candidate != expected:
                 raise ValueError("导出输出文件未绑定到本任务 artifact")
             target = self._assert_controlled_path(expected, root)
+        display_name = device_export_display_name(f"device_export_{export_type}", spec.get("display_name"))
+        if not display_name:
+            raise ValueError("导出文件显示名无效")
         return {
             "artifact_id": str(spec["artifact_id"]),
             "artifact_name": target.name,
-            "display_name": str(spec.get("display_name") or target.name),
+            "display_name": display_name,
             "available": True,
             "sha256": self._file_sha256(target),
             "size_bytes": target.stat().st_size,

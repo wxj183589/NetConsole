@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from threading import Barrier, Event
+from urllib.parse import unquote
 import zipfile
 
 from fastapi import FastAPI
@@ -664,10 +665,29 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     zip_task = service.submit_snapshots_export("demo", [int(running.id), int(saved.id), int(running.id)])
     zip_status = service.get_task("demo", zip_task.id)
     assert zip_status is not None and zip_status.status == TaskState.COMPLETED.value
-    zip_path, _zip_name = service.open_artifact("demo", str(zip_status.result["artifact_id"]))
+    zip_path, zip_name = service.open_artifact("demo", str(zip_status.result["artifact_id"]))
     with zipfile.ZipFile(zip_path) as archive:
         assert any(name.endswith("running_20260715_101500.txt") for name in archive.namelist())
         assert "_netconsole_manifest.json" in archive.namelist()
+    with TestClient(app) as client:
+        diff_download = client.get(f"/api/config-collection/artifacts/{diff_artifact_id}")
+        zip_download = client.get(
+            f"/api/config-collection/artifacts/{zip_status.result['artifact_id']}"
+        )
+    assert diff_download.status_code == 200
+    assert diff_name in unquote(diff_download.headers["content-disposition"])
+    assert int(diff_download.headers["content-length"]) == diff_path.stat().st_size
+    assert diff_download.headers["content-type"] == "application/octet-stream"
+    assert zip_download.status_code == 200
+    assert zip_name in unquote(zip_download.headers["content-disposition"])
+    assert str(zip_status.result["artifact_id"]) not in unquote(
+        zip_download.headers["content-disposition"]
+    )
+    assert int(zip_download.headers["content-length"]) == zip_path.stat().st_size
+    assert zip_download.headers["content-type"] in {
+        "application/zip",
+        "application/x-zip-compressed",
+    }
 
     refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
     recovered = refreshed.get_task("demo", zip_task.id)

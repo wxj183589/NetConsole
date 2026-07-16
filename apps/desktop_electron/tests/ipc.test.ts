@@ -82,22 +82,48 @@ describe('desktop IPC', () => {
   })
 
   it('opens only opaque in-memory capabilities and never renderer paths', async () => {
-    const { ipcMain, sender, selectedFile, selectedDirectory, shell, pathRegistry } = createHarness()
+    const { ipcMain, sender, selectedFile, shell, pathRegistry } = createHarness()
     const event = { sender }
     const open = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
     const reveal = ipcMain.handlers.get(DESKTOP_IPC.showItemInFolder)!
 
     expect(await open(event, pathRegistry.grantCapability(selectedFile))).toEqual({ success: true })
-    expect(await reveal(event, pathRegistry.grantCapability(selectedDirectory, 'directory'))).toEqual({ success: true })
-    expect(await open(event, pathRegistry.grantCapability(resolve('danger.py')))).toEqual({
+    const revealCapability = pathRegistry.grantCapability(selectedFile)
+    expect(await reveal(event, revealCapability)).toEqual({ success: true })
+    const dangerousCapability = pathRegistry.grantCapability(resolve('danger.exe'))
+    expect(await open(event, dangerousCapability)).toEqual({
       success: false,
-      error: '桌面桥接只允许打开受支持的数据与报告文件',
+      error: '文件授权用途不匹配',
+    })
+    expect(await reveal(event, dangerousCapability)).toEqual({
+      success: false,
+      error: '文件授权用途不匹配',
     })
     expect(await open(event, resolve('not-granted.txt'))).toEqual({
       success: false,
       error: '文件授权标识无效',
     })
     expect(shell.openPath).toHaveBeenCalledOnce()
+    expect(shell.showItemInFolder).toHaveBeenCalledOnce()
+  })
+
+  it('expires, evicts and isolates capability purpose and actions', () => {
+    let now = 1_000
+    const registry = new GrantedPathRegistry({ now: () => now, ttlMs: 10, maxCapabilities: 2 })
+    const first = registry.grantCapability(resolve('first.zip'))
+    const second = registry.grantCapability(resolve('second.zip'))
+    const third = registry.grantCapability(resolve('third.zip'))
+
+    expect(() => registry.requireCapability(first, 'artifact-download', 'open')).toThrow('已失效')
+    expect(registry.requireCapability(second, 'artifact-download', 'reveal')).toBe(resolve('second.zip'))
+    expect(registry.requireCapability(third, 'artifact-download', 'open')).toBe(resolve('third.zip'))
+
+    const isolated = registry.grantCapability(resolve('selected.txt'), 'selected-file', ['open'])
+    expect(() => registry.requireCapability(isolated, 'artifact-download', 'open')).toThrow('用途不匹配')
+    expect(() => registry.requireCapability(isolated, 'selected-file', 'reveal')).toThrow('用途不匹配')
+    now += 10
+    expect(() => registry.requireCapability(isolated, 'selected-file', 'open')).toThrow('已过期')
+    expect(() => registry.requireCapability('00000000-0000-4000-8000-000000000000', 'artifact-download', 'open')).toThrow('已失效')
   })
 
   it('validates dialog DTOs at the main-process boundary', async () => {

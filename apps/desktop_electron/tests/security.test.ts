@@ -8,8 +8,57 @@ import {
   isAllowedNavigation,
   isTrustedRendererSender,
 } from '../src/main/security'
+import {
+  validateArtifactFileName,
+  validateBackendDownloadRequest,
+} from '../src/shared/validation'
 
 describe('Electron security policy', () => {
+  it('keeps the exact normalized Artifact extension for save-type matching', () => {
+    expect(validateArtifactFileName('固件.bin')).toBe('.bin')
+    expect(validateArtifactFileName('startup.conf')).toBe('.conf')
+    expect(validateArtifactFileName('无扩展')).toBe('<none>')
+    expect(validateArtifactFileName('.env')).toBe('<none>')
+    expect(validateArtifactFileName('capture.vendor-format')).toBe('.vendor-format')
+    expect(validateArtifactFileName('archive.tar.gz')).toBe('.tar.gz')
+    expect(validateArtifactFileName('archive.zip.gz')).toBe('.zip.gz')
+    expect(validateArtifactFileName('capture.other-format')).not.toBe(
+      validateArtifactFileName('capture.vendor-format'),
+    )
+  })
+
+  it('accepts only formal Artifact download endpoints and endpoint-specific query fields', () => {
+    const approved = [
+      ['/api/device-management/exports/task-1/download', { artifact_id: 'artifact-1' }],
+      ['/api/config-collection/artifacts/artifact-1', undefined],
+      ['/api/file-management/downloads/task-1/file', { site_id: 'demo' }],
+      ['/api/ac-management/extensions/artifacts/artifact-1/download', undefined],
+      ['/api/rail-transit/mesh-analysis/sessions/session-1/artifacts/artifact-1/download', undefined],
+      ['/api/rail-transit/mesh-analysis/sessions/%E4%BC%9A%E8%AF%9D%2F1/artifacts/%E6%8A%A5%E5%91%8A%2F1/download', undefined],
+      ['/api/online-mr/report-artifacts/artifact-1/download', undefined],
+      ['/api/rail-transit/mesh-analysis/report-artifacts/artifact-1/download', undefined],
+      ['/api/network-tools/artifacts/artifact-1', undefined],
+      ['/api/network-tools/wireless-scan/artifacts/artifact-1', undefined],
+    ] as const
+    for (const [apiPath, query] of approved) {
+      expect(validateBackendDownloadRequest({ apiPath, query, suggestedName: '报告.zip' })).toMatchObject({ apiPath })
+    }
+
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/health',
+      suggestedName: 'health.json',
+    })).toThrow('approved Artifact download endpoint')
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/config-collection/artifacts/artifact-1',
+      query: { site_id: 'demo' },
+      suggestedName: '配置.zip',
+    })).toThrow('approved Artifact download endpoint')
+    expect(() => validateBackendDownloadRequest({
+      apiPath: '/api/device-management/exports/task-1/download',
+      suggestedName: '设备.csv',
+    })).toThrow('approved Artifact download endpoint')
+  })
+
   it('limits the development cookie to WebSocket paths and authenticates production assets', () => {
     expect(desktopSessionCookiePath(true)).toBe('/ws')
     expect(desktopSessionCookiePath(false)).toBe('/')

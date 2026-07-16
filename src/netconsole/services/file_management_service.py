@@ -30,6 +30,7 @@ from netconsole.models.api.file_management import (
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
@@ -521,7 +522,10 @@ class FileManagementApplicationService:
             raise FileManagementError("文件下载任务尚未完成")
         if task.result.file_ref:
             resolved = self.resolve_ref(task.site_id, task.result.file_ref)
-            return resolved.path, task.result.name
+            name = _download_display_name(task.result.name)
+            if not name:
+                raise FileManagementError("下载文件显示名无效")
+            return resolved.path, name
         if not ARTIFACT_ID_RE.fullmatch(task.result.artifact_id) or not task.result.relative_path:
             raise FileReferenceNotFound("下载结果 Artifact 不存在")
         path = self._safe_site_relative_path(task.site_id, task.result.relative_path, under_downloads=True)
@@ -532,7 +536,10 @@ class FileManagementApplicationService:
         expected_artifact = self._artifact_id(task.task_id, task.result.relative_path, task.result.sha256)
         if task.result.artifact_id != expected_artifact:
             raise FileReferenceNotFound("下载结果 Artifact 引用无效")
-        return path, task.result.name
+        name = _download_display_name(task.result.name)
+        if not name:
+            raise FileManagementError("下载文件显示名无效")
+        return path, name
 
     def validate_for_download(self, context: JobContext) -> dict[str, object]:
         site = self._site_id(str(context.params.get("site_name") or ""))
@@ -541,9 +548,12 @@ class FileManagementApplicationService:
             source = self.resolve_ref(site, file_ref)
             context.check_cancelled()
             context.progress("file_validate", 1, 1, f"已校验 {source.path.name}")
+            display_name = _download_display_name(source.path.name)
+            if not display_name:
+                raise FileManagementError("下载文件显示名无效")
             return {
                 "download_ref": source.file_ref,
-                "name": source.path.name,
+                "name": display_name,
                 "size_bytes": source.path.stat().st_size,
             }
         return self._download_remote(context, site)
@@ -563,6 +573,9 @@ class FileManagementApplicationService:
             or any(char in remote_name for char in "/\\")
         ):
             raise FileReferenceNotFound("远程文件名或路径无效")
+        display_name = _download_display_name(remote_name)
+        if not display_name:
+            raise FileManagementError("下载文件显示名无效")
         normalized_path = normalize_remote_path(remote_path)
         if self._remote_entry_id(device_id, normalized_path) != remote_entry_id:
             raise FileReferenceNotFound("远程文件引用校验失败")
@@ -619,7 +632,7 @@ class FileManagementApplicationService:
         digest = file_sha256(output)
         context.progress("file_verify", 1, 1, f"已校验 {remote_file.name}")
         return {
-            "name": remote_file.name,
+            "name": display_name,
             "size_bytes": size,
             "relative_path": relative,
             "sha256": digest,
@@ -817,6 +830,16 @@ def classify_file(relative_path: str) -> str | None:
     if "online_mr" in parts and "sessions" in parts and suffix in SESSION_SUFFIXES:
         return "session"
     return None
+
+
+def _download_display_name(value: object) -> str:
+    candidate = str(value or "").strip()
+    if not candidate or "/" in candidate or "\\" in candidate:
+        return ""
+    suffix = "".join(Path(candidate).suffixes[-2:]) if candidate.casefold().endswith((".tar.gz", ".zip.gz")) else Path(candidate).suffix
+    if suffix:
+        return safe_artifact_display_name(candidate, suffix)
+    return safe_artifact_display_name(f"{candidate}.file", ".file").removesuffix(".file")
 
 
 def run_file_management_download(context: JobContext) -> dict[str, object]:

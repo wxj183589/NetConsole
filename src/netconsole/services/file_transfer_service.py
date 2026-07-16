@@ -479,7 +479,7 @@ class FileTransferService:
     def local_path_for(self, device: Device, remote_file: RemoteDeviceFile) -> Path:
         directory = self.local_device_dir(device) / remote_file.category
         directory.mkdir(parents=True, exist_ok=True)
-        return unique_path(directory / f"{safe_device_name(device.name or device.system_name or 'device')}_{remote_file.name}")
+        return unique_path(directory / f"{safe_device_name(device.name or device.system_name or 'device')}_{safe_device_name(remote_file.name)}")
 
     def _download_sftp(self, target, remote_path: str, local_path: Path) -> None:
         import paramiko
@@ -789,7 +789,11 @@ def is_cancelled(cancel_token) -> bool:
 
 def safe_device_name(name: str) -> str:
     value = str(name or "device").strip()
-    value = re.sub(r'[\\/:*?"<>|]+', "_", value)
+    value = re.sub(
+        r'[\\/:*?"<>|\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+',
+        "_",
+        value,
+    )
     value = re.sub(r"\s+", "_", value)
     return value.strip("._ ") or "device"
 

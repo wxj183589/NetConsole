@@ -15,7 +15,7 @@ from uuid import uuid4
 from netconsole.core.database import Database
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.config_lifecycle_service import ConfigLifecycleService, safe_device_name
+from netconsole.services.config_lifecycle_service import ConfigLifecycleService, safe_artifact_display_name, safe_device_name
 from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.worker_protocol import parse_event_line
@@ -265,7 +265,10 @@ def _artifact_target(context: JobContext, suffix: str, label: str) -> tuple[str,
     root = context.paths.config_center_root(site_name) / "outputs"
     root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return artifact_id, root / f"{artifact_id}{suffix}", f"{label}_{stamp}{suffix}"
+    display_name = safe_artifact_display_name(f"{label}_{stamp}{suffix}", suffix)
+    if not display_name:
+        raise ValueError("配置导出文件名无效")
+    return artifact_id, root / f"{artifact_id}{suffix}", display_name
 
 
 def _run_export(context: JobContext, job, artifact_id: str, output_path: Path, display_name: str) -> dict[str, object]:

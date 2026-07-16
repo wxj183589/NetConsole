@@ -4,7 +4,7 @@
 
 `openTaskWindow` 只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 固定为 `devices/config/files`，`status` 固定为任务状态枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。主窗口和任务窗口可作为 IPC sender，文件对话框以实际调用窗口为父窗口。
 
-受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID、显示名、大小和类型；保存完成后 Renderer 只得到临时 capability ID，本机路径只存在于 Electron Main 的有界内存授权表。
+受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID、显示名、大小和类型；保存完成后 Renderer 不接收本机路径，只有安全可打开/定位的文件才得到临时 capability ID，仅保存类型返回 `saved` 但不返回 capability。本机路径只存在于 Electron Main 的有界内存授权表。
 
 ## 当前状态
 
@@ -33,9 +33,9 @@ Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/des
 | `selectFile` | 过滤器、是否多选 | 数量、名称、扩展名、未知字段白名单 | 原生选择器 |
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
 | `chooseSavePath` | 安全文件名、过滤器 | 不接受路径或命令作为文件名 | 只选择目标位置 |
-| `downloadBackendResource` | `/api/...` 相对路径、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存 | 文件、配置快照与 MESH Artifact 下载 |
-| `openPath` | 下载完成返回的 capability ID | Main 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
-| `showItemInFolder` | 本轮对话框返回的路径 | 当前进程临时授权 | 在资源管理器定位 |
+| `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
+| `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
+| `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
 
@@ -43,15 +43,15 @@ Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/des
 
 ## 路径授权模型
 
-Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 仅在流式下载和原子替换成功后把最终路径登记到最多 256 项的 Main 内存授权表，并返回随机 capability ID。`openPath`/`showItemInFolder` 只接受该 ID，由 Main 解析路径；退出时授权表清空，不持久化。
+Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 仅在流式下载和原子替换成功后，针对至少具备 `open/reveal` 一项的文件把最终路径登记到最多 256 项、默认 15 分钟有效的 Main 内存授权表，并返回随机 capability ID。每条记录包含 purpose、独立 action、规范化实际扩展名和过期时间；未知、伪造、过期、FIFO 淘汰或跨用途复用均失败。`openPath`/`showItemInFolder` 只接受该 ID，由 Main 分别校验动作并解析路径；退出时授权表清空，不持久化。
 
-`openPath` 对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel 和 ZIP；目录必须由目录选择器单独授予。`.exe`、`.py`、`.reg`、`.chm`、`.msc`、快捷方式、安装包和其他未知扩展名默认拒绝。此接口不是 `openArtifact` 的最终业务实现；后续 Artifact 必须通过 `artifact_id`、局点和受控路径解析。
+原生打开/定位对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel、抓包和 ZIP 等数据/报告类型。FileManagement 既有 `.bin/.conf` 及其他合法远端文件仍可安全保存，但不返回 capability；`.exe`、脚本、系统控制文件、快捷方式和安装包同样不能借 reveal 绕过。保存时建议名与最终名按规范化的真实末级扩展精确比较，`.tar.gz/.zip.gz` 等已知复合扩展整体保留，无扩展单独表示；未知或含连字符的合法扩展不会折叠为“无扩展”，改扩展名会在发起 HTTP 前拒绝。
 
 `openExternalUrl` 不复用窗口导航，也不允许 Renderer 自己创建新窗口。main/preload 两侧都校验 URL，只有无凭据 HTTPS 地址会传给 `shell.openExternal`；临时 API Token、认证 Header 和设备密码不得进入 URL。
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认的目标路径。报告生成及 Excel/ZIP/PDF 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 只能提交严格校验的 `/api/...` 相对路径和字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+`chooseSavePath` 只返回用户确认的目标路径。报告生成及 Excel/ZIP/PDF 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
 Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
 
