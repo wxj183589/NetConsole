@@ -29,8 +29,6 @@ const stateType = computed(() => ({
   failed: 'danger',
 })[status.value.state] as 'warning' | 'success' | 'info' | 'danger')
 
-const lastGrantedPath = computed(() => lastDirectory.value || lastFile.value || lastSavePath.value)
-
 onMounted(async () => {
   if (!visible.value) return
   status.value = await runtime.getBackendStatus()
@@ -65,19 +63,6 @@ async function chooseSavePath(): Promise<void> {
   ElMessage.success(`已选择保存位置：${displayName(result.path)}`)
 }
 
-async function openGrantedPath(): Promise<void> {
-  if (!lastGrantedPath.value) return
-  const result = await runtime.openPath(lastGrantedPath.value)
-  if (!result.success) ElMessage.error(result.error || '打开路径失败')
-}
-
-async function revealGrantedPath(): Promise<void> {
-  const path = lastFile.value || lastSavePath.value || lastDirectory.value
-  if (!path) return
-  const result = await runtime.showItemInFolder(path)
-  if (!result.success) ElMessage.error(result.error || '定位路径失败')
-}
-
 function displayName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path
 }
@@ -95,8 +80,6 @@ function displayName(path: string): string {
         <el-button size="small" :disabled="!bridgeEnabled" @click="selectFile">选择文件</el-button>
         <el-button size="small" :disabled="!bridgeEnabled" @click="selectDirectory">选择目录</el-button>
         <el-button size="small" :disabled="!bridgeEnabled" @click="chooseSavePath">另存为</el-button>
-        <el-button size="small" :disabled="!bridgeEnabled || !lastGrantedPath" @click="openGrantedPath">打开</el-button>
-        <el-button size="small" :disabled="!bridgeEnabled || !lastGrantedPath" @click="revealGrantedPath">在目录中显示</el-button>
       </div>
       <p class="desktop-runtime-hint">这里只验证桌面宿主能力；报告内容仍由 Python ApplicationService 生成。</p>
     </div>

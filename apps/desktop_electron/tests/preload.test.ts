@@ -59,6 +59,8 @@ describe('preload bridge', () => {
       suggestedName: 'report.zip',
     })).toThrow()
     expect(() => bridge.openExternalUrl('http://192.0.2.10/')).toThrow()
+    expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
+    expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 })

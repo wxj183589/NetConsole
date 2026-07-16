@@ -81,26 +81,23 @@ describe('desktop IPC', () => {
     expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
   })
 
-  it('grants only dialog-returned paths and blocks arbitrary or executable open requests', async () => {
+  it('opens only opaque in-memory capabilities and never renderer paths', async () => {
     const { ipcMain, sender, selectedFile, selectedDirectory, shell, pathRegistry } = createHarness()
     const event = { sender }
-    const select = ipcMain.handlers.get(DESKTOP_IPC.selectFile)!
-    const selectDirectory = ipcMain.handlers.get(DESKTOP_IPC.selectDirectory)!
     const open = ipcMain.handlers.get(DESKTOP_IPC.openPath)!
+    const reveal = ipcMain.handlers.get(DESKTOP_IPC.showItemInFolder)!
 
-    await select(event, {})
-    await selectDirectory(event)
-    expect(await open(event, selectedFile)).toEqual({ success: true })
-    expect(await open(event, selectedDirectory)).toEqual({ success: true })
-    expect(await open(event, pathRegistry.grant(resolve('danger.py')))).toEqual({
+    expect(await open(event, pathRegistry.grantCapability(selectedFile))).toEqual({ success: true })
+    expect(await reveal(event, pathRegistry.grantCapability(selectedDirectory, 'directory'))).toEqual({ success: true })
+    expect(await open(event, pathRegistry.grantCapability(resolve('danger.py')))).toEqual({
       success: false,
-      error: '桌面桥接只允许打开已选择的目录或受支持的数据与报告文件',
+      error: '桌面桥接只允许打开受支持的数据与报告文件',
     })
     expect(await open(event, resolve('not-granted.txt'))).toEqual({
       success: false,
-      error: '该路径未由当前桌面会话授权',
+      error: '文件授权标识无效',
     })
-    expect(shell.openPath).toHaveBeenCalledTimes(2)
+    expect(shell.openPath).toHaveBeenCalledOnce()
   })
 
   it('validates dialog DTOs at the main-process boundary', async () => {

@@ -103,6 +103,13 @@ export function validateBridgePath(value: unknown): string {
   return candidate
 }
 
+export function validateCapabilityId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new TypeError('capabilityId is invalid')
+  }
+  return value
+}
+
 export function validateExternalUrl(value: unknown): string {
   if (typeof value !== 'string') throw new TypeError('url must be a string')
   const candidate = value.trim()

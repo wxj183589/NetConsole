@@ -23,8 +23,8 @@ export interface PlatformAdapter {
   selectDirectory(): Promise<SelectDirectoryResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
-  openPath(path: string): Promise<NativeActionResult>
-  showItemInFolder(path: string): Promise<NativeActionResult>
+  openPath(capabilityId: string): Promise<NativeActionResult>
+  showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   reportRendererReady(healthOk: boolean): void

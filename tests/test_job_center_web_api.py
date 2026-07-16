@@ -18,6 +18,11 @@ from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.config_collection_job_handlers import _artifact_target
+from netconsole.services.file_management_service import FileManagementApplicationService, run_file_management_download
+from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
@@ -58,6 +63,17 @@ def _app_with_tasks(tmp_path: Path):
             time="2026-07-14T08:01:00Z",
             source="worker",
             payload={"message": "采集运行中", "password": "must-not-leak"},
+        ),
+    )
+    repository.record(
+        repository.get("online-mr-task"),
+        TaskEvent(
+            event_id="event-paths",
+            task_id="online-mr-task",
+            type="error",
+            time="2026-07-14T08:01:01Z",
+            source="worker",
+            payload={"traceback": "failed at C:\\private\\worker.py and \\\\server\\share\\secret.log"},
         ),
     )
     repository.save(
@@ -124,6 +140,9 @@ def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path
     assert "must-not-leak" not in detail.text
     assert logs.status_code == 200
     assert logs.json()["lines"][0]["message"] == "采集运行中"
+    assert logs.json()["lines"][1]["message"] == "failed at <redacted-path>"
+    assert "C:\\private" not in logs.text
+    assert "server\\share" not in logs.text
     assert "must-not-leak" not in logs.text
     assert summary.json() == {"total": 2, "active": 0, "completed": 1, "failed": 1, "warning": 1}
     assert (after_hash, after_mtime) == (before_hash, before_mtime)
@@ -181,10 +200,37 @@ def test_job_center_routes_device_export_cancel_to_real_owner(tmp_path: Path) ->
 def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_path: Path) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     repository = TaskRepository(db_path)
+    device_service = app.state.device_management_service
+    device_root = device_service._artifact_root("demo")
+    device_target = device_root / "device-production.xlsx"
+    device_target.write_bytes(b"device export")
+    device_result = device_service._finalize_export_artifact(
+        {
+            "artifact_id": "device-abc", "artifact_root": device_root,
+            "artifact_name": device_target.name, "display_name": "设备:清单?.xlsx",
+            "export_type": "device_xlsx", "target": device_target, "tmp_path": device_target,
+        },
+        {"path": str(device_target)},
+    )
+    config_context = JobContext.from_job(BackgroundJob(
+        job_id="config-artifact", task_type="config_web_export_snapshots",
+        params={"site_name": "demo", "app_root": str(tmp_path), "data_root": str(tmp_path)},
+    ))
+    config_id, _config_path, config_name = _artifact_target(config_context, ".zip", "配置:快照?")
+    files_root = app.state.task_service.paths.site_files_dir("demo") / "outputs"
+    files_root.mkdir(parents=True, exist_ok=True)
+    source = files_root / "中文报告.zip"
+    source.write_bytes(b"capture")
+    file_service = FileManagementApplicationService(app.state.task_service.paths)
+    file_ref = next(item.file_ref for item in file_service.list_files("demo").items if item.name == source.name)
+    file_result = run_file_management_download(JobContext.from_job(BackgroundJob(
+        job_id="file-artifact", task_type="file_management_download",
+        params={"site_name": "demo", "file_ref": file_ref, "app_root": str(tmp_path), "data_root": str(tmp_path)},
+    )))
     fixtures = [
-        ("device-artifact", "device_export_device_csv", "web_device_management", {"artifact_id": "device-abc", "artifact_name": "devices.xlsx", "available": True}),
-        ("config-artifact", "config_web_export_snapshots", "web_config_collection", {"artifact_id": "export-0123456789abcdef0123456789abcdef", "display_name": "configs.zip", "output_path": "C:\\private\\configs.zip"}),
-        ("file-artifact", "file_management_download", "web_file_management", {"name": "capture.pcapng", "available": True, "relative_path": "private/capture.pcapng"}),
+        ("device-artifact", "device_export_device_csv", "web_device_management", device_result),
+        ("config-artifact", "config_web_export_snapshots", "web_config_collection", {"artifact_id": config_id, "display_name": config_name, "size": 34, "output_path": "C:\\private\\configs.zip"}),
+        ("file-artifact", "file_management_download", "web_file_management", file_result),
     ]
     for task_id, task_type, owner, result in fixtures:
         repository.save(
@@ -207,12 +253,21 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     with TestClient(app) as client:
         payloads = {task_id: client.get(f"/api/job-center/tasks/{task_id}").json() for task_id, *_rest in fixtures}
 
-    assert payloads["device-artifact"]["artifact_download"]["suggestedName"] == "devices.xlsx"
-    assert payloads["device-artifact"]["artifact_download"]["apiPath"] == "/api/device-management/exports/device-artifact/download"
-    assert payloads["config-artifact"]["artifact_download"]["suggestedName"] == "configs.zip"
-    assert payloads["config-artifact"]["artifact_download"]["apiPath"].endswith("/artifacts/export-0123456789abcdef0123456789abcdef")
-    assert payloads["file-artifact"]["artifact_download"]["suggestedName"] == "capture.pcapng"
-    assert payloads["file-artifact"]["artifact_download"]["apiPath"] == "/api/file-management/downloads/file-artifact/file"
+    device = payloads["device-artifact"]["artifact_download"]
+    config = payloads["config-artifact"]["artifact_download"]
+    file = payloads["file-artifact"]["artifact_download"]
+    assert device == {
+        "artifact_id": "device-abc", "display_name": "设备_清单.xlsx", "size_bytes": len(b"device export"),
+        "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "api_path": "/api/device-management/exports/device-artifact/download", "query": {"artifact_id": "device-abc"},
+    }
+    assert config["display_name"].startswith("配置_快照_") and config["display_name"].endswith(".zip")
+    assert config["size_bytes"] == 34
+    assert config["api_path"].endswith(f"/artifacts/{config_id}")
+    assert file["artifact_id"] == file_ref
+    assert file["display_name"] == "中文报告.zip"
+    assert file["size_bytes"] == len(b"capture")
+    assert file["api_path"] == "/api/file-management/downloads/file-artifact/file"
     for payload in payloads.values():
         assert not {"result_path", "output_dir", "package_path", "session_path", "raw_output_reference"} & payload.keys()
         assert "C:\\secret" not in str(payload)
@@ -234,3 +289,13 @@ def test_job_center_router_exposes_only_owner_checked_cancel_mutation(tmp_path: 
     }
     assert all(not path.endswith(("/stop", "/force-stop", "/retry")) for path, _method in routes)
     assert all("delete" not in path for path, _method in routes)
+
+
+def test_job_center_artifact_names_are_safe_and_duplicate_names_keep_distinct_ids() -> None:
+    name = JobCenterQueryService._artifact_display_name("同名:报告?.xlsx")
+    first = JobCenterQueryService._artifact_dto("artifact-1", name, 1, "/api/files/1")
+    second = JobCenterQueryService._artifact_dto("artifact-2", name, 1, "/api/files/2")
+
+    assert name == "同名_报告.xlsx"
+    assert first.display_name == second.display_name
+    assert first.artifact_id != second.artifact_id

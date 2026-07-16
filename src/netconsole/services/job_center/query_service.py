@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -10,11 +12,13 @@ from typing import Any
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.job_center import (
+    JobCenterArtifactDTO,
     JobCenterLogLineDTO,
     JobCenterLogTailDTO,
     JobCenterSummaryDTO,
     JobCenterTaskDTO,
 )
+from netconsole.services.config_lifecycle_service import safe_device_name
 from netconsole.services.config_collection_job_handlers import CONFIG_WEB_EXPORT_TASKS
 from netconsole.services.config_collection_web_service import (
     CONFIG_WEB_OWNER,
@@ -250,24 +254,48 @@ class JobCenterQueryService:
         return False, "当前任务 owner 未接入统一停止能力"
 
     @staticmethod
-    def _artifact_download(owner: str, task_type: str, task_id: str, site_name: str, status: str, result: dict[str, Any]) -> dict[str, object] | None:
+    def _artifact_download(owner: str, task_type: str, task_id: str, site_name: str, status: str, result: dict[str, Any]) -> JobCenterArtifactDTO | None:
         if status != "COMPLETED":
             return None
         artifact_id = str(result.get("artifact_id") or "")
+        if artifact_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", artifact_id):
+            return None
         if owner == WEB_TASK_OWNER and task_type in EXPORT_TASK_TYPES and artifact_id and result.get("available"):
-            name = str(result.get("artifact_name") or "")
+            name = JobCenterQueryService._artifact_display_name(result.get("display_name"), result.get("artifact_name"))
             if not name:
                 return None
-            return {"apiPath": f"/api/device-management/exports/{task_id}/download", "query": {"artifact_id": artifact_id}, "suggestedName": name}
+            return JobCenterQueryService._artifact_dto(artifact_id, name, result.get("size_bytes"), f"/api/device-management/exports/{task_id}/download", {"artifact_id": artifact_id})
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_EXPORT_TASKS and artifact_id:
-            name = str(result.get("display_name") or "")
+            name = JobCenterQueryService._artifact_display_name(result.get("display_name"))
             if not name:
                 return None
-            return {"apiPath": f"/api/config-collection/artifacts/{artifact_id}", "suggestedName": name}
+            return JobCenterQueryService._artifact_dto(artifact_id, name, result.get("size") or result.get("size_bytes"), f"/api/config-collection/artifacts/{artifact_id}")
         if owner == "web_file_management" and task_type == "file_management_download" and result.get("name"):
-            name = str(result["name"])
-            return {"apiPath": f"/api/file-management/downloads/{task_id}/file", "query": {"site_id": site_name}, "suggestedName": name}
+            name = JobCenterQueryService._artifact_display_name(result["name"])
+            safe_id = str(result.get("artifact_id") or result.get("download_ref") or task_id)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", safe_id):
+                return None
+            return JobCenterQueryService._artifact_dto(safe_id, name, result.get("size_bytes"), f"/api/file-management/downloads/{task_id}/file", {"site_id": site_name})
         return None
+
+    @staticmethod
+    def _artifact_display_name(value: object, fallback: object = "") -> str:
+        candidate = Path(str(value or fallback or "")).name
+        suffix = Path(candidate).suffix.casefold()
+        if not candidate or not suffix:
+            return ""
+        return f"{safe_device_name(Path(candidate).stem)}.{safe_device_name(suffix.removeprefix('.'))}"
+
+    @staticmethod
+    def _artifact_dto(artifact_id: str, display_name: str, size: object, api_path: str, query: dict[str, str] | None = None) -> JobCenterArtifactDTO:
+        return JobCenterArtifactDTO(
+            artifact_id=artifact_id,
+            display_name=display_name,
+            size_bytes=max(0, JobCenterQueryService._optional_int(size) or 0),
+            media_type=mimetypes.guess_type(display_name)[0] or "application/octet-stream",
+            api_path=api_path,
+            query=query or {},
+        )
 
     @staticmethod
     def _optional_int(value: object) -> int | None:
@@ -280,7 +308,7 @@ class JobCenterQueryService:
     def _log_line(cls, row: dict[str, object]) -> JobCenterLogLineDTO:
         event_type = str(row.get("event_type") or "log")
         payload = cls._json_object(row.get("payload_json"))
-        message = cls._first_text(payload, "message", "error", "state", "stage") or cls._event_label(event_type)
+        message = redact_web_task_text(cls._first_text(payload, "message", "error", "traceback", "diagnostic", "state", "stage") or cls._event_label(event_type))
         level = "ERROR" if event_type == "error" else "WARNING" if event_type == "cancelled" else "INFO"
         return JobCenterLogLineDTO(
             sequence=int(row.get("sequence") or 0),

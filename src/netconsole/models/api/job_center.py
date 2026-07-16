@@ -5,6 +5,15 @@ from pydantic import Field
 from netconsole.models.api.common import ApiModel
 
 
+class JobCenterArtifactDTO(ApiModel):
+    artifact_id: str
+    display_name: str
+    size_bytes: int
+    media_type: str
+    api_path: str
+    query: dict[str, str] = Field(default_factory=dict)
+
+
 class JobCenterTaskDTO(ApiModel):
     id: str
     type: str
@@ -40,7 +49,7 @@ class JobCenterTaskDTO(ApiModel):
     cancel_reason: str = ""
     retryable: bool = False
     retry_reason: str = "当前任务 owner 未提供统一重试能力"
-    artifact_download: dict[str, object] | None = None
+    artifact_download: JobCenterArtifactDTO | None = None
     artifact_reason: str = "当前任务 owner 未提供可下载 Artifact"
 
 
@@ -69,6 +78,7 @@ class JobCenterLogTailDTO(ApiModel):
 
 __all__ = [
     "JobCenterLogLineDTO",
+    "JobCenterArtifactDTO",
     "JobCenterLogTailDTO",
     "JobCenterSummaryDTO",
     "JobCenterTaskDTO",

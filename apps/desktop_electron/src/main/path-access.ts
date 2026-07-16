@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { extname, isAbsolute, resolve } from 'node:path'
 
 import { validateBridgePath } from '../shared/validation'
@@ -23,6 +24,7 @@ interface GrantedPath {
 
 export class GrantedPathRegistry {
   private readonly grants = new Map<string, GrantedPath>()
+  private readonly capabilities = new Map<string, GrantedPath>()
 
   grant(path: string, kind: GrantedPathKind = 'file'): string {
     const normalized = normalizeAbsolutePath(path)
@@ -49,8 +51,26 @@ export class GrantedPathRegistry {
     return granted.path
   }
 
+  grantCapability(path: string, kind: GrantedPathKind = 'save'): string {
+    const capabilityId = randomUUID()
+    this.capabilities.set(capabilityId, { path: normalizeAbsolutePath(path), kind })
+    if (this.capabilities.size > 256) this.capabilities.delete(this.capabilities.keys().next().value!)
+    return capabilityId
+  }
+
+  requireCapability(value: unknown, openable = false): string {
+    if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new Error('文件授权标识无效')
+    const granted = this.capabilities.get(value)
+    if (!granted) throw new Error('文件授权已失效')
+    if (openable && granted.kind !== 'directory' && !SAFE_OPEN_EXTENSIONS.has(extname(granted.path).toLocaleLowerCase())) {
+      throw new Error('桌面桥接只允许打开受支持的数据与报告文件')
+    }
+    return granted.path
+  }
+
   clear(): void {
     this.grants.clear()
+    this.capabilities.clear()
   }
 
   private key(path: string): string {

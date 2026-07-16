@@ -4,7 +4,7 @@
 
 `openTaskWindow` 只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 固定为 `devices/config/files`，`status` 固定为任务状态枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。主窗口和任务窗口可作为 IPC sender，文件对话框以实际调用窗口为父窗口。
 
-受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID 和正式文件名；保存完成后的本机路径仅由当前 Electron 会话内存授权，用于打开文件或定位目录。
+受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID、显示名、大小和类型；保存完成后 Renderer 只得到临时 capability ID，本机路径只存在于 Electron Main 的有界内存授权表。
 
 ## 当前状态
 
@@ -34,7 +34,7 @@ Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/des
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
 | `chooseSavePath` | 安全文件名、过滤器 | 不接受路径或命令作为文件名 | 只选择目标位置 |
 | `downloadBackendResource` | `/api/...` 相对路径、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存 | 文件、配置快照与 MESH Artifact 下载 |
-| `openPath` | 本轮对话框返回的路径 | 当前进程临时授权；仅目录或数据/报告扩展名白名单 | 打开已选择文件/目录 |
+| `openPath` | 下载完成返回的 capability ID | Main 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 本轮对话框返回的路径 | 当前进程临时授权 | 在资源管理器定位 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
@@ -43,7 +43,7 @@ Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/des
 
 ## 路径授权模型
 
-Renderer 不能提交任意绝对路径。`selectFile`、`selectDirectory` 或 `chooseSavePath` 的 Electron 原生对话框返回值先由 main 规范化，再登记到当前进程内存授权表；`downloadBackendResource` 仅在流式下载和原子替换成功后登记最终路径。后续 `openPath`/`showItemInFolder` 只接受与已登记项精确匹配的路径。退出时授权表清空，不持久化。
+Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 仅在流式下载和原子替换成功后把最终路径登记到最多 256 项的 Main 内存授权表，并返回随机 capability ID。`openPath`/`showItemInFolder` 只接受该 ID，由 Main 解析路径；退出时授权表清空，不持久化。
 
 `openPath` 对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel 和 ZIP；目录必须由目录选择器单独授予。`.exe`、`.py`、`.reg`、`.chm`、`.msc`、快捷方式、安装包和其他未知扩展名默认拒绝。此接口不是 `openArtifact` 的最终业务实现；后续 Artifact 必须通过 `artifact_id`、局点和受控路径解析。
 

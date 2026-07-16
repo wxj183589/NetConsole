@@ -108,7 +108,7 @@ describe('real Python backend integration', () => {
         completed.task_id,
         completed.site_id,
         completed.result!.name,
-      ))).resolves.toEqual({ status: 'saved', savedPath })
+      ))).resolves.toMatchObject({ status: 'saved', capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/) })
       await expect(readFile(savedPath, 'utf8')).resolves.toBe('dynamic-port-download')
       expect(new URL(runtime.baseUrl).port).not.toBe('8000')
       expect(logs.join('\n')).not.toContain(runtime.apiToken)

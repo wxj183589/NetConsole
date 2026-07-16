@@ -112,9 +112,9 @@ export class BackendDownloadManager {
       if (!response.body) throw new Error('empty response body')
       await streamResponseToFile(response.body, tempPath)
       await rename(tempPath, finalPath)
-      const savedPath = this.options.pathRegistry.grant(finalPath, 'save')
+      const capabilityId = this.options.pathRegistry.grantCapability(finalPath)
       this.logger('ELECTRON_BACKEND_DOWNLOAD_SAVED', `route=${route}`)
-      return { status: 'saved', savedPath }
+      return { status: 'saved', capabilityId }
     } catch (cause) {
       await rm(tempPath, { force: true }).catch(() => undefined)
       this.logger(

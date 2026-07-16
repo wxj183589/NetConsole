@@ -111,16 +111,21 @@ async function cancelSelected(): Promise<void> {
 
 async function downloadArtifact(): Promise<void> {
   if (!store.selected?.artifact_download) return
-  const result = await downloadBackendResource(store.selected.artifact_download)
-  if (result.status === 'saved' && result.savedPath) {
-    lastSavedPath.value = result.savedPath
+  const artifact = store.selected.artifact_download
+  const result = await downloadBackendResource({
+    apiPath: artifact.api_path,
+    query: artifact.query,
+    suggestedName: artifact.display_name,
+  })
+  if (result.status === 'saved' && result.capabilityId) {
+    lastSavedCapability.value = result.capabilityId
     ElMessage.success('Artifact 已保存')
   } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
 }
 
-const lastSavedPath = ref('')
-const openSaved = () => getPlatformAdapter().openPath(lastSavedPath.value)
-const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedPath.value)
+const lastSavedCapability = ref('')
+const openSaved = () => getPlatformAdapter().openPath(lastSavedCapability.value)
+const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapability.value)
 </script>
 
 <template>
@@ -229,8 +234,8 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedPath.va
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">Artifact 下载</el-button></span></el-tooltip>
-          <el-button :disabled="!lastSavedPath" @click="openSaved">打开文件</el-button>
-          <el-button :disabled="!lastSavedPath" @click="revealSaved">打开所在目录</el-button>
+          <el-button :disabled="!lastSavedCapability" @click="openSaved">打开文件</el-button>
+          <el-button :disabled="!lastSavedCapability" @click="revealSaved">打开所在目录</el-button>
         </div>
 
         <section class="log-section">

@@ -81,6 +81,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.config_lifecycle_service import safe_device_name
 from netconsole.services.device_group_service import DeviceGroupService
 from netconsole.services.device_import_export import DeviceImportExportService
 from netconsole.services.device_web_service import build_https_url, effective_https_port
@@ -1919,6 +1920,7 @@ class DeviceManagementWebService:
             "site": site,
             "artifact_id": artifact_id,
             "artifact_name": target.name,
+            "display_name": f"{safe_device_name(action)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}",
             "export_type": export_type,
             "artifact_root": artifact_root,
             "target": target,
@@ -2058,6 +2060,7 @@ class DeviceManagementWebService:
         return {
             "artifact_id": str(spec["artifact_id"]),
             "artifact_name": target.name,
+            "display_name": str(spec.get("display_name") or target.name),
             "available": True,
             "sha256": self._file_sha256(target),
             "size_bytes": target.stat().st_size,

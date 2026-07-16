@@ -4,7 +4,7 @@
 
 Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -> TaskRepository -> tasks.db`，提供单实例任务窗口。主窗口只通过严格的 `taskId/module/status` DTO 打开或恢复该窗口；关闭窗口仅隐藏，不取消后台任务，应用退出时再与主窗口、受管后端一并有序关闭。
 
-任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。Artifact 只携带不透明标识、正式显示名和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 不向 Renderer 返回结果、会话、采集包或原始回显的服务端路径。
+任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。Artifact 使用强类型 DTO 携带不透明标识、正式显示名、大小、类型和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 和日志均不向 Renderer 返回服务端绝对路径。
 
 主窗口和任务窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；脱敏后的后端状态广播到所有受管窗口。关闭任务窗口仍只隐藏窗口，不改变后台任务状态。
 
@@ -173,7 +173,7 @@ Renderer 当前只能调用：
 
 - `selectFile`、`selectDirectory` 和 `chooseSavePath` 只调用 Electron 原生对话框。
 - main 仅接受白名单 DTO；过滤器数量、名称、扩展名、保存文件名和未知字段均有运行时限制。
-- 对话框返回的绝对路径只在当前 Electron 进程内登记为临时授权；`openPath`/`showItemInFolder` 只能回传并使用这些已授权路径。
+- 下载保存后的绝对路径只进入 Electron Main 的有界临时授权表；Renderer 仅持有 capability ID，`openPath`/`showItemInFolder` 只接受该 ID。
 - `openPath` 只允许原生对话框授予的目录或明确的数据/报告扩展名；程序、脚本、系统控制文件和未知扩展名默认拒绝，不能成为通用程序启动器。
 - `chooseSavePath` 只选择目标；Excel、ZIP、PDF、报告和 Artifact 内容继续由 Python Application Service/Export Process 生成。
 - `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把安全相对 API 描述交给 main；main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后原子替换。Renderer 不接收完整文件、任意 URL、Header 或目标路径，令牌不进入 URL、Storage 或日志。

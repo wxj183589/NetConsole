@@ -169,7 +169,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
-        const path = registry.requireOpenable(value)
+        const path = registry.requireCapability(value, true)
         const error = await dependencies.shell.openPath(path)
         return error
           ? { success: false, error: '系统未能打开所选路径' }
@@ -183,7 +183,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC.showItemInFolder,
     trusted((value) => {
       try {
-        dependencies.shell.showItemInFolder(registry.requireGranted(value))
+        dependencies.shell.showItemInFolder(registry.requireCapability(value))
         return { success: true }
       } catch (cause) {
         return { success: false, error: safeActionError(cause) }
@@ -214,7 +214,7 @@ export function registerDesktopIpc(
 }
 
 function safeActionError(cause: unknown): string {
-  if (cause instanceof Error && /未由当前桌面会话授权|路径必须是绝对路径|桌面桥接只允许/.test(cause.message)) {
+  if (cause instanceof Error && /文件授权|桌面桥接只允许/.test(cause.message)) {
     return cause.message
   }
   return '桌面操作失败'

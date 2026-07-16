@@ -10,5 +10,8 @@ describe('Job Center unified task view', () => {
     expect(source).toContain('停止 / 取消')
     expect(source).toContain('Artifact 下载')
     expect(source).toContain('moduleFilter')
+    expect(source).toContain('artifact.display_name')
+    expect(source).toContain('result.capabilityId')
+    expect(source).not.toContain('savedPath')
   })
 })

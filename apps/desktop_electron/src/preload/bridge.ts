@@ -3,7 +3,7 @@ import type { IpcRendererEvent } from 'electron'
 import type { BackendStatus, NetConsoleDesktopBridge } from '../shared/bridge'
 import { DESKTOP_IPC } from '../shared/bridge'
 import {
-  validateBridgePath,
+  validateCapabilityId,
   validateExternalUrl,
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
@@ -41,13 +41,13 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.downloadBackendResource,
       validateBackendDownloadRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['downloadBackendResource']>,
-    openPath: (path) => ipcRenderer.invoke(
+    openPath: (capabilityId) => ipcRenderer.invoke(
       DESKTOP_IPC.openPath,
-      validateBridgePath(path),
+      validateCapabilityId(capabilityId),
     ) as ReturnType<NetConsoleDesktopBridge['openPath']>,
-    showItemInFolder: (path) => ipcRenderer.invoke(
+    showItemInFolder: (capabilityId) => ipcRenderer.invoke(
       DESKTOP_IPC.showItemInFolder,
-      validateBridgePath(path),
+      validateCapabilityId(capabilityId),
     ) as ReturnType<NetConsoleDesktopBridge['showItemInFolder']>,
     openExternalUrl: (url) => ipcRenderer.invoke(
       DESKTOP_IPC.openExternalUrl,

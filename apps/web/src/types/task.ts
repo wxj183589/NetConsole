@@ -48,7 +48,14 @@ export interface TaskItem {
   cancel_reason?: string
   retryable?: boolean
   retry_reason?: string
-  artifact_download?: { apiPath: string; query?: Record<string, string>; suggestedName: string } | null
+  artifact_download?: {
+    artifact_id: string
+    display_name: string
+    size_bytes: number
+    media_type: string
+    api_path: string
+    query: Record<string, string>
+  } | null
   artifact_reason?: string
 }
 
