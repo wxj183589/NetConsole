@@ -53,6 +53,7 @@ export interface AcAp {
   section: string
   mileage: string
   direction: string
+  location_note: string
   switch_name: string
   switch_interface: string
   lldp_status: string
@@ -126,6 +127,15 @@ export interface AcApDetail {
     connected_at: string
     updated_at: string
   }
+}
+
+export interface AcApHistoryPage {
+  kind: 'radio' | 'lldp' | 'optical'
+  ap_id: string
+  items: Array<Record<string, unknown>>
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface AcConfigSnapshot {

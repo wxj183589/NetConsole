@@ -9,7 +9,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { cancelAcWebTask, deleteAcFitAps, getAcWebTask, importAcFitApMetadata, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
+import { cancelAcWebTask, deleteAcFitAps, getAcWebTask, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcResourceRefresh } from '../api/acWebParity'
 import type {
   AcAp,
   AcApDetail,
@@ -22,7 +22,7 @@ import type { AcWebTask } from '../types/acWebParity'
 
 const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import'])
+const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
@@ -240,6 +240,26 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     }
   }
 
+  async function startFitApMetadataSave(metadata: {
+    site_name: string
+    mileage: string
+    location_note: string
+    direction: string
+  }): Promise<void> {
+    if (!filters.ac_id || !selected.value || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
+    refreshStarting.value = true
+    error.value = ''
+    try {
+      refreshTask.value = await saveAcFitApMetadata(filters.ac_id, selected.value.ap.id, metadata)
+      window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
+      scheduleTask()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : 'FIT-AP 元数据保存启动失败'
+    } finally {
+      refreshStarting.value = false
+    }
+  }
+
   async function cancelRefreshTask(): Promise<void> {
     if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
     try {
@@ -408,6 +428,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     startOpticalRefresh,
     startFitApDelete,
     startFitApMetadataImport,
+    startFitApMetadataSave,
     cancelRefreshTask,
     recoverRefreshTask,
     setAcId,

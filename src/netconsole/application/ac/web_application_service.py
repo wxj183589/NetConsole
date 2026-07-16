@@ -33,12 +33,14 @@ from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLA
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec
+from netconsole.services.fit_ap_import_export import normalize_ap_direction
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError, RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
+from netconsole.utils.mileage import mileage_storage_text
 
 
 ACTION_DEFINITIONS = {
@@ -78,6 +80,7 @@ class AcWebApplicationService:
         "ac_command_action_execute": "ac_command_action_execute",
         "ac_fit_ap_delete_many": "ac_fit_ap_delete_many",
         "fit_ap_metadata_import": "fit_ap_metadata_import",
+        "fit_ap_metadata_save": "fit_ap_metadata_save",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -298,6 +301,49 @@ class AcWebApplicationService:
             input_path.unlink(missing_ok=True)
             pending.unlink(missing_ok=True)
             raise
+        return self._task_dto(site_id, task_id)
+
+    def start_fit_ap_metadata_save(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        ap_id: str,
+        metadata: dict[str, object],
+    ) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        ap_uuid = str(ap_id or "").strip()
+        resource = self._repository(site_id).get_fit_ap_resource_by_uuid(device_uuid, ap_uuid)
+        if resource is None:
+            raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "目标 FIT-AP 不属于当前 AC")
+        payload = {
+            "ap_uuid": ap_uuid,
+            "ap_name": str(resource.get("ap_name") or ""),
+            "site_name": str(metadata.get("site_name") or "").strip(),
+            "mileage": mileage_storage_text(metadata.get("mileage")),
+            "location_note": str(metadata.get("location_note") or "").strip(),
+            "direction": normalize_ap_direction(str(metadata.get("direction") or "")),
+        }
+        task_id = f"ac-web-metadata-save-{uuid4().hex}"
+        self.process_adapter.start_job(
+            BackgroundJob(
+                job_id=task_id,
+                task_type="fit_ap_metadata_save",
+                params={
+                    "site_name": site_id,
+                    "db_path": str(self.paths.site_db_path(site_id)),
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "task_name": "保存 FIT-AP 元数据",
+                    "owner": self._OWNER,
+                    "task_source": "local",
+                    "device_uuid": device_uuid,
+                    "ac_uuid": device_uuid,
+                    "metadata": payload,
+                },
+            )
+        )
         return self._task_dto(site_id, task_id)
 
     def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:

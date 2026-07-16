@@ -33,6 +33,8 @@ Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mod
 
 Electron 的“打开 AC Web”复用 Qt 相同的 HTTPS URL 规则：优先使用已采集端口，缺失或无效时回退 443；Python DTO 生成受控 URL，Vue 只通过现有 Electron 外部 URL Bridge 打开。
 
+FIT-AP 详情已迁移 Qt 的站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。
+
 ## 光衰关联规则
 
 光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 和统一 severity 规则，Vue 不重复计算。Web 展示状态为：
@@ -94,8 +96,8 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ## 尚未完成的 Qt 对等能力
 
-- Qt AC 资源页的 AP 信息导出和 OmniPeek 名称表导出；批量删除及 AP 元数据 CSV/XLSX 导入已通过持久化任务迁移；
-- FIT-AP CSV、光衰 XLSX 与 OmniPeek NAM 的 Export Process worker 已存在，但共享 `WebArtifactStore` 尚未允许对应 AC 来源，且 `.nam` 不在 Artifact 类型白名单；最小共享补丁是把三个 AC 导出来源映射到当前局点 `trackside_ap_outputs` 受控根，并允许 `.nam`，本分支不修改或复制共享 Artifact/Native Bridge；
+- Qt AC 资源页的 AP 信息导出、OmniPeek 名称表导出，以及详情页 Radio/LLDP/光衰历史 XLSX 导出；批量删除、AP 元数据 CSV/XLSX 导入、详情元数据保存及历史查看已迁移；
+- FIT-AP CSV、光衰 XLSX、历史 XLSX 与 OmniPeek NAM 的 Export Process worker 已存在，但共享 `WebArtifactStore` 尚未允许对应 AC 来源，且 `.nam` 不在 Artifact 类型白名单；最小共享补丁是把 AC 导出来源映射到当前局点 `trackside_ap_outputs` 受控根，并允许 `.nam`，本分支不修改或复制共享 Artifact/Native Bridge；
 - AP 扩展信息与轨旁规划的全部 Qt 导入、导出和编辑入口；
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - 导出及现有 Qt AC 工作流。

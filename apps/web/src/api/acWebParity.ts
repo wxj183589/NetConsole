@@ -68,6 +68,17 @@ export function importAcFitApMetadata(file: File): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/fit-aps/metadata/import`, { method: 'POST', body: form })
 }
 
+export function saveAcFitApMetadata(
+  acId: string,
+  apId: string,
+  metadata: { site_name: string; mileage: string; location_note: string; direction: string },
+): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/aps/${encodeURIComponent(apId)}/metadata`, {
+    method: 'POST',
+    body: JSON.stringify({ ac_id: acId, ...metadata }),
+  })
+}
+
 export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
 }

@@ -7,6 +7,7 @@ from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.ac_management import (
     AcApDetailDTO,
+    AcApHistoryPageDTO,
     AcApPageDTO,
     AcActionConfirmRequestDTO,
     AcActionPlanCreateRequestDTO,
@@ -25,6 +26,7 @@ from netconsole.models.api.ac_management import (
     AcExtensionRollbackRequestDTO,
     AcExtensionRollbackResultDTO,
     AcFitApDeleteRequestDTO,
+    AcFitApMetadataSaveRequestDTO,
     AcLocalRebuildRequestDTO,
     AcRefreshRequestDTO,
     AcTracksidePlanPageDTO,
@@ -130,6 +132,30 @@ def optical_anomalies(
 )
 def ap_detail(request: Request, ap_id: str) -> AcApDetailDTO:
     return _required(_query(lambda: _service(request).get_ap_detail(_site_id(request), ap_id)), "AP 不存在")
+
+
+@router.get(
+    "/aps/{ap_id}/history/{history_kind}",
+    response_model=AcApHistoryPageDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_history"))],
+)
+def ap_history(
+    request: Request,
+    ap_id: str,
+    history_kind: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+) -> AcApHistoryPageDTO:
+    result = _query(
+        lambda: _service(request).get_ap_history(
+            _site_id(request),
+            ap_id,
+            history_kind,
+            page=page,
+            page_size=page_size,
+        )
+    )
+    return _required(result, "AP 不存在")
 
 
 @router.get(
@@ -388,6 +414,27 @@ async def import_fit_ap_metadata(request: Request, file: UploadFile = File(...))
         _raise_web_error(exc)
     finally:
         await file.close()
+
+
+@router.post(
+    "/aps/{ap_id}/metadata",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.ac_fit_ap_metadata_write")),
+        Depends(require_feature("web.ac_refresh")),
+    ],
+)
+def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataSaveRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_fit_ap_metadata_save(
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            ap_id=ap_id,
+            metadata=payload.model_dump(exclude={"ac_id"}),
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
 
 
 @router.post(

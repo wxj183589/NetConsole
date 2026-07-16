@@ -120,6 +120,8 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.ac_refresh", "AC/FIT-AP 设备更新（Web）", "web.ac_management", "action"),
     FeatureItem("web.ac_fit_ap_delete", "批量删除 FIT-AP（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_fit_ap_metadata_import", "导入 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
+    FeatureItem("web.ac_fit_ap_metadata_write", "保存 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
+    FeatureItem("web.ac_fit_ap_history", "查看 FIT-AP 历史（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_open_web", "打开 AC Web 管理（Electron）", "web.ac_management", "action"),
     FeatureItem("web.ac_dangerous_actions", "AC 高风险动作真实闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
@@ -132,7 +134,7 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
-    FeatureItem("web.ac_mesh_links", "Mesh-Link 在线监控（Web 只读）", "module.ac", "page"),
+    FeatureItem("web.ac_mesh_links", "Mesh-Link 在线监控与真实刷新（Web）", "module.ac", "page"),
     FeatureItem("ac.mesh_link.refresh", "刷新 Mesh-Link", "web.ac_mesh_links", "action"),
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),

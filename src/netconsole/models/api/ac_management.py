@@ -113,6 +113,7 @@ class AcApDTO(ApiModel):
     section: str = ""
     mileage: str = ""
     direction: str = ""
+    location_note: str = ""
     switch_name: str = ""
     switch_interface: str = ""
     lldp_status: str = ""
@@ -127,6 +128,15 @@ class AcApPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 50
+
+
+class AcApHistoryPageDTO(ApiModel):
+    kind: str
+    ap_id: str
+    items: list[dict[str, object | None]] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
 
 
 class AcApDetailDTO(ApiModel):
@@ -316,9 +326,18 @@ class AcFitApDeleteRequestDTO(ApiModel):
     explicit_confirmation: bool = False
 
 
+class AcFitApMetadataSaveRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    site_name: str = Field(default="", max_length=100)
+    mileage: str = Field(default="", max_length=100)
+    location_note: str = Field(default="", max_length=500)
+    direction: str = Field(default="", max_length=30)
+
+
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
+    "AcApHistoryPageDTO",
     "AcApPageDTO",
     "AcConfigContentDTO",
     "AcConfigDiffDTO",
@@ -341,6 +360,7 @@ __all__ = [
     "AcExtensionRollbackRequestDTO",
     "AcExtensionRollbackResultDTO",
     "AcFitApDeleteRequestDTO",
+    "AcFitApMetadataSaveRequestDTO",
     "AcLocalRebuildRequestDTO",
     "AcRefreshRequestDTO",
     "AcTracksidePlanDTO",

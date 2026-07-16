@@ -4,10 +4,11 @@ import { Refresh, Setting, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 
+import { getAcApHistory } from '../../api/acManagement'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
-import type { AcAp, AcConfigSnapshot } from '../../types/acManagement'
+import type { AcAp, AcApHistoryPage, AcConfigSnapshot } from '../../types/acManagement'
 
 const store = useAcManagementStore()
 const route = useRoute()
@@ -19,6 +20,13 @@ const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
 const metadataInput = ref<HTMLInputElement | null>(null)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
+const metadataForm = reactive({ site_name: '', mileage: '', location_note: '', direction: '' })
+const historyVisible = ref(false)
+const historyLoading = ref(false)
+const historyError = ref('')
+const historyPage = ref<AcApHistoryPage | null>(null)
+const historyKind = ref<'radio' | 'lldp' | 'optical'>('radio')
+const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
 interface TableColumn { key: string; label: string; width: number; sortable?: boolean }
 
@@ -62,7 +70,27 @@ const taskLabel = computed(() => ({
   ac_fit_ap_optical_refresh: 'FIT-AP 光衰更新',
   ac_fit_ap_delete_many: 'FIT-AP 批量删除',
   fit_ap_metadata_import: 'FIT-AP 元数据导入',
+  fit_ap_metadata_save: 'FIT-AP 元数据保存',
 }[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
+const historyColumns = computed(() => ({
+  radio: [
+    ['collected_at', '采集时间'], ['ap_name', 'AP 名称'], ['rid', 'Radio ID'], ['status', '状态'], ['mode', '模式'], ['band', '频段'],
+    ['channel', '信道'], ['bandwidth', '带宽'], ['usage', '利用率'], ['tx_power', '功率'], ['clients', '客户端'], ['bbssid', 'BSSID'],
+  ],
+  lldp: [
+    ['collected_at', '采集时间'], ['source', '来源'], ['is_changed', '是否变化'], ['conflict_flag', '冲突'],
+    ['local_interface', '本地接口'], ['lldp_neighbor', 'LLDP 邻居'], ['neighbor_interface', '邻居接口'],
+    ['neighbor_mac', '邻居 MAC'], ['neighbor_device_name', '邻居设备'], ['neighbor_name', '邻居名称'],
+  ],
+  optical: [
+    ['collected_at', '采集时间'], ['interface_name', '接口'], ['optical_alarm_status', '告警'], ['temperature', '温度'],
+    ['voltage', '电压'], ['bias_current', '偏置电流'], ['tx_power', 'Tx Power'], ['rx_power', 'Rx Power'],
+    ['rx_low_alarm', 'Rx 低告警'], ['rx_high_alarm', 'Rx 高告警'], ['tx_low_alarm', 'Tx 低告警'], ['tx_high_alarm', 'Tx 高告警'],
+    ['rx_low_warning', 'Rx 低预警'], ['rx_high_warning', 'Rx 高预警'], ['tx_low_warning', 'Tx 低预警'], ['tx_high_warning', 'Tx 高预警'],
+    ['module_model', '模块型号'], ['module_vendor', '厂商'],
+    ['wavelength', '波长'], ['transmission_distance', '传输距离'], ['connector_type', '连接器'], ['status', '状态'], ['error_message', '错误'],
+  ],
+}[historyKind.value] as string[][]))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
   if (!needle) return []
@@ -73,10 +101,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
   const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
-  if (apId) {
-    detailVisible.value = true
-    void store.selectAp(apId)
-  }
+  if (apId) void openDetailById(apId)
 })
 
 onBeforeUnmount(() => {
@@ -156,6 +181,25 @@ async function openAcWeb(): Promise<void> {
   if (!result.success) ElMessage.error(result.error || '无法打开 AC Web 管理地址')
 }
 
+async function saveMetadata(): Promise<void> {
+  await store.startFitApMetadataSave({ ...metadataForm })
+}
+
+async function openHistory(kind: 'radio' | 'lldp' | 'optical', page = 1): Promise<void> {
+  if (!store.selected) return
+  historyKind.value = kind
+  historyVisible.value = true
+  historyLoading.value = true
+  historyError.value = ''
+  try {
+    historyPage.value = await getAcApHistory(store.selected.ap.id, kind, page)
+  } catch (cause) {
+    historyError.value = cause instanceof Error ? cause.message : 'FIT-AP 历史加载失败'
+  } finally {
+    historyLoading.value = false
+  }
+}
+
 function handleSort(event: { prop: string; order: 'ascending' | 'descending' | null }): void {
   const sortMap: Record<string, string> = {
     name: 'name',
@@ -174,8 +218,19 @@ function handleSort(event: { prop: string; order: 'ascending' | 'descending' | n
 }
 
 async function openDetail(row: AcAp): Promise<void> {
+  await openDetailById(row.id)
+}
+
+async function openDetailById(apId: string): Promise<void> {
   detailVisible.value = true
-  await store.selectAp(row.id)
+  await store.selectAp(apId)
+  const ap = store.selected?.ap
+  if (ap) Object.assign(metadataForm, {
+    site_name: ap.station || '',
+    mileage: ap.mileage || '',
+    location_note: ap.location_note || '',
+    direction: ap.direction || '',
+  })
 }
 
 async function openConfig(snapshot: AcConfigSnapshot): Promise<void> {
@@ -296,6 +351,9 @@ function diffLineClass(line: string): string {
       </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'fit_ap_metadata_import'" class="task-result">
         已更新 {{ store.refreshTask.result_summary.updated || 0 }} 条元数据，跳过 {{ store.refreshTask.result_summary.skipped || 0 }} 条，错误 {{ store.refreshTask.result_summary.errors_count || 0 }} 条。
+      </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'fit_ap_metadata_save'" class="task-result">
+        FIT-AP 元数据已保存。
       </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
         已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
@@ -488,6 +546,18 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="线路方向">{{ display(store.selected.ap.direction) }}</el-descriptions-item>
           </el-descriptions>
 
+          <div class="metadata-editor">
+            <div class="section-heading"><h3>AP 扩展元数据</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_metadata_write')" type="primary" :loading="store.refreshStarting" :disabled="taskActive" @click="saveMetadata">保存元数据</el-button></div>
+            <el-form :model="metadataForm" label-width="88px" :disabled="!isFeatureEnabled('web.ac_fit_ap_metadata_write')">
+              <div class="metadata-grid">
+                <el-form-item label="归属站点"><el-input v-model="metadataForm.site_name" maxlength="100" /></el-form-item>
+                <el-form-item label="里程"><el-input v-model="metadataForm.mileage" maxlength="100" placeholder="例如 ZDK1+200" /></el-form-item>
+                <el-form-item label="线路方向"><el-select v-model="metadataForm.direction" clearable><el-option label="上行" value="上行" /><el-option label="下行" value="下行" /><el-option v-if="metadataForm.direction && !['上行', '下行'].includes(metadataForm.direction)" :label="metadataForm.direction" :value="metadataForm.direction" /></el-select></el-form-item>
+                <el-form-item label="点位说明"><el-input v-model="metadataForm.location_note" maxlength="500" /></el-form-item>
+              </div>
+            </el-form>
+          </div>
+
           <h3 class="detail-section-title">AC 连接记录</h3>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="连接状态">{{ display(store.selected.connection.state) }}</el-descriptions-item>
@@ -496,7 +566,7 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="数据更新时间">{{ formatTime(store.selected.connection.updated_at) }}</el-descriptions-item>
           </el-descriptions>
 
-          <h3 class="detail-section-title">Mesh Radio 1 / 2</h3>
+          <div class="section-heading"><h3>Mesh Radio 1 / 2</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('radio')">查看历史</el-button></div>
           <el-table :data="detailRadios" border>
             <el-table-column prop="radio_id" label="Mesh Radio ID" width="125" />
             <el-table-column prop="status" label="状态" min-width="90"><template #default="{ row }">{{ display(row.status) }}</template></el-table-column>
@@ -510,7 +580,7 @@ function diffLineClass(line: string): string {
             <el-table-column prop="bssid" label="BSSID" min-width="145" />
           </el-table>
 
-          <h3 class="detail-section-title">LLDP / 端口</h3>
+          <div class="section-heading"><h3>LLDP / 端口</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('lldp')">查看历史</el-button></div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="交换机">{{ display(store.selected.lldp.switch_name) }}</el-descriptions-item>
             <el-descriptions-item label="交换机 IP">{{ display(store.selected.lldp.switch_ip) }}</el-descriptions-item>
@@ -522,7 +592,7 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="LLDP 状态">{{ display(store.selected.lldp.match_status) }}</el-descriptions-item>
           </el-descriptions>
 
-          <h3 class="detail-section-title">光衰</h3>
+          <div class="section-heading"><h3>光衰</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('optical')">查看历史</el-button></div>
           <el-alert :title="store.selected.optical.anomaly_reason" :type="statusType(store.selected.optical.optical_status)" :closable="false" show-icon />
           <el-descriptions :column="2" border class="optical-detail">
             <el-descriptions-item label="Tx Power">{{ display(store.selected.optical.tx_power) }}</el-descriptions-item>
@@ -535,6 +605,21 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="最近更新时间">{{ formatTime(store.selected.optical.updated_at) }}</el-descriptions-item>
           </el-descriptions>
         </template>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="historyVisible" :title="historyTitle" size="min(1100px, 96vw)">
+      <div v-loading="historyLoading">
+        <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" show-icon />
+        <el-table :data="historyPage?.items || []" stripe empty-text="暂无历史记录" height="calc(100vh - 190px)">
+          <el-table-column v-for="column in historyColumns" :key="column[0]" :prop="column[0]" :label="column[1]" min-width="130">
+            <template #default="{ row }">{{ display(row[column[0]]) }}</template>
+          </el-table-column>
+        </el-table>
+        <div class="pagination-row">
+          <span>共 {{ historyPage?.total || 0 }} 条</span>
+          <el-pagination :current-page="historyPage?.page || 1" :page-size="historyPage?.page_size || 100" layout="prev, pager, next" :total="historyPage?.total || 0" @current-change="openHistory(historyKind, $event)" />
+        </div>
       </div>
     </el-drawer>
 
@@ -594,6 +679,10 @@ function diffLineClass(line: string): string {
 .pagination-row { padding: 12px 16px; color: #718096; font-size: 12px; }
 .config-toolbar { padding: 15px 18px; border-bottom: 1px solid #edf1f6; }
 .detail-section-title { margin: 23px 0 10px; }
+.metadata-editor { margin-top: 18px; padding: 14px 16px 2px; border: 1px solid #dfe7f1; border-radius: 8px; }
+.metadata-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin: 23px 0 10px; }
+.section-heading h3, .metadata-editor .section-heading { margin: 0; }
 .optical-detail { margin-top: 12px; }
 .config-viewer { min-height: 360px; }
 .config-searchbar { position: sticky; top: 0; z-index: 2; padding: 10px 0; background: #fff; }

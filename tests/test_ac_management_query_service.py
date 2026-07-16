@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from ac_management_web_fixture import build_ac_management_fixture
+from netconsole.core.database import Database
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.config_lifecycle_service import extract_h3c_configuration_body
 
@@ -42,6 +44,25 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
     assert _fingerprint(db_path) == before
+
+
+def test_ac_query_service_returns_allowlisted_radio_history_without_raw_paths(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    repository = AcRepository(Database(paths.site_db_path("demo")))
+    ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
+    assert ap is not None
+    repository.upsert_fit_ap_resource("ac-1", ap)
+    service = AcManagementQueryService(paths)
+
+    history = service.get_ap_history("demo", "ap-online", "radio")
+
+    assert history is not None
+    assert history.total == 2
+    assert {int(row["rid"]): int(row["clients"] or 0) for row in history.items} == {1: 3, 2: 1}
+    assert all("ap_name" in row and "status" in row and "usage" in row for row in history.items)
+    assert all("raw_log_path" not in row for row in history.items)
+    with pytest.raises(ValueError, match="不支持"):
+        service.get_ap_history("demo", "ap-online", "unknown")
 
 
 def test_ac_optical_anomaly_requires_ap_offline_relation(tmp_path: Path) -> None:

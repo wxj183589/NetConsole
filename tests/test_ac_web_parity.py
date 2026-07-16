@@ -24,6 +24,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many, fit_ap_metadata_import
+from netconsole.services.job_center.handlers.device_jobs import fit_ap_metadata_save
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
@@ -42,6 +43,8 @@ AC_FEATURE_IDS = (
     "web.ac_refresh",
     "web.ac_fit_ap_delete",
     "web.ac_fit_ap_metadata_import",
+    "web.ac_fit_ap_metadata_write",
+    "web.ac_fit_ap_history",
     "web.ac_dangerous_actions",
 )
 CSV_CONTENT = (
@@ -470,6 +473,67 @@ def test_fit_ap_metadata_import_api_starts_persistent_job(tmp_path: Path, monkey
     snapshot = service.task_service.repository("demo").get(response.json()["task_id"])
     assert snapshot is not None
     assert snapshot.task_type == "fit_ap_metadata_import"
+
+
+def test_fit_ap_metadata_save_validates_ac_scope_and_persists_through_job(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    with pytest.raises(AcWebActionError) as foreign:
+        service.start_fit_ap_metadata_save(
+            "demo",
+            ac_id="ac-1",
+            ap_id="missing-ap",
+            metadata={},
+        )
+    assert foreign.value.code == "AP_TARGET_NOT_AUTHORIZED"
+
+    started = service.start_fit_ap_metadata_save(
+        "demo",
+        ac_id="ac-1",
+        ap_id="ap-online",
+        metadata={"site_name": "Web站", "mileage": "ZDK1+200", "location_note": "站台", "direction": "CW"},
+    )
+    job = normal.jobs[started.task_id]
+    result = fit_ap_metadata_save(JobContext(job.job_id, job.task_type, job.params, None, lambda: False, paths))
+    normal.complete(job.job_id, result)
+
+    metadata = AcRepository(Database(paths.site_db_path("demo"))).get_fit_ap_metadata_by_uuid("ap-online")
+    assert result["metadata"]["ap_uuid"] == "ap-online"
+    assert metadata is not None
+    assert metadata["site_name"] == "Web站"
+    assert metadata["mileage"] == "1200"
+    assert metadata["location_note"] == "站台"
+    assert metadata["direction"] == "上行"
+
+
+def test_fit_ap_metadata_save_api_starts_normalized_persistent_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service = _client(tmp_path, monkeypatch)
+    with client:
+        response = client.post(
+            "/api/ac-management/aps/ap-online/metadata",
+            json={
+                "ac_id": "ac-1",
+                "site_name": "Web站",
+                "mileage": "ZDK1+200",
+                "location_note": "站台",
+                "direction": "CW",
+            },
+        )
+
+    assert response.status_code == 202
+    job = service.process_adapter.jobs[response.json()["task_id"]]  # type: ignore[attr-defined]
+    assert job.task_type == "fit_ap_metadata_save"
+    assert job.params["metadata"] == {
+        "ap_uuid": "ap-online",
+        "ap_name": "AP-Online",
+        "site_name": "Web站",
+        "mileage": "1200",
+        "location_note": "站台",
+        "direction": "上行",
+    }
 
 
 def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest(tmp_path: Path) -> None:

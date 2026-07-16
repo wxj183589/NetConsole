@@ -10,7 +10,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { deleteAcFitAps, importAcFitApMetadata, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
+import { deleteAcFitAps, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcResourceRefresh } from '../api/acWebParity'
 
 vi.mock('../api/acManagement', () => ({
   getAcApDetail: vi.fn(),
@@ -24,6 +24,7 @@ vi.mock('../api/acWebParity', () => ({
   cancelAcWebTask: vi.fn(),
   deleteAcFitAps: vi.fn(),
   importAcFitApMetadata: vi.fn(),
+  saveAcFitApMetadata: vi.fn(),
   getAcWebTask: vi.fn(),
   recoverAcWebTasks: vi.fn(),
   startAcResourceRefresh: vi.fn(),
@@ -44,6 +45,7 @@ describe('AC Management polling store', () => {
     vi.mocked(recoverAcWebTasks).mockReset().mockResolvedValue([])
     vi.mocked(deleteAcFitAps).mockReset()
     vi.mocked(importAcFitApMetadata).mockReset()
+    vi.mocked(saveAcFitApMetadata).mockReset()
     vi.mocked(startAcResourceRefresh).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
@@ -133,5 +135,38 @@ describe('AC Management polling store', () => {
 
     expect(importAcFitApMetadata).toHaveBeenCalledWith(file)
     expect(store.refreshTask?.task_id).toBe('task-import')
+  })
+
+  it('saves selected FIT-AP metadata through the persistent task API', async () => {
+    vi.mocked(saveAcFitApMetadata).mockResolvedValue({
+      task_id: 'task-save', action: 'fit_ap_metadata_save', status: 'QUEUED',
+      progress: 0, stage: 'queued', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    })
+    const store = useAcManagementStore()
+    store.filters.ac_id = 'ac-1'
+    store.selected = { ap: { id: 'ap-1' } } as never
+    const metadata = { site_name: 'Web站', mileage: 'ZDK1+200', location_note: '站台', direction: '上行' }
+
+    await store.startFitApMetadataSave(metadata)
+
+    expect(saveAcFitApMetadata).toHaveBeenCalledWith('ac-1', 'ap-1', metadata)
+    expect(store.refreshTask?.task_id).toBe('task-save')
+  })
+
+  it('recovers an active FIT-AP metadata save after the page restarts', async () => {
+    vi.mocked(recoverAcWebTasks).mockResolvedValue([{
+      task_id: 'task-save-recovered', action: 'fit_ap_metadata_save', status: 'RUNNING',
+      progress: 50, stage: 'running', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    }])
+    const store = useAcManagementStore()
+
+    await store.recoverRefreshTask()
+
+    expect(store.refreshTask?.task_id).toBe('task-save-recovered')
+    store.stopPolling()
   })
 })

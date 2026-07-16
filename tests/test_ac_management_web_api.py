@@ -9,6 +9,7 @@ from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.repositories.ac_repository import AcRepository
 
 
 class _NoopAsyncService:
@@ -25,6 +26,10 @@ def _fingerprint(path: Path) -> tuple[str, int]:
 
 def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: Path) -> None:
     paths, db_path, files = build_ac_management_fixture(tmp_path)
+    repository = AcRepository(Database(db_path))
+    ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
+    assert ap is not None
+    repository.upsert_fit_ap_resource("ac-1", ap)
     with Database(db_path).connect() as conn:
         conn.execute("UPDATE ac_ap_summary SET cpu_usage = '16%', memory_usage = '47%' WHERE ac_device_uuid = 'ac-1'")
         conn.execute("UPDATE devices SET https_port = 10443 WHERE device_uuid = 'ac-1'")
@@ -45,6 +50,8 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
         summary = client.get("/api/ac-management/summary")
         aps = client.get("/api/ac-management/aps?page=1&page_size=2&status=offline")
         detail = client.get("/api/ac-management/aps/ap-offline")
+        radio_history = client.get("/api/ac-management/aps/ap-online/history/radio")
+        invalid_history = client.get("/api/ac-management/aps/ap-online/history/unknown")
         snapshots = client.get("/api/ac-management/config-snapshots")
         running_id = next(item["id"] for item in snapshots.json()["items"] if item["type"] == "running")
         content = client.get(f"/api/ac-management/config-snapshots/{running_id}")
@@ -59,6 +66,11 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert summary.json()["acs"][0]["https_port"] == 10443
     assert aps.json()["items"][0]["id"] == "ap-offline"
     assert detail.status_code == 200
+    assert radio_history.status_code == 200
+    assert radio_history.json()["total"] == 2
+    assert radio_history.json()["items"][0]["status"] == "Up"
+    assert "raw_log_path" not in radio_history.text
+    assert invalid_history.status_code == 422
     assert len(detail.json()["radios"]) == 2
     assert detail.json()["radios"][0]["status"] == "Up"
     assert detail.json()["radios"][0]["usage"] == "12"
@@ -97,6 +109,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/extensions/audits/{audit_id}/rollback",
         "/api/ac-management/fit-aps/delete",
         "/api/ac-management/fit-aps/metadata/import",
+        "/api/ac-management/aps/{ap_id}/metadata",
         "/api/ac-management/local-rebuild/{rebuild_kind}",
         "/api/ac-management/refresh/{refresh_kind}",
         "/api/ac-management/trackside-business/local-rebuild",

@@ -15,6 +15,7 @@ from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.models.api.ac_management import (
     AcApDTO,
     AcApDetailDTO,
+    AcApHistoryPageDTO,
     AcApPageDTO,
     AcConfigContentDTO,
     AcConfigDiffDTO,
@@ -40,6 +41,59 @@ from netconsole.utils.mileage import format_track_mileage, parse_mileage_to_mete
 _ABNORMAL_OPTICAL = {"notice", "warning", "alarm", "link_abnormal", "link_down", "no_light"}
 _CRITICAL_OPTICAL = {"alarm", "link_abnormal", "link_down", "no_light"}
 _NO_DATA_OPTICAL = {"", "unknown", "not_collected", "skipped", "offline", "no_module"}
+_AP_HISTORY_FIELDS = {
+    "radio": (
+        "collected_at",
+        "ap_name",
+        "rid",
+        "status",
+        "mode",
+        "band",
+        "channel",
+        "bandwidth",
+        "usage",
+        "tx_power",
+        "clients",
+        "bbssid",
+    ),
+    "lldp": (
+        "collected_at",
+        "source",
+        "is_changed",
+        "conflict_flag",
+        "local_interface",
+        "lldp_neighbor",
+        "neighbor_interface",
+        "neighbor_mac",
+        "neighbor_device_name",
+        "neighbor_name",
+    ),
+    "optical": (
+        "collected_at",
+        "interface_name",
+        "optical_alarm_status",
+        "temperature",
+        "voltage",
+        "bias_current",
+        "tx_power",
+        "rx_power",
+        "rx_low_alarm",
+        "rx_high_alarm",
+        "tx_low_alarm",
+        "tx_high_alarm",
+        "rx_low_warning",
+        "rx_high_warning",
+        "tx_low_warning",
+        "tx_high_warning",
+        "module_model",
+        "module_vendor",
+        "wavelength",
+        "transmission_distance",
+        "connector_type",
+        "status",
+        "error_message",
+    ),
+}
 
 
 class _ReadonlyDatabase:
@@ -185,6 +239,44 @@ class AcManagementQueryService:
             return None
         item, raw, optical, lldp = record
         return AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical, connection=self._connection(raw))
+
+    def get_ap_history(
+        self,
+        site_id: str,
+        ap_id: str,
+        history_kind: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> AcApHistoryPageDTO | None:
+        record = self._find_ap(site_id, ap_id)
+        if record is None:
+            return None
+        kind = str(history_kind or "").casefold()
+        try:
+            fields = _AP_HISTORY_FIELDS[kind]
+        except KeyError as exc:
+            raise ValueError("不支持的 FIT-AP 历史类型") from exc
+        size = max(1, min(int(page_size), 200))
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        total = repository.count_fit_ap_history(kind, record[0].id)
+        total_pages = max((total + size - 1) // size, 1)
+        current_page = min(max(int(page), 1), total_pages)
+        rows = repository.list_fit_ap_history_page(
+            kind,
+            record[0].id,
+            limit=size,
+            offset=(current_page - 1) * size,
+        )
+        items = [{field: row.get(field) for field in fields} for row in rows]
+        return AcApHistoryPageDTO(
+            kind=kind,
+            ap_id=record[0].id,
+            items=items,
+            total=total,
+            page=current_page,
+            page_size=size,
+        )
 
     def list_all_ap_details(self, site_id: str) -> list[AcApDetailDTO]:
         return [
@@ -414,6 +506,7 @@ class AcManagementQueryService:
             section=str(row.get("section_name") or row.get("metadata_belong_section") or ""),
             mileage=mileage if mileage != "-" else "",
             direction=str(row.get("direction") or row.get("extension_line_side") or ""),
+            location_note=str(row.get("location_note") or row.get("extension_location_desc") or ""),
             switch_name=lldp.switch_name,
             switch_interface=lldp.interface_name,
             lldp_status=lldp.match_status,
