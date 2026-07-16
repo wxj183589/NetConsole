@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
@@ -7,12 +8,10 @@ import { useRouter } from 'vue-router'
 
 import { isFeatureEnabled } from '../../features'
 import {
-  cancelConfigTask,
   configArtifactDownloadRequest,
   confirmSaveForce,
   confirmSnapshotDelete,
   getConfigDirectory,
-  getConfigTask,
   issueSnapshotDelete,
   listConfigDevices,
   listConfigSnapshots,
@@ -29,14 +28,24 @@ import {
 import type {
   ConfigDevice,
   ConfigDevicePage,
+  ConfigDiffRow,
+  ConfigDiffSummary,
   ConfigSnapshot,
   ConfigTaskReference,
   ConfigTaskStatus,
 } from '../../types/configCollection'
 import { downloadBackendResource } from '../../platform/runtime'
+import {
+  nextConfigDiffChangeIndex,
+  parseConfigDiffRows,
+  parseConfigDiffSummary,
+  statusForConfigDiffFilter,
+  type ConfigDiffFilter,
+} from './configDiff'
 
-const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
 const router = useRouter()
+const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
+const emptyDiffSummary: ConfigDiffSummary = { added: 0, removed: 0, modified: 0 }
 const devicePage = ref<ConfigDevicePage>(emptyPage)
 const snapshots = ref<ConfigSnapshot[]>([])
 const tasks = ref<ConfigTaskStatus[]>([])
@@ -52,21 +61,27 @@ const error = ref('')
 const resultTitle = ref('')
 const resultText = ref('')
 const resultDiff = ref('')
+const resultDiffRows = ref<ConfigDiffRow[]>([])
+const resultDiffSummary = ref<ConfigDiffSummary>({ ...emptyDiffSummary })
+const resultDiffLeftLabel = ref('left')
+const resultDiffRightLabel = ref('right')
+const diffViewport = ref<HTMLElement | null>(null)
 const resultArtifactId = ref('')
 const resultArtifactName = ref('')
-const diffFilter = ref<'all' | 'added' | 'removed'>('all')
+const diffFilter = ref<ConfigDiffFilter>('all')
+const currentDiffChange = ref(0)
 const focusedTaskId = ref('')
 const activeTaskIds = ref(new Set<string>())
 const handledTerminalTasks = new Set<string>()
 let pollTimer: ReturnType<typeof setInterval> | undefined
 
 const hasActiveTasks = computed(() => activeTaskIds.value.size > 0)
-const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
-
-function openTaskWindow(): void {
-  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'config' })
-  else void router.push({ name: 'tasks', query: { module: 'config' } })
-}
+const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED' || Number(task.result?.failed || 0) > 0).length)
+const filteredDiffRows = computed(() => {
+  const status = statusForConfigDiffFilter(diffFilter.value)
+  return status ? resultDiffRows.value.filter((row) => row.status === status) : resultDiffRows.value
+})
+const diffChangeCount = computed(() => filteredDiffRows.value.filter((row) => row.status !== '=').length)
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -145,7 +160,7 @@ async function pollTasks(): Promise<void> {
       if (!isTerminal(task.status)) active.add(task.id)
       if (isTerminal(task.status) && !handledTerminalTasks.has(task.id)) {
         handledTerminalTasks.add(task.id)
-        if (['config_web_snapshot_fetch', 'config_web_save_force', 'config_snapshot_delete_many'].includes(task.type) && task.status === 'COMPLETED') await loadSnapshots()
+        if (['config_web_snapshot_fetch', 'config_web_save_force', 'config_snapshot_delete_many'].includes(task.type)) await loadSnapshots()
         if (task.id === focusedTaskId.value) showTaskResult(task)
       }
     }
@@ -331,7 +346,7 @@ async function viewSnapshot(snapshot: ConfigSnapshot): Promise<void> {
     focusedTaskId.value = task.id
     resultTitle.value = `${snapshot.type} · ${formatTime(snapshot.timestamp)}`
     resultText.value = '正在读取快照内容…'
-    resultDiff.value = ''
+    resetDiffResult()
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '快照读取任务提交失败')
   }
@@ -346,43 +361,55 @@ function addTaskReferences(refs: ConfigTaskReference[]): void {
   tasks.value = [...known.values()].sort((left, right) => right.created_time.localeCompare(left.created_time))
 }
 
-async function openTask(task: ConfigTaskStatus): Promise<void> {
-  focusedTaskId.value = task.id
-  try {
-    const current = await getConfigTask(task.id, diffFilter.value)
-    showTaskResult(current)
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '配置任务详情加载失败')
-  }
-}
-
-async function changeDiffFilter(value: 'all' | 'added' | 'removed'): Promise<void> {
+async function changeDiffFilter(value: ConfigDiffFilter): Promise<void> {
   diffFilter.value = value
-  if (!focusedTaskId.value) return
+  currentDiffChange.value = 0
+  await scrollToCurrentDiff()
+}
+
+async function openTaskWindow(): Promise<void> {
+  type ConfigTaskWindowBridge = {
+    openTaskWindow?: (context: { module: 'config' }) => Promise<{ success: boolean; error?: string }>
+  }
+  const bridge = window.netconsoleDesktop as (typeof window.netconsoleDesktop & ConfigTaskWindowBridge)
   try {
-    showTaskResult(await getConfigTask(focusedTaskId.value, value))
+    if (bridge?.openTaskWindow) {
+      const result = await bridge.openTaskWindow({ module: 'config' })
+      if (!result.success) ElMessage.error(result.error || '任务窗口打开失败')
+      return
+    }
+    await router.push({ name: 'tasks', query: { module: 'config' } })
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '差异过滤失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '任务窗口打开失败')
   }
 }
 
-async function cancelTask(task: ConfigTaskStatus): Promise<void> {
+async function openResultDirectory(directoryKind: 'config_snapshots' | 'config_exports'): Promise<void> {
   try {
-    const current = await cancelConfigTask(task.id)
-    tasks.value = tasks.value.map((item) => item.id === current.id ? current : item)
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '任务取消失败')
-  }
-}
-
-async function openResultDirectory(): Promise<void> {
-  try {
-    const result = await getConfigDirectory('config_exports')
+    const result = await getConfigDirectory(directoryKind)
     if (result.success) ElMessage.success(result.message || '已打开结果目录')
     else ElMessage.warning(result.message || '当前运行模式不支持打开目录')
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '结果目录不可用')
   }
+}
+
+function previousDiff(): void {
+  if (!diffChangeCount.value) return
+  currentDiffChange.value = nextConfigDiffChangeIndex(currentDiffChange.value, diffChangeCount.value, -1)
+  void scrollToCurrentDiff()
+}
+
+function nextDiff(): void {
+  if (!diffChangeCount.value) return
+  currentDiffChange.value = nextConfigDiffChangeIndex(currentDiffChange.value, diffChangeCount.value, 1)
+  void scrollToCurrentDiff()
+}
+
+async function scrollToCurrentDiff(): Promise<void> {
+  await nextTick()
+  const rows = diffViewport.value?.querySelectorAll<HTMLElement>('[data-diff-change="true"]')
+  rows?.[currentDiffChange.value]?.scrollIntoView({ block: 'center' })
 }
 
 function showTaskResult(task: ConfigTaskStatus): void {
@@ -403,23 +430,30 @@ function showTaskResult(task: ConfigTaskStatus): void {
     ].filter(Boolean)
     resultTitle.value = result.interrupted ? '任务中断，执行记录已保留' : Number(result.failed) === Number(result.total) ? '任务失败' : '任务部分完成'
     resultText.value = details.join('\n')
-    resultDiff.value = ''
+    resetDiffResult()
   } else if (task.error_message) {
     resultTitle.value = '任务失败'
     resultText.value = task.error_message
-    resultDiff.value = ''
+    resetDiffResult()
   } else if (typeof result.text === 'string') {
     resultTitle.value = `${result.snapshot_type || '配置快照'} · ${task.device_name || ''}`
     resultText.value = result.text
-    resultDiff.value = ''
+    resetDiffResult()
   } else if (typeof result.raw_diff === 'string') {
-    resultTitle.value = `配置差异 · ${task.device_name || ''}`
+    resultDiffLeftLabel.value = typeof result.left_label === 'string' ? result.left_label : 'left'
+    resultDiffRightLabel.value = typeof result.right_label === 'string' ? result.right_label : 'right'
+    resultTitle.value = `配置差异 · ${resultDiffLeftLabel.value} → ${resultDiffRightLabel.value}`
     resultDiff.value = result.raw_diff
+    resultDiffRows.value = parseConfigDiffRows(result.diff_rows)
+    resultDiffSummary.value = parseConfigDiffSummary(result.diff_summary)
+    diffFilter.value = 'all'
+    currentDiffChange.value = 0
     resultText.value = ''
+    void scrollToCurrentDiff()
   } else if (resultArtifactId.value) {
     resultTitle.value = 'Artifact 已生成'
     resultText.value = 'Artifact 已生成，可下载。'
-    resultDiff.value = ''
+    resetDiffResult()
   }
 }
 
@@ -427,28 +461,22 @@ function isTerminal(status: string): boolean {
   return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(status)
 }
 
-function taskType(task: ConfigTaskStatus): 'success' | 'warning' | 'danger' | 'info' {
-  if (task.status === 'COMPLETED' && isAllFailed(task)) return 'danger'
-  if (task.status === 'COMPLETED' && Number(task.result?.failed || 0) > 0) return 'warning'
-  if (task.status === 'COMPLETED') return 'success'
-  if (task.status === 'FAILED') return 'danger'
-  if (task.status === 'RUNNING' || task.status === 'STARTING' || task.status === 'PENDING') return 'warning'
-  return 'info'
+function resetDiffResult(): void {
+  resultDiff.value = ''
+  resultDiffRows.value = []
+  resultDiffSummary.value = { ...emptyDiffSummary }
+  resultDiffLeftLabel.value = 'left'
+  resultDiffRightLabel.value = 'right'
+  diffFilter.value = 'all'
+  currentDiffChange.value = 0
 }
 
-function taskStatusLabel(task: ConfigTaskStatus): string {
-  if (task.status !== 'COMPLETED' || Number(task.result?.failed || 0) <= 0) return task.status
-  return isAllFailed(task) ? '全部失败' : '部分完成'
-}
-
-function isAllFailed(task: ConfigTaskStatus): boolean {
-  const total = Number(task.result?.total || 0)
-  return total > 0 && Number(task.result?.failed || 0) >= total
-}
-
-function taskFailureText(task: ConfigTaskStatus): string {
-  const failedItems = Array.isArray(task.result?.failed_items) ? task.result.failed_items : []
-  return task.error_message || failedItems.map(failureItemText).join('；')
+function clearResult(): void {
+  resultTitle.value = ''
+  resultText.value = ''
+  resultArtifactId.value = ''
+  resultArtifactName.value = ''
+  resetDiffResult()
 }
 
 function failureItemText(value: unknown): string {
@@ -488,8 +516,13 @@ function formatBytes(value: number): string {
         <el-option label="未分组" value="__ungrouped__" />
         <el-option v-for="group in devicePage.groups" :key="group.id" :label="`${group.name} (${group.device_count})`" :value="String(group.id)" />
       </el-select>
-      <el-button type="primary" :icon="Refresh" :loading="loading" @click="refreshAll">刷新</el-button>
-      <el-button :icon="Search" :disabled="loading" @click="loadDevices">应用筛选</el-button>
+      <div class="toolbar-actions">
+        <el-button type="primary" :icon="Refresh" :loading="loading" @click="refreshAll">刷新</el-button>
+        <el-button :icon="Search" :disabled="loading" @click="loadDevices">应用筛选</el-button>
+        <el-button :disabled="!isFeatureEnabled('web.config_collection_open_directory')" @click="openResultDirectory('config_snapshots')">快照目录</el-button>
+        <el-button :disabled="!isFeatureEnabled('web.config_collection_open_directory')" @click="openResultDirectory('config_exports')">导出目录</el-button>
+        <el-button :disabled="!isFeatureEnabled('web.job_center')" @click="openTaskWindow">任务窗口（运行 {{ activeTaskIds.size }} / 异常 {{ failedTaskCount }}）</el-button>
+      </div>
     </div>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="page-error" />
@@ -521,12 +554,22 @@ function formatBytes(value: number): string {
       </div>
     </div>
 
-    <div class="content-card task-card compact-task-summary">
-      <div class="card-heading"><div><h2>配置任务</h2><p>运行中 {{ activeTaskIds.size }} 项 / 失败 {{ failedTaskCount }} 项</p></div><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
-    </div>
-    <div v-if="resultText || resultDiff" class="content-card result-card">
-      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiff" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部差异" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /></el-select><el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载 Artifact</el-button><el-button @click="resultText = ''; resultDiff = ''; resultArtifactId = ''; resultArtifactName = ''">清空</el-button></div></div>
+    <div v-if="resultText || resultDiff || resultDiffRows.length" class="content-card result-card">
+      <div class="card-heading"><div><h2>{{ resultTitle || '配置结果' }}</h2><p v-if="resultDiffRows.length">新增 {{ resultDiffSummary.added }} · 删除 {{ resultDiffSummary.removed }} · 修改块 {{ resultDiffSummary.modified }}</p><p v-else>内容由后台任务返回，未暴露本机绝对路径</p></div><div class="heading-actions"><el-select v-if="resultDiffRows.length" :model-value="diffFilter" size="small" @update:model-value="changeDiffFilter"><el-option label="全部行" value="all" /><el-option label="仅新增" value="added" /><el-option label="仅删除" value="removed" /><el-option label="仅修改" value="modified" /></el-select><el-button v-if="resultDiffRows.length" :disabled="!diffChangeCount" @click="previousDiff">上一处差异</el-button><span v-if="resultDiffRows.length" class="diff-position">{{ diffChangeCount ? currentDiffChange + 1 : 0 }} / {{ diffChangeCount }}</span><el-button v-if="resultDiffRows.length" :disabled="!diffChangeCount" @click="nextDiff">下一处差异</el-button><el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载 Artifact</el-button><el-button @click="clearResult">清空</el-button></div></div>
       <pre v-if="resultText" class="code-panel">{{ resultText }}</pre>
+      <div v-else-if="resultDiffRows.length" ref="diffViewport" class="diff-table" role="table" aria-label="配置差异双栏视图">
+        <div class="diff-row diff-header" role="row"><span>#</span><strong>{{ resultDiffLeftLabel }}</strong><span>状态</span><span>#</span><strong>{{ resultDiffRightLabel }}</strong></div>
+        <div
+          v-for="(row, index) in filteredDiffRows"
+          :key="`${row.left_line}-${row.right_line}-${index}`"
+          class="diff-row"
+          :class="{ 'is-added': row.status === '+', 'is-removed': row.status === '-', 'is-modified': row.status === '~', 'is-equal': row.status === '=' }"
+          :data-diff-change="row.status !== '=' ? 'true' : 'false'"
+          role="row"
+        >
+          <span class="line-number">{{ row.left_line ?? '' }}</span><code>{{ row.left_text }}</code><span class="diff-status">{{ row.status }}</span><span class="line-number">{{ row.right_line ?? '' }}</span><code>{{ row.right_text }}</code>
+        </div>
+      </div>
       <pre v-else class="code-panel diff-panel">{{ resultDiff }}</pre>
     </div>
   </section>
@@ -536,7 +579,8 @@ function formatBytes(value: number): string {
 .config-collection { max-width: 1780px; margin: 0 auto; }
 .page-alert, .page-error { margin-bottom: 16px; }
 .content-card { overflow: hidden; background: #fff; border: 1px solid #dfe7f1; border-radius: 10px; }
-.toolbar { display: grid; grid-template-columns: minmax(260px, 1fr) 210px auto auto; gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.toolbar { display: grid; grid-template-columns: minmax(260px, 1fr) 210px minmax(520px, auto); gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .main-grid { display: grid; grid-template-columns: minmax(420px, 0.85fr) minmax(560px, 1.15fr); gap: 16px; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 17px; border-bottom: 1px solid #edf1f6; }
 .card-heading h2 { margin: 0; color: #172033; font-size: 18px; }
@@ -544,9 +588,22 @@ function formatBytes(value: number): string {
 .card-heading small { display: block; margin-top: 4px; color: #8793a5; font-size: 11px; }
 .heading-actions { display: flex; align-items: center; gap: 8px; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; color: #718096; font-size: 12px; }
-.task-card, .result-card { margin-top: 16px; }
+.result-card { margin-top: 16px; }
 .code-panel { max-height: 470px; margin: 0; padding: 16px; overflow: auto; color: #d9e2ed; background: #101827; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre; }
 .diff-panel { color: #e6edf5; }
+.diff-position { min-width: 48px; color: #718096; text-align: center; }
+.diff-table { max-height: 560px; overflow: auto; background: #101827; }
+.diff-row { display: grid; grid-template-columns: 70px minmax(360px, 1fr) 70px 70px minmax(360px, 1fr); min-width: 1100px; color: #f5f7fa; background: #1f2b3a; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
+.diff-row > * { min-height: 28px; padding: 5px 8px; border-right: 1px solid #334155; border-bottom: 1px solid #334155; }
+.diff-row code { overflow: hidden; color: inherit; font: inherit; text-overflow: ellipsis; white-space: pre; }
+.diff-header { position: sticky; z-index: 2; top: 0; color: #d9e2ed; background: #182333; }
+.diff-header > * { font-weight: 600; text-align: center; }
+.line-number { color: #c9d4e2; background: #182333; text-align: center; }
+.diff-status { text-align: center; }
+.diff-row.is-added { color: #d8ffe3; background: #1f3d2b; }
+.diff-row.is-removed { color: #ffd8dc; background: #4a2428; }
+.diff-row.is-modified { color: #fff0c2; background: #4a3a1f; }
 @media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } }
+@media (max-width: 1200px) { .toolbar { grid-template-columns: minmax(260px, 1fr) 210px; } .toolbar-actions { grid-column: 1 / -1; justify-content: flex-start; } }
+@media (max-width: 760px) { .toolbar { grid-template-columns: 1fr; } .toolbar-actions { grid-column: auto; } .card-heading { align-items: flex-start; flex-direction: column; } .heading-actions { flex-wrap: wrap; width: 100%; } }
 </style>

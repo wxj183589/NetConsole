@@ -58,6 +58,22 @@ export interface ConfigTaskStatus extends ConfigTaskReference {
   result: Record<string, unknown>
 }
 
+export type ConfigDiffStatus = '=' | '+' | '-' | '~'
+
+export interface ConfigDiffRow {
+  left_line: number | null
+  left_text: string
+  status: ConfigDiffStatus
+  right_line: number | null
+  right_text: string
+}
+
+export interface ConfigDiffSummary {
+  added: number
+  removed: number
+  modified: number
+}
+
 export interface ConfigConfirmation {
   action: 'delete_snapshots' | 'save_force'
   confirmation_token: string

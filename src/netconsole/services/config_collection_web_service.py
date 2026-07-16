@@ -307,9 +307,6 @@ class ConfigCollectionApplicationService:
             return self._task_dto(task, site_name=site_name)
         if task.status is TaskState.STOPPING:
             return self._task_dto(task, site_name=site_name)
-        cancellable, reason = self.cancel_capability(site_name, task.task_id)
-        if not cancellable:
-            raise ValueError(reason)
         cancel = getattr(self.process_adapter, "cancel_job", None)
         assert callable(cancel)
         try:
@@ -352,6 +349,12 @@ class ConfigCollectionApplicationService:
         kind = str(directory_kind or "").strip()
         if kind not in {"config_snapshots", "config_exports"}:
             raise ValueError("结果目录类型无效")
+        directory = (
+            self.paths.config_center_snapshots_root(site_name)
+            if kind == "config_snapshots"
+            else self.paths.config_center_outputs_dir(site_name)
+        )
+        directory.mkdir(parents=True, exist_ok=True)
         target_id = f"{kind}:{site_name}"
         action = self.desktop_action_service
         if action is None:
@@ -870,12 +873,15 @@ class ConfigCollectionApplicationService:
                 result.update(
                     {
                         "artifact_id": f"diff-{snapshot.task_id}",
+                        "display_name": f"config_diff_{snapshot.task_id}.diff",
                         "hash": _sha256_file(path),
                         "size": path.stat().st_size,
                     }
                 )
             if str(diff_filter or "all") != "all":
-                result["raw_diff"] = _filter_diff(str(result.get("raw_diff") or ""), diff_filter)
+                kind = _validate_diff_filter(diff_filter)
+                result["raw_diff"] = _filter_diff_result(result, kind)
+                result["diff_rows"] = _filter_diff_rows(result.get("diff_rows"), kind)
         return ConfigTaskStatusDTO(
             id=snapshot.task_id,
             type=snapshot.task_type,
@@ -929,11 +935,11 @@ def _sanitize_text(value: str) -> str:
 
 
 def _filter_diff(text: str, diff_filter: str) -> str:
-    kind = str(diff_filter or "all").strip().casefold()
-    if kind not in {"all", "added", "removed"}:
-        raise ValueError("差异过滤类型无效")
+    kind = _validate_diff_filter(diff_filter)
     if kind == "all":
         return text
+    if kind == "modified":
+        return ""
     return "\n".join(
         line
         for line in str(text or "").splitlines()
@@ -943,6 +949,42 @@ def _filter_diff(text: str, diff_filter: str) -> str:
         or (kind == "added" and line.startswith("+") and not line.startswith("+++"))
         or (kind == "removed" and line.startswith("-") and not line.startswith("---"))
     )
+
+
+def _validate_diff_filter(diff_filter: str) -> str:
+    kind = str(diff_filter or "all").strip().casefold()
+    if kind not in {"all", "added", "removed", "modified"}:
+        raise ValueError("差异过滤类型无效")
+    return kind
+
+
+def _filter_diff_rows(value: object, kind: str) -> list[object]:
+    rows = list(value) if isinstance(value, list) else []
+    status = {"added": "+", "removed": "-", "modified": "~"}.get(kind)
+    if status is None:
+        return rows
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("status") or "") == status
+    ]
+
+
+def _filter_diff_result(result: dict[str, Any], kind: str) -> str:
+    if kind != "modified":
+        return _filter_diff(str(result.get("raw_diff") or ""), kind)
+    rows = _filter_diff_rows(result.get("diff_rows"), kind)
+    if not rows:
+        return ""
+    lines = [
+        f"--- {result.get('left_label') or 'left'}",
+        f"+++ {result.get('right_label') or 'right'}",
+    ]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lines.extend((f"-{row.get('left_text') or ''}", f"+{row.get('right_text') or ''}"))
+    return "\n".join(lines)
 
 
 def _sha256_file(path: Path) -> str:

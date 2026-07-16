@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import difflib
-from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from netconsole.core.i18n import I18n
-from netconsole.services.config_lifecycle_service import clean_config_for_diff
+from netconsole.services.config_lifecycle_service import (
+    build_side_by_side_rows,
+    clean_config_for_diff,
+)
 from netconsole.ui.render.table_render_engine import apply_table_style
 from netconsole.ui.table_utils import auto_fit_table_columns
 
@@ -40,15 +42,6 @@ QTableWidget::item:focus {{
     outline: none;
 }}
 """
-
-
-@dataclass(frozen=True)
-class SideBySideDiffRow:
-    left_line: int | None
-    left_text: str
-    status: str
-    right_line: int | None
-    right_text: str
 
 
 class ConfigDiffViewer(QWidget):
@@ -146,43 +139,6 @@ class ConfigDiffViewer(QWidget):
         self.table.setFont(font)
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setStyleSheet(DIFF_TABLE_STYLESHEET)
-
-
-def build_side_by_side_rows(left_lines: list[str], right_lines: list[str]) -> tuple[list[SideBySideDiffRow], int, int, int]:
-    rows: list[SideBySideDiffRow] = []
-    added = 0
-    deleted = 0
-    modified_blocks = 0
-    matcher = difflib.SequenceMatcher(a=left_lines, b=right_lines)
-    for tag, left_start, left_end, right_start, right_end in matcher.get_opcodes():
-        left_block = left_lines[left_start:left_end]
-        right_block = right_lines[right_start:right_end]
-        if tag == "equal":
-            for offset, (left, right) in enumerate(zip(left_block, right_block)):
-                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "=", right_start + offset + 1, right))
-        elif tag == "delete":
-            deleted += len(left_block)
-            for offset, left in enumerate(left_block):
-                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "-", None, ""))
-        elif tag == "insert":
-            added += len(right_block)
-            for offset, right in enumerate(right_block):
-                rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right))
-        elif tag == "replace":
-            modified_blocks += 1
-            max_len = max(len(left_block), len(right_block))
-            for offset in range(max_len):
-                left_exists = offset < len(left_block)
-                right_exists = offset < len(right_block)
-                if left_exists and right_exists:
-                    rows.append(SideBySideDiffRow(left_start + offset + 1, left_block[offset], "~", right_start + offset + 1, right_block[offset]))
-                elif left_exists:
-                    deleted += 1
-                    rows.append(SideBySideDiffRow(left_start + offset + 1, left_block[offset], "-", None, ""))
-                else:
-                    added += 1
-                    rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right_block[offset]))
-    return rows, added, deleted, modified_blocks
 
 
 def _apply_diff_item_colors(item: QTableWidgetItem, status: str, column: int) -> None:

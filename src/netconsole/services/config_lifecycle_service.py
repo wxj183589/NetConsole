@@ -38,6 +38,15 @@ CONFIG_COMMAND_ECHOES = {
 
 
 @dataclass(frozen=True)
+class SideBySideDiffRow:
+    left_line: int | None
+    left_text: str
+    status: str
+    right_line: int | None
+    right_text: str
+
+
+@dataclass(frozen=True)
 class ConfigDiffResult:
     added: list[str]
     removed: list[str]
@@ -163,10 +172,13 @@ class ConfigLifecycleService:
             app_logger.log_error("CONFIG_FETCH_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
             return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
 
-    def compare_snapshots(self, running_snapshot: ConfigSnapshot, saved_snapshot: ConfigSnapshot) -> ConfigDiffResult:
-        running_text = self.snapshot_text(running_snapshot)
-        saved_text = self.snapshot_text(saved_snapshot)
-        return compare_config_text(running_text, saved_text)
+    def compare_snapshots(self, left_snapshot: ConfigSnapshot, right_snapshot: ConfigSnapshot) -> ConfigDiffResult:
+        return compare_named_config_text(
+            self.snapshot_text(left_snapshot),
+            self.snapshot_text(right_snapshot),
+            str(left_snapshot.type or "left"),
+            str(right_snapshot.type or "right"),
+        )
 
     def compare_latest_running_between_devices(self, device_a: Device, device_b: Device) -> MultiDeviceCompareResult:
         running_a = self.list_device_snapshots(device_a, "running")
@@ -392,7 +404,61 @@ def compare_named_config_text(from_config_text: str, to_config_text: str, from_n
     )
     added = [line[1:] for line in diff_lines if line.startswith("+") and not line.startswith("+++")]
     removed = [line[1:] for line in diff_lines if line.startswith("-") and not line.startswith("---")]
-    return ConfigDiffResult(added=added, removed=removed, modified=[], raw_diff="\n".join(diff_lines))
+    rows, _added_count, _removed_count, _modified_count = build_side_by_side_rows(from_lines, to_lines)
+    modified = [
+        {"from": row.left_text, "to": row.right_text}
+        for row in rows
+        if row.status == "~"
+    ]
+    return ConfigDiffResult(added=added, removed=removed, modified=modified, raw_diff="\n".join(diff_lines))
+
+
+def build_side_by_side_rows(
+    left_lines: list[str],
+    right_lines: list[str],
+) -> tuple[list[SideBySideDiffRow], int, int, int]:
+    rows: list[SideBySideDiffRow] = []
+    added = 0
+    removed = 0
+    modified_blocks = 0
+    matcher = difflib.SequenceMatcher(a=left_lines, b=right_lines)
+    for tag, left_start, left_end, right_start, right_end in matcher.get_opcodes():
+        left_block = left_lines[left_start:left_end]
+        right_block = right_lines[right_start:right_end]
+        if tag == "equal":
+            for offset, (left, right) in enumerate(zip(left_block, right_block)):
+                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "=", right_start + offset + 1, right))
+        elif tag == "delete":
+            removed += len(left_block)
+            for offset, left in enumerate(left_block):
+                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "-", None, ""))
+        elif tag == "insert":
+            added += len(right_block)
+            for offset, right in enumerate(right_block):
+                rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right))
+        elif tag == "replace":
+            modified_blocks += 1
+            max_len = max(len(left_block), len(right_block))
+            for offset in range(max_len):
+                left_exists = offset < len(left_block)
+                right_exists = offset < len(right_block)
+                if left_exists and right_exists:
+                    rows.append(
+                        SideBySideDiffRow(
+                            left_start + offset + 1,
+                            left_block[offset],
+                            "~",
+                            right_start + offset + 1,
+                            right_block[offset],
+                        )
+                    )
+                elif left_exists:
+                    removed += 1
+                    rows.append(SideBySideDiffRow(left_start + offset + 1, left_block[offset], "-", None, ""))
+                else:
+                    added += 1
+                    rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right_block[offset]))
+    return rows, added, removed, modified_blocks
 
 
 def snapshot_timestamp() -> str:

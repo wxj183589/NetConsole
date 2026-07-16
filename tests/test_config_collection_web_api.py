@@ -386,6 +386,10 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
 
     assert result["kind"] == "snapshot_pair"
     assert result["raw_diff"]
+    assert result["left_label"] == "running"
+    assert result["right_label"] == "saved"
+    assert any(row["status"] == "+" and row["right_text"] == "vlan 10" for row in result["diff_rows"])
+    assert result["diff_summary"] == {"added": 1, "removed": 0, "modified": 0}
     assert "diff_file" in result
     assert str(paths.data_root).replace("\\", "\\\\") in json.dumps(result)
     task = TaskSnapshot(
@@ -405,7 +409,8 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
     app.state.config_collection_service.task_service.repository("demo").save(pending)
     with TestClient(app) as client:
         status = client.get("/api/config-collection/tasks/config-web-test-diff")
-        removed = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=removed")
+        added = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=added")
+        modified = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=modified")
         invalid_filter = client.get("/api/config-collection/tasks/config-web-test-diff?diff_filter=unknown")
         artifact = client.get("/api/config-collection/artifacts/diff-config-web-test-diff")
         pending_status = client.get("/api/config-collection/tasks/config-web-pending-diff")
@@ -413,8 +418,12 @@ def test_config_web_compare_adapter_reuses_lifecycle_service_and_hides_absolute_
 
     assert status.status_code == 200
     assert status.json()["result"]["artifact_id"] == "diff-config-web-test-diff"
-    assert removed.status_code == 200
-    assert "-vlan 10" in removed.json()["result"]["raw_diff"]
+    assert status.json()["result"]["display_name"] == "config_diff_config-web-test-diff.diff"
+    assert added.status_code == 200
+    assert "+vlan 10" in added.json()["result"]["raw_diff"]
+    assert {row["status"] for row in added.json()["result"]["diff_rows"]} == {"+"}
+    assert modified.status_code == 200
+    assert modified.json()["result"]["diff_rows"] == []
     assert invalid_filter.status_code == 422
     assert "diff_file" not in status.text
     assert str(paths.data_root) not in status.text
@@ -489,7 +498,7 @@ def test_config_confirmation_rejects_expiry_site_change_and_digest_tamper(tmp_pa
 def test_config_router_exposes_fixed_save_export_and_desktop_action_contracts(
     tmp_path: Path,
 ) -> None:
-    app, _paths, device, running, saved, adapter = _fixture(tmp_path)
+    app, paths, device, running, saved, adapter = _fixture(tmp_path)
     _enable_handoff_features(app)
     opened: list[str] = []
 
@@ -539,6 +548,7 @@ def test_config_router_exposes_fixed_save_export_and_desktop_action_contracts(
         "message": "已打开",
     }
     assert opened == ["config_exports:demo"]
+    assert paths.config_center_outputs_dir("demo").is_dir()
 
 
 def test_config_task_recovery_scans_past_other_modules_and_keeps_all_active(tmp_path: Path) -> None:
@@ -711,6 +721,9 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     diff_artifact_id = str(diff_status.result["artifact_id"])
     diff_path, diff_name = service.open_artifact("demo", diff_artifact_id)
     assert diff_name.endswith(".diff")
+    diff_text = diff_path.read_text(encoding="utf-8")
+    assert "--- running" in diff_text and "+++ saved" in diff_text
+    assert "+vlan 10" in diff_text
     assert diff_status.result["hash"] == hashlib.sha256(diff_path.read_bytes()).hexdigest()
     assert diff_status.result["size"] == diff_path.stat().st_size
     assert str(paths.data_root) not in json.dumps(diff_status.model_dump(), ensure_ascii=False)
@@ -810,7 +823,7 @@ def test_config_snapshot_delete_all_failures_end_as_failed_task(tmp_path: Path) 
     assert "删除全部失败" in status.error_message
 
 
-def test_config_delete_batch_keeps_results_when_cancel_arrives_after_first_delete(
+def test_config_delete_batch_cancels_between_items_and_recovers_completed_results(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -838,14 +851,15 @@ def test_config_delete_batch_keeps_results_when_cancel_arrives_after_first_delet
     refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
     recovered = refreshed.get_task("demo", task.id)
 
-    assert status is not None and status.status == TaskState.COMPLETED.value
-    assert status.result["deleted"] == 2
+    assert status is not None and status.status == TaskState.CANCELLED.value
+    assert status.result["deleted"] == 1
     assert status.result["failed"] == 0
-    assert status.result["cancel_policy"] == "before_batch_only"
-    assert recovered is not None and recovered.result["deleted"] == 2
+    assert status.result["not_started_items"] == [saved.id]
+    assert status.result["cancel_policy"] == "checkpointed_between_items"
+    assert recovered is not None and recovered.result["deleted"] == 1
 
 
-def test_config_save_force_batch_keeps_results_when_cancel_arrives_after_first_device(
+def test_config_save_force_batch_cancels_between_devices_and_recovers_audit_results(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -884,14 +898,15 @@ def test_config_save_force_batch_keeps_results_when_cancel_arrives_after_first_d
     refreshed = ConfigCollectionApplicationService(paths, service.task_service, _FakeProcessAdapter(service.task_service))
     recovered = refreshed.get_task("demo", task.id)
 
-    assert status is not None and status.status == TaskState.COMPLETED.value
-    assert status.result["saved"] == 2
+    assert status is not None and status.status == TaskState.CANCELLED.value
+    assert status.result["saved"] == 1
     assert "snapshot_ids" not in status.result
-    assert status.result["cancel_policy"] == "before_batch_only"
-    assert recovered is not None and recovered.result["saved"] == 2
+    assert status.result["not_started_items"] == [str(second.device_uuid)]
+    assert status.result["cancel_policy"] == "checkpointed_between_items"
+    assert recovered is not None and recovered.result["saved"] == 1
 
 
-def test_config_running_irreversible_task_rejects_cancel(tmp_path: Path) -> None:
+def test_config_running_irreversible_task_accepts_checkpointed_cancel(tmp_path: Path) -> None:
     app, paths, device, _running, _saved, _adapter = _fixture(tmp_path)
     service = app.state.config_collection_service
     preview = service.preview_save_force("demo", [int(device.id)])
@@ -920,11 +935,13 @@ def test_config_running_irreversible_task_rejects_cancel(tmp_path: Path) -> None
         },
     )
 
-    with pytest.raises(ValueError, match="不可安全中断"):
-        service.cancel_task("demo", task.id)
+    cancelled = service.cancel_task("demo", task.id)
+
+    assert cancelled is not None
+    assert cancelled.status == TaskState.STOPPING.value
 
     status = service.get_task("demo", task.id)
-    assert status is not None and status.status == TaskState.RUNNING.value
+    assert status is not None and status.status == TaskState.STOPPING.value
 
 
 def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_partial(tmp_path: Path) -> None:
@@ -987,7 +1004,7 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
         "not_started_items": [13],
         "interrupted": True,
         "partial_success": True,
-        "cancel_policy": "before_batch_only",
+        "cancel_policy": "checkpointed_between_items",
         "deleted": 1,
         "deleted_snapshot_ids": [11],
     }
@@ -1011,7 +1028,7 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
                 "failed": 1,
                 "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
                 "partial_success": True,
-                "cancel_policy": "before_batch_only",
+                "cancel_policy": "checkpointed_between_items",
             },
             TaskState.COMPLETED,
         ),
@@ -1022,7 +1039,7 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
                 "failed": 1,
                 "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
                 "partial_success": True,
-                "cancel_policy": "before_batch_only",
+                "cancel_policy": "checkpointed_between_items",
             },
             TaskState.FAILED,
         ),

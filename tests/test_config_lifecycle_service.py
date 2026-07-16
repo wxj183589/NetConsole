@@ -9,7 +9,9 @@ from netconsole.services.config_lifecycle_service import (
     BatchConfigItemResult,
     ConfigLifecycleService,
     ConfigOperationResult,
+    build_side_by_side_rows,
     compare_config_text,
+    compare_named_config_text,
     clean_config_for_diff,
     device_config_dir_name,
     extract_h3c_configuration_body,
@@ -220,6 +222,21 @@ def test_compare_config_text_reports_unified_diff_added_and_removed_lines():
     assert "+++ running" in result.raw_diff
     assert "display current-configuration" not in result.raw_diff
     assert "display saved-configuration" not in result.raw_diff
+
+
+def test_side_by_side_diff_reports_modified_rows_and_qt_summary_counts():
+    left = ["#", "sysname SW01", "vlan 10", "return"]
+    right = ["#", "sysname SW02", "vlan 20", "return"]
+
+    rows, added, removed, modified = build_side_by_side_rows(left, right)
+    result = compare_named_config_text("\n".join(left), "\n".join(right), "left", "right")
+
+    assert [row.status for row in rows] == ["=", "~", "~", "="]
+    assert (added, removed, modified) == (0, 0, 1)
+    assert result.modified == [
+        {"from": "sysname SW01", "to": "sysname SW02"},
+        {"from": "vlan 10", "to": "vlan 20"},
+    ]
 
 
 def test_clean_config_for_diff_trims_cli_noise_and_tail():

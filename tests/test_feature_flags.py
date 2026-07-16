@@ -75,6 +75,18 @@ def test_feature_registry_lists_expected_features() -> None:
     assert desktop_feature.default_enabled is True
     assert desktop_feature.default_client_package is True
     assert FEATURE_BY_ID["web.config_collection_download"].parent_id == "web.config_collection"
+    for feature_id in (
+        "web.config_collection_delete",
+        "web.config_collection_save_force",
+        "web.config_collection_export",
+        "web.config_collection_open_directory",
+    ):
+        feature = FEATURE_BY_ID[feature_id]
+        assert feature.parent_id == "web.config_collection"
+        assert feature.status is FeatureStatus.ENABLED
+        assert feature.default_visible is True
+        assert feature.default_enabled is True
+        assert feature.default_client_package is True
     assert FEATURE_BY_ID["web.file_management_download"].parent_id == "web.file_management"
     assert FEATURE_BY_ID["web.network_tools_tcp_port_test"].parent_id == "web.network_tools_toolbox"
     assert FEATURE_BY_ID["system.web_console"].parent_id == "module.system_settings"

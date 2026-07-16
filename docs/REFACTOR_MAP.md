@@ -29,7 +29,7 @@
 | 轨道交通基础资料 | Qt AP 扩展/设备资料；Web 查询、问题治理、预览和受控导入审计 | Query/Preview/Import Service + Guard + 受控 API | 5C-6B 已增加运行态预览、人工决策、备份、事务、脱敏审计、幂等和冲突回滚 | 默认只读；副本可授权写入；真实局点未授权 | Qt 编辑仍保留；AP Identity 不接管；无删除/通用更新 | 先在副本持续验收，真实局点写入必须单独授权 |
 | 在线列车车地通信检测 | Web 按列车分别展示 MR-CT/MR-TC、Mesh-Link、Online MR、fping/iPerf、任务和包；MR 详情以独立页签受控 LOCAL/AGENT 启停 | 只读聚合 Query Service + LOCAL/AGENT Web Control Service + Vue | 5C-10A LOCAL 已接入；5B-13B AGENT Fake 全链路已通过 | 聚合与控制代码是；两项现场验收冻结 | Web 无强停/删除/命令；正式分析/报告未接入 | 列车上电后分别执行 5C-10A-B 与 5B-13A-A |
 | 轨道交通无线综合看板 | Web 聚合基础资料、FIT-AP/光衰、Mesh-Link、列车通信、Online MR、任务、Agent 缓存和 Mesh 分析 | `WirelessDashboardQueryService` + GET-only API + Vue | 5C-9 已增加只读总览、既有告警映射、数据时效和分层刷新 | 是，只读 | 详情和所有控制继续由原页面承担 | 保持无设备连接、无新阈值、无写入边界 |
-| 配置采集 | snapshot/compare/collect Job | config domain handlers | 部分迁移 | 部分 | 多个任务 thin legacy | 补 handler 单测后迁出 legacy |
+| 配置采集 | Qt 与 Electron 提交 snapshot/compare/collect/save/delete Job | `config_jobs.py` + `ConfigLifecycleService` + `ConfigCollectionApplicationService` | 配置 handler 已迁出 legacy；Electron 纵向链已实现 | 是，真实设备待验收 | `legacy_tasks.py` 中旧配置函数仅保留兼容/回退，生产 Registry 不再委托 | 集成共享任务窗口取消 capability；完成 H3C 现场验收后再清理旧函数 |
 | 文件管理 | 页面后台导航/动作 | file domain handlers | 部分迁移 | 部分 | 导航与动作 legacy 适配 | 收敛路径与取消契约 |
 | SNMP 查询/采集 | `snmp_query_execute` / `snmp_collection_execute` | snmp domain 正式 handler | 已完成 | 是 | 兼容 service/export 方法 | 保持请求/缓存契约，验证 frozen |
 | SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |

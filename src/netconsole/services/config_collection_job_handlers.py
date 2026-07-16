@@ -94,7 +94,7 @@ def interrupted_irreversible_result(checkpoint: dict[str, object]) -> dict[str, 
         "not_started_items": pending_items,
         "interrupted": str(checkpoint.get("status") or "running") != "completed",
         "partial_success": True,
-        "cancel_policy": "before_batch_only",
+        "cancel_policy": "checkpointed_between_items",
     }
     if operation == "save_force":
         result.update(
@@ -134,6 +134,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         },
     )
     for index, device_uuid in enumerate(device_uuids, start=1):
+        context.check_cancelled()
         context.progress("config_save_force_irreversible", index - 1, total, f"正在保存设备配置 {index}/{total}")
         write_irreversible_checkpoint(
             context,
@@ -175,7 +176,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         "failed": len(failed_items),
         "failed_items": failed_items,
         "partial_success": bool(failed_items),
-        "cancel_policy": "before_batch_only",
+        "cancel_policy": "checkpointed_between_items",
     }
     write_irreversible_checkpoint(
         context,
