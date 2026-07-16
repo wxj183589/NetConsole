@@ -8,17 +8,21 @@ import {
   deleteWirelessProject,
   exportWirelessScan,
   getWirelessExportArtifact,
+  getWirelessRunDetail,
   getWirelessTask,
   listWirelessAdapters,
   listWirelessProjects,
   listWirelessResults,
   listWirelessRuns,
-  listWirelessTasks,
   startWirelessScan,
 } from '../../api/networkTools'
 import { downloadBackendResource } from '../../platform/runtime'
-import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun } from '../../types/networkTools'
+import { useTaskStore } from '../../stores/tasks'
+import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun, WirelessScanRunDetail } from '../../types/networkTools'
+import type { TaskItem } from '../../types/task'
+import { filterWirelessScanRows } from './wirelessScanRows'
 
+const taskStore = useTaskStore()
 const adapters = ref<WirelessAdapter[]>([])
 const projects = ref<WirelessProject[]>([])
 const runs = ref<WirelessScanRun[]>([])
@@ -26,34 +30,52 @@ const results = ref<Record<string, unknown>[]>([])
 const runPage = ref(1)
 const runPageSize = 50
 const runTotal = ref(0)
-const resultPage = ref(1)
-const resultPageSize = 100
 const resultTotal = ref(0)
 const selectedRun = ref<WirelessScanRun | null>(null)
-const task = ref<NetworkToolTask | null>(null)
-const exportTaskState = ref<NetworkToolTask | null>(null)
+const runDetail = ref<WirelessScanRunDetail | null>(null)
+const selectedResult = ref<Record<string, unknown> | null>(null)
+const selectedTask = ref<NetworkToolTask | null>(null)
 const loading = ref(false)
-const form = reactive({ adapter_guid: '', project_id: '', project_name: '', project_description: '' })
-let timer: number | null = null
-let downloadedExportTaskId = ''
-const SCAN_TASK_KEY = 'netconsole.wireless-scan.task-id'
-const EXPORT_TASK_KEY = 'netconsole.wireless-scan.export-task-id'
+const form = reactive({
+  adapter_guid: '',
+  project_id: '',
+  project_name: '',
+  project_description: '',
+  scan_source: 'auto' as 'auto' | 'hybrid' | 'wlan_api' | 'netsh',
+  auto_refresh: false,
+  refresh_interval: 5,
+  only_trackside: false,
+  band: '',
+  radio: '',
+  search: '',
+})
+let autoRefreshTimer: number | null = null
 const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
-
+const tasks = computed(() => taskStore.tasks.filter((item) => item.owner === 'web_network_tools' && ['network_tools.wireless_scan', 'network_tools.wireless_export'].includes(item.type)))
+const runningTask = computed(() => tasks.value.find((item) => item.type === 'network_tools.wireless_scan' && ACTIVE_STATUSES.includes(item.status)) || null)
+const selectedTaskSummary = computed(() => tasks.value.find((item) => item.id === selectedTask.value?.id) || selectedTask.value)
+const selectedTaskRunning = computed(() => selectedTaskSummary.value && ACTIVE_STATUSES.includes(selectedTaskSummary.value.status))
+const selectedExportCompleted = computed(() => selectedTaskSummary.value?.type === 'network_tools.wireless_export' && selectedTaskSummary.value.status === 'COMPLETED')
+const detailVisible = computed({
+  get: () => selectedResult.value !== null,
+  set: (value: boolean) => { if (!value) selectedResult.value = null },
+})
+const filteredResults = computed(() => filterWirelessScanRows(results.value, form))
 const rowKeys = computed(() => {
   const keys: string[] = []
-  for (const row of results.value) for (const key of Object.keys(row)) if (!keys.includes(key)) keys.push(key)
+  for (const row of filteredResults.value) for (const key of Object.keys(row)) if (!keys.includes(key) && !key.endsWith('_json')) keys.push(key)
   return keys
 })
-const running = computed(() => task.value && ACTIVE_STATUSES.includes(task.value.status))
-const exportRunning = computed(() => exportTaskState.value && ACTIVE_STATUSES.includes(exportTaskState.value.status))
 
 onMounted(async () => {
-  await refresh()
-  await recoverTasks()
+  await Promise.all([refresh(), taskStore.refresh()])
+  taskStore.startPolling()
 })
 
-onBeforeUnmount(() => stopPolling())
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+  taskStore.stopPolling()
+})
 
 async function refresh(): Promise<void> {
   loading.value = true
@@ -74,88 +96,88 @@ async function refresh(): Promise<void> {
   }
 }
 
-async function deleteProject(): Promise<void> {
-  const project = projects.value.find((item) => item.project_id === form.project_id)
-  if (!project) return
-  if (running.value) {
-    ElMessage.warning('存在进行中的无线扫描，请先停止后再删除项目')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确认删除项目“${project.name}”？已有扫描历史会保留项目名称和说明快照。`,
-      '删除无线扫描项目',
-      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
-    )
-    await deleteWirelessProject(project.project_id)
-    projects.value = projects.value.filter((item) => item.project_id !== project.project_id)
-    form.project_id = ''
-    ElMessage.success('无线扫描项目已删除，历史记录保持可辨识')
-  } catch (cause) {
-    if (cause === 'cancel' || cause === 'close') return
-    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描项目删除失败')
-  }
-}
-
 async function createProject(): Promise<void> {
   if (!form.project_name.trim()) return
   try {
     const project = await createWirelessProject(form.project_name.trim(), form.project_description.trim())
     projects.value.unshift(project)
     form.project_id = project.project_id
-    form.project_name = ''
-    form.project_description = ''
+    form.project_name = form.project_description = ''
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描项目创建失败')
   }
 }
 
-async function startScan(): Promise<void> {
+async function deleteProject(): Promise<void> {
+  const project = projects.value.find((item) => item.project_id === form.project_id)
+  if (!project) return
+  try {
+    await ElMessageBox.confirm(`确认删除项目“${project.name}”？已有扫描历史会保留项目快照。`, '删除无线扫描项目', { type: 'warning' })
+    await deleteWirelessProject(project.project_id)
+    projects.value = projects.value.filter((item) => item.project_id !== project.project_id)
+    form.project_id = ''
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描项目删除失败')
+  }
+}
+
+async function startScan(notify = true): Promise<void> {
+  if (runningTask.value) return
   try {
     const adapter = adapters.value.find((item) => item.guid === form.adapter_guid)
-    const response = await startWirelessScan({ adapter_name: adapter?.name || '', adapter_guid: form.adapter_guid, project_id: form.project_id })
-    task.value = response.task
-    window.localStorage.setItem(SCAN_TASK_KEY, response.task.id)
-    startPolling()
-    ElMessage.success(`无线扫描已提交：${response.task.id}`)
+    const response = await startWirelessScan({
+      adapter_name: adapter?.name || '',
+      adapter_guid: form.adapter_guid,
+      project_id: form.project_id,
+      scan_source: form.scan_source,
+    })
+    selectedTask.value = response.task
+    await taskStore.refresh()
+    if (notify) ElMessage.success(`无线扫描已提交：${response.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描启动失败')
   }
 }
 
-function startPolling(): void {
-  if (timer !== null) return
-  timer = window.setInterval(async () => {
-    try {
-      if (task.value) task.value = await getWirelessTask(task.value.id)
-      if (exportTaskState.value) exportTaskState.value = await getWirelessTask(exportTaskState.value.id)
-      await finishRecoveredTasks()
-      if (!running.value && !exportRunning.value) stopPolling()
-    } catch {
-      stopPolling()
-    }
-  }, 1000)
+async function stopScan(): Promise<void> {
+  form.auto_refresh = false
+  stopAutoRefresh()
+  const current = runningTask.value
+  if (!current) return
+  try {
+    selectedTask.value = await cancelWirelessTask(current.id)
+    await taskStore.refresh()
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描停止失败')
+  }
 }
 
-function stopPolling(): void {
-  if (timer !== null) window.clearInterval(timer)
-  timer = null
+function toggleAutoRefresh(): void {
+  stopAutoRefresh()
+  if (!form.auto_refresh) return
+  autoRefreshTimer = window.setInterval(() => {
+    if (!runningTask.value) void startScan(false)
+  }, form.refresh_interval * 1000)
+}
+
+function stopAutoRefresh(): void {
+  if (autoRefreshTimer !== null) window.clearInterval(autoRefreshTimer)
+  autoRefreshTimer = null
 }
 
 async function selectRun(run: WirelessScanRun): Promise<void> {
   selectedRun.value = run
-  resultPage.value = 1
   results.value = []
   resultTotal.value = 0
-  await loadResults()
-}
-
-async function loadResults(): Promise<void> {
-  if (!selectedRun.value) return
   try {
-    const page = await listWirelessResults(selectedRun.value.scan_id, resultPage.value, resultPageSize)
+    const [page, detail] = await Promise.all([
+      listWirelessResults(run.scan_id, 1, 500),
+      getWirelessRunDetail(run.scan_id),
+    ])
     results.value = page.items
     resultTotal.value = page.total
+    runDetail.value = detail
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描结果加载失败')
   }
@@ -163,18 +185,7 @@ async function loadResults(): Promise<void> {
 
 async function changeRunPage(page: number): Promise<void> {
   runPage.value = page
-  try {
-    const response = await listWirelessRuns(runPage.value, runPageSize)
-    runs.value = response.items
-    runTotal.value = response.total
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描历史分页加载失败')
-  }
-}
-
-async function changeResultPage(page: number): Promise<void> {
-  resultPage.value = page
-  await loadResults()
+  await refresh()
 }
 
 async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
@@ -182,106 +193,101 @@ async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
   if (!run) return
   try {
     const response = await exportWirelessScan(run.scan_id, format)
-    exportTaskState.value = response.task
-    window.localStorage.setItem(EXPORT_TASK_KEY, response.task.id)
-    startPolling()
+    selectedTask.value = response.task
+    await taskStore.refresh()
     ElMessage.success(`无线扫描导出任务已提交：${response.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描导出失败')
   }
 }
 
-async function cancelScan(): Promise<void> {
-  if (!task.value) return
+async function selectTask(task: TaskItem): Promise<void> {
   try {
-    task.value = await cancelWirelessTask(task.value.id)
-    startPolling()
+    selectedTask.value = await getWirelessTask(task.id)
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描停止失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描任务详情加载失败')
   }
 }
 
-async function cancelExport(): Promise<void> {
-  if (!exportTaskState.value) return
+async function cancelSelectedTask(): Promise<void> {
+  if (!selectedTask.value) return
   try {
-    exportTaskState.value = await cancelWirelessTask(exportTaskState.value.id)
-    startPolling()
+    selectedTask.value = await cancelWirelessTask(selectedTask.value.id)
+    await taskStore.refresh()
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描导出停止失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描任务停止失败')
   }
 }
 
-async function recoverTasks(): Promise<void> {
+async function downloadExport(): Promise<void> {
+  if (!selectedTask.value || !selectedExportCompleted.value) return
   try {
-    const tasks = await listWirelessTasks()
-    const scanTaskId = window.localStorage.getItem(SCAN_TASK_KEY)
-    const exportTaskId = window.localStorage.getItem(EXPORT_TASK_KEY)
-    task.value = scanTaskId ? tasks.find((item) => item.id === scanTaskId) || await getWirelessTask(scanTaskId) : tasks.find((item) => item.type === 'network_tools.wireless_scan' && ACTIVE_STATUSES.includes(item.status)) || null
-    exportTaskState.value = exportTaskId ? tasks.find((item) => item.id === exportTaskId) || await getWirelessTask(exportTaskId) : tasks.find((item) => item.type === 'network_tools.wireless_export' && ACTIVE_STATUSES.includes(item.status)) || null
-    await finishRecoveredTasks()
-    if (running.value || exportRunning.value) startPolling()
+    const artifact = await getWirelessExportArtifact(selectedTask.value.id)
+    const result = await downloadBackendResource({ apiPath: artifact.download_url, suggestedName: artifact.filename })
+    if (result.status === 'failed') throw new Error(result.error || '无线扫描导出下载失败')
+    if (result.status !== 'cancelled') ElMessage.success(`下载完成，SHA-256：${artifact.sha256}`)
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描任务恢复失败')
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描导出下载失败')
   }
 }
 
-async function finishRecoveredTasks(): Promise<void> {
-  if (task.value && !ACTIVE_STATUSES.includes(task.value.status)) {
-    window.localStorage.removeItem(SCAN_TASK_KEY)
-    if (task.value.status === 'COMPLETED') {
-      runPage.value = 1
-      await refresh()
-    }
-  }
-  const currentExport = exportTaskState.value
-  if (!currentExport || ACTIVE_STATUSES.includes(currentExport.status)) return
-  if (currentExport.status !== 'COMPLETED') {
-    window.localStorage.removeItem(EXPORT_TASK_KEY)
-    return
-  }
-  if (downloadedExportTaskId === currentExport.id) return
-  const artifact = await getWirelessExportArtifact(currentExport.id)
-  const result = await downloadBackendResource({ apiPath: artifact.download_url, suggestedName: artifact.filename })
-  if (result.status === 'failed') throw new Error(result.error || '无线扫描导出下载失败')
-  if (result.status === 'cancelled') return
-  downloadedExportTaskId = currentExport.id
-  window.localStorage.removeItem(EXPORT_TASK_KEY)
-  ElMessage.success(`无线扫描导出完成，SHA-256：${artifact.sha256}`)
+function showDetail(row: Record<string, unknown>): void {
+  selectedResult.value = row
 }
 </script>
 
 <template>
   <el-card shadow="never">
-    <template #header><div class="header"><div><h2>无线扫描</h2><p>独立于无线勘测，使用 Fake Adapter 可做 Web 闭环验收。</p></div><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
+    <template #header><div class="header"><div><h2>无线扫描</h2><p>网络工具内的 WLAN 扫描；无线勘测模块仍不在本页范围。</p></div><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
+    <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <div class="toolbar">
       <el-select v-model="form.adapter_guid" clearable placeholder="选择无线网卡"><el-option v-for="adapter in adapters" :key="adapter.guid || adapter.name" :label="adapter.display_name" :value="adapter.guid" /></el-select>
+      <el-select v-model="form.scan_source"><el-option label="自动" value="auto" /><el-option label="WLAN API + netsh" value="hybrid" /><el-option label="Windows WLAN API" value="wlan_api" /><el-option label="netsh" value="netsh" /></el-select>
       <el-select v-model="form.project_id" clearable placeholder="扫描项目"><el-option v-for="project in projects" :key="project.project_id" :label="project.name" :value="project.project_id" /></el-select>
-      <el-button v-if="form.project_id" type="danger" plain :disabled="!!running" @click="deleteProject">删除所选项目</el-button>
-      <el-button type="primary" :loading="!!running" @click="startScan">开始扫描</el-button>
+      <el-button type="primary" :disabled="!!runningTask" @click="startScan()">开始扫描</el-button>
+      <el-button type="danger" plain :disabled="!runningTask" @click="stopScan">停止</el-button>
+      <el-checkbox v-model="form.auto_refresh" @change="toggleAutoRefresh">自动刷新</el-checkbox>
+      <el-input-number v-model="form.refresh_interval" :min="3" :max="3600" @change="toggleAutoRefresh" /><span>秒</span>
     </div>
     <el-collapse>
-      <el-collapse-item title="新建扫描项目" name="project"><div class="project-form"><el-input v-model="form.project_name" placeholder="项目名称" /><el-input v-model="form.project_description" placeholder="说明（可选）" /><el-button @click="createProject">创建</el-button></div></el-collapse-item>
+      <el-collapse-item title="扫描项目" name="project"><div class="project-form"><el-input v-model="form.project_name" placeholder="项目名称" /><el-input v-model="form.project_description" placeholder="说明（可选）" /><el-button @click="createProject">创建</el-button><el-button v-if="form.project_id" type="danger" plain :disabled="!!runningTask" @click="deleteProject">删除所选项目</el-button></div></el-collapse-item>
     </el-collapse>
-    <el-alert v-if="task" :title="`${task.name}：${task.status} ${task.message}`" :type="running ? 'info' : task.status === 'COMPLETED' ? 'success' : 'warning'" show-icon :closable="false"><el-button v-if="running" link type="danger" @click="cancelScan">停止扫描</el-button></el-alert>
-    <el-progress v-if="task" :percentage="task.progress" :status="task.status === 'FAILED' ? 'exception' : task.status === 'COMPLETED' ? 'success' : undefined" />
-    <div v-if="exportTaskState" class="task-progress"><span>{{ exportTaskState.name }}：{{ exportTaskState.status }}</span><el-progress :percentage="exportTaskState.progress" :status="exportTaskState.status === 'FAILED' ? 'exception' : exportTaskState.status === 'COMPLETED' ? 'success' : undefined" /><el-button v-if="exportRunning" link type="danger" @click="cancelExport">停止导出</el-button></div>
-    <el-divider />
-    <el-table :data="runs" empty-text="暂无无线扫描记录" stripe @row-click="selectRun">
-      <el-table-column prop="scan_id" label="扫描 ID" min-width="230" /><el-table-column prop="project_name" label="项目" min-width="140" /><el-table-column prop="project_description" label="项目说明" min-width="180" show-overflow-tooltip /><el-table-column prop="adapter_name" label="无线网卡" min-width="160" /><el-table-column prop="network_count" label="结果数" width="90" /><el-table-column prop="status" label="状态" width="100" />
+
+    <el-divider content-position="left">后台任务</el-divider>
+    <el-table :data="tasks" empty-text="暂无无线扫描任务" stripe max-height="260" @row-click="selectTask">
+      <el-table-column prop="name" label="任务" min-width="180" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="90"><template #default="{ row }">{{ row.progress }}%</template></el-table-column><el-table-column prop="message" label="消息" min-width="220" />
+    </el-table>
+    <div v-if="selectedTaskSummary" class="actions"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="selectedTaskRunning" link type="danger" @click="cancelSelectedTask">停止任务</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
+
+    <el-divider content-position="left">扫描历史与结果</el-divider>
+    <el-table v-loading="loading" :data="runs" empty-text="暂无无线扫描记录" stripe @row-click="selectRun">
+      <el-table-column prop="started_at" label="扫描时间" min-width="170" /><el-table-column prop="project_name" label="项目" min-width="140" /><el-table-column prop="adapter_name" label="无线网卡" min-width="160" /><el-table-column prop="network_count" label="结果数" width="90" /><el-table-column prop="status" label="状态" width="100" />
     </el-table>
     <el-pagination v-if="runTotal > runPageSize" v-model:current-page="runPage" :total="runTotal" :page-size="runPageSize" layout="prev, pager, next, total" @current-change="changeRunPage" />
     <div class="actions"><el-button v-if="runs.length" link type="primary" @click="exportRun('csv')">导出 CSV</el-button><el-button v-if="runs.length" link type="primary" @click="exportRun('xlsx')">导出 XLSX</el-button></div>
-    <el-table v-if="results.length" :data="results" stripe max-height="420"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
-    <el-pagination v-if="resultTotal > resultPageSize" v-model:current-page="resultPage" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
+
+    <el-tabs v-if="selectedRun" class="result-tabs">
+      <el-tab-pane label="扫描结果">
+        <div class="filters"><el-checkbox v-model="form.only_trackside">仅轨旁 AP</el-checkbox><el-select v-model="form.band" clearable placeholder="全部频段"><el-option label="2.4G" value="2.4G" /><el-option label="5G" value="5G" /><el-option label="6G" value="6G" /></el-select><el-select v-model="form.radio" clearable placeholder="全部 Radio"><el-option v-for="radio in ['1', '2', '3']" :key="radio" :label="radio" :value="radio" /></el-select><el-input v-model="form.search" clearable placeholder="SSID、BSSID、AP、车站或区间" /></div>
+        <el-alert v-if="resultTotal > results.length" :title="`结果共 ${resultTotal} 条，当前展示并过滤前 ${results.length} 条`" type="warning" :closable="false" />
+        <el-table :data="filteredResults" stripe max-height="520" @row-dblclick="showDetail"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" show-overflow-tooltip /></el-table>
+      </el-tab-pane>
+      <el-tab-pane label="Raw"><el-input :model-value="runDetail?.raw_output || ''" type="textarea" :rows="18" readonly /></el-tab-pane>
+      <el-tab-pane label="扫描详情"><el-descriptions v-if="runDetail" :column="2" border><el-descriptions-item label="扫描 ID">{{ runDetail.scan_id }}</el-descriptions-item><el-descriptions-item label="状态">{{ runDetail.status }}</el-descriptions-item><el-descriptions-item label="网卡">{{ runDetail.adapter_name || '—' }}</el-descriptions-item><el-descriptions-item label="结果数">{{ runDetail.network_count }}</el-descriptions-item><el-descriptions-item label="开始">{{ runDetail.started_at }}</el-descriptions-item><el-descriptions-item label="结束">{{ runDetail.ended_at }}</el-descriptions-item><el-descriptions-item label="项目" :span="2">{{ runDetail.project_name || '—' }} {{ runDetail.project_description }}</el-descriptions-item></el-descriptions></el-tab-pane>
+    </el-tabs>
   </el-card>
+
+  <el-dialog v-model="detailVisible" title="无线网络详情" width="760px"><pre class="raw-detail">{{ JSON.stringify(selectedResult, null, 2) }}</pre></el-dialog>
 </template>
 
 <style scoped>
 .header { align-items: center; display: flex; justify-content: space-between; gap: 16px; }
 .header h2 { margin: 0 0 4px; }
 .header p { color: var(--el-text-color-secondary); margin: 0; }
-.toolbar, .project-form, .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.toolbar, .project-form, .actions, .filters { align-items: center; display: flex; gap: 10px; flex-wrap: wrap; }
 .toolbar { margin-bottom: 14px; }
-.actions { margin-top: 12px; }
-.task-progress { margin-top: 12px; }
+.actions, .result-tabs { margin-top: 12px; }
+.filters { margin-bottom: 12px; }
+.filters .el-input { max-width: 360px; }
+.raw-detail { max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 </style>

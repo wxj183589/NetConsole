@@ -12,6 +12,8 @@ import type {
   WirelessProject,
   WirelessScanPage,
   WirelessScanRun,
+  WirelessScanRunDetail,
+  WirelessScanStartRequest,
 } from '../types/networkTools'
 
 export function startTcpPortTest(value: TcpPortTestRequest): Promise<TcpPortTestResponse> {
@@ -89,7 +91,7 @@ export function deleteWirelessProject(id: string): Promise<{ project_id: string;
   return apiRequest<{ project_id: string; deleted: boolean }>(`/api/network-tools/wireless-scan/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-export function startWirelessScan(value: { adapter_name?: string; adapter_guid?: string; project_id?: string }): Promise<NetworkTaskResponse> {
+export function startWirelessScan(value: WirelessScanStartRequest): Promise<NetworkTaskResponse> {
   return apiRequest<NetworkTaskResponse>('/api/network-tools/wireless-scan/tasks', { method: 'POST', body: JSON.stringify(value) })
 }
 
@@ -111,6 +113,10 @@ export function listWirelessRuns(page = 1, pageSize = 50): Promise<WirelessScanP
 
 export function listWirelessResults(scanId: string, page = 1, pageSize = 100): Promise<WirelessScanPage<Record<string, unknown>>> {
   return apiRequest<WirelessScanPage<Record<string, unknown>>>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?page=${page}&page_size=${pageSize}`)
+}
+
+export function getWirelessRunDetail(scanId: string): Promise<WirelessScanRunDetail> {
+  return apiRequest<WirelessScanRunDetail>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}`)
 }
 
 export function exportWirelessScan(scanId: string, format: 'csv' | 'xlsx'): Promise<NetworkTaskResponse> {

@@ -4,6 +4,7 @@
 
 ### 本次修复
 
+- 网络工具 Electron 页面收口重复入口：Traffic 独立承载 TCP 端口、fping 与 iPerf，小工具独立承载 IP 计算和五类 Ping，无线扫描新增正式路由并接入网卡/扫描源、过滤、启停、自动刷新、历史、Raw、详情和 CSV/XLSX Artifact。网络任务恢复统一消费 tasks store，不再用组件 `localStorage` 保存任务 ID；IPOP 仍等待系统设置页与语义 Native Bridge，不开放任意程序启动。
 - 文件管理按 Qt 双栏事实源完成 Electron 纵向闭环：本地/设备目录导航、分组筛选、受控 SFTP、明确确认的 H3C SFTP 准备、多选串行下载、TaskRepository 持久队列、取消/重试/清理/重启恢复、`.part` 清理、MR Mesh 日志归档与自动导入均接入永久 Service；设备文件使用 `fd1_*`，不伪装 Artifact。新增 `fda1_*` 一次性桌面动作和 Electron main 固定回环白名单，可打开受控目录并启动固定 WinSCP；Renderer 不接收路径、程序或凭据，Electron WinSCP 参数不含密码。自动验证通过后状态为 `IMPLEMENTED_UNVERIFIED`，真实 SFTP/MR、大文件异常和桌面点击仍待验收。
 - 设备管理 Electron/Qt 对等整改继续收口：删除旧只读校验链，编辑改为真实保存并同步详情；秘密字段增加保持、替换、显式清除三态且不回显；未保存新增/编辑表单可通过仅回环一次性秘密通道提交 SSH/Telnet/SNMP 正式 Job，取消会立即关闭通道且凭据不进入 Task 参数、响应和日志；CSV 导入增加已有主地址重复行预览及拒绝/跳过/仍新增策略；诊断下载生成含摘要、真实诊断文件和 manifest 的受控 ZIP Artifact；CSV（含/不含凭据）、模板、SecureCRT、OmniPeek 均由独立 Export Process 生成并通过 Electron 受管下载，成功保存后可使用已授权路径打开文件或定位目录；SecureCRT/Xshell/PuTTY 继续由严格 DTO 和白名单本机 Adapter 以 `shell=False` 启动。设备页面已移除私有 `sessionStorage` 任务记录并接入统一任务窗口；人工桌面与真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED`。
 - 配置采集中心按 Qt `ConfigCollectionCenterPage`、`ConfigLifecycleWorker/Service` 和 `ConfigDiffViewer` 实现 Electron 纵向链：纠正 `save force` 与 saved-configuration 快照语义，增加跨设备独立左右快照篮、“设备名 · 类型 · 时间”比较标题、共享 raw log 引用安全与删除前原子隔离/DB 失败恢复、直接 config Job handlers、双栏 added/removed/modified 差异与导航、真实 Export Process/Artifact、项目边界取消和检查点重启恢复，并以 Vue mount 测试覆盖采集/保存/删除/比较/导出/统一任务窗口；未修改数据库 schema，也未连接真实设备，状态保持 `IMPLEMENTED_UNVERIFIED`。

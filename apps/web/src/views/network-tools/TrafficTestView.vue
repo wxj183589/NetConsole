@@ -5,6 +5,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
+import TcpPortTestPanel from '../../components/network-tools/TcpPortTestPanel.vue'
 import ExecutionTargetSelect from '../../components/traffic/ExecutionTargetSelect.vue'
 import TrafficBandwidthChart from '../../components/traffic/TrafficBandwidthChart.vue'
 import TrafficLogViewer from '../../components/traffic/TrafficLogViewer.vue'
@@ -40,10 +41,12 @@ const fpingForm = reactive({
   continuous: false,
   source_address: '',
 })
+const clearedEventSequence = ref(0)
+const clearedSampleSequence = ref(0)
 
 const summaryItems = computed(() => Object.entries(store.summary || {}).slice(0, 8))
-const latestSamples = computed(() => store.samples.slice(-500))
-const latestEvents = computed(() => store.events.slice(-400))
+const latestSamples = computed(() => store.samples.filter((item) => item.sequence > clearedSampleSequence.value).slice(-500))
+const latestEvents = computed(() => store.events.filter((item) => item.sequence > clearedEventSequence.value).slice(-400))
 
 onMounted(async () => {
   await store.refreshTargets()
@@ -115,6 +118,8 @@ async function startFping(): Promise<void> {
 async function selectRun(run: TrafficRun): Promise<void> {
   try {
     await store.selectRun(run.traffic_run_id)
+    clearedEventSequence.value = 0
+    clearedSampleSequence.value = 0
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '流量任务详情加载失败')
   }
@@ -173,6 +178,11 @@ function formatTime(value: string): string {
 function openTaskCenter(): void {
   if (store.selected) void router.push({ name: 'tasks', query: { task_id: store.selected.controller_task_id } })
 }
+
+function clearCurrentView(): void {
+  clearedEventSequence.value = store.events.at(-1)?.sequence || 0
+  clearedSampleSequence.value = store.samples.at(-1)?.sequence || 0
+}
 </script>
 
 <template>
@@ -194,6 +204,7 @@ function openTaskCenter(): void {
         </template>
 
         <el-tabs v-model="activeTab">
+          <el-tab-pane label="TCP 端口" name="tcp"><TcpPortTestPanel /></el-tab-pane>
           <el-tab-pane label="高频 Ping" name="fping">
             <el-form label-position="top">
               <el-form-item label="执行端">
@@ -270,6 +281,7 @@ function openTaskCenter(): void {
             <NcStatusTag v-if="store.selected" :status="store.selected.status" />
             <div v-if="store.selected" class="detail-actions">
               <el-button link type="primary" @click="openTaskCenter">任务中心</el-button>
+              <el-button link @click="clearCurrentView">清空日志视图</el-button>
               <el-button v-if="store.selected.cancellable" link type="danger" @click="cancelRun(store.selected)">停止</el-button>
             </div>
           </div>

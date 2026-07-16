@@ -99,6 +99,17 @@ export interface WirelessScanRun {
   raw_file: string
 }
 
+export interface WirelessScanRunDetail extends Omit<WirelessScanRun, 'site' | 'raw_file'> {
+  raw_output: string
+}
+
+export interface WirelessScanStartRequest {
+  adapter_name: string
+  adapter_guid: string
+  project_id: string
+  scan_source: 'auto' | 'hybrid' | 'wlan_api' | 'netsh'
+}
+
 export interface WirelessScanPage<T> {
   items: T[]
   total: number

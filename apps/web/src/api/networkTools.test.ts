@@ -7,6 +7,7 @@ import {
   exportWirelessScan,
   getNetworkExportArtifact,
   getWirelessExportArtifact,
+  getWirelessRunDetail,
   listNetworkTaskResults,
   listWirelessResults,
   listWirelessRuns,
@@ -45,6 +46,7 @@ describe('network tools API client', () => {
     await listWirelessTasks()
     await listWirelessRuns(21, 50)
     await listWirelessResults('scan_20260715_120000_deadbeef', 22, 100)
+    await getWirelessRunDetail('scan_20260715_120000_deadbeef')
     await deleteWirelessProject('project-1')
     await cancelWirelessTask('scan-1')
     await exportWirelessScan('scan_20260715_120000_deadbeef', 'xlsx')
@@ -57,14 +59,15 @@ describe('network tools API client', () => {
       '/api/network-tools/wireless-scan/tasks?limit=200',
       '/api/network-tools/wireless-scan/runs?page=21&page_size=50',
       '/api/network-tools/wireless-scan/runs/scan_20260715_120000_deadbeef/results?page=22&page_size=100',
+      '/api/network-tools/wireless-scan/runs/scan_20260715_120000_deadbeef',
       '/api/network-tools/wireless-scan/projects/project-1',
       '/api/network-tools/wireless-scan/tasks/scan-1/cancel',
       '/api/network-tools/wireless-scan/export',
       '/api/network-tools/wireless-scan/tasks/wireless-export-1/artifact',
     ])
     expect(fetchMock.mock.calls[1][1].method).toBe('POST')
-    expect(fetchMock.mock.calls[6][1].method).toBe('DELETE')
-    expect(fetchMock.mock.calls[7][1].method).toBe('POST')
+    expect(fetchMock.mock.calls[7][1].method).toBe('DELETE')
     expect(fetchMock.mock.calls[8][1].method).toBe('POST')
+    expect(fetchMock.mock.calls[9][1].method).toBe('POST')
   })
 })

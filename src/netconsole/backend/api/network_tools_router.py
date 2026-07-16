@@ -20,6 +20,7 @@ from netconsole.models.api.network_tools import (
     WirelessExportRequest,
     WirelessProjectRequest,
     WirelessScanPageResponse,
+    WirelessScanRunDetailResponse,
     WirelessScanStartRequest,
 )
 from netconsole.models.api.task import TaskDTO
@@ -278,6 +279,18 @@ def list_wireless_results(
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描结果不存在") from exc
+
+
+@router.get(
+    "/wireless-scan/runs/{scan_id}",
+    response_model=WirelessScanRunDetailResponse,
+    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+)
+def get_wireless_run_detail(scan_id: str, request: Request) -> WirelessScanRunDetailResponse:
+    try:
+        return WirelessScanRunDetailResponse(**network_tools_service(request).get_wireless_run_detail(scan_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描记录不存在") from exc
 
 
 @router.post("/wireless-scan/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])

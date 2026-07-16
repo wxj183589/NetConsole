@@ -90,6 +90,11 @@ def test_feature_registry_lists_expected_features() -> None:
         assert feature.default_client_package is True
     assert FEATURE_BY_ID["web.file_management_download"].parent_id == "web.file_management"
     assert FEATURE_BY_ID["web.network_tools_tcp_port_test"].parent_id == "web.network_tools_toolbox"
+    wireless_scan = FEATURE_BY_ID["web.network_tools_wireless_scan"]
+    assert wireless_scan.parent_id == "web.network_tools"
+    assert wireless_scan.default_visible is True
+    assert wireless_scan.default_enabled is True
+    assert wireless_scan.default_client_package is True
     assert FEATURE_BY_ID["system.web_console"].parent_id == "module.system_settings"
     assert FEATURE_BY_ID["module.feature_switch"].internal_only is True
     assert FEATURE_BY_ID["system.feature_flags"].internal_only is True

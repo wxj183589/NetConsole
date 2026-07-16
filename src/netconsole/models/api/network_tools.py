@@ -56,6 +56,7 @@ class WirelessScanStartRequest(ApiModel):
     adapter_name: str = Field(default="", max_length=256)
     adapter_guid: str = Field(default="", max_length=128)
     project_id: str = Field(default="", max_length=128)
+    scan_source: Literal["auto", "hybrid", "wlan_api", "netsh"] = "auto"
 
 
 class WirelessExportRequest(ApiModel):
@@ -91,6 +92,20 @@ class WirelessScanPageResponse(ApiModel):
     page_size: int = 100
 
 
+class WirelessScanRunDetailResponse(ApiModel):
+    scan_id: str
+    project_id: str = ""
+    project_name: str = ""
+    project_description: str = ""
+    adapter_name: str = ""
+    adapter_guid: str = ""
+    started_at: str
+    ended_at: str
+    status: str
+    network_count: int = 0
+    raw_output: str = ""
+
+
 class WirelessProjectRequest(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
@@ -109,5 +124,6 @@ __all__ = [
     "WirelessExportRequest",
     "WirelessProjectRequest",
     "WirelessScanPageResponse",
+    "WirelessScanRunDetailResponse",
     "WirelessScanStartRequest",
 ]

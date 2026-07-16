@@ -41,6 +41,7 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 
 
 _CONTROLLED_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_WIRELESS_SCAN_ID_RE = re.compile(r"^scan_[0-9]{8}_[0-9]{6}_[0-9a-f]{8}$")
 _ARTIFACT_SUFFIXES = {".csv", ".xlsx"}
 _INVALID_FILENAME_CHARS = set('<>:"|?*')
 _ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
@@ -274,6 +275,7 @@ class NetworkToolsApplicationService:
         adapter_name: str = "",
         adapter_guid: str = "",
         project_id: str = "",
+        scan_source: str = "auto",
     ) -> TaskSnapshot:
         selected_project = str(project_id or "").strip()
         with self._project_lock:
@@ -296,6 +298,7 @@ class NetworkToolsApplicationService:
                     "project_id": selected_project,
                     "project_name": str((project or {}).get("name") or ""),
                     "project_description": str((project or {}).get("description") or ""),
+                    "scan_source": self._validate_scan_source(scan_source),
                     "device": str(adapter_name or adapter_guid or "").strip(),
                 },
             )
@@ -358,6 +361,30 @@ class NetworkToolsApplicationService:
             "total": repository.count_results(scan_id),
             "page": selected_page,
             "page_size": size,
+        }
+
+    def get_wireless_run_detail(self, scan_id: str) -> dict[str, object]:
+        selected_id = str(scan_id or "").strip()
+        if not _WIRELESS_SCAN_ID_RE.fullmatch(selected_id):
+            raise KeyError(selected_id)
+        run = self._wireless().repository.get_run(selected_id)
+        if run is None:
+            raise KeyError(selected_id)
+        raw_root = self.paths.wireless_scan_raw_dir(self.site_name).resolve()
+        raw_path = (raw_root / f"{selected_id}.txt").resolve()
+        raw_output = raw_path.read_text(encoding="utf-8", errors="replace") if raw_path.parent == raw_root and raw_path.is_file() else ""
+        return {
+            "scan_id": selected_id,
+            "project_id": str(run.get("project_id") or ""),
+            "project_name": str(run.get("project_name") or ""),
+            "project_description": str(run.get("project_description") or ""),
+            "adapter_name": str(run.get("adapter_name") or ""),
+            "adapter_guid": str(run.get("adapter_guid") or ""),
+            "started_at": str(run.get("started_at") or ""),
+            "ended_at": str(run.get("ended_at") or ""),
+            "status": str(run.get("status") or ""),
+            "network_count": int(run.get("network_count") or 0),
+            "raw_output": raw_output,
         }
 
     async def export_wireless_scan(self, scan_id: str, file_format: str, filename: str = "") -> TaskSnapshot:
@@ -665,6 +692,13 @@ class NetworkToolsApplicationService:
         selected = str(value or "").lower()
         if selected not in {"csv", "xlsx"}:
             raise ValueError("导出格式不支持")
+        return selected
+
+    @staticmethod
+    def _validate_scan_source(value: str) -> str:
+        selected = str(value or "auto").strip().lower()
+        if selected not in {"auto", "hybrid", "wlan_api", "netsh"}:
+            raise ValueError("无线扫描源不支持")
         return selected
 
     @staticmethod

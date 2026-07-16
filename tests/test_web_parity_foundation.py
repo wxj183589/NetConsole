@@ -198,7 +198,7 @@ def test_system_settings_is_released_while_unimplemented_features_stay_hidden(
 
     for feature_id in (
         "web.ac_trackside_ap_plan",
-        "web.network_tools_wireless_scan",
+        "web.rail_train_online",
         "web.command_reference",
         "web.logs",
     ):

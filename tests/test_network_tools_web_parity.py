@@ -128,9 +128,10 @@ class FakeWirelessWorkerService:
     scan_id = "scan_20260715_120000_deadbeef"
     block_event: threading.Event | None = None
 
-    def __init__(self, site_name: str, paths: PathResolver) -> None:
+    def __init__(self, site_name: str, paths: PathResolver, *, scan_source: str = "auto") -> None:
         self.site_name = site_name
         self.paths = paths
+        self.scan_source = scan_source
         self.repository = WirelessScanRepository(paths.wireless_scan_db_path(site_name))
 
     def list_adapters(self) -> list[WirelessAdapter]:
@@ -453,26 +454,32 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     monkeypatch.setattr(job_handlers, "WirelessScanService", FakeWirelessWorkerService)
     service, adapter = _service(tmp_path, wireless_service=fake_wireless)
     project = service.create_wireless_project("Fake Project", "history snapshot")
-    task = asyncio.run(service.start_wireless_scan(adapter_guid="fake-guid", project_id=str(project["project_id"])))
+    task = asyncio.run(service.start_wireless_scan(adapter_guid="fake-guid", project_id=str(project["project_id"]), scan_source="wlan_api"))
     completed = _wait_task(service, adapter, task.task_id, wireless=True)
 
     assert completed.result == {"result_id": FakeWirelessWorkerService.scan_id, "row_count": 1}
+    assert adapter.jobs[-1].params["scan_source"] == "wlan_api"
     history = service.list_wireless_runs()
     assert history["total"] == 1
     assert history["items"][0]["project_id"] == project["project_id"]
     assert history["items"][0]["project_name"] == "Fake Project"
     assert history["items"][0]["project_description"] == "history snapshot"
     assert history["items"][0]["raw_file"] == f"{FakeWirelessWorkerService.scan_id}.txt"
+    detail = service.get_wireless_run_detail(FakeWirelessWorkerService.scan_id)
+    assert detail["raw_output"] == "fake wireless raw"
     assert service.get_network_task(task.task_id) is None
     assert service.get_wireless_task(task.task_id) is not None
 
     app = _app(tmp_path, service)
     app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(app) as client:
+        detail_response = client.get(f"/api/network-tools/wireless-scan/runs/{FakeWirelessWorkerService.scan_id}")
         submitted = client.post(
             "/api/network-tools/wireless-scan/export",
             json={"scan_id": FakeWirelessWorkerService.scan_id, "format": "csv", "filename": "wireless.csv"},
         )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["raw_output"] == "fake wireless raw"
     assert submitted.status_code == 202
     export_id = submitted.json()["task"]["id"]
     exported = _wait_task(service, adapter, export_id, wireless=True)

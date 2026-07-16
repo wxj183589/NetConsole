@@ -129,7 +129,10 @@ def run_wireless_scan(context: JobContext) -> dict[str, object]:
     project_id = _bounded_text(context.params.get("project_id"), 128, "无线扫描项目 ID")
     project_name = _bounded_text(context.params.get("project_name"), 100, "无线扫描项目名称")
     project_description = _bounded_text(context.params.get("project_description"), 500, "无线扫描项目说明")
-    service = WirelessScanService(site_name, context.paths)
+    scan_source = _bounded_text(context.params.get("scan_source") or "auto", 16, "无线扫描源")
+    if scan_source not in {"auto", "hybrid", "wlan_api", "netsh"}:
+        raise ValueError("无线扫描源不支持")
+    service = WirelessScanService(site_name, context.paths, scan_source=scan_source)
     adapter = _find_wireless_adapter(service, adapter_name, adapter_guid)
     context.check_cancelled()
     context.progress("wireless_scan", 0, 0, "无线扫描执行中")

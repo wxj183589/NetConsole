@@ -13,7 +13,7 @@
 | 设备管理 | 生产入口 | CRUD/导入导出/诊断已实现；表单测试 Runtime bootstrap、统一任务窗口与诊断 allowlist 仍阻塞 | `PARTIAL` | Electron + Vue + FastAPI，达到 `COMPLETE` 后替换 Qt |
 | AC 管理 | 生产入口 | 只读与部分受控能力 | `PARTIAL` | Vue + FastAPI，写操作需权限/确认/审计 |
 | 轨道交通 | 生产入口/回退 | 主业务展示与部分控制已覆盖 | `PARTIAL` | Vue 主入口，补齐真实设备闭环 |
-| 网络工具 | 生产入口 | Ping/fping/iPerf/端口能力部分覆盖 | `PARTIAL` | 本地与 Agent 统一任务模型 |
+| 网络工具 | 生产入口/回退 | 计算、Ping/fping/iPerf、无线扫描、停止、恢复和 Artifact 已形成真实闭环；IPOP 仍待共享桥接 | `PARTIAL` | 复用 Application Service、Traffic 与统一 Task/Export；不新增第二套状态 |
 | 配置采集中心 | 生产入口 | 任务、查看、差异和下载部分覆盖 | `PARTIAL` | 复用正式采集 Service，不重写采集器 |
 | 文件管理 | 生产入口 | 只读浏览与受控下载部分覆盖 | `PARTIAL` | Vue 主入口，远程删除不进入首批 |
 | Job Center | 辅助/分散入口 | 已有统一页面，尚未完成 Qt 人工对照 | `IMPLEMENTED_UNVERIFIED` | 永久 Electron/Vue 基础能力 |
@@ -24,7 +24,7 @@
 | 命令、日志等传统工具 | 生产入口 | 未完整迁移 | `NOT_STARTED` | 先收敛 Application Service，再建设 Web |
 | SNMP 中心 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |
 | 无线勘测 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |
-| 网络工具无线扫描 | 现有能力 | 尚未完成 | `NOT_STARTED` | 与无线勘测区分，按网络工具范围评估 |
+| 网络工具无线扫描 | 现有能力 | 独立正式路由已接入网卡/扫描源、过滤、启停、自动刷新、历史、Raw、详情和导出 | `REAL_DEVICE_PENDING` | 与无线勘测区分；待 Windows 真网卡和 Electron 人工验收 |
 
 ## 共同替换门槛
 

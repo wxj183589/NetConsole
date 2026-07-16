@@ -32,7 +32,7 @@ describe('Web route ownership', () => {
   it('does not register excluded or unfinished routes', () => {
     const paths = routes.map((route) => `/${route.path}`)
     expect(paths.some((path) => /snmp|wifi-survey/.test(path))).toBe(false)
-    expect(paths).not.toContain('/network-tools/wireless-scan')
+    expect(paths).toContain('/network-tools/wireless-scan')
     expect(paths).not.toContain('/command-reference')
   })
 })

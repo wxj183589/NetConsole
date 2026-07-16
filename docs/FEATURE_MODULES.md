@@ -24,7 +24,7 @@
 
 ## 3. 已登记的子功能与内部能力
 
-Registry 当前显式登记的主要子功能包括：设备管理页面、连接测试、正式写入、采集诊断、导入、导出和桌面联动；这些设备能力仍处于 `IMPLEMENTED_UNVERIFIED`，不代表可隐藏 Qt。其他登记项包括配置采集、比较、下载，以及删除、`save force`、报告导出和目录动作；文件管理下载、本地下载目录写入、设备 SFTP 浏览/下载和文件桌面联动；网络工具 toolbox、TCP 端口测试和默认关闭的无线扫描；轨道交通基础资料、通信监测、Mesh/Online MR，以及默认关闭的车内诊断执行、Mesh 导入/报告、Online MR 报告和统一任务控制；AC FIT-AP/Mesh-Link，以及默认关闭的 AP 扩展预览/写入/回滚/导出、本地重算和高风险动作；Web 任务中心、Agent 管理、Electron 外壳状态与白名单 Native Bridge `desktop.native_bridge`，以及开发态 Feature 页面。所有未经人工或真实设备验收的能力都不能据自动测试直接标记为 Qt 可替换。
+Registry 当前显式登记的主要子功能包括：设备管理页面、连接测试、正式写入、采集诊断、导入、导出和桌面联动；这些设备能力仍处于 `IMPLEMENTED_UNVERIFIED`，不代表可隐藏 Qt。其他登记项包括配置采集、比较、下载，以及删除、`save force`、报告导出和目录动作；文件管理下载、本地下载目录写入、设备 SFTP 浏览/下载和文件桌面联动；网络工具 toolbox、TCP 端口测试和已进入正式路由但仍为 `REAL_DEVICE_PENDING` 的无线扫描；轨道交通基础资料、通信监测、Mesh/Online MR，以及默认关闭的车内诊断执行、Mesh 导入/报告、Online MR 报告和统一任务控制；AC FIT-AP/Mesh-Link，以及默认关闭的 AP 扩展预览/写入/回滚/导出、本地重算和高风险动作；Web 任务中心、Agent 管理、Electron 外壳状态与白名单 Native Bridge `desktop.native_bridge`，以及开发态 Feature 页面。所有未经人工或真实设备验收的能力都不能据自动测试直接标记为 Qt 可替换。
 
 `desktop.native_bridge` 只控制 Vue 中 Electron 本机能力状态区的产品可见性和禁用状态。它不能绕过 Electron main 的发送方校验、参数白名单和同会话路径授权，也不代表 Qt 页面已被替换。
 

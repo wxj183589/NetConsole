@@ -52,7 +52,7 @@ describe('Web navigation registry', () => {
     ])
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
-    expect(visible.some((item) => item.navigation_id === 'network.wireless-scan')).toBe(false)
+    expect(visible.some((item) => item.navigation_id === 'network.wireless-scan')).toBe(true)
   })
 
   it('hides a group when none of its children are visible', () => {
