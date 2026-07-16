@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -47,6 +47,53 @@ class TracksideApUpdateRequestDTO(ApiModel):
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
+
+
+class TracksideApPlanRowDTO(ApiModel):
+    station_name: str = ""
+    ap_count: int = 0
+    ap_start_address: str = ""
+    mask_length: int | None = None
+    ap_gateway: str = ""
+    ap_management_vlans: str = ""
+    remark: str = ""
+    sort_order: int = 0
+
+
+class TracksideApPlanDTO(ApiModel):
+    items: list[TracksideApPlanRowDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class TracksideApPlanWriteRequestDTO(ApiModel):
+    rows: list[TracksideApPlanRowDTO] = Field(default_factory=list)
+    explicit_confirmation: bool = False
+    audit: dict[str, str] = Field(default_factory=dict)
+
+
+class TracksideApPlanPreviewRowDTO(ApiModel):
+    row_number: int
+    status: Literal["valid", "duplicate", "error"]
+    key: str = ""
+    message: str = ""
+    row: TracksideApPlanRowDTO | None = None
+
+
+class TracksideApPlanPreviewDTO(ApiModel):
+    file_name: str
+    file_sha256: str
+    duplicate_strategy: Literal["replace", "skip", "error"]
+    can_apply: bool
+    total_count: int
+    valid_count: int
+    duplicate_count: int
+    error_count: int
+    rows: list[TracksideApPlanPreviewRowDTO] = Field(default_factory=list)
+    result_rows: list[TracksideApPlanRowDTO] = Field(default_factory=list)
+
+
+class TracksideApPlanExportRequestDTO(ApiModel):
+    template: bool = False
 
 
 __all__ = [name for name in globals() if name.startswith("TracksideAp")]

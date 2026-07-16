@@ -148,3 +148,55 @@ def _dotted_netmask_to_prefix(mask: str) -> int | None:
     if re.fullmatch(r"1*0*", bits) is None:
         return None
     return bits.count("1")
+
+
+def normalize_trackside_plan_row(
+    row: dict[str, object | None],
+    *,
+    row_number: int = 2,
+) -> dict[str, object | None]:
+    from netconsole.services.trackside_ap_business import parse_vlan_set
+
+    value = dict(row)
+    station = str(value.get("station_name") or "").strip()
+    if not station:
+        raise ValueError(f"第{row_number}行 车站名称：必填")
+    try:
+        ap_count = int(str(value.get("ap_count") or "0").strip())
+    except ValueError:
+        raise ValueError(f"第{row_number}行 AP数量：必须是整数") from None
+    if ap_count < 0:
+        raise ValueError(f"第{row_number}行 AP数量：必须是非负整数")
+    raw_mask = value.get("mask_length")
+    mask_length = _parse_mask_length(raw_mask)
+    if mask_length is None and str(raw_mask or "").strip():
+        raise ValueError(f"第{row_number}行 掩码：{MASK_ERROR_TEXT}")
+    vlans = parse_vlan_set(value.get("ap_management_vlans"))
+    if not vlans:
+        raise ValueError(f"第{row_number}行 AP管理VLAN：必填")
+    start = str(value.get("ap_start_address") or "").strip()
+    gateway = str(value.get("ap_gateway") or "").strip()
+    if start and not _valid_ipv4_or_placeholder(start):
+        raise ValueError(f"第{row_number}行 AP起始地址：格式无效")
+    if gateway and not _valid_ipv4(gateway):
+        raise ValueError(f"第{row_number}行 AP网关：必须是IPv4")
+    return {
+        "station_name": station,
+        "ap_count": ap_count,
+        "ap_start_address": start,
+        "mask_length": mask_length,
+        "ap_gateway": gateway,
+        "ap_management_vlans": ",".join(str(vlan) for vlan in sorted(vlans)),
+        "remark": str(value.get("remark") or "").strip(),
+        "sort_order": int(value.get("sort_order") or 0),
+    }
+
+
+def normalize_trackside_plan_rows(
+    rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    normalized = [
+        normalize_trackside_plan_row(row, row_number=index)
+        for index, row in enumerate(rows, start=2)
+    ]
+    return _dedupe_station_rows(normalized)

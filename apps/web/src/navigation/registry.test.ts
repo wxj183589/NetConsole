@@ -32,6 +32,7 @@ describe('Web navigation registry', () => {
 
     expect(parent('ac.trackside-plan')).toBe('ac')
     expect(parent('rail.trackside-ap-business')).toBe('rail')
+    expect(parent('rail.trackside-ap-plan')).toBe('rail')
     expect(parent('rail.online-mr')).toBe('rail')
     expect(parent('rail.online-mr-analysis')).toBe('rail')
     expect(parent('network.traffic')).toBe('network')
@@ -44,7 +45,7 @@ describe('Web navigation registry', () => {
       '轨旁 AP 规划', 'AP 在线概览', 'FIT-AP 资源', '光衰', 'AP 扩展信息', 'Mesh-Link 在线监控', 'AC 配置快照与对比',
     ])
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '轨道交通无线看板', '基础资料', '列车在线情况', '车内通信检测', '在线列车车地通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
+      '轨道交通无线看板', '基础资料', '列车在线情况', '车内通信检测', '在线列车车地通信检测', '轨旁 AP 业务', '轨旁 AP 规划', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
     ])
     expect(navigationRegistry.find((item) => item.navigation_id === 'network')?.children.map((item) => item.title)).toEqual([
       '流量测试', '小工具与连通性检测', '无线扫描',

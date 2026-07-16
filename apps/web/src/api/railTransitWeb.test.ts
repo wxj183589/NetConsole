@@ -2,15 +2,21 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   cancelCarNetworkDiagnostic,
+  cancelCarNetworkPointTableTask,
   cancelRailTransitTask,
   exportMeshAnalysisReport,
   exportOnlineMrReport,
+  exportCarNetworkPointTable,
   getCarNetworkDiagnosticTask,
+  getCarNetworkPointTable,
+  generateCarNetworkPointTable,
   importMeshAnalysis,
   queryOnlineMrTimeline,
   recoverCarNetworkDiagnostics,
+  recoverCarNetworkPointTableTasks,
   recoverRailTransitTasks,
   startCarNetworkDiagnostic,
+  saveCarNetworkPointTable,
 } from './railTransitWeb'
 
 describe('rail transit Web parity API client', () => {
@@ -71,5 +77,27 @@ describe('rail transit Web parity API client', () => {
     await queryOnlineMrTimeline('session/1', 300)
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/sessions/session%2F1/timeline?limit=300&offset=0')
+  })
+
+  it('uses point-table read, write, generation, export and task control endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-4' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getCarNetworkPointTable()
+    await saveCarNetworkPointTable([], {})
+    await generateCarNetworkPointTable([], {})
+    await exportCarNetworkPointTable('xlsx')
+    await cancelCarNetworkPointTableTask('task-4')
+    await recoverCarNetworkPointTableTasks()
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/train-communication/point-table',
+      '/api/rail-transit/train-communication/point-table/save',
+      '/api/rail-transit/train-communication/point-table/generate',
+      '/api/rail-transit/train-communication/point-table/export',
+      '/api/rail-transit/train-communication/point-table/tasks/task-4/cancel',
+      '/api/rail-transit/train-communication/point-table/tasks/recover',
+    ])
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).explicit_confirmation).toBe(true)
   })
 })

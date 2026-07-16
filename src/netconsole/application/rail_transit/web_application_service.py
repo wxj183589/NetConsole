@@ -1,31 +1,72 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable, NoReturn
 from uuid import uuid4
 
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.online_mr import OnlineMrDownsampleMode, OnlineMrMetricType
-from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
+from netconsole.models.api.rail_transit_web import (
+    CarNetworkPointPreviewDTO,
+    CarNetworkPointPreviewRowDTO,
+    CarNetworkPointRowDTO,
+    CarNetworkPointTableDTO,
+    RailTransitTaskDTO,
+)
+from netconsole.models.api.trackside_ap_business import (
+    TracksideApPlanDTO,
+    TracksideApPlanPreviewDTO,
+    TracksideApPlanPreviewRowDTO,
+    TracksideApPlanRowDTO,
+)
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
+from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_job import ExportJob
-from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
+from netconsole.services.export.export_task_builders import (
+    car_network_point_table_spec,
+    online_mr_report_xlsx_spec,
+    repository_query_source,
+    table_xlsx_source_spec,
+    table_xlsx_spec,
+)
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
-from netconsole.services.online_mr.query_service import OnlineMrQueryService
-from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.car_network_diagnostic import (
+    DEFAULT_GLOBAL_CONFIG,
+    CarNetworkNode,
+    CarNetworkGlobalConfigStore,
+    CarNetworkPointTableStore,
+    apply_address_mapping,
+    apply_global_rules_to_nodes,
+    merge_global_config,
+    node_from_mapping,
+    normalize_train_network_defaults,
+    read_point_table_file,
+)
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
+from netconsole.services.trackside_ap_plan_io import (
+    TRACKSIDE_PLAN_COLUMNS,
+    TRACKSIDE_PLAN_COLUMN_WIDTHS,
+    TRACKSIDE_PLAN_HEADERS,
+    normalize_trackside_plan_row,
+    normalize_trackside_plan_rows,
+    read_trackside_plan_file,
+)
 
 
 class RailTransitWebError(ValueError):
@@ -40,26 +81,36 @@ class RailTransitWebApplicationService:
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
         "car_network_diagnostic": "车内通信检测",
+        "car_network_generate_point_table": "从设备管理生成车内通信点表",
+        "car_network_save_point_table": "保存车内通信点表",
         "trackside_ap_optical_update": "轨旁 AP 光衰更新",
+        "trackside_ap_plan_save": "保存轨旁 AP 规划",
         "vehicle_mr_online_refresh_all": "列车在线状态刷新",
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
+    _TABLE_SUFFIXES = {".xlsx", ".csv"}
     _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
     _ALLOWED_TASK_TYPES = {
         *_TASK_NAMES,
         "web_export_online_mr_report_xlsx",
         "web_export_mesh_analysis_report",
+        "web_export_car_network_point_table",
+        "web_export_table_xlsx",
     }
     _OWNER = "web_rail_transit"
     _ARTIFACT_TASK_TYPES = {
         "online_mr_report": "web_export_online_mr_report_xlsx",
         "mesh_analysis_report": "web_export_mesh_analysis_report",
+        "car_network_point_table": "web_export_car_network_point_table",
+        "trackside_ap_plan": "web_export_table_xlsx",
     }
     _ACTIONS = {
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
+        "web_export_car_network_point_table": "car_network_point_table_export",
+        "web_export_table_xlsx": "trackside_ap_plan_export",
     }
 
     def __init__(
@@ -196,6 +247,386 @@ class RailTransitWebApplicationService:
             )
         except ValueError as exc:
             raise RailTransitWebError("PROFILE_CONFLICT", str(exc)) from exc
+
+    def get_car_network_point_table(self, site_id: str) -> CarNetworkPointTableDTO:
+        site_id = self._site(site_id)
+        config = merge_global_config(CarNetworkGlobalConfigStore(self.paths, site_id).load())
+        return CarNetworkPointTableDTO(
+            rows=[self._point_row(node) for node in CarNetworkPointTableStore(self.paths, site_id).load()],
+            global_config=config,
+            locked=bool(config.get("point_table_locked", False)),
+        )
+
+    def preview_car_network_point_table(
+        self,
+        site_id: str,
+        *,
+        file_name: str,
+        content: bytes,
+        duplicate_strategy: str,
+    ) -> CarNetworkPointPreviewDTO:
+        site_id = self._site(site_id)
+        strategy = self._duplicate_strategy(duplicate_strategy)
+        raw_rows = self._read_table_upload(site_id, file_name, content, read_point_table_file)
+        existing = CarNetworkPointTableStore(self.paths, site_id).load()
+        merged = {self._point_key(node): node for node in existing}
+        imported: set[tuple[str, str]] = set()
+        preview_rows: list[CarNetworkPointPreviewRowDTO] = []
+        duplicate_count = 0
+        error_count = 0
+        valid_count = 0
+        for row_number, raw in enumerate(raw_rows, start=2):
+            try:
+                node = node_from_mapping(raw)
+                self._validate_point_node(node, row_number)
+            except (TypeError, ValueError) as exc:
+                error_count += 1
+                preview_rows.append(
+                    CarNetworkPointPreviewRowDTO(
+                        row_number=row_number,
+                        status="error",
+                        message=str(exc),
+                    )
+                )
+                continue
+            key = self._point_key(node)
+            duplicate = key in merged or key in imported
+            if duplicate:
+                duplicate_count += 1
+                preview_rows.append(
+                    CarNetworkPointPreviewRowDTO(
+                        row_number=row_number,
+                        status="duplicate",
+                        key=" / ".join(key),
+                        message={
+                            "replace": "重复节点将由导入行覆盖",
+                            "skip": "重复节点将保留现有值",
+                            "error": "重复节点阻止确认导入",
+                        }[strategy],
+                        row=self._point_row(node),
+                    )
+                )
+                if strategy == "replace":
+                    merged[key] = node
+                imported.add(key)
+                continue
+            valid_count += 1
+            imported.add(key)
+            merged[key] = node
+            preview_rows.append(
+                CarNetworkPointPreviewRowDTO(
+                    row_number=row_number,
+                    status="valid",
+                    key=" / ".join(key),
+                    row=self._point_row(node),
+                )
+            )
+        can_apply = error_count == 0 and (strategy != "error" or duplicate_count == 0)
+        return CarNetworkPointPreviewDTO(
+            file_name=Path(file_name).name,
+            file_sha256=hashlib.sha256(content).hexdigest(),
+            duplicate_strategy=strategy,
+            can_apply=can_apply,
+            total_count=len(raw_rows),
+            valid_count=valid_count,
+            duplicate_count=duplicate_count,
+            error_count=error_count,
+            rows=preview_rows,
+            result_rows=[self._point_row(node) for node in merged.values()] if can_apply else [],
+        )
+
+    def transform_car_network_point_table(
+        self,
+        site_id: str,
+        *,
+        operation: str,
+        rows: list[dict[str, object]],
+        global_config: dict[str, object],
+    ) -> CarNetworkPointTableDTO:
+        self._site(site_id)
+        config = merge_global_config(global_config)
+        nodes = self._point_nodes(rows)
+        if bool(config.get("point_table_locked", False)):
+            raise RailTransitWebError("POINT_TABLE_LOCKED", "当前点表已锁定，请先解锁")
+        if operation == "apply_mapping":
+            nodes = [
+                apply_address_mapping(node, config, overwrite=node.address_mapping_mode == "global")
+                for node in nodes
+            ]
+            nodes = normalize_train_network_defaults(nodes, config, overwrite_custom=False)
+        elif operation == "apply_global":
+            nodes = apply_global_rules_to_nodes(nodes, config, overwrite_custom=False)
+        elif operation == "apply_global_override":
+            nodes = apply_global_rules_to_nodes(nodes, config, overwrite_custom=True)
+        elif operation == "restore_defaults":
+            config = merge_global_config(DEFAULT_GLOBAL_CONFIG)
+        else:
+            raise RailTransitWebError("POINT_TABLE_OPERATION_INVALID", "不支持的点表转换操作")
+        return CarNetworkPointTableDTO(
+            rows=[self._point_row(node) for node in nodes],
+            global_config=config,
+            locked=False,
+        )
+
+    def start_car_network_point_table_save(
+        self,
+        site_id: str,
+        *,
+        rows: list[dict[str, object]],
+        global_config: dict[str, object],
+        overwrite_custom: bool,
+        explicit_confirmation: bool,
+        audit: dict[str, str] | None = None,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError("CONFIRMATION_REQUIRED", "保存点表前必须明确确认")
+        nodes = self._point_nodes(rows)
+        config = merge_global_config(global_config)
+        current = self.get_car_network_point_table(site_id)
+        if current.locked and bool(config.get("point_table_locked", False)):
+            if [row.model_dump() for row in current.rows] != [self._point_row(node).model_dump() for node in nodes]:
+                raise RailTransitWebError("POINT_TABLE_LOCKED", "当前点表已锁定，不能修改行数据")
+        return self._start_task(
+            site_id,
+            "car_network_save_point_table",
+            {
+                "nodes": [asdict(node) for node in nodes],
+                "global_config": config,
+                "overwrite_custom": bool(overwrite_custom),
+                "audit": {str(key): str(value) for key, value in (audit or {}).items()},
+                "explicit_confirmation": True,
+            },
+        )
+
+    def start_car_network_point_table_generate(
+        self,
+        site_id: str,
+        *,
+        rows: list[dict[str, object]],
+        global_config: dict[str, object],
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        config = merge_global_config(global_config)
+        if bool(config.get("point_table_locked", False)):
+            raise RailTransitWebError("POINT_TABLE_LOCKED", "当前点表已锁定，请先解锁")
+        return self._start_task(
+            site_id,
+            "car_network_generate_point_table",
+            {
+                "nodes": [asdict(node) for node in self._point_nodes(rows)],
+                "global_config": config,
+                "save_result": False,
+            },
+        )
+
+    def start_car_network_point_table_export(self, site_id: str, *, file_format: str) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        suffix = ".csv" if file_format == "csv" else ".xlsx"
+        task_id = f"rail-export-{uuid4().hex}"
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="car_network_point_table",
+                artifact_type=suffix.removeprefix("."),
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["car_network_point_table"],
+                output_root=self.paths.car_network_diagnostic_parsed_dir(site_id) / "exports",
+                preferred_name=f"车内通信点表{suffix}",
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("车内通信点表导出", exc)
+        job = car_network_point_table_spec(
+            reservation.output_path,
+            site_name=site_id,
+            title="导出车内通信点表",
+            open_dir_on_success=False,
+        ).to_job(task_id)
+        return self._start_export(site_id, replace(job, site_name=site_id), "car_network_point_table_export", reservation)
+
+    def open_car_network_point_table_export(
+        self,
+        site_id: str,
+        artifact_id: str,
+        *,
+        file_format: str,
+    ) -> tuple[Path, str]:
+        artifact_type = "csv" if file_format == "csv" else "xlsx"
+        return self._open_artifact(site_id, artifact_id, "car_network_point_table", artifact_type)
+
+    def get_trackside_ap_plan(self, site_id: str) -> TracksideApPlanDTO:
+        site_id = self._site(site_id)
+        rows = AcRepository(Database(self.paths.site_db_path(site_id))).list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
+        items = [
+            TracksideApPlanRowDTO.model_validate(normalize_trackside_plan_row(row, row_number=index))
+            for index, row in enumerate(rows, start=2)
+        ]
+        return TracksideApPlanDTO(items=items, total=len(items))
+
+    def preview_trackside_ap_plan(
+        self,
+        site_id: str,
+        *,
+        file_name: str,
+        content: bytes,
+        duplicate_strategy: str,
+    ) -> TracksideApPlanPreviewDTO:
+        site_id = self._site(site_id)
+        strategy = self._duplicate_strategy(duplicate_strategy)
+        raw_rows = self._read_table_upload(site_id, file_name, content, read_trackside_plan_file)
+        existing = {row.station_name.casefold(): row for row in self.get_trackside_ap_plan(site_id).items}
+        imported: set[str] = set()
+        preview_rows: list[TracksideApPlanPreviewRowDTO] = []
+        duplicate_count = 0
+        error_count = 0
+        valid_count = 0
+        for row_number, raw in enumerate(raw_rows, start=2):
+            try:
+                row = TracksideApPlanRowDTO.model_validate(
+                    normalize_trackside_plan_row(dict(raw), row_number=row_number)
+                )
+            except (TypeError, ValueError) as exc:
+                error_count += 1
+                preview_rows.append(
+                    TracksideApPlanPreviewRowDTO(
+                        row_number=row_number,
+                        status="error",
+                        message=str(exc),
+                    )
+                )
+                continue
+            key = row.station_name.casefold()
+            duplicate = key in existing or key in imported
+            if duplicate:
+                duplicate_count += 1
+                preview_rows.append(
+                    TracksideApPlanPreviewRowDTO(
+                        row_number=row_number,
+                        status="duplicate",
+                        key=row.station_name,
+                        message={
+                            "replace": "重复车站将由导入行覆盖",
+                            "skip": "重复车站将保留现有值",
+                            "error": "重复车站阻止确认导入",
+                        }[strategy],
+                        row=row,
+                    )
+                )
+                if strategy == "replace":
+                    existing[key] = row
+                imported.add(key)
+                continue
+            valid_count += 1
+            imported.add(key)
+            existing[key] = row
+            preview_rows.append(
+                TracksideApPlanPreviewRowDTO(
+                    row_number=row_number,
+                    status="valid",
+                    key=row.station_name,
+                    row=row,
+                )
+            )
+        can_apply = error_count == 0 and (strategy != "error" or duplicate_count == 0)
+        result_rows = list(existing.values()) if can_apply else []
+        for index, row in enumerate(result_rows):
+            row.sort_order = index
+        return TracksideApPlanPreviewDTO(
+            file_name=Path(file_name).name,
+            file_sha256=hashlib.sha256(content).hexdigest(),
+            duplicate_strategy=strategy,
+            can_apply=can_apply,
+            total_count=len(raw_rows),
+            valid_count=valid_count,
+            duplicate_count=duplicate_count,
+            error_count=error_count,
+            rows=preview_rows,
+            result_rows=result_rows,
+        )
+
+    def start_trackside_ap_plan_save(
+        self,
+        site_id: str,
+        *,
+        rows: list[dict[str, object | None]],
+        explicit_confirmation: bool,
+        audit: dict[str, str] | None = None,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError("CONFIRMATION_REQUIRED", "保存轨旁 AP 规划前必须明确确认")
+        normalized = normalize_trackside_plan_rows(rows)
+        return self._start_task(
+            site_id,
+            "trackside_ap_plan_save",
+            {
+                "mode": TRACKSIDE_AP_PLAN_MODE,
+                "rows": normalized,
+                "audit": {str(key): str(value) for key, value in (audit or {}).items()},
+                "explicit_confirmation": True,
+            },
+        )
+
+    def start_trackside_ap_plan_export(self, site_id: str, *, template: bool) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        task_id = f"rail-export-{uuid4().hex}"
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="trackside_ap_plan",
+                artifact_type="xlsx",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_plan"],
+                output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_plan",
+                preferred_name="轨旁AP规划模板.xlsx" if template else "轨旁AP规划.xlsx",
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("轨旁 AP 规划导出", exc)
+        columns = [
+            {
+                "key": field,
+                "title": TRACKSIDE_PLAN_HEADERS[index],
+                "width": TRACKSIDE_PLAN_COLUMN_WIDTHS.get(field),
+            }
+            for index, (_key, field) in enumerate(TRACKSIDE_PLAN_COLUMNS)
+        ]
+        spec = (
+            table_xlsx_spec(
+                reservation.output_path,
+                columns=columns,
+                rows=[],
+                sheet_name="轨旁AP规划",
+                title="轨旁 AP 规划模板",
+                open_dir_on_success=False,
+                allow_inline_rows=True,
+                inline_reason="轨旁 AP 规划空白模板",
+            )
+            if template
+            else table_xlsx_source_spec(
+                reservation.output_path,
+                columns=columns,
+                source=repository_query_source(
+                    db_path=self.paths.site_db_path(site_id),
+                    repository="ac_repository",
+                    method="list_trackside_ap_plan",
+                    filters={"mode": TRACKSIDE_AP_PLAN_MODE},
+                ),
+                sheet_name="轨旁AP规划",
+                title="轨旁 AP 规划",
+                open_dir_on_success=False,
+            )
+        )
+        return self._start_export(
+            site_id,
+            replace(spec.to_job(task_id), site_name=site_id),
+            "trackside_ap_plan_export",
+            reservation,
+        )
+
+    def open_trackside_ap_plan_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "trackside_ap_plan")
 
     def start_car_network_diagnostic(self, site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
         selected_train = str(train_id or "").strip()
@@ -508,19 +939,108 @@ class RailTransitWebApplicationService:
                 summary[f"{key}_count"] = len(value)
         return summary
 
-    def _open_artifact(self, site_id: str, artifact_id: str, source: str) -> tuple[Path, str]:
+    def _open_artifact(
+        self,
+        site_id: str,
+        artifact_id: str,
+        source: str,
+        artifact_type: str = "xlsx",
+    ) -> tuple[Path, str]:
         try:
             path, name, _manifest = self.artifact_store.open(
                 site_id=self._site(site_id),
                 artifact_id=artifact_id,
                 owner=self._OWNER,
                 source=source,
-                artifact_type="xlsx",
+                artifact_type=artifact_type,
                 task_type=self._ARTIFACT_TASK_TYPES[source],
             )
         except WebArtifactError as exc:
             raise RailTransitWebError("ARTIFACT_INVALID", str(exc)) from exc
         return path, name
+
+    @staticmethod
+    def _point_row(node: CarNetworkNode) -> CarNetworkPointRowDTO:
+        return CarNetworkPointRowDTO.model_validate(asdict(node))
+
+    def _point_nodes(self, rows: list[dict[str, object]]) -> list[CarNetworkNode]:
+        nodes: list[CarNetworkNode] = []
+        seen: set[tuple[str, str]] = set()
+        for row_number, row in enumerate(rows, start=1):
+            try:
+                node = node_from_mapping(row)
+                self._validate_point_node(node, row_number)
+            except (TypeError, ValueError) as exc:
+                raise RailTransitWebError("POINT_TABLE_ROW_INVALID", str(exc)) from exc
+            key = self._point_key(node)
+            if key in seen:
+                raise RailTransitWebError(
+                    "POINT_TABLE_DUPLICATE",
+                    f"第{row_number}行节点重复：{' / '.join(key)}",
+                )
+            seen.add(key)
+            nodes.append(node)
+        return nodes
+
+    @staticmethod
+    def _validate_point_node(node: CarNetworkNode, row_number: int) -> None:
+        if not (node.train_id or node.train_no):
+            raise ValueError(f"第{row_number}行 列车标识：必填")
+        if not node.node_name:
+            raise ValueError(f"第{row_number}行 节点名称：必填")
+        if not node.node_type:
+            raise ValueError(f"第{row_number}行 节点类型：必填")
+
+    @staticmethod
+    def _point_key(node: CarNetworkNode) -> tuple[str, str]:
+        return (
+            str(node.train_no or node.train_id).strip().casefold(),
+            node.normalized_name.strip().casefold(),
+        )
+
+    def _read_table_upload(
+        self,
+        site_id: str,
+        file_name: str,
+        content: bytes,
+        reader: Callable[[Path], list[dict[str, object | None]]],
+    ) -> list[dict[str, object | None]]:
+        name = Path(str(file_name or "")).name
+        suffix = Path(name).suffix.casefold()
+        if suffix not in self._TABLE_SUFFIXES:
+            raise RailTransitWebError("FILE_TYPE_INVALID", "仅支持 XLSX/CSV 文件")
+        if not content:
+            raise RailTransitWebError("FILE_EMPTY", "导入文件为空")
+        if len(content) > 10 * 1024 * 1024:
+            raise RailTransitWebError("FILE_TOO_LARGE", "导入文件不得超过 10 MiB")
+        root = (self.paths.runtime_cache_dir / "rail_web_table_previews" / site_id).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        target = (root / f"{uuid4().hex}{suffix}").resolve()
+        self._require_within(target, root)
+        try:
+            target.write_bytes(content)
+            return reader(target)
+        except RailTransitWebError:
+            raise
+        except Exception as exc:
+            message = redact_web_task_text(str(exc)) or "文件格式或元数据校验失败"
+            raise RailTransitWebError("IMPORT_INVALID", message) from exc
+        finally:
+            target.unlink(missing_ok=True)
+
+    @staticmethod
+    def _duplicate_strategy(value: str) -> str:
+        strategy = str(value or "replace").strip().casefold()
+        if strategy not in {"replace", "skip", "error"}:
+            raise RailTransitWebError("DUPLICATE_STRATEGY_INVALID", "重复策略无效")
+        return strategy
+
+    @staticmethod
+    def _task_window_blocked(action: str, exc: Exception) -> NoReturn:
+        raise RailTransitWebError(
+            "BLOCKED_ON_TASK_WINDOW",
+            f"{action}等待公共 Artifact source/任务授权：{exc}",
+        ) from exc
 
     def _validated_staged_files(self, site_id: str, staging_dir: Path, uploads: list[Path]) -> list[Path]:
         expected_root = (self.paths.runtime_cache_dir / "rail_web_uploads" / site_id).resolve()

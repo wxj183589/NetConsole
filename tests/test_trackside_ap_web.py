@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
-from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
+from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job
 from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult
+from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 
 
 def _snapshot() -> TracksideApBusinessLoadResult:
@@ -129,3 +133,49 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     update_job = process.jobs[update.task_id]
     assert update_job.task_type == "trackside_ap_optical_update"
     assert update_job.params["station"] == "站点A"
+
+
+def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{"station_name": "站点A", "ap_count": 20, "ap_start_address": "10.1.1.1", "mask_length": 24, "ap_gateway": "10.1.1.254", "ap_management_vlans": "921", "remark": "原值"}],
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    content = (
+        "车站名称,AP数量,AP起始地址,掩码,AP网关,AP管理VLAN,备注\r\n"
+        "站点A,30,10.1.1.1,255.255.255.0,10.1.1.254,921,覆盖值\r\n"
+        "站点B,10,10.2.1.X,24,10.2.1.254,922,新增值\r\n"
+    ).encode("utf-8-sig")
+
+    preview = service.preview_trackside_ap_plan(
+        "demo", file_name="trackside.csv", content=content, duplicate_strategy="replace"
+    )
+    assert preview.can_apply is True
+    assert preview.duplicate_count == 1
+    assert preview.valid_count == 1
+    assert {row.station_name for row in preview.result_rows} == {"站点A", "站点B"}
+    assert next(row for row in preview.result_rows if row.station_name == "站点A").ap_count == 30
+
+    started = service.start_trackside_ap_plan_save(
+        "demo",
+        rows=[row.model_dump() for row in preview.result_rows],
+        explicit_confirmation=True,
+        audit={"source": "test"},
+    )
+    assert process.jobs[started.task_id].task_type == "trackside_ap_plan_save"
+    assert process.jobs[started.task_id].params["audit"] == {"source": "test"}
+    with pytest.raises(RailTransitWebError) as blocked:
+        service.start_trackside_ap_plan_export("demo", template=False)
+    assert blocked.value.code == "BLOCKED_ON_TASK_WINDOW"

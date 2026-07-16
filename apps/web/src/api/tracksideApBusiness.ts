@@ -1,5 +1,9 @@
 import { apiRequest } from './client'
-import type { TracksideApBusinessPage, TracksideApTask, TracksideApUpdateRequest } from '../types/tracksideApBusiness'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
+import type {
+  TracksideApBusinessPage, TracksideApPlan, TracksideApPlanPreview, TracksideApPlanRow,
+  TracksideApTask, TracksideApUpdateRequest,
+} from '../types/tracksideApBusiness'
 
 const root = '/api/rail-transit/trackside-ap-business'
 
@@ -26,3 +30,29 @@ export function cancelTracksideApTask(taskId: string): Promise<TracksideApTask> 
 export function recoverTracksideApTasks(): Promise<TracksideApTask[]> {
   return apiRequest(`${root}/tasks/recover`, { method: 'POST' })
 }
+
+export function getTracksideApPlan(): Promise<TracksideApPlan> {
+  return apiRequest(`${root}/plan`)
+}
+
+export function previewTracksideApPlan(file: File, duplicateStrategy: 'replace' | 'skip' | 'error'): Promise<TracksideApPlanPreview> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('duplicate_strategy', duplicateStrategy)
+  return apiRequest(`${root}/plan/import/preview`, { method: 'POST', body: form })
+}
+
+export function saveTracksideApPlan(rows: TracksideApPlanRow[]): Promise<TracksideApTask> {
+  return apiRequest(`${root}/plan/save`, {
+    method: 'POST', body: JSON.stringify({ rows, explicit_confirmation: true, audit: { source: 'electron-trackside-plan' } }),
+  })
+}
+
+export function exportTracksideApPlan(template = false): Promise<TracksideApTask> {
+  return apiRequest(`${root}/plan/export`, { method: 'POST', body: JSON.stringify({ template }) })
+}
+
+export const tracksideApPlanDownloadRequest = (artifactId: string, template = false): BackendDownloadRequest => ({
+  apiPath: `${root}/plan/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName: template ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx',
+})

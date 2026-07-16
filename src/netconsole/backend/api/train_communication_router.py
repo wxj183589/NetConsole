@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
-from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
+from netconsole.models.api.rail_transit_web import (
+    CarNetworkPointPreviewDTO,
+    CarNetworkPointTableDTO,
+    CarNetworkPointTableExportRequestDTO,
+    CarNetworkPointTableTransformRequestDTO,
+    CarNetworkPointTableWriteRequestDTO,
+    RailTransitTaskDTO,
+)
 from netconsole.models.api.train_communication import (
     CommunicationPackageDTO,
     CommunicationRawSourceDTO,
@@ -21,6 +31,11 @@ from netconsole.services.rail_transit.train_communication_query_service import T
 
 
 router = APIRouter(prefix="/rail-transit/train-communication", tags=["train-communication"])
+_POINT_TABLE_ACTIONS = {
+    "car_network_generate_point_table",
+    "car_network_save_point_table",
+    "car_network_point_table_export",
+}
 
 
 def _service(request: Request) -> TrainCommunicationQueryService:
@@ -169,6 +184,194 @@ def recover_car_network_diagnostics(request: Request) -> list[RailTransitTaskDTO
         _raise_application_error(exc)
 
 
+@router.get(
+    "/point-table",
+    response_model=CarNetworkPointTableDTO,
+    dependencies=[Depends(require_feature("web.rail_car_network_diagnostic"))],
+)
+def point_table(request: Request) -> CarNetworkPointTableDTO:
+    try:
+        return _application_service(request).get_car_network_point_table(_site_id(request, ""))
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/import/preview",
+    response_model=CarNetworkPointPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_car_network_point_table_write"))],
+)
+async def preview_point_table_import(
+    request: Request,
+    file: UploadFile = File(...),
+    duplicate_strategy: str = Form(default="replace", pattern="^(replace|skip|error)$"),
+) -> CarNetworkPointPreviewDTO:
+    content = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        return await asyncio.to_thread(
+            _application_service(request).preview_car_network_point_table,
+            _site_id(request, ""),
+            file_name=file.filename or "point-table.xlsx",
+            content=content,
+            duplicate_strategy=duplicate_strategy,
+        )
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/transform",
+    response_model=CarNetworkPointTableDTO,
+    dependencies=[Depends(require_feature("web.rail_car_network_point_table_write"))],
+)
+def transform_point_table(
+    request: Request,
+    payload: CarNetworkPointTableTransformRequestDTO,
+) -> CarNetworkPointTableDTO:
+    try:
+        return _application_service(request).transform_car_network_point_table(
+            _site_id(request, ""),
+            operation=payload.operation,
+            rows=[row.model_dump() for row in payload.rows],
+            global_config=payload.global_config,
+        )
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/save",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_car_network_point_table_write")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def save_point_table(
+    request: Request,
+    payload: CarNetworkPointTableWriteRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_car_network_point_table_save(
+            _site_id(request, ""),
+            rows=[row.model_dump() for row in payload.rows],
+            global_config=payload.global_config,
+            overwrite_custom=payload.overwrite_custom,
+            explicit_confirmation=payload.explicit_confirmation,
+            audit=payload.audit,
+        )
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/generate",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_car_network_point_table_write")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def generate_point_table(
+    request: Request,
+    payload: CarNetworkPointTableWriteRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_car_network_point_table_generate(
+            _site_id(request, ""),
+            rows=[row.model_dump() for row in payload.rows],
+            global_config=payload.global_config,
+        )
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.rail_car_network_point_table_export"))],
+)
+def export_point_table(
+    request: Request,
+    payload: CarNetworkPointTableExportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_car_network_point_table_export(
+            _site_id(request, ""),
+            file_format=payload.format,
+        )
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.get(
+    "/point-table/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_car_network_point_table_export"))],
+)
+def download_point_table(
+    request: Request,
+    artifact_id: str,
+    format: str = Query(default="xlsx", pattern="^(xlsx|csv)$"),
+) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_car_network_point_table_export(
+            _site_id(request, ""),
+            artifact_id,
+            file_format=format,
+        )
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.get(
+    "/point-table/tasks/{task_id}",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def point_table_task(request: Request, task_id: str) -> RailTransitTaskDTO:
+    try:
+        result = _application_service(request).get_task(_site_id(request, ""), task_id)
+        if result.action not in _POINT_TABLE_ACTIONS:
+            raise RailTransitWebError("TASK_NOT_FOUND", "车内通信点表任务不存在")
+        return result
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/tasks/{task_id}/cancel",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def cancel_point_table_task(request: Request, task_id: str) -> RailTransitTaskDTO:
+    point_table_task(request, task_id)
+    try:
+        return _application_service(request).cancel_task(_site_id(request, ""), task_id)
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.post(
+    "/point-table/tasks/recover",
+    response_model=list[RailTransitTaskDTO],
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def recover_point_table_tasks(request: Request) -> list[RailTransitTaskDTO]:
+    try:
+        return [
+            item
+            for item in _application_service(request).recover_tasks(_site_id(request, ""))
+            if item.action in _POINT_TABLE_ACTIONS
+        ]
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
 @router.get("/trains/{train_id}", response_model=TrainCommunicationDetailDTO)
 def train_detail(
     request: Request,
@@ -241,7 +444,10 @@ def _query(callback):
 
 
 def _raise_application_error(exc: RailTransitWebError) -> None:
-    status_code = status.HTTP_404_NOT_FOUND if exc.code == "TASK_NOT_FOUND" else status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = {
+        "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
+    }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 

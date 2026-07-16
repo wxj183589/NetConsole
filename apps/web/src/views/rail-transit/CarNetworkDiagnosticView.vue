@@ -10,6 +10,7 @@ import {
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type { OnlineTrainRow, RailTransitTask } from '../../types/railTransitWeb'
+import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
 
 const storageKey = 'netconsole.car-network-diagnostic.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -18,6 +19,7 @@ const selectedTrainId = ref('')
 const task = ref<RailTransitTask | null>(null)
 const loading = ref(false)
 const error = ref('')
+const pointTableVisible = ref(false)
 let pollTimer: number | undefined
 
 const canStart = computed(() => Boolean(
@@ -125,7 +127,7 @@ onBeforeUnmount(stopPolling)
   <section class="diagnostic-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · CAR NETWORK</p><h1>车内通信检测</h1><p>按列车执行 AC 在线状态、MR SSH、跨 TC 丢包与核心侧辅助 Ping 检测。</p></div>
-      <div class="actions"><el-button :loading="loading" @click="loadTrains">刷新列车</el-button><el-button type="primary" :disabled="!canStart" :loading="loading" @click="startDiagnostic">开始检测</el-button><el-button type="danger" plain :disabled="!task || terminalStates.has(task.status)" @click="cancelDiagnostic">取消检测</el-button></div>
+      <div class="actions"><el-button :loading="loading" @click="loadTrains">刷新列车</el-button><el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_write')" @click="pointTableVisible = true">点表管理</el-button><el-button type="primary" :disabled="!canStart" :loading="loading" @click="startDiagnostic">开始检测</el-button><el-button type="danger" plain :disabled="!task || terminalStates.has(task.status)" @click="cancelDiagnostic">取消检测</el-button></div>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverDiagnostic">恢复任务状态</el-button></el-alert>
@@ -151,6 +153,7 @@ onBeforeUnmount(stopPolling)
       <el-empty v-else-if="terminalStates.has(task.status)" description="任务没有返回诊断结果" />
       <el-skeleton v-else :rows="4" animated />
     </div>
+    <CarNetworkPointTableDialog v-model="pointTableVisible" />
   </section>
 </template>
 

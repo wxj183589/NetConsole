@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import csv
+import io
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,6 +27,11 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.rail_transit.car_network_diagnostic import (
+    POINT_TABLE_FIELDS,
+    CarNetworkNode,
+    CarNetworkPointTableStore,
+)
 
 
 RAIL_FEATURE_IDS = (
@@ -34,6 +41,8 @@ RAIL_FEATURE_IDS = (
     "web.mesh_analysis_report_export",
     "web.rail_car_network_diagnostic_execute",
     "web.rail_task_control",
+    "web.rail_car_network_point_table_write",
+    "web.rail_car_network_point_table_export",
 )
 
 
@@ -69,6 +78,108 @@ def _enable_features(app) -> None:
             "client_package": True,
             "internal_only": False,
         }
+
+
+def _point_table_csv(rows: list[dict[str, object]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=list(POINT_TABLE_FIELDS))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8-sig")
+
+
+def test_point_table_preview_transform_save_and_task_window_blocker(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    existing = CarNetworkNode(train_id="LC01", train_no="1", node_name="TC1-MR", node_type="MR")
+    CarNetworkPointTableStore(paths, "demo").save([existing])
+
+    preview = service.preview_car_network_point_table(
+        "demo",
+        file_name="point-table.csv",
+        content=_point_table_csv([
+            {**existing.__dict__, "remark": "覆盖值"},
+            {**existing.__dict__, "node_name": "TC2-MR", "tc": "TC2", "remark": "新增值"},
+        ]),
+        duplicate_strategy="replace",
+    )
+    assert preview.can_apply is True
+    assert preview.duplicate_count == 1
+    assert preview.valid_count == 1
+    assert {row.node_name for row in preview.result_rows} == {"TC1-MR", "TC2-MR"}
+
+    transformed = service.transform_car_network_point_table(
+        "demo",
+        operation="apply_global",
+        rows=[row.model_dump() for row in preview.result_rows],
+        global_config={},
+    )
+    started = service.start_car_network_point_table_save(
+        "demo",
+        rows=[row.model_dump() for row in transformed.rows],
+        global_config=transformed.global_config,
+        overwrite_custom=False,
+        explicit_confirmation=True,
+        audit={"source": "test"},
+    )
+    assert normal.jobs[started.task_id].task_type == "car_network_save_point_table"
+    assert normal.jobs[started.task_id].params["audit"] == {"source": "test"}
+    with pytest.raises(RailTransitWebError) as blocked:
+        service.start_car_network_point_table_export("demo", file_format="xlsx")
+    assert blocked.value.code == "BLOCKED_ON_TASK_WINDOW"
+
+
+def test_point_table_and_trackside_plan_routes_reach_application_tasks(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+    normal = FakeLocalProcessAdapter(app.state.task_service)
+    app.state.rail_transit_web_application_service = RailTransitWebApplicationService(
+        paths,
+        app.state.task_service,
+        process_adapter=normal,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(app.state.task_service),  # type: ignore[arg-type]
+    )
+    _enable_features(app)
+    for feature_id in ("web.rail_trackside_ap_plan", "web.rail_trackside_ap_plan_write", "web.rail_trackside_ap_plan_export"):
+        app.state.feature_gate.features[feature_id] = {
+            "visible": True,
+            "enabled": True,
+            "client_package": True,
+            "internal_only": False,
+        }
+
+    with TestClient(app) as client:
+        point_table = client.get("/api/rail-transit/train-communication/point-table")
+        point_save = client.post(
+            "/api/rail-transit/train-communication/point-table/save",
+            json={"rows": [], "global_config": {}, "explicit_confirmation": True},
+        )
+        plan = client.get("/api/rail-transit/trackside-ap-business/plan")
+        plan_save = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/save",
+            json={"rows": [], "explicit_confirmation": True},
+        )
+        blocked_export = client.post(
+            "/api/rail-transit/trackside-ap-business/plan/export",
+            json={"template": True},
+        )
+
+    assert point_table.status_code == 200
+    assert point_save.status_code == 202
+    assert normal.jobs[point_save.json()["task_id"]].task_type == "car_network_save_point_table"
+    assert plan.status_code == 200
+    assert plan_save.status_code == 202
+    assert normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
+    assert blocked_export.status_code == 503
+    assert blocked_export.json()["detail"]["code"] == "BLOCKED_ON_TASK_WINDOW"
 
 
 def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(tmp_path: Path) -> None:

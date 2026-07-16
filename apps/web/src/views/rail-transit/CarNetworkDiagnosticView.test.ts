@@ -14,6 +14,8 @@ describe('car network diagnostic view', () => {
       '开始检测',
       '取消检测',
       '跨 TC 丢包',
+      'CarNetworkPointTableDialog',
+      '点表管理',
     ]) expect(source).toContain(contract)
     for (const unrelated of [
       'importMeshAnalysis',

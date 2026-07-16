@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.feature_access import require_feature
@@ -8,13 +11,21 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
+    TracksideApPlanDTO,
+    TracksideApPlanExportRequestDTO,
+    TracksideApPlanPreviewDTO,
+    TracksideApPlanWriteRequestDTO,
     TracksideApUpdateRequestDTO,
 )
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
 
 
 router = APIRouter(prefix="/rail-transit/trackside-ap-business", tags=["trackside-ap-business"])
-_ACTIONS = {"trackside_ap_optical_update"}
+_ACTIONS = {
+    "trackside_ap_optical_update",
+    "trackside_ap_plan_save",
+    "trackside_ap_plan_export",
+}
 
 
 def _query_service(request: Request) -> TracksideApBusinessQueryService:
@@ -52,6 +63,94 @@ def rows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/plan",
+    response_model=TracksideApPlanDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+)
+def plan(request: Request) -> TracksideApPlanDTO:
+    try:
+        return _application_service(request).get_trackside_ap_plan(_site_id(request))
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/plan/import/preview",
+    response_model=TracksideApPlanPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_write"))],
+)
+async def preview_plan_import(
+    request: Request,
+    file: UploadFile = File(...),
+    duplicate_strategy: str = Form(default="replace", pattern="^(replace|skip|error)$"),
+) -> TracksideApPlanPreviewDTO:
+    content = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        return await asyncio.to_thread(
+            _application_service(request).preview_trackside_ap_plan,
+            _site_id(request),
+            file_name=file.filename or "trackside-plan.xlsx",
+            content=content,
+            duplicate_strategy=duplicate_strategy,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/plan/save",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_trackside_ap_plan_write")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def save_plan(request: Request, payload: TracksideApPlanWriteRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_trackside_ap_plan_save(
+            _site_id(request),
+            rows=[row.model_dump() for row in payload.rows],
+            explicit_confirmation=payload.explicit_confirmation,
+            audit=payload.audit,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/plan/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_export"))],
+)
+def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_trackside_ap_plan_export(
+            _site_id(request),
+            template=payload.template,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/plan/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_export"))],
+)
+def download_plan_artifact(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_trackside_ap_plan_export(
+            _site_id(request),
+            artifact_id,
+        )
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
 
 
 @router.post(
@@ -121,7 +220,10 @@ def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
 
 
 def _raise_error(exc: RailTransitWebError) -> None:
-    status_code = status.HTTP_404_NOT_FOUND if exc.code == "TASK_NOT_FOUND" else status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = {
+        "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
+    }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
