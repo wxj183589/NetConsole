@@ -72,7 +72,9 @@ export interface AcRadio {
   band: string
   channel: string
   bandwidth: string
+  usage: string
   tx_power: string
+  clients: number
   bssid: string
   updated_at: string
 }
@@ -114,6 +116,12 @@ export interface AcApDetail {
   radios: AcRadio[]
   lldp: AcLldp
   optical: AcOptical
+  connection: {
+    ip_address: string
+    state: string
+    connected_at: string
+    updated_at: string
+  }
 }
 
 export interface AcConfigSnapshot {

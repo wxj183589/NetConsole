@@ -4,6 +4,10 @@ export interface AcWebTask {
   action: string
   artifact_id: string
   available: boolean
+  progress: number
+  stage: string
+  current: number
+  total: number
   sha256: string
   size_bytes: number
   message: string

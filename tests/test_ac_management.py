@@ -27,8 +27,10 @@ from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, p
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
+from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import parse_wlan_ap_connection_records
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
+from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import parse_wlan_ap_radio_types
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -383,6 +385,8 @@ def test_ac_tables_are_created(tmp_path):
     with database.connect() as conn:
         table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_optical_history)").fetchall()]
+        resource_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()]
+        radio_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_radio_history)").fetchall()]
 
     assert "ac_ap_summary" in table_names
     assert "ac_fit_ap_resources" in table_names
@@ -397,6 +401,10 @@ def test_ac_tables_are_created(tmp_path):
     assert "ac_fit_ap_lldp_history" in table_names
     for column in ("voltage", "bias_current", "rx_low_alarm", "tx_high_warning", "module_vendor", "wavelength", "transmission_distance", "connector_type"):
         assert column in optical_history_columns
+    for column in ("connection_state", "connection_time", "rid1_status", "rid1_mode", "rid1_band", "rid1_usage", "rid1_clients"):
+        assert column in resource_columns
+    for column in ("status", "mode", "band", "usage", "clients"):
+        assert column in radio_history_columns
 
 
 def test_ac_repository_summary_upsert_and_replace_lists(tmp_path):
@@ -415,6 +423,41 @@ def test_ac_repository_summary_upsert_and_replace_lists(tmp_path):
     assert repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"] == "GigabitEthernet1/0/1"
     assert repository.get_fit_ap_optical_by_ap("ac-1", "ap-c")["rx_power"] == "-7.55"
     assert repository.get_fit_ap_resource("ac-1", "ap-c")["ap_name"] == "ap-c"
+
+
+def test_fit_ap_resource_refresh_persists_radio_and_connection_fields_without_erasing_bssid(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{
+            "ap_name": "ap-a",
+            "serial_number": "SN-001",
+            "connection_ip": "2001::3",
+            "connection_state": "Run",
+            "connection_time": "05-06 09:47:44",
+            "rid1_status": "Up",
+            "rid1_mode": "802.11n",
+            "rid1_band": "5GHz",
+            "rid1_channel": "149",
+            "rid1_bandwidth": "40",
+            "rid1_usage": "27",
+            "rid1_tx_power": "24",
+            "rid1_clients": 3,
+            "rid1_bbssid": "0011-2233-4455",
+        }],
+    )
+    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "153"}])
+
+    row = repository.get_fit_ap_resource("ac-1", "ap-a")
+    assert row["connection_state"] == "Run"
+    assert row["rid1_status"] == "Up"
+    assert row["rid1_usage"] == "27"
+    assert row["rid1_clients"] == 3
+    assert row["rid1_channel"] == "153"
+    assert row["rid1_bbssid"] == "0011-2233-4455"
+    history = repository.list_fit_ap_radio_history_by_ap(str(row["ap_uuid"]))
+    assert history[0]["status"] == "Up"
+    assert history[0]["clients"] == 3
 
 
 def test_fit_ap_resources_match_by_serial_number_and_keep_ap_uuid(tmp_path):
@@ -1314,7 +1357,40 @@ AP name                  RID State Channel          BW    Usage TxPower Clients
 
     assert radios["4c6f-d608-0400"]["rid1_channel"] == "52(auto)"
     assert radios["4c6f-d608-0400"]["rid1_bandwidth"] == "80"
+    assert radios["4c6f-d608-0400"]["rid1_status"] == "Down"
+    assert radios["4c6f-d608-0400"]["rid1_usage"] == "0"
     assert radios["4c6f-d608-0400"]["rid1_tx_power"] == "20"
+    assert radios["4c6f-d608-0400"]["rid1_clients"] == "0"
+
+
+def test_wlan_ap_connection_record_and_radio_type_parsers_follow_h3c_output():
+    records = parse_wlan_ap_connection_records(
+        """
+AP name                          IP address    State      Time
+ap1                              2001::3       Run        05-06 09:47:44
+ap2                              N/A           Offline    05-06 09:50:38
+"""
+    )
+    radio_types = parse_wlan_ap_radio_types(
+        """
+AP name                  RID  AP state  Radio state  Radio type
+ap1                      1    Up        Up           802.11n(5GHz)
+ap1                      2    Up        Down         802.11n(2.4GHz)
+"""
+    )
+
+    assert records["ap1"] == {
+        "ap_name": "ap1",
+        "connection_ip": "2001::3",
+        "connection_state": "Run",
+        "connection_time": "05-06 09:47:44",
+    }
+    assert records["ap2"]["connection_ip"] is None
+    assert radio_types["ap1"]["rid1_status"] == "Up"
+    assert radio_types["ap1"]["rid1_mode"] == "802.11n"
+    assert radio_types["ap1"]["rid1_band"] == "5GHz"
+    assert radio_types["ap1"]["rid2_status"] == "Down"
+    assert radio_types["ap1"]["rid2_band"] == "2.4GHz"
 
 
 def test_fit_ap_optical_parser_extracts_lldp_and_power_summary():
@@ -1404,6 +1480,9 @@ def test_real_machine_wlan_parsers_read_large_fixture():
     assert rows[0]["online_time"] == "27:02:49:39"
     assert addresses["AP-CLD_01"]["ap_ip"] == "10.62.113.177"
     assert radios["AP-CLD_01"]["rid1_channel"] == "149"
+    assert radios["AP-CLD_01"]["rid1_status"] == "Up"
+    assert radios["AP-CLD_01"]["rid1_usage"] == "27"
+    assert radios["AP-CLD_01"]["rid1_clients"] == "0"
 
 
 def test_wlan_ap_radio_verbose_bbssid_parser_groups_by_ap_name():

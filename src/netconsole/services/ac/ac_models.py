@@ -42,6 +42,7 @@ class AcResourceRefreshResult:
     unauthenticated_rows_updated: int = 0
     bbssid_rows_parsed: int = 0
     lldp_rows_parsed: int = 0
+    failed_commands: list[str] = field(default_factory=list)
     error_message: str = ""
 
     def to_payload(self) -> dict[str, object]:
@@ -56,6 +57,7 @@ class AcResourceRefreshResult:
                 "unauthenticated_rows_updated": self.unauthenticated_rows_updated,
                 "bbssid_rows_parsed": self.bbssid_rows_parsed,
                 "lldp_rows_parsed": self.lldp_rows_parsed,
+                "failed_commands": list(self.failed_commands),
                 "error_message": self.error_message,
             },
         }

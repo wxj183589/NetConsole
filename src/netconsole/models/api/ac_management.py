@@ -60,8 +60,17 @@ class AcRadioDTO(ApiModel):
     band: str = ""
     channel: str = ""
     bandwidth: str = ""
+    usage: str = ""
     tx_power: str = ""
+    clients: int = 0
     bssid: str = ""
+    updated_at: str = ""
+
+
+class AcConnectionRecordDTO(ApiModel):
+    ip_address: str = ""
+    state: str = ""
+    connected_at: str = ""
     updated_at: str = ""
 
 
@@ -121,6 +130,7 @@ class AcApDetailDTO(ApiModel):
     radios: list[AcRadioDTO] = Field(default_factory=list)
     lldp: AcLldpDTO
     optical: AcOpticalDTO
+    connection: AcConnectionRecordDTO = Field(default_factory=AcConnectionRecordDTO)
 
 
 class AcConfigSnapshotDTO(ApiModel):
@@ -215,6 +225,10 @@ class AcWebTaskDTO(ApiModel):
     action: str
     artifact_id: str = ""
     available: bool = False
+    progress: int = 0
+    stage: str = ""
+    current: int = 0
+    total: int = 0
     sha256: str = ""
     size_bytes: int = 0
     message: str = ""
@@ -287,6 +301,10 @@ class AcLocalRebuildRequestDTO(ApiModel):
     ac_id: str = Field(default="", max_length=100)
 
 
+class AcRefreshRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+
+
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
@@ -295,6 +313,7 @@ __all__ = [
     "AcConfigDiffDTO",
     "AcConfigSnapshotDTO",
     "AcConfigSnapshotPageDTO",
+    "AcConnectionRecordDTO",
     "AcLldpDTO",
     "AcManagementSummaryDTO",
     "AcOpticalDTO",
@@ -311,6 +330,7 @@ __all__ = [
     "AcExtensionRollbackRequestDTO",
     "AcExtensionRollbackResultDTO",
     "AcLocalRebuildRequestDTO",
+    "AcRefreshRequestDTO",
     "AcTracksidePlanDTO",
     "AcTracksidePlanPageDTO",
     "AcWebTaskDTO",

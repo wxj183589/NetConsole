@@ -68,18 +68,19 @@ class AcResourceService:
         progress_callback: ProgressCallback | None,
         should_cancel: CancelCallback | None,
     ) -> AcResourceRefreshResult:
-        self._progress(progress_callback, "ac_fit_ap_collect", 0, 0, "正在通过 H3C CLI 更新 FIT-AP 资源...")
+        self._progress(progress_callback, "ac_fit_ap_collect", 0, 2, "正在通过 H3C CLI 更新 FIT-AP 资源...")
         result: AcResourceCollectResult = self.cli_collector(
             device,
             request.site_name,
             repository=self.ac_repository,
             paths=self.paths,
-            progress=lambda message: self._progress(progress_callback, "ac_fit_ap_collect", 0, 0, message),
+            progress=lambda message: self._progress(progress_callback, "ac_fit_ap_collect", 1, 2, message),
             should_cancel=should_cancel,
         )
         if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
             raise AcResourceRefreshCancelled("用户已取消更新")
         snapshot = self.load_snapshot(request.device_uuid)
+        self._progress(progress_callback, "ac_fit_ap_collect", 2, 2, "FIT-AP 资源已持久化")
         return AcResourceRefreshResult(
             success=result.success,
             source="cli",
@@ -90,6 +91,7 @@ class AcResourceService:
             unauthenticated_rows_updated=result.unauthenticated_rows_updated,
             bbssid_rows_parsed=result.bbssid_rows_parsed,
             lldp_rows_parsed=result.lldp_rows_parsed,
+            failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             error_message=str(result.error_message or ""),
         )
 

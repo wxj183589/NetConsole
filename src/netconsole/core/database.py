@@ -6,7 +6,7 @@ from pathlib import Path
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.05.snmp_center_device_fields"
+CURRENT_SCHEMA_VERSION = "2026.07.17.ac_fit_ap_radio_connection_fields"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -335,19 +335,37 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     state_display TEXT,
     group_name TEXT,
     online_time TEXT,
+    connection_ip TEXT,
+    connection_state TEXT,
+    connection_time TEXT,
     site TEXT,
     mileage TEXT,
     location_note TEXT,
     direction TEXT,
+    rid1_status TEXT,
+    rid1_mode TEXT,
+    rid1_band TEXT,
     rid1_channel TEXT,
     rid1_bandwidth TEXT,
+    rid1_usage TEXT,
     rid1_tx_power TEXT,
+    rid1_clients INTEGER,
+    rid2_status TEXT,
+    rid2_mode TEXT,
+    rid2_band TEXT,
     rid2_channel TEXT,
     rid2_bandwidth TEXT,
+    rid2_usage TEXT,
     rid2_tx_power TEXT,
+    rid2_clients INTEGER,
+    rid3_status TEXT,
+    rid3_mode TEXT,
+    rid3_band TEXT,
     rid3_channel TEXT,
     rid3_bandwidth TEXT,
+    rid3_usage TEXT,
     rid3_tx_power TEXT,
+    rid3_clients INTEGER,
     rid1_bbssid TEXT,
     rid2_bbssid TEXT,
     rid3_bbssid TEXT,
@@ -768,9 +786,14 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
     ap_uuid TEXT NOT NULL,
     ap_name TEXT,
     rid INTEGER,
+    status TEXT,
+    mode TEXT,
+    band TEXT,
     channel TEXT,
     bandwidth TEXT,
+    usage TEXT,
     tx_power TEXT,
+    clients INTEGER,
     bbssid TEXT,
     collected_at TEXT,
     collect_run_uuid TEXT,
@@ -1007,6 +1030,24 @@ class Database:
         if self._table_exists(conn, "ac_trackside_ap_plan") and not self._column_exists(conn, "ac_trackside_ap_plan", "remark"):
             conn.execute("ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT")
         fit_ap_resource_columns = {
+            "connection_ip": "TEXT",
+            "connection_state": "TEXT",
+            "connection_time": "TEXT",
+            "rid1_status": "TEXT",
+            "rid1_mode": "TEXT",
+            "rid1_band": "TEXT",
+            "rid1_usage": "TEXT",
+            "rid1_clients": "INTEGER",
+            "rid2_status": "TEXT",
+            "rid2_mode": "TEXT",
+            "rid2_band": "TEXT",
+            "rid2_usage": "TEXT",
+            "rid2_clients": "INTEGER",
+            "rid3_status": "TEXT",
+            "rid3_mode": "TEXT",
+            "rid3_band": "TEXT",
+            "rid3_usage": "TEXT",
+            "rid3_clients": "INTEGER",
             "rid1_bbssid": "TEXT",
             "rid2_bbssid": "TEXT",
             "rid3_bbssid": "TEXT",
@@ -1084,8 +1125,17 @@ class Database:
         for column, column_type in fit_ap_optical_history_columns.items():
             if self._table_exists(conn, "ac_fit_ap_optical_history") and not self._column_exists(conn, "ac_fit_ap_optical_history", column):
                 conn.execute(f"ALTER {'TABLE'} ac_fit_ap_optical_history ADD COLUMN {column} {column_type}")
-        if self._table_exists(conn, "ac_fit_ap_radio_history") and not self._column_exists(conn, "ac_fit_ap_radio_history", "bbssid"):
-            conn.execute("ALTER " "TABLE ac_fit_ap_radio_history ADD COLUMN bbssid TEXT")
+        fit_ap_radio_history_columns = {
+            "status": "TEXT",
+            "mode": "TEXT",
+            "band": "TEXT",
+            "usage": "TEXT",
+            "clients": "INTEGER",
+            "bbssid": "TEXT",
+        }
+        for column, column_type in fit_ap_radio_history_columns.items():
+            if self._table_exists(conn, "ac_fit_ap_radio_history") and not self._column_exists(conn, "ac_fit_ap_radio_history", column):
+                conn.execute(f"ALTER {'TABLE'} ac_fit_ap_radio_history ADD COLUMN {column} {column_type}")
         fit_ap_lldp_history_columns = {
             "source": "TEXT",
             "local_interface_normalized": "TEXT",

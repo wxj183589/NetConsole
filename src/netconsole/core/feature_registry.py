@@ -80,7 +80,7 @@ FEATURES: tuple[FeatureItem, ...] = (
         status=FeatureStatus.DEVELOPMENT,
     ),
     FeatureItem("web.network_tools_tcp_port_test", "TCP 端口测试（Web）", "web.network_tools_toolbox", "action"),
-    FeatureItem("web.ac_management", "AC 管理（Web 只读）", "module.ac", "page"),
+    FeatureItem("web.ac_management", "AC 管理（Web）", "module.ac", "page"),
     FeatureItem("web.ac_fit_ap_resources", "FIT-AP 资源（Web）", "web.ac_management", "page"),
     FeatureItem(
         "web.ac_trackside_ap_plan",
@@ -126,7 +126,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.ac_extensions_apply", "AP 扩展导入确认（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.ac_extensions_rollback", "AP 扩展导入回滚（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.ac_extensions_export", "AP 扩展导出（Web）", "web.ac_extensions", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
-    FeatureItem("web.ac_refresh", "AC 本地重算（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.ac_refresh", "AC/FIT-AP 设备更新（Web）", "web.ac_management", "action"),
     FeatureItem("web.ac_dangerous_actions", "AC 高风险动作 Fake 闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(
         "web.ac_config_snapshots",

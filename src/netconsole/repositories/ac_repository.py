@@ -70,19 +70,37 @@ FIT_AP_RESOURCE_FIELDS = (
     "state_display",
     "group_name",
     "online_time",
+    "connection_ip",
+    "connection_state",
+    "connection_time",
     "site",
     "mileage",
     "location_note",
     "direction",
+    "rid1_status",
+    "rid1_mode",
+    "rid1_band",
     "rid1_channel",
     "rid1_bandwidth",
+    "rid1_usage",
     "rid1_tx_power",
+    "rid1_clients",
+    "rid2_status",
+    "rid2_mode",
+    "rid2_band",
     "rid2_channel",
     "rid2_bandwidth",
+    "rid2_usage",
     "rid2_tx_power",
+    "rid2_clients",
+    "rid3_status",
+    "rid3_mode",
+    "rid3_band",
     "rid3_channel",
     "rid3_bandwidth",
+    "rid3_usage",
     "rid3_tx_power",
+    "rid3_clients",
     "rid1_bbssid",
     "rid2_bbssid",
     "rid3_bbssid",
@@ -383,14 +401,26 @@ FIT_AP_RADIO_HISTORY_FIELDS = (
     "ap_uuid",
     "ap_name",
     "rid",
+    "status",
+    "mode",
+    "band",
     "channel",
     "bandwidth",
+    "usage",
     "tx_power",
+    "clients",
     "bbssid",
     "collected_at",
     "collect_run_uuid",
     "raw_log_path",
     "created_at",
+)
+
+FIT_AP_OPTIONAL_DETAIL_FIELDS = (
+    "connection_ip",
+    "connection_state",
+    "connection_time",
+    *(f"rid{rid}_{field}" for rid in (1, 2, 3) for field in ("status", "mode", "band", "usage", "clients", "bbssid")),
 )
 
 AP_ENTITY_FIELDS = (
@@ -597,6 +627,11 @@ class AcRepository:
                 if station and not str(resource_data.get("site") or "").strip():
                     resource_data["site"] = station
                 existing_resource = conn.execute("SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1", (ap_uuid,)).fetchone()
+                if existing_resource is not None:
+                    existing_data = dict(existing_resource)
+                    for field in FIT_AP_OPTIONAL_DETAIL_FIELDS:
+                        if resource_data.get(field) in (None, "") and existing_data.get(field) not in (None, ""):
+                            resource_data[field] = existing_data[field]
                 if _has_lldp_payload(resource_data):
                     lldp_data = normalize_lldp_payload(
                         {
@@ -1901,20 +1936,30 @@ class AcRepository:
     def _append_radio_history(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
         for rid in (1, 2, 3):
+            status = payload.get(f"rid{rid}_status")
+            mode = payload.get(f"rid{rid}_mode")
+            band = payload.get(f"rid{rid}_band")
             channel = payload.get(f"rid{rid}_channel")
             bandwidth = payload.get(f"rid{rid}_bandwidth")
+            usage = payload.get(f"rid{rid}_usage")
             tx_power = payload.get(f"rid{rid}_tx_power")
+            clients = payload.get(f"rid{rid}_clients")
             bbssid = payload.get(f"rid{rid}_bbssid")
-            if not any(value not in (None, "") for value in (channel, bandwidth, tx_power, bbssid)):
+            if not any(value not in (None, "") for value in (status, mode, band, channel, bandwidth, usage, tx_power, clients, bbssid)):
                 continue
             row = {
                 "ac_device_uuid": payload.get("ac_device_uuid"),
                 "ap_uuid": payload.get("ap_uuid"),
                 "ap_name": payload.get("ap_name"),
                 "rid": rid,
+                "status": status,
+                "mode": mode,
+                "band": band,
                 "channel": channel,
                 "bandwidth": bandwidth,
+                "usage": usage,
                 "tx_power": tx_power,
+                "clients": clients,
                 "bbssid": bbssid,
                 "collected_at": payload.get("collected_at"),
                 "collect_run_uuid": payload.get("collect_run_uuid"),

@@ -41,16 +41,22 @@ def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dic
             INSERT INTO ac_fit_ap_resources (
                 ac_device_uuid, ap_uuid, ap_name, ap_ip, ap_mac, model,
                 serial_number, state, state_display, site, rid1_channel,
-                rid1_bandwidth, rid1_tx_power, rid1_bbssid, rid2_channel,
-                rid2_bandwidth, rid2_tx_power, rid2_bbssid,
+                rid1_bandwidth, rid1_tx_power, rid1_bbssid, rid1_status,
+                rid1_mode, rid1_band, rid1_usage, rid1_clients, rid2_channel,
+                rid2_bandwidth, rid2_tx_power, rid2_bbssid, rid2_status,
+                rid2_mode, rid2_band, rid2_usage, rid2_clients,
+                connection_ip, connection_state, connection_time,
                 lldp_neighbor_name, lldp_neighbor_interface, lldp_match_status,
                 collected_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'WA-Test', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '接入交换机', ?, 'matched', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, 'WA-Test', ?, ?, ?, ?, ?, ?, ?, ?, 'Up',
+                      '802.11n', '5GHz', '12', 3, ?, ?, ?, ?, 'Up',
+                      '802.11n', '2.4GHz', '8', 1, ?, 'Run', '05-06 09:47:44',
+                      '接入交换机', ?, 'matched', ?, ?)
             """,
             [
-                ("ac-1", "ap-online", "AP-Online", "10.0.1.1", "0000-0000-0001", "SECRET-SN-1", "R/M", "运行(主)", "车站A", "1", "80", "15", "0000-0001-0001", "36", "80", "17", "0000-0001-0002", "GigabitEthernet1/0/1", now, now),
-                ("ac-1", "ap-offline", "AP-Offline", "10.0.1.2", "0000-0000-0002", "SECRET-SN-2", "Idle", "Idle", "车站B", "6", "40", "13", "0000-0002-0001", "44", "80", "16", "0000-0002-0002", "GigabitEthernet1/0/2", now, now),
-                ("ac-1", "ap-unauth", "AP-Unauth", "10.0.1.3", "0000-0000-0003", "SECRET-SN-3", "R/M", "运行(主)", "车站A", "11", "40", "12", "0000-0003-0001", "149", "80", "14", "0000-0003-0002", "GigabitEthernet1/0/3", now, now),
+                ("ac-1", "ap-online", "AP-Online", "10.0.1.1", "0000-0000-0001", "SECRET-SN-1", "R/M", "运行(主)", "车站A", "1", "80", "15", "0000-0001-0001", "36", "80", "17", "0000-0001-0002", "10.0.1.1", "GigabitEthernet1/0/1", now, now),
+                ("ac-1", "ap-offline", "AP-Offline", "10.0.1.2", "0000-0000-0002", "SECRET-SN-2", "Idle", "Idle", "车站B", "6", "40", "13", "0000-0002-0001", "44", "80", "16", "0000-0002-0002", "10.0.1.2", "GigabitEthernet1/0/2", now, now),
+                ("ac-1", "ap-unauth", "AP-Unauth", "10.0.1.3", "0000-0000-0003", "SECRET-SN-3", "R/M", "运行(主)", "车站A", "11", "40", "12", "0000-0003-0001", "149", "80", "14", "0000-0003-0002", "10.0.1.3", "GigabitEthernet1/0/3", now, now),
             ],
         )
         conn.executemany(

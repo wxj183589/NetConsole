@@ -25,6 +25,7 @@ from netconsole.models.api.ac_management import (
     AcExtensionRollbackRequestDTO,
     AcExtensionRollbackResultDTO,
     AcLocalRebuildRequestDTO,
+    AcRefreshRequestDTO,
     AcTracksidePlanPageDTO,
     AcWebTaskDTO,
 )
@@ -322,6 +323,19 @@ def local_rebuild(request: Request, rebuild_kind: str, payload: AcLocalRebuildRe
         return _web_service(request).start_local_rebuild(_web_site_id(request), task_type, ac_id=payload.ac_id)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="不支持的 AC 本地重算类型") from exc
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
+    "/refresh/{refresh_kind}",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.ac_refresh"))],
+)
+def refresh_resources(request: Request, refresh_kind: str, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_refresh(_web_site_id(request), refresh_kind, ac_id=payload.ac_id)
     except AcWebActionError as exc:
         _raise_web_error(exc)
 

@@ -48,6 +48,13 @@ export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'tracksi
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }
 
+export function startAcResourceRefresh(kind: 'fit-ap', acId: string): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/refresh/${kind}`, {
+    method: 'POST',
+    body: JSON.stringify({ ac_id: acId }),
+  })
+}
+
 export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
 }

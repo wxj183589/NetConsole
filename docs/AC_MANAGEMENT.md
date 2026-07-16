@@ -2,32 +2,33 @@
 
 ## 当前状态
 
-阶段 5C-4 在完整 Web 控制台中增加 AC 管理只读页面，入口为 `/ac-management`，Feature key 为 `web.ac_management`。Qt AC 页面仍是设备连接、采集和写操作的唯一生产入口；Web 页面只展示当前局点已有数据。
+Electron AC/FIT-AP 迁移处于 `PARTIAL / REAL_DEVICE_PENDING`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 FIT-AP 资源”会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。Qt 仍保留为事实源和回退入口，AC 信息、单 AP 深度更新以及 Qt 其余按钮完成前不得标记 `COMPLETE`。
 
 阶段 5C-5 增加独立的 `/ac-management/mesh-links` 页面，Feature key 为 `web.ac_mesh_links`。阶段 5C-5A 再增加 Feature key `ac.mesh_link.refresh` 的受控手工刷新。该页面展示“车载 MR ↔ 轨旁 FIT-AP”的 AC Mesh-Link 快照，不把 MR 建模为无线客户端。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
 
-Web 只读链路为：
+当前 FIT-AP 更新链路为：
 
 ```text
-Vue AC 管理
-  -> GET /api/ac-management/*
-  -> AcManagementQueryService
-  -> AcRepository + 现有光衰/配置规则
-  -> 当前局点 devices.db / 受控配置快照
+Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
+  -> AcWebApplicationService -> ac_fit_ap_resources_refresh Job
+  -> AcResourceService -> H3C CLI collector/parser -> AcRepository
+  -> 当前局点 devices.db + raw/commands JSONL
+  -> web-tasks 查询/取消/重启恢复 -> Vue 刷新结构化结果
 ```
 
-Query Service 通过 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON` 复用现有 `AcRepository` 查询，不初始化 schema、不修复数据、不更新时间戳。配置快照只能通过 `snapshot_id` 读取，路径必须是当前局点目录内的相对路径。
+查询仍通过 SQLite URI `mode=ro` 和 `PRAGMA query_only=ON`；写入只发生在后台采集 Worker 的 `AcRepository`。数据库升级仅对 `ac_fit_ap_resources` 与 Radio history 执行幂等加列，不删除、不重建主库。
 
 ## 页面能力
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
 - FIT-AP：后端搜索、筛选、排序和分页，前端列显隐、手工列宽及横向滚动；
-- AP 详情：基本信息、Radio 1/2、LLDP/端口、交换机光模块和 AP 侧光衰；
+- AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
+- 真实更新：任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 在线监控：车载 MR 状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、AP 在线与光衰关联、最近快照和切换事件；可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
 
-轨道交通 FIT-AP 资源采用 Mesh 接口/射频链路语义，仅展示 Mesh Radio 1/2 的信道、带宽、功率、BSSID 等真实采集字段，不展示客户端数量。当前数据库没有可靠的 Mesh Radio 状态、模式和频段时，API 返回空值，页面显示“--”，不得根据 Radio ID、信道或其他无关字段推测。Web DTO 不返回 AP/设备序列号，不显示 Radio 3 和端口变化列。
+Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留，只有后续单 AP 深度更新允许消费该既有命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
 ## 光衰关联规则
 
@@ -69,9 +70,13 @@ GET /api/ac-management/mesh-links/mrs/{mr_id}
 GET /api/ac-management/mesh-links/snapshots
 GET /api/ac-management/mesh-links/raw-tail
 POST /api/ac-management/mesh-links/refresh
+POST /api/ac-management/refresh/fit-ap
+GET  /api/ac-management/web-tasks/{task_id}
+POST /api/ac-management/web-tasks/{task_id}/cancel
+POST /api/ac-management/web-tasks/recover
 ```
 
-`refresh` 是 Mesh-Link 路由唯一 POST，只接受 `controller_id` 和 `include_switch_history`。请求不能携带命令、用户名或密码；同一 AC 的活动任务重复提交时返回已有 Task。Web 不连接设备，Worker 从当前局点设备库读取受控凭据，固定执行：
+Mesh-Link `refresh` 只接受 `controller_id` 和 `include_switch_history`。请求不能携带命令、用户名或密码；同一 AC 的活动任务重复提交时返回已有 Task。Vue 不连接设备，Worker 从当前局点设备库读取受控凭据，固定执行：
 
 ```text
 screen-length disable
@@ -84,27 +89,26 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 原始回显位于当前局点 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`。Worker 先在 `.staging` 完整写入 UTF-8 raw 和无绝对路径的 metadata，再原子移动到正式目录并在单个 SQLite 事务中写入结构化快照。数据库提交失败时 raw 转入受控 `failures/<task_id>`，最新成功快照保持不变。命令明确返回零条链路时生成有效空快照；空回显、命令错误或格式无法识别时任务失败，不把全部 MR 改成离线。
 
-## 保留在 Qt 的能力
+## 尚未完成的 Qt 对等能力
 
-- 除 Mesh-Link 白名单手工刷新外的 AC 连接和新采集；
-- FIT-AP 资源、Radio、LLDP 与光衰刷新；
+- AC 信息真实更新；
+- 单 AP 深度更新与 BSSID 定向补采；
+- FIT-AP 光衰刷新在主页面的完整任务入口与状态交付；
 - 固化新上线 AP、开启 AP 远程登录和批量命令；
 - `save force`、配置采集任务和其他设备写操作；
 - 导出及现有 Qt AC 工作流。
 
-Web 页面稳定前不替换 Qt AC 页面，也不改变现有 AC 命令、数据库 schema 或采集文件。
+上述能力和真实设备验收完成前不替换 Qt AC 页面。
 
 ## 定向验证
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_ac_management_query_service.py -q
-.venv\Scripts\python.exe -m pytest tests/test_ac_management_web_api.py -q
+.venv\Scripts\python.exe -m pytest tests/test_ac_management.py tests/test_ac_domain_job.py tests/test_ac_web_parity.py tests/test_ac_management_web_api.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_refresh_service.py tests/test_ac_mesh_link_refresh_job.py tests/test_ac_mesh_link_refresh_api.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_query_service.py tests/test_ac_mesh_link_web_api.py -q
 cd apps/web
-npm run test -- AcManagement
-npm run test -- AcMeshLink
-npm run build
+pnpm exec vitest run src/views/ac-management/AcManagementView.test.ts src/stores/acManagement.test.ts src/api/acWebParity.test.ts
+pnpm exec vue-tsc --noEmit -p tsconfig.app.json
 ```
 
-自动测试不连接真实 AC。真实局点验证必须显式设置 `NETCONSOLE_ALLOW_REAL_AC_TEST=1` 并指定局点和 AC，只执行上述固定白名单命令；本阶段不提供默认真实设备测试入口。
+自动测试不连接真实 AC。connection-record、radio type 与整条设备链路标记 `REAL_DEVICE_PENDING`，不得用 Fake 结果替代现场验收。

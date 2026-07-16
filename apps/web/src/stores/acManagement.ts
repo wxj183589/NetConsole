@@ -9,6 +9,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
+import { cancelAcWebTask, getAcWebTask, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
 import type {
   AcAp,
   AcApDetail,
@@ -17,6 +18,10 @@ import type {
   AcConfigSnapshot,
   AcManagementSummary,
 } from '../types/acManagement'
+import type { AcWebTask } from '../types/acWebParity'
+
+const ACTIVE_TASK_KEY = 'netconsole.ac.fit-ap-active-task'
+const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 
 export const useAcManagementStore = defineStore('ac-management', () => {
   const summary = ref<AcManagementSummary | null>(null)
@@ -32,6 +37,8 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   const configLoading = ref(false)
   const failures = ref(0)
   const error = ref('')
+  const refreshTask = ref<AcWebTask | null>(null)
+  const refreshStarting = ref(false)
   const filters = reactive({
     ac_id: '',
     page: 1,
@@ -58,6 +65,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   let apsTimer: number | null = null
   let detailTimer: number | null = null
   let snapshotTimer: number | null = null
+  let taskTimer: number | null = null
 
   const activeAc = computed(() => summary.value?.acs.find((item) => item.id === filters.ac_id) || summary.value?.acs[0])
 
@@ -181,6 +189,64 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     await Promise.all([refreshAps(), refreshSnapshots(), refreshSelected()])
   }
 
+  async function startFitApRefresh(): Promise<void> {
+    if (!filters.ac_id || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
+    refreshStarting.value = true
+    error.value = ''
+    try {
+      refreshTask.value = await startAcResourceRefresh('fit-ap', filters.ac_id)
+      window.localStorage?.setItem(ACTIVE_TASK_KEY, refreshTask.value.task_id)
+      scheduleTask()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : 'FIT-AP 资源更新启动失败'
+    } finally {
+      refreshStarting.value = false
+    }
+  }
+
+  async function cancelRefreshTask(): Promise<void> {
+    if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
+    try {
+      refreshTask.value = await cancelAcWebTask(refreshTask.value.task_id)
+      scheduleTask()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : '取消 FIT-AP 更新失败'
+    }
+  }
+
+  async function recoverRefreshTask(): Promise<void> {
+    const saved = window.localStorage?.getItem(ACTIVE_TASK_KEY)
+    try {
+      const tasks = await recoverAcWebTasks()
+      refreshTask.value = tasks.find((item) => item.task_id === saved)
+        || tasks.find((item) => item.action === 'ac_fit_ap_resources_refresh')
+        || null
+      if (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status)) scheduleTask()
+    } catch {
+      if (saved) await pollTask(saved)
+    }
+  }
+
+  async function pollTask(taskId: string): Promise<void> {
+    try {
+      refreshTask.value = await getAcWebTask(taskId)
+      if (TERMINAL_TASKS.has(refreshTask.value.status)) {
+        window.localStorage?.removeItem(ACTIVE_TASK_KEY)
+        await manualRefresh()
+      } else {
+        scheduleTask()
+      }
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : 'FIT-AP 更新任务读取失败'
+    }
+  }
+
+  function scheduleTask(): void {
+    if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
+    if (taskTimer !== null) window.clearTimeout(taskTimer)
+    taskTimer = window.setTimeout(() => void pollTask(refreshTask.value!.task_id), 1000)
+  }
+
   function setAcId(value: string): void {
     filters.ac_id = value
     filters.page = 1
@@ -220,6 +286,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     if (polling) return
     polling = true
     void manualRefresh()
+    void recoverRefreshTask()
     scheduleSummary()
     scheduleAps()
     scheduleDetail()
@@ -228,10 +295,11 @@ export const useAcManagementStore = defineStore('ac-management', () => {
 
   function stopPolling(): void {
     polling = false
-    for (const timer of [summaryTimer, apsTimer, detailTimer, snapshotTimer]) {
+    for (const timer of [summaryTimer, apsTimer, detailTimer, snapshotTimer, taskTimer]) {
       if (timer !== null) window.clearTimeout(timer)
     }
     summaryTimer = apsTimer = detailTimer = snapshotTimer = null
+    taskTimer = null
   }
 
   function scheduleSummary(): void {
@@ -283,6 +351,8 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     configLoading,
     failures,
     error,
+    refreshTask,
+    refreshStarting,
     filters,
     snapshotPage,
     snapshotPageSize,
@@ -296,6 +366,9 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     loadMoreConfig,
     loadDiff,
     manualRefresh,
+    startFitApRefresh,
+    cancelRefreshTask,
+    recoverRefreshTask,
     setAcId,
     applyFilters,
     setPage,

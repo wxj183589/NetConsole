@@ -26,6 +26,8 @@ SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",
+    "display wlan ap all connection-record",
+    "display wlan ap all radio type",
     "display wlan ap unauthenticated",
     "display wlan ap all radio verbose filter bbssid",
     "display wlan ap all lldp",
@@ -40,8 +42,9 @@ SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS = {
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",
+    "display wlan ap all connection-record",
+    "display wlan ap all radio type",
     "display wlan ap unauthenticated",
-    "display wlan ap all radio verbose filter bbssid",
     "display wlan ap all lldp",
 }
 

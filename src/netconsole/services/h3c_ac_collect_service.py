@@ -19,9 +19,11 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
+from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import parse_wlan_ap_connection_records
 from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
+from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import parse_wlan_ap_radio_types
 from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
 from netconsole.repositories.ac_repository import AcRepository
@@ -42,8 +44,9 @@ FIT_AP_RESOURCE_REQUIRED_COMMANDS = (
     "display wlan ap all radio",
 )
 FIT_AP_RESOURCE_OPTIONAL_COMMANDS = (
+    "display wlan ap all connection-record",
+    "display wlan ap all radio type",
     "display wlan ap unauthenticated",
-    "display wlan ap all radio verbose filter bbssid",
     "display wlan ap all lldp",
 )
 FIT_AP_RESOURCE_COMMANDS = FIT_AP_RESOURCE_REQUIRED_COMMANDS
@@ -985,6 +988,8 @@ def parse_ac_resource_outputs(
     ap_rows = parse_wlan_ap_list(ap_all)
     address_rows = parse_wlan_ap_addresses(outputs.get("display wlan ap all address", ""))
     radio_rows = parse_wlan_ap_radios(outputs.get("display wlan ap all radio", ""))
+    connection_rows = parse_wlan_ap_connection_records(outputs.get("display wlan ap all connection-record", ""))
+    radio_type_rows = parse_wlan_ap_radio_types(outputs.get("display wlan ap all radio type", ""))
     bbssid_rows = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
     lldp_rows = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
     resources: list[dict[str, object | None]] = []
@@ -996,6 +1001,8 @@ def parse_ac_resource_outputs(
                 **row,
                 **address_rows.get(ap_name, {}),
                 **radio_rows.get(ap_name, {}),
+                **connection_rows.get(ap_name, {}),
+                **radio_type_rows.get(ap_name, {}),
                 **bbssid_rows.get(ap_name, {}),
                 **lldp_rows.get(ap_name, {}),
                 **metadata,

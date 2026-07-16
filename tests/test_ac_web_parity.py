@@ -18,7 +18,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
-from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO
+from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO, AcRefreshRequestDTO
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
@@ -286,6 +286,21 @@ def test_ac_local_rebuild_validates_target_and_task_recovery_scope(tmp_path: Pat
     with pytest.raises(AcWebActionError) as foreign_task:
         service.get_task("demo", "foreign-ac-task")
     assert foreign_task.value.code == "TASK_NOT_FOUND"
+
+
+def test_fit_ap_refresh_starts_real_collect_job_with_fixed_parameters(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+
+    assert set(AcRefreshRequestDTO.model_fields) == {"ac_id"}
+    started = service.start_refresh("demo", "fit-ap", ac_id="ac-1")
+    job = normal.jobs[started.task_id]
+
+    assert job.task_type == "ac_fit_ap_resources_refresh"
+    assert job.params["mode"] == "collect"
+    assert job.params["source"] == "cli"
+    assert job.params["device_uuid"] == "ac-1"
+    assert started.status == "RUNNING"
 
 
 def test_ac_local_rebuild_api_rejects_legacy_source_and_unknown_target(

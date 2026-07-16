@@ -52,10 +52,12 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert aps.json()["items"][0]["id"] == "ap-offline"
     assert detail.status_code == 200
     assert len(detail.json()["radios"]) == 2
+    assert detail.json()["radios"][0]["status"] == "Up"
+    assert detail.json()["radios"][0]["usage"] == "12"
+    assert detail.json()["radios"][0]["clients"] == 3
+    assert detail.json()["connection"]["state"] == "Run"
     assert "serial" not in detail.text.casefold()
     assert "SECRET-SN" not in detail.text
-    assert "client" not in aps.text.casefold()
-    assert "client" not in detail.text.casefold()
     assert content.status_code == 200
     assert diff.status_code == 200
     assert after_db == before_db
@@ -86,6 +88,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/extensions/export",
         "/api/ac-management/extensions/audits/{audit_id}/rollback",
         "/api/ac-management/local-rebuild/{rebuild_kind}",
+        "/api/ac-management/refresh/{refresh_kind}",
         "/api/ac-management/trackside-business/local-rebuild",
         "/api/ac-management/web-tasks/{task_id}/cancel",
         "/api/ac-management/web-tasks/recover",
@@ -94,6 +97,5 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/actions/plans/{plan_id}/execute",
     }
     assert all(method in {"GET", "POST"} for _path, method in routes)
-    assert "client_count" not in str(app.openapi()).casefold()
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
     assert all("delete" not in path for path, _method in routes)

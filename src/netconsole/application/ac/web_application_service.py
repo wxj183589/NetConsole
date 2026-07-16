@@ -56,7 +56,7 @@ class AcWebActionError(ValueError):
 
 
 class AcWebApplicationService:
-    """AC Web 用例边界；写入复用基础资料服务，设备动作只进入 Fake Task。"""
+    """AC Web 用例边界；设备 IO 只通过持久化后台任务执行。"""
 
     _OWNER = "web_ac"
     _ARTIFACT_TASK_TYPES = {"ac_extension_export": "web_export_fit_ap_extension_xlsx"}
@@ -66,6 +66,9 @@ class AcWebApplicationService:
         "ac_fit_ap_optical_refresh": "FIT-AP 光衰本地重算",
         "trackside_ap_plan_refresh": "轨旁 AP 规划本地加载",
         "ac_trackside_business_refresh": "轨旁 AP 业务本地重算",
+    }
+    _REFRESH_TASKS = {
+        "fit-ap": ("ac_fit_ap_resources_refresh", "更新 FIT-AP 资源"),
     }
     _TASK_ACTIONS = {
         **{task_type: task_type for task_type in _LOCAL_REBUILD_TASKS},
@@ -161,6 +164,30 @@ class AcWebApplicationService:
         }
         if task_type == "trackside_ap_plan_refresh":
             params["mode"] = TRACKSIDE_AP_PLAN_MODE
+        self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
+        return self._task_dto(site_id, task_id)
+
+    def start_refresh(self, site_id: str, refresh_kind: str, *, ac_id: str) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        try:
+            task_type, task_name = self._REFRESH_TASKS[refresh_kind]
+        except KeyError as exc:
+            raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 AC/FIT-AP 更新类型") from exc
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        task_id = f"ac-web-{uuid4().hex}"
+        params = {
+            "site_name": site_id,
+            "db_path": str(self.paths.site_db_path(site_id)),
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "task_name": task_name,
+            "owner": self._OWNER,
+            "task_source": "local",
+            "device_uuid": device_uuid,
+            "ac_uuid": device_uuid,
+            "mode": "collect",
+            "source": "cli",
+        }
         self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
         return self._task_dto(site_id, task_id)
 
@@ -464,6 +491,10 @@ class AcWebApplicationService:
             action=self._TASK_ACTIONS[snapshot.task_type],
             artifact_id=str((metadata or {}).get("artifact_id") or ""),
             available=bool(metadata and metadata.get("completed") is True),
+            progress=snapshot.progress,
+            stage=snapshot.stage,
+            current=snapshot.current,
+            total=snapshot.total,
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             message=redact_web_task_text(snapshot.message),
@@ -523,6 +554,23 @@ class AcWebApplicationService:
             value = result.get(key)
             if isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
+        collection = result.get("collection")
+        if isinstance(collection, dict):
+            summary["collection"] = {
+                key: collection[key]
+                for key in (
+                    "success",
+                    "source",
+                    "collect_run_uuid",
+                    "fit_ap_resources_updated",
+                    "unauthenticated_rows_updated",
+                    "bbssid_rows_parsed",
+                    "lldp_rows_parsed",
+                    "failed_commands",
+                    "error_message",
+                )
+                if key in collection
+            }
         return summary
 
     def _site(self, site_id: str) -> str:

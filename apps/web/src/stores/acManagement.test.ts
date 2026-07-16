@@ -10,6 +10,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
+import { recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
 
 vi.mock('../api/acManagement', () => ({
   getAcApDetail: vi.fn(),
@@ -18,6 +19,12 @@ vi.mock('../api/acManagement', () => ({
   getAcSummary: vi.fn(),
   listAcAps: vi.fn(),
   listAcConfigSnapshots: vi.fn(),
+}))
+vi.mock('../api/acWebParity', () => ({
+  cancelAcWebTask: vi.fn(),
+  getAcWebTask: vi.fn(),
+  recoverAcWebTasks: vi.fn(),
+  startAcResourceRefresh: vi.fn(),
 }))
 
 describe('AC Management polling store', () => {
@@ -32,7 +39,9 @@ describe('AC Management polling store', () => {
     vi.mocked(getAcApDetail).mockReset()
     vi.mocked(getAcConfigDiff).mockReset()
     vi.mocked(getAcConfigSnapshot).mockReset()
-    vi.stubGlobal('window', { setTimeout, clearTimeout })
+    vi.mocked(recoverAcWebTasks).mockReset().mockResolvedValue([])
+    vi.mocked(startAcResourceRefresh).mockReset()
+    vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
 
   it('does not overlap AP requests and reports after three failures', async () => {
@@ -51,7 +60,7 @@ describe('AC Management polling store', () => {
     expect(store.error).toContain('AC 数据刷新失败')
   })
 
-  it('stops every timer and exposes no write operation', async () => {
+  it('stops every timer and exposes only the approved refresh operation', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout
     window.clearTimeout = clearTimeout
@@ -64,9 +73,27 @@ describe('AC Management polling store', () => {
     store.stopPolling()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(listAcAps).toHaveBeenCalledTimes(calls)
-    expect('collect' in store).toBe(false)
+    expect('startFitApRefresh' in store).toBe(true)
     expect('save' in store).toBe(false)
     expect('deleteAp' in store).toBe(false)
     vi.useRealTimers()
+  })
+
+  it('starts the fixed FIT-AP collection task for the selected AC', async () => {
+    vi.mocked(startAcResourceRefresh).mockResolvedValue({
+      task_id: 'task-fit-ap', action: 'ac_fit_ap_resources_refresh', status: 'QUEUED',
+      progress: 0, stage: 'queued', current: 0, total: 0,
+    })
+    const store = useAcManagementStore()
+    store.filters.ac_id = 'ac-1'
+
+    await store.startFitApRefresh()
+
+    expect(startAcResourceRefresh).toHaveBeenCalledWith('fit-ap', 'ac-1')
+    expect(store.refreshTask?.task_id).toBe('task-fit-ap')
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      'netconsole.ac.fit-ap-active-task',
+      'task-fit-ap',
+    )
   })
 })

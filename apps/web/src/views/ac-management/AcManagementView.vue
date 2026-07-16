@@ -47,6 +47,8 @@ const visibleColumns = computed(() => columns.filter((column) => columnVisibilit
 const detailRadios = computed(() => (store.selected?.radios || []).filter((radio) => radio.radio_id <= 2))
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
+const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
+const taskCollection = computed(() => (store.refreshTask?.result_summary.collection || {}) as Record<string, unknown>)
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
   if (!needle) return []
@@ -175,8 +177,8 @@ function diffLineClass(line: string): string {
 <template>
   <section class="ac-management">
     <el-alert
-      title="AC 管理只读视图"
-      description="本页只展示 Qt 已采集的 AC、FIT-AP、Radio、LLDP、光衰和配置快照，不连接设备、不执行命令、不创建任务。"
+      title="AC / FIT-AP 资源"
+      description="“更新 FIT-AP 资源”通过后台任务连接所选 H3C AC，保留命令原始记录并持久化 AP、Radio、连接记录与 LLDP 结果；任务可取消并可在页面重启后恢复。"
       type="info"
       :closable="false"
       show-icon
@@ -193,10 +195,25 @@ function diffLineClass(line: string): string {
           <el-option v-for="ac in store.summary?.acs || []" :key="ac.id" :label="`${ac.name} (${ac.management_ip || '--'})`" :value="ac.id" />
         </el-select>
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
+        <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
       </div>
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
+    <div v-if="store.refreshTask" class="task-panel">
+      <div class="task-heading">
+        <div>
+          <strong>FIT-AP 更新任务 · {{ store.refreshTask.status }}</strong>
+          <p>{{ store.refreshTask.message || store.refreshTask.error_message || store.refreshTask.stage || '等待任务事件…' }}</p>
+        </div>
+        <el-button v-if="taskActive" type="danger" plain @click="store.cancelRefreshTask">取消任务</el-button>
+      </div>
+      <el-progress :percentage="store.refreshTask.progress" :status="store.refreshTask.status === 'FAILED' ? 'exception' : store.refreshTask.status === 'COMPLETED' ? 'success' : undefined" />
+      <p v-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
+        已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
+      </p>
+      <el-alert v-if="Array.isArray(taskCollection.failed_commands) && taskCollection.failed_commands.length" :title="`部分命令失败：${taskCollection.failed_commands.join('、')}`" type="warning" :closable="false" show-icon />
+    </div>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <div v-else class="summary-grid">
@@ -309,7 +326,7 @@ function diffLineClass(line: string): string {
       </el-tabs>
     </div>
 
-    <el-drawer v-model="detailVisible" title="FIT-AP 只读详情" size="min(920px, 95vw)">
+    <el-drawer v-model="detailVisible" title="FIT-AP 详情" size="min(920px, 95vw)">
       <div v-loading="store.detailLoading">
         <template v-if="store.selected">
           <div class="detail-heading">
@@ -325,6 +342,14 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="线路方向">{{ display(store.selected.ap.direction) }}</el-descriptions-item>
           </el-descriptions>
 
+          <h3 class="detail-section-title">AC 连接记录</h3>
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="连接状态">{{ display(store.selected.connection.state) }}</el-descriptions-item>
+            <el-descriptions-item label="连接 IP">{{ display(store.selected.connection.ip_address) }}</el-descriptions-item>
+            <el-descriptions-item label="最近建链时间">{{ display(store.selected.connection.connected_at) }}</el-descriptions-item>
+            <el-descriptions-item label="数据更新时间">{{ formatTime(store.selected.connection.updated_at) }}</el-descriptions-item>
+          </el-descriptions>
+
           <h3 class="detail-section-title">Mesh Radio 1 / 2</h3>
           <el-table :data="detailRadios" border>
             <el-table-column prop="radio_id" label="Mesh Radio ID" width="125" />
@@ -333,7 +358,9 @@ function diffLineClass(line: string): string {
             <el-table-column prop="band" label="频段" min-width="90"><template #default="{ row }">{{ display(row.band) }}</template></el-table-column>
             <el-table-column prop="channel" label="信道" min-width="90" />
             <el-table-column prop="bandwidth" label="带宽" min-width="90" />
+            <el-table-column prop="usage" label="利用率 (%)" min-width="100" />
             <el-table-column prop="tx_power" label="功率" min-width="90" />
+            <el-table-column prop="clients" label="客户端" min-width="90" />
             <el-table-column prop="bssid" label="BSSID" min-width="145" />
           </el-table>
 
@@ -397,6 +424,9 @@ function diffLineClass(line: string): string {
 <style scoped>
 .ac-management { max-width: 1780px; margin: 0 auto; }
 .readonly-alert, .page-error { margin-bottom: 16px; }
+.task-panel { margin-bottom: 16px; padding: 14px 16px; background: #fff; border: 1px solid #dfe7f1; border-radius: 10px; }
+.task-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.task-heading p, .task-result { margin: 5px 0 0; color: #718096; font-size: 12px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }

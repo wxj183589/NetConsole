@@ -20,6 +20,7 @@ from netconsole.models.api.ac_management import (
     AcConfigDiffDTO,
     AcConfigSnapshotDTO,
     AcConfigSnapshotPageDTO,
+    AcConnectionRecordDTO,
     AcLldpDTO,
     AcManagementSummaryDTO,
     AcOpticalDTO,
@@ -176,11 +177,11 @@ class AcManagementQueryService:
         if record is None:
             return None
         item, raw, optical, lldp = record
-        return AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical)
+        return AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical, connection=self._connection(raw))
 
     def list_all_ap_details(self, site_id: str) -> list[AcApDetailDTO]:
         return [
-            AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical)
+            AcApDetailDTO(ap=item, radios=self._radios(raw), lldp=lldp, optical=optical, connection=self._connection(raw))
             for item, raw, optical, lldp in self._ap_records(site_id)
         ]
 
@@ -396,6 +397,8 @@ class AcManagementQueryService:
             model=str(row.get("model") or ""),
             online_time=str(row.get("online_time") or ""),
             is_unauthenticated=unauthenticated,
+            radio1_status=str(row.get("rid1_status") or ""),
+            radio2_status=str(row.get("rid2_status") or ""),
             radio1_channel=str(row.get("rid1_channel") or ""),
             radio2_channel=str(row.get("rid2_channel") or ""),
             radio1_power=str(row.get("rid1_tx_power") or ""),
@@ -418,14 +421,28 @@ class AcManagementQueryService:
         return [
             AcRadioDTO(
                 radio_id=rid,
+                status=str(row.get(f"rid{rid}_status") or ""),
+                mode=str(row.get(f"rid{rid}_mode") or ""),
+                band=str(row.get(f"rid{rid}_band") or ""),
                 channel=str(row.get(f"rid{rid}_channel") or ""),
                 bandwidth=str(row.get(f"rid{rid}_bandwidth") or ""),
+                usage=str(row.get(f"rid{rid}_usage") or ""),
                 tx_power=str(row.get(f"rid{rid}_tx_power") or ""),
+                clients=int(row.get(f"rid{rid}_clients") or 0),
                 bssid=str(row.get(f"rid{rid}_bbssid") or ""),
                 updated_at=str(row.get("updated_at") or row.get("collected_at") or ""),
             )
             for rid in (1, 2)
         ]
+
+    @staticmethod
+    def _connection(row: dict[str, object | None]) -> AcConnectionRecordDTO:
+        return AcConnectionRecordDTO(
+            ip_address=str(row.get("connection_ip") or ""),
+            state=str(row.get("connection_state") or ""),
+            connected_at=str(row.get("connection_time") or ""),
+            updated_at=str(row.get("updated_at") or row.get("collected_at") or ""),
+        )
 
     def _optical_for(
         self,
