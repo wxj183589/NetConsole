@@ -33,6 +33,6 @@ describe('Web route ownership', () => {
     const paths = routes.map((route) => `/${route.path}`)
     expect(paths.some((path) => /snmp|wifi-survey/.test(path))).toBe(false)
     expect(paths).toContain('/network-tools/wireless-scan')
-    expect(paths).not.toContain('/command-reference')
+    expect(paths).toContain('/command-reference')
   })
 })

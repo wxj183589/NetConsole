@@ -244,10 +244,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         "命令说明（Web）",
         "module.command_reference",
         "page",
-        default_visible=False,
-        default_enabled=False,
-        default_client_package=False,
-        status=FeatureStatus.DEVELOPMENT,
     ),
     FeatureItem(
         "web.logs",

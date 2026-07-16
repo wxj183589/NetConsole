@@ -43,6 +43,7 @@ from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshAp
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
 from netconsole.services.device_management_web_service import DeviceManagementWebService
 from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -304,6 +305,12 @@ def create_app(
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_management_service = device_management_service
     app.state.config_collection_service = config_collection_service
+    app.state.command_reference_application_service = CommandReferenceApplicationService(
+        paths,
+        task_service,
+        web_export_adapter,
+        web_artifact_store,
+    )
     app.state.file_management_service = file_management_service
     app.state.online_mr_query_service = OnlineMrQueryService(paths)
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)

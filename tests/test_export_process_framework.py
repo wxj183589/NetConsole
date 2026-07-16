@@ -214,6 +214,22 @@ def test_command_reference_export_reads_resource_in_export_process(tmp_path) -> 
     assert "display version" in output.read_text(encoding="utf-8")
 
 
+def test_command_reference_export_keeps_empty_selection_empty(tmp_path) -> None:
+    resource = tmp_path / "command_reference.json"
+    resource.write_text(
+        json.dumps({"items": [{"id": "display-version", "command_template": "display version"}]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "commands.md"
+    spec = command_reference_markdown_spec(output, resource_path=resource, selected_ids=[])
+    job = spec.to_job("command-reference-empty")
+    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "commands.md.tmp")})
+
+    run_generic_export_handler(job)
+
+    assert "display version" not in output.read_text(encoding="utf-8")
+
+
 def test_app_log_export_applies_page_offset_and_limit_in_export_process(tmp_path) -> None:
     log_path = tmp_path / "app.log"
     log_path.write_text(

@@ -248,7 +248,7 @@ def export_command_reference_markdown(
     items = raw.get("items", raw) if isinstance(raw, Mapping) else raw
     references = [CommandReference.from_dict(dict(item)) for item in items or [] if isinstance(item, Mapping)]
     selected_ids = {str(value) for value in payload.get("selected_ids") or [] if str(value)}
-    if selected_ids:
+    if "selected_ids" in payload:
         references = [item for item in references if item.id in selected_ids]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(export_command_references_markdown(references), encoding="utf-8")

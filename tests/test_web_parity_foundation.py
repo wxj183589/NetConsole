@@ -199,12 +199,15 @@ def test_system_settings_is_released_while_unimplemented_features_stay_hidden(
     for feature_id in (
         "web.ac_trackside_ap_plan",
         "web.rail_train_online",
-        "web.command_reference",
         "web.logs",
     ):
         assert gate.is_visible(feature_id) is False
         assert gate.is_enabled(feature_id) is False
         assert gate.is_in_client_package(feature_id) is False
+
+    assert gate.is_visible("web.command_reference") is True
+    assert gate.is_enabled("web.command_reference") is True
+    assert gate.is_in_client_package("web.command_reference") is True
 
 
 def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> None:
