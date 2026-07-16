@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -79,7 +81,7 @@ def test_config_snapshot_listing_filters_missing_files_as_source_of_truth(tmp_pa
     assert service.list_device_snapshots(device) == []
 
 
-def test_delete_snapshot_deletes_record_and_ignores_missing_or_zero_byte_files(tmp_path):
+def test_delete_snapshot_keeps_shared_raw_log_until_last_snapshot_is_deleted(tmp_path):
     paths = PathResolver(tmp_path)
     db = Database(paths.site_db_path("demo"))
     db.initialize()
@@ -87,6 +89,7 @@ def test_delete_snapshot_deletes_record_and_ignores_missing_or_zero_byte_files(t
     service = ConfigLifecycleService("demo", db, paths, repository)
     device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
     raw_log_path = "files/config_center/raw_logs/20260618/SW01/run.log"
+    running = service._write_snapshot(device, "running", "20260618_101200", "running", raw_log_path=raw_log_path)
     snapshot = service._write_snapshot(device, "diff", "20260618_101200", "", raw_log_path=raw_log_path)
     snapshot_path = paths.site_dir("demo") / snapshot.file_path
     raw_log = paths.site_dir("demo") / raw_log_path
@@ -101,6 +104,11 @@ def test_delete_snapshot_deletes_record_and_ignores_missing_or_zero_byte_files(t
     with pytest.raises(KeyError):
         repository.get(int(snapshot.id or 0))
     assert not snapshot_path.exists()
+    assert raw_log.exists()
+    assert raw_log.with_suffix(".jsonl").exists()
+
+    service.delete_snapshot(running)
+
     assert not raw_log.exists()
     assert not raw_log.with_suffix(".jsonl").exists()
 
@@ -111,6 +119,27 @@ def test_delete_snapshot_deletes_record_and_ignores_missing_or_zero_byte_files(t
 
     with pytest.raises(KeyError):
         repository.get(int(missing_snapshot.id or 0))
+
+
+def test_delete_snapshot_never_unlinks_raw_log_outside_config_center(tmp_path):
+    paths = PathResolver(tmp_path)
+    db = Database(paths.site_db_path("demo"))
+    db.initialize()
+    service = ConfigLifecycleService("demo", db, paths)
+    device = Device(id=7, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
+    outside = tmp_path / "must-not-delete.log"
+    outside.write_text("audit", encoding="utf-8")
+    snapshot = service._write_snapshot(
+        device,
+        "diff",
+        "20260618_101200",
+        "",
+        raw_log_path=str(outside),
+    )
+
+    service.delete_snapshot(snapshot)
+
+    assert outside.read_text(encoding="utf-8") == "audit"
 
 
 def test_extract_h3c_configuration_body_trims_command_echo_and_prompt():
@@ -211,7 +240,7 @@ display saved-configuration
     assert clean_config_for_diff(raw) == "#\nversion 7.1.070\nsysname SW01\ninterface GigabitEthernet1/0/1\n description uplink\nreturn"
 
 
-def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tmp_path, monkeypatch):
+def test_save_force_only_executes_save_force_and_does_not_create_saved_configuration_snapshot(tmp_path, monkeypatch):
     import netconsole.services.config_lifecycle_service as service_module
 
     commands: list[str] = []
@@ -233,9 +262,9 @@ def test_save_force_only_executes_save_force_and_writes_saved_status_snapshot(tm
 
     assert result.success is True
     assert commands == ["save force"]
-    assert [snapshot.type for snapshot in result.snapshots] == ["saved"]
-    text = (paths.site_dir("demo") / result.snapshots[0].file_path).read_text(encoding="utf-8")
-    assert "save_force_status: success" in text
+    assert result.snapshots == []
+    assert ConfigSnapshotRepository(db).list_for_device(str(device.device_uuid)) == []
+    assert result.raw_log_path and "save force" in Path(result.raw_log_path).read_text(encoding="utf-8")
 
 
 def test_fetch_configs_is_read_only_and_never_runs_save_force(tmp_path, monkeypatch):

@@ -112,10 +112,8 @@ class ConfigLifecycleService:
                 message = str(save_result.get("error_message") or "save force failed")
                 app_logger.log_error("CONFIG_SAVE_FAILED", self._detail(device, error=message, raw_log_path=raw_log_file))
                 return ConfigOperationResult(False, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file), error_message=message)
-            relative_raw_log_path = self._relative_to_site(raw_log_file)
-            saved_snapshot = self._write_snapshot(device, "saved", timestamp, save_status_snapshot_text(device, timestamp, str(save_result.get("output") or "")), raw_log_path=relative_raw_log_path)
             app_logger.log_info("CONFIG_SAVE_SUCCESS", self._detail(device, raw_log_path=raw_log_file))
-            return ConfigOperationResult(True, str(device.device_uuid), timestamp, [saved_snapshot], raw_log_path=str(raw_log_file))
+            return ConfigOperationResult(True, str(device.device_uuid), timestamp, [], raw_log_path=str(raw_log_file))
         except Exception as exc:
             message = sanitize_sensitive_text(str(exc), device)
             self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results, message)
@@ -232,15 +230,13 @@ class ConfigLifecycleService:
                 archive.writestr("failed_devices.txt", "\n".join(failures) + "\n")
 
     def delete_snapshot(self, snapshot: ConfigSnapshot) -> None:
-        paths: list[Path] = [self._absolute_snapshot_path(snapshot)]
-        if snapshot.raw_log_path:
-            raw_path = Path(snapshot.raw_log_path)
-            if not raw_path.is_absolute():
-                raw_path = self.paths.site_dir(self.site_name) / raw_path
-            paths.extend([raw_path, raw_path.with_suffix(".jsonl")])
+        paths = [self._safe_managed_file(snapshot.file_path, self.paths.config_center_snapshots_root(self.site_name))]
         if snapshot.id is not None:
             self.repository.delete(int(snapshot.id))
-        for path in paths:
+        if snapshot.raw_log_path and self.repository.raw_log_reference_count(snapshot.raw_log_path) == 0:
+            raw_path = self._safe_managed_file(snapshot.raw_log_path, self.paths.config_center_raw_logs_root(self.site_name))
+            paths.extend([raw_path, raw_path.with_suffix(".jsonl") if raw_path is not None else None])
+        for path in (candidate for candidate in paths if candidate is not None):
             try:
                 if path.exists() and path.is_file():
                     path.unlink()
@@ -339,6 +335,16 @@ class ConfigLifecycleService:
 
     def _absolute_snapshot_path(self, snapshot: ConfigSnapshot) -> Path:
         return self.paths.site_dir(self.site_name) / snapshot.file_path
+
+    def _safe_managed_file(self, value: str, root: Path) -> Path | None:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = self.paths.site_dir(self.site_name) / candidate
+        resolved_root = root.resolve()
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve()
+        return resolved if resolved_root in resolved.parents and not resolved.is_symlink() else None
 
     def _batch_log_paths(self, item: BatchConfigItemResult) -> list[Path]:
         paths: list[Path] = []
@@ -465,18 +471,6 @@ def _fallback_clean_config_output(lines: list[str]) -> str:
         if stripped.casefold() == "return":
             break
     return "\n".join(body_lines or fallback_lines)
-
-
-def save_status_snapshot_text(device: Device, timestamp: str, output: str) -> str:
-    lines = [
-        "save_force_status: success",
-        f"device: {device.name or ''}",
-        f"timestamp: {timestamp}",
-    ]
-    cleaned_output = clean_h3c_device_text(output).strip()
-    if cleaned_output:
-        lines.extend(["", cleaned_output])
-    return "\n".join(lines) + "\n"
 
 
 def structure_diff(config_a: str, config_b: str) -> dict[str, list[str]]:

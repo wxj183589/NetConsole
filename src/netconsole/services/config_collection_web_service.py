@@ -252,7 +252,7 @@ class ConfigCollectionApplicationService:
             site_name,
             ids,
             summary,
-            ("固定执行 save force", "生成 saved 状态快照并写入审计"),
+            ("固定执行 save force", "仅写入命令审计，不采集或伪造 saved-configuration 快照"),
         )
 
     def confirm_save_force(

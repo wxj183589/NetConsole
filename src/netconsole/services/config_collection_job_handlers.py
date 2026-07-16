@@ -99,11 +99,6 @@ def interrupted_irreversible_result(checkpoint: dict[str, object]) -> dict[str, 
     if operation == "save_force":
         result.update(
             saved=len(completed_items),
-            snapshot_ids=[
-                int(snapshot_id)
-                for item in completed_items
-                for snapshot_id in item.get("snapshot_ids") or []
-            ],
         )
     elif operation == "delete_snapshots":
         result.update(
@@ -122,7 +117,6 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
     database = Database(Path(str(context.params.get("db_path") or "")))
     devices = DeviceRepository(database)
     service = ConfigLifecycleService(str(context.params.get("site_name") or ""), database, context.paths)
-    saved_snapshot_ids: list[int] = []
     failed_items: list[dict[str, str]] = []
     completed_items: list[dict[str, object]] = []
     total = len(device_uuids)
@@ -159,9 +153,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         else:
             item_result = service.save_force(device)
             if item_result.success:
-                item_snapshot_ids = [int(item.id) for item in item_result.snapshots if item.id is not None]
-                saved_snapshot_ids.extend(item_snapshot_ids)
-                completed_items.append({"device_uuid": device_uuid, "snapshot_ids": item_snapshot_ids})
+                completed_items.append({"device_uuid": device_uuid, "audit_recorded": bool(item_result.raw_log_path)})
             else:
                 failed_items.append({"device_uuid": device_uuid, "error": str(item_result.error_message or "保存配置失败")})
         write_irreversible_checkpoint(
@@ -182,7 +174,6 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         "saved": total - len(failed_items),
         "failed": len(failed_items),
         "failed_items": failed_items,
-        "snapshot_ids": saved_snapshot_ids,
         "partial_success": bool(failed_items),
         "cancel_policy": "before_batch_only",
     }
@@ -199,7 +190,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
             "result": result,
         },
     )
-    if failed_items and not saved_snapshot_ids:
+    if failed_items and not completed_items:
         raise RuntimeError(f"保存配置失败：{failed_items[0]['error']}")
     return result
 

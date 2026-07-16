@@ -690,10 +690,11 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     assert {item.type for item in service.list_snapshots("demo", int(device.id))} >= {"running", "saved", "diff"}
     event_types = {event["type"] for event in service.task_service.repository("demo").list_events(fetched.id)}
     assert {"state", "progress", "finished"} <= event_types
+    snapshot_ids_before_save = {item.id for item in service.list_snapshots("demo", int(device.id))}
 
     save_preview = service.preview_save_force("demo", [int(device.id), int(device.id)])
     assert save_preview.device_ids == [device.id]
-    assert save_preview.action_plan == ["固定执行 save force", "生成 saved 状态快照并写入审计"]
+    assert save_preview.action_plan == ["固定执行 save force", "仅写入命令审计，不采集或伪造 saved-configuration 快照"]
     saved_task = service.confirm_save_force(
         "demo", save_preview.confirmation_token, save_preview.digest
     )
@@ -701,6 +702,8 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     assert saved_status is not None and saved_status.status == TaskState.COMPLETED.value
     assert commands.count("save force") == 1
     assert all(command in {"screen-length disable", "display current-configuration", "display saved-configuration", "save force"} for command in commands)
+    assert "snapshot_ids" not in saved_status.result
+    assert {item.id for item in service.list_snapshots("demo", int(device.id))} == snapshot_ids_before_save
 
     diff_task = service.submit_diff_export("demo", int(running.id), int(saved.id))
     diff_status = service.get_task("demo", diff_task.id)
@@ -883,7 +886,7 @@ def test_config_save_force_batch_keeps_results_when_cancel_arrives_after_first_d
 
     assert status is not None and status.status == TaskState.COMPLETED.value
     assert status.result["saved"] == 2
-    assert len(status.result["snapshot_ids"]) == 2
+    assert "snapshot_ids" not in status.result
     assert status.result["cancel_policy"] == "before_batch_only"
     assert recovered is not None and recovered.result["saved"] == 2
 
@@ -1007,7 +1010,6 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
                 "saved": 1,
                 "failed": 1,
                 "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
-                "snapshot_ids": [7],
                 "partial_success": True,
                 "cancel_policy": "before_batch_only",
             },
@@ -1019,7 +1021,6 @@ def test_config_forced_stop_recovers_irreversible_checkpoint_as_structured_parti
                 "saved": 0,
                 "failed": 1,
                 "failed_items": [{"device_uuid": "missing", "error": "设备不存在"}],
-                "snapshot_ids": [],
                 "partial_success": True,
                 "cancel_policy": "before_batch_only",
             },

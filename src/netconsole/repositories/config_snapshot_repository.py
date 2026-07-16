@@ -84,6 +84,14 @@ class ConfigSnapshotRepository:
             conn.commit()
         return snapshot
 
+    def raw_log_reference_count(self, raw_log_path: str) -> int:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM config_snapshots WHERE raw_log_path = ?",
+                (str(raw_log_path),),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
     @staticmethod
     def _from_row(row: dict[str, object]) -> ConfigSnapshot:
         return ConfigSnapshot(
