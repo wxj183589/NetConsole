@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.vehicle_mr_online import (
     VehicleMrEndStateDTO,
+    VehicleMrControllerDTO,
     VehicleMrEventPageDTO,
     VehicleMrOnlinePageDTO,
     VehicleMrTrainMappingDTO,
     VehicleMrTrainStateDTO,
 )
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.vehicle_mr_online import (
     TRAIN_STATUS_ABNORMAL_SINGLE,
@@ -19,6 +22,7 @@ from netconsole.services.vehicle_mr_online import (
     TRAIN_STATUS_PARTIAL,
     TRAIN_STATUS_UNEXPECTED_END,
     VehicleMrOnlineStore,
+    is_ac_device,
 )
 
 
@@ -66,8 +70,53 @@ class VehicleMrOnlineQueryService:
     def list_mappings(self, site_id: str) -> list[VehicleMrTrainMappingDTO]:
         return [VehicleMrTrainMappingDTO(**asdict(row)) for row in self._store(site_id).list_mappings()]
 
-    def list_events(self, site_id: str, train_id: str, *, limit: int = 200) -> VehicleMrEventPageDTO:
-        rows = self._store(site_id).list_events(train_id, min(max(int(limit), 1), 2000))
+    def list_controllers(self, site_id: str) -> list[VehicleMrControllerDTO]:
+        repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
+        result = []
+        for device in repository.list():
+            if device.id is None or not is_ac_device(device):
+                continue
+            protocol = "SSH" if device.ssh_enabled else "Telnet" if device.telnet_enabled else ""
+            username = device.ssh_username if protocol == "SSH" else device.telnet_username
+            password = device.ssh_password if protocol == "SSH" else device.telnet_password
+            result.append(
+                VehicleMrControllerDTO(
+                    device_id=device.id,
+                    name=device.name,
+                    primary_address=device.primary_address,
+                    protocol=protocol,
+                    connection_ready=bool(protocol and device.primary_address and username and password),
+                )
+            )
+        return sorted(result, key=lambda item: (item.name.casefold(), item.primary_address, item.device_id))
+
+    def list_events(
+        self,
+        site_id: str,
+        train_id: str,
+        *,
+        start_time: str = "",
+        end_time: str = "",
+        car_end_label: str = "",
+        status: str = "",
+        station: str = "",
+        ap_name: str = "",
+        limit: int = 200,
+    ) -> VehicleMrEventPageDTO:
+        size = min(max(int(limit), 1), 2000)
+        if any((start_time, end_time, car_end_label, status, station, ap_name)):
+            rows = self._store(site_id).query_events(
+                train_id,
+                start_time,
+                end_time,
+                car_end_label=car_end_label,
+                status=status,
+                station=station,
+                ap_name=ap_name,
+                limit=size,
+            )
+        else:
+            rows = self._store(site_id).list_events(train_id, size)
         return VehicleMrEventPageDTO(items=rows, total=len(rows))
 
     def _store(self, site_id: str) -> VehicleMrOnlineStore:

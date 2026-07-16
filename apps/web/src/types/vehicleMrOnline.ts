@@ -19,4 +19,20 @@ export interface VehicleMrTrainMapping {
   created_at: string; updated_at: string
 }
 export interface VehicleMrEventPage { items: Array<Record<string, unknown>>; total: number }
+export interface VehicleMrController {
+  device_id: number; name: string; primary_address: string; protocol: string; connection_ready: boolean
+}
+export interface VehicleMrHistoryFilters {
+  start_time?: string; end_time?: string; car_end_label?: string; event_status?: string
+  station?: string; ap_name?: string; limit?: number
+}
+export interface VehicleMrMappingPreviewRow {
+  row_number: number; status: 'valid' | 'duplicate' | 'error'; key: string; message: string
+  row: VehicleMrTrainMapping | null
+}
+export interface VehicleMrMappingPreview {
+  file_name: string; file_sha256: string; duplicate_strategy: 'replace' | 'skip' | 'error'
+  can_apply: boolean; total_count: number; valid_count: number; duplicate_count: number; error_count: number
+  rows: VehicleMrMappingPreviewRow[]; result_rows: VehicleMrTrainMapping[]
+}
 export type VehicleMrOnlineTask = RailTransitTask

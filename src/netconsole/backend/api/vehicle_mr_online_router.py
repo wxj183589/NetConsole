@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.feature_access import require_feature
@@ -8,6 +11,10 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.vehicle_mr_online import (
     VehicleMrEventPageDTO,
+    VehicleMrCollectionStartRequestDTO,
+    VehicleMrControllerDTO,
+    VehicleMrHistoryExportRequestDTO,
+    VehicleMrMappingPreviewDTO,
     VehicleMrMappingSaveRequestDTO,
     VehicleMrOnlinePageDTO,
     VehicleMrTrainMappingDTO,
@@ -16,7 +23,14 @@ from netconsole.services.rail_transit.vehicle_mr_online_query_service import Veh
 
 
 router = APIRouter(prefix="/rail-transit/train-online", tags=["vehicle-mr-online"])
-_ACTIONS = {"vehicle_mr_online_refresh_all", "vehicle_mr_ap_mapping_refresh", "vehicle_mr_mapping_save"}
+_ACTIONS = {
+    "vehicle_mr_online_refresh_all",
+    "vehicle_mr_ap_mapping_refresh",
+    "vehicle_mr_mapping_save",
+    "vehicle_mr_online_collection_start",
+    "vehicle_mr_history_export",
+    "vehicle_mr_mapping_template_export",
+}
 
 
 def _query_service(request: Request) -> VehicleMrOnlineQueryService:
@@ -59,9 +73,92 @@ def mappings(request: Request) -> list[VehicleMrTrainMappingDTO]:
     return _query_service(request).list_mappings(_site_id(request))
 
 
+@router.post(
+    "/mappings/import/preview",
+    response_model=VehicleMrMappingPreviewDTO,
+    dependencies=[Depends(require_feature("web.rail_train_online_mapping_import"))],
+)
+async def preview_mapping_import(
+    request: Request,
+    file: UploadFile = File(...),
+    duplicate_strategy: str = Form(default="replace", pattern="^(replace|skip|error)$"),
+) -> VehicleMrMappingPreviewDTO:
+    content = await file.read(10 * 1024 * 1024 + 1)
+    try:
+        return await asyncio.to_thread(
+            _application_service(request).preview_vehicle_mr_mappings,
+            _site_id(request),
+            file_name=file.filename or "vehicle-mr-mapping.xlsx",
+            content=content,
+            duplicate_strategy=duplicate_strategy,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get("/controllers", response_model=list[VehicleMrControllerDTO])
+def controllers(request: Request) -> list[VehicleMrControllerDTO]:
+    return _query_service(request).list_controllers(_site_id(request))
+
+
 @router.get("/trains/{train_id}/events", response_model=VehicleMrEventPageDTO)
-def events(request: Request, train_id: str, limit: int = Query(default=200, ge=1, le=2000)) -> VehicleMrEventPageDTO:
-    return _query_service(request).list_events(_site_id(request), train_id, limit=limit)
+def events(
+    request: Request,
+    train_id: str,
+    start_time: str = Query(default="", max_length=30),
+    end_time: str = Query(default="", max_length=30),
+    car_end_label: str = Query(default="", max_length=10),
+    event_status: str = Query(default="", max_length=20),
+    station: str = Query(default="", max_length=100),
+    ap_name: str = Query(default="", max_length=100),
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> VehicleMrEventPageDTO:
+    return _query_service(request).list_events(
+        _site_id(request),
+        train_id,
+        start_time=start_time,
+        end_time=end_time,
+        car_end_label=car_end_label,
+        status=event_status,
+        station=station,
+        ap_name=ap_name,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/collection/start",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_train_online_collect")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def start_collection(request: Request, payload: VehicleMrCollectionStartRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_vehicle_mr_online_collection(
+            _site_id(request),
+            ac_device_id=payload.ac_device_id,
+            interval_seconds=payload.interval_seconds,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/collection/{task_id}/stop",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def stop_collection(request: Request, task_id: str) -> RailTransitTaskDTO:
+    try:
+        current = task(request, task_id)
+        if current.action != "vehicle_mr_online_collection_start":
+            raise RailTransitWebError("TASK_NOT_FOUND", "列车在线连续采集任务不存在")
+        return _application_service(request).cancel_task(_site_id(request), task_id)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
 
 
 @router.post(
@@ -101,12 +198,75 @@ def save_mappings(request: Request, payload: VehicleMrMappingSaveRequestDTO) -> 
         return _application_service(request).save_vehicle_mr_mappings(
             _site_id(request),
             [row.model_dump(mode="json") for row in payload.mappings],
+            explicit_confirmation=payload.explicit_confirmation,
+            audit=payload.audit,
         )
     except RailTransitWebError as exc:
         _raise_error(exc)
 
 
-@router.get("/tasks/{task_id}", response_model=RailTransitTaskDTO)
+@router.post(
+    "/mappings/template/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.rail_train_online_mapping_export"))],
+)
+def export_mapping_template(request: Request) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_vehicle_mr_mapping_template_export(_site_id(request))
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/mappings/template/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_train_online_mapping_export"))],
+)
+def download_mapping_template(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_vehicle_mr_mapping_template(_site_id(request), artifact_id)
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/history/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.rail_train_online_history_export"))],
+)
+def export_history(request: Request, payload: VehicleMrHistoryExportRequestDTO) -> RailTransitTaskDTO:
+    try:
+        values = payload.model_dump(exclude={"train_id"})
+        return _application_service(request).start_vehicle_mr_history_export(
+            _site_id(request),
+            train_id=payload.train_id,
+            filters=values,
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/history/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_train_online_history_export"))],
+)
+def download_history(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_vehicle_mr_history_export(_site_id(request), artifact_id)
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
 def task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
         result = _application_service(request).get_task(_site_id(request), task_id)
@@ -117,7 +277,11 @@ def task(request: Request, task_id: str) -> RailTransitTaskDTO:
         _raise_error(exc)
 
 
-@router.post("/tasks/{task_id}/cancel", response_model=RailTransitTaskDTO)
+@router.post(
+    "/tasks/{task_id}/cancel",
+    response_model=RailTransitTaskDTO,
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
 def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     task(request, task_id)
     try:
@@ -126,7 +290,11 @@ def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
         _raise_error(exc)
 
 
-@router.post("/tasks/recover", response_model=list[RailTransitTaskDTO])
+@router.post(
+    "/tasks/recover",
+    response_model=list[RailTransitTaskDTO],
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
 def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
     try:
         return [item for item in _application_service(request).recover_tasks(_site_id(request)) if item.action in _ACTIONS]
@@ -135,7 +303,10 @@ def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
 
 
 def _raise_error(exc: RailTransitWebError) -> None:
-    status_code = status.HTTP_404_NOT_FOUND if exc.code == "TASK_NOT_FOUND" else status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = {
+        "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
+    }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 

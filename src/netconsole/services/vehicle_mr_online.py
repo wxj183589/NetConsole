@@ -1545,14 +1545,18 @@ class VehicleMrOnlineCollector:
         self.sample_index = 0
         self.current_by_train = store.load_current_states()
 
-    def run_forever(self, callback: Callable[[VehicleMrOnlineSnapshot], None] | None = None) -> None:
+    def run_forever(
+        self,
+        callback: Callable[[VehicleMrOnlineSnapshot], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> None:
         self.session_id = self.store.create_session(self.ac, self.interval_seconds)
         self._emit(callback, "连接中")
         try:
             self.connection = self.connection_factory(self.connection_config)
             self.connection.send_command(VEHICLE_INIT_COMMAND, self.connection_config.command_timeout)
             self.store.update_session(self.session_id, "采集中")
-            while not self.cancelled:
+            while not self.cancelled and not (should_cancel and should_cancel()):
                 started = time.monotonic()
                 snapshot = self.run_once()
                 if callback:
@@ -1560,8 +1564,10 @@ class VehicleMrOnlineCollector:
                 elapsed = time.monotonic() - started
                 wait = max(0.0, self.interval_seconds - elapsed)
                 deadline = time.monotonic() + wait
-                while not self.cancelled and time.monotonic() < deadline:
+                while not self.cancelled and not (should_cancel and should_cancel()) and time.monotonic() < deadline:
                     self.sleeper(min(0.2, deadline - time.monotonic()))
+            if should_cancel and should_cancel():
+                self.cancelled = True
         except Exception as exc:
             self.store.update_session(self.session_id, "连接失败", error=str(exc))
             self._emit(callback, "连接失败", str(exc))

@@ -28,6 +28,11 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanPreviewRowDTO,
     TracksideApPlanRowDTO,
 )
+from netconsole.models.api.vehicle_mr_online import (
+    VehicleMrMappingPreviewDTO,
+    VehicleMrMappingPreviewRowDTO,
+    VehicleMrTrainMappingDTO,
+)
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
@@ -39,7 +44,9 @@ from netconsole.services.export.export_task_builders import (
     repository_query_source,
     table_xlsx_source_spec,
     table_xlsx_spec,
+    vehicle_mr_history_xlsx_spec,
 )
+from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
@@ -67,6 +74,13 @@ from netconsole.services.trackside_ap_plan_io import (
     normalize_trackside_plan_rows,
     read_trackside_plan_file,
 )
+from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
+from netconsole.services.rail_transit.vehicle_mr_mapping_io import (
+    VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
+    VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
+    normalize_vehicle_mr_mapping_row,
+    read_vehicle_mr_mapping_file,
+)
 
 
 class RailTransitWebError(ValueError):
@@ -88,6 +102,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_online_refresh_all": "列车在线状态刷新",
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
+        "vehicle_mr_online_collection_start": "列车在线连续采集",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
     _TABLE_SUFFIXES = {".xlsx", ".csv"}
@@ -98,6 +113,7 @@ class RailTransitWebApplicationService:
         "web_export_mesh_analysis_report",
         "web_export_car_network_point_table",
         "web_export_table_xlsx",
+        "web_export_vehicle_mr_history_xlsx",
     }
     _OWNER = "web_rail_transit"
     _ARTIFACT_TASK_TYPES = {
@@ -105,12 +121,23 @@ class RailTransitWebApplicationService:
         "mesh_analysis_report": "web_export_mesh_analysis_report",
         "car_network_point_table": "web_export_car_network_point_table",
         "trackside_ap_plan": "web_export_table_xlsx",
+        "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
+        "vehicle_mr_mapping_template": "web_export_table_xlsx",
     }
     _ACTIONS = {
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
         "web_export_car_network_point_table": "car_network_point_table_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
+        "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
+    }
+    _ARTIFACT_ACTIONS = {
+        "online_mr_report": "online_mr_report",
+        "mesh_analysis_report": "mesh_analysis_report",
+        "car_network_point_table": "car_network_point_table_export",
+        "trackside_ap_plan": "trackside_ap_plan_export",
+        "vehicle_mr_history": "vehicle_mr_history_export",
+        "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
     }
 
     def __init__(
@@ -670,6 +697,29 @@ class RailTransitWebApplicationService:
     def start_vehicle_mr_online_refresh(self, site_id: str) -> RailTransitTaskDTO:
         return self._start_task(self._site(site_id), "vehicle_mr_online_refresh_all", {})
 
+    def start_vehicle_mr_online_collection(
+        self,
+        site_id: str,
+        *,
+        ac_device_id: int,
+        interval_seconds: int,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if "vehicle_mr_online_collection_start" not in registered_task_types():
+            raise RailTransitWebError(
+                "BLOCKED_ON_TASK_WINDOW",
+                "连续采集领域 Job 已实现，但共享 Job Center 尚未注册 vehicle_mr_online_collection_start",
+            )
+        if int(ac_device_id) <= 0:
+            raise RailTransitWebError("AC_REQUIRED", "请选择无线控制器 AC")
+        if not 3 <= int(interval_seconds) <= 300:
+            raise RailTransitWebError("INTERVAL_INVALID", "采集间隔必须是 3-300 秒")
+        return self._start_task(
+            site_id,
+            "vehicle_mr_online_collection_start",
+            {"ac_device_id": int(ac_device_id), "interval_seconds": int(interval_seconds)},
+        )
+
     def start_vehicle_mr_ap_mapping_refresh(self, site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
         return self._start_task(
             self._site(site_id),
@@ -677,12 +727,182 @@ class RailTransitWebApplicationService:
             {"train_id": str(train_id or "").strip()},
         )
 
-    def save_vehicle_mr_mappings(self, site_id: str, mappings: list[dict[str, object]]) -> RailTransitTaskDTO:
+    def preview_vehicle_mr_mappings(
+        self,
+        site_id: str,
+        *,
+        file_name: str,
+        content: bytes,
+        duplicate_strategy: str,
+    ) -> VehicleMrMappingPreviewDTO:
+        site_id = self._site(site_id)
+        strategy = self._duplicate_strategy(duplicate_strategy)
+        raw_rows = self._read_table_upload(site_id, file_name, content, read_vehicle_mr_mapping_file)
+        existing_rows = [VehicleMrTrainMappingDTO.model_validate(row) for row in self._vehicle_mapping_rows(site_id)]
+        merged = {self._vehicle_mapping_key(row): row for row in existing_rows}
+        peer_owner = self._vehicle_peer_owners(merged)
+        imported: set[str] = set()
+        previews: list[VehicleMrMappingPreviewRowDTO] = []
+        duplicate_count = 0
+        error_count = 0
+        valid_count = 0
+        for row_number, raw in enumerate(raw_rows, start=2):
+            try:
+                row = VehicleMrTrainMappingDTO.model_validate(asdict(normalize_vehicle_mr_mapping_row(raw, row_number=row_number)))
+            except (TypeError, ValueError) as exc:
+                error_count += 1
+                previews.append(VehicleMrMappingPreviewRowDTO(row_number=row_number, status="error", message=str(exc)))
+                continue
+            key = self._vehicle_mapping_key(row)
+            duplicate = key in merged or key in imported
+            if duplicate and strategy == "skip":
+                duplicate_count += 1
+                imported.add(key)
+                previews.append(VehicleMrMappingPreviewRowDTO(row_number=row_number, status="duplicate", key=key, message="重复车次将保留现有值", row=row))
+                continue
+            if duplicate and strategy == "error":
+                duplicate_count += 1
+                imported.add(key)
+                previews.append(VehicleMrMappingPreviewRowDTO(row_number=row_number, status="duplicate", key=key, message="重复车次阻止确认导入", row=row))
+                continue
+            previous = merged.get(key)
+            if previous is not None:
+                for peer in (previous.tc1_peer_name, previous.tc2_peer_name):
+                    if peer and peer_owner.get(peer.casefold()) == key:
+                        peer_owner.pop(peer.casefold(), None)
+            conflict = next(
+                (
+                    peer
+                    for peer in (row.tc1_peer_name, row.tc2_peer_name)
+                    if peer and peer_owner.get(peer.casefold()) not in {None, key}
+                ),
+                "",
+            )
+            if conflict:
+                error_count += 1
+                previews.append(VehicleMrMappingPreviewRowDTO(row_number=row_number, status="error", key=key, message=f"Peer Name 重复：{conflict}", row=row))
+                if previous is not None:
+                    merged[key] = previous
+                    peer_owner.update(self._vehicle_peer_owners({key: previous}))
+                continue
+            if duplicate:
+                duplicate_count += 1
+                status_value = "duplicate"
+                message = "重复车次将由导入行覆盖"
+            else:
+                valid_count += 1
+                status_value = "valid"
+                message = ""
+            imported.add(key)
+            merged[key] = row
+            for peer in (row.tc1_peer_name, row.tc2_peer_name):
+                if peer:
+                    peer_owner[peer.casefold()] = key
+            previews.append(VehicleMrMappingPreviewRowDTO(row_number=row_number, status=status_value, key=key, message=message, row=row))
+        can_apply = error_count == 0 and (strategy != "error" or duplicate_count == 0)
+        return VehicleMrMappingPreviewDTO(
+            file_name=Path(file_name).name,
+            file_sha256=hashlib.sha256(content).hexdigest(),
+            duplicate_strategy=strategy,
+            can_apply=can_apply,
+            total_count=len(raw_rows),
+            valid_count=valid_count,
+            duplicate_count=duplicate_count,
+            error_count=error_count,
+            rows=previews,
+            result_rows=list(merged.values()) if can_apply else [],
+        )
+
+    def save_vehicle_mr_mappings(
+        self,
+        site_id: str,
+        mappings: list[dict[str, object]],
+        *,
+        explicit_confirmation: bool = False,
+        audit: dict[str, str] | None = None,
+    ) -> RailTransitTaskDTO:
+        if not explicit_confirmation:
+            raise RailTransitWebError("CONFIRMATION_REQUIRED", "保存列车 MR 映射前必须明确确认")
         return self._start_task(
             self._site(site_id),
             "vehicle_mr_mapping_save",
-            {"mappings": [dict(row) for row in mappings]},
+            {
+                "mappings": [dict(row) for row in mappings],
+                "explicit_confirmation": True,
+                "audit": {str(key): str(value) for key, value in (audit or {}).items()},
+            },
         )
+
+    def start_vehicle_mr_mapping_template_export(self, site_id: str) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        task_id = f"rail-export-{uuid4().hex}"
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="vehicle_mr_mapping_template",
+                artifact_type="xlsx",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["vehicle_mr_mapping_template"],
+                output_root=self.paths.online_mr_root(site_id) / "exports" / "vehicle_mr_mapping",
+                preferred_name="车载MR映射模板.xlsx",
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("车载 MR 映射模板导出", exc)
+        spec = table_xlsx_spec(
+            reservation.output_path,
+            columns=list(VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS),
+            rows=list(VEHICLE_MR_MAPPING_TEMPLATE_ROWS),
+            sheet_name="车载MR映射表",
+            title="导出车载 MR 映射模板",
+            open_dir_on_success=False,
+            allow_inline_rows=True,
+            inline_reason="车载 MR 映射模板为固定示例行",
+        )
+        return self._start_export(site_id, replace(spec.to_job(task_id), site_name=site_id), "vehicle_mr_mapping_template_export", reservation)
+
+    def open_vehicle_mr_mapping_template(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "vehicle_mr_mapping_template")
+
+    def start_vehicle_mr_history_export(
+        self,
+        site_id: str,
+        *,
+        train_id: str,
+        filters: dict[str, object],
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        selected_train = str(train_id or "").strip()
+        if not selected_train:
+            raise RailTransitWebError("TRAIN_REQUIRED", "请选择要导出历史的列车")
+        task_id = f"rail-export-{uuid4().hex}"
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="vehicle_mr_history",
+                artifact_type="xlsx",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["vehicle_mr_history"],
+                output_root=self.paths.online_mr_root(site_id) / "exports" / "vehicle_mr_history",
+                preferred_name=f"{selected_train}_列车经过历史.xlsx",
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("列车经过历史导出", exc)
+        job = vehicle_mr_history_xlsx_spec(
+            reservation.output_path,
+            app_root=self.paths.app_root,
+            data_root=self.paths.data_root,
+            site_name=site_id,
+            train_id=selected_train,
+            filters=filters,
+            title="导出列车经过历史",
+            open_dir_on_success=False,
+        ).to_job(task_id)
+        return self._start_export(site_id, job, "vehicle_mr_history_export", reservation)
+
+    def open_vehicle_mr_history_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "vehicle_mr_history")
 
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:
         site_id = self._site(site_id)
@@ -912,7 +1132,8 @@ class RailTransitWebApplicationService:
             owner=self._OWNER,
             source_task_types=self._ARTIFACT_TASK_TYPES,
         )
-        action = self._ACTIONS.get(snapshot.task_type, snapshot.task_type)
+        artifact_source = str((metadata or {}).get("source") or "")
+        action = self._ARTIFACT_ACTIONS.get(artifact_source, self._ACTIONS.get(snapshot.task_type, snapshot.task_type))
         return RailTransitTaskDTO(
             task_id=snapshot.task_id,
             status=snapshot.status.value,
@@ -981,6 +1202,23 @@ class RailTransitWebApplicationService:
             seen.add(key)
             nodes.append(node)
         return nodes
+
+    def _vehicle_mapping_rows(self, site_id: str) -> list[dict[str, object]]:
+        return [asdict(row) for row in VehicleMrOnlineStore(self.paths, site_id).list_mappings()]
+
+    @staticmethod
+    def _vehicle_mapping_key(row: VehicleMrTrainMappingDTO) -> str:
+        return str(row.train_no or row.train_id or row.train_display_name).strip().casefold()
+
+    @classmethod
+    def _vehicle_peer_owners(cls, rows: dict[str, VehicleMrTrainMappingDTO]) -> dict[str, str]:
+        owners: dict[str, str] = {}
+        for key, row in rows.items():
+            for peer in (row.tc1_peer_name, row.tc2_peer_name):
+                normalized = peer.strip().casefold()
+                if normalized:
+                    owners[normalized] = key
+        return owners
 
     @staticmethod
     def _validate_point_node(node: CarNetworkNode, row_number: int) -> None:

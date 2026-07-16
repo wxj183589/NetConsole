@@ -1,20 +1,30 @@
 <script setup lang="ts">
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import {
   cancelVehicleMrOnlineTask,
+  exportVehicleMrHistory,
+  exportVehicleMrMappingTemplate,
   getVehicleMrOnlineTask,
   listVehicleMrEvents,
+  listVehicleMrControllers,
   listVehicleMrMappings,
   listVehicleMrOnline,
   recoverVehicleMrOnlineTasks,
+  previewVehicleMrMappings,
   refreshVehicleMrApMapping,
   refreshVehicleMrOnline,
   saveVehicleMrMappings,
+  startVehicleMrCollection,
+  stopVehicleMrCollection,
+  vehicleMrHistoryDownloadRequest,
+  vehicleMrMappingTemplateDownloadRequest,
 } from '../../api/vehicleMrOnline'
 import { isFeatureEnabled } from '../../features'
-import type { VehicleMrOnlinePage, VehicleMrOnlineTask, VehicleMrTrainMapping, VehicleMrTrainState } from '../../types/vehicleMrOnline'
+import { downloadBackendResource } from '../../platform/runtime'
+import type { VehicleMrController, VehicleMrHistoryFilters, VehicleMrMappingPreview, VehicleMrOnlinePage, VehicleMrOnlineTask, VehicleMrTrainMapping, VehicleMrTrainState } from '../../types/vehicleMrOnline'
 
 const router = useRouter()
 const storageKey = 'netconsole.vehicle-mr-online.last-task'
@@ -28,10 +38,21 @@ const selectedTrain = ref<VehicleMrTrainState | null>(null)
 const detailVisible = ref(false)
 const mappingVisible = ref(false)
 const mappings = ref<VehicleMrTrainMapping[]>([])
+const controllers = ref<VehicleMrController[]>([])
+const selectedControllerId = ref<number | null>(null)
+const collectionInterval = ref(10)
+const historyRange = ref<[string, string] | []>([])
+const historyFilters = reactive({ car_end_label: '', event_status: '', station: '', ap_name: '' })
+const mappingImportInput = ref<HTMLInputElement | null>(null)
+const mappingDuplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
+const mappingPreview = ref<VehicleMrMappingPreview | null>(null)
+const mappingPreviewVisible = ref(false)
 const filters = reactive({ query: '', train_status: '', page: 1, page_size: 50 })
 let pollTimer: number | undefined
 
 const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
+const collectionRunning = computed(() => Boolean(task.value?.action === 'vehicle_mr_online_collection_start' && !terminalStates.has(task.value.status)))
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
 function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
@@ -50,19 +71,30 @@ function poll(): void {
     return
   }
   pollTimer = window.setTimeout(async () => {
-    try { rememberTask(await getVehicleMrOnlineTask(task.value!.task_id)); error.value = ''; poll() }
+    try {
+      rememberTask(await getVehicleMrOnlineTask(task.value!.task_id)); error.value = ''
+      if (task.value?.action === 'vehicle_mr_online_collection_start') await loadTrains(false, true)
+      poll()
+    }
     catch (reason) { error.value = failure(reason, '列车在线任务状态读取失败') }
   }, 1000)
 }
 
-async function loadTrains(reset = false): Promise<void> {
+async function loadTrains(reset = false, silent = false): Promise<void> {
   if (reset) filters.page = 1
-  loading.value = true; error.value = ''
+  if (!silent) loading.value = true
+  error.value = ''
   try { page.value = await listVehicleMrOnline(filters) }
   catch (reason) { error.value = failure(reason, '列车在线状态加载失败') }
-  finally { loading.value = false }
+  finally { if (!silent) loading.value = false }
 }
 async function loadMappings(): Promise<void> { try { mappings.value = await listVehicleMrMappings() } catch (reason) { error.value = failure(reason, '列车 MR 映射加载失败') } }
+async function loadControllers(): Promise<void> {
+  try {
+    controllers.value = await listVehicleMrControllers()
+    if (selectedControllerId.value === null && controllers.value.length === 1) selectedControllerId.value = controllers.value[0].device_id
+  } catch (reason) { error.value = failure(reason, '无线控制器 AC 加载失败') }
+}
 async function startTask(factory: () => Promise<VehicleMrOnlineTask>, fallback: string): Promise<void> {
   loading.value = true; error.value = ''
   try { rememberTask(await factory()); poll() }
@@ -71,40 +103,114 @@ async function startTask(factory: () => Promise<VehicleMrOnlineTask>, fallback: 
 }
 function refreshAll(): void { void startTask(refreshVehicleMrOnline, '列车在线状态刷新启动失败') }
 function refreshApMapping(): void { void startTask(() => refreshVehicleMrApMapping(selectedTrain.value?.train_id || ''), '轨旁 AP 映射刷新启动失败') }
+function startCollection(): void {
+  if (!selectedControllerId.value) { error.value = '请选择连接信息完整的无线控制器 AC'; return }
+  void startTask(() => startVehicleMrCollection(selectedControllerId.value!, collectionInterval.value), '列车在线连续采集启动失败')
+}
+async function stopCollection(): Promise<void> {
+  if (!task.value || task.value.action !== 'vehicle_mr_online_collection_start') return
+  await startTask(() => stopVehicleMrCollection(task.value!.task_id), '列车在线连续采集停止失败')
+}
+function currentHistoryFilters(): VehicleMrHistoryFilters {
+  return {
+    start_time: historyRange.value[0] || '', end_time: historyRange.value[1] || '',
+    car_end_label: historyFilters.car_end_label, event_status: historyFilters.event_status,
+    station: historyFilters.station, ap_name: historyFilters.ap_name, limit: 1000,
+  }
+}
+async function loadEvents(): Promise<void> {
+  if (!selectedTrain.value) return
+  loading.value = true; error.value = ''
+  try { events.value = (await listVehicleMrEvents(selectedTrain.value.train_id, currentHistoryFilters())).items }
+  catch (reason) { error.value = failure(reason, '列车经过历史加载失败') }
+  finally { loading.value = false }
+}
 async function openEvents(row: VehicleMrTrainState): Promise<void> {
   selectedTrain.value = row; detailVisible.value = true
-  try { events.value = (await listVehicleMrEvents(row.train_id)).items } catch (reason) { error.value = failure(reason, '列车经过历史加载失败') }
+  await loadEvents()
+}
+function resetHistory(): void { historyRange.value = []; historyFilters.car_end_label = ''; historyFilters.event_status = ''; historyFilters.station = ''; historyFilters.ap_name = ''; void loadEvents() }
+function exportHistory(): void {
+  if (!selectedTrain.value) return
+  void startTask(() => exportVehicleMrHistory(selectedTrain.value!.train_id, currentHistoryFilters()), '列车经过历史导出启动失败')
+}
+async function downloadHistory(): Promise<void> {
+  if (!task.value?.available || !task.value.artifact_id || task.value.action !== 'vehicle_mr_history_export') return
+  try {
+    const result = await downloadBackendResource(vehicleMrHistoryDownloadRequest(task.value.artifact_id, selectedTrain.value?.display_name || '列车'))
+    if (result.status === 'failed') throw new Error(result.error || '列车经过历史下载失败')
+    if (result.status === 'saved') ElMessage.success('列车经过历史已保存')
+  } catch (reason) { error.value = failure(reason, '列车经过历史下载失败') }
+}
+async function downloadTaskArtifact(): Promise<void> {
+  if (task.value?.action === 'vehicle_mr_history_export') { await downloadHistory(); return }
+  if (!task.value?.available || !task.value.artifact_id || task.value.action !== 'vehicle_mr_mapping_template_export') return
+  try {
+    const result = await downloadBackendResource(vehicleMrMappingTemplateDownloadRequest(task.value.artifact_id))
+    if (result.status === 'failed') throw new Error(result.error || '列车 MR 映射模板下载失败')
+    if (result.status === 'saved') ElMessage.success('列车 MR 映射模板已保存')
+  } catch (reason) { error.value = failure(reason, '列车 MR 映射模板下载失败') }
 }
 async function openMappings(): Promise<void> { await loadMappings(); mappingVisible.value = true }
 function addMapping(): void { mappings.value.push({ id: null, enabled: true, train_display_name: '', train_id: '', train_no: '', tc1_peer_name: '', tc2_peer_name: '', online_policy: 'auto', remark: '', created_at: '', updated_at: '' }) }
 function deleteMapping(index: number): void { mappings.value.splice(index, 1) }
-function saveMappings(): void { void startTask(() => saveVehicleMrMappings(mappings.value), '列车 MR 映射保存失败'); mappingVisible.value = false }
+async function saveMappings(): Promise<void> {
+  try { await ElMessageBox.confirm(`确认用当前 ${mappings.value.length} 行替换列车 MR 映射并持久化？`, '保存映射确认', { type: 'warning' }) }
+  catch { return }
+  await startTask(() => saveVehicleMrMappings(mappings.value), '列车 MR 映射保存失败'); mappingVisible.value = false
+}
+async function chooseMappingImport(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement; const file = input.files?.[0]; input.value = ''
+  if (!file) return
+  loading.value = true; error.value = ''
+  try { mappingPreview.value = await previewVehicleMrMappings(file, mappingDuplicateStrategy.value); mappingPreviewVisible.value = true }
+  catch (reason) { error.value = failure(reason, '列车 MR 映射导入预览失败') }
+  finally { loading.value = false }
+}
+function applyMappingPreview(): void {
+  if (!mappingPreview.value?.can_apply) return
+  mappings.value = mappingPreview.value.result_rows; mappingPreviewVisible.value = false
+  ElMessage.success('导入预览已应用到映射编辑区，请确认后保存')
+}
+function exportMappingTemplate(): void { void startTask(exportVehicleMrMappingTemplate, '列车 MR 映射模板导出启动失败') }
 async function cancelTask(): Promise<void> { if (task.value && !terminalStates.has(task.value.status)) await startTask(() => cancelVehicleMrOnlineTask(task.value!.task_id), '列车在线任务取消失败') }
 async function recoverTasks(): Promise<void> {
   try { const rows = await recoverVehicleMrOnlineTasks(); const saved = localStorage.getItem(storageKey) || ''; rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => !terminalStates.has(item.status)) || rows[0] || null); poll() }
   catch (reason) { error.value = failure(reason, '列车在线任务恢复失败') }
 }
 
-onMounted(() => { void Promise.all([loadTrains(), loadMappings(), recoverTasks()]) })
+onMounted(() => { void Promise.all([loadTrains(), loadMappings(), loadControllers(), recoverTasks()]) })
 onBeforeUnmount(stopPolling)
 </script>
 
 <template>
   <section class="vehicle-page">
-    <header class="page-heading"><div><p class="eyebrow">RAIL TRANSIT · VEHICLE MR ONLINE</p><h1>列车在线情况</h1><p>按 CT/TC 展示当前轨旁 AP、站点、RSSI、最后出现时间与映射策略。</p></div><div class="actions"><el-button :loading="loading" @click="loadTrains()">刷新页面</el-button><el-button :disabled="!isFeatureEnabled('web.rail_train_online_refresh')" @click="refreshAll">刷新在线状态</el-button><el-button :disabled="!isFeatureEnabled('web.rail_train_online_refresh')" @click="refreshApMapping">刷新 AP 映射</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.rail_train_online_mapping_write')" @click="openMappings">映射表管理</el-button></div></header>
+    <header class="page-heading"><div><p class="eyebrow">RAIL TRANSIT · VEHICLE MR ONLINE</p><h1>列车在线情况</h1><p>连续采集 AC Mesh-Link，按 CT/TC 展示当前轨旁 AP、站点、RSSI、最后出现时间与映射策略。</p></div><div class="actions"><el-button :loading="loading" @click="loadTrains()">刷新页面</el-button><el-button :disabled="taskRunning || !isFeatureEnabled('web.rail_train_online_refresh')" @click="refreshAll">刷新在线状态</el-button><el-button :disabled="taskRunning || !isFeatureEnabled('web.rail_train_online_refresh')" @click="refreshApMapping">刷新 AP 映射</el-button><el-button type="primary" :disabled="collectionRunning || !isFeatureEnabled('web.rail_train_online_mapping_write')" @click="openMappings">映射表管理</el-button></div></header>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
+    <div class="content-card collection-bar">
+      <strong>连续采集</strong>
+      <el-select v-model="selectedControllerId" :disabled="collectionRunning" placeholder="选择无线控制器 AC" style="width:300px"><el-option v-for="item in controllers" :key="item.device_id" :label="`${item.name} (${item.primary_address}) · ${item.protocol || '未配置协议'}`" :value="item.device_id" :disabled="!item.connection_ready" /></el-select>
+      <el-input-number v-model="collectionInterval" :disabled="collectionRunning" :min="3" :max="300" controls-position="right" /><span>秒</span>
+      <el-button type="primary" :disabled="taskRunning || !selectedControllerId || !isFeatureEnabled('web.rail_train_online_collect') || !isFeatureEnabled('web.rail_task_control')" @click="startCollection">开始</el-button>
+      <el-button type="danger" plain :disabled="!collectionRunning" @click="stopCollection">停止</el-button>
+      <el-tag :type="collectionRunning ? 'success' : 'info'">{{ collectionRunning ? '采集中' : task?.action === 'vehicle_mr_online_collection_start' ? task.status : '未开始' }}</el-tag>
+    </div>
     <div v-if="page" class="summary-grid"><article><span>在线</span><strong>{{ page.online_count }}</strong></article><article><span>异常</span><strong>{{ page.abnormal_count }}</strong></article><article><span>离线</span><strong>{{ page.offline_count }}</strong></article><article><span>未登记</span><strong>{{ page.unregistered_count }}</strong></article></div>
     <div class="content-card"><div class="toolbar"><el-input v-model="filters.query" clearable placeholder="列车、AP 或站点" @keyup.enter="loadTrains(true)" /><el-select v-model="filters.train_status" clearable placeholder="在线状态"><el-option v-for="value in ['双端在线','在线','单端在线','异常单端','非预期端在线','离线']" :key="value" :label="value" :value="value" /></el-select><el-button type="primary" @click="loadTrains(true)">查询</el-button></div>
       <el-table v-loading="loading" :data="page?.items || []" stripe height="calc(100vh - 430px)" empty-text="暂无列车在线状态" highlight-current-row @current-change="(row: VehicleMrTrainState | undefined) => selectedTrain = row || null" @row-dblclick="openEvents">
         <el-table-column prop="display_name" label="列车" width="100" fixed="left" /><el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template></el-table-column><el-table-column label="MR-CT 当前 AP" min-width="165"><template #default="{ row }">{{ display(row.tc1.ap_name) }}</template></el-table-column><el-table-column label="CT 站点 / RSSI" min-width="180"><template #default="{ row }">{{ display(row.tc1.station) }} / {{ display(row.tc1.rssi, ' dBm') }}</template></el-table-column><el-table-column label="MR-TC 当前 AP" min-width="165"><template #default="{ row }">{{ display(row.tc2.ap_name) }}</template></el-table-column><el-table-column label="TC 站点 / RSSI" min-width="180"><template #default="{ row }">{{ display(row.tc2.station) }} / {{ display(row.tc2.rssi, ' dBm') }}</template></el-table-column><el-table-column prop="current_station" label="当前位置" width="130" /><el-table-column prop="direction" label="方向" width="85" /><el-table-column prop="online_policy" label="在线策略" width="105" /><el-table-column prop="status_reason" label="状态原因" min-width="180" show-overflow-tooltip /><el-table-column prop="last_ac_time" label="AC 时间" width="175" /><el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openEvents(row)">经过历史</el-button><el-button link type="primary" @click="router.push({ path: '/rail-transit/train-communication', query: { train: row.train_no } })">通信详情</el-button></template></el-table-column>
       </el-table><div class="pagination"><span>共 {{ page?.total || 0 }} 列车</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadTrains() }" /></div>
     </div>
-    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>列车在线任务</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="260"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><el-button :disabled="terminalStates.has(task.status)" @click="cancelTask">取消任务</el-button></div>
-    <el-drawer v-model="detailVisible" :title="`${selectedTrain?.display_name || ''} 经过历史`" size="min(1000px, 95vw)"><el-table :data="events" border height="calc(100vh - 150px)" empty-text="暂无经过历史"><el-table-column prop="event_time" label="时间" width="180" /><el-table-column prop="car_end_label" label="端" width="80" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="station" label="站点" width="140" /><el-table-column prop="ap_name" label="轨旁 AP" min-width="160" /><el-table-column prop="rssi" label="RSSI" width="90" /><el-table-column prop="match_method" label="匹配方式" min-width="150" /></el-table></el-drawer>
-    <el-dialog v-model="mappingVisible" title="列车 MR 映射表" width="min(1150px, 96vw)" destroy-on-close><el-table :data="mappings" border height="520"><el-table-column label="启用" width="70"><template #default="{ row }"><el-checkbox v-model="row.enabled" /></template></el-table-column><el-table-column label="车次" width="130"><template #default="{ row }"><el-input v-model="row.train_display_name" /></template></el-table-column><el-table-column label="TC1 Peer Name" min-width="190"><template #default="{ row }"><el-input v-model="row.tc1_peer_name" /></template></el-table-column><el-table-column label="TC2 Peer Name" min-width="190"><template #default="{ row }"><el-input v-model="row.tc2_peer_name" /></template></el-table-column><el-table-column label="在线策略" width="170"><template #default="{ row }"><el-select v-model="row.online_policy"><el-option label="自动/未知" value="auto" /><el-option label="单端在线-尾端在线" value="single_tail" /><el-option label="双端在线" value="dual_active" /><el-option label="TC1 固定在线" value="single_tc1" /><el-option label="TC2 固定在线" value="single_tc2" /></el-select></template></el-table-column><el-table-column label="备注" min-width="180"><template #default="{ row }"><el-input v-model="row.remark" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="{ $index }"><el-button link type="danger" @click="deleteMapping($index)">删除</el-button></template></el-table-column></el-table><template #footer><el-button @click="addMapping">新增</el-button><el-button @click="mappingVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.rail_train_online_mapping_write')" @click="saveMappings">保存映射</el-button></template></el-dialog>
+    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>列车在线任务</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><p v-else>{{ task.message }}</p><el-table v-if="taskRows.length" :data="taskRows" max-height="260"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><div class="actions"><el-button :disabled="terminalStates.has(task.status)" @click="cancelTask">取消任务</el-button><el-button type="primary" :disabled="!['vehicle_mr_history_export','vehicle_mr_mapping_template_export'].includes(task.action) || !task.available" @click="downloadTaskArtifact">受控下载</el-button></div></div>
+    <el-drawer v-model="detailVisible" :title="`${selectedTrain?.display_name || ''} 经过历史`" size="min(1100px, 96vw)">
+      <div class="history-toolbar"><el-date-picker v-model="historyRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" start-placeholder="开始时间" end-placeholder="结束时间" /><el-select v-model="historyFilters.car_end_label" clearable placeholder="全部端别"><el-option label="TC1" value="TC1" /><el-option label="TC2" value="TC2" /></el-select><el-select v-model="historyFilters.event_status" clearable placeholder="全部状态"><el-option label="在线" value="在线" /><el-option label="离线" value="离线" /></el-select><el-input v-model="historyFilters.station" clearable placeholder="车站" /><el-input v-model="historyFilters.ap_name" clearable placeholder="轨旁 AP" /><el-button type="primary" :loading="loading" @click="loadEvents">查询</el-button><el-button @click="resetHistory">重置</el-button><el-button :disabled="!isFeatureEnabled('web.rail_train_online_history_export') || taskRunning" @click="exportHistory">导出</el-button></div>
+      <el-table :data="events" border height="calc(100vh - 235px)" empty-text="暂无经过历史"><el-table-column prop="event_time" label="时间" width="180" /><el-table-column prop="car_end_label" label="端" width="80" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="station" label="站点" width="140" /><el-table-column prop="ap_name" label="轨旁 AP" min-width="160" /><el-table-column prop="rssi" label="RSSI" width="90" /><el-table-column prop="event_type" label="事件类型" width="130" /><el-table-column prop="status_reason" label="判断说明" min-width="180" /></el-table>
+    </el-drawer>
+    <el-dialog v-model="mappingVisible" title="列车 MR 映射表" width="min(1150px, 96vw)" destroy-on-close><div class="mapping-toolbar"><el-select v-model="mappingDuplicateStrategy" style="width:150px"><el-option label="重复时覆盖" value="replace" /><el-option label="重复时跳过" value="skip" /><el-option label="重复时报错" value="error" /></el-select><input ref="mappingImportInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseMappingImport"><el-button :disabled="!isFeatureEnabled('web.rail_train_online_mapping_import')" @click="mappingImportInput?.click()">导入并预览</el-button><el-button :disabled="!isFeatureEnabled('web.rail_train_online_mapping_export')" @click="exportMappingTemplate">导出模板</el-button><el-button @click="loadMappings">刷新</el-button></div><el-table :data="mappings" border height="520"><el-table-column label="启用" width="70"><template #default="{ row }"><el-checkbox v-model="row.enabled" /></template></el-table-column><el-table-column label="车次" width="130"><template #default="{ row }"><el-input v-model="row.train_display_name" /></template></el-table-column><el-table-column label="TC1 Peer Name" min-width="190"><template #default="{ row }"><el-input v-model="row.tc1_peer_name" /></template></el-table-column><el-table-column label="TC2 Peer Name" min-width="190"><template #default="{ row }"><el-input v-model="row.tc2_peer_name" /></template></el-table-column><el-table-column label="在线策略" width="170"><template #default="{ row }"><el-select v-model="row.online_policy"><el-option label="自动/未知" value="auto" /><el-option label="单端在线-尾端在线" value="single_tail" /><el-option label="双端在线" value="dual_active" /><el-option label="TC1 固定在线" value="single_tc1" /><el-option label="TC2 固定在线" value="single_tc2" /></el-select></template></el-table-column><el-table-column label="备注" min-width="180"><template #default="{ row }"><el-input v-model="row.remark" /></template></el-table-column><el-table-column label="操作" width="80"><template #default="{ $index }"><el-button link type="danger" @click="deleteMapping($index)">删除</el-button></template></el-table-column></el-table><template #footer><el-button @click="addMapping">新增</el-button><el-button @click="mappingVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.rail_train_online_mapping_write')" @click="saveMappings">保存映射</el-button></template></el-dialog>
+    <el-dialog v-model="mappingPreviewVisible" title="列车 MR 映射导入预览" width="900px" append-to-body><div v-if="mappingPreview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ mappingPreview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ mappingPreview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ mappingPreview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ mappingPreview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ mappingPreview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><el-table :data="mappingPreview.rows" border height="350"><el-table-column prop="row_number" label="行" width="70" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="key" label="车次" min-width="140" /><el-table-column prop="message" label="说明" min-width="260" /></el-table><el-alert v-if="!mappingPreview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div><template #footer><el-button @click="mappingPreviewVisible = false">取消</el-button><el-button type="primary" :disabled="!mappingPreview?.can_apply" @click="applyMappingPreview">应用到编辑区</el-button></template></el-dialog>
   </section>
 </template>
 
 <style scoped>
-.vehicle-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:24px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:280px}.toolbar .el-select{width:140px}.pagination{padding-top:12px}.task-card{display:flex;flex-direction:column;gap:12px}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.vehicle-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading,.collection-bar,.history-toolbar,.mapping-toolbar{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p,.task-card p,.collection-bar span{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar,.history-toolbar,.collection-bar,.mapping-toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:24px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:280px}.toolbar .el-select{width:140px}.history-toolbar,.mapping-toolbar{margin-bottom:12px}.history-toolbar .el-input{width:130px}.history-toolbar .el-select{width:125px}.pagination{padding-top:12px}.task-card,.preview{display:flex;flex-direction:column;gap:12px}.hidden{display:none}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>
