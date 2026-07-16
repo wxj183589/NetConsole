@@ -36,13 +36,20 @@ class TunnelSession:
 
 
 class TunnelManager:
+    def __init__(self, *, strict_host_keys: bool = False) -> None:
+        self.strict_host_keys = bool(strict_host_keys)
+
     def open_tunnel(self, tunnel: TunnelProfile, remote_host: str, remote_port: int) -> TunnelSession:
         import paramiko
 
         local_host = "127.0.0.1"
         local_port = 0
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if self.strict_host_keys:
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
             client.connect(
                 hostname=tunnel.host,

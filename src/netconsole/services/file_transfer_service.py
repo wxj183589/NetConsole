@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import socket
 import stat
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -85,10 +86,18 @@ class FileDownloadResult:
 
 
 class FileTransferService:
-    def __init__(self, site_name: str, paths: PathResolver | None = None, *, allow_remote_setup: bool = True) -> None:
+    def __init__(
+        self,
+        site_name: str,
+        paths: PathResolver | None = None,
+        *,
+        allow_remote_setup: bool = True,
+        strict_host_keys: bool = False,
+    ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
         self.allow_remote_setup = bool(allow_remote_setup)
+        self.strict_host_keys = bool(strict_host_keys)
         self._client = None
         self._sftp = None
         self._device: Device | None = None
@@ -110,7 +119,11 @@ class FileTransferService:
                 if target.via_tunnel:
                     if target.tunnel is None:
                         raise RuntimeError("Tunnel target is missing tunnel profile")
-                    tunnel_session = TunnelManager().open_tunnel(target.tunnel, target.host, target.port)  # type: ignore[arg-type]
+                    tunnel_session = TunnelManager(strict_host_keys=self.strict_host_keys).open_tunnel(  # type: ignore[arg-type]
+                        target.tunnel,
+                        target.host,
+                        target.port,
+                    )
                     prepared = type(target)(
                         protocol=target.protocol,
                         device_type=target.device_type,
@@ -124,7 +137,7 @@ class FileTransferService:
                         tunnel=target.tunnel,
                     )
                 self._emit_progress(progress_callback, "file_management.status.sftp_trying")
-                client = self._connect_ssh_client(prepared)
+                client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
                 self._emit_progress(progress_callback, "file_management.status.ssh_login_success")
                 self._client = client
                 self._tunnel_session = tunnel_session
@@ -138,13 +151,19 @@ class FileTransferService:
                         "SFTP_INITIAL_OPEN_FAILED",
                         f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, error={sanitize_sensitive_text(str(sftp_exc), device)}",
                     )
-                    client = self._ensure_active_ssh_client(client, prepared, progress_callback)
+                    client = self._ensure_active_ssh_client(
+                        client,
+                        prepared,
+                        progress_callback,
+                        key_host=target.host,
+                        key_port=target.port,
+                    )
                     self._client = client
                     self._enable_sftp_for_target(client, device, prepared.username, progress_callback)
                     self._emit_progress(progress_callback, "file_management.status.sftp_reconnecting")
                     self._close_client(client)
                     self._client = None
-                    client = self._connect_ssh_client(prepared)
+                    client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
                     self._client = client
                     self._sftp = client.open_sftp()
                 self._device = device
@@ -160,30 +179,56 @@ class FileTransferService:
                 app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
         raise RuntimeError(last_error or "SFTP connection failed.")
 
-    def _connect_ssh_client(self, target):
+    def _connect_ssh_client(self, target, *, key_host: str = "", key_port: int = 0):
         import paramiko
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=target.host,
-            port=target.port,
-            username=target.username,
-            password=target.password,
-            timeout=20,
-            banner_timeout=20,
-            auth_timeout=20,
-            look_for_keys=False,
-            allow_agent=False,
-        )
+        if self.strict_host_keys:
+            client.load_system_host_keys()
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        sock = None
+        try:
+            hostname = target.host
+            port = target.port
+            if self.strict_host_keys and target.via_tunnel:
+                sock = socket.create_connection((target.host, target.port), timeout=20)
+                hostname = str(key_host or target.host)
+                port = int(key_port or target.port)
+            client.connect(
+                hostname=hostname,
+                port=port,
+                username=target.username,
+                password=target.password,
+                timeout=20,
+                banner_timeout=20,
+                auth_timeout=20,
+                look_for_keys=False,
+                allow_agent=False,
+                sock=sock,
+            )
+        except Exception:
+            if sock is not None:
+                sock.close()
+            client.close()
+            raise
         return client
 
-    def _ensure_active_ssh_client(self, client, target, progress_callback: SftpProgressCallback | None = None):
+    def _ensure_active_ssh_client(
+        self,
+        client,
+        target,
+        progress_callback: SftpProgressCallback | None = None,
+        *,
+        key_host: str = "",
+        key_port: int = 0,
+    ):
         if self._is_ssh_transport_active(client):
             return client
         self._emit_progress(progress_callback, "file_management.status.ssh_session_reconnecting")
         self._close_client(client)
-        return self._connect_ssh_client(target)
+        return self._connect_ssh_client(target, key_host=key_host, key_port=key_port)
 
     @staticmethod
     def _is_ssh_transport_active(client) -> bool:
@@ -210,6 +255,10 @@ class FileTransferService:
             return message
         if "automatic sftp enabling failed" in lowered:
             return message
+        if "not found in known_hosts" in lowered or "server" in lowered and "not found" in lowered:
+            return "SFTP 主机密钥未受信任；请先由管理员核验并写入 Windows 用户 known_hosts。"
+        if "host key for server" in lowered and "does not match" in lowered:
+            return "SFTP 主机密钥与 known_hosts 不一致，已拒绝连接。"
         return message
 
     def _enable_h3c_sftp(self, client, username: str) -> None:

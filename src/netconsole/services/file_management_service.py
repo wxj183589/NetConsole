@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import base64
+import ctypes
 import hashlib
+import json
 import os
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
 from netconsole.core.database import Database
@@ -17,16 +20,21 @@ from netconsole.models.device import Device
 from netconsole.models.api.file_management import (
     FileConnectionDTO,
     FileDesktopActionDTO,
+    FileDownloadBatchDTO,
+    FileDownloadClearDTO,
     FileDownloadResultDTO,
     FileDownloadTaskDTO,
     FileManagementCapabilityDTO,
     FileManagementStatusDTO,
     FileRemoteDeviceDTO,
+    LocalFileEntryDTO,
+    LocalFilePageDTO,
     ManagedFileDTO,
     ManagedFilePageDTO,
     RemoteFileEntryDTO,
     RemoteFilePageDTO,
 )
+from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
@@ -34,11 +42,14 @@ from netconsole.services.config_lifecycle_service import safe_artifact_display_n
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
+    auto_rename_path,
     file_sha256,
     is_within_remote_root,
     normalize_remote_path,
     parent_remote_path,
+    safe_device_name,
 )
+from netconsole.services.mesh_storage_service import MeshStorageService
 
 if TYPE_CHECKING:
     from netconsole.models.task_snapshot import TaskSnapshot
@@ -51,6 +62,9 @@ FILE_REF_RE = re.compile(r"^fm1_[0-9a-f]{32}$")
 CONNECTION_ID_RE = re.compile(r"^fc1_[0-9a-f]{32}$")
 REMOTE_ENTRY_ID_RE = re.compile(r"^fe1_[0-9a-f]{32}$")
 ARTIFACT_ID_RE = re.compile(r"^fa1_[0-9a-f]{32}$")
+LOCAL_ENTRY_ID_RE = re.compile(r"^fl1_[0-9a-f]{32}$")
+DEVICE_FILE_REF_RE = re.compile(r"^fd1_[0-9a-f]{32}$")
+DESKTOP_ACTION_RE = re.compile(r"^fda1_[0-9a-f]{32}$")
 FILE_CATEGORIES = {"session", "raw", "package", "artifact"}
 ARTIFACT_SUFFIXES = {".csv", ".diff", ".html", ".json", ".md", ".pdf", ".png", ".txt", ".xls", ".xlsx"}
 PACKAGE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".zip.gz")
@@ -60,6 +74,15 @@ REMOTE_FILES_UNAVAILABLE = "当前局点没有可用的设备资料库。"
 REMOTE_FILES_AVAILABLE = "设备文件通过受控 SFTP 会话读取。"
 WINSCP_INTEGRATION_MESSAGE = "WinSCP 需要 Desktop Action Service；当前 Web 宿主未提供桥接。"
 ACTIVE_DOWNLOAD_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
+TERMINAL_DOWNLOAD_STATES = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
+DOWNLOAD_DESCRIPTOR_EVENT = "file_management_descriptor"
+DOWNLOAD_HIDDEN_EVENT = "file_management_hidden"
+MESH_HISTORY_LOG_PATTERN = re.compile(r"^\d{4}_\d{2}_\d{2}_\d+meshlog\.log\.gz$", re.IGNORECASE)
+CRYPTPROTECT_UI_FORBIDDEN = 0x1
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_ulong), ("data", ctypes.POINTER(ctypes.c_ubyte))]
 
 
 class FileManagementError(ValueError):
@@ -85,6 +108,32 @@ class _RemoteEntry:
     remote_file: RemoteDeviceFile
 
 
+@dataclass(frozen=True)
+class _LocalEntry:
+    site_id: str
+    root: Path
+    path: Path
+
+
+@dataclass(frozen=True)
+class FileDesktopActionCommand:
+    """仅供未来 Native Bridge 消费的一次性强类型动作，不进入 HTTP DTO。"""
+
+    action: str
+    path: Path | None = None
+    device_id: str = ""
+    host: str = ""
+    port: int = 22
+    username: str = ""
+
+
+@dataclass
+class _DesktopAction:
+    site_id: str
+    expires_at: datetime
+    command: FileDesktopActionCommand
+
+
 @dataclass
 class _RemoteSession:
     connection_id: str
@@ -96,6 +145,7 @@ class _RemoteSession:
     root_entry_id: str
     current_entry_id: str
     entries: dict[str, _RemoteEntry]
+    entry_ids: dict[str, str]
     lock: threading.RLock
 
 
@@ -124,6 +174,14 @@ class FileManagementApplicationService:
         self._transfer_factory = transfer_factory
         self._sessions: dict[str, _RemoteSession] = {}
         self._sessions_lock = threading.RLock()
+        self._local_entries: dict[str, _LocalEntry] = {}
+        self._local_entry_ids: dict[tuple[str, str, str], str] = {}
+        self._local_entries_lock = threading.RLock()
+        self._desktop_actions: dict[str, _DesktopAction] = {}
+        self._desktop_actions_lock = threading.RLock()
+        self._target_lock = threading.RLock()
+        self._reserved_targets: set[str] = set()
+        self._parts_cleaned: set[str] = set()
         self._owns_process_adapter = False
         if self.task_service is not None and self.process_adapter is None:
             from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
@@ -152,6 +210,7 @@ class FileManagementApplicationService:
 
     def status(self, site_id: str = "") -> FileManagementStatusDTO:
         site = self._site_id(site_id)
+        self._cleanup_stale_parts_once(site)
         device_db_exists = self.paths.site_db_path(site).is_file()
         return FileManagementStatusDTO(
             site_id=site,
@@ -165,6 +224,104 @@ class FileManagementApplicationService:
             ),
             winscp=FileManagementCapabilityDTO(available=False, message=WINSCP_INTEGRATION_MESSAGE),
         )
+
+    def list_local_files(
+        self,
+        site_id: str = "",
+        *,
+        directory_id: str = "",
+        device_id: str = "",
+        page: int = 1,
+        limit: int = 200,
+    ) -> LocalFilePageDTO:
+        """浏览下载目录；客户端永远只接收会话内 opaque 引用。"""
+        site = self._site_id(site_id)
+        self._cleanup_stale_parts_once(site)
+        root = self._local_root(site, device_id)
+        root.mkdir(parents=True, exist_ok=True)
+        root_id = self._remember_local_entry(site, root, root)
+        current_id = str(directory_id or root_id)
+        current = self._local_entry(site, current_id)
+        if current.root != root or not current.path.is_dir():
+            raise FileReferenceNotFound("本地目录引用不存在或不属于当前受控目录")
+        try:
+            entries = tuple(os.scandir(current.path))
+        except OSError as exc:
+            raise RuntimeError(f"本地目录读取失败：{exc}") from exc
+        items: list[LocalFileEntryDTO] = []
+        for entry in entries:
+            try:
+                if entry.is_symlink() or str(entry.name).endswith(".part"):
+                    continue
+                is_dir = entry.is_dir(follow_symlinks=False)
+                if not is_dir and not entry.is_file(follow_symlinks=False):
+                    continue
+                stat_result = entry.stat(follow_symlinks=False)
+                child = Path(entry.path).resolve()
+                child_id = self._remember_local_entry(site, root, child)
+                items.append(
+                    LocalFileEntryDTO(
+                        entry_id=child_id,
+                        name=entry.name,
+                        is_dir=is_dir,
+                        size_bytes=None if is_dir else max(0, int(stat_result.st_size)),
+                        modified_at=datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
+                        file_type="directory" if is_dir else (child.suffix.lstrip(".") or "file"),
+                        downloadable=not is_dir,
+                    )
+                )
+            except OSError:
+                continue
+        items.sort(key=lambda item: (not item.is_dir, item.name.casefold()))
+        selected_page = max(1, int(page))
+        selected_limit = max(1, min(int(limit), 500))
+        start = (selected_page - 1) * selected_limit
+        parent = current.path.parent if current.path != root else root
+        parent_id = self._remember_local_entry(site, root, parent)
+        return LocalFilePageDTO(
+            site_id=site,
+            root_entry_id=root_id,
+            current_entry_id=current_id,
+            parent_entry_id=parent_id,
+            current_label=root.name if current.path == root else current.path.name,
+            items=items[start : start + selected_limit],
+            total=len(items),
+            page=selected_page,
+            limit=selected_limit,
+            has_more=start + selected_limit < len(items),
+        )
+
+    def create_local_directory(
+        self,
+        site_id: str,
+        *,
+        directory_id: str = "",
+        device_id: str = "",
+        name: str,
+    ) -> LocalFilePageDTO:
+        site = self._site_id(site_id)
+        root = self._local_root(site, device_id)
+        root.mkdir(parents=True, exist_ok=True)
+        current_id = str(directory_id or self._remember_local_entry(site, root, root))
+        current = self._local_entry(site, current_id)
+        if current.root != root or not current.path.is_dir():
+            raise FileReferenceNotFound("本地目录引用不存在或不属于当前受控目录")
+        safe_name = safe_device_name(name)
+        target = (current.path / safe_name).resolve()
+        self._assert_within(target, root, "本地目录超出受控范围")
+        try:
+            target.mkdir()
+        except FileExistsError as exc:
+            raise FileManagementError("同名目录已存在") from exc
+        except OSError as exc:
+            raise RuntimeError(f"本地目录创建失败：{exc}") from exc
+        return self.list_local_files(site, directory_id=current_id, device_id=device_id)
+
+    def open_local_file(self, site_id: str, entry_id: str) -> tuple[Path, str]:
+        entry = self._local_entry(self._site_id(site_id), entry_id)
+        if not entry.path.is_file() or entry.path.is_symlink() or entry.path.name.endswith(".part"):
+            raise FileReferenceNotFound("本地文件不存在或不可打开")
+        return entry.path, entry.path.name
 
     def list_remote_devices(self, site_id: str = "") -> list[FileRemoteDeviceDTO]:
         site = self._site_id(site_id)
@@ -182,12 +339,17 @@ class FileManagementApplicationService:
             if (device.device_uuid or device.id) and device.primary_address and bool(device.ssh_enabled)
         ]
 
-    def connect_device(self, site_id: str, device_id: str) -> FileConnectionDTO:
+    def connect_device(self, site_id: str, device_id: str, *, allow_sftp_setup: bool = False) -> FileConnectionDTO:
         site = self._site_id(site_id)
         device = self._resolve_device(site, device_id)
         device_key = str(device.device_uuid or device_id)
         self._close_device_sessions(site, device_key)
-        transfer = self._transfer_factory(site, self.paths, allow_remote_setup=False)
+        transfer = self._transfer_factory(
+            site,
+            self.paths,
+            allow_remote_setup=bool(allow_sftp_setup),
+            strict_host_keys=True,
+        )
         try:
             root_path = normalize_remote_path(transfer.connect(device))
         except Exception as exc:
@@ -198,7 +360,7 @@ class FileManagementApplicationService:
             raise RuntimeError(f"设备文件连接失败：{exc}") from exc
         connection_id = f"fc1_{uuid4().hex}"
         root_file = RemoteDeviceFile("根目录", root_path, None, None, "dir", is_dir=True, file_type="directory")
-        root_entry_id = self._remote_entry_id(device_key, root_path)
+        root_entry_id = self._new_remote_entry_id()
         session = _RemoteSession(
             connection_id=connection_id,
             site_id=site,
@@ -209,6 +371,7 @@ class FileManagementApplicationService:
             root_entry_id=root_entry_id,
             current_entry_id=root_entry_id,
             entries={root_entry_id: _RemoteEntry(device_key, root_file)},
+            entry_ids={root_path: root_entry_id},
             lock=threading.RLock(),
         )
         self._register_session(session)
@@ -219,7 +382,15 @@ class FileManagementApplicationService:
         self._close_session(session)
         return self._connection_dto(session, "已断开", status="DISCONNECTED")
 
-    def list_remote_files(self, site_id: str, connection_id: str, entry_id: str = "") -> RemoteFilePageDTO:
+    def list_remote_files(
+        self,
+        site_id: str,
+        connection_id: str,
+        entry_id: str = "",
+        *,
+        page: int = 1,
+        limit: int = 200,
+    ) -> RemoteFilePageDTO:
         session = self._session(site_id, connection_id)
         with session.lock:
             selected_id = str(entry_id or session.current_entry_id)
@@ -248,7 +419,8 @@ class FileManagementApplicationService:
                     is_dir=remote_file.is_dir,
                     file_type=remote_file.file_type,
                 )
-                child_id = self._remote_entry_id(session.device_id, normalized)
+                child_id = session.entry_ids.get(normalized) or self._new_remote_entry_id()
+                session.entry_ids[normalized] = child_id
                 session.entries[child_id] = _RemoteEntry(session.device_id, controlled)
                 items.append(
                     RemoteFileEntryDTO(
@@ -263,7 +435,8 @@ class FileManagementApplicationService:
                     )
                 )
             parent_path = parent_remote_path(selected.remote_file.remote_path, session.root_path)
-            parent_id = self._remote_entry_id(session.device_id, parent_path)
+            parent_id = session.entry_ids.get(parent_path) or self._new_remote_entry_id()
+            session.entry_ids[parent_path] = parent_id
             if parent_id not in session.entries:
                 parent_name = Path(parent_path.rstrip("/")).name or "根目录"
                 session.entries[parent_id] = _RemoteEntry(
@@ -271,18 +444,27 @@ class FileManagementApplicationService:
                     RemoteDeviceFile(parent_name, parent_path, None, None, "dir", is_dir=True, file_type="directory"),
                 )
             session.current_entry_id = selected_id
+            items.sort(key=lambda item: (not item.is_dir, item.name.casefold()))
+            selected_page = max(1, int(page))
+            selected_limit = max(1, min(int(limit), 500))
+            start = (selected_page - 1) * selected_limit
             return RemoteFilePageDTO(
                 connection_id=session.connection_id,
                 current_entry_id=selected_id,
                 parent_entry_id=parent_id,
                 current_label="根目录" if selected_id == session.root_entry_id else selected.remote_file.name,
-                items=sorted(items, key=lambda item: (not item.is_dir, item.name.casefold())),
+                items=items[start : start + selected_limit],
+                total=len(items),
+                page=selected_page,
+                limit=selected_limit,
+                has_more=start + selected_limit < len(items),
             )
 
     def list_download_tasks(self, site_id: str, limit: int = 100) -> list[FileDownloadTaskDTO]:
         if self.task_service is None:
             return []
         site = self._site_id(site_id)
+        self._cleanup_stale_parts_once(site)
         requested = max(1, min(int(limit), 200))
         page_size = min(200, max(50, requested))
         tasks: list[FileDownloadTaskDTO] = []
@@ -296,7 +478,7 @@ class FileManagementApplicationService:
                 break
             offset += len(snapshots)
             for snapshot in snapshots:
-                if self._is_download_snapshot(snapshot):
+                if self._is_download_snapshot(snapshot) and not self._task_hidden(repository, snapshot.task_id):
                     tasks.append(self._download_task_from_snapshot(site, snapshot))
                     task_ids.add(snapshot.task_id)
             if len(snapshots) < page_size:
@@ -312,7 +494,11 @@ class FileManagementApplicationService:
                 break
             offset += len(snapshots)
             for snapshot in snapshots:
-                if snapshot.task_id not in task_ids and self._is_download_snapshot(snapshot):
+                if (
+                    snapshot.task_id not in task_ids
+                    and self._is_download_snapshot(snapshot)
+                    and not self._task_hidden(repository, snapshot.task_id)
+                ):
                     tasks.append(self._download_task_from_snapshot(site, snapshot))
                     task_ids.add(snapshot.task_id)
                     if len(tasks) >= requested:
@@ -331,18 +517,63 @@ class FileManagementApplicationService:
             raise FileManagementError("下载任务当前不可停止")
         return self.download_task(site_id, task.task_id) or task
 
-    def desktop_action(self, action: str, *, site_id: str = "", device_id: str = "", artifact_id: str = "") -> FileDesktopActionDTO:
+    def desktop_action(
+        self,
+        action: str,
+        *,
+        site_id: str = "",
+        device_id: str = "",
+        local_entry_id: str = "",
+        task_id: str = "",
+    ) -> FileDesktopActionDTO:
+        site = self._site_id(site_id)
         selected = str(action or "").strip()
         if selected == "winscp":
             if not str(device_id or "").strip():
                 raise FileManagementError("WinSCP 操作缺少设备标识")
-            self._resolve_device(self._site_id(site_id), device_id)
-            return FileDesktopActionDTO(action=selected, message=WINSCP_INTEGRATION_MESSAGE)
+            device = self._resolve_device(site, device_id)
+            command = FileDesktopActionCommand(
+                action=selected,
+                device_id=str(device.device_uuid or device.id or ""),
+                host=str(device.primary_address or ""),
+                port=max(1, int(device.ssh_port or 22)),
+                username=str(device.ssh_username or ""),
+            )
         if selected == "open_result_dir":
-            if not ARTIFACT_ID_RE.fullmatch(str(artifact_id or "")):
-                raise FileReferenceNotFound("Artifact 引用不存在")
-            return FileDesktopActionDTO(action=selected, message="打开结果目录需要 Desktop Action Service；当前 Web 宿主未提供桥接。")
-        raise FileManagementError("不支持的桌面动作")
+            path, _name = self.open_download(site, task_id)
+            command = FileDesktopActionCommand(action=selected, path=path.parent)
+        elif selected == "open_local":
+            entry = self._local_entry(site, local_entry_id)
+            command = FileDesktopActionCommand(action=selected, path=entry.path)
+        elif selected != "winscp":
+            raise FileManagementError("不支持的桌面动作")
+        expires_at = datetime.now(UTC) + timedelta(seconds=60)
+        action_ref = f"fda1_{uuid4().hex}"
+        with self._desktop_actions_lock:
+            self._desktop_actions[action_ref] = _DesktopAction(site, expires_at, command)
+        return FileDesktopActionDTO(
+            action=selected,
+            action_ref=action_ref,
+            expires_at=expires_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            accepted=True,
+            integration_required=True,
+            message=(
+                WINSCP_INTEGRATION_MESSAGE
+                if selected == "winscp"
+                else "桌面动作已登记；等待 Task Window Native Bridge 消费。"
+            ),
+        )
+
+    def consume_desktop_action(self, action_ref: str) -> FileDesktopActionCommand:
+        """Native Bridge 唯一可接入点：动作一次性消费，且没有密码或任意 argv。"""
+        value = str(action_ref or "")
+        if not DESKTOP_ACTION_RE.fullmatch(value):
+            raise FileReferenceNotFound("桌面动作引用不存在")
+        with self._desktop_actions_lock:
+            action = self._desktop_actions.pop(value, None)
+        if action is None or action.expires_at < datetime.now(UTC):
+            raise FileReferenceNotFound("桌面动作引用不存在或已过期")
+        return action.command
 
     def list_files(
         self,
@@ -400,21 +631,22 @@ class FileManagementApplicationService:
         *,
         connection_id: str = "",
         remote_entry_id: str = "",
+        local_directory_id: str = "",
+        batch_id: str = "",
     ) -> FileDownloadTaskDTO:
         if self.task_service is None or self.process_adapter is None:
             raise RuntimeError("文件下载任务宿主未接线")
         site = self._site_id(site_id)
         if file_ref and (connection_id or remote_entry_id):
             raise FileManagementError("本地文件引用与远程文件引用不能同时提交")
-        task_id = uuid4().hex
-        params: dict[str, object]
         if str(file_ref or "").strip():
             resolved = self.resolve_ref(site, file_ref)
-            params = {
-                "site_name": resolved.site_id,
+            descriptor: dict[str, object] = {
+                "version": 1,
+                "source_kind": "managed_file",
+                "batch_id": str(batch_id or f"fb1_{uuid4().hex}"),
                 "file_ref": resolved.file_ref,
-                "task_name": f"文件下载 - {resolved.path.name}",
-                "task_source": "local",
+                "name": resolved.path.name,
             }
         else:
             session = self._session(site, connection_id)
@@ -424,39 +656,94 @@ class FileManagementApplicationService:
                     raise FileReferenceNotFound("远程文件引用不存在或不属于当前设备会话")
                 if entry.remote_file.is_dir:
                     raise FileManagementError("不能下载远程目录")
-                candidate = session.transfer.local_path_for(session.device, entry.remote_file)
-                target = candidate.with_name(f"{task_id}_{candidate.name}")
-                relative_target = target.resolve().relative_to(self.paths.site_dir(site).resolve()).as_posix()
-                params = {
-                    "site_name": site,
-                    "task_name": f"设备文件下载 - {entry.remote_file.name}",
-                    "task_source": "local",
-                    "file_source": "remote",
+                target, target_kind = self._download_target(site, session.device, entry.remote_file, local_directory_id)
+                descriptor = {
+                    "version": 1,
+                    "source_kind": "remote",
+                    "batch_id": str(batch_id or f"fb1_{uuid4().hex}"),
                     "device_id": session.device_id,
+                    "device_name": str(session.device.name or session.device.system_name or session.device.primary_address),
                     "remote_entry_id": str(remote_entry_id),
                     "remote_path": entry.remote_file.remote_path,
                     "remote_name": entry.remote_file.name,
                     "remote_size": int(entry.remote_file.size or 0),
                     "remote_modified_at": entry.remote_file.modified_time or "",
                     "remote_category": entry.remote_file.category,
-                    "target_relative_path": relative_target,
+                    "target_relative_path": target.relative_to(self.paths.site_dir(site).resolve()).as_posix(),
+                    "target_kind": target_kind,
                 }
-        params.update(
-            {
-                "owner": "web_file_management",
-                "app_root": str(self.paths.app_root),
-                "data_root": str(self.paths.data_root),
-            }
-        )
+        return self._start_download(site, descriptor)
+
+    def submit_download_batch(
+        self,
+        site_id: str,
+        connection_id: str,
+        remote_entry_ids: Iterable[str],
+        *,
+        local_directory_id: str = "",
+    ) -> FileDownloadBatchDTO:
+        site = self._site_id(site_id)
+        values = list(dict.fromkeys(str(value or "") for value in remote_entry_ids))
+        if not values or len(values) > 100:
+            raise FileManagementError("每个下载批次必须包含 1 到 100 个文件")
+        session = self._session(site, connection_id)
+        active_keys = self._active_remote_keys(site)
+        batch_id = f"fb1_{uuid4().hex}"
+        tasks: list[FileDownloadTaskDTO] = []
+        failures: list[str] = []
+        for entry_id in values:
+            with session.lock:
+                entry = session.entries.get(entry_id)
+                key = (session.device_id, entry.remote_file.remote_path) if entry is not None else ("", "")
+                name = entry.remote_file.name if entry is not None else entry_id
+            if key in active_keys:
+                failures.append(f"{name}：已有活动下载任务")
+                continue
+            try:
+                task = self.submit_download(
+                    site,
+                    connection_id=connection_id,
+                    remote_entry_id=entry_id,
+                    local_directory_id=local_directory_id,
+                    batch_id=batch_id,
+                )
+            except (FileManagementError, RuntimeError) as exc:
+                failures.append(f"{name}：{exc}")
+                continue
+            tasks.append(task)
+            active_keys.add(key)
+        return FileDownloadBatchDTO(batch_id=batch_id, tasks=tasks, failures=failures)
+
+    def _start_download(self, site: str, descriptor: dict[str, object]) -> FileDownloadTaskDTO:
+        if self.task_service is None or self.process_adapter is None:
+            raise RuntimeError("文件下载任务宿主未接线")
+        task_id = uuid4().hex
+        params = {
+            **descriptor,
+            "site_name": site,
+            "task_name": self._descriptor_task_name(descriptor),
+            "task_source": "local",
+            "file_source": descriptor.get("source_kind", ""),
+            "owner": "web_file_management",
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+        }
         job = BackgroundJob(
             job_id=task_id,
             task_type="file_management_download",
             params=params,
         )
+        protected_descriptor = _protect_descriptor(descriptor, site, task_id)
         try:
             self.process_adapter.start_job(job)
         except Exception as exc:
             raise RuntimeError("文件下载任务启动失败") from exc
+        self._record_task_metadata(
+            site,
+            task_id,
+            DOWNLOAD_DESCRIPTOR_EVENT,
+            {"protected_descriptor": protected_descriptor},
+        )
         return self.download_task(site, task_id) or FileDownloadTaskDTO(
             task_id=task_id,
             site_id=site,
@@ -464,6 +751,43 @@ class FileManagementApplicationService:
             progress=0,
             message="已创建文件下载任务",
         )
+
+    def retry_download(self, site_id: str, task_id: str) -> FileDownloadTaskDTO:
+        site = self._site_id(site_id)
+        task = self.download_task(site, task_id)
+        if task is None:
+            raise FileReferenceNotFound("下载任务不存在")
+        if task.status not in {TaskState.FAILED.value, TaskState.CANCELLED.value}:
+            raise FileManagementError("只有失败或已取消的下载可以重试")
+        descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else None
+        if descriptor is None:
+            raise FileManagementError("旧下载任务没有可恢复的下载描述")
+        retry = dict(descriptor)
+        retry["batch_id"] = str(retry.get("batch_id") or f"fb1_{uuid4().hex}")
+        if retry.get("source_kind") == "remote":
+            device = self._resolve_device(site, str(retry.get("device_id") or ""))
+            remote_file = self._remote_file_from_descriptor(retry)
+            target, target_kind = self._download_target(site, device, remote_file, "")
+            retry["target_relative_path"] = target.relative_to(self.paths.site_dir(site).resolve()).as_posix()
+            retry["target_kind"] = target_kind
+        return self._start_download(site, retry)
+
+    def clear_downloads(self, site_id: str, statuses: Iterable[str]) -> FileDownloadClearDTO:
+        if self.task_service is None:
+            return FileDownloadClearDTO(cleared_count=0)
+        site = self._site_id(site_id)
+        requested = {str(value or "").upper() for value in statuses}
+        allowed = {TaskState.COMPLETED.value, TaskState.FAILED.value}
+        if not requested or not requested <= allowed:
+            raise FileManagementError("只能清理已完成或失败的下载记录")
+        repository = self.task_service.repository(site)
+        cleared = 0
+        for snapshot in repository.list(statuses={TaskState(value) for value in requested}, limit=1000):
+            if not self._is_download_snapshot(snapshot) or self._task_hidden(repository, snapshot.task_id):
+                continue
+            self._record_task_metadata(site, snapshot.task_id, DOWNLOAD_HIDDEN_EVENT, {"hidden": True})
+            cleared += 1
+        return FileDownloadClearDTO(cleared_count=cleared)
 
     def download_task(self, site_id: str, task_id: str) -> FileDownloadTaskDTO | None:
         if self.task_service is None:
@@ -480,15 +804,21 @@ class FileManagementApplicationService:
         return self._download_task_from_snapshot(site, snapshot)
 
     def _download_task_from_snapshot(self, site: str, snapshot) -> FileDownloadTaskDTO:
+        repository = self.task_service.repository(site) if self.task_service is not None else None
+        descriptor = self._task_descriptor(repository, snapshot.task_id) if repository is not None else {}
+        descriptor = descriptor or {}
         result = dict(snapshot.result or {})
         result_dto = None
         if snapshot.status is TaskState.COMPLETED and result.get("name"):
             file_ref = str(result.get("download_ref") or "")
             artifact_id = str(result.get("artifact_id") or "")
-            if FILE_REF_RE.fullmatch(file_ref) or ARTIFACT_ID_RE.fullmatch(artifact_id):
+            device_file_ref = str(result.get("device_file_ref") or "")
+            if FILE_REF_RE.fullmatch(file_ref) or ARTIFACT_ID_RE.fullmatch(artifact_id) or DEVICE_FILE_REF_RE.fullmatch(device_file_ref):
                 try:
                     result_dto = FileDownloadResultDTO(
+                        result_kind=str(result.get("result_kind") or ("managed_file" if file_ref else "device_file")),
                         file_ref=file_ref,
+                        device_file_ref=device_file_ref,
                         name=str(result["name"]),
                         size_bytes=max(0, int(result.get("size_bytes") or 0)),
                         artifact_id=artifact_id,
@@ -496,6 +826,7 @@ class FileManagementApplicationService:
                         sha256=str(result.get("sha256") or ""),
                         device_id=str(result.get("device_id") or ""),
                         remote_entry_id=str(result.get("remote_entry_id") or ""),
+                        target_kind=str(result.get("target_kind") or descriptor.get("target_kind") or ""),
                     )
                 except (TypeError, ValueError):
                     result_dto = None
@@ -504,6 +835,10 @@ class FileManagementApplicationService:
             message = "文件下载失败"
         elif snapshot.status is TaskState.CANCELLED:
             message = "文件下载已取消"
+        total = max(0, int(snapshot.total or descriptor.get("remote_size") or 0))
+        current = max(0, int(snapshot.current or (total if snapshot.status is TaskState.COMPLETED else 0)))
+        speed = self._average_speed(snapshot.started_time, snapshot.finished_time or snapshot.updated_time, current)
+        retryable = snapshot.status in {TaskState.FAILED, TaskState.CANCELLED} and bool(descriptor)
         return FileDownloadTaskDTO(
             task_id=snapshot.task_id,
             site_id=site,
@@ -511,6 +846,17 @@ class FileManagementApplicationService:
             progress=max(0, min(int(snapshot.progress or 0), 100)),
             stage=str(snapshot.stage or ""),
             message=message,
+            batch_id=str(descriptor.get("batch_id") or ""),
+            source_kind=str(descriptor.get("source_kind") or ""),
+            device_name=str(descriptor.get("device_name") or ""),
+            remote_name=str(descriptor.get("remote_name") or descriptor.get("name") or ""),
+            downloaded_bytes=current,
+            total_bytes=total,
+            speed_bytes_per_second=speed,
+            created_at=str(snapshot.created_time or ""),
+            updated_at=str(snapshot.updated_time or ""),
+            retryable=retryable,
+            retry_reason="" if retryable else "当前状态不可重试",
             result=result_dto,
         )
 
@@ -526,16 +872,26 @@ class FileManagementApplicationService:
             if not name:
                 raise FileManagementError("下载文件显示名无效")
             return resolved.path, name
-        if not ARTIFACT_ID_RE.fullmatch(task.result.artifact_id) or not task.result.relative_path:
-            raise FileReferenceNotFound("下载结果 Artifact 不存在")
-        path = self._safe_site_relative_path(task.site_id, task.result.relative_path, under_downloads=True)
+        descriptor = self._task_descriptor(self.task_service.repository(task.site_id), task.task_id) if self.task_service else None
+        relative_path = str((descriptor or {}).get("target_relative_path") or task.result.relative_path)
+        target_kind = str((descriptor or {}).get("target_kind") or task.result.target_kind)
+        if not relative_path:
+            raise FileReferenceNotFound("下载结果文件不存在")
+        path = self._safe_download_target(task.site_id, relative_path, target_kind)
         if not path.is_file():
             raise FileReferenceNotFound("下载结果文件不存在")
         if task.result.sha256 and file_sha256(path) != task.result.sha256:
             raise FileManagementError("下载结果校验失败")
-        expected_artifact = self._artifact_id(task.task_id, task.result.relative_path, task.result.sha256)
-        if task.result.artifact_id != expected_artifact:
-            raise FileReferenceNotFound("下载结果 Artifact 引用无效")
+        if task.result.device_file_ref:
+            expected = self._device_file_ref(task.task_id, relative_path, task.result.sha256)
+            if task.result.device_file_ref != expected:
+                raise FileReferenceNotFound("设备文件结果引用无效")
+        elif task.result.artifact_id:
+            expected_artifact = self._artifact_id(task.task_id, relative_path, task.result.sha256)
+            if task.result.artifact_id != expected_artifact:
+                raise FileReferenceNotFound("旧版下载结果 Artifact 引用无效")
+        else:
+            raise FileReferenceNotFound("下载结果引用无效")
         name = _download_display_name(task.result.name)
         if not name:
             raise FileManagementError("下载文件显示名无效")
@@ -577,18 +933,14 @@ class FileManagementApplicationService:
         if not display_name:
             raise FileManagementError("下载文件显示名无效")
         normalized_path = normalize_remote_path(remote_path)
-        if self._remote_entry_id(device_id, normalized_path) != remote_entry_id:
-            raise FileReferenceNotFound("远程文件引用校验失败")
         category = str(context.params.get("remote_category") or "file").strip().casefold()
         if category in {"", "dir"}:
             category = "file"
         if category not in {"bin", "zip", "diag", "meshlog", "file"}:
             raise FileManagementError("远程文件分类无效")
-        target = self._safe_site_relative_path(
-            site,
-            str(context.params.get("target_relative_path") or ""),
-            under_downloads=True,
-        )
+        target_relative_path = str(context.params.get("target_relative_path") or "")
+        target_kind = str(context.params.get("target_kind") or "device_file")
+        target = self._safe_download_target(site, target_relative_path, target_kind)
         device = self._resolve_device(site, device_id)
         remote_file = RemoteDeviceFile(
             name=remote_name,
@@ -597,7 +949,7 @@ class FileManagementApplicationService:
             modified_time=str(context.params.get("remote_modified_at") or "") or None,
             category=category,
         )
-        transfer = FileTransferService(site, context.paths, allow_remote_setup=False)
+        transfer = FileTransferService(site, context.paths, allow_remote_setup=False, strict_host_keys=True)
 
         class _JobCancelToken:
             def is_cancelled(self) -> bool:
@@ -632,13 +984,14 @@ class FileManagementApplicationService:
         digest = file_sha256(output)
         context.progress("file_verify", 1, 1, f"已校验 {remote_file.name}")
         return {
+            "result_kind": "device_file",
             "name": display_name,
             "size_bytes": size,
-            "relative_path": relative,
             "sha256": digest,
-            "artifact_id": self._artifact_id(context.job_id, relative, digest),
+            "device_file_ref": self._device_file_ref(context.job_id, relative, digest),
             "device_id": device_id,
             "remote_entry_id": remote_entry_id,
+            "target_kind": target_kind,
         }
 
     def _resolve_device(self, site: str, device_id: str) -> Device:
@@ -721,9 +1074,212 @@ class FileManagementApplicationService:
         )
 
     @staticmethod
-    def _remote_entry_id(device_id: str, remote_path: str) -> str:
-        digest = hashlib.sha256(f"fe1\0{device_id}\0{normalize_remote_path(remote_path)}".encode("utf-8")).hexdigest()[:32]
-        return f"fe1_{digest}"
+    def _new_remote_entry_id() -> str:
+        return f"fe1_{uuid4().hex}"
+
+    def _local_root(self, site: str, device_id: str = "") -> Path:
+        if not str(device_id or "").strip():
+            return self.paths.file_downloads_root(site).resolve()
+        device = self._resolve_device(site, device_id)
+        return self.paths.device_file_download_dir(
+            site,
+            safe_device_name(device.name or device.system_name or "device"),
+        ).resolve()
+
+    def _remember_local_entry(self, site: str, root: Path, path: Path) -> str:
+        resolved_root = root.resolve()
+        resolved = path.resolve()
+        self._assert_within(resolved, resolved_root, "本地文件超出受控目录")
+        key = (site, str(resolved_root), str(resolved))
+        with self._local_entries_lock:
+            entry_id = self._local_entry_ids.get(key)
+            if entry_id is None:
+                entry_id = f"fl1_{uuid4().hex}"
+                self._local_entry_ids[key] = entry_id
+                self._local_entries[entry_id] = _LocalEntry(site, resolved_root, resolved)
+        return entry_id
+
+    def _local_entry(self, site: str, entry_id: str) -> _LocalEntry:
+        value = str(entry_id or "")
+        if not LOCAL_ENTRY_ID_RE.fullmatch(value):
+            raise FileReferenceNotFound("本地文件引用不存在")
+        with self._local_entries_lock:
+            entry = self._local_entries.get(value)
+        if entry is None or entry.site_id != site:
+            raise FileReferenceNotFound("本地文件引用不存在或不属于当前局点")
+        try:
+            resolved = entry.path.resolve(strict=True)
+        except OSError as exc:
+            raise FileReferenceNotFound("本地文件已不存在") from exc
+        if entry.path.is_symlink():
+            raise FileReferenceNotFound("符号链接不允许进入受控文件浏览")
+        self._assert_within(resolved, entry.root, "本地文件超出受控目录")
+        return _LocalEntry(entry.site_id, entry.root, resolved)
+
+    @staticmethod
+    def _assert_within(path: Path, root: Path, message: str) -> None:
+        try:
+            path.resolve().relative_to(root.resolve())
+        except ValueError as exc:
+            raise FileReferenceNotFound(message) from exc
+
+    def _download_target(
+        self,
+        site: str,
+        device: Device,
+        remote_file: RemoteDeviceFile,
+        local_directory_id: str,
+    ) -> tuple[Path, str]:
+        if is_mesh_log_file(remote_file.name) and self._is_vehicle_mr_device(device):
+            profile = MeshStorageService(site, self.paths).ensure_mr_profile_for_device(device)
+            directory = self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
+            target_kind = "mr_raw"
+        elif local_directory_id:
+            local = self._local_entry(site, local_directory_id)
+            if not local.path.is_dir():
+                raise FileReferenceNotFound("本地下载目标不是目录")
+            self._assert_within(local.path, self.paths.file_downloads_root(site), "本地下载目标超出下载目录")
+            directory = local.path
+            target_kind = "device_file"
+        else:
+            directory = self.paths.device_file_download_dir(
+                site,
+                safe_device_name(device.name or device.system_name or "device"),
+            ).resolve()
+            target_kind = "device_file"
+        directory.mkdir(parents=True, exist_ok=True)
+        name = resolve_local_download_name(remote_file, str(device.name or device.system_name or "device"))
+        return self._reserve_target(directory / name), target_kind
+
+    def _reserve_target(self, target: Path) -> Path:
+        with self._target_lock:
+            candidate = auto_rename_path(target)
+            suffix = "".join(target.suffixes)
+            stem = target.name[: -len(suffix)] if suffix else target.name
+            index = 1
+            while str(candidate.resolve()) in self._reserved_targets:
+                candidate = target.with_name(f"{stem}_{index}{suffix}")
+                index += 1
+            self._reserved_targets.add(str(candidate.resolve()))
+            return candidate
+
+    @staticmethod
+    def _is_vehicle_mr_device(device: Device) -> bool:
+        return any("MR" in str(value or "").upper() for value in (device.device_type, device.name, device.system_name))
+
+    @staticmethod
+    def _remote_file_from_descriptor(descriptor: dict[str, object]) -> RemoteDeviceFile:
+        return RemoteDeviceFile(
+            name=str(descriptor.get("remote_name") or ""),
+            remote_path=str(descriptor.get("remote_path") or ""),
+            size=max(0, int(descriptor.get("remote_size") or 0)),
+            modified_time=str(descriptor.get("remote_modified_at") or "") or None,
+            category=str(descriptor.get("remote_category") or "file"),
+        )
+
+    @staticmethod
+    def _descriptor_task_name(descriptor: dict[str, object]) -> str:
+        if descriptor.get("source_kind") == "remote":
+            return f"设备文件下载 - {descriptor.get('remote_name') or '文件'}"
+        return f"文件下载 - {descriptor.get('name') or '文件'}"
+
+    def _record_task_metadata(self, site: str, task_id: str, event_type: str, payload: dict[str, object]) -> None:
+        if self.task_service is None:
+            return
+        repository = self.task_service.repository(site)
+        snapshot = repository.get(task_id)
+        if snapshot is None:
+            raise RuntimeError("下载任务状态尚未持久化")
+        now = utc_now_iso()
+        repository.record(
+            snapshot,
+            TaskEvent(
+                event_id=uuid4().hex,
+                task_id=task_id,
+                type=event_type,
+                time=now,
+                source="file_management",
+                payload=dict(payload),
+            ),
+        )
+
+    @staticmethod
+    def _task_descriptor(repository, task_id: str) -> dict[str, object] | None:
+        if repository is None:
+            return None
+        snapshot = repository.get(task_id)
+        if snapshot is None:
+            return None
+        descriptor = None
+        for event in repository.list_events(task_id, limit=2000):
+            if event.get("type") != DOWNLOAD_DESCRIPTOR_EVENT:
+                continue
+            payload = dict(event.get("payload") or {})
+            token = str(payload.get("protected_descriptor") or "")
+            if token:
+                try:
+                    descriptor = _unprotect_descriptor(token, snapshot.site_name, task_id)
+                except (OSError, ValueError, RuntimeError):
+                    descriptor = None
+        return descriptor
+
+    @staticmethod
+    def _task_hidden(repository, task_id: str) -> bool:
+        return any(
+            event.get("type") == DOWNLOAD_HIDDEN_EVENT and bool(dict(event.get("payload") or {}).get("hidden"))
+            for event in repository.list_events(task_id, limit=2000)
+        )
+
+    def _active_remote_keys(self, site: str) -> set[tuple[str, str]]:
+        if self.task_service is None:
+            return set()
+        repository = self.task_service.repository(site)
+        keys: set[tuple[str, str]] = set()
+        for snapshot in repository.list(statuses=ACTIVE_DOWNLOAD_STATES, limit=1000):
+            if not self._is_download_snapshot(snapshot):
+                continue
+            descriptor = self._task_descriptor(repository, snapshot.task_id) or {}
+            if descriptor.get("source_kind") == "remote":
+                keys.add((str(descriptor.get("device_id") or ""), str(descriptor.get("remote_path") or "")))
+        return keys
+
+    @staticmethod
+    def _average_speed(started: str, finished: str, current: int) -> float:
+        if not started or not finished or current <= 0:
+            return 0.0
+        try:
+            start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+            seconds = max(0.0, (end - start).total_seconds())
+        except ValueError:
+            return 0.0
+        return float(current) / seconds if seconds > 0 else 0.0
+
+    def _safe_download_target(self, site: str, relative_path: str, target_kind: str) -> Path:
+        resolved = self._safe_site_relative_path(site, relative_path)
+        root = self.paths.site_mesh_root(site) if target_kind == "mr_raw" else self.paths.file_downloads_root(site)
+        self._assert_within(resolved, root, "下载结果不属于受控目标目录")
+        return resolved
+
+    def _cleanup_stale_parts_once(self, site: str) -> None:
+        if site in self._parts_cleaned:
+            return
+        with self._target_lock:
+            if site in self._parts_cleaned:
+                return
+            roots = (self.paths.file_downloads_root(site), self.paths.site_mesh_root(site))
+            for root in roots:
+                if not root.is_dir():
+                    continue
+                for part in root.rglob("*.part"):
+                    try:
+                        if part.is_symlink() or not part.is_file():
+                            continue
+                        self._assert_within(part, root, "临时文件超出受控清理目录")
+                        part.unlink()
+                    except OSError:
+                        continue
+            self._parts_cleaned.add(site)
 
     def _safe_site_relative_path(self, site: str, relative_path: str, *, under_downloads: bool = False) -> Path:
         value = str(relative_path or "").strip()
@@ -748,6 +1304,11 @@ class FileManagementApplicationService:
     def _artifact_id(task_id: str, relative_path: str, sha256: str) -> str:
         digest = hashlib.sha256(f"fa1\0{task_id}\0{relative_path}\0{sha256}".encode("utf-8")).hexdigest()[:32]
         return f"fa1_{digest}"
+
+    @staticmethod
+    def _device_file_ref(task_id: str, relative_path: str, sha256: str) -> str:
+        digest = hashlib.sha256(f"fd1\0{task_id}\0{relative_path}\0{sha256}".encode("utf-8")).hexdigest()[:32]
+        return f"fd1_{digest}"
 
     @staticmethod
     def _is_download_snapshot(snapshot: TaskSnapshot) -> bool:
@@ -811,6 +1372,79 @@ class FileManagementApplicationService:
     def _file_ref(self, site_id: str, relative_path: str) -> str:
         digest = hashlib.sha256(f"{site_id}\0{relative_path}".encode("utf-8")).hexdigest()[:32]
         return f"fm1_{digest}"
+
+
+def _protect_descriptor(descriptor: dict[str, object], site: str, task_id: str) -> str:
+    payload = json.dumps(descriptor, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    protected = _crypt_protect(payload, f"file-management\0{site}\0{task_id}".encode("utf-8"), decrypt=False)
+    return base64.urlsafe_b64encode(protected).decode("ascii")
+
+
+def _unprotect_descriptor(token: str, site: str, task_id: str) -> dict[str, object]:
+    try:
+        protected = base64.urlsafe_b64decode(str(token or "").encode("ascii"))
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise ValueError("下载恢复描述无效") from exc
+    payload = _crypt_protect(protected, f"file-management\0{site}\0{task_id}".encode("utf-8"), decrypt=True)
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("下载恢复描述无效")
+    return {str(key): item for key, item in value.items()}
+
+
+def _crypt_protect(data: bytes, entropy: bytes, *, decrypt: bool) -> bytes:
+    if os.name != "nt":
+        raise RuntimeError("下载队列持久恢复要求 Windows DPAPI")
+    data_buffer = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+    entropy_buffer = (ctypes.c_ubyte * len(entropy)).from_buffer_copy(entropy)
+    input_blob = _DataBlob(len(data), ctypes.cast(data_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    entropy_blob = _DataBlob(len(entropy), ctypes.cast(entropy_buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    output_blob = _DataBlob()
+    windll = getattr(ctypes, "windll")
+    function = windll.crypt32.CryptUnprotectData if decrypt else windll.crypt32.CryptProtectData
+    args = (
+        ctypes.byref(input_blob),
+        None,
+        ctypes.byref(entropy_blob),
+        None,
+        None,
+        CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(output_blob),
+    )
+    if not function(*args):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(output_blob.data, output_blob.size)
+    finally:
+        windll.kernel32.LocalFree(output_blob.data)
+
+
+def is_mesh_log_file(filename: str) -> bool:
+    basename = Path(str(filename or "")).name
+    return basename.casefold() == "meshlog.log" or MESH_HISTORY_LOG_PATTERN.fullmatch(basename) is not None
+
+
+def resolve_local_download_name(remote_file: RemoteDeviceFile, device_name: str = "", today: date | None = None) -> str:
+    basename = Path(str(remote_file.name or "")).name
+    safe_name = safe_device_name(device_name or "device")
+    if MESH_HISTORY_LOG_PATTERN.fullmatch(basename):
+        return f"{safe_name}-{basename}"
+    if basename.casefold() != "meshlog.log":
+        return basename
+    resolved_date = _meshlog_modified_date(remote_file.modified_time) or today or date.today()
+    return f"{safe_name}-{resolved_date:%Y_%m_%d}-meshlog.log"
+
+
+def _meshlog_modified_date(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text or text.startswith("1970-01-01"):
+        return None
+    for fmt, length in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
+        try:
+            return datetime.strptime(text[:length], fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def classify_file(relative_path: str) -> str | None:

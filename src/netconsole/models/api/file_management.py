@@ -35,14 +35,51 @@ class ManagedFilePageDTO(ApiModel):
     total: int = 0
 
 
+class LocalFileEntryDTO(ApiModel):
+    entry_id: str = Field(pattern=r"^fl1_[0-9a-f]{32}$")
+    name: str
+    is_dir: bool = False
+    size_bytes: int | None = Field(default=None, ge=0)
+    modified_at: str | None = None
+    file_type: str = "file"
+    downloadable: bool = False
+
+
+class LocalFilePageDTO(ApiModel):
+    site_id: str
+    root_entry_id: str = Field(pattern=r"^fl1_[0-9a-f]{32}$")
+    current_entry_id: str = Field(pattern=r"^fl1_[0-9a-f]{32}$")
+    parent_entry_id: str = Field(pattern=r"^fl1_[0-9a-f]{32}$")
+    current_label: str = ""
+    items: list[LocalFileEntryDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=200, ge=1, le=500)
+    has_more: bool = False
+
+
+class LocalDirectoryCreateRequestDTO(ApiModel):
+    directory_id: str = Field(default="", max_length=80, pattern=r"^(|fl1_[0-9a-f]{32})$")
+    device_id: str = Field(default="", max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+
+
 class FileDownloadRequestDTO(ApiModel):
     file_ref: str = Field(default="", max_length=64, pattern=r"^(|fm1_[0-9a-f]{32})$")
     connection_id: str = Field(default="", max_length=80, pattern=r"^(|fc1_[0-9a-f]{32})$")
     remote_entry_id: str = Field(default="", max_length=80, pattern=r"^(|fe1_[0-9a-f]{32})$")
+    local_directory_id: str = Field(default="", max_length=80, pattern=r"^(|fl1_[0-9a-f]{32})$")
+
+
+class FileDownloadBatchRequestDTO(ApiModel):
+    connection_id: str = Field(max_length=80, pattern=r"^fc1_[0-9a-f]{32}$")
+    remote_entry_ids: list[str] = Field(min_length=1, max_length=100)
+    local_directory_id: str = Field(default="", max_length=80, pattern=r"^(|fl1_[0-9a-f]{32})$")
 
 
 class DeviceFileConnectionRequestDTO(ApiModel):
     device_id: str = Field(min_length=1, max_length=120)
+    allow_sftp_setup: bool = False
 
 
 class FileRemoteDeviceDTO(ApiModel):
@@ -79,22 +116,31 @@ class RemoteFilePageDTO(ApiModel):
     parent_entry_id: str = Field(pattern=r"^fe1_[0-9a-f]{32}$")
     current_label: str = ""
     items: list[RemoteFileEntryDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = Field(default=1, ge=1)
+    limit: int = Field(default=200, ge=1, le=500)
+    has_more: bool = False
 
 
 class FileDesktopActionRequestDTO(ApiModel):
     device_id: str = Field(default="", max_length=120)
-    artifact_id: str = Field(default="", max_length=80)
+    local_entry_id: str = Field(default="", max_length=80, pattern=r"^(|fl1_[0-9a-f]{32})$")
+    task_id: str = Field(default="", max_length=160)
 
 
 class FileDesktopActionDTO(ApiModel):
     action: str
+    action_ref: str = Field(default="", pattern=r"^(|fda1_[0-9a-f]{32})$")
+    expires_at: str = ""
     accepted: bool = False
     integration_required: bool = True
     message: str
 
 
 class FileDownloadResultDTO(ApiModel):
+    result_kind: str = "managed_file"
     file_ref: str = Field(default="", pattern=r"^(|fm1_[0-9a-f]{32})$")
+    device_file_ref: str = Field(default="", pattern=r"^(|fd1_[0-9a-f]{32})$")
     name: str
     size_bytes: int = Field(ge=0)
     artifact_id: str = Field(default="", pattern=r"^(|fa1_[0-9a-f]{32})$")
@@ -102,6 +148,7 @@ class FileDownloadResultDTO(ApiModel):
     sha256: str = Field(default="", pattern=r"^(|[0-9a-f]{64})$")
     device_id: str = ""
     remote_entry_id: str = Field(default="", pattern=r"^(|fe1_[0-9a-f]{32})$")
+    target_kind: str = ""
 
 
 class FileDownloadTaskDTO(ApiModel):
@@ -111,7 +158,32 @@ class FileDownloadTaskDTO(ApiModel):
     progress: int = Field(ge=0, le=100)
     stage: str = ""
     message: str = ""
+    batch_id: str = ""
+    source_kind: str = ""
+    device_name: str = ""
+    remote_name: str = ""
+    downloaded_bytes: int = Field(default=0, ge=0)
+    total_bytes: int = Field(default=0, ge=0)
+    speed_bytes_per_second: float = Field(default=0, ge=0)
+    created_at: str = ""
+    updated_at: str = ""
+    retryable: bool = False
+    retry_reason: str = ""
     result: FileDownloadResultDTO | None = None
+
+
+class FileDownloadBatchDTO(ApiModel):
+    batch_id: str
+    tasks: list[FileDownloadTaskDTO] = Field(default_factory=list)
+    failures: list[str] = Field(default_factory=list)
+
+
+class FileDownloadClearRequestDTO(ApiModel):
+    statuses: list[str] = Field(min_length=1, max_length=3)
+
+
+class FileDownloadClearDTO(ApiModel):
+    cleared_count: int = Field(ge=0)
 
 
 __all__ = [
@@ -120,11 +192,18 @@ __all__ = [
     "FileDesktopActionDTO",
     "FileDesktopActionRequestDTO",
     "FileDownloadRequestDTO",
+    "FileDownloadBatchRequestDTO",
+    "FileDownloadBatchDTO",
+    "FileDownloadClearDTO",
+    "FileDownloadClearRequestDTO",
     "FileDownloadResultDTO",
     "FileDownloadTaskDTO",
     "FileManagementCapabilityDTO",
     "FileManagementStatusDTO",
     "FileRemoteDeviceDTO",
+    "LocalDirectoryCreateRequestDTO",
+    "LocalFileEntryDTO",
+    "LocalFilePageDTO",
     "ManagedFileDTO",
     "ManagedFilePageDTO",
     "RemoteFileEntryDTO",

@@ -104,6 +104,32 @@ def test_local_file_index_excludes_databases_runtime_files_and_unknown_formats(t
             service.resolve_ref("demo", ref)
 
 
+def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_directory_creation(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    root = paths.file_downloads_root("demo")
+    root.mkdir(parents=True)
+    (root / "b.txt").write_text("b", encoding="utf-8")
+    (root / "folder").mkdir()
+    (root / "folder" / "a.txt").write_text("a", encoding="utf-8")
+    (root / "stale.bin.part").write_bytes(b"partial")
+    service = FileManagementApplicationService(paths)
+
+    first = service.list_local_files("demo", page=1, limit=1)
+    assert first.total == 2
+    assert first.has_more is True
+    assert first.items[0].is_dir is True
+    assert str(root) not in first.model_dump_json()
+    assert not (root / "stale.bin.part").exists()
+
+    nested = service.list_local_files("demo", directory_id=first.items[0].entry_id)
+    assert [item.name for item in nested.items] == ["a.txt"]
+    assert nested.parent_entry_id == first.current_entry_id
+    created = service.create_local_directory("demo", directory_id=nested.current_entry_id, name="新 目录")
+    assert "新_目录" in {item.name for item in created.items}
+    with pytest.raises(FileReferenceNotFound):
+        service.list_local_files("demo", directory_id="fl1_" + "0" * 32)
+
+
 def test_download_job_only_validates_and_returns_original_ref_without_creating_files(tmp_path: Path) -> None:
     paths, source = _fixture(tmp_path)
     service = FileManagementApplicationService(paths)
@@ -134,6 +160,16 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
 
     service = FileManagementApplicationService(paths, task_service=task_service, process_adapter=FakeProcessAdapter())
     with TestClient(_app(service)) as client:
+        local = client.get("/api/file-management/local/entries", params={"site_id": "demo"})
+        assert local.status_code == 200
+        assert str(tmp_path) not in local.text
+        created = client.post(
+            "/api/file-management/local/directories",
+            params={"site_id": "demo"},
+            json={"directory_id": local.json()["current_entry_id"], "name": "API 目录"},
+        )
+        assert created.status_code == 201
+        assert "API_目录" in {item["name"] for item in created.json()["items"]}
         response = client.get("/api/file-management/files", params={"site_id": "demo", "category": "raw"})
         assert response.status_code == 200
         payload = response.json()
@@ -183,7 +219,7 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
         ).status_code == 404
 
 
-def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
+def test_remote_file_web_flow_uses_session_entries_persistent_device_file_results_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
@@ -198,10 +234,11 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         }
         instances: list["FakeTransfer"] = []
 
-        def __init__(self, site_name, fake_paths, *, allow_remote_setup=True):
+        def __init__(self, site_name, fake_paths, *, allow_remote_setup=True, strict_host_keys=False):
             self.site_name = site_name
             self.paths = fake_paths
             self.allow_remote_setup = allow_remote_setup
+            self.strict_host_keys = strict_host_keys
             self.connected = False
             self.disconnect_calls = 0
             self.root_path = "flash:/"
@@ -273,6 +310,7 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         connection_id = connected.json()["connection_id"]
         assert "flash:/" not in connected.text
         assert FakeTransfer.instances[-1].allow_remote_setup is False
+        assert FakeTransfer.instances[-1].strict_host_keys is True
 
         reconnected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
         assert reconnected.status_code == 201
@@ -290,6 +328,7 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         entries = {item["name"]: item["entry_id"] for item in nested.json()["items"]}
         remote_entry_id = entries["diag_a.tar.gz"]
         binary_entry_id = entries["启动:配置?.bin"]
+        remote_entry_ids = [item["entry_id"] for item in nested.json()["items"]]
 
         second = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_b.device_uuid})
         assert second.status_code == 201
@@ -308,6 +347,9 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert started.status_code == 202
         task_id = started.json()["task_id"]
         assert captured and captured[-1].params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+        persisted_events = task_service.list_events(task_id)
+        assert "flash:/diagfile/diag_a.tar.gz" not in str(persisted_events)
+        assert str(paths.site_dir("demo")) not in str(persisted_events)
         first_job = captured[-1]
         pending = client.post(
             "/api/file-management/downloads",
@@ -317,21 +359,35 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert pending.status_code == 202
         second_job = captured[-1]
         assert first_job.params["target_relative_path"] != second_job.params["target_relative_path"]
-        assert task_id in str(first_job.params["target_relative_path"])
-        assert pending.json()["task_id"] in str(second_job.params["target_relative_path"])
+        assert str(first_job.params["target_relative_path"]).startswith("files/file_manager/downloads/MR-A/")
+        assert str(second_job.params["target_relative_path"]).startswith("files/file_manager/downloads/MR-A/")
+        batch = client.post(
+            "/api/file-management/downloads/batch",
+            params={"site_id": "demo"},
+            json={"connection_id": connection_id, "remote_entry_ids": remote_entry_ids},
+        )
+        assert batch.status_code == 202
+        assert len(batch.json()["tasks"]) == 1
+        assert len(batch.json()["failures"]) == 1
+        assert batch.json()["tasks"][0]["batch_id"] == batch.json()["batch_id"]
         result = run_file_management_download(JobContext.from_job(first_job))
-        assert result["sha256"] == file_sha256(paths.site_dir("demo") / result["relative_path"])
+        assert result["sha256"] == file_sha256(paths.site_dir("demo") / str(first_job.params["target_relative_path"]))
+        assert "relative_path" not in result
+        assert "artifact_id" not in result
         task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
         queue = client.get("/api/file-management/downloads", params={"site_id": "demo"})
         assert queue.status_code == 200
         completed = next(item for item in queue.json() if item["task_id"] == task_id)
-        assert completed["result"]["artifact_id"].startswith("fa1_")
-        artifact = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
-        assert artifact.status_code == 200
-        assert artifact.content == b"remote artifact"
-        assert "diag_a.tar.gz" in unquote(artifact.headers["content-disposition"])
-        assert int(artifact.headers["content-length"]) == len(b"remote artifact")
-        assert artifact.headers["content-type"] == "application/gzip"
+        assert completed["result"]["result_kind"] == "device_file"
+        assert completed["result"]["device_file_ref"].startswith("fd1_")
+        assert completed["result"]["artifact_id"] == ""
+        assert completed["result"]["relative_path"] == ""
+        device_file = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
+        assert device_file.status_code == 200
+        assert device_file.content == b"remote artifact"
+        assert "diag_a.tar.gz" in unquote(device_file.headers["content-disposition"])
+        assert int(device_file.headers["content-length"]) == len(b"remote artifact")
+        assert device_file.headers["content-type"] == "application/gzip"
 
         binary_started = client.post(
             "/api/file-management/downloads",
@@ -343,8 +399,8 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         binary_job = captured[-1]
         binary_result = run_file_management_download(JobContext.from_job(binary_job))
         assert binary_result["name"] == "启动_配置.bin"
-        assert ":" not in str(binary_result["relative_path"])
-        assert "?" not in str(binary_result["relative_path"])
+        assert ":" not in str(binary_job.params["target_relative_path"])
+        assert "?" not in str(binary_job.params["target_relative_path"])
         task_service.record_external_event(
             binary_task_id,
             "finished",
@@ -360,10 +416,29 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
         assert "启动_配置.bin" in unquote(binary_artifact.headers["content-disposition"])
         assert int(binary_artifact.headers["content-length"]) == len(b"binary configuration")
         assert binary_artifact.headers["content-type"] == "application/octet-stream"
+        cleared = client.post(
+            "/api/file-management/downloads/clear",
+            params={"site_id": "demo"},
+            json={"statuses": [TaskState.COMPLETED.value]},
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["cleared_count"] == 2
+        assert task_id not in {item["task_id"] for item in client.get("/api/file-management/downloads", params={"site_id": "demo"}).json()}
         pending_cancel = client.post(f"/api/file-management/downloads/{pending.json()['task_id']}/cancel", params={"site_id": "demo"})
         assert pending_cancel.status_code == 200
         assert pending_cancel.json()["status"] == TaskState.CANCELLED.value
         assert pending.json()["task_id"] in FakeProcessAdapter.cancelled
+        restarted = FileManagementApplicationService(
+            paths,
+            task_service=task_service,
+            process_adapter=FakeProcessAdapter(),
+        )
+        recovered = next(item for item in restarted.list_download_tasks("demo") if item.task_id == pending.json()["task_id"])
+        assert recovered.remote_name == "diag_a.tar.gz"
+        assert recovered.retryable is True
+        retried = restarted.retry_download("demo", recovered.task_id)
+        assert retried.task_id != recovered.task_id
+        assert captured[-1].params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
         cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
         assert cancelled.status_code == 422
         assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).status_code == 404
@@ -395,10 +470,14 @@ def test_remote_file_web_flow_uses_session_entries_task_artifact_and_rejects_cro
 def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     commands: list[str] = []
+    host_key_events: list[str] = []
 
     class FakeSshClient:
-        def set_missing_host_key_policy(self, _policy):
-            pass
+        def load_system_host_keys(self):
+            host_key_events.append("loaded")
+
+        def set_missing_host_key_policy(self, policy):
+            host_key_events.append(str(policy))
 
         def connect(self, **_kwargs):
             pass
@@ -413,7 +492,11 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSshClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(SSHClient=FakeSshClient, AutoAddPolicy=lambda: "auto", RejectPolicy=lambda: "reject"),
+    )
     device = Device(
         device_uuid=Device.new_uuid(),
         name="MR-read-only",
@@ -431,6 +514,30 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     assert response.status_code == 502
     assert "只读" in response.json()["detail"]
     assert commands == []
+    assert host_key_events[:2] == ["loaded", "reject"]
+
+
+def test_desktop_action_contract_is_opaque_one_time_and_never_contains_password(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        device_uuid=Device.new_uuid(),
+        name="MR-action",
+        primary_address="192.0.2.40",
+        ssh_username="ops",
+        ssh_password="top-secret",
+    )
+    service = FileManagementApplicationService(paths, device_resolver=lambda _site, _device_id: device)
+
+    prepared = service.desktop_action("winscp", site_id="demo", device_id=device.device_uuid)
+
+    assert prepared.action_ref.startswith("fda1_")
+    assert "top-secret" not in prepared.model_dump_json()
+    command = service.consume_desktop_action(prepared.action_ref)
+    assert command.host == "192.0.2.40"
+    assert command.username == "ops"
+    assert not hasattr(command, "password")
+    with pytest.raises(FileReferenceNotFound):
+        service.consume_desktop_action(prepared.action_ref)
 
 
 def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:

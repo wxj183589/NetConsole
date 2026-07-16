@@ -66,7 +66,9 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.config_collection_open_directory", "打开配置结果目录（Web）", "web.config_collection", "action"),
     FeatureItem("web.file_management", "文件管理（Web）", "module.file_management", "page"),
     FeatureItem("web.file_management_download", "文件下载（Web）", "web.file_management", "action"),
-    FeatureItem("web.file_management_remote", "设备文件只读浏览（Web）", "web.file_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.file_management_local_write", "本地下载目录写操作（Web）", "web.file_management", "action"),
+    FeatureItem("web.file_management_remote", "设备文件浏览与下载（Web）", "web.file_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.file_management_desktop_actions", "文件桌面联动（Web）", "web.file_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.network_tools", "网络工具（Web）", "module.network_tools", "page"),
     FeatureItem("web.network_tools_toolbox", "小工具与连通性检测（Web）", "web.network_tools", "page"),
     FeatureItem(
