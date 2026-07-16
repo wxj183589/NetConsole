@@ -9,7 +9,7 @@ Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯�
 ```text
 apps/desktop/              当前 Qt Web Shell，Legacy/生产回退
 apps/desktop_electron/     Electron main/preload/shared，目标桌面外壳基础
-apps/web/                  唯一 Vue Renderer，浏览器与 Electron 共用
+apps/web/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
 src/netconsole/            唯一 Python Core/FastAPI/Application Service
 ```
 
@@ -29,7 +29,7 @@ flowchart TD
     VUE -->|"安全下载 DTO"| PRE
     PRE -->|"固定 IPC"| EM
     EM -->|"动态 Origin + 内存令牌；流式响应"| API
-    BROWSER["普通浏览器"] --> VUE
+    BROWSER["开发诊断浏览器"] -.-> VUE
 ```
 
 职责固定为：
@@ -38,7 +38,7 @@ flowchart TD
 | --- | --- | --- |
 | Electron Main | 窗口、Python 子进程、动态端口、会话令牌、CSP、导航和白名单 IPC | 设备、采集、解析、数据库、报告或 Agent 业务 |
 | preload | 将固定方法逐个映射到固定 IPC channel | 暴露 `ipcRenderer`、Node `process`、`fs` 或通用 invoke/send |
-| Vue | 页面、状态、表单、REST/WebSocket；通过 `src/platform` 选择 Browser/Electron Adapter | 直接访问 Node、持久化 Electron API Token、到处判断宿主全局变量 |
+| Vue | 页面、状态、表单、REST/WebSocket；正式运行使用 Electron Adapter，Browser Adapter 仅作开发诊断兼容 | 直接访问 Node、持久化 Electron API Token、为浏览器另建业务页面或验收链 |
 | FastAPI | 鉴权、DTO、Router、静态 Vue、Application Service 组合根 | 复制业务规则或建立 Electron 专属业务 Core |
 | Application Service | 原有业务用例、Task/Session/Artifact、采集、报告和存储 | 依赖 Electron、Vue 或 Qt 控件 |
 
@@ -137,7 +137,7 @@ partition: non-persistent in-memory session
 - 生产 CSP 不包含 `unsafe-eval`，开发 CSP 只为 Vite 开放该项；
 - `object-src 'none'`、`frame-ancestors 'none'`，`connect-src` 只包含当前回环 Renderer/API/WebSocket Origin；
 - IPC 在 main 再次校验参数，并核对发送者必须是当前主窗口的 main frame，且 frame URL 仍属于已登记回环 Origin。
-- 所有新窗口继续拒绝；当前基础阶段不开放 Renderer 外部链接，后续如需开放只能以独立 URL 白名单交给系统浏览器。
+- 所有新窗口继续拒绝；设备 Web 管理地址只能通过独立 `openExternalUrl` 白名单动作交给系统浏览器，拒绝 HTTP、凭据 URL 和 Renderer 任意导航。
 - Electron 内存 Session 一律拦截 Chromium `will-download`；合法文件只能走 `downloadBackendResource` 的原生保存确认与 main 流式链，不能用 `<a download>`、Blob 或页面导航绕过。
 - `did-start-loading`、`did-finish-load`、`did-fail-load`、`preload-error`、`render-process-gone`、`unresponsive/responsive`、`child-process-gone` 和后端状态变化均写入脱敏诊断；主框架失败显示可重试状态页，不保留永久黑屏。
 - 默认移除 Electron 应用菜单；仅开发服务器存在且显式设置 `NETCONSOLE_ELECTRON_DEV_MENU=1` 时显示开发菜单。
@@ -155,6 +155,7 @@ Renderer 当前只能调用：
 - `downloadBackendResource`
 - `openPath`
 - `showItemInFolder`
+- `openExternalUrl`
 - `onBackendStatusChanged`
 - 内部开发冒烟用 `reportRendererReady`
 
@@ -200,11 +201,11 @@ Renderer 当前只能调用：
 9. SNMP 等剩余模块
 10. 删除 Qt Desktop
 
-现有 SNMP Center 与无线勘测继续保持 `DISABLED / FUTURE_REBUILD`；第 9 项只能在独立重建设计批准后开始。
+现有 SNMP Center 与无线勘测在 Feature Registry 中继续保持 `DISABLED`，迁移状态为 `BLOCKED`；第 9 项只能在独立重建设计批准后开始。
 
 本轮只加固 Electron 宿主、下载和退出链，没有启动上述第 1 项 Online MR 完整操作闭环迁移，也没有改变 Qt 的生产与回退入口地位。
 
-后续不能只迁移只读列表和详情页。每个模块必须按完整纵向业务闭环迁移，包括创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；在达到 `REPLACE_READY` 前不能隐藏 Qt 回退入口。
+后续不能只迁移只读列表和详情页。每个模块必须按完整纵向业务闭环迁移，包括创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；在达到 `COMPLETE` 前不能隐藏 Qt 回退入口。浏览器开发联调通过不构成正式产品验收证据。
 
 ## 定向验证
 

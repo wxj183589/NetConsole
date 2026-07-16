@@ -13,10 +13,10 @@
 | `module.devices` | 设备管理 | `ENABLED` | 设备、分组、连接、批量任务和相关导出 |
 | `module.ac` | AC 管理 | `ENABLED` | FIT AP 资源、扩展、光衰、历史和命令 |
 | `module.rail_transit` | 轨道交通 | `ENABLED` | MR、Mesh、轨旁 AP、车载网络 |
-| `module.wifi_survey` | 无线勘测 | `DISABLED` | 代码和数据保留；Qt/Web 入口关闭，等待独立重构 |
+| `module.wifi_survey` | 无线勘测 | `DISABLED` | 代码和数据保留；Qt/Electron 入口关闭，等待独立重构 |
 | `module.config_collection` | 配置采集 | `ENABLED` | 快照、比较、批量采集 |
 | `module.file_management` | 文件管理 | `ENABLED` | 局点文件和下载 |
-| `module.snmp_center` | SNMP Center | `DISABLED` | 代码、数据库和 MIB 保留；Qt/Web 入口关闭，等待独立重构 |
+| `module.snmp_center` | SNMP Center | `DISABLED` | 代码、数据库和 MIB 保留；Qt/Electron 入口关闭，等待独立重构 |
 | `module.network_tools` | 网络工具 | `ENABLED` | Ping/fping、iPerf、无线扫描和工具箱 |
 | `module.command_reference` | 命令参考 | `ENABLED` | 命令、解析器与消费者索引 |
 | `module.logs` | 日志 | `ENABLED` | 应用日志 |
@@ -24,11 +24,11 @@
 
 ## 3. 已登记的子功能与内部能力
 
-Registry 当前显式登记的主要子功能包括：设备管理只读页、连接测试、编辑预览，以及默认关闭的正式写入、采集诊断、导入、导出和桌面联动；配置采集、比较、下载，以及默认关闭的删除、`save force`、报告导出和目录动作；文件管理下载与默认关闭的设备文件只读浏览；网络工具 toolbox、TCP 端口测试和默认关闭的无线扫描；轨道交通基础资料、通信监测、Mesh/Online MR，以及默认关闭的车内诊断执行、Mesh 导入/报告、Online MR 报告和统一任务控制；AC FIT-AP/Mesh-Link，以及默认关闭的 AP 扩展预览/写入/回滚/导出、本地重算和高风险 Fake 动作；Web 任务中心、Agent 管理、Electron 外壳状态与白名单 Native Bridge `desktop.native_bridge`，以及开发态 Feature 页面。所有默认关闭能力都不能因 Fake 验收自动进入客户包。
+Registry 当前显式登记的主要子功能包括：设备管理页面、连接测试、编辑预览、正式写入、采集诊断、导入、导出和桌面联动；这些设备能力当前已进入源码客户 profile，但仍处于 `IMPLEMENTED_UNVERIFIED`，不代表可隐藏 Qt。其他登记项包括配置采集、比较、下载，以及默认关闭的删除、`save force`、报告导出和目录动作；文件管理下载与默认关闭的设备文件只读浏览；网络工具 toolbox、TCP 端口测试和默认关闭的无线扫描；轨道交通基础资料、通信监测、Mesh/Online MR，以及默认关闭的车内诊断执行、Mesh 导入/报告、Online MR 报告和统一任务控制；AC FIT-AP/Mesh-Link，以及默认关闭的 AP 扩展预览/写入/回滚/导出、本地重算和高风险 Fake 动作；Web 任务中心、Agent 管理、Electron 外壳状态与白名单 Native Bridge `desktop.native_bridge`，以及开发态 Feature 页面。所有仍默认关闭的能力都不能因 Fake 验收自动进入客户包。
 
 `desktop.native_bridge` 只控制 Vue 中 Electron 本机能力状态区的产品可见性和禁用状态。它不能绕过 Electron main 的发送方校验、参数白名单和同会话路径授权，也不代表 Qt 页面已被替换。
 
-Web parity foundation 仍登记了默认隐藏、不可进入客户包的规划页面：`web.ac_trackside_ap_plan`、`web.ac_online_overview`、`web.ac_optical`、`web.ac_config_snapshots`、`web.rail_train_online`、`web.rail_trackside_ap_business`、`web.online_mr_analysis`、`web.command_reference`、`web.logs`、`web.system_settings` 和内部 `web.feature_switch`。这些条目只固定归属和 Gate 基线，不代表已实现页面或 API。`web.ac_extensions`、`web.rail_car_network_diagnostic` 与网络工具无线扫描已经具备默认关闭的 Fake 闭环，但仍未通过真实设备验收；无线扫描与被排除的无线勘测不是同一模块。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
+Electron parity foundation 仍登记了默认隐藏、不可进入客户包的规划页面：`web.ac_trackside_ap_plan`、`web.ac_online_overview`、`web.ac_optical`、`web.ac_config_snapshots`、`web.rail_train_online`、`web.rail_trackside_ap_business`、`web.online_mr_analysis`、`web.command_reference`、`web.logs`、`web.system_settings` 和内部 `web.feature_switch`。这些条目只固定归属和 Gate 基线，不代表已实现页面或 API。`web.ac_extensions`、`web.rail_car_network_diagnostic` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与被排除的无线勘测不是同一模块。完整状态见 [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md)。
 
 阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口，不代表 iPerf、Ping 或 Online MR 已迁移。
 

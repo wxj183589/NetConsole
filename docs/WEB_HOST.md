@@ -2,36 +2,36 @@
 
 ## 当前状态
 
-默认入口现由无 Qt 依赖 Launcher 完成轻量能力探测后创建唯一 FastAPI Core Runtime，再把同一个 Web 服务实例交给 Qt Shell、本机浏览器 Shell 或无 Shell Server。Qt WebConsoleHost 复用该实例，不再创建或停止 Launcher 所拥有的服务，也不通过 QWebChannel 暴露业务方法。
+唯一 FastAPI Core Runtime 由桌面宿主创建并交给 Electron 的唯一 Vue Renderer；迁移期 Qt Shell 继续复用同一业务层。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口。Qt WebConsoleHost 不再创建或停止 Launcher 所拥有的服务，也不通过 QWebChannel 暴露业务方法。
 
-主程序托盘和 Fluent 顶部“更多”菜单仍可打开完整 Web 控制台。默认 `auto/qt` 启动下 Core Runtime 已在 Shell 前监听随机回环端口；直接调用旧 `netconsole.app.run()` 时仍保留按需创建 WebHost 的兼容行为。
+迁移期 Qt 主程序托盘和 Fluent 顶部“更多”菜单仍可打开同一 Vue 控制台。默认 `auto/qt` 启动下 Core Runtime 已在 Shell 前监听随机回环端口，但 `auto` 在 Qt 不可用或初始化失败时明确退出，不自动打开浏览器；直接调用旧 `netconsole.app.run()` 时仍保留按需创建 WebHost 的兼容行为。
 
 ## 运行结构
 
 ```text
-NetConsole Launcher
+NetConsole Desktop Runtime
         |
         v
 Core Runtime / FastAPI / Uvicorn
         |
-        +-- Qt WebConsoleHost / QWebEngineView（可用时）
+        +-- Electron / 唯一 Vue Renderer（正式桌面产品）
         |
-        +-- 本机系统浏览器
+        +-- Qt Shell（迁移期生产与回退）
         |
-        +-- Server Mode（无 Shell）
+        +-- Browser / Server（仅源码开发诊断）
 ```
 
 本地服务只绑定 `127.0.0.1`。桌面 WebHost 每次进程启动生成新的临时会话令牌；令牌通过 `POST /__desktop_session` 建立 HttpOnly、SameSite Cookie，不进入 URL。HTTP 和 WebSocket 在会话建立前均拒绝访问。
 
-外部浏览器 fallback 会在 `runtime/cache/` 创建临时自提交页面，令牌只存在于 POST 表单正文，文件在 60 秒后或主程序退出时删除。该令牌只保护主程序本地 WebHost，不替代 Agent 的 `X-Agent-Token`，也不会写入任务、数据库或业务日志。
+开发诊断用外部浏览器兼容入口会在 `runtime/cache/` 创建临时自提交页面，令牌只存在于 POST 表单正文，文件在 60 秒后或主程序退出时删除。该令牌只保护本地 WebHost，不替代 Agent 的 `X-Agent-Token`，也不会写入任务、数据库或业务日志；该入口不进入客户发布导航或人工对等验收。
 
 ## 生命周期
 
 - 默认 Launcher 在选择 Shell 前创建一次 FastAPI 服务并启动 Uvicorn 线程；
 - 关闭 Web 窗口只关闭显示窗口，主程序和本地服务继续存活，可从托盘重新打开；
 - Launcher 进程退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止 Core Runtime；
-- QWebEngine 不可用时主程序仍可正常启动，并自动提供外部浏览器入口；
-- `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
+- Electron 启动失败时报告明确错误；不把系统浏览器静默当成正式产品回退，迁移期回退入口仍是 Qt；
+- 源码开发态 `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
 - 旧 `--web-shell` 与直接 `netconsole.app.run()` 继续作为兼容路径，不代表新 Launcher 生命周期。
 
 ## 构建

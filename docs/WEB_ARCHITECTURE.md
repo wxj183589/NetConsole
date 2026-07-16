@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。当前默认入口由 Launcher 创建 Core Runtime，并在 Qt、本机浏览器和无 Shell Server 间选择；Qt 仍是具备能力机器上的稳定生产与回退界面。Vue Web Shell 已接入任务中心、Agent、Traffic、Online MR，以及第一批设备、网络工具、配置采集和文件管理页面。Web 验收完成前不删除或隐藏 Qt 页面。
+NetConsole 采用渐进式 Electron/Vue 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。正式桌面目标只有 Electron；Qt 仍是迁移期稳定生产与回退界面。本机浏览器和无 Shell Server 只保留开发、诊断及 API 联调能力，不作为独立产品。模块达到 `COMPLETE` 前不删除或隐藏 Qt 页面。
 
 最终方向已经明确：Python Core + FastAPI 是永久业务层，Vue 是永久主界面，Electron 是最终桌面外壳，Qt 只在迁移期保留并最终删除。Electron 安全基础已建立，但业务替换仍必须先收敛 Application Service、薄化 Router并完成 Vue 完整纵向闭环与真实验收。完整目标和阶段门槛见 [下一代架构](ARCHITECTURE_NEXT.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 与 [Web 迁移计划](WEB_MIGRATION_PLAN.md)。
 
@@ -14,7 +14,7 @@ NetConsole 采用渐进式 Web 演进，不重建第二套 Python Core，不搬�
 flowchart TD
     L["No-Qt Launcher"] --> API["唯一 FastAPI Core Runtime"]
     L --> QS["Qt Desktop Shell"]
-    L --> B["Local Browser Shell"]
+    L -.开发诊断.-> B["Local Browser Shell"]
     QS --> WV["QWebEngineView / external fallback"]
     WV --> API
     B --> API
@@ -23,7 +23,7 @@ flowchart TD
     CORE --> JOB["Job Registry / Worker Process"]
 ```
 
-`python main.py` 等价 `--mode auto`；`--mode qt` 强制 Qt，`--mode web` 完全不导入 PySide6 并打开本机浏览器。两种 Desktop Shell 只共用 Vue/FastAPI 代码与契约，各自独立管理 runtime、动态端口和桌面会话。旧 `--web-shell` 仍保留 Qt WebEngine 兼容语义。
+`python main.py` 当前仍等价 `--mode auto`，只选择迁移期 Qt；Qt 不可用或初始化失败时明确退出，不再自动回退系统浏览器。`--mode qt` 强制 Qt。只有开发者显式指定 `--mode web` 或旧 `--web-shell` 时才进入浏览器兼容诊断，不再承担客户发布、Qt 功能对等或人工验收；后续可在 Launcher 收口阶段移除，而不是在业务模块迁移中复制或删除 Vue/FastAPI 逻辑。
 
 ### 2.2 Server Mode
 
@@ -162,7 +162,7 @@ Web parity foundation 已建立：
 - AC 轨旁 AP 规划和轨交轨旁 AP 业务保持分属两个模块；Online MR 收集/分析保持轨交归属；无线扫描保持网络工具归属；SNMP Center 和无线勘测不注册 Web 导航；
 - Router 的正式业务路由携带 `navigationId`、`featureId`、`moduleId`、`title` 和 `desktopOnly`，兼容 `/ac-management` 与 `/network-tools/overview` 重定向；已接入页面的 FastAPI Router 同步执行 Feature Gate，不能只靠 Vue 隐藏；
 - 深色子菜单覆盖标题、内嵌菜单、箭头、hover/active/disabled 状态；全局不再强制 `min-width: 960px`，侧栏支持折叠和窄屏抽屉；
-- 真实 Qt/Web 状态和替换条件以 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md) 为准，聚合展示不得升级为完整替代。
+- 真实 Qt/Electron 状态和替换条件以 [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md) 为准，聚合展示不得升级为完整替代。
 
 仍未实现：
 
@@ -234,4 +234,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段继续禁止新增 Qt 业务页面，逐模块把 Qt 页面和 Router 中的业务编排收敛到 Application Service，并补齐权限、审计、状态恢复和真实验收。Electron 基础不得扩展为通用 Native Bridge；只有业务模块完成完整纵向闭环后才可切换默认入口。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测归入 `EXCLUDED/FUTURE_REBUILD`，网络工具无线扫描保持独立范围。
+下一阶段继续禁止新增 Qt 业务页面，逐模块把 Qt 页面和 Router 中的业务编排收敛到 Application Service，并补齐权限、审计、状态恢复和真实验收。Electron 基础不得扩展为通用 Native Bridge；只有业务模块完成完整纵向闭环后才可切换默认入口。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测当前状态为 `BLOCKED` 并排除迁移，网络工具无线扫描保持独立范围。

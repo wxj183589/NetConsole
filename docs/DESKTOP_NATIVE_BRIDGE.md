@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。除桌面选择器外，当前还提供受控的后端文件下载，用于文件管理、配置快照和 MESH Artifact；这不表示 Artifact、终端、通知或完整业务导出已经迁移。普通 Browser/Server Mode 没有 `window.netconsoleDesktop`，仍不能调用本机选择器或打开路径，但 Vue Platform Adapter 会用原生 `<a download>` 保持普通浏览器下载。
+Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。除桌面选择器和受控后端文件下载外，设备详情可通过独立 `openExternalUrl` 动作把无凭据 HTTPS 地址交给系统浏览器。普通 Browser/Server Mode 仅作开发诊断，没有正式本机动作能力。
 
 总体运行方式和启动命令见 [Electron Desktop 基础架构](ELECTRON_DESKTOP.md)。
 
@@ -30,6 +30,7 @@ Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位
 | `downloadBackendResource` | `/api/...` 相对路径、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存 | 文件、配置快照与 MESH Artifact 下载 |
 | `openPath` | 本轮对话框返回的路径 | 当前进程临时授权；仅目录或数据/报告扩展名白名单 | 打开已选择文件/目录 |
 | `showItemInFolder` | 本轮对话框返回的路径 | 当前进程临时授权 | 在资源管理器定位 |
+| `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
 
 `reportRendererReady` 仅用于自动开发冒烟的 health 结果回报，不接受 URL、路径、命令或令牌。
@@ -39,6 +40,8 @@ Electron Desktop 第一阶段 Native Bridge 已实现基础白名单，代码位
 Renderer 不能提交任意绝对路径。`selectFile`、`selectDirectory` 或 `chooseSavePath` 的 Electron 原生对话框返回值先由 main 规范化，再登记到当前进程内存授权表；`downloadBackendResource` 仅在流式下载和原子替换成功后登记最终路径。后续 `openPath`/`showItemInFolder` 只接受与已登记项精确匹配的路径。退出时授权表清空，不持久化。
 
 `openPath` 对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel 和 ZIP；目录必须由目录选择器单独授予。`.exe`、`.py`、`.reg`、`.chm`、`.msc`、快捷方式、安装包和其他未知扩展名默认拒绝。此接口不是 `openArtifact` 的最终业务实现；后续 Artifact 必须通过 `artifact_id`、局点和受控路径解析。
+
+`openExternalUrl` 不复用窗口导航，也不允许 Renderer 自己创建新窗口。main/preload 两侧都校验 URL，只有无凭据 HTTPS 地址会传给 `shell.openExternal`；临时 API Token、认证 Header 和设备密码不得进入 URL。
 
 ## 文件导出边界
 

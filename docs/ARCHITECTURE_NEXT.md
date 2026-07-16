@@ -38,7 +38,7 @@ NetConsole 的长期产品形态确定为：
 
 ```mermaid
 flowchart TD
-    L["Launcher"] --> E["Electron 或 Browser"]
+    L["Launcher"] --> E["Electron Desktop"]
     E --> V["Vue Web Console"]
     V --> A["FastAPI HTTP / WebSocket"]
     A --> S["Application Service"]
@@ -110,7 +110,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 
 所有桥接调用必须验证路径归属、参数类型、允许的目标程序和审计信息。业务控制仍经过 FastAPI 和 Application Service。
 
-所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路属于宿主 `FOUNDATION_READY`，没有启动 Online MR 完整操作闭环迁移，也不改变 Qt 的生产与回退入口地位。
+所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路当前为 `IMPLEMENTED_UNVERIFIED`，没有启动 Online MR 完整操作闭环迁移，也不改变 Qt 的生产与回退入口地位。
 
 ## 冻结和排除范围
 
@@ -134,7 +134,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 1. **架构约束期**：固化本文、迁移计划、开发规则和模块矩阵；停止新增 Qt 业务。
 2. **Core/API 收敛期**：逐模块把业务规则从 Qt 页面和 Router 收敛到 Application Service。
 3. **Vue 主界面期**：按真实验收门槛完成 Web 功能，Qt 保持并行回退。
-4. **Web 默认期**：满足 `REPLACE_READY` 的模块先隐藏 Qt 入口，保留一个发布周期回退。
+4. **Electron 默认期**：满足 `COMPLETE` 的模块先隐藏 Qt 入口，保留一个发布周期回退。普通浏览器仅保留开发和诊断入口，不进入发布或功能对等验收。
 5. **Electron 外壳期**：安全基础已开始；继续补安装/升级/托盘，并仅在模块达到完整纵向闭环后替换 Qt 入口。
 6. **Qt 删除期**：所有目标模块完成迁移、真实验收、发布回退验证后，删除 Qt 业务层和 Qt 运行依赖。
 
