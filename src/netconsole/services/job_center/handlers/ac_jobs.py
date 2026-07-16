@@ -49,10 +49,22 @@ ac_station_online_history_page = legacy_handler(legacy_tasks._ac_station_online_
 ac_ap_history_page = legacy_handler(legacy_tasks._ac_ap_history_page)
 ac_trackside_business_refresh = legacy_handler(legacy_tasks._ac_trackside_business_refresh)
 ac_devices_refresh = legacy_handler(legacy_tasks._ac_devices_refresh)
-ac_fit_ap_delete_many = legacy_handler(legacy_tasks._ac_fit_ap_delete_many)
 ac_ap_extension_delete = legacy_handler(legacy_tasks._ac_ap_extension_delete)
 ac_ap_extension_clear = legacy_handler(legacy_tasks._ac_ap_extension_clear)
 ac_station_overview_value_save = legacy_handler(legacy_tasks._ac_station_overview_value_save)
+
+
+def ac_fit_ap_delete_many(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    ac_uuid = str(params.get("ac_uuid") or "").strip()
+    ap_uuids = _string_list(params.get("ap_uuids"), params.get("names"))
+    if not ac_uuid or not ap_uuids:
+        raise ValueError("批量删除 FIT-AP 缺少 AC 或 AP 标识")
+    context.progress("ac_fit_ap_delete_many", 0, 1, "正在批量删除 FIT-AP")
+    count = AcRepository(Database(Path(str(params.get("db_path") or "")))).delete_fit_aps(ac_uuid, ap_uuids)
+    context.progress("ac_fit_ap_delete_many", 1, 1, f"FIT-AP 批量删除完成，共删除 {count} 条")
+    return {"count": count}
 
 
 def fit_ap_extension_preview(context: JobContext) -> dict[str, object]:

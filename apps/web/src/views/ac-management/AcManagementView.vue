@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, Setting, View } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
 import { useRoute } from 'vue-router'
 
+import { isFeatureEnabled } from '../../features'
 import { useAcManagementStore } from '../../stores/acManagement'
 import type { AcAp, AcConfigSnapshot } from '../../types/acManagement'
 
@@ -13,6 +15,7 @@ const detailVisible = ref(false)
 const configVisible = ref(false)
 const configSearch = ref('')
 const currentMatch = ref(-1)
+const selectedApIds = ref(new Set<string>())
 
 interface TableColumn { key: string; label: string; width: number; sortable?: boolean }
 
@@ -54,6 +57,7 @@ const taskLabel = computed(() => ({
   ac_fit_ap_resources_refresh: 'FIT-AP 资源更新',
   ac_fit_ap_detail_refresh: 'FIT-AP 深度更新',
   ac_fit_ap_optical_refresh: 'FIT-AP 光衰更新',
+  ac_fit_ap_delete_many: 'FIT-AP 批量删除',
 }[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
@@ -94,6 +98,44 @@ function clearFilters(): void {
     sort_order: 'asc',
   })
   store.applyFilters()
+}
+
+function setApSelected(apId: string, selected: boolean): void {
+  const next = new Set(selectedApIds.value)
+  if (selected) next.add(apId)
+  else next.delete(apId)
+  selectedApIds.value = next
+}
+
+function selectCurrentPage(): void {
+  const next = new Set(selectedApIds.value)
+  for (const ap of store.aps) next.add(ap.id)
+  selectedApIds.value = next
+}
+
+function invertCurrentPage(): void {
+  const next = new Set(selectedApIds.value)
+  for (const ap of store.aps) {
+    if (next.has(ap.id)) next.delete(ap.id)
+    else next.add(ap.id)
+  }
+  selectedApIds.value = next
+}
+
+async function deleteSelectedAps(): Promise<void> {
+  const apIds = [...selectedApIds.value]
+  if (!apIds.length) return
+  try {
+    await ElMessageBox.confirm(
+      `确认从当前 AC 资源库删除选中的 ${apIds.length} 个 FIT-AP 及其关联光衰/元数据？`,
+      '批量删除 FIT-AP',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await store.startFitApDelete(apIds)
+  if (store.refreshTask?.action === 'ac_fit_ap_delete_many') selectedApIds.value = new Set()
 }
 
 function handleSort(event: { prop: string; order: 'ascending' | 'descending' | null }): void {
@@ -226,6 +268,9 @@ function diffLineClass(line: string): string {
       <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_optical_refresh'" class="task-result">
         已更新 {{ taskCollection.optical_rows_updated || 0 }} 条光衰记录，失败 {{ taskCollection.failed_aps || 0 }} 个 AP。
       </p>
+      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_delete_many'" class="task-result">
+        已删除 {{ store.refreshTask.result_summary.count || 0 }} 个 FIT-AP。
+      </p>
       <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
         已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
       </p>
@@ -269,6 +314,17 @@ function diffLineClass(line: string): string {
             <el-input v-model="store.filters.switch" clearable placeholder="交换机" />
             <el-button type="primary" @click="store.applyFilters">应用筛选</el-button>
             <el-button @click="clearFilters">清除</el-button>
+            <el-button @click="selectCurrentPage">选择本页</el-button>
+            <el-button @click="invertCurrentPage">反选本页</el-button>
+            <el-button :disabled="!selectedApIds.size" @click="selectedApIds = new Set()">清空选择</el-button>
+            <el-button
+              v-if="isFeatureEnabled('web.ac_fit_ap_delete')"
+              type="danger"
+              plain
+              :loading="store.refreshStarting"
+              :disabled="!selectedApIds.size || taskActive"
+              @click="deleteSelectedAps"
+            >批量删除（{{ selectedApIds.size }}）</el-button>
             <el-popover placement="bottom-end" :width="260" trigger="click">
               <template #reference><el-button :icon="Setting">列显隐</el-button></template>
               <div class="column-picker">
@@ -285,6 +341,11 @@ function diffLineClass(line: string): string {
             empty-text="暂无 FIT-AP 资源数据"
             @sort-change="handleSort"
           >
+            <el-table-column label="选择" width="62" fixed="left">
+              <template #default="{ row }">
+                <el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" />
+              </template>
+            </el-table-column>
             <el-table-column
               v-for="column in visibleColumns"
               :key="column.key"

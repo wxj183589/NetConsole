@@ -23,6 +23,8 @@ from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many
+from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -38,6 +40,7 @@ AC_FEATURE_IDS = (
     "web.ac_extensions_rollback",
     "web.ac_extensions_export",
     "web.ac_refresh",
+    "web.ac_fit_ap_delete",
     "web.ac_dangerous_actions",
 )
 CSV_CONTENT = (
@@ -366,6 +369,57 @@ def test_ac_local_rebuild_api_rejects_legacy_source_and_unknown_target(
 
     assert legacy_fields.status_code == 422
     assert unknown_target.status_code == 422
+
+
+def test_fit_ap_batch_delete_requires_confirmation_and_scopes_every_ap_to_selected_ac(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+
+    with pytest.raises(AcWebActionError) as unconfirmed:
+        service.start_fit_ap_delete("demo", ac_id="ac-1", ap_ids=["ap-online"], explicit_confirmation=False)
+    assert unconfirmed.value.code == "CONFIRMATION_REQUIRED"
+    with pytest.raises(AcWebActionError) as foreign:
+        service.start_fit_ap_delete("demo", ac_id="ac-1", ap_ids=["missing-ap"], explicit_confirmation=True)
+    assert foreign.value.code == "AP_TARGET_NOT_AUTHORIZED"
+
+    started = service.start_fit_ap_delete(
+        "demo",
+        ac_id="ac-1",
+        ap_ids=["ap-online", "ap-online"],
+        explicit_confirmation=True,
+    )
+    job = normal.jobs[started.task_id]
+    assert job.task_type == "ac_fit_ap_delete_many"
+    assert job.params["ap_uuids"] == ["ap-online"]
+    progress: list[tuple[str, int, int, str]] = []
+    result = ac_fit_ap_delete_many(
+        JobContext(
+            job.job_id,
+            job.task_type,
+            job.params,
+            lambda stage, current, total, message: progress.append((stage, current, total, message)),
+            lambda: False,
+            paths,
+        )
+    )
+
+    assert result == {"count": 1}
+    assert progress[-1][1:3] == (1, 1)
+    assert AcRepository(Database(paths.site_db_path("demo"))).get_fit_ap_resource_by_uuid("ac-1", "ap-online") is None
+
+
+def test_fit_ap_batch_delete_api_starts_persistent_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, service = _client(tmp_path, monkeypatch)
+    with client:
+        response = client.post(
+            "/api/ac-management/fit-aps/delete",
+            json={"ac_id": "ac-1", "ap_ids": ["ap-online"], "explicit_confirmation": True},
+        )
+
+    assert response.status_code == 202
+    snapshot = service.task_service.repository("demo").get(response.json()["task_id"])
+    assert snapshot is not None
+    assert snapshot.task_type == "ac_fit_ap_delete_many"
 
 
 def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest(tmp_path: Path) -> None:

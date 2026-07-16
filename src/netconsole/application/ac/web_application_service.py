@@ -76,6 +76,7 @@ class AcWebApplicationService:
         **{task_type: task_type for task_type in _LOCAL_REBUILD_TASKS},
         **{task_type: task_type for task_type, _task_name in _REFRESH_TASKS.values()},
         "ac_command_action_execute": "ac_command_action_execute",
+        "ac_fit_ap_delete_many": "ac_fit_ap_delete_many",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -207,6 +208,45 @@ class AcWebApplicationService:
 
     def get_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
         site_id = self._site(site_id)
+        return self._task_dto(site_id, task_id)
+
+    def start_fit_ap_delete(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        ap_ids: list[str],
+        explicit_confirmation: bool,
+    ) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise AcWebActionError("CONFIRMATION_REQUIRED", "批量删除 FIT-AP 前必须明确确认")
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        selected = list(dict.fromkeys(str(value or "").strip() for value in ap_ids if str(value or "").strip()))
+        if not selected:
+            raise AcWebActionError("AP_TARGET_REQUIRED", "未选择要删除的 FIT-AP")
+        repository = self._repository(site_id)
+        if any(repository.get_fit_ap_resource_by_uuid(device_uuid, ap_uuid) is None for ap_uuid in selected):
+            raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "待删除 FIT-AP 不属于当前 AC")
+        task_id = f"ac-web-delete-{uuid4().hex}"
+        self.process_adapter.start_job(
+            BackgroundJob(
+                job_id=task_id,
+                task_type="ac_fit_ap_delete_many",
+                params={
+                    "site_name": site_id,
+                    "db_path": str(self.paths.site_db_path(site_id)),
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "task_name": "批量删除 FIT-AP",
+                    "owner": self._OWNER,
+                    "task_source": "local",
+                    "device_uuid": device_uuid,
+                    "ac_uuid": device_uuid,
+                    "ap_uuids": selected,
+                },
+            )
+        )
         return self._task_dto(site_id, task_id)
 
     def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:

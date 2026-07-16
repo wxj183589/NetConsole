@@ -10,7 +10,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
+import { deleteAcFitAps, recoverAcWebTasks, startAcResourceRefresh } from '../api/acWebParity'
 
 vi.mock('../api/acManagement', () => ({
   getAcApDetail: vi.fn(),
@@ -22,6 +22,7 @@ vi.mock('../api/acManagement', () => ({
 }))
 vi.mock('../api/acWebParity', () => ({
   cancelAcWebTask: vi.fn(),
+  deleteAcFitAps: vi.fn(),
   getAcWebTask: vi.fn(),
   recoverAcWebTasks: vi.fn(),
   startAcResourceRefresh: vi.fn(),
@@ -40,6 +41,7 @@ describe('AC Management polling store', () => {
     vi.mocked(getAcConfigDiff).mockReset()
     vi.mocked(getAcConfigSnapshot).mockReset()
     vi.mocked(recoverAcWebTasks).mockReset().mockResolvedValue([])
+    vi.mocked(deleteAcFitAps).mockReset()
     vi.mocked(startAcResourceRefresh).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
@@ -60,7 +62,7 @@ describe('AC Management polling store', () => {
     expect(store.error).toContain('AC 数据刷新失败')
   })
 
-  it('stops every timer and exposes only the approved refresh operation', async () => {
+  it('stops every timer and exposes the approved resource operations', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout
     window.clearTimeout = clearTimeout
@@ -75,7 +77,7 @@ describe('AC Management polling store', () => {
     expect(listAcAps).toHaveBeenCalledTimes(calls)
     expect('startFitApRefresh' in store).toBe(true)
     expect('save' in store).toBe(false)
-    expect('deleteAp' in store).toBe(false)
+    expect('startFitApDelete' in store).toBe(true)
     vi.useRealTimers()
   })
 
@@ -97,5 +99,21 @@ describe('AC Management polling store', () => {
       'netconsole.ac.active-task',
       'task-fit-ap',
     )
+  })
+
+  it('starts confirmed FIT-AP batch deletion through the persistent task API', async () => {
+    vi.mocked(deleteAcFitAps).mockResolvedValue({
+      task_id: 'task-delete', action: 'ac_fit_ap_delete_many', status: 'QUEUED',
+      progress: 0, stage: 'queued', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    })
+    const store = useAcManagementStore()
+    store.filters.ac_id = 'ac-1'
+
+    await store.startFitApDelete(['ap-1', 'ap-2'])
+
+    expect(deleteAcFitAps).toHaveBeenCalledWith('ac-1', ['ap-1', 'ap-2'])
+    expect(store.refreshTask?.task_id).toBe('task-delete')
   })
 })

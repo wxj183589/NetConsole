@@ -95,6 +95,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/extensions/import-apply",
         "/api/ac-management/extensions/export",
         "/api/ac-management/extensions/audits/{audit_id}/rollback",
+        "/api/ac-management/fit-aps/delete",
         "/api/ac-management/local-rebuild/{rebuild_kind}",
         "/api/ac-management/refresh/{refresh_kind}",
         "/api/ac-management/trackside-business/local-rebuild",
@@ -106,4 +107,4 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
     }
     assert all(method in {"GET", "POST"} for _path, method in routes)
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
-    assert all("delete" not in path for path, _method in routes)
+    assert {path for path, _method in routes if "delete" in path} == {"/api/ac-management/fit-aps/delete"}

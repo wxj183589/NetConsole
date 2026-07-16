@@ -55,6 +55,13 @@ export function startAcResourceRefresh(kind: 'ac' | 'fit-ap' | 'ap-detail' | 'op
   })
 }
 
+export function deleteAcFitAps(acId: string, apIds: string[]): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/fit-aps/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ ac_id: acId, ap_ids: apIds, explicit_confirmation: true }),
+  })
+}
+
 export function exportAcExtensions(search = '', acId = ''): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/extensions/export${query({ search, ac_id: acId })}`, { method: 'POST' })
 }

@@ -309,6 +309,12 @@ class AcRefreshRequestDTO(ApiModel):
     ap_id: str = Field(default="", max_length=100)
 
 
+class AcFitApDeleteRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    ap_ids: list[str] = Field(min_length=1, max_length=2000)
+    explicit_confirmation: bool = False
+
+
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
@@ -333,6 +339,7 @@ __all__ = [
     "AcExtensionPreviewDTO",
     "AcExtensionRollbackRequestDTO",
     "AcExtensionRollbackResultDTO",
+    "AcFitApDeleteRequestDTO",
     "AcLocalRebuildRequestDTO",
     "AcRefreshRequestDTO",
     "AcTracksidePlanDTO",

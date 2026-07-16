@@ -8,6 +8,10 @@ describe('AC Management resource view', () => {
     expect(source).toContain('更新 AC 信息')
     expect(source).toContain('深度更新')
     expect(source).toContain('更新光衰')
+    expect(source).toContain('批量删除')
+    expect(source).toContain('选择本页')
+    expect(source).toContain('反选本页')
+    expect(source).toContain('ElMessageBox.confirm')
     expect(source).toContain('取消任务')
     expect(source).toContain('FIT-AP 资源')
     expect(source).toContain('AC 连接记录')
@@ -23,13 +27,11 @@ describe('AC Management resource view', () => {
     expect(source).not.toContain('save force')
   })
 
-  it('stops polling when hidden and exposes no unapproved write action', () => {
+  it('stops polling when hidden and exposes no unapproved device write action', () => {
     expect(source).toContain('document.hidden')
     expect(source).toContain('store.stopPolling()')
     expect(source).toContain('onBeforeUnmount')
     expect(source).not.toContain('停止任务')
-    expect(source).not.toContain('删除 AP')
-    expect(source).not.toContain('@click="delete')
     expect(source).not.toContain('下发')
   })
 })
