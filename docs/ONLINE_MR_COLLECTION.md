@@ -351,7 +351,7 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 页面状态和轻量预览每 2 秒刷新，最近会话、采集器与 raw 摘要每 5 秒刷新；原始日志只有展开后才每秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。终态会话若遗留 `view/live_mr_status.json` 的 `running` 采集器状态，查询层以 `session_meta.json` 终态校正为停止，事实文件本身保持不变。
 
-5C-2 本身不提供 start/stop/force-stop/删除/解析/报告 API。5C-10A 另在 Desktop WebHost 增加默认关闭的 LOCAL start/normal stop 薄入口；Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约。`executor=AGENT`、Agent 远程 MR 控制、Go Agent 和 Agent Web 均未修改。
+5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 
@@ -361,6 +361,6 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 ## 19. Web LOCAL 受控启停（5C-10A）
 
-Web 控制默认关闭，仅 `ONLINE_MR_WEB_CONTROL_ENABLED=1`、Desktop 模式、严格 `127.0.0.1` 和已认证 WebHost 短期 Cookie 同时满足时可用。启动 DTO 不接受凭据、命令、Agent URL 或路径；后端从正式 MR 资料和当前局点设备库补齐连接配置，并固定 `owner=web_local`、`executor=LOCAL`。
+Web 控制仅在显式启用、Desktop 模式、严格 `127.0.0.1` 和已认证 Host 短期 Cookie 同时满足时可用。正式 Electron Runtime 显式启用；其他宿主未显式传参时仍由默认关闭的 `ONLINE_MR_WEB_CONTROL_ENABLED` 控制。启动 DTO 不接受凭据、命令、Agent URL 或路径；后端从正式 MR 资料和当前局点设备库补齐连接配置，并固定 `owner=web_local`、`executor=LOCAL`。
 
-启动和正常停止分别复用 `OnlineMrApplicationService.start_local_collection()` 与 `stop_operation()`。同 MR 重复启动返回现有活动 Mapping，重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。Web 不提供强停，也不暴露 5B-13A 的 AGENT 执行入口。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
+启动、正常停止、强停和恢复分别复用 `OnlineMrApplicationService.start_local_collection()`、`stop_operation()`、`force_stop_operation()` 与 `recover_mappings()`。同 MR 重复启动返回现有活动 Mapping，重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。AGENT 控制继续使用独立契约，且不提供强停。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。

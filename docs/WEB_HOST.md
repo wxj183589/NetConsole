@@ -64,7 +64,7 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测、Mesh 原始日志分析和轨道交通无线综合看板；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；
 - Job Center 查询以 SQLite `mode=ro` 和 `query_only` 打开当前局点 `tasks.db`，不初始化 schema、不修复状态，也不返回任务结果中的完整业务 payload；
-- Online MR 在 `ONLINE_MR_WEB_CONTROL_ENABLED=1` 时提供 LOCAL start 和 normal stop，在 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 时提供独立 AGENT start/status/normal stop；两类控制路由都要求 Desktop 模式、严格 `127.0.0.1` 与已认证短期 Cookie。WebHost 没有 Agent 强停、解析、报告、删除、重试、任意命令或 URL API；
+- Online MR 在显式启用时提供 LOCAL start/normal stop/force-stop/recover；正式 Electron Runtime 显式启用，其他宿主未传参时仍由 `ONLINE_MR_WEB_CONTROL_ENABLED` 控制。在 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 时提供独立 AGENT start/status/normal stop；两类控制路由都要求 Desktop 模式、严格 `127.0.0.1` 与已认证短期 Cookie。WebHost 没有 Agent 强停、任意命令或任意 URL API；
 - Online MR Web 仅读取当前局点的 Session metadata、Task/Mapping、`view/*.json` 和 raw 白名单；页面隐藏或关闭后停止轮询；
 - AC 管理通过 GET-only `/api/ac-management` 和 SQLite `mode=ro + query_only` 展示现有 AC/FIT-AP、Radio 1/2、LLDP、光衰及配置快照；不连接设备、不采集、不下发命令，配置文件仅通过受控 snapshot ID 分块读取；
 - AC Mesh-Link 查询仍使用 GET-only 接口并按 30 秒 fresh/5 分钟 stale 边界保守展示 MR 状态；唯一 `POST /api/ac-management/mesh-links/refresh` 只接受 AC 标识和 switch-history 布尔开关，通过 Task Center Worker 执行固定只读命令。WebHost 不持有设备凭据、不接受命令文本；旧采集没有 raw 时明确显示不可用；

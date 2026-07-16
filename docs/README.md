@@ -15,6 +15,7 @@
 | [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md) | 模块级长期去向、当前阶段和冻结范围 | Web 迁移指挥与集成 | Feature Registry、Web 导航、详细对等矩阵 | 模块阶段、排除范围或长期去向变化 |
 | [Qt WebHost](WEB_HOST.md) | 普通主程序内嵌 Web、托盘、临时会话、fallback 和前端打包 | Desktop WebHost 开发 | `src/netconsole/ui/web_host`、FastAPI、Vue 构建 | WebHost 生命周期、认证、fallback 或打包变化 |
 | [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md) | Qt 页面/动作与 Electron Route、Feature、验收和完成状态 | Electron 迁移指挥与模块开发 | Qt 页面、Navigation Registry、Router、Feature Registry、测试 | Qt/Electron 能力、归属或验收状态变化 |
+| [轨道交通 Qt/Electron 逐操作矩阵](development/parity/rail-transit.md) | 轨交 Qt 独立页面、按钮、写入、导入导出、异常恢复与 Electron 真实闭环 | 轨交迁移与验收 | Rail/Online MR/MESH 页面、Application Service、Router、测试 | 任一轨交 Qt 操作、Electron 闭环、公共依赖或现场验收变化 |
 | [设备管理对等规格](development/parity/device-management.md) | 设备管理逐字段、逐操作、调用链和人工验收清单 | 设备管理迁移与验收 | Qt 设备页、DeviceManagementView、Device API/Service、测试 | 设备管理能力或验收状态变化 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
