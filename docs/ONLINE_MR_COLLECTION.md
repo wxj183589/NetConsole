@@ -112,6 +112,8 @@ iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采
 
 阶段 5B-3 为新 LOCAL 入口增加纯 Python `OnlineMrTrafficCoordinator`，由同一个 Background Worker 持有 fping/iPerf 与 SSH 采集生命周期。正常停止或达到显式 `duration_minutes` 上限时，先停止并 join Traffic，再停止 SSH collector、等待 writer/连接关闭、写最终 metadata，最后原子发布 ZIP；Worker 返回以后 Task 才进入终态。Traffic 工具缺失或运行失败写入 `traffic_summary/finalization_warnings`，不会让映射悬挂；无法确认 flush 时不发布正式 ZIP。
 
+Qt 删除准备阶段进一步把历史页面自管 fping 的执行、统计、事件发布和摘要写入收敛到纯 Python `FpingV5ProbeRunner`。`netconsole.ui.online_mr_fping_worker.FpingV5ProbeWorker` 只保留 QThread/Signal 转发，正式 LOCAL 主路径不依赖该 Adapter；Qt 移除时可直接删除 Adapter，不得删除或复制 Runner 的业务契约。
+
 `online_mr_task_sessions` schema v2 增加 LOCAL 生命周期字段；阶段 5B-13A 的 schema v3 再增加 Agent Profile、远端 Task/Session/Package、最近状态、连续失败次数和 Controller 截止时间，迁移不重建既有行。实际时长统一使用 `max(0, ended_at - started_at) / 60` 并保留三位小数。LOCAL 正常与强停契约保持不变；AGENT 只提供正常停止，远端终态必须先下载并安全导入 package，Controller Task 才能终态。详细见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)。
 
 ### 6.1 阶段 5B-3A 真实设备验收

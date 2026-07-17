@@ -120,7 +120,7 @@ from netconsole.services.online_mr_collector import (
 from netconsole.services.online_mr_session_store import COLLECTOR_OUTPUT_RAW_FILE, DEVICE_TERMINAL_MONITOR_RAW_FILE, OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION, OnlineMrDiagnosisParser, TimeSyncSample, estimate_device_time_from_local
 from netconsole.ui.pages.online_mr_collection_page import OnlineMrUiThrottle
-from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
+from netconsole.ui.online_mr_fping_worker import FpingV5ProbeWorker
 from netconsole.ui.online_mr_collector_worker import OnlineMrCollectorWorker
 
 

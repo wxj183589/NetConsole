@@ -17,7 +17,7 @@ from netconsole.services.online_mr.parser.event_parser_engine import EventParser
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.online_mr.session_adapter import SessionAdapter
 from netconsole.services.online_mr.offline.replay_engine import replay_session
-from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
+from netconsole.services.online_mr.fping_v5_probe import FpingV5ProbeRunner
 from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
 from netconsole.services.online_mr.workers.ssh_resilient_worker import SshResilientWorker
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
@@ -336,12 +336,12 @@ def test_diagnosis_parser_records_iperf_busy_error_without_intervals(tmp_path: P
     assert "server_busy" in row[1]
 
 
-def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> None:
+def test_fping_v5_runner_publishes_source_device_and_target(tmp_path: Path) -> None:
     events = []
     bus = OnlineMrEventBus()
     bus.subscribe("*", events.append)
     session = type("Session", (), {"meta": type("Meta", (), {"device_id": 7, "session_id": "s1"})()})()
-    worker = FpingV5ProbeWorker(
+    runner = FpingV5ProbeRunner(
         session,
         FpingConfig(target="127.0.0.1"),
         tmp_path / "fping.exe",
@@ -349,7 +349,7 @@ def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> N
         source_device_id=7,
     )
 
-    worker._handle_sample(
+    runner.handle_sample(
         FpingV5Sample(
             ts="2026-06-27T10:00:00.123",
             target="127.0.0.1",
@@ -368,6 +368,25 @@ def test_fping_v5_worker_publishes_source_device_and_target(tmp_path: Path) -> N
     assert events[0].device_id == 7
     assert events[0].payload["source_device_id"] == 7
     assert events[0].payload["target_ip"] == "127.0.0.1"
+
+
+def test_fping_v5_runner_handles_disabled_probe_without_qt(tmp_path: Path) -> None:
+    summaries: list[str] = []
+    session = type(
+        "Session",
+        (),
+        {
+            "meta": type("Meta", (), {"device_id": 7, "session_id": "s1"})(),
+            "write_fping_final_summary": summaries.append,
+        },
+    )()
+    runner = FpingV5ProbeRunner(session, FpingConfig(enabled=False), tmp_path / "fping.exe")
+
+    result = runner.run()
+
+    assert result.status == "disabled"
+    assert result.error == ""
+    assert summaries == ["Status: high frequency ping disabled"]
 
 
 def test_fping_config_serializes_high_ping_preset_and_compat_keys() -> None:

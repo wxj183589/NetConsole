@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
-from PySide6.QtCore import QThread, Signal
 
 from netconsole.core.ping.fping_v5_models import FpingV5Sample
 from netconsole.core.ping.fping_v5_runner import check_fping_v5_available, run_fping_v5_json
@@ -15,11 +15,13 @@ from netconsole.services.online_mr.event_bus import EVENT_FPING_V5_SAMPLE, Onlin
 from netconsole.services.online_mr_session_store import OnlineMrSession
 
 
-class FpingV5ProbeWorker(QThread):
-    snapshot = Signal(object)
-    completed = Signal(str)
-    failed = Signal(str)
+@dataclass(frozen=True)
+class FpingV5ProbeResult:
+    status: str
+    error: str = ""
 
+
+class FpingV5ProbeRunner:
     def __init__(
         self,
         session: OnlineMrSession,
@@ -27,9 +29,7 @@ class FpingV5ProbeWorker(QThread):
         fping_path: Path,
         event_bus: OnlineMrEventBus | None = None,
         source_device_id: int | None = None,
-        parent=None,
     ) -> None:
-        super().__init__(parent)
         self.session = session
         self.config = config.normalized()
         self.fping_path = fping_path
@@ -39,20 +39,19 @@ class FpingV5ProbeWorker(QThread):
         self.stats = FpingV5Stats()
         self.source_device_id = source_device_id if source_device_id is not None else self.session.meta.device_id
 
-    def run(self) -> None:
+    def run(self, snapshot_callback: Callable[[dict[str, object]], None] | None = None) -> FpingV5ProbeResult:
         if not self.config.enabled:
             self.session.write_fping_final_summary("Status: high frequency ping disabled")
-            self.completed.emit("disabled")
-            return
+            return FpingV5ProbeResult("disabled")
         if not self.config.target:
-            self.session.write_fping_final_summary("Status: failed\nReason: ping target is empty")
-            self.failed.emit("Ping target is empty")
-            return
+            error = "Ping target is empty"
+            self.session.write_fping_final_summary(f"Status: failed\nReason: {error}")
+            return FpingV5ProbeResult("FAILED", error)
         check = check_fping_v5_available(fping_path=self.fping_path)
         if not check.available:
-            self.session.write_fping_final_summary(f"Status: failed\nReason: {check.error}")
-            self.failed.emit(check.error or "fping v5 is unavailable")
-            return
+            error = check.error or "fping v5 is unavailable"
+            self.session.write_fping_final_summary(f"Status: failed\nReason: {error}")
+            return FpingV5ProbeResult("FAILED", error)
         try:
             raw_log = self.session.session_dir / "raw" / "fping_v5_raw.log"
             jsonl = self.session.session_dir / "raw" / "fping_v5_samples.jsonl"
@@ -67,22 +66,23 @@ class FpingV5ProbeWorker(QThread):
                 stop_event=self.stop_event,
                 fping_path=self.fping_path,
             ):
-                self._handle_sample(sample)
+                snapshot = self.handle_sample(sample)
+                if snapshot_callback is not None:
+                    snapshot_callback(snapshot)
                 if self.stop_requested:
                     break
         except Exception as exc:
             self.session.write_fping_final_summary(f"Status: failed\nReason: {exc}")
-            self.failed.emit(str(exc))
-            return
+            return FpingV5ProbeResult("FAILED", str(exc))
         finally:
-            self._write_summary()
-        self.completed.emit("STOPPED" if self.stop_requested else "DONE")
+            self.write_summary()
+        return FpingV5ProbeResult("STOPPED" if self.stop_requested else "DONE")
 
     def stop(self) -> None:
         self.stop_requested = True
         self.stop_event.set()
 
-    def _handle_sample(self, sample: FpingV5Sample) -> None:
+    def handle_sample(self, sample: FpingV5Sample) -> dict[str, object]:
         self.stats.add(sample)
         payload = sample.as_dict()
         payload.update(self.stats.as_dict())
@@ -99,9 +99,9 @@ class FpingV5ProbeWorker(QThread):
             raw=json.dumps(sample.raw, ensure_ascii=False),
         )
         self.event_bus.publish(event)
-        self.snapshot.emit(self.stats.as_dict())
+        return self.stats.as_dict()
 
-    def _write_summary(self) -> None:
+    def write_summary(self) -> None:
         stats = self.stats.as_dict()
         summary = {
             "target_ip": self.config.target,

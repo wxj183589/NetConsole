@@ -112,7 +112,7 @@ from netconsole.services.online_mr.diagnosis_engine import OnlineMrDiagnosisEngi
 from netconsole.services.online_mr.event_bus import OnlineMrEventBus
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
-from netconsole.services.online_mr.workers.fping_v5_worker import FpingV5ProbeWorker
+from netconsole.ui.online_mr_fping_worker import FpingV5ProbeWorker
 from netconsole.services.ap_radio_mapping_service import ApRadioMappingService
 from netconsole.utils.station_normalize import normalize_station_value
 from netconsole.ui.iperf_worker import IperfProcessWorker
