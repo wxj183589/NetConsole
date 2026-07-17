@@ -1023,6 +1023,9 @@ class FakeConnectedSftpService:
     def is_connected(self):
         return True
 
+    def disconnect(self):
+        return None
+
 
 def page_task(task_id, device, remote_file, local_path, status_key):
     from netconsole.ui.pages.file_management_page import TransferTask
