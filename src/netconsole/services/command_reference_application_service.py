@@ -28,13 +28,17 @@ from netconsole.services.job_center.web_export_event_safety import sanitize_web_
 
 
 class CommandReferenceApplicationError(ValueError):
-    pass
+    def __init__(self, code: str, safe_message: str) -> None:
+        super().__init__(safe_message)
+        self.code = code
+        self.safe_message = safe_message
 
 
 class CommandReferenceApplicationService:
     _OWNER = "web_command_reference"
     _TASK_TYPE = "web_export_command_reference_markdown"
     _ARTIFACT_SOURCE = "command_reference_export"
+    _ARTIFACT_DISPLAY_NAME = "NetConsole_软件使用命令清单.md"
 
     def __init__(
         self,
@@ -58,7 +62,7 @@ class CommandReferenceApplicationService:
             and all(not value or str(getattr(item, field, "")) == value for field, value in filters.items())
         ]
         return CommandReferencePageDTO(
-            items=[CommandReferenceDTO(**asdict(item)) for item in result],
+            items=[self._reference_dto(item) for item in result],
             filters=CommandReferenceFiltersDTO(
                 modules=unique_values(references, "module"),
                 device_scopes=unique_values(references, "device_scope"),
@@ -80,7 +84,7 @@ class CommandReferenceApplicationService:
         known_ids = {item.id for item in load_command_references(self.paths)}
         selected = list(dict.fromkeys(str(value) for value in selected_ids if str(value)))
         if len(selected) != len(selected_ids) or any(value not in known_ids for value in selected):
-            raise CommandReferenceApplicationError("导出范围包含无效命令标识")
+            raise CommandReferenceApplicationError("INVALID_EXPORT_SELECTION", "导出范围包含无效命令标识")
         task_id = f"command-reference-export-{uuid4().hex}"
         try:
             reservation = self.artifact_store.reserve(
@@ -91,12 +95,10 @@ class CommandReferenceApplicationService:
                 task_id=task_id,
                 task_type=self._TASK_TYPE,
                 output_root=self._export_root(site_id),
-                preferred_name="NetConsole_软件使用命令清单.md",
+                preferred_name=self._ARTIFACT_DISPLAY_NAME,
             )
         except WebArtifactError as exc:
-            raise CommandReferenceApplicationError(
-                "BLOCKED_ON_TASK_WINDOW：统一 Artifact 契约尚未注册 command_reference_export 来源"
-            ) from exc
+            raise CommandReferenceApplicationError("ARTIFACT_CONTRACT_UNAVAILABLE", "命令说明导出能力暂时不可用") from exc
         job = command_reference_markdown_spec(
             reservation.output_path,
             resource_path=command_reference_path(self.paths),
@@ -122,7 +124,7 @@ class CommandReferenceApplicationService:
                 owner=self._OWNER,
                 public_result={
                     "artifact_id": reservation.artifact_id,
-                    "artifact_name": reservation.output_path.name,
+                    "artifact_name": self._ARTIFACT_DISPLAY_NAME,
                     "artifact_source": self._ARTIFACT_SOURCE,
                     "artifact_type": "md",
                 },
@@ -151,7 +153,7 @@ class CommandReferenceApplicationService:
         site_id = self.current_site_id()
         self._snapshot(site_id, task_id)
         if not self.task_service.cancel_task(task_id):
-            raise CommandReferenceApplicationError("导出任务当前不可取消")
+            raise CommandReferenceApplicationError("EXPORT_NOT_CANCELLABLE", "导出任务当前不可取消")
         return self.get_task(task_id, site_id=site_id)
 
     def open_artifact(self, artifact_id: str) -> tuple[Path, str]:
@@ -165,19 +167,19 @@ class CommandReferenceApplicationService:
                 task_type=self._TASK_TYPE,
             )
         except WebArtifactError as exc:
-            raise CommandReferenceApplicationError(str(exc)) from exc
+            raise CommandReferenceApplicationError("ARTIFACT_NOT_AVAILABLE", "Markdown Artifact 不存在或不可用") from exc
         return path, name
 
     def current_site_id(self) -> str:
         try:
             return SiteManager(self.paths).validate_site_name(str(SiteManager(self.paths).get_current_site() or "demo"))
         except (OSError, ValueError, KeyError) as exc:
-            raise CommandReferenceApplicationError("当前局点上下文无效") from exc
+            raise CommandReferenceApplicationError("SITE_CONTEXT_INVALID", "当前局点上下文无效") from exc
 
     def _snapshot(self, site_id: str, task_id: str):
         snapshot = self.task_service.repository(site_id).get(str(task_id or ""))
         if snapshot is None or snapshot.site_name != site_id or not self._authorized(snapshot):
-            raise CommandReferenceApplicationError("导出任务不存在或不属于命令说明")
+            raise CommandReferenceApplicationError("EXPORT_NOT_FOUND", "导出任务不存在或不属于命令说明")
         return sanitize_web_export_snapshot(snapshot)
 
     def _authorized(self, snapshot) -> bool:
@@ -204,6 +206,16 @@ class CommandReferenceApplicationService:
                 " ".join(item.source_locations),
             )
         ).casefold()
+
+    @staticmethod
+    def _reference_dto(item: CommandReference) -> CommandReferenceDTO:
+        read_only = True if item.risk_level == "read_only" else False if item.risk_level == "config_write" else None
+        return CommandReferenceDTO(
+            **asdict(item),
+            read_only=read_only,
+            modifies_device_config=item.risk_level == "config_write",
+            requires_interactive_confirmation=item.interactive_input,
+        )
 
 
 __all__ = ["CommandReferenceApplicationError", "CommandReferenceApplicationService"]

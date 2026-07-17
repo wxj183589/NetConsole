@@ -22,6 +22,9 @@ class CommandReferenceDTO(ApiModel):
     risk_level: str
     interactive_input: bool
     is_cli: bool
+    read_only: bool | None
+    modifies_device_config: bool
+    requires_interactive_confirmation: bool
     source_locations: list[str] = Field(default_factory=list)
     zte_adaptation_status: str
     comware_command: str

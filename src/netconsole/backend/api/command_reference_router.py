@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeVar
+
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.backend.api.task_router import task_dto
+from netconsole.core import app_logger
 from netconsole.models.api.command_reference import (
     CommandReferenceExportRequestDTO,
     CommandReferencePageDTO,
 )
 from netconsole.models.api.task import TaskCancelResponse, TaskDTO
 from netconsole.models.task_state import TaskState
-from netconsole.backend.api.task_router import task_dto
 from netconsole.services.command_reference_application_service import (
     CommandReferenceApplicationError,
     CommandReferenceApplicationService,
@@ -17,6 +21,7 @@ from netconsole.services.command_reference_application_service import (
 
 
 router = APIRouter(prefix="/command-reference", tags=["command-reference"])
+T = TypeVar("T")
 
 
 def _service(request: Request) -> CommandReferenceApplicationService:
@@ -69,15 +74,29 @@ def download_artifact(request: Request, artifact_id: str) -> FileResponse:
     return FileResponse(path, filename=name, media_type="text/markdown; charset=utf-8")
 
 
-def _call(callback):
+def _call(callback: Callable[[], T]) -> T:
     try:
         return callback()
     except CommandReferenceApplicationError as exc:
-        message = str(exc)
-        code = status.HTTP_409_CONFLICT if "不可取消" in message else status.HTTP_404_NOT_FOUND if "不存在" in message else status.HTTP_422_UNPROCESSABLE_ENTITY
-        raise HTTPException(status_code=code, detail=message) from exc
+        app_logger.log_error("COMMAND_REFERENCE_API_FAILED", f"code={exc.code} type={type(exc).__name__}")
+        status_code = {
+            "EXPORT_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+            "ARTIFACT_NOT_AVAILABLE": status.HTTP_404_NOT_FOUND,
+            "EXPORT_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
+        }.get(exc.code, status.HTTP_422_UNPROCESSABLE_CONTENT)
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": exc.safe_message},
+        ) from exc
     except (OSError, UnicodeError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        app_logger.log_error(
+            "COMMAND_REFERENCE_RESOURCE_FAILED",
+            f"code=COMMAND_REFERENCE_RESOURCE_UNAVAILABLE type={type(exc).__name__}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "COMMAND_REFERENCE_RESOURCE_UNAVAILABLE", "message": "命令说明资源暂时不可用"},
+        ) from exc
 
 
 __all__ = ["router"]

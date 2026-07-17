@@ -205,9 +205,9 @@ def test_system_settings_is_released_while_unimplemented_features_stay_hidden(
         assert gate.is_enabled(feature_id) is False
         assert gate.is_in_client_package(feature_id) is False
 
-    assert gate.is_visible("web.command_reference") is True
-    assert gate.is_enabled("web.command_reference") is True
-    assert gate.is_in_client_package("web.command_reference") is True
+    assert gate.is_visible("web.command_reference") is False
+    assert gate.is_enabled("web.command_reference") is False
+    assert gate.is_in_client_package("web.command_reference") is False
 
 
 def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ import type { CommandReferenceExportTask, CommandReferencePage, CommandReference
 import { apiRequest } from './client'
 
 const root = '/api/command-reference'
+export const commandReferenceArtifactName = 'NetConsole_软件使用命令清单.md'
 
 function queryString(values: CommandReferenceQuery): string {
   const params = new URLSearchParams()
@@ -30,9 +31,9 @@ export function cancelCommandReferenceExport(taskId: string): Promise<{ id: stri
   return apiRequest(`${root}/exports/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }
 
-export function commandReferenceArtifactDownloadRequest(artifactId: string, artifactName: string): BackendDownloadRequest {
+export function commandReferenceArtifactDownloadRequest(artifactId: string): BackendDownloadRequest {
   return {
     apiPath: `${root}/artifacts/${encodeURIComponent(artifactId)}/download`,
-    suggestedName: artifactName || 'NetConsole_软件使用命令清单.md',
+    suggestedName: commandReferenceArtifactName,
   }
 }

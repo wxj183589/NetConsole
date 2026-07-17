@@ -15,6 +15,9 @@ export interface CommandReference {
   risk_level: string
   interactive_input: boolean
   is_cli: boolean
+  read_only: boolean | null
+  modifies_device_config: boolean
+  requires_interactive_confirmation: boolean
   source_locations: string[]
   zte_adaptation_status: string
   comware_command: string

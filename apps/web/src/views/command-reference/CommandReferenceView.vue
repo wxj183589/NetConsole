@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   cancelCommandReferenceExport,
@@ -11,9 +12,19 @@ import {
 } from '../../api/commandReference'
 import { downloadBackendResource } from '../../platform/runtime'
 import type { CommandReference, CommandReferenceExportTask, CommandReferencePage } from '../../types/commandReference'
+import { createCommandReferenceTranslator } from './commandReferenceI18n'
 
-const taskStorageKey = 'netconsole.command-reference.export-task-id'
+type TaskWindowStatus = 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+type CommandReferenceTaskWindowBridge = {
+  openTaskWindow(context: { taskId: string; module: 'command-reference'; status: TaskWindowStatus }): Promise<{ success: boolean; error?: string }>
+}
+
+const searchDelayMs = 250
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const taskWindowStatuses = new Set<TaskWindowStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED'])
+const t = createCommandReferenceTranslator()
+const route = useRoute()
+const router = useRouter()
 const filters = reactive({ query: '', module: '', device_scope: '', vendor: '', protocol: '', category: '', risk_level: '' })
 const page = ref<CommandReferencePage | null>(null)
 const selected = ref<CommandReference | null>(null)
@@ -21,37 +32,64 @@ const task = ref<CommandReferenceExportTask | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
 const error = ref('')
-let pollTimer: number | undefined
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+let requestGeneration = 0
 
 const state = computed(() => error.value ? 'error' : loading.value ? 'loading' : page.value?.items.length ? 'success' : 'empty')
 const artifactId = computed(() => String(task.value?.result?.artifact_id || ''))
 const artifactName = computed(() => String(task.value?.result?.artifact_name || ''))
-const artifactSha256 = computed(() => String(task.value?.result?.sha256 || ''))
 const artifactAvailable = computed(() => task.value?.status === 'COMPLETED' && Boolean(artifactId.value) && task.value?.result?.artifact_pending !== true)
+const filterFields = computed(() => [
+  ['module', t('module'), page.value?.filters.modules],
+  ['device_scope', t('deviceScope'), page.value?.filters.device_scopes],
+  ['vendor', t('vendor'), page.value?.filters.vendors],
+  ['protocol', t('protocol'), page.value?.filters.protocols],
+  ['category', t('category'), page.value?.filters.categories],
+  ['risk_level', t('riskLevel'), page.value?.filters.risk_levels],
+] as const)
+
+watch(() => filters.query, scheduleSearch)
 
 async function loadReferences(): Promise<void> {
+  const generation = ++requestGeneration
   loading.value = true
   error.value = ''
   try {
-    page.value = await listCommandReferences(filters)
-    selected.value = page.value.items.find((item) => item.id === selected.value?.id) || page.value.items[0] || null
+    const result = await listCommandReferences({ ...filters })
+    if (generation !== requestGeneration) return
+    page.value = result
+    selected.value = result.items.find((item) => item.id === selected.value?.id) || result.items[0] || null
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '命令说明加载失败'
+    if (generation === requestGeneration) error.value = reason instanceof Error ? reason.message : t('loadFailed')
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) loading.value = false
   }
+}
+
+function scheduleSearch(): void {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    searchTimer = null
+    void loadReferences()
+  }, searchDelayMs)
+}
+
+function searchNow(): void {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = null
+  void loadReferences()
 }
 
 async function copyCommand(): Promise<void> {
   if (!selected.value) {
-    ElMessage.warning('请先选择一条命令说明')
+    ElMessage.warning(t('selectFirst'))
     return
   }
   try {
     await navigator.clipboard.writeText(selected.value.command_template)
-    ElMessage.success('命令模板已复制')
+    ElMessage.success(t('copied'))
   } catch {
-    ElMessage.error('复制失败，请检查剪贴板权限')
+    ElMessage.error(t('copyFailed'))
   }
 }
 
@@ -60,122 +98,153 @@ async function startExport(): Promise<void> {
   exporting.value = true
   try {
     task.value = await startCommandReferenceExport(page.value.items.map((item) => item.id))
-    window.localStorage.setItem(taskStorageKey, task.value.id)
-    schedulePoll()
+    ElMessage.success(t('taskSubmitted'))
   } catch (reason) {
-    ElMessage.error(reason instanceof Error ? reason.message : '导出启动失败')
+    ElMessage.error(reason instanceof Error ? reason.message : t('exportFailed'))
   } finally {
     exporting.value = false
   }
 }
 
-async function refreshTask(): Promise<void> {
-  if (!task.value?.id) return
+async function recoverTask(taskId: string): Promise<void> {
   try {
-    task.value = await getCommandReferenceExport(task.value.id)
-    if (!terminalStates.has(task.value.status)) schedulePoll()
+    task.value = await getCommandReferenceExport(taskId)
   } catch (reason) {
-    ElMessage.error(reason instanceof Error ? reason.message : '导出状态恢复失败')
-    window.localStorage.removeItem(taskStorageKey)
+    ElMessage.error(reason instanceof Error ? reason.message : t('restoreFailed'))
   }
-}
-
-function schedulePoll(): void {
-  window.clearTimeout(pollTimer)
-  if (task.value && !terminalStates.has(task.value.status)) pollTimer = window.setTimeout(refreshTask, 800)
 }
 
 async function cancelExport(): Promise<void> {
   if (!task.value?.cancellable) return
+  const taskId = task.value.id
   try {
-    await cancelCommandReferenceExport(task.value.id)
-    task.value = await getCommandReferenceExport(task.value.id)
-    schedulePoll()
+    await cancelCommandReferenceExport(taskId)
+    await recoverTask(taskId)
   } catch (reason) {
-    ElMessage.error(reason instanceof Error ? reason.message : '取消导出失败')
+    ElMessage.error(reason instanceof Error ? reason.message : t('cancelFailed'))
   }
 }
 
 async function downloadArtifact(): Promise<void> {
   if (!artifactAvailable.value) return
-  const result = await downloadBackendResource(commandReferenceArtifactDownloadRequest(artifactId.value, artifactName.value))
-  if (result.status === 'saved') ElMessage.success('Markdown 已保存')
-  else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+  const result = await downloadBackendResource(commandReferenceArtifactDownloadRequest(artifactId.value))
+  if (result.status === 'saved') ElMessage.success(t('downloadSaved'))
+  else if (result.status === 'failed') ElMessage.error(result.error || t('downloadFailed'))
+}
+
+async function openTaskWindow(): Promise<void> {
+  if (!task.value || !taskWindowStatuses.has(task.value.status as TaskWindowStatus)) return
+  const context = {
+    taskId: task.value.id,
+    module: 'command-reference' as const,
+    status: task.value.status as TaskWindowStatus,
+  }
+  if (window.netconsoleDesktop) {
+    try {
+      const bridge = window.netconsoleDesktop as unknown as CommandReferenceTaskWindowBridge
+      const result = await bridge.openTaskWindow(context)
+      if (!result.success) ElMessage.error(result.error || t('taskWindowFailed'))
+    } catch (reason) {
+      ElMessage.error(reason instanceof Error ? reason.message : t('taskWindowFailed'))
+    }
+    return
+  }
+  await router.push({ name: 'tasks', query: { task_id: context.taskId, module: context.module, status: context.status } })
+}
+
+function readOnlyText(item: CommandReference): string {
+  return item.read_only === null ? t('conditional') : item.read_only ? t('yes') : t('no')
+}
+
+function riskText(value: string): string {
+  return ({
+    read_only: t('riskReadOnly'), config_write: t('riskConfigWrite'), interactive: t('riskInteractive'),
+    external_tool: t('riskExternalTool'), unknown: t('riskUnknown'),
+  } as Record<string, string>)[value] || value
+}
+
+function zteStatusText(value: string): string {
+  return ({
+    not_applicable: t('zteNotApplicable'), phase_1_reference: t('ztePhase1'), phase_2_reference: t('ztePhase2'),
+  } as Record<string, string>)[value] || value
 }
 
 onMounted(async () => {
   await loadReferences()
-  const taskId = window.localStorage.getItem(taskStorageKey)
-  if (taskId) {
-    task.value = { id: taskId } as CommandReferenceExportTask
-    await refreshTask()
-  }
+  const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : ''
+  if (taskId) await recoverTask(taskId)
 })
-onUnmounted(() => window.clearTimeout(pollTimer))
+
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+  requestGeneration += 1
+})
 </script>
 
 <template>
   <section class="command-reference" :data-state="state">
     <header class="heading">
-      <div><p class="eyebrow">REFERENCE ONLY · 不执行设备命令</p><h1>命令说明</h1><p>查询版本化命令资源，复制模板或导出当前筛选结果。</p></div>
-      <div class="actions"><el-button @click="loadReferences">刷新</el-button><el-button :disabled="!selected" @click="copyCommand">复制命令模板</el-button><el-button type="primary" :loading="exporting" @click="startExport">导出 Markdown</el-button></div>
+      <div><p class="eyebrow">{{ t('referenceOnly') }}</p><h1>{{ t('title') }}</h1><p>{{ t('subtitle') }}</p></div>
+      <div class="actions"><el-button @click="loadReferences">{{ t('refresh') }}</el-button><el-button :disabled="!selected" @click="copyCommand">{{ t('copy') }}</el-button><el-button type="primary" :loading="exporting" @click="startExport">{{ t('exportMarkdown') }}</el-button></div>
     </header>
 
     <el-card shadow="never">
       <div class="filters">
-        <el-input v-model="filters.query" clearable placeholder="搜索命令、用途、模块、源码位置" @keyup.enter="loadReferences" @clear="loadReferences" />
-        <el-select v-for="field in [
-          ['module', '模块', page?.filters.modules], ['device_scope', '设备类型', page?.filters.device_scopes],
-          ['vendor', '厂商', page?.filters.vendors], ['protocol', '协议', page?.filters.protocols],
-          ['category', '类别', page?.filters.categories], ['risk_level', '风险级别', page?.filters.risk_levels],
-        ]" :key="String(field[0])" v-model="filters[field[0] as keyof typeof filters]" clearable :placeholder="String(field[1])" @change="loadReferences">
-          <el-option v-for="value in field[2] as string[] || []" :key="value" :label="value" :value="value" />
+        <el-input v-model="filters.query" clearable :placeholder="t('searchPlaceholder')" @keyup.enter="searchNow" />
+        <el-select v-for="field in filterFields" :key="field[0]" v-model="filters[field[0]]" clearable :placeholder="field[1]" @change="loadReferences">
+          <el-option v-for="value in field[2] || []" :key="value" :label="value" :value="value" />
         </el-select>
-        <el-button @click="loadReferences">搜索</el-button>
+        <el-button @click="searchNow">{{ t('search') }}</el-button>
       </div>
-      <p v-if="page" class="summary">已归档 {{ page.summary.total }} 条，当前显示 {{ page.summary.shown }} 条；交换机 {{ page.summary.switch_count }} 条，非 CLI / 本地工具 {{ page.summary.non_cli_count }} 条。</p>
+      <p v-if="page" class="summary">{{ t('archived') }} {{ page.summary.total }} {{ t('itemUnit') }}，{{ t('shown') }} {{ page.summary.shown }} {{ t('itemUnit') }}；{{ t('switch') }} {{ page.summary.switch_count }} {{ t('itemUnit') }}，{{ t('nonCli') }} {{ page.summary.non_cli_count }} {{ t('itemUnit') }}。</p>
     </el-card>
 
-    <el-alert v-if="error" type="error" :title="error" show-icon :closable="false"><el-button @click="loadReferences">重试</el-button></el-alert>
+    <el-alert v-if="error" type="error" :title="error" show-icon :closable="false"><el-button @click="loadReferences">{{ t('retry') }}</el-button></el-alert>
     <div v-loading="loading" class="content">
-      <el-empty v-if="!loading && !error && !page?.items.length" description="当前筛选没有命令说明" />
+      <el-empty v-if="!loading && !error && !page?.items.length" :description="t('empty')" />
       <template v-else-if="page?.items.length">
         <el-card shadow="never" class="table-card">
           <el-table :data="page.items" highlight-current-row height="100%" @current-change="selected = $event">
-            <el-table-column prop="category" label="类别" width="140" /><el-table-column prop="command_template" label="命令" min-width="260" show-overflow-tooltip />
-            <el-table-column prop="purpose" label="当前用途" min-width="220" show-overflow-tooltip /><el-table-column prop="module" label="模块" width="160" />
-            <el-table-column prop="device_scope" label="设备类型" width="140" /><el-table-column prop="vendor" label="厂商" width="110" />
-            <el-table-column prop="risk_level" label="风险级别" width="120" /><el-table-column prop="notes" label="备注" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="category" :label="t('category')" width="140" /><el-table-column prop="command_template" :label="t('command')" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="purpose" :label="t('purpose')" min-width="220" show-overflow-tooltip /><el-table-column prop="module" :label="t('module')" width="160" />
+            <el-table-column prop="pre_commands" :label="t('prerequisites')" min-width="180"><template #default="scope">{{ scope.row.pre_commands.join(', ') || t('none') }}</template></el-table-column>
+            <el-table-column prop="device_scope" :label="t('deviceScope')" width="140" /><el-table-column prop="vendor" :label="t('vendor')" width="110" />
+            <el-table-column prop="risk_level" :label="t('riskLevel')" width="120"><template #default="scope">{{ riskText(scope.row.risk_level) }}</template></el-table-column><el-table-column prop="notes" :label="t('notes')" min-width="220" show-overflow-tooltip />
           </el-table>
         </el-card>
-        <el-card shadow="never" class="detail-card"><template #header>命令详情</template>
+        <el-card shadow="never" class="detail-card"><template #header>{{ t('details') }}</template>
           <el-descriptions v-if="selected" :column="1" border>
-            <el-descriptions-item label="命令模板"><code>{{ selected.command_template }}</code></el-descriptions-item>
-            <el-descriptions-item label="模块 / 类别">{{ selected.module }} / {{ selected.category }}</el-descriptions-item>
-            <el-descriptions-item label="设备 / 厂商 / 协议">{{ selected.device_scope }} / {{ selected.vendor }} / {{ selected.protocol }}</el-descriptions-item>
-            <el-descriptions-item label="当前用途">{{ selected.purpose || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="风险">{{ selected.risk_level }}；交互确认：{{ selected.interactive_input ? '是' : '否' }}；CLI：{{ selected.is_cli ? '是' : '否' }}</el-descriptions-item>
-            <el-descriptions-item label="参数"><div v-if="selected.parameters.length"><p v-for="parameter in selected.parameters" :key="`${parameter.name}-${parameter.description}`">{{ parameter.name }}：{{ parameter.description }}</p></div><span v-else>—</span></el-descriptions-item>
-            <el-descriptions-item label="前置命令">{{ selected.pre_commands.join(', ') || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="输出 / 日志">{{ selected.output_log || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="解析器 / 消费模块">{{ selected.parser || '—' }} / {{ selected.consumer || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="源码位置">{{ selected.source_locations.join(', ') || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="Comware / ZTE">{{ selected.comware_command || '—' }} / {{ selected.zte_command || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="适配状态">ZTE：{{ selected.zte_adaptation_status }}；解析器：{{ selected.parser_status || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="注意事项">{{ selected.notes || '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('commandTemplate')"><code>{{ selected.command_template }}</code></el-descriptions-item>
+            <el-descriptions-item :label="t('moduleCategory')">{{ selected.module }} / {{ selected.category }}</el-descriptions-item>
+            <el-descriptions-item :label="t('deviceVendorProtocol')">{{ selected.device_scope }} / {{ selected.vendor }} / {{ selected.protocol }}</el-descriptions-item>
+            <el-descriptions-item :label="t('purpose')">{{ selected.purpose || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('readOnly')">{{ readOnlyText(selected) }}</el-descriptions-item>
+            <el-descriptions-item :label="t('modifiesConfig')">{{ selected.modifies_device_config ? t('yes') : t('no') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('interactive')">{{ selected.requires_interactive_confirmation ? t('yes') : t('no') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('riskCli')">{{ riskText(selected.risk_level) }} / {{ selected.is_cli ? t('yes') : t('no') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('parameters')"><div v-if="selected.parameters.length"><p v-for="parameter in selected.parameters" :key="`${parameter.name}-${parameter.description}`">{{ parameter.name }}：{{ parameter.description }}</p></div><span v-else>{{ t('none') }}</span></el-descriptions-item>
+            <el-descriptions-item :label="t('preCommands')">{{ selected.pre_commands.join(', ') || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('outputLog')">{{ selected.output_log || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('parserConsumer')">{{ selected.parser || t('none') }} / {{ selected.consumer || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('sourceLocations')">{{ selected.source_locations.join(', ') || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('comwareZte')">{{ selected.comware_command || t('none') }} / {{ selected.zte_command || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('adaptationStatus')">{{ t('zte') }}：{{ zteStatusText(selected.zte_adaptation_status) }}；{{ t('parser') }}：{{ selected.parser_status || t('none') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('cautions')">{{ selected.notes || t('none') }}</el-descriptions-item>
           </el-descriptions>
-          <el-empty v-else description="选择左侧命令后查看详情" />
+          <el-empty v-else :description="t('selectDetails')" />
         </el-card>
       </template>
     </div>
 
-    <el-card v-if="task" shadow="never"><template #header>Markdown 导出</template>
-      <el-descriptions :column="3" border><el-descriptions-item label="任务">{{ task.id }}</el-descriptions-item><el-descriptions-item label="状态">{{ task.status }}</el-descriptions-item><el-descriptions-item label="条数">{{ task.total || '—' }}</el-descriptions-item><el-descriptions-item label="消息">{{ task.error_message || task.message || '—' }}</el-descriptions-item><el-descriptions-item label="Artifact">{{ artifactName || '生成中' }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ artifactSha256 || '—' }}</el-descriptions-item></el-descriptions>
-      <div class="task-actions"><el-button :disabled="!task.cancellable" @click="cancelExport">取消</el-button><el-button type="primary" :disabled="!artifactAvailable" @click="downloadArtifact">下载 Artifact</el-button></div>
-    </el-card>
+    <el-alert v-if="task" type="success" :closable="false" show-icon :title="t('taskSubmitted')">
+      <span class="task-summary">{{ t('task') }} {{ task.id }} · {{ t('status') }} {{ task.status }} · {{ t('artifact') }} {{ artifactName || t('none') }}</span>
+      <el-button :disabled="!task.cancellable || terminalStates.has(task.status)" @click="cancelExport">{{ t('cancel') }}</el-button>
+      <el-button :disabled="!artifactAvailable" @click="downloadArtifact">{{ t('download') }}</el-button>
+      <el-button type="primary" @click="openTaskWindow">{{ t('openTaskWindow') }}</el-button>
+    </el-alert>
   </section>
 </template>
 
 <style scoped>
-.command-reference{display:flex;flex-direction:column;gap:16px;min-width:0}.heading,.actions,.filters,.task-actions{display:flex;align-items:center;gap:10px}.heading{justify-content:space-between}.heading h1{margin:4px 0}.heading p,.summary{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.filters{flex-wrap:wrap}.filters .el-input{width:300px}.filters .el-select{width:150px}.summary{margin-top:12px}.content{display:grid;grid-template-columns:minmax(620px,3fr) minmax(360px,2fr);gap:16px;min-height:520px}.table-card,.detail-card{min-width:0;height:520px}.detail-card{overflow:auto}.detail-card p{margin:0}.task-actions{margin-top:12px}@media(max-width:1000px){.heading{align-items:flex-start;flex-direction:column}.content{grid-template-columns:1fr}.table-card,.detail-card{height:auto;min-height:360px}}
+.command-reference{display:flex;flex-direction:column;gap:16px;min-width:0}.heading,.actions,.filters{display:flex;align-items:center;gap:10px}.heading{justify-content:space-between}.heading h1{margin:4px 0}.heading p,.summary{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.filters{flex-wrap:wrap}.filters .el-input{width:300px}.filters .el-select{width:150px}.summary{margin-top:12px}.content{display:grid;grid-template-columns:minmax(620px,3fr) minmax(360px,2fr);gap:16px;min-height:520px}.table-card,.detail-card{min-width:0;height:520px}.detail-card{overflow:auto}.detail-card p{margin:0}.task-summary{margin-right:12px}@media(max-width:1000px){.heading{align-items:flex-start;flex-direction:column}.content{grid-template-columns:1fr}.table-card,.detail-card{height:auto;min-height:360px}}
 </style>
