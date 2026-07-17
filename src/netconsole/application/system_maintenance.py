@@ -28,6 +28,7 @@ from netconsole.models.api.system_maintenance import (
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.app_auto_cleanup import AppCleanupService, CLEANUP_ITEM_IDS
 from netconsole.services.export.export_task_builders import app_logs_csv_spec, open_source_notices_spec
 from netconsole.services.export.export_task_builders import ExportTaskSpec
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
@@ -49,7 +50,7 @@ class SystemMaintenanceResolver:
     ARTIFACTS = {
         "logs_current": ("system_logs_current", "csv", "web_export_app_logs_csv", "app_log_current.csv"),
         "logs_all": ("system_logs_all", "csv", "web_export_app_logs_csv", "app_log_all.csv"),
-        "open_source_txt": ("system_open_source_txt", "md", "web_export_open_source_notices", "open_source_notices.md"),
+        "open_source_txt": ("system_open_source_txt", "txt", "web_export_open_source_notices", "open_source_notices.txt"),
         "open_source_xlsx": ("system_open_source_xlsx", "xlsx", "web_export_open_source_notices", "open_source_notices.xlsx"),
     }
     DIRECTORIES = {"logs": "system_logs", "cache": "system_cache"}
@@ -151,8 +152,36 @@ class SystemMaintenanceApplicationService:
         app_logger.log_info("LOGS_CLEARED", "运行日志已清空", log_path=self.paths.app_log_path)
         return DesktopActionDTO(success=True, code="completed", message="日志中心记录已清空")
 
-    def start_cleanup(self, site_id: str, *, dry_run: bool, automatic: bool = False) -> MaintenanceTaskDTO:
+    def start_cleanup(
+        self,
+        site_id: str,
+        *,
+        dry_run: bool,
+        retention_days: int = 3,
+        selected_item_ids: list[str] | tuple[str, ...] = (),
+        confirmed: bool = False,
+        automatic: bool = False,
+    ) -> MaintenanceTaskDTO:
         site_id = self._site(site_id)
+        days = int(retention_days)
+        if not 1 <= days <= 365:
+            raise SystemMaintenanceError("RETENTION_DAYS_INVALID", "保留天数必须在 1 到 365 之间")
+        selected = [str(value).strip() for value in selected_item_ids]
+        if automatic:
+            if dry_run:
+                raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "自动清理不能使用扫描模式")
+            selected = list(CLEANUP_ITEM_IDS)
+            confirmed = True
+        if dry_run:
+            if selected or confirmed:
+                raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "扫描请求不能包含清理选择或确认")
+        elif not selected or not confirmed:
+            raise SystemMaintenanceError("CLEANUP_CONFIRMATION_REQUIRED", "正式清理必须选择项目并明确确认")
+        else:
+            try:
+                selected = list(AppCleanupService.validate_item_ids(selected))
+            except ValueError as exc:
+                raise SystemMaintenanceError("CLEANUP_ITEMS_INVALID", str(exc)) from exc
         task_id = f"system-maintenance-{uuid4().hex}"
         action = "cleanup_scan" if dry_run else ("cleanup_auto" if automatic else "cleanup_clean")
         name = {"cleanup_scan": "扫描日志与缓存", "cleanup_clean": "安全清理日志与缓存", "cleanup_auto": "自动安全清理"}[action]
@@ -167,8 +196,11 @@ class SystemMaintenanceApplicationService:
                     "task_source": "local",
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
-                    "retention_days": 3,
+                    "retention_days": days,
                     "dry_run": dry_run,
+                    "selected_item_ids": selected,
+                    "confirmed": bool(confirmed),
+                    "_cancel_grace_ms": 3_000,
                 },
             )
         )
@@ -283,7 +315,7 @@ class SystemMaintenanceApplicationService:
             )
         except WebArtifactError as exc:
             raise SystemMaintenanceError("ARTIFACT_INVALID", redact_system_maintenance_text(exc)) from exc
-        return path, "open_source_notices.txt" if kind == "open_source_txt" else name
+        return path, _stored_name or name
 
     def changelog(self) -> ChangelogDTO:
         try:
@@ -377,13 +409,14 @@ class SystemMaintenanceApplicationService:
                 self.artifact_store.fail(reservation)
 
         try:
+            public_name = self.resolver.artifact(kind)[3]
             self.export_adapter.start_export(
                 job,
                 task_name=kind,
                 owner=self._OWNER,
                 public_result={
                     "artifact_id": reservation.artifact_id,
-                    "artifact_name": reservation.output_path.name,
+                    "artifact_name": public_name,
                     "artifact_source": reservation.source,
                     "artifact_type": reservation.artifact_type,
                 },
@@ -403,6 +436,7 @@ class SystemMaintenanceApplicationService:
             source_task_types=self.resolver.source_task_types(),
         )
         result = dict(snapshot.result or {})
+        progress_details = self._progress_details(site_id, snapshot.task_id)
         cleanup_items = [CleanupItemDTO(**item) for item in result.get("cleanup_items", []) if isinstance(item, dict)]
         components: list[OpenSourceComponentDTO] = []
         for item in result.get("components", []):
@@ -435,16 +469,34 @@ class SystemMaintenanceApplicationService:
             error_message=redact_system_maintenance_text(snapshot.error_message),
             artifact_id=str((metadata or {}).get("artifact_id") or ""),
             artifact_kind=self.resolver.artifact_kind(source),
-            artifact_name=("open_source_notices.txt" if source == "system_open_source_txt" else str((metadata or {}).get("file_name") or "")),
+            artifact_name=str((metadata or {}).get("display_name") or ""),
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             cleanup_items=cleanup_items,
-            deleted_files=int(result.get("deleted_files") or 0),
-            failed_count=int(result.get("failed_count") or 0),
-            freed_bytes=int(result.get("freed_bytes") or 0),
+            processed_files=int(result.get("processed_files") or progress_details.get("processed_files") or snapshot.current or 0),
+            deleted_files=int(result.get("deleted_files") or progress_details.get("deleted_files") or 0),
+            failed_count=int(result.get("failed_count") or progress_details.get("failed_count") or 0),
+            freed_bytes=int(result.get("freed_bytes") or progress_details.get("freed_bytes") or 0),
             components=components,
         )
+
+    def _progress_details(self, site_id: str, task_id: str) -> dict[str, int]:
+        repository = self.task_service.repository(site_id)
+        after_sequence = max(0, repository.last_event_sequence() - 500)
+        events = repository.list_events(task_id, after_sequence=after_sequence, limit=500)
+        for event in reversed(events):
+            if event.get("type") != "progress":
+                continue
+            payload = event.get("payload")
+            details = payload.get("details") if isinstance(payload, dict) else None
+            if not isinstance(details, dict):
+                continue
+            return {
+                key: _nonnegative_int(details.get(key))
+                for key in ("processed_files", "deleted_files", "failed_count", "freed_bytes")
+            }
+        return {}
 
     def _authorized(self, snapshot) -> bool:
         return snapshot.owner == self._OWNER and snapshot.source == "local" and snapshot.task_type in self._TASK_TYPES
@@ -475,3 +527,10 @@ class SystemMaintenanceApplicationService:
 
 
 __all__ = ["SystemMaintenanceApplicationService", "SystemMaintenanceError", "SystemMaintenanceResolver"]
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0

@@ -7,7 +7,20 @@ from netconsole.services.open_source_notice_service import OpenSourceNoticeServi
 
 
 def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
-    days = max(1, int(context.params.get("retention_days") or APP_CLEANUP_RETENTION_DAYS))
+    retention_value = context.params.get("retention_days", APP_CLEANUP_RETENTION_DAYS)
+    days = int(retention_value)
+    if not 1 <= days <= 365:
+        raise ValueError("保留天数必须在 1 到 365 之间")
+    dry_run = bool(context.params.get("dry_run"))
+    selected_item_ids = context.params.get("selected_item_ids")
+    if not isinstance(selected_item_ids, list):
+        raise ValueError("清理项目格式无效")
+    if dry_run:
+        if selected_item_ids or bool(context.params.get("confirmed")):
+            raise ValueError("扫描请求不能包含清理选择或确认")
+    else:
+        if context.params.get("confirmed") is not True:
+            raise ValueError("正式清理必须明确确认")
     context.check_cancelled()
     context.progress("scan", 0, 1, "正在扫描受控日志与缓存")
     service = AppCleanupService(context.paths)
@@ -26,21 +39,55 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
             for item in items
         ]
     }
-    if bool(context.params.get("dry_run")):
+    if dry_run:
         context.progress("scan", 1, 1, "白名单扫描完成")
         return result
+    selected = service.validate_item_ids(selected_item_ids)
     context.check_cancelled()
-    total = sum(item.file_count for item in items)
-    context.progress("clean", 0, total, "正在清理受控日志与缓存")
-    cleaned = service.cleanup_items(items, days, should_cancel=context.check_cancelled)
+    context.progress("clean", 0, 0, "正在重新扫描所选白名单项目")
+
+    def report_progress(current: int, expected_total: int, partial) -> None:
+        context.structured_progress(
+            "clean",
+            current,
+            expected_total,
+            (
+                f"已处理 {partial.processed_files} 项，已删除 {partial.deleted_files} 项，"
+                f"失败 {partial.failed_count} 项，释放 {partial.freed_bytes} 字节"
+            ),
+            processed_files=partial.processed_files,
+            deleted_files=partial.deleted_files,
+            failed_count=partial.failed_count,
+            freed_bytes=partial.freed_bytes,
+        )
+
+    rescanned_items, cleaned = service.cleanup_selected(
+        selected,
+        days,
+        should_cancel=context.check_cancelled,
+        progress_callback=report_progress,
+    )
     result.update(
+        cleanup_items=[
+            {
+                "item_id": item.item_id,
+                "title": item.title,
+                "description": item.description,
+                "retention_policy": item.retention_policy,
+                "status": item.status,
+                "file_count": item.file_count,
+                "total_bytes": item.total_bytes,
+            }
+            for item in rescanned_items
+        ],
+        processed_files=cleaned.processed_files,
         deleted_files=cleaned.deleted_files,
         failed_count=cleaned.failed_count,
         freed_bytes=cleaned.freed_bytes,
     )
     log = app_logger.log_warning if cleaned.failed_count else app_logger.log_info
     log("APP_AUTO_CLEANUP_PARTIAL_FAILED" if cleaned.failed_count else "APP_AUTO_CLEANUP_COMPLETED", cleaned.summary_detail(), log_path=context.paths.app_log_path)
-    context.progress("clean", total, total, "安全清理完成")
+    context.progress("clean", cleaned.processed_files, cleaned.processed_files, "安全清理完成")
     return result
 
 

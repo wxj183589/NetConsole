@@ -20,8 +20,16 @@ def _event(event_type: str, job_id: str, **values: Any) -> dict[str, Any]:
     return event
 
 
-def progress_event(job_id: str, stage: str, current: int = 0, total: int = 0, message: str = "") -> dict[str, Any]:
-    return _event(
+def progress_event(
+    job_id: str,
+    stage: str,
+    current: int = 0,
+    total: int = 0,
+    message: str = "",
+    *,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = _event(
         "progress",
         job_id,
         stage=str(stage or ""),
@@ -29,6 +37,9 @@ def progress_event(job_id: str, stage: str, current: int = 0, total: int = 0, me
         total=int(total or 0),
         message=str(message or stage or ""),
     )
+    if details:
+        event["details"] = dict(details)
+    return event
 
 
 def log_event(job_id: str, message: str, *, stage: str = "", level: str = "info") -> dict[str, Any]:

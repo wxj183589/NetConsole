@@ -23,6 +23,11 @@
    └─ cache/
       ├─ background_jobs/
       ├─ export_jobs/
+      ├─ thumbnails/
+      ├─ chart_cache/
+      ├─ preview_cache/
+      ├─ tmp/、temp/
+      ├─ export_tmp/、download_tmp/
       ├─ snmp_query_results/
       └─ snmp_collection_results/
 ```
@@ -178,12 +183,12 @@ sessions/<session>/
 
 ## 7. 清理策略
 
-自动清理在主窗口启动后延时执行，默认保留 3 天，只处理：
+自动清理在 Desktop 启动后延时提交既有 `system_maintenance_cleanup` Job，默认保留 3 天。手工清理允许选择 1～365 天并必须先扫描、选择类别和二次确认。两种入口都只处理：
 
-- `.local/runtime/logs/` 中受认可的运行日志；
-- `.local/runtime/` 中受认可的 cache/runtime cache、缩略图、图表/预览缓存；
-- `.local/tmp/` 及受认可的 `temp`、`export_tmp`、`download_tmp` 临时目录。
+- `.local/runtime/logs/` 中受认可且不是当前 `app.log` 的旧运行日志；
+- `.local/runtime/cache/{thumbnails,chart_cache,preview_cache}/` 中的旧页面缓存；
+- `.local/runtime/cache/{tmp,temp,export_tmp,download_tmp}/` 与 `.local/runtime/{tmp,temp,export_tmp,download_tmp}/` 中的旧临时文件。
 
-自动清理必须验证解析后的真实路径位于允许目录内，只删除文件并清理空目录。它不得删除局点数据库、配置、业务 raw、outputs 或备份。
+扫描结果不是删除授权：Worker 删除每个文件前会重新验证年龄、普通文件类型、解析后的真实路径和所属类别。`background_jobs`、`export_jobs`、`ac_web_action_plans`、`config_irreversible`、`rail_web_table_previews`、`rail_web_uploads`、`base_data_import_previews` 以及 `.cancel`、`.json.tmp`、`.part` 协议文件均受保护。清理不得触及局点数据库、配置、业务 raw、正式 outputs/报告或备份；失败日志只记录计数，不记录失败绝对路径和系统异常原文。
 
 系统设置中的手工磁盘清理可管理局点 cache/debug logs，但数据库、配置中心、文件管理、轨道交通、网络工具、备份和配置属于受保护分类。任何扩大清理范围的改动都要有预览、确认、路径约束和测试。

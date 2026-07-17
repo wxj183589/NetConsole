@@ -23,6 +23,7 @@ import {
   type AboutInfo,
   type Changelog,
   type CleanupItem,
+  type CleanupItemId,
   type LogEntry,
   type MaintenanceTask,
   type OpenSourceComponent,
@@ -40,6 +41,8 @@ const total = ref(0)
 const tasks = ref<MaintenanceTask[]>([])
 const currentTask = ref<MaintenanceTask>()
 const cleanupItems = ref<CleanupItem[]>([])
+const retentionDays = ref(3)
+const selectedCleanupItemIds = ref<CleanupItemId[]>([])
 const components = ref<OpenSourceComponent[]>([])
 const openSourceTaskId = ref('')
 const changelog = ref<Changelog>()
@@ -102,6 +105,15 @@ function applyTaskResult(task: MaintenanceTask): void {
   currentTask.value = task
   tasks.value = [task, ...tasks.value.filter((item) => item.task_id !== task.task_id)].slice(0, 20)
   if (task.cleanup_items.length) cleanupItems.value = task.cleanup_items
+  if (
+    task.action === 'cleanup_scan'
+    && task.status === 'COMPLETED'
+    && task.cleanup_items.length
+  ) {
+    selectedCleanupItemIds.value = task.cleanup_items
+      .filter((item) => item.file_count > 0)
+      .map((item) => item.item_id)
+  }
   if (task.components.length) {
     components.value = task.components
     openSourceTaskId.value = task.task_id
@@ -123,13 +135,51 @@ async function pollTask(taskId: string): Promise<void> {
   }
 }
 
-async function runCleanup(mode: 'scan' | 'clean'): Promise<void> {
+async function scanCleanup(): Promise<void> {
   if (taskBusy.value) return
   try {
-    applyTaskResult(await startCleanup(mode))
+    selectedCleanupItemIds.value = []
+    applyTaskResult(await startCleanup({ mode: 'scan', retention_days: retentionDays.value }))
   } catch (cause) {
     ElMessage.error(errorMessage(cause))
   }
+}
+
+async function confirmCleanup(): Promise<void> {
+  if (taskBusy.value) return
+  if (!selectedCleanupItemIds.value.length) {
+    ElMessage.warning('请先扫描并选择至少一个可清理类别')
+    return
+  }
+  const selectedNames = cleanupItems.value
+    .filter((item) => selectedCleanupItemIds.value.includes(item.item_id))
+    .map((item) => item.title)
+    .join('、')
+  try {
+    await ElMessageBox.confirm(
+      `将重新扫描并清理“${selectedNames}”中超过 ${retentionDays.value} 天的文件。后台任务、导入预览和取消文件不会删除。`,
+      '确认安全清理',
+      { type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消' },
+    )
+    applyTaskResult(await startCleanup({
+      mode: 'clean',
+      retention_days: retentionDays.value,
+      selected_item_ids: [...selectedCleanupItemIds.value],
+      confirmed: true,
+    }))
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') ElMessage.error(errorMessage(cause))
+  }
+}
+
+function setCleanupSelected(itemId: CleanupItemId, selected: string | number | boolean): void {
+  if (Boolean(selected)) {
+    if (!selectedCleanupItemIds.value.includes(itemId)) {
+      selectedCleanupItemIds.value = [...selectedCleanupItemIds.value, itemId]
+    }
+    return
+  }
+  selectedCleanupItemIds.value = selectedCleanupItemIds.value.filter((value) => value !== itemId)
 }
 
 async function scanOpenSource(): Promise<void> {
@@ -228,7 +278,14 @@ onMounted(async () => {
       components.value = completedScan.components
       openSourceTaskId.value = completedScan.task_id
     }
-    if (completedCleanup) cleanupItems.value = completedCleanup.cleanup_items
+    if (completedCleanup) {
+      cleanupItems.value = completedCleanup.cleanup_items
+      if (completedCleanup.action === 'cleanup_scan') {
+        selectedCleanupItemIds.value = completedCleanup.cleanup_items
+          .filter((item) => item.file_count > 0)
+          .map((item) => item.item_id)
+      }
+    }
     const active = tasks.value.find((task) => !terminalStates.has(task.status))
     if (active) applyTaskResult(active)
   }
@@ -278,8 +335,9 @@ onBeforeUnmount(() => {
       </el-tab-pane>
 
       <el-tab-pane label="安全清理" name="cleanup">
-        <div class="toolbar"><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="runCleanup('scan')">扫描白名单</el-button><el-button type="danger" plain :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="runCleanup('clean')">清理超过 3 天的项目</el-button><el-button :disabled="!isFeatureEnabled('desktop.native_bridge')" @click="openDirectory('cache')">打开缓存目录</el-button></div>
-        <el-table :data="cleanupItems" empty-text="请先扫描白名单"><el-table-column prop="title" label="类别" width="180" /><el-table-column prop="description" label="范围" min-width="280" /><el-table-column prop="retention_policy" label="策略" width="140" /><el-table-column prop="file_count" label="文件数" width="100" /><el-table-column label="大小" width="120"><template #default="{ row }">{{ formatBytes(row.total_bytes) }}</template></el-table-column><el-table-column prop="status" label="状态" width="110" /></el-table>
+        <div class="toolbar"><span>保留最近</span><el-input-number v-model="retentionDays" :min="1" :max="365" controls-position="right" /><span>天</span><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="scanCleanup">扫描白名单</el-button><el-button type="danger" plain :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup') || !selectedCleanupItemIds.length" @click="confirmCleanup">清理所选项目</el-button><el-button :disabled="!isFeatureEnabled('desktop.native_bridge')" @click="openDirectory('cache')">打开缓存目录</el-button></div>
+        <el-table :data="cleanupItems" empty-text="请先扫描白名单"><el-table-column label="选择" width="72"><template #default="{ row }"><el-checkbox :model-value="selectedCleanupItemIds.includes(row.item_id)" :disabled="row.file_count === 0" @change="setCleanupSelected(row.item_id, $event)" /></template></el-table-column><el-table-column prop="title" label="类别" width="180" /><el-table-column prop="description" label="范围" min-width="280" /><el-table-column prop="retention_policy" label="策略" width="140" /><el-table-column prop="file_count" label="文件数" width="100" /><el-table-column label="大小" width="120"><template #default="{ row }">{{ formatBytes(row.total_bytes) }}</template></el-table-column><el-table-column prop="status" label="状态" width="110" /></el-table>
+        <p v-if="currentTask?.action === 'cleanup_clean'" class="hint">已处理 {{ currentTask.processed_files }} 项，已删除 {{ currentTask.deleted_files }} 项，失败 {{ currentTask.failed_count }} 项，释放 {{ formatBytes(currentTask.freed_bytes) }}。</p>
       </el-tab-pane>
 
       <el-tab-pane label="版本更新日志" name="changelog">

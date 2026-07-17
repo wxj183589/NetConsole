@@ -69,7 +69,15 @@ def clear_logs(request: Request) -> DesktopActionDTO:
     dependencies=[Depends(require_feature("system.disk_cleanup"))],
 )
 def start_cleanup(request: Request, payload: CleanupStartRequest) -> MaintenanceTaskDTO:
-    return _run(lambda: _service(request).start_cleanup(_site(request), dry_run=payload.mode == "scan"))
+    return _run(
+        lambda: _service(request).start_cleanup(
+            _site(request),
+            dry_run=payload.mode == "scan",
+            retention_days=payload.retention_days,
+            selected_item_ids=payload.selected_item_ids,
+            confirmed=payload.confirmed,
+        )
+    )
 
 
 @router.post(

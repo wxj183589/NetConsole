@@ -13,8 +13,8 @@ def test_app_auto_cleanup_removes_only_old_runtime_logs_and_cache(tmp_path: Path
     paths = PathResolver(tmp_path)
     old_log = paths.logs_dir / "app_20260701.log"
     fresh_log = paths.logs_dir / "app_20260708.log"
-    old_cache = paths.runtime_cache_dir / "chart_preview_xxx.png"
-    fresh_cache = paths.runtime_cache_dir / "fresh_preview.png"
+    old_cache = paths.runtime_cache_dir / "chart_cache" / "chart_preview_xxx.png"
+    fresh_cache = paths.runtime_cache_dir / "chart_cache" / "fresh_preview.png"
     user_data = paths.site_files_dir("demo") / "mesh_analysis" / "列车07-MR-CT.log.gz"
     for path in (old_log, fresh_log, old_cache, fresh_cache, user_data):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +39,7 @@ def test_app_auto_cleanup_removes_only_old_runtime_logs_and_cache(tmp_path: Path
 def test_app_auto_cleanup_writes_summary_log(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     app_logger.configure_path_resolver(paths)
-    old_cache = paths.runtime_cache_dir / "old.tmp"
+    old_cache = paths.runtime_cache_dir / "temp" / "old.tmp"
     old_cache.parent.mkdir(parents=True, exist_ok=True)
     old_cache.write_text("cache", encoding="utf-8")
     _set_mtime_days_ago(old_cache, 5)
@@ -67,6 +67,45 @@ def test_app_cleanup_service_scans_items_without_touching_site_data(tmp_path: Pa
     assert item_map["runtime_logs"].file_count == 1
     assert item_map["temporary_files"].file_count == 1
     assert str(protected_log) not in "\n".join(str(candidate.path) for item in items for candidate in item.candidates)
+
+
+def test_app_cleanup_excludes_task_protocol_and_preview_roots(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    protected = [
+        paths.runtime_cache_dir / "background_jobs" / "active.json",
+        paths.runtime_cache_dir / "background_jobs" / "active.cancel",
+        paths.runtime_cache_dir / "export_jobs" / "active.json",
+        paths.runtime_dir / "base_data_import_previews" / "preview_meta.json",
+        paths.runtime_cache_dir / "rail_web_uploads" / "upload.bin",
+    ]
+    allowed = paths.runtime_cache_dir / "preview_cache" / "chart.json"
+    for path in [*protected, allowed]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+        _set_mtime_days_ago(path, 10)
+
+    result = run_app_auto_cleanup(paths, emit_log=False)
+
+    assert result.deleted_cache_files == 1
+    assert not allowed.exists()
+    assert all(path.exists() for path in protected)
+
+
+def test_app_cleanup_rechecks_file_age_before_delete(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    candidate = paths.runtime_cache_dir / "chart_cache" / "became-fresh.tmp"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("cache", encoding="utf-8")
+    _set_mtime_days_ago(candidate, 10)
+    service = AppCleanupService(paths)
+    items = service.scan_cleanup_items(3)
+
+    os.utime(candidate, None)
+    result = service.cleanup_items(items, 3)
+
+    assert candidate.exists()
+    assert result.processed_files == 0
+    assert result.deleted_files == 0
 
 
 def _set_mtime_days_ago(path: Path, days: int) -> None:

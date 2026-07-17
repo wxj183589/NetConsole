@@ -17,14 +17,24 @@ describe('system maintenance API client', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await getLogs({ page: 2, page_size: 100, keyword: '启动', level: 'ERROR' })
-    await startCleanup('clean')
+    await startCleanup({
+      mode: 'clean',
+      retention_days: 7,
+      selected_item_ids: ['runtime_logs'],
+      confirmed: true,
+    })
     await startLogExport({ scope: 'current', keyword: '启动', level: 'ERROR', page: 2, page_size: 100 })
     await startOpenSourceExport('xlsx')
 
     expect(fetchMock.mock.calls[0][0]).toBe(
       '/api/system-maintenance/logs?page=2&page_size=100&keyword=%E5%90%AF%E5%8A%A8&level=ERROR',
     )
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ mode: 'clean' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      mode: 'clean',
+      retention_days: 7,
+      selected_item_ids: ['runtime_logs'],
+      confirmed: true,
+    })
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
       scope: 'current',
       keyword: '启动',

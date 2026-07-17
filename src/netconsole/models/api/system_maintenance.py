@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from netconsole.models.api.common import ApiModel
 
@@ -59,6 +59,7 @@ class MaintenanceTaskDTO(ApiModel):
     sha256: str = ""
     size_bytes: int = 0
     cleanup_items: list[CleanupItemDTO] = Field(default_factory=list)
+    processed_files: int = 0
     deleted_files: int = 0
     failed_count: int = 0
     freed_bytes: int = 0
@@ -67,6 +68,26 @@ class MaintenanceTaskDTO(ApiModel):
 
 class CleanupStartRequest(ApiModel):
     mode: Literal["scan", "clean"] = "scan"
+    retention_days: int = Field(default=3, ge=1, le=365)
+    selected_item_ids: list[Literal["runtime_logs", "runtime_cache", "temporary_files"]] = Field(
+        default_factory=list,
+        max_length=3,
+    )
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_cleanup_contract(self) -> "CleanupStartRequest":
+        if len(self.selected_item_ids) != len(set(self.selected_item_ids)):
+            raise ValueError("清理项目不能重复")
+        if self.mode == "scan":
+            if self.selected_item_ids or self.confirmed:
+                raise ValueError("扫描请求只能包含保留天数")
+            return self
+        if not self.selected_item_ids:
+            raise ValueError("正式清理至少选择一个项目")
+        if not self.confirmed:
+            raise ValueError("正式清理必须明确确认")
+        return self
 
 
 class LogExportRequest(ApiModel):

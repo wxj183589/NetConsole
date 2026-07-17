@@ -15,7 +15,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 _SAFE_STEM = re.compile(r"[^0-9A-Za-z._\u4e00-\u9fff-]+")
-_ALLOWED_SUFFIXES = {".xlsx", ".csv", ".zip", ".pdf", ".md", ".nam"}
+_ALLOWED_SUFFIXES = {".xlsx", ".csv", ".zip", ".pdf", ".md", ".txt", ".nam"}
 
 
 class WebArtifactError(RuntimeError):

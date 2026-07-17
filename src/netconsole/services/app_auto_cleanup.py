@@ -3,24 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from netconsole.core.paths import PathResolver
 
 
 APP_CLEANUP_RETENTION_DAYS = 3
 APP_LOG_PATTERNS = ("*.log", "*.log.*", "netconsole_*.log", "runtime_*.log", "app_*.log", "ui_*.log")
-CACHE_DIR_NAMES = (
-    "cache",
-    "tmp",
-    "temp",
-    "runtime_cache",
-    "__runtime_cache__",
-    "thumbnails",
-    "chart_cache",
-    "preview_cache",
-    "export_tmp",
-    "download_tmp",
+CLEANUP_ITEM_IDS = ("runtime_logs", "runtime_cache", "temporary_files")
+_RUNTIME_CACHE_SUBDIRS = ("thumbnails", "chart_cache", "preview_cache")
+_TEMPORARY_SUBDIRS = ("tmp", "temp", "export_tmp", "download_tmp")
+_PROTECTED_RUNTIME_SUBDIRS = frozenset(
+    {
+        "background_jobs",
+        "export_jobs",
+        "ac_web_action_plans",
+        "config_irreversible",
+        "rail_web_table_previews",
+        "rail_web_uploads",
+    }
 )
 
 
@@ -63,6 +64,7 @@ class AppCleanupResult:
     deleted_cache_files: int = 0
     deleted_log_records: int = 0
     freed_bytes: int = 0
+    processed_files: int = 0
     failures: list[CleanupFailure] = field(default_factory=list)
 
     @property
@@ -104,7 +106,7 @@ class AppCleanupService:
                 "页面渲染、图表预览、运行时缓存文件",
                 policy,
                 "待清理",
-                self._cache_candidates(cutoff, include_names={"cache", "runtime_cache", "__runtime_cache__", "thumbnails", "chart_cache", "preview_cache"}),
+                self._cache_candidates(cutoff, self._runtime_cache_dirs()),
             ),
             CleanupItem(
                 "temporary_files",
@@ -112,7 +114,7 @@ class AppCleanupService:
                 "临时目录、导出缓存、下载缓存中的过期文件",
                 policy,
                 "待清理",
-                self._cache_candidates(cutoff, include_names={"tmp", "temp", "export_tmp", "download_tmp"}),
+                self._cache_candidates(cutoff, self._temporary_dirs()),
             ),
         ]
         for item in items:
@@ -125,13 +127,21 @@ class AppCleanupService:
         retention_days: int = APP_CLEANUP_RETENTION_DAYS,
         *,
         should_cancel: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
     ) -> AppCleanupResult:
         days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
         cutoff = datetime.now() - timedelta(days=days)
         result = AppCleanupResult(retention_days=days, cutoff=cutoff)
-        allowed_dirs = _existing_dirs([self.paths.logs_dir, *_runtime_cache_dirs(self.paths)])
+        self.validate_item_ids(item.item_id for item in items)
+        allowed_dirs_by_item = {
+            "runtime_logs": _existing_dirs([self.paths.logs_dir]),
+            "runtime_cache": _existing_dirs(self._runtime_cache_dirs()),
+            "temporary_files": _existing_dirs(self._temporary_dirs()),
+        }
+        total = sum(item.file_count for item in items)
         seen: set[Path] = set()
         for item in items:
+            allowed_dirs = allowed_dirs_by_item[item.item_id]
             for candidate in item.candidates:
                 if should_cancel is not None:
                     should_cancel()
@@ -139,11 +149,50 @@ class AppCleanupService:
                 if resolved is None or resolved in seen:
                     continue
                 seen.add(resolved)
-                if not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
+                refreshed = _candidate_for_file(
+                    resolved,
+                    cutoff,
+                    allowed_dirs,
+                    is_log=candidate.is_log,
+                )
+                if refreshed is None:
                     continue
-                _delete_file(resolved, result, is_log=candidate.is_log)
-        _remove_empty_dirs(_existing_dirs(_runtime_cache_dirs(self.paths)))
+                _delete_file(refreshed.path, result, is_log=refreshed.is_log)
+                result.processed_files += 1
+                if progress_callback is not None:
+                    progress_callback(result.processed_files, total, result)
+        _remove_empty_dirs(_existing_dirs([*self._runtime_cache_dirs(), *self._temporary_dirs()]))
         return result
+
+    def cleanup_selected(
+        self,
+        item_ids: Iterable[str],
+        retention_days: int = APP_CLEANUP_RETENTION_DAYS,
+        *,
+        should_cancel: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
+    ) -> tuple[list[CleanupItem], AppCleanupResult]:
+        selected = self.validate_item_ids(item_ids)
+        rescanned = self.scan_cleanup_items(retention_days)
+        items = [item for item in rescanned if item.item_id in selected]
+        return items, self.cleanup_items(
+            items,
+            retention_days,
+            should_cancel=should_cancel,
+            progress_callback=progress_callback,
+        )
+
+    @staticmethod
+    def validate_item_ids(item_ids: Iterable[str]) -> tuple[str, ...]:
+        values = tuple(str(value or "").strip() for value in item_ids)
+        if not values or any(not value for value in values):
+            raise ValueError("清理项目不能为空")
+        if len(values) != len(set(values)):
+            raise ValueError("清理项目不能重复")
+        unknown = set(values) - set(CLEANUP_ITEM_IDS)
+        if unknown:
+            raise ValueError("清理项目不在白名单")
+        return values
 
     def auto_cleanup(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
         items = self.scan_cleanup_items(retention_days)
@@ -155,26 +204,43 @@ class AppCleanupService:
         candidates: list[CleanupCandidate] = []
         seen: set[Path] = set()
         allowed_dirs = _existing_dirs([self.paths.logs_dir])
+        active_log = _safe_resolve(self.paths.app_log_path)
         for directory in allowed_dirs:
             for pattern in APP_LOG_PATTERNS:
                 for file_path in directory.glob(pattern):
                     candidate = _candidate_for_file(file_path, cutoff, allowed_dirs, is_log=True)
-                    if candidate is None or candidate.path in seen:
+                    if candidate is None or candidate.path == active_log or candidate.path in seen:
                         continue
                     seen.add(candidate.path)
                     candidates.append(candidate)
         return candidates
 
-    def _cache_candidates(self, cutoff: datetime, *, include_names: set[str]) -> list[CleanupCandidate]:
+    def _cache_candidates(
+        self,
+        cutoff: datetime,
+        directories: Iterable[Path],
+    ) -> list[CleanupCandidate]:
         candidates: list[CleanupCandidate] = []
-        dirs = [path for path in _runtime_cache_dirs(self.paths) if path.name in include_names]
-        allowed_dirs = _existing_dirs(dirs)
+        allowed_dirs = _existing_dirs(list(directories))
         for directory in allowed_dirs:
             for file_path in directory.rglob("*"):
                 candidate = _candidate_for_file(file_path, cutoff, allowed_dirs, is_log=False)
                 if candidate is not None:
                     candidates.append(candidate)
         return candidates
+
+    def _runtime_cache_dirs(self) -> list[Path]:
+        root = self.paths.runtime_cache_dir
+        return [root / name for name in _RUNTIME_CACHE_SUBDIRS]
+
+    def _temporary_dirs(self) -> list[Path]:
+        return [
+            *(self.paths.runtime_cache_dir / name for name in _TEMPORARY_SUBDIRS),
+            *(
+                self.paths.runtime_dir / name
+                for name in ("tmp", "temp", "export_tmp", "download_tmp")
+            ),
+        ]
 
 
 def run_app_auto_cleanup(paths: PathResolver, retention_days: int = APP_CLEANUP_RETENTION_DAYS, *, emit_log: bool = True) -> AppCleanupResult:
@@ -183,11 +249,6 @@ def run_app_auto_cleanup(paths: PathResolver, retention_days: int = APP_CLEANUP_
     if emit_log:
         _emit_cleanup_log(result)
     return result
-
-
-def _runtime_cache_dirs(paths: PathResolver) -> list[Path]:
-    runtime = paths.runtime_dir
-    return [runtime / name for name in CACHE_DIR_NAMES]
 
 
 def _existing_dirs(paths: list[Path]) -> list[Path]:
@@ -232,6 +293,10 @@ def _candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path], 
     if resolved is None or not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
         return None
     if not _is_old_file(resolved, cutoff):
+        return None
+    if not is_log and any(part.casefold() in _PROTECTED_RUNTIME_SUBDIRS for part in resolved.parts):
+        return None
+    if resolved.name.casefold().endswith((".cancel", ".json.tmp", ".part")):
         return None
     try:
         size = resolved.stat().st_size
@@ -288,10 +353,9 @@ def _emit_cleanup_log(result: AppCleanupResult) -> None:
     from netconsole.core import app_logger
 
     if result.failures:
-        first = result.failures[0]
         app_logger.log_warning(
             "APP_AUTO_CLEANUP_PARTIAL_FAILED",
-            f"{result.summary_detail()} first_failed_path={first.path} error={first.error}",
+            result.summary_detail(),
         )
     else:
         app_logger.log_info("APP_AUTO_CLEANUP_COMPLETED", result.summary_detail())

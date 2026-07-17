@@ -78,6 +78,8 @@ result, error, traceback, cancelled
 {"type":"progress","job_id":"a1","stage":"query","current":20,"total":100,"message":"正在查询","result":null,"error":"","traceback":"","cancelled":false}
 ```
 
+`progress` 可选携带 JSON `details`，仅用于同一任务的可恢复计数，不增加新事件类型或第二套状态机。例如安全清理使用 `processed_files/deleted_files/failed_count/freed_bytes`；普通 handler 继续传字符串 `message`，现有消费者保持兼容。任务取消仍只产生一个 `cancelled` 终态，最后一条持久进度可用于恢复取消前的部分计数。
+
 日志：
 
 ```json
@@ -122,6 +124,8 @@ def device_status_refresh(context: JobContext) -> dict[str, object]:
 
 HANDLERS["device_status_refresh"] = device_status_refresh
 ```
+
+应用日志与安全维护复用 `system_maintenance_cleanup`：扫描只返回白名单候选，正式清理必须携带 1～365 天、非空且不重复的类别白名单和明确确认。Worker 删除前重新扫描，并在每项后写带 `details` 的标准进度；取消保留未处理文件。CSV/TXT/XLSX 通过现有 Export Process 和公共 `WebArtifactStore` 最终化，Task DTO 与 Renderer 只获得安全显示名和 Artifact ID，不获得服务端物理路径。
 
 ## 从 UI 提交普通任务
 

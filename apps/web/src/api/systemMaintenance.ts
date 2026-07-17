@@ -20,8 +20,10 @@ export interface LogPage {
   total_pages: number
 }
 
+export type CleanupItemId = 'runtime_logs' | 'runtime_cache' | 'temporary_files'
+
 export interface CleanupItem {
-  item_id: string
+  item_id: CleanupItemId
   title: string
   description: string
   retention_policy: string
@@ -54,6 +56,7 @@ export interface MaintenanceTask {
   sha256: string
   size_bytes: number
   cleanup_items: CleanupItem[]
+  processed_files: number
   deleted_files: number
   failed_count: number
   freed_bytes: number
@@ -82,8 +85,13 @@ export function clearLogs(): Promise<{ success: boolean; code: string; message: 
   return apiRequest(`${root}/logs`, { method: 'DELETE' })
 }
 
-export function startCleanup(mode: 'scan' | 'clean'): Promise<MaintenanceTask> {
-  return apiRequest(`${root}/cleanup/tasks`, { method: 'POST', body: JSON.stringify({ mode }) })
+export function startCleanup(payload: {
+  mode: 'scan' | 'clean'
+  retention_days: number
+  selected_item_ids?: CleanupItemId[]
+  confirmed?: boolean
+}): Promise<MaintenanceTask> {
+  return apiRequest(`${root}/cleanup/tasks`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function startOpenSourceScan(): Promise<MaintenanceTask> {

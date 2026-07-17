@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -8,7 +9,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.sensitive_bootstrap import SensitiveBootstrap
 
-ProgressCallback = Callable[[str, int, int, str], None]
+ProgressMessage = str | Mapping[str, object]
+ProgressCallback = Callable[[str, int, int, ProgressMessage], None]
 CancelCallback = Callable[[], bool]
 
 
@@ -54,6 +56,19 @@ class JobContext:
     def progress(self, stage: str, current: int, total: int, message: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(stage, int(current or 0), int(total or 0), message)
+
+    def structured_progress(
+        self,
+        stage: str,
+        current: int,
+        total: int,
+        message: str,
+        **details: int | str,
+    ) -> None:
+        payload: dict[str, object] = {"message": str(message or stage or "")}
+        payload.update(details)
+        if self.progress_callback is not None:
+            self.progress_callback(stage, int(current or 0), int(total or 0), payload)
 
     def check_cancelled(self) -> None:
         if self.should_cancel is not None and self.should_cancel():

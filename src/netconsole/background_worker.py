@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import sys
+from collections.abc import Mapping
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -30,10 +31,12 @@ def _should_cancel(job: BackgroundJob) -> bool:
 def run_job(job: BackgroundJob, sensitive_bootstrap: SensitiveBootstrap | None = None) -> int:
     diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
 
-    def emit_progress(stage: str, current: int, total: int, message: str) -> None:
-        _emit(progress_event(job.job_id, stage, current, total, message))
-        if bool(job.params.get("_emit_log_events")) and message:
-            _emit(log_event(job.job_id, message, stage=stage))
+    def emit_progress(stage: str, current: int, total: int, message: object) -> None:
+        details = dict(message) if isinstance(message, Mapping) else {}
+        message_text = str(details.pop("message", "") if details else message or "")
+        _emit(progress_event(job.job_id, stage, current, total, message_text, details=details))
+        if bool(job.params.get("_emit_log_events")) and message_text:
+            _emit(log_event(job.job_id, message_text, stage=stage))
 
     with redirect_stdout(diagnostics):
         result = run_center_job(
