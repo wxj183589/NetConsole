@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-
-from PySide6.QtCore import QProcess
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -139,7 +138,7 @@ def launch_ipop(
     executable = validation.executable_path
     assert executable is not None
     try:
-        result = QProcess.startDetached(str(executable), [], str(executable.parent))
+        started = _start_detached_process(executable)
     except PermissionError as exc:
         return ExternalToolLaunchResult(False, f"IPOP v4.1 启动失败：权限不足，{exc}", executable, "permission_denied")
     except OSError as exc:
@@ -147,10 +146,26 @@ def launch_ipop(
         return ExternalToolLaunchResult(False, f"IPOP v4.1 启动失败：{exc}", executable, code)
     except Exception as exc:
         return ExternalToolLaunchResult(False, f"IPOP v4.1 启动失败：{exc}", executable, "start_failed")
-    started = bool(result[0]) if isinstance(result, tuple) else bool(result)
     if not started:
-        return ExternalToolLaunchResult(False, "IPOP v4.1 启动失败：QProcess 未能启动程序", executable, "qprocess_failed")
+        return ExternalToolLaunchResult(False, "IPOP v4.1 启动失败：系统未能启动程序", executable, "start_failed")
     return ExternalToolLaunchResult(True, "IPOP v4.1 已启动。", executable)
+
+
+def _start_detached_process(executable: Path) -> bool:
+    creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+    )
+    subprocess.Popen(
+        [str(executable)],
+        cwd=str(executable.parent),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+        close_fds=True,
+        creationflags=creation_flags,
+    )
+    return True
 
 
 def normalize_ipop_path(path: object) -> Path | None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
@@ -91,31 +90,39 @@ def test_launch_ipop_uses_detached_process_arguments_and_working_directory(tmp_p
     paths, settings = _context(tmp_path)
     executable = _exe(tmp_path / "中文 路径 (测试)" / "IPOP.EXE")
     service.save_ipop_path(executable, settings, paths=paths)
-    calls: list[tuple[str, list[str], str]] = []
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(
-        service,
-        "QProcess",
-        SimpleNamespace(startDetached=lambda program, arguments, working_directory: calls.append((program, arguments, working_directory)) or (True, 1234)),
+        service.subprocess,
+        "Popen",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or object(),
     )
 
     result = service.launch_ipop(paths, settings=settings)
 
     assert result.success
-    assert calls == [(str(executable.resolve()), [], str(executable.parent.resolve()))]
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ([str(executable.resolve())],)
+    assert kwargs["cwd"] == str(executable.parent.resolve())
+    assert kwargs["shell"] is False
+    assert kwargs["close_fds"] is True
+    assert kwargs["stdin"] is service.subprocess.DEVNULL
+    assert kwargs["stdout"] is service.subprocess.DEVNULL
+    assert kwargs["stderr"] is service.subprocess.DEVNULL
 
 
-def test_launch_ipop_converts_qprocess_failures_to_readable_results(tmp_path: Path, monkeypatch) -> None:
+def test_launch_ipop_converts_start_failures_to_readable_results(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(service.sys, "platform", "win32")
     paths, settings = _context(tmp_path)
     executable = _exe(tmp_path / "IPOP.EXE")
     service.save_ipop_path(executable, settings, paths=paths)
-    monkeypatch.setattr(service, "QProcess", SimpleNamespace(startDetached=lambda *_args: (False, 0)))
+    monkeypatch.setattr(service, "_start_detached_process", lambda *_args: False)
 
     result = service.launch_ipop(paths, settings=settings)
 
     assert not result.success
-    assert result.error_code == "qprocess_failed"
-    assert "QProcess" in result.message
+    assert result.error_code == "start_failed"
+    assert "系统未能启动程序" in result.message
 
 
 def test_launch_ipop_reports_permission_error(tmp_path: Path, monkeypatch) -> None:
@@ -127,7 +134,7 @@ def test_launch_ipop_reports_permission_error(tmp_path: Path, monkeypatch) -> No
     def denied(*_args):
         raise PermissionError("Access is denied")
 
-    monkeypatch.setattr(service, "QProcess", SimpleNamespace(startDetached=denied))
+    monkeypatch.setattr(service, "_start_detached_process", denied)
 
     result = service.launch_ipop(paths, settings=settings)
 
