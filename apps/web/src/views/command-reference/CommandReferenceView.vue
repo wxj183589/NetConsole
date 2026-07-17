@@ -32,6 +32,7 @@ const task = ref<CommandReferenceExportTask | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
 const error = ref('')
+const taskRefreshError = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let exportPollTimer: ReturnType<typeof setTimeout> | null = null
 let exportPollGeneration = 0
@@ -111,27 +112,23 @@ async function startExport(): Promise<void> {
 
 async function recoverTask(taskId: string): Promise<void> {
   stopExportPolling()
-  try {
-    setExportTask(await getCommandReferenceExport(taskId))
-  } catch (reason) {
-    if (reason instanceof ApiRequestError && reason.status === 404) {
-      clearPersistedExportTask(taskId)
-      task.value = null
-    }
-    ElMessage.error(reason instanceof Error ? reason.message : t('restoreFailed'))
-  }
+  await refreshExportTask(taskId, exportPollGeneration)
 }
 
 async function cancelExport(): Promise<void> {
   if (!task.value?.cancellable) return
   const taskId = task.value.id
   stopExportPolling()
+  const generation = exportPollGeneration
   try {
     const response = await cancelCommandReferenceExport(taskId)
+    if (!componentActive || generation !== exportPollGeneration) return
     if (task.value?.id === taskId) {
       task.value = { ...task.value, status: response.status, cancellable: false, message: response.message }
     }
+    await refreshExportTask(taskId, generation)
   } catch (reason) {
+    if (!componentActive || generation !== exportPollGeneration) return
     if (task.value?.id === taskId && !terminalStates.has(task.value.status)) startExportPolling(taskId)
     ElMessage.error(reason instanceof Error ? reason.message : t('cancelFailed'))
   }
@@ -164,6 +161,7 @@ async function openTaskWindow(): Promise<void> {
 
 function setExportTask(snapshot: CommandReferenceExportTask): void {
   task.value = snapshot
+  taskRefreshError.value = ''
   persistExportTask(snapshot.id)
   if (terminalStates.has(snapshot.status)) stopExportPolling()
   else startExportPolling(snapshot.id)
@@ -182,21 +180,31 @@ function scheduleExportPoll(taskId: string, generation: number): void {
 async function pollExportTask(taskId: string, generation: number): Promise<void> {
   if (!componentActive || generation !== exportPollGeneration) return
   exportPollTimer = null
+  await refreshExportTask(taskId, generation)
+}
+
+async function refreshExportTask(taskId: string, generation: number): Promise<void> {
+  if (!componentActive || generation !== exportPollGeneration) return
   try {
     const snapshot = await getCommandReferenceExport(taskId)
     if (!componentActive || generation !== exportPollGeneration) return
     task.value = snapshot
+    taskRefreshError.value = ''
     persistExportTask(snapshot.id)
     if (terminalStates.has(snapshot.status)) stopExportPolling()
     else scheduleExportPoll(taskId, generation)
   } catch (reason) {
     if (!componentActive || generation !== exportPollGeneration) return
-    stopExportPolling()
     if (reason instanceof ApiRequestError && reason.status === 404) {
+      stopExportPolling()
       clearPersistedExportTask(taskId)
       task.value = null
+      taskRefreshError.value = ''
+      ElMessage.error(reason.message)
+      return
     }
-    ElMessage.error(reason instanceof Error ? reason.message : t('restoreFailed'))
+    taskRefreshError.value = t('taskRefreshFailed')
+    scheduleExportPoll(taskId, generation)
   }
 }
 
@@ -320,6 +328,7 @@ onUnmounted(() => {
       </template>
     </div>
 
+    <el-alert v-if="taskRefreshError" type="warning" :closable="false" show-icon :title="taskRefreshError" />
     <el-alert v-if="task" type="success" :closable="false" show-icon :title="t('taskSubmitted')">
       <span class="task-summary">{{ t('task') }} {{ task.id }} · {{ t('status') }} {{ task.status }} · {{ t('artifact') }} {{ artifactName || t('none') }}</span>
       <el-button :disabled="!task.cancellable || terminalStates.has(task.status)" @click="cancelExport">{{ t('cancel') }}</el-button>

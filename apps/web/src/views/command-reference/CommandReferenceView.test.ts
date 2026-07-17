@@ -255,26 +255,77 @@ describe('Command Reference mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('stops polling after cancellation and when the component unmounts', async () => {
-    const cancelled = await renderView()
-    await button(cancelled, '导出 Markdown').trigger('click')
+  it('keeps polling STOPPING until the API reports a terminal cancellation', async () => {
+    mocks.get
+      .mockResolvedValueOnce(exportTask({ status: 'STOPPING', cancellable: false, message: '正在停止' }))
+      .mockResolvedValueOnce(exportTask({ status: 'CANCELLED', cancellable: false, message: '已取消' }))
+    const wrapper = await renderView()
+    await button(wrapper, '导出 Markdown').trigger('click')
     await flushPromises()
-    await button(cancelled, '取消').trigger('click')
+
+    await button(wrapper, '取消').trigger('click')
     await flushPromises()
+    expect(mocks.cancel).toHaveBeenCalledWith(taskId)
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('STOPPING')
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(mocks.get).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('CANCELLED')
+
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(mocks.get).not.toHaveBeenCalled()
-    expect(cancelled.text()).toContain('STOPPING')
-    cancelled.unmount()
+    expect(mocks.get).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('recovers after a temporary refresh failure without clearing the task id', async () => {
+    mocks.get
+      .mockRejectedValueOnce(new ApiRequestError('后端暂时不可用', 503))
+      .mockResolvedValueOnce(exportTask({
+        status: 'COMPLETED', progress: 100, cancellable: false,
+        result: { artifact_id: 'artifact-1', artifact_name: 'NetConsole_软件使用命令清单.md' },
+      }))
+    const wrapper = await renderView()
+    await button(wrapper, '导出 Markdown').trigger('click')
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('任务状态刷新暂时失败，正在重试')
+    expect(localStorage.getItem(taskStorageKey)).toBe(taskId)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('COMPLETED')
+    expect(wrapper.text()).not.toContain('任务状态刷新暂时失败，正在重试')
+    expect(button(wrapper, '下载 Artifact').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not request again after unmounting during STOPPING or an error retry delay', async () => {
+    mocks.get.mockResolvedValueOnce(exportTask({ status: 'STOPPING', cancellable: false }))
+    const stopping = await renderView()
+    await button(stopping, '导出 Markdown').trigger('click')
+    await flushPromises()
+    await button(stopping, '取消').trigger('click')
+    await flushPromises()
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    stopping.unmount()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.get).toHaveBeenCalledTimes(1)
 
     localStorage.clear()
-    mocks.get.mockClear()
-    mocks.start.mockResolvedValueOnce(exportTask({ id: taskId, status: 'RUNNING' }))
-    const unmounted = await renderView()
-    await button(unmounted, '导出 Markdown').trigger('click')
+    mocks.get.mockReset().mockRejectedValueOnce(new ApiRequestError('后端暂时不可用', 503))
+    const retrying = await renderView()
+    await button(retrying, '导出 Markdown').trigger('click')
     await flushPromises()
-    unmounted.unmount()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    retrying.unmount()
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(mocks.get).not.toHaveBeenCalled()
+    expect(mocks.get).toHaveBeenCalledTimes(1)
   })
 
   it('stops polling when the export reaches FAILED', async () => {
@@ -316,7 +367,7 @@ describe('Command Reference mounted behavior', () => {
     await button(wrapper, '取消').trigger('click')
     await flushPromises()
     expect(mocks.cancel).toHaveBeenCalledWith('task-recovered')
-    expect(mocks.get).toHaveBeenCalledTimes(1)
+    expect(mocks.get).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
     mocks.routeQuery = { task_id: 'task-completed' }
