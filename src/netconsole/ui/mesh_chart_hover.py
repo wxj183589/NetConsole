@@ -7,11 +7,11 @@ from PySide6.QtCore import QObject, QPoint, QTimer
 
 from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
+from netconsole.services.mesh_series_metadata import MESH_SERIES_METADATA, format_mesh_value
 from netconsole.ui.mesh_hover_content_cache import HoverContent, HoverContentCache
 from netconsole.models.mesh_log_models import format_mac_h3c
 from netconsole.ui.mesh_chart_hover_popup import MeshChartHoverPopup
 from netconsole.ui.mesh_chart_time_axis import full_sample_time_label
-from netconsole.ui.mesh_series_metadata import MESH_SERIES_METADATA, format_mesh_value
 
 
 def _format_switch_detection_window(value: object) -> str:
