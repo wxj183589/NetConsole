@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import { useRouter } from 'vue-router'
 
 import { isFeatureEnabled } from '../../features'
 import {

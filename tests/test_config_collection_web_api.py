@@ -33,6 +33,7 @@ from netconsole.services.job_center.job_events import cancelled_event, error_eve
 from netconsole.services.job_center.job_models import JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
 from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
+from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.worker_protocol import encode_event
@@ -193,6 +194,10 @@ def _fixture(tmp_path: Path):
     )
     app.include_router(router, prefix="/api")
     app.state.config_collection_service = web_service
+    app.state.job_center_query_service = JobCenterQueryService(
+        paths,
+        config_cancel_capability=web_service.cancel_capability,
+    )
     return app, paths, device, running, saved, process_adapter
 
 
@@ -937,8 +942,15 @@ def test_config_running_irreversible_task_accepts_checkpointed_cancel(tmp_path: 
         },
     )
 
-    cancelled = service.cancel_task("demo", task.id)
+    assert service.cancel_capability("demo", task.id) == (True, "")
+    with TestClient(app) as client:
+        detail = client.get(f"/api/job-center/tasks/{task.id}")
+        response = client.post(f"/api/job-center/tasks/{task.id}/cancel")
 
+    assert detail.status_code == 200
+    assert detail.json()["cancellable"] is True
+    assert response.status_code == 200
+    cancelled = service.get_task("demo", task.id)
     assert cancelled is not None
     assert cancelled.status == TaskState.STOPPING.value
 

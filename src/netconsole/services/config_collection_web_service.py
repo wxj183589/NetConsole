@@ -308,7 +308,8 @@ class ConfigCollectionApplicationService:
         if task.status is TaskState.STOPPING:
             return self._task_dto(task, site_name=site_name)
         cancel = getattr(self.process_adapter, "cancel_job", None)
-        assert callable(cancel)
+        if not callable(cancel):
+            raise ValueError("配置任务取消接收端不可用")
         try:
             accepted = cancel(task.task_id)
         except Exception as exc:
@@ -337,12 +338,6 @@ class ConfigCollectionApplicationService:
             return False, "配置任务取消接收端状态检查失败"
         if not receiver_active:
             return False, "配置任务已失去受管取消接收端"
-        if task.task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and task.status is TaskState.RUNNING:
-            checkpoint = read_irreversible_checkpoint(self.paths, task.task_id)
-            if checkpoint is not None:
-                if task.task_type == CONFIG_WEB_SAVE_TASK:
-                    return False, "强制保存已进入不可安全中断阶段"
-                return False, "快照删除已进入不可安全中断阶段"
         return True, ""
 
     def directory_info(self, site_name: str, directory_kind: str) -> ConfigDirectoryDTO:
