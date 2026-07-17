@@ -50,6 +50,7 @@ export interface NetworkTaskStartRequest {
   packet_size?: number
   concurrency?: number
   source_ip?: string
+  usable_only?: boolean
 }
 
 export interface NetworkTaskResponse { task: NetworkToolTask }
@@ -99,6 +100,22 @@ export interface WirelessScanRun {
   raw_file: string
 }
 
+export interface NetworkAdapter {
+  name: string
+  interface_index: number
+  status: string
+  ipv4_addresses: string[]
+  display_name: string
+}
+
+export interface NetworkProbeEnvironment {
+  adapters: NetworkAdapter[]
+  scan_engine: string
+  scan_engine_available: boolean
+  supports_source_ip: boolean
+  message: string
+}
+
 export interface WirelessScanRunDetail extends Omit<WirelessScanRun, 'site' | 'raw_file'> {
   raw_output: string
 }
@@ -115,4 +132,11 @@ export interface WirelessScanPage<T> {
   total: number
   page: number
   page_size: number
+}
+
+export interface WirelessScanFilters {
+  only_trackside?: boolean
+  band?: string
+  radio?: string
+  search?: string
 }

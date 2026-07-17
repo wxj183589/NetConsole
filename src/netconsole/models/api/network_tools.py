@@ -45,6 +45,7 @@ class NetworkTaskStartRequest(ApiModel):
     packet_size: int = Field(default=32, ge=1, le=65500)
     concurrency: int = Field(default=100, ge=1, le=500)
     source_ip: str = Field(default="", max_length=128)
+    usable_only: bool = True
 
 
 class NetworkExportRequest(ApiModel):
@@ -74,6 +75,22 @@ class NetworkTaskResultPageResponse(ApiModel):
     offset: int = 0
     limit: int = 100
     total: int = 0
+
+
+class NetworkAdapterResponse(ApiModel):
+    name: str
+    interface_index: int
+    status: str = ""
+    ipv4_addresses: list[str] = Field(default_factory=list)
+    display_name: str
+
+
+class NetworkProbeEnvironmentResponse(ApiModel):
+    adapters: list[NetworkAdapterResponse]
+    scan_engine: str
+    scan_engine_available: bool
+    supports_source_ip: bool
+    message: str = ""
 
 
 class NetworkToolArtifactResponse(ApiModel):
@@ -112,7 +129,9 @@ class WirelessProjectRequest(ApiModel):
 
 
 __all__ = [
+    "NetworkAdapterResponse",
     "NetworkExportRequest",
+    "NetworkProbeEnvironmentResponse",
     "NetworkTaskResponse",
     "NetworkTaskResultPageResponse",
     "NetworkTaskStartRequest",

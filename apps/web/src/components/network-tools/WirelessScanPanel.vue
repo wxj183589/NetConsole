@@ -20,7 +20,6 @@ import { downloadBackendResource } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun, WirelessScanRunDetail } from '../../types/networkTools'
 import type { TaskItem } from '../../types/task'
-import { filterWirelessScanRows } from './wirelessScanRows'
 
 const taskStore = useTaskStore()
 const adapters = ref<WirelessAdapter[]>([])
@@ -31,6 +30,8 @@ const runPage = ref(1)
 const runPageSize = 50
 const runTotal = ref(0)
 const resultTotal = ref(0)
+const resultPage = ref(1)
+const resultPageSize = ref(100)
 const selectedRun = ref<WirelessScanRun | null>(null)
 const runDetail = ref<WirelessScanRunDetail | null>(null)
 const selectedResult = ref<Record<string, unknown> | null>(null)
@@ -60,21 +61,18 @@ const detailVisible = computed({
   get: () => selectedResult.value !== null,
   set: (value: boolean) => { if (!value) selectedResult.value = null },
 })
-const filteredResults = computed(() => filterWirelessScanRows(results.value, form))
 const rowKeys = computed(() => {
   const keys: string[] = []
-  for (const row of filteredResults.value) for (const key of Object.keys(row)) if (!keys.includes(key) && !key.endsWith('_json')) keys.push(key)
+  for (const row of results.value) for (const key of Object.keys(row)) if (!keys.includes(key) && !key.endsWith('_json')) keys.push(key)
   return keys
 })
 
 onMounted(async () => {
   await Promise.all([refresh(), taskStore.refresh()])
-  taskStore.startPolling()
 })
 
 onBeforeUnmount(() => {
   stopAutoRefresh()
-  taskStore.stopPolling()
 })
 
 async function refresh(): Promise<void> {
@@ -168,11 +166,12 @@ function stopAutoRefresh(): void {
 
 async function selectRun(run: WirelessScanRun): Promise<void> {
   selectedRun.value = run
+  resultPage.value = 1
   results.value = []
   resultTotal.value = 0
   try {
     const [page, detail] = await Promise.all([
-      listWirelessResults(run.scan_id, 1, 500),
+      loadResultPage(run.scan_id),
       getWirelessRunDetail(run.scan_id),
     ])
     results.value = page.items
@@ -181,6 +180,38 @@ async function selectRun(run: WirelessScanRun): Promise<void> {
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描结果加载失败')
   }
+}
+
+function loadResultPage(scanId = selectedRun.value?.scan_id || '') {
+  return listWirelessResults(scanId, resultPage.value, resultPageSize.value, {
+    only_trackside: form.only_trackside,
+    band: form.band,
+    radio: form.radio,
+    search: form.search.trim(),
+  })
+}
+
+async function applyResultFilters(): Promise<void> {
+  if (!selectedRun.value) return
+  resultPage.value = 1
+  await changeResultPage(1)
+}
+
+async function changeResultPage(page: number): Promise<void> {
+  if (!selectedRun.value) return
+  resultPage.value = page
+  try {
+    const result = await loadResultPage()
+    results.value = result.items
+    resultTotal.value = result.total
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '无线扫描结果加载失败')
+  }
+}
+
+async function changeResultPageSize(size: number): Promise<void> {
+  resultPageSize.value = size
+  await applyResultFilters()
 }
 
 async function changeRunPage(page: number): Promise<void> {
@@ -268,9 +299,9 @@ function showDetail(row: Record<string, unknown>): void {
 
     <el-tabs v-if="selectedRun" class="result-tabs">
       <el-tab-pane label="扫描结果">
-        <div class="filters"><el-checkbox v-model="form.only_trackside">仅轨旁 AP</el-checkbox><el-select v-model="form.band" clearable placeholder="全部频段"><el-option label="2.4G" value="2.4G" /><el-option label="5G" value="5G" /><el-option label="6G" value="6G" /></el-select><el-select v-model="form.radio" clearable placeholder="全部 Radio"><el-option v-for="radio in ['1', '2', '3']" :key="radio" :label="radio" :value="radio" /></el-select><el-input v-model="form.search" clearable placeholder="SSID、BSSID、AP、车站或区间" /></div>
-        <el-alert v-if="resultTotal > results.length" :title="`结果共 ${resultTotal} 条，当前展示并过滤前 ${results.length} 条`" type="warning" :closable="false" />
-        <el-table :data="filteredResults" stripe max-height="520" @row-dblclick="showDetail"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" show-overflow-tooltip /></el-table>
+        <div class="filters"><el-checkbox v-model="form.only_trackside">仅轨旁 AP</el-checkbox><el-select v-model="form.band" clearable placeholder="全部频段"><el-option label="2.4G" value="2.4G" /><el-option label="5G" value="5G" /><el-option label="6G" value="6G" /></el-select><el-select v-model="form.radio" clearable placeholder="全部 Radio"><el-option v-for="radio in ['1', '2', '3']" :key="radio" :label="radio" :value="radio" /></el-select><el-input v-model="form.search" clearable placeholder="SSID、BSSID、AP、车站或区间" @keyup.enter="applyResultFilters" /><el-button @click="applyResultFilters">筛选</el-button></div>
+        <el-table :data="results" stripe max-height="520" @row-dblclick="showDetail"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" show-overflow-tooltip /></el-table>
+        <el-pagination v-model:current-page="resultPage" v-model:page-size="resultPageSize" :total="resultTotal" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next, total" @current-change="changeResultPage" @size-change="changeResultPageSize" />
       </el-tab-pane>
       <el-tab-pane label="Raw"><el-input :model-value="runDetail?.raw_output || ''" type="textarea" :rows="18" readonly /></el-tab-pane>
       <el-tab-pane label="扫描详情"><el-descriptions v-if="runDetail" :column="2" border><el-descriptions-item label="扫描 ID">{{ runDetail.scan_id }}</el-descriptions-item><el-descriptions-item label="状态">{{ runDetail.status }}</el-descriptions-item><el-descriptions-item label="网卡">{{ runDetail.adapter_name || '—' }}</el-descriptions-item><el-descriptions-item label="结果数">{{ runDetail.network_count }}</el-descriptions-item><el-descriptions-item label="开始">{{ runDetail.started_at }}</el-descriptions-item><el-descriptions-item label="结束">{{ runDetail.ended_at }}</el-descriptions-item><el-descriptions-item label="项目" :span="2">{{ runDetail.project_name || '—' }} {{ runDetail.project_description }}</el-descriptions-item></el-descriptions></el-tab-pane>

@@ -1,5 +1,6 @@
 import { apiRequest } from './client'
 import type {
+  NetworkProbeEnvironment,
   NetworkTaskResponse,
   NetworkTaskResultPage,
   NetworkTaskStartRequest,
@@ -13,6 +14,7 @@ import type {
   WirelessScanPage,
   WirelessScanRun,
   WirelessScanRunDetail,
+  WirelessScanFilters,
   WirelessScanStartRequest,
 } from '../types/networkTools'
 
@@ -49,6 +51,10 @@ export function calculateWildcard(text: string): Promise<ToolboxResult> {
 
 export function startNetworkTask(value: NetworkTaskStartRequest): Promise<NetworkTaskResponse> {
   return apiRequest<NetworkTaskResponse>('/api/network-tools/tasks', { method: 'POST', body: JSON.stringify(value) })
+}
+
+export function getNetworkProbeEnvironment(): Promise<NetworkProbeEnvironment> {
+  return apiRequest<NetworkProbeEnvironment>('/api/network-tools/toolbox/probe-environment')
 }
 
 export function listNetworkTasks(): Promise<NetworkToolTask[]> {
@@ -111,8 +117,13 @@ export function listWirelessRuns(page = 1, pageSize = 50): Promise<WirelessScanP
   return apiRequest<WirelessScanPage<WirelessScanRun>>(`/api/network-tools/wireless-scan/runs?page=${page}&page_size=${pageSize}`)
 }
 
-export function listWirelessResults(scanId: string, page = 1, pageSize = 100): Promise<WirelessScanPage<Record<string, unknown>>> {
-  return apiRequest<WirelessScanPage<Record<string, unknown>>>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?page=${page}&page_size=${pageSize}`)
+export function listWirelessResults(scanId: string, page = 1, pageSize = 100, filters: WirelessScanFilters = {}): Promise<WirelessScanPage<Record<string, unknown>>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  if (filters.only_trackside) query.set('only_trackside', 'true')
+  if (filters.band) query.set('band', filters.band)
+  if (filters.radio) query.set('radio', filters.radio)
+  if (filters.search) query.set('search', filters.search)
+  return apiRequest<WirelessScanPage<Record<string, unknown>>>(`/api/network-tools/wireless-scan/runs/${encodeURIComponent(scanId)}/results?${query}`)
 }
 
 export function getWirelessRunDetail(scanId: string): Promise<WirelessScanRunDetail> {

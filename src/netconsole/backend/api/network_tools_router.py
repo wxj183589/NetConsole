@@ -9,6 +9,7 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.traffic_presentation import execution_target_from_request, traffic_run_dto
 from netconsole.models.api.network_tools import (
     NetworkExportRequest,
+    NetworkProbeEnvironmentResponse,
     NetworkTaskResultPageResponse,
     NetworkTaskResponse,
     NetworkTaskStartRequest,
@@ -89,6 +90,15 @@ def summarize_routes(body: ToolboxTextRequest, request: Request) -> dict[str, ob
 @router.post("/toolbox/wildcard", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
 def calculate_wildcard(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).wildcard_calculate(body.text))
+
+
+@router.get(
+    "/toolbox/probe-environment",
+    response_model=NetworkProbeEnvironmentResponse,
+    dependencies=[Depends(require_feature("web.network_tools_toolbox"))],
+)
+def get_network_probe_environment(request: Request) -> NetworkProbeEnvironmentResponse:
+    return NetworkProbeEnvironmentResponse(**network_tools_service(request).get_network_probe_environment())
 
 
 @router.post("/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
@@ -268,6 +278,10 @@ def list_wireless_results(
     request: Request,
     page: int = Query(default=1, ge=1, le=1_000_000),
     page_size: int = Query(default=100, ge=1, le=500),
+    only_trackside: bool = False,
+    band: str = Query(default="", max_length=16),
+    radio: str = Query(default="", max_length=16),
+    search: str = Query(default="", max_length=200),
 ) -> WirelessScanPageResponse:
     try:
         return WirelessScanPageResponse(
@@ -275,6 +289,10 @@ def list_wireless_results(
                 scan_id,
                 page=page,
                 page_size=page_size,
+                only_trackside=only_trackside,
+                band=band,
+                radio=radio,
+                search=search,
             )
         )
     except KeyError as exc:
@@ -358,7 +376,7 @@ def _safe_task_result(result: object) -> dict[str, object]:
     row_count = result.get("row_count")
     if isinstance(row_count, int) and not isinstance(row_count, bool):
         safe["row_count"] = row_count
-    for key in ("result_id",):
+    for key in ("result_id", "engine"):
         value = result.get(key)
         if isinstance(value, str) and value:
             safe[key] = value

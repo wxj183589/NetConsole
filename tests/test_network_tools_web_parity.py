@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
+from openpyxl import load_workbook
 
 from netconsole.backend.api.network_tools_router import router
 from netconsole.core.feature_flags import FeatureGate
@@ -29,6 +31,7 @@ from netconsole.services.network_tools import job_handlers
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 from netconsole.services.network_tools.job_handlers import (
     NETWORK_BATCH_PING_TASK,
+    NETWORK_CONTINUOUS_PING_TASK,
     NETWORK_SINGLE_PING_TASK,
     NETWORK_TASK_SOURCE,
     NETWORK_TOOLBOX_EXPORT_TASK,
@@ -37,7 +40,9 @@ from netconsole.services.network_tools.job_handlers import (
     NETWORK_WIRELESS_SCAN_TASK,
 )
 from netconsole.services.network_tools.toolbox.ping_tools import PingResult
+from netconsole.services.network_tools.toolbox.fping_runner import FpingAvailability
 from netconsole.services.network_tools.wireless_scan_service import WirelessScanRunResult
+from netconsole.services.windows_network_manager import NetworkAdapterInfo
 
 
 class FakeTrafficService:
@@ -189,6 +194,7 @@ def _service(
     *,
     force_release: threading.Event | None = None,
     wireless_service: object | None = None,
+    network_manager: object | None = None,
 ) -> tuple[NetworkToolsApplicationService, DispatchingProcessAdapter]:
     paths = PathResolver(tmp_path)
     task_service = TaskApplicationService(paths=paths, site_name="demo")
@@ -199,6 +205,7 @@ def _service(
         paths=paths,
         site_name="demo",
         wireless_scan_service=wireless_service,
+        network_manager=network_manager,
         process_adapter=adapter,
     )
     return service, adapter
@@ -352,6 +359,115 @@ def test_batch_probe_dispatches_registered_handler_and_never_embeds_rows(tmp_pat
     assert first["items"][0]["target"] == "fake-0"
     assert second["items"][0]["target"] == "fake-7"
     assert all("raw_output" not in row for row in first["items"])
+
+
+def test_subnet_ping_uses_existing_adapter_source_full_range_and_reports_engine(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeNetworkManager:
+        def list_adapters(self):
+            return [NetworkAdapterInfo(name="Ethernet 2", interface_index=12, status="Up", ipv4_addresses=["192.168.50.10/30"])]
+
+    def fake_batch(targets, *, source_ip="", progress=None, **_kwargs):
+        captured["targets"] = list(targets)
+        captured["source_ip"] = source_ip
+        rows = [PingResult(target=target, status="online", received=1, sent=1) for target in targets]
+        for row in rows:
+            if progress:
+                progress(row)
+        return rows
+
+    unavailable = FpingAvailability(False, error="测试环境未提供 fping")
+    monkeypatch.setattr(job_handlers, "discover_fping", lambda *_args, **_kwargs: unavailable)
+    monkeypatch.setattr(job_handlers, "run_batch_ping", fake_batch)
+    monkeypatch.setattr("netconsole.services.network_tools.application_service.discover_fping", lambda *_args, **_kwargs: unavailable)
+    service, adapter = _service(tmp_path, network_manager=FakeNetworkManager())
+
+    with TestClient(_app(tmp_path, service)) as client:
+        environment = client.get("/api/network-tools/toolbox/probe-environment")
+        submitted = client.post(
+            "/api/network-tools/tasks",
+            json={
+                "kind": "subnet_ping",
+                "target": "192.168.50.10/30",
+                "source_ip": "192.168.50.10",
+                "usable_only": False,
+            },
+        )
+
+    assert environment.status_code == 200
+    assert environment.json()["adapters"][0]["interface_index"] == 12
+    assert environment.json()["scan_engine"] == "系统 ping"
+    assert submitted.status_code == 202
+    task_id = submitted.json()["task"]["id"]
+    completed = _wait_task(service, adapter, task_id)
+    assert completed.result["engine"] == "系统 ping（测试环境未提供 fping）"
+    assert adapter.jobs[-1].params["source_ip"] == "192.168.50.10"
+    assert adapter.jobs[-1].params["usable_only"] is False
+    assert captured == {
+        "targets": ["192.168.50.8", "192.168.50.9", "192.168.50.10", "192.168.50.11"],
+        "source_ip": "192.168.50.10",
+    }
+
+
+def test_continuous_ping_cancel_preserves_samples_for_paging_and_csv_xlsx_export(tmp_path: Path, monkeypatch) -> None:
+    sample = 0
+
+    def fake_ping(target: str, **_kwargs) -> PingResult:
+        nonlocal sample
+        sample += 1
+        return PingResult(target=target, status="online", latency_ms=float(sample), received=1, sent=1)
+
+    monkeypatch.setattr(job_handlers, "run_single_ping", fake_ping)
+    service, adapter = _service(tmp_path)
+    task = asyncio.run(service.start_network_task(kind="continuous_ping", target="fake-host", interval_ms=1))
+    result_path = service.paths.toolbox_outputs_dir("demo") / f"{task.task_id}.jsonl"
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if result_path.is_file() and len(result_path.read_text(encoding="utf-8").splitlines()) >= 1001:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("持续 Ping 在 1000 个样本前后未保持增量写入")
+    assert adapter.is_running(task.task_id)
+    running = service.get_network_task(task.task_id)
+    assert running is not None and running.status is TaskState.RUNNING
+
+    with TestClient(_app(tmp_path, service)) as client:
+        stopping = client.post(f"/api/network-tools/runs/{task.task_id}/cancel")
+        assert stopping.status_code == 200
+        assert stopping.json()["status"] == "STOPPING"
+        terminal = _wait_task(service, adapter, task.task_id)
+        assert terminal.task_type == NETWORK_CONTINUOUS_PING_TASK
+        assert terminal.status is TaskState.CANCELLED
+
+        first_page = client.get(f"/api/network-tools/runs/{task.task_id}/results", params={"offset": 0, "limit": 2})
+        second_page = client.get(f"/api/network-tools/runs/{task.task_id}/results", params={"offset": 2, "limit": 2})
+        assert first_page.status_code == second_page.status_code == 200
+        total = first_page.json()["total"]
+        assert total >= 1001
+        assert len(first_page.json()["items"]) == 2
+        assert second_page.json()["items"]
+
+        exported_paths: dict[str, Path] = {}
+        for file_format in ("csv", "xlsx"):
+            submitted = client.post(f"/api/network-tools/runs/{task.task_id}/export", json={"format": file_format})
+            assert submitted.status_code == 202
+            export_id = submitted.json()["task"]["id"]
+            exported = _wait_task(service, adapter, export_id)
+            assert exported.status is TaskState.COMPLETED
+            artifact = service.get_network_export_artifact(export_id)
+            exported_paths[file_format] = service.open_network_artifact(str(artifact["artifact_id"]))[0]
+
+    with exported_paths["csv"].open("r", encoding="utf-8-sig", newline="") as handle:
+        csv_rows = list(csv.reader(handle))
+        assert csv_rows[0][0] == "#NETCONSOLE_META"
+        assert len(csv_rows) == total + 2
+    workbook = load_workbook(exported_paths["xlsx"], read_only=True)
+    try:
+        assert sum(1 for row in workbook.active.iter_rows(values_only=True) if row[0] == "fake-host") == total
+    finally:
+        workbook.close()
 
 
 def test_toolbox_and_wireless_task_scope_rejects_site_owner_source_and_exact_type_mismatches(tmp_path: Path) -> None:
@@ -584,11 +700,29 @@ def test_wireless_runs_and_results_use_sql_pagination_beyond_old_limits(tmp_path
                 for index in range(2105)
             ],
         )
+        connection.execute(
+            """
+            UPDATE wireless_scan_results
+            SET matched_trackside_ap = 1, band = '5G', matched_radio_id = 2,
+                matched_ap_name = '轨旁-唯一', matched_station = '测试站'
+            WHERE scan_id = ? AND ssid = 'ssid-2104'
+            """,
+            (scan_id,),
+        )
         connection.commit()
 
     service, _adapter = _service(tmp_path, wireless_service=fake_wireless)
     run_page = service.list_wireless_runs(page=21, page_size=50)
     result_page = service.list_wireless_results(scan_id, page=22, page_size=100)
+    filtered_page = service.list_wireless_results(
+        scan_id,
+        page=1,
+        page_size=50,
+        only_trackside=True,
+        band="5G",
+        radio="2",
+        search="测试站",
+    )
 
     assert run_page["total"] == 1006
     assert run_page["page"] == 21
@@ -598,6 +732,8 @@ def test_wireless_runs_and_results_use_sql_pagination_beyond_old_limits(tmp_path
     assert result_page["page"] == 22
     assert result_page["page_size"] == 100
     assert len(result_page["items"]) == 5
+    assert filtered_page["total"] == 1
+    assert filtered_page["items"][0]["display_ap_name"] == "轨旁-唯一"
 
     app = _app(tmp_path, service)
     app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
@@ -607,9 +743,14 @@ def test_wireless_runs_and_results_use_sql_pagination_beyond_old_limits(tmp_path
             f"/api/network-tools/wireless-scan/runs/{scan_id}/results",
             params={"page": 22, "page_size": 100},
         )
+        filtered_response = client.get(
+            f"/api/network-tools/wireless-scan/runs/{scan_id}/results",
+            params={"page": 1, "page_size": 50, "only_trackside": True, "band": "5G", "radio": "2", "search": "测试站"},
+        )
     assert response.status_code == results_response.status_code == 200
     assert response.json()["total"] == 1006
     assert len(results_response.json()["items"]) == 5
+    assert filtered_response.json()["total"] == 1
 
 
 def test_export_manifest_tamper_and_foreign_scope_are_rejected(tmp_path: Path, monkeypatch) -> None:

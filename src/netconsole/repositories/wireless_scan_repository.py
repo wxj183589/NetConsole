@@ -162,27 +162,75 @@ class WirelessScanRepository:
             row = conn.execute("SELECT * FROM wireless_scan_runs WHERE scan_id = ?", (scan_id,)).fetchone()
         return dict(row) if row is not None else None
 
-    def list_results(self, scan_id: str, *, limit: int | None = None, offset: int = 0) -> list[dict[str, object]]:
-        query = """
+    def list_results(
+        self,
+        scan_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        only_trackside: bool = False,
+        band: str = "",
+        radio: str = "",
+        search: str = "",
+    ) -> list[dict[str, object]]:
+        where, values = self._result_filters(scan_id, only_trackside=only_trackside, band=band, radio=radio, search=search)
+        query = f"""
             SELECT * FROM wireless_scan_results
-            WHERE scan_id = ?
+            WHERE {' AND '.join(where)}
             ORDER BY matched_trackside_ap DESC, rssi_dbm DESC, matched_station, matched_ap_name, id
         """
-        params: tuple[object, ...] = (scan_id,)
         if limit is not None:
             query += " LIMIT ? OFFSET ?"
-            params = (scan_id, max(1, int(limit)), max(0, int(offset)))
+            values.extend((max(1, int(limit)), max(0, int(offset))))
         with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+            rows = conn.execute(query, values).fetchall()
         return [dict(row) for row in rows]
 
-    def count_results(self, scan_id: str) -> int:
+    def count_results(
+        self,
+        scan_id: str,
+        *,
+        only_trackside: bool = False,
+        band: str = "",
+        radio: str = "",
+        search: str = "",
+    ) -> int:
+        where, values = self._result_filters(scan_id, only_trackside=only_trackside, band=band, radio=radio, search=search)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS value FROM wireless_scan_results WHERE scan_id = ?",
-                (scan_id,),
+                f"SELECT COUNT(*) AS value FROM wireless_scan_results WHERE {' AND '.join(where)}",
+                values,
             ).fetchone()
         return int(row["value"] if row is not None else 0)
+
+    @staticmethod
+    def _result_filters(
+        scan_id: str,
+        *,
+        only_trackside: bool,
+        band: str,
+        radio: str,
+        search: str,
+    ) -> tuple[list[str], list[object]]:
+        where = ["scan_id = ?"]
+        values: list[object] = [scan_id]
+        if only_trackside:
+            where.append("matched_trackside_ap = 1")
+        if band:
+            where.append("band = ?")
+            values.append(band)
+        if radio:
+            where.append("CAST(matched_radio_id AS TEXT) = ?")
+            values.append(radio)
+        if search:
+            where.append(
+                "(instr(lower(ssid), lower(?)) > 0 OR instr(lower(bssid), lower(?)) > 0 "
+                "OR instr(lower(matched_ap_mac), lower(?)) > 0 OR instr(lower(matched_ap_name), lower(?)) > 0 "
+                "OR instr(lower(matched_station), lower(?)) > 0 OR instr(lower(matched_section), lower(?)) > 0 "
+                "OR instr(lower(matched_location), lower(?)) > 0)"
+            )
+            values.extend([search] * 7)
+        return where, values
 
     def backfill_project_snapshot(self, project_id: str, project_name: str, project_description: str) -> None:
         with self._connect() as conn:

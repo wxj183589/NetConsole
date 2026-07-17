@@ -19,6 +19,7 @@ from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import result_file_rows_source
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.worker_protocol import parse_event_line
+from netconsole.services.network_tools.toolbox.fping_runner import discover_fping, scan_targets as scan_fping_targets
 from netconsole.services.network_tools.toolbox.ping_tools import run_batch_ping, run_single_ping, run_tcp_ping
 from netconsole.services.network_tools.wireless_scan_service import (
     WIRELESS_SCAN_EXPORT_COLUMNS,
@@ -73,6 +74,7 @@ def run_network_probe(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     context.progress("network_probe", 0, 0, "网络探测任务执行中")
 
+    engine = ""
     if kind == "single_ping":
         rows = [_safe_probe_row(run_single_ping(
             params["target"],
@@ -82,7 +84,8 @@ def run_network_probe(context: JobContext) -> dict[str, object]:
             source_ip=params["source_ip"],
         ))]
     elif kind == "continuous_ping":
-        rows = _run_continuous_ping(context, params)
+        _run_continuous_ping(context, params, _probe_result_path(context, site_name))
+        raise AssertionError("持续 Ping 只能由取消终止")
     elif kind in {"batch_ping", "subnet_ping"}:
         targets = _targets_for_probe(kind, params)
         completed = 0
@@ -97,16 +100,19 @@ def run_network_probe(context: JobContext) -> dict[str, object]:
                 f"已完成 {completed}/{len(targets)} 个目标",
             )
 
-        results = run_batch_ping(
-            targets,
-            count=params["count"],
-            size=params["packet_size"],
-            timeout_ms=params["timeout_ms"],
-            concurrency=params["concurrency"],
-            source_ip=params["source_ip"],
-            progress=progress,
-            should_stop=context.should_cancel,
-        )
+        if kind == "subnet_ping":
+            results, engine = _run_subnet_ping(context, params, targets, progress)
+        else:
+            results = run_batch_ping(
+                targets,
+                count=params["count"],
+                size=params["packet_size"],
+                timeout_ms=params["timeout_ms"],
+                concurrency=params["concurrency"],
+                source_ip=params["source_ip"],
+                progress=progress,
+                should_stop=context.should_cancel,
+            )
         context.check_cancelled()
         rows = [_safe_probe_row(result) for result in results]
     else:
@@ -119,7 +125,10 @@ def run_network_probe(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     _write_jsonl_atomic(_probe_result_path(context, site_name), rows)
     context.progress("network_probe", len(rows), len(rows), f"网络探测完成，共 {len(rows)} 条结果")
-    return {"result_id": context.job_id, "row_count": len(rows)}
+    result: dict[str, object] = {"result_id": context.job_id, "row_count": len(rows)}
+    if engine:
+        result["engine"] = engine
+    return result
 
 
 def run_wireless_scan(context: JobContext) -> dict[str, object]:
@@ -156,9 +165,11 @@ def run_wireless_export(context: JobContext) -> dict[str, object]:
     return _run_network_export(context, wireless=True)
 
 
-def _run_continuous_ping(context: JobContext, params: dict[str, Any]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    while len(rows) < 1000:
+def _run_continuous_ping(context: JobContext, params: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    sample_count = 0
+    while True:
         context.check_cancelled()
         result = run_single_ping(
             params["target"],
@@ -167,13 +178,49 @@ def _run_continuous_ping(context: JobContext, params: dict[str, Any]) -> list[di
             timeout_ms=params["timeout_ms"],
             source_ip=params["source_ip"],
         )
-        rows.append(_safe_probe_row(result))
-        context.progress("network_probe", len(rows), 0, f"已完成第 {len(rows)} 次 Ping")
+        _append_jsonl_row(path, _safe_probe_row(result))
+        sample_count += 1
+        context.progress("network_probe", sample_count, 0, f"已完成第 {sample_count} 次 Ping")
         deadline = time.monotonic() + params["interval_ms"] / 1000
         while time.monotonic() < deadline:
             context.check_cancelled()
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-    return rows
+
+
+def _run_subnet_ping(
+    context: JobContext,
+    params: dict[str, Any],
+    targets: list[str],
+    progress: Any,
+) -> tuple[list[object], str]:
+    availability = discover_fping(context.paths.app_root)
+    source_ip = params["source_ip"]
+    if availability.available and (not source_ip or availability.supports_source_ip):
+        results, run_availability = scan_fping_targets(
+            targets,
+            root=context.paths.app_root,
+            count=params["count"],
+            size=params["packet_size"],
+            timeout_ms=params["timeout_ms"],
+            source_ip=source_ip,
+            progress=progress,
+            should_stop=context.should_cancel,
+        )
+        if run_availability.available and results:
+            return list(results), f"fping {run_availability.version}".strip()
+        availability = run_availability
+    reason = "fping 不支持绑定源地址" if source_ip and availability.available else availability.error
+    results = run_batch_ping(
+        targets,
+        count=params["count"],
+        size=params["packet_size"],
+        timeout_ms=params["timeout_ms"],
+        concurrency=params["concurrency"],
+        source_ip=source_ip,
+        progress=progress,
+        should_stop=context.should_cancel,
+    )
+    return list(results), f"系统 ping（{reason or 'fping 不可用'}）"
 
 
 def _run_network_export(context: JobContext, *, wireless: bool) -> dict[str, object]:
@@ -414,6 +461,7 @@ def _validated_probe_params(kind: str, values: dict[str, Any]) -> dict[str, Any]
         "packet_size": _bounded_int(values.get("packet_size"), 1, 65500, 32, "包大小"),
         "concurrency": _bounded_int(values.get("concurrency"), 1, 500, 100, "并发数"),
         "source_ip": _bounded_text(values.get("source_ip"), 128, "源地址"),
+        "usable_only": bool(values.get("usable_only", True)),
     }
     if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping"} and not params["target"]:
         raise ValueError("请提供目标地址")
@@ -427,10 +475,15 @@ def _targets_for_probe(kind: str, params: dict[str, Any]) -> list[str]:
         network = ipaddress.ip_network(params["target"], strict=False)
         if network.version != 4:
             raise ValueError("网段 Ping 只支持 IPv4")
-        host_count = network.num_addresses if network.prefixlen >= 31 else max(0, network.num_addresses - 2)
+        host_count = (
+            network.num_addresses
+            if not params["usable_only"] or network.prefixlen >= 31
+            else max(0, network.num_addresses - 2)
+        )
         if host_count > 4096:
             raise ValueError("批量或网段 Ping 最多支持 4096 个地址")
-        targets = [str(address) for address in network.hosts()]
+        addresses = network.hosts() if params["usable_only"] else iter(network)
+        targets = [str(address) for address in addresses]
     else:
         raw_targets = params["targets"]
         if not isinstance(raw_targets, list):
@@ -489,6 +542,14 @@ def _write_jsonl_atomic(path: Path, rows: list[dict[str, object]]) -> None:
         os.replace(temp, path)
     finally:
         _unlink(temp)
+
+
+def _append_jsonl_row(path: Path, row: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _write_json_atomic(temp: Path, path: Path, payload: dict[str, object]) -> None:

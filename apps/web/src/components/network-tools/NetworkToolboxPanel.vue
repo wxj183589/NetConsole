@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import {
@@ -10,6 +10,7 @@ import {
   calculateWildcard,
   cancelNetworkTask,
   exportNetworkTask,
+  getNetworkProbeEnvironment,
   getNetworkExportArtifact,
   getNetworkTask,
   listNetworkTaskResults,
@@ -18,8 +19,9 @@ import {
 } from '../../api/networkTools'
 import { downloadBackendResource } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
-import type { NetworkToolTask, ToolboxResult } from '../../types/networkTools'
+import type { NetworkAdapter, NetworkProbeEnvironment, NetworkToolTask, ToolboxResult } from '../../types/networkTools'
 import type { TaskItem } from '../../types/task'
+import { buildSubnetStatusGrid } from './subnetStatusGrid'
 
 const taskStore = useTaskStore()
 
@@ -33,17 +35,21 @@ const pageSize = ref(50)
 const result = ref<ToolboxResult>({ rows: [], summary: {}, errors: [] })
 const calculating = ref(false)
 const taskKind = ref<'single_ping' | 'continuous_ping' | 'batch_ping' | 'subnet_ping' | 'tcp_ping'>('single_ping')
-const probe = reactive({ target: '127.0.0.1', targets: '', port: 443, count: 4, timeout_ms: 1500, interval_ms: 1000, packet_size: 32, concurrency: 100 })
+const probe = reactive({ target: '127.0.0.1', targets: '', port: 443, count: 4, timeout_ms: 1500, interval_ms: 1000, packet_size: 32, concurrency: 100, source_ip: '', usable_only: true })
+const probeEnvironment = ref<NetworkProbeEnvironment>({ adapters: [], scan_engine: '检测中', scan_engine_available: false, supports_source_ip: true, message: '' })
+const selectedAdapterIndex = ref<number | null>(null)
 const selectedTask = ref<NetworkToolTask | null>(null)
+const selectedSubnetResult = ref<Record<string, unknown> | null>(null)
 const taskResults = ref<Record<string, unknown>[]>([])
 const resultOffset = ref(0)
-const resultPageSize = 100
+const resultPageSize = 500
 const resultTotal = ref(0)
 const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
 const PROBE_TYPES = ['network_tools.single_ping', 'network_tools.continuous_ping', 'network_tools.batch_ping', 'network_tools.subnet_ping', 'network_tools.tcp_ping']
 const tasks = computed(() => taskStore.tasks.filter((item) => item.owner === 'web_network_tools' && (PROBE_TYPES.includes(item.type) || item.type === 'network_tools.toolbox_export')))
 const loadingTasks = computed(() => taskStore.loading)
 const selectedTaskSummary = computed(() => tasks.value.find((item) => item.id === selectedTask.value?.id) || selectedTask.value)
+const selectedAdapter = computed<NetworkAdapter | null>(() => probeEnvironment.value.adapters.find((item) => item.interface_index === selectedAdapterIndex.value) || null)
 
 const rowKeys = computed(() => {
   const keys: string[] = []
@@ -54,24 +60,38 @@ const resultRows = computed(() => {
   return taskResults.value
 })
 const taskRunning = computed(() => selectedTaskSummary.value && ACTIVE_STATUSES.includes(selectedTaskSummary.value.status))
-const selectedProbeCompleted = computed(() => selectedTaskSummary.value?.status === 'COMPLETED' && PROBE_TYPES.includes(selectedTaskSummary.value.type))
+const selectedProbeTerminal = computed(() => ['COMPLETED', 'CANCELLED'].includes(selectedTaskSummary.value?.status || '') && PROBE_TYPES.includes(selectedTaskSummary.value?.type || ''))
+const selectedProbeHasResults = computed(() => selectedProbeTerminal.value && resultTotal.value > 0)
 const selectedExportCompleted = computed(() => selectedTaskSummary.value?.status === 'COMPLETED' && selectedTaskSummary.value.type === 'network_tools.toolbox_export')
+const subnetGrid = computed(() => taskKind.value === 'subnet_ping' ? buildSubnetStatusGrid(probe.target, probe.usable_only, taskResults.value) : [])
+const scanEngine = computed(() => String(selectedTask.value?.result?.engine || probeEnvironment.value.scan_engine))
 
 watch(() => selectedTaskSummary.value?.status, async (status, previous) => {
   if (!selectedTask.value || !status || status === previous) return
   selectedTask.value = await getNetworkTask(selectedTask.value.id)
-  if (status === 'COMPLETED' && selectedProbeCompleted.value) {
+  if (['COMPLETED', 'CANCELLED'].includes(status) && PROBE_TYPES.includes(selectedTask.value.type)) {
     resultOffset.value = 0
     await loadTaskResults()
   }
 })
 
 onMounted(async () => {
-  await taskStore.refresh()
-  taskStore.startPolling()
+  await Promise.all([taskStore.refresh(), loadProbeEnvironment()])
 })
 
-onBeforeUnmount(() => taskStore.stopPolling())
+async function loadProbeEnvironment(): Promise<void> {
+  try {
+    probeEnvironment.value = await getNetworkProbeEnvironment()
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '网卡与扫描引擎状态加载失败')
+  }
+}
+
+function selectAdapter(): void {
+  const address = selectedAdapter.value?.ipv4_addresses[0] || ''
+  probe.source_ip = address.split('/', 1)[0] || ''
+  if (address) probe.target = address
+}
 
 async function calculate(): Promise<void> {
   calculating.value = true
@@ -101,11 +121,13 @@ async function startProbe(): Promise<void> {
       target: probe.target.trim(),
       targets: values,
       port: probe.port,
-      count: probe.count,
+      count: taskKind.value === 'subnet_ping' ? 1 : probe.count,
       timeout_ms: probe.timeout_ms,
       interval_ms: probe.interval_ms,
       packet_size: probe.packet_size,
       concurrency: probe.concurrency,
+      source_ip: taskKind.value === 'subnet_ping' ? probe.source_ip : '',
+      usable_only: probe.usable_only,
     })
     selectedTask.value = response.task
     taskResults.value = []
@@ -124,7 +146,7 @@ async function refreshTasks(): Promise<void> {
       const previousStatus = selectedTask.value.status
       const current = await getNetworkTask(selectedTask.value.id)
       selectedTask.value = current
-      if (current?.status === 'COMPLETED' && previousStatus !== 'COMPLETED' && !current.type.endsWith('_export')) {
+      if (['COMPLETED', 'CANCELLED'].includes(current?.status || '') && current?.status !== previousStatus && !current.type.endsWith('_export')) {
         resultOffset.value = 0
         await loadTaskResults()
       }
@@ -137,7 +159,7 @@ async function refreshTasks(): Promise<void> {
 async function selectTask(task: TaskItem): Promise<void> {
   selectedTask.value = await getNetworkTask(task.id)
   resultOffset.value = 0
-  if (selectedTask.value.status === 'COMPLETED' && PROBE_TYPES.includes(selectedTask.value.type)) await loadTaskResults()
+  if (['COMPLETED', 'CANCELLED'].includes(selectedTask.value.status) && PROBE_TYPES.includes(selectedTask.value.type)) await loadTaskResults()
   else {
     taskResults.value = []
     resultTotal.value = 0
@@ -155,7 +177,7 @@ async function cancelTask(): Promise<void> {
 }
 
 async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
-  if (!selectedTask.value || !selectedProbeCompleted.value) return
+  if (!selectedTask.value || !selectedProbeHasResults.value) return
   try {
     const response = await exportNetworkTask(selectedTask.value.id, format)
     selectedTask.value = response.task
@@ -167,11 +189,12 @@ async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
 }
 
 async function loadTaskResults(): Promise<void> {
-  if (!selectedTask.value || !selectedProbeCompleted.value) return
+  if (!selectedTask.value || !selectedProbeTerminal.value) return
   try {
     const page = await listNetworkTaskResults(selectedTask.value.id, resultOffset.value, resultPageSize)
     taskResults.value = page.items
     resultTotal.value = page.total
+    selectedSubnetResult.value = null
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络任务结果加载失败')
   }
@@ -192,6 +215,16 @@ async function downloadExport(): Promise<void> {
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络工具导出下载失败')
   }
+}
+
+function selectSubnetResult(row: Record<string, unknown>): void {
+  selectedSubnetResult.value = row
+}
+
+function clearTaskResults(): void {
+  taskResults.value = []
+  resultTotal.value = 0
+  selectedSubnetResult.value = null
 }
 </script>
 
@@ -228,17 +261,21 @@ async function downloadExport(): Promise<void> {
     <template #header><div class="header"><div><h2>连通性检测</h2><p>单次、持续、批量、网段 Ping 与 TCP Ping 均进入任务链。</p></div><el-button :loading="loadingTasks" @click="refreshTasks">刷新历史</el-button></div></template>
     <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <el-form label-position="top">
-      <div class="inline-form"><el-form-item label="类型"><el-select v-model="taskKind"><el-option label="单个 Ping" value="single_ping" /><el-option label="持续 Ping" value="continuous_ping" /><el-option label="批量 Ping" value="batch_ping" /><el-option label="网段 Ping" value="subnet_ping" /><el-option label="TCP Ping" value="tcp_ping" /></el-select></el-form-item><el-form-item label="目标"><el-input v-model="probe.target" placeholder="主机、IP 或 IPv4 网段" /></el-form-item><el-form-item label="端口"><el-input-number v-model="probe.port" :min="1" :max="65535" /></el-form-item></div>
+      <div class="inline-form"><el-form-item label="类型"><el-select v-model="taskKind"><el-option label="单个 Ping" value="single_ping" /><el-option label="持续 Ping" value="continuous_ping" /><el-option label="批量 Ping" value="batch_ping" /><el-option label="网段 Ping" value="subnet_ping" /><el-option label="TCP Ping" value="tcp_ping" /></el-select></el-form-item><el-form-item label="目标"><el-input v-model="probe.target" placeholder="主机、IP 或 IPv4 网段" /></el-form-item><el-form-item v-if="taskKind === 'tcp_ping'" label="端口"><el-input-number v-model="probe.port" :min="1" :max="65535" /></el-form-item></div>
+      <div v-if="taskKind === 'subnet_ping'" class="inline-form subnet-controls"><el-form-item label="网卡"><el-select v-model="selectedAdapterIndex" data-testid="network-adapter-select" clearable placeholder="自动选择" @change="selectAdapter"><el-option v-for="adapter in probeEnvironment.adapters" :key="adapter.interface_index" :label="adapter.display_name" :value="adapter.interface_index" /></el-select></el-form-item><el-form-item label="源地址"><el-input v-model="probe.source_ip" readonly data-testid="source-ip" /></el-form-item><el-form-item label="扫描范围"><el-checkbox v-model="probe.usable_only">只扫描可用主机</el-checkbox></el-form-item><el-button @click="loadProbeEnvironment">刷新网卡</el-button></div>
+      <el-alert v-if="taskKind === 'subnet_ping'" :title="`当前引擎：${scanEngine}`" :description="probeEnvironment.message" type="info" :closable="false" />
       <el-form-item v-if="taskKind === 'batch_ping'" label="批量目标"><el-input v-model="probe.targets" type="textarea" :rows="2" placeholder="多个目标用空格、逗号或换行分隔" /></el-form-item>
       <div class="inline-form"><el-form-item label="次数"><el-input-number v-model="probe.count" :min="1" :max="1000" /></el-form-item><el-form-item label="超时 ms"><el-input-number v-model="probe.timeout_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="间隔 ms"><el-input-number v-model="probe.interval_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="并发"><el-input-number v-model="probe.concurrency" :min="1" :max="500" /></el-form-item></div>
-      <el-button type="primary" @click="startProbe">开始检测</el-button>
+      <el-button type="primary" data-testid="start-probe" @click="startProbe">开始检测</el-button>
     </el-form>
     <el-divider />
     <el-table v-loading="loadingTasks" :data="tasks" empty-text="暂无网络工具任务" stripe @row-click="selectTask">
       <el-table-column prop="name" label="任务" min-width="140" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="100"><template #default="{ row }">{{ `${row.progress}%` }}</template></el-table-column><el-table-column prop="message" label="消息" min-width="220" />
     </el-table>
-    <div v-if="selectedTaskSummary" class="task-detail"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="taskRunning" link type="danger" @click="cancelTask">停止</el-button><el-button v-if="selectedProbeCompleted" link @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedProbeCompleted" link @click="exportTask('xlsx')">导出 XLSX</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
-    <el-table v-if="resultRows.length" :data="resultRows" stripe max-height="360"><el-table-column v-for="key in Object.keys(resultRows[0])" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
+    <div v-if="selectedTaskSummary" class="task-detail"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="taskRunning" link type="danger" data-testid="stop-task" @click="cancelTask">停止</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-csv" @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-xlsx" @click="exportTask('xlsx')">导出 XLSX</el-button><el-button v-if="resultRows.length" link @click="clearTaskResults">清空显示</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
+    <div v-if="subnetGrid.length" class="subnet-grid" data-testid="subnet-status-grid"><button v-for="host in subnetGrid" :key="host.ip" type="button" class="subnet-host" :class="`is-${host.status}`" :disabled="!host.in_range" :title="host.ip" @click="selectSubnetResult(host.detail)">{{ host.host_number }}</button></div>
+    <el-descriptions v-if="selectedSubnetResult" :column="3" border class="subnet-detail" data-testid="subnet-detail"><el-descriptions-item v-for="([key, value]) in Object.entries(selectedSubnetResult)" :key="key" :label="key">{{ value }}</el-descriptions-item></el-descriptions>
+    <el-table v-if="resultRows.length" :data="resultRows" stripe max-height="360" @row-click="selectSubnetResult"><el-table-column v-for="key in Object.keys(resultRows[0])" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
     <el-pagination v-if="resultTotal > resultPageSize" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
   </el-card>
 </template>
@@ -251,4 +288,12 @@ async function downloadExport(): Promise<void> {
 .inline-form { display: flex; gap: 12px; flex-wrap: wrap; }
 .summary { margin-top: 16px; }
 .task-detail { align-items: center; display: flex; gap: 8px; margin: 12px 0; }
+.subnet-controls .el-select, .subnet-controls .el-input { min-width: 280px; }
+.subnet-grid { display: grid; gap: 4px; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); margin: 14px 0; }
+.subnet-host { border: 1px solid var(--el-border-color); border-radius: 4px; min-height: 34px; }
+.subnet-host.is-online { background: var(--el-color-success-light-7); border-color: var(--el-color-success); }
+.subnet-host.is-offline, .subnet-host.is-error { background: var(--el-color-danger-light-7); border-color: var(--el-color-danger); }
+.subnet-host.is-timeout { background: var(--el-color-warning-light-7); border-color: var(--el-color-warning); }
+.subnet-host:disabled { opacity: 0.35; }
+.subnet-detail { margin-bottom: 12px; }
 </style>

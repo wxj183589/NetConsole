@@ -28,6 +28,7 @@ from netconsole.services.network_tools.job_handlers import (
     NETWORK_WIRELESS_SCAN_TASK,
     NETWORK_WIRELESS_TASK_TYPES,
 )
+from netconsole.services.network_tools.toolbox.fping_runner import discover_fping
 from netconsole.services.network_tools.toolbox.ip_calc import (
     TableResult,
     ipv4_calculate,
@@ -38,6 +39,7 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     wildcard_calculate,
 )
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
+from netconsole.services.windows_network_manager import WindowsNetworkManager
 
 
 _CONTROLLED_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -60,6 +62,7 @@ class NetworkToolsApplicationService:
         paths: PathResolver | None = None,
         site_name: str = "",
         wireless_scan_service: Any | None = None,
+        network_manager: Any | None = None,
         process_adapter: LocalProcessAdapter | None = None,
     ) -> None:
         self.traffic_service = traffic_service
@@ -73,6 +76,7 @@ class NetworkToolsApplicationService:
         self._owns_process_adapter = process_adapter is None and inherited_process_adapter is None
         self.process_adapter = process_adapter or inherited_process_adapter or LocalProcessAdapter(self.task_service)
         self._wireless_scan_service = wireless_scan_service
+        self._network_manager = network_manager
         self._project_lock = _project_lock(self._project_path())
         self._reconcile_module_tasks()
 
@@ -105,6 +109,29 @@ class NetworkToolsApplicationService:
     def wildcard_calculate(self, text: str) -> TableResult:
         return wildcard_calculate(text)
 
+    def get_network_probe_environment(self) -> dict[str, object]:
+        manager = self._network_manager or WindowsNetworkManager()
+        adapters = []
+        for adapter in manager.list_adapters():
+            ipv4_addresses = [str(value) for value in adapter.ipv4_addresses if str(value).strip()]
+            adapters.append(
+                {
+                    "name": adapter.name,
+                    "interface_index": int(adapter.interface_index),
+                    "status": str(adapter.status or ""),
+                    "ipv4_addresses": ipv4_addresses,
+                    "display_name": f"{adapter.name} / {', '.join(ipv4_addresses) or '无 IPv4'} / {adapter.status or '-'}",
+                }
+            )
+        availability = discover_fping(self.paths.app_root)
+        return {
+            "adapters": adapters,
+            "scan_engine": f"fping {availability.version}" if availability.available else "系统 ping",
+            "scan_engine_available": availability.available,
+            "supports_source_ip": True,
+            "message": availability.error,
+        }
+
     async def start_network_task(
         self,
         *,
@@ -118,6 +145,7 @@ class NetworkToolsApplicationService:
         packet_size: int = 32,
         concurrency: int = 100,
         source_ip: str = "",
+        usable_only: bool = True,
     ) -> TaskSnapshot:
         params: dict[str, object] = {
             "target": str(target or "").strip(),
@@ -129,6 +157,7 @@ class NetworkToolsApplicationService:
             "packet_size": int(packet_size),
             "concurrency": int(concurrency),
             "source_ip": str(source_ip or "").strip(),
+            "usable_only": bool(usable_only),
         }
         self._validate_network_task(kind, params)
         task_type = f"network_tools.{kind}"
@@ -174,32 +203,32 @@ class NetworkToolsApplicationService:
         size = max(1, min(int(limit), 500))
         path = self._controlled_task_result_path(task.task_id)
         rows: list[dict[str, object]] = []
+        total = 0
         if path is not None:
             with path.open("r", encoding="utf-8") as handle:
-                for index, line in enumerate(handle):
-                    if index < start:
-                        continue
-                    if len(rows) >= size:
-                        break
+                for line in handle:
                     try:
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(row, dict):
+                    if not isinstance(row, dict):
+                        continue
+                    if start <= total < start + size:
                         rows.append(dict(row))
-        total = task.result.get("row_count") if isinstance(task.result, dict) else 0
+                    total += 1
         return {
             "items": rows,
             "offset": start,
             "limit": size,
-            "total": int(total or 0),
+            "total": total,
         }
 
     async def export_network_task(self, task_id: str, file_format: str, filename: str = "") -> TaskSnapshot:
         task = self._get_scoped_task(task_id, NETWORK_PROBE_TASK_TYPES)
         if task is None:
             raise KeyError(task_id)
-        if task.status is not TaskState.COMPLETED or self._controlled_task_result_path(task.task_id) is None:
+        result_path = self._controlled_task_result_path(task.task_id)
+        if task.status not in {TaskState.COMPLETED, TaskState.CANCELLED} or result_path is None or not _has_jsonl_row(result_path):
             raise ValueError("网络工具任务尚未完成或没有结果")
         artifact_id = uuid.uuid4().hex
         return self._start_job(
@@ -346,7 +375,17 @@ class NetworkToolsApplicationService:
             "page_size": size,
         }
 
-    def list_wireless_results(self, scan_id: str, *, page: int = 1, page_size: int = 100) -> dict[str, object]:
+    def list_wireless_results(
+        self,
+        scan_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        only_trackside: bool = False,
+        band: str = "",
+        radio: str = "",
+        search: str = "",
+    ) -> dict[str, object]:
         repository = self._wireless().repository
         if repository.get_run(str(scan_id or "")) is None:
             raise KeyError(scan_id)
@@ -355,10 +394,16 @@ class NetworkToolsApplicationService:
         selected_page = max(1, int(page))
         size = max(1, min(int(page_size), 500))
         start = (selected_page - 1) * size
-        rows = repository.list_results(scan_id, limit=size, offset=start)
+        filters = {
+            "only_trackside": bool(only_trackside),
+            "band": str(band or "").strip(),
+            "radio": str(radio or "").strip(),
+            "search": str(search or "").strip(),
+        }
+        rows = repository.list_results(scan_id, limit=size, offset=start, **filters)
         return {
             "items": [repository_row_to_display_row(row) for row in rows],
-            "total": repository.count_results(scan_id),
+            "total": repository.count_results(scan_id, **filters),
             "page": selected_page,
             "page_size": size,
         }
@@ -671,6 +716,13 @@ class NetworkToolsApplicationService:
             raise ValueError("Ping 目标最多 255 个字符")
         if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping"} and not target:
             raise ValueError("请提供目标地址")
+        source_ip = str(params.get("source_ip") or "").strip()
+        if source_ip:
+            try:
+                if ipaddress.ip_address(source_ip).version != 4:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("Ping 源地址必须是 IPv4 地址") from exc
         if kind == "subnet_ping":
             try:
                 network = ipaddress.ip_network(target, strict=False)
@@ -678,7 +730,12 @@ class NetworkToolsApplicationService:
                 raise ValueError("网段 Ping 目标无效") from exc
             if network.version != 4:
                 raise ValueError("网段 Ping 只支持 IPv4")
-            if network.num_addresses - 2 > 4096:
+            host_count = (
+                network.num_addresses
+                if not bool(params.get("usable_only", True)) or network.prefixlen >= 31
+                else max(0, network.num_addresses - 2)
+            )
+            if host_count > 4096:
                 raise ValueError("网段 Ping 最多支持 4096 个地址")
         if kind == "batch_ping":
             targets = list(params.get("targets") or [])
@@ -739,6 +796,17 @@ def _hash_file(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
+
+
+def _has_jsonl_row(path: Path) -> bool:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                if isinstance(json.loads(line), dict):
+                    return True
+            except json.JSONDecodeError:
+                continue
+    return False
 
 
 __all__ = ["NetworkToolsApplicationService"]

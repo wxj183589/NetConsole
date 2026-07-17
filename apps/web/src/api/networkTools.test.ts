@@ -5,6 +5,7 @@ import {
   deleteWirelessProject,
   exportNetworkTask,
   exportWirelessScan,
+  getNetworkProbeEnvironment,
   getNetworkExportArtifact,
   getWirelessExportArtifact,
   getWirelessRunDetail,
@@ -41,11 +42,12 @@ describe('network tools API client', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await listNetworkTaskResults('probe-1', 100, 50)
+    await getNetworkProbeEnvironment()
     await exportNetworkTask('probe-1', 'csv')
     await getNetworkExportArtifact('export-1')
     await listWirelessTasks()
     await listWirelessRuns(21, 50)
-    await listWirelessResults('scan_20260715_120000_deadbeef', 22, 100)
+    await listWirelessResults('scan_20260715_120000_deadbeef', 22, 100, { only_trackside: true, band: '5G', radio: '2', search: '测试站' })
     await getWirelessRunDetail('scan_20260715_120000_deadbeef')
     await deleteWirelessProject('project-1')
     await cancelWirelessTask('scan-1')
@@ -54,20 +56,21 @@ describe('network tools API client', () => {
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/network-tools/runs/probe-1/results?offset=100&limit=50',
+      '/api/network-tools/toolbox/probe-environment',
       '/api/network-tools/runs/probe-1/export',
       '/api/network-tools/runs/export-1/artifact',
       '/api/network-tools/wireless-scan/tasks?limit=200',
       '/api/network-tools/wireless-scan/runs?page=21&page_size=50',
-      '/api/network-tools/wireless-scan/runs/scan_20260715_120000_deadbeef/results?page=22&page_size=100',
+      '/api/network-tools/wireless-scan/runs/scan_20260715_120000_deadbeef/results?page=22&page_size=100&only_trackside=true&band=5G&radio=2&search=%E6%B5%8B%E8%AF%95%E7%AB%99',
       '/api/network-tools/wireless-scan/runs/scan_20260715_120000_deadbeef',
       '/api/network-tools/wireless-scan/projects/project-1',
       '/api/network-tools/wireless-scan/tasks/scan-1/cancel',
       '/api/network-tools/wireless-scan/export',
       '/api/network-tools/wireless-scan/tasks/wireless-export-1/artifact',
     ])
-    expect(fetchMock.mock.calls[1][1].method).toBe('POST')
-    expect(fetchMock.mock.calls[7][1].method).toBe('DELETE')
-    expect(fetchMock.mock.calls[8][1].method).toBe('POST')
+    expect(fetchMock.mock.calls[2][1].method).toBe('POST')
+    expect(fetchMock.mock.calls[8][1].method).toBe('DELETE')
     expect(fetchMock.mock.calls[9][1].method).toBe('POST')
+    expect(fetchMock.mock.calls[10][1].method).toBe('POST')
   })
 })
