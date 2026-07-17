@@ -188,7 +188,6 @@ def test_unimplemented_web_features_are_registered_but_hidden(tmp_path: Path) ->
     gate = FeatureGate(tmp_path)
     for feature_id in (
         "web.ac_trackside_ap_plan",
-        "web.rail_train_online",
         "web.network_tools_wireless_scan",
         "web.command_reference",
         "web.logs",

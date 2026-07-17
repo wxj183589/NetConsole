@@ -1,6 +1,6 @@
 # Job Center 使用说明
 
-Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理、配置采集和文件管理主页只保留运行中/失败数量与打开入口；停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备 Export 还必须同时持有当前进程内的受管 Export spec、与持久化 `ExportJob` 一致的专用 cancel 路径和仍活跃的受管进程，服务重建、spec/进程丢失或终态竞态均拒绝写 `STOPPING`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、类型和受控 endpoint。关闭任务窗口不改变后台任务生命周期。
+Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理和配置采集主页只保留紧凑摘要与打开入口；文件管理因 Qt 对等要求保留业务下载队列，但通用日志、跨模块筛选和统一详情仍进入任务窗口。停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备 Export 还必须同时持有当前进程内的受管 Export spec、与持久化 `ExportJob` 一致的专用 cancel 路径和仍活跃的受管进程，服务重建、spec/进程丢失或终态竞态均拒绝写 `STOPPING`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、类型和受控 endpoint。关闭任务窗口不改变后台任务生命周期。
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
@@ -60,6 +60,8 @@ Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约
 - `/ws/tasks`：初始快照与 Event Hub/SQLite 增量事件。
 
 本地 Worker 由宿主进程持有。正常关闭宿主会走既有取消/清理；崩溃后重启会将失去 PID 宿主的活动快照核对为 `FAILED`。任务中心不得仅依据旧数据库状态显示伪 `RUNNING`。
+
+Worker 内为只读映射恢复临时创建的 `TaskApplicationService` 必须关闭启动期孤儿回收；只有宿主进程可以核对并回收宿主所有的活动任务，避免子进程把仍存活的父任务误判为遗留任务。
 
 ## 事件协议
 

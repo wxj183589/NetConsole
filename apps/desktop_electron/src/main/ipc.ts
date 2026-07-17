@@ -1,8 +1,9 @@
 import type { AppInfo, BackendStatus, DesktopRuntimeConfig, TaskWindowContext } from '../shared/bridge'
-import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../shared/bridge'
+import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
   validateExternalUrl,
+  validateFileDesktopActionRef,
   validateRendererReadyReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
@@ -64,6 +65,7 @@ export interface DesktopIpcDependencies {
   isTrustedSender: (event: IpcEventLike) => boolean
   onRendererReady?: (healthOk: boolean) => void
   logger?: DesktopLogger
+  fetchImpl?: typeof fetch
 }
 
 export interface DesktopIpcRegistration {
@@ -166,6 +168,15 @@ export function registerDesktopIpc(
     trusted((value, event) => downloadManager.download(value, dependencies.windowForEvent?.(event) ?? dependencies.window)),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.executeFileDesktopAction,
+    trusted((value) => executeFileDesktopAction(
+      dependencies.backend,
+      validateFileDesktopActionRef(value),
+      dependencies.fetchImpl ?? fetch,
+      dependencies.logger,
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
@@ -218,4 +229,40 @@ function safeActionError(cause: unknown): string {
     return cause.message
   }
   return '桌面操作失败'
+}
+
+async function executeFileDesktopAction(
+  backend: BackendLike,
+  actionRef: string,
+  fetchImpl: typeof fetch,
+  logger: DesktopLogger = () => undefined,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const runtime = backend.getRuntimeInfo()
+    const base = new URL(runtime.baseUrl)
+    if (
+      base.protocol !== 'http:'
+      || base.hostname !== '127.0.0.1'
+      || !base.port
+      || base.pathname !== '/'
+      || base.username
+      || base.password
+      || base.search
+      || base.hash
+    ) throw new Error('untrusted backend')
+    const url = new URL(`/api/file-management/desktop-actions/${actionRef}/execute`, base.origin)
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken },
+      redirect: 'error',
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const body = await response.json() as { success?: unknown }
+    if (body.success !== true) throw new Error('action rejected')
+    logger('ELECTRON_FILE_DESKTOP_ACTION_COMPLETED')
+    return { success: true }
+  } catch {
+    logger('ELECTRON_FILE_DESKTOP_ACTION_FAILED')
+    return { success: false, error: '桌面操作失败，请检查本机设置后重试。' }
+  }
 }

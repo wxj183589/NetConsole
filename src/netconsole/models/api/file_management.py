@@ -141,6 +141,12 @@ class FileDesktopActionDTO(ApiModel):
     message: str
 
 
+class FileDesktopActionResultDTO(ApiModel):
+    action: str
+    success: bool
+    message: str
+
+
 class FileDownloadResultDTO(ApiModel):
     result_kind: str = "managed_file"
     file_ref: str = Field(default="", pattern=r"^(|fm1_[0-9a-f]{32})$")
@@ -199,6 +205,7 @@ __all__ = [
     "DeviceFileConnectionRequestDTO",
     "FileConnectionDTO",
     "FileDesktopActionDTO",
+    "FileDesktopActionResultDTO",
     "FileDesktopActionRequestDTO",
     "FileDownloadRequestDTO",
     "FileDownloadBatchRequestDTO",

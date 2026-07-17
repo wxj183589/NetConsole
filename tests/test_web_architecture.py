@@ -197,6 +197,53 @@ def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypat
     assert traffic_stop_entered.is_set()
 
 
+def test_web_lifespan_stops_file_queue_before_shared_process_adapter(tmp_path: Path, monkeypatch) -> None:
+    file_closed = Event()
+    adapter_entered = Event()
+    premature_adapter_shutdown = Event()
+
+    class OrderedAdapter:
+        def __init__(self, _task_service) -> None:
+            pass
+
+        def shutdown(self, timeout_seconds: float = 5.0) -> None:
+            adapter_entered.set()
+            if not file_closed.is_set():
+                premature_adapter_shutdown.set()
+
+    class PassiveService:
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    paths = PathResolver(tmp_path)
+    monkeypatch.setattr("netconsole.backend.api.main.LocalProcessAdapter", OrderedAdapter)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=TaskApplicationService(paths=paths),
+        agent_service=PassiveService(),  # type: ignore[arg-type]
+        traffic_service=PassiveService(),  # type: ignore[arg-type]
+        ac_mesh_link_refresh_service=PassiveService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    def close_file_queue() -> None:
+        # 并行 gather 会让 adapter 在这里等待期间提前进入；严格顺序不会。
+        adapter_entered.wait(0.2)
+        file_closed.set()
+
+    monkeypatch.setattr(app.state.file_management_service, "close", close_file_queue)
+    with TestClient(app):
+        pass
+
+    assert file_closed.is_set()
+    assert adapter_entered.is_set()
+    assert premature_adapter_shutdown.is_set() is False
+
+
 def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> None:
     class AgentService:
         stopped = False

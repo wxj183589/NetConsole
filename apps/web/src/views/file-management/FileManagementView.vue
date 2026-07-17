@@ -51,6 +51,9 @@ const localError = ref('')
 const remoteError = ref('')
 const queueError = ref('')
 const deviceFilesMessage = ref('')
+const winscpAvailable = ref(false)
+const winscpMessage = ref('')
+const desktopAvailable = Boolean(window.netconsoleDesktop)
 const localPage = ref<LocalFilePage | null>(null)
 const localLoading = ref(false)
 const localPageNumber = ref(1)
@@ -66,7 +69,7 @@ const remotePageNumber = ref(1)
 const remoteSelected = ref<RemoteFileEntry[]>([])
 const remoteTable = ref<{ clearSelection(): void; toggleRowSelection(row: RemoteFileEntry, selected: boolean): void } | null>(null)
 const tasks = ref<FileDownloadTask[]>([])
-const savedPaths = new Map<string, string>()
+const savedCapabilities = ref(new Map<string, string>())
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => activeDownloadTasks(tasks.value))
@@ -102,6 +105,8 @@ async function initialize(): Promise<void> {
     const status = await getFileManagementStatus(siteId.value)
     siteId.value = status.site_id
     deviceFilesMessage.value = status.device_files.message
+    winscpAvailable.value = status.winscp.available
+    winscpMessage.value = status.winscp.message
     if (isFeatureEnabled('web.file_management_remote')) {
       try { devices.value = await listRemoteDevices(siteId.value) } catch (reason) {
         devices.value = []
@@ -152,8 +157,8 @@ async function openLocal(row: LocalFileEntry): Promise<void> {
   }
   try {
     const result = await downloadBackendResource(localFileDownloadRequest(row.entry_id, siteId.value, row.name))
-    if (result.status === 'saved' && result.savedPath) {
-      const opened = await getPlatformAdapter().openPath(result.savedPath)
+    if (result.status === 'saved' && result.capabilityId) {
+      const opened = await getPlatformAdapter().openPath(result.capabilityId)
       if (!opened.success) localError.value = opened.error || '文件打开失败'
     } else if (result.status === 'failed') {
       localError.value = result.error || '文件打开失败'
@@ -296,10 +301,13 @@ async function showDesktopDependency(
   values: { device_id?: string; local_entry_id?: string; task_id?: string },
 ): Promise<void> {
   try {
+    if (!window.netconsoleDesktop) throw new Error('该操作只能在 Electron Desktop 中执行')
     const result = await prepareFileDesktopAction(action, { site_id: siteId.value, ...values })
-    ElMessage.warning(result.message)
+    const executed = await window.netconsoleDesktop.executeFileDesktopAction(result.action_ref)
+    if (!executed.success) throw new Error(executed.error || '桌面操作失败')
+    ElMessage.success(action === 'winscp' ? '已启动 WinSCP' : '已打开目录')
   } catch (reason) {
-    error.value = messageOf(reason, '桌面动作登记失败')
+    error.value = messageOf(reason, '桌面操作失败')
   }
 }
 
@@ -358,24 +366,30 @@ async function deliverTask(task: FileDownloadTask, action: 'save' | 'open' | 'fo
   if (!task.result) return
   queueError.value = ''
   try {
-    let savedPath = savedPaths.get(task.task_id)
-    if (!savedPath) {
+    let capabilityId = savedCapabilities.value.get(task.task_id)
+    if (action === 'save') {
       const result = await downloadBackendResource(fileDownloadRequest(task.task_id, task.site_id, task.result.name))
       if (result.status === 'failed') {
         queueError.value = result.error || '下载结果交付失败'
         return
       }
-      if (result.status === 'cancelled' || result.status === 'started') return
-      savedPath = result.savedPath
-      if (savedPath) savedPaths.set(task.task_id, savedPath)
+      if (result.status === 'cancelled') return
+      if (result.status === 'started') {
+        ElMessage.success('已开始下载')
+        return
+      }
+      capabilityId = result.capabilityId
+      if (capabilityId) savedCapabilities.value.set(task.task_id, capabilityId)
+      ElMessage.success(capabilityId ? '文件已保存' : '文件已保存；该文件类型不支持直接打开或定位')
+      return
     }
-    if (!savedPath || action === 'save') {
-      if (savedPath) ElMessage.success('文件已保存')
+    if (!capabilityId) {
+      ElMessage.warning('请先保存文件；只有支持的文件类型才能直接打开或定位')
       return
     }
     const result = action === 'open'
-      ? await getPlatformAdapter().openPath(savedPath)
-      : await getPlatformAdapter().showItemInFolder(savedPath)
+      ? await getPlatformAdapter().openPath(capabilityId)
+      : await getPlatformAdapter().showItemInFolder(capabilityId)
     if (!result.success) queueError.value = result.error || '桌面打开失败'
   } catch (reason) {
     queueError.value = messageOf(reason, '下载结果交付失败')
@@ -421,7 +435,7 @@ function messageOf(reason: unknown, fallback: string): string {
         <el-checkbox v-model="allowSftpSetup">必要时允许设备侧启用 SFTP</el-checkbox>
         <el-button type="primary" :disabled="!selectedDeviceId || !!connection" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
         <el-button :disabled="!connection" @click="disconnectDevice">{{ t('disconnect') }}</el-button>
-        <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions')" :disabled="!selectedDeviceId" @click="prepareWinscp">{{ t('winscp') }}</el-button>
+        <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :title="winscpMessage" :disabled="!selectedDeviceId || !winscpAvailable" @click="prepareWinscp">{{ t('winscp') }}</el-button>
       </template>
     </div>
 
@@ -434,7 +448,7 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button :disabled="!localPage" @click="loadLocal(localPage?.root_entry_id, 1)">{{ t('root') }}</el-button>
           <el-button :loading="localLoading" :disabled="!localPage" @click="loadLocal(localPage?.current_entry_id, localPageNumber)">{{ t('refresh') }}</el-button>
           <el-button v-if="isFeatureEnabled('web.file_management_local_write')" :disabled="!localPage" @click="createDirectory">{{ t('newDirectory') }}</el-button>
-          <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions')" :disabled="!localPage" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
+          <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :disabled="!localPage" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
         </div>
         <el-table :data="localPage?.items || []" border stripe height="430" empty-text="当前目录为空" v-loading="localLoading" @row-dblclick="openLocal">
           <el-table-column prop="name" label="名称" min-width="220" show-overflow-tooltip />
@@ -511,8 +525,8 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
             <el-button link type="primary" @click="deliverTask(row, 'save')">{{ t('save') }}</el-button>
-            <el-button link type="primary" @click="deliverTask(row, 'open')">{{ t('open') }}</el-button>
-            <el-button link type="primary" @click="deliverTask(row, 'folder')">{{ t('containingFolder') }}</el-button>
+            <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'open')">{{ t('open') }}</el-button>
+            <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'folder')">{{ t('containingFolder') }}</el-button>
           </template>
         </template></el-table-column>
       </el-table>

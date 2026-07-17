@@ -16,6 +16,7 @@ function bridge(runtime = {
     selectDirectory: vi.fn(async () => ({ cancelled: true })),
     chooseSavePath: vi.fn(async () => ({ cancelled: true })),
     downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
+    executeFileDesktopAction: vi.fn(async () => ({ success: true })),
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
     openExternalUrl: vi.fn(async () => ({ success: true })),

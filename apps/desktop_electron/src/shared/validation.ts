@@ -152,6 +152,13 @@ export function validateCapabilityId(value: unknown): string {
   return value
 }
 
+export function validateFileDesktopActionRef(value: unknown): string {
+  if (typeof value !== 'string' || !/^fda1_[0-9a-f]{32}$/.test(value)) {
+    throw new TypeError('file desktop action reference is invalid')
+  }
+  return value
+}
+
 export function validateExternalUrl(value: unknown): string {
   if (typeof value !== 'string') throw new TypeError('url must be a string')
   const candidate = value.trim()

@@ -143,8 +143,8 @@ class TaskRuntime:
             terminal_state = TaskState.CANCELLED if cancelled else TaskState.FAILED
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
-        task.state = terminal_state
         self.events.publish(payload)
+        self._set_state(job_id, terminal_state)
         self._finish(job_id)
         return payload
 
@@ -167,8 +167,8 @@ class TaskRuntime:
         }
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
-        task.state = TaskState.CANCELLED if cancelled else TaskState.FAILED
         self.events.publish(payload)
+        self._set_state(job_id, TaskState.CANCELLED if cancelled else TaskState.FAILED)
         self._finish(job_id)
         return payload
 

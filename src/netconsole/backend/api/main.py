@@ -209,6 +209,7 @@ def create_app(
         process_adapter=web_process_adapter,
         site_name=site_name,
         mesh_auto_import_enabled=feature_gate.is_enabled("file.mesh_auto_import"),
+        desktop_action_service=desktop_action_service,
     )
     owns_online_mr_application_service = (
         online_mr_application_service is None
@@ -229,11 +230,19 @@ def create_app(
         try:
             await agent_service.start()
             await traffic_service.start()
+            file_management_service.start()
             yield
         finally:
+            try:
+                # 文件下载队列必须先退出，之后才能关闭它共用的 LocalProcessAdapter。
+                await asyncio.to_thread(file_management_service.close)
+            except BaseException as exc:
+                app_logger.log_error(
+                    "WEB_LIFESPAN_STOP_FAILED",
+                    f"component=file_management error={exc.__class__.__name__}: {exc}",
+                )
             cleanup = await asyncio.gather(
                 device_management_service.stop_exports(),
-                asyncio.to_thread(file_management_service.close),
                 asyncio.to_thread(web_export_adapter.shutdown),
                 asyncio.to_thread(web_process_adapter.shutdown),
                 ac_mesh_link_refresh_service.stop(),
@@ -241,7 +250,7 @@ def create_app(
                 return_exceptions=True,
             )
             for component, result in zip(
-                ("device_exports", "file_management", "web_exports", "local_process", "ac_mesh_link", "traffic"),
+                ("device_exports", "web_exports", "local_process", "ac_mesh_link", "traffic"),
                 cleanup,
                 strict=True,
             ):

@@ -360,6 +360,58 @@ def test_expected_state_cas_keeps_normal_external_owner_terminal_transitions(
     assert persisted is not None and persisted.status is expected
 
 
+def test_local_runtime_persists_result_before_single_terminal_state_event(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "local-terminal-order"
+    observed: list[dict[str, object]] = []
+    service.events.subscribe(observed.append)
+    service.prepare(
+        BackgroundJob(job_id=task_id, task_type="demo_task", params={"task_name": "本地终态顺序"})
+    )
+    service.mark_running(task_id)
+    service.feed_stdout(
+        task_id,
+        (json.dumps({"type": "finished", "job_id": task_id, "result": {"count": 1}}) + "\n").encode(),
+    )
+
+    service.complete(task_id, 0)
+
+    terminal_states = [
+        event
+        for event in observed
+        if event.get("type") == "state"
+        and dict(event.get("payload") or {}).get("state") == TaskState.COMPLETED.value
+    ]
+    assert len(terminal_states) == 1
+    persisted = service.get_task(task_id)
+    assert persisted is not None
+    assert persisted.status is TaskState.COMPLETED
+    assert persisted.result == {"count": 1}
+    event_types = [event["type"] for event in service.list_events(task_id)]
+    assert event_types[-2:] == ["finished", "state"]
+
+
+def test_worker_read_only_task_service_does_not_reconcile_parent_owned_task(
+    tmp_path: Path,
+) -> None:
+    owner = _service(tmp_path)
+    task_id = "parent-owned-task"
+    owner.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    owner.mark_running(task_id)
+
+    worker = TaskApplicationService(
+        paths=owner.paths,
+        reconcile_on_start=False,
+    )
+
+    snapshot = worker.get_task(task_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.RUNNING
+    assert not any(event["source"] == "recovery" for event in worker.list_events(task_id))
+
+
 def test_task_api_marks_external_task_not_cancellable(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.create_external_task(

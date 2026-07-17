@@ -162,6 +162,25 @@ def test_application_service_can_launch_a_validated_dynamic_terminal(tmp_path: P
     assert rejected.code == "forbidden_executable"
 
 
+def test_application_service_opens_only_dynamic_paths_inside_controlled_roots(tmp_path: Path) -> None:
+    service, adapter, controlled, _artifact = _fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert service.open_controlled_path(
+        controlled / "reports",
+        expect_directory=True,
+    ).success is True
+    assert adapter.calls[-1] == (
+        "open_controlled_directory",
+        (controlled / "reports").resolve(),
+    )
+    assert service.open_controlled_path(
+        outside,
+        expect_directory=True,
+    ).code == "path_outside_controlled_roots"
+
+
 @pytest.mark.parametrize(
     "forged_id",
     [

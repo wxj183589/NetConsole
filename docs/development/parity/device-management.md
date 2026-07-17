@@ -79,8 +79,8 @@ Qt 截图必须由人工在同一测试数据和窗口尺寸下采集。当前�
 | SecureCRT 会话导出 | 内置或受控 `.ini` 模板生成真实 ZIP Artifact；敏感模板成功/失败均清理 | 已实现，待人工对照 |
 | OmniPeek 预览/选择/强制异常项/导出 | 后台真实预览与 `.nam` Artifact；异常项需显式强制 | 已实现，待人工对照 |
 | SecureCRT/Xshell/PuTTY 配置和单/批量启动 | 严格终端类型、设备 ID、可执行文件名白名单；`shell=False`；超过 20 台需一次性 token | 已实现，真实本机软件待验收 |
-| 文件下载、打开、所在目录 | FastAPI 按 Task/Artifact/SHA-256/大小验证；Electron 受管下载成功后只使用 Native Bridge 返回的当前会话授权句柄调用 `openPath`/`showItemInFolder`，不向桥提交 Renderer 自造路径；重启后授权失效需重新下载 | 模块侧已实现；诊断下载路由待共享 allowlist 合入 |
-| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页已删除 `trackedTasks`、私有任务轮询/取消和本页任务表，只消费公共 tasks store 的紧凑摘要并打开统一任务窗口 | `BLOCKED_ON_TASK_WINDOW` |
+| 文件下载、打开、所在目录 | FastAPI 按 Task/Artifact/SHA-256/大小验证；Electron 受管下载成功后只使用 Native Bridge 返回的当前会话授权句柄调用 `openPath`/`showItemInFolder`，不向桥提交 Renderer 自造路径；重启后授权失效需重新下载 | 已实现，待人工桌面对照 |
+| 进度、停止、失败和重启恢复 | 后端 Task/导入审计持久；设备页已删除 `trackedTasks`、私有任务轮询/取消和本页任务表，只消费公共 tasks store 的紧凑摘要并打开统一任务窗口 | 已实现，待人工桌面对照 |
 
 Qt 的窗口置顶、窗口几何和 Qt 专属子窗口生命周期属于外壳行为，不复制为第二套 Vue 业务状态；Electron 对应能力由正式桌面壳统一承担。采集日志的持久查看、统一停止和 Artifact 一次性授权也归统一任务窗口，设备页不再复制一套。
 
@@ -132,7 +132,7 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 页面和动作继续由以下 Feature 控制：`web.device_management`、`web.device_connection_test`、`web.device_form_connection_test`、`web.device_management_write`、`web.device_management_collect`、`web.device_management_import`、`web.device_management_export`、`web.device_management_desktop`。
 
-除 `web.device_form_connection_test` 外，这些功能在客户包中可见并按既有策略启用；表单连接测试在共享 Runtime 接线前 `default_enabled=false`、`default_client_package=false`。`web.device_management_desktop` 的具体按钮还必须满足 Electron host 检查。
+这些功能按源码 profile 的既有策略启用；`web.device_management_desktop` 的具体按钮还必须满足 Electron host 检查。未完成人工与真实设备验收前，模块状态保持 `IMPLEMENTED_UNVERIFIED`。
 
 ## 自动化证据
 

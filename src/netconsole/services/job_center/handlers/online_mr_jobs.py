@@ -12,6 +12,7 @@ from netconsole.models.online_mr_agent import OnlineMrAgentConnectionConfig
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
 from netconsole.services.online_mr.agent_download_service import OnlineMrAgentDownloadImportResult
 from netconsole.services.online_mr.agent_http_client import OnlineMrAgentHttpClient
@@ -61,7 +62,20 @@ def online_mr_mark_stale_sessions(context: JobContext) -> dict[str, object]:
     site_name = str(context.params.get("site_name") or "")
     if not site_name:
         raise ValueError("Online MR 遗留会话核对缺少 site_name")
-    service = OnlineMrApplicationService(context.paths, site_name=site_name)
+    if not context.paths.site_dir(site_name).is_dir():
+        return {"changed_count": 0}
+    # 当前进程本身就是受管 Worker，不能在读取映射时把父进程持有的任务
+    # 误判成遗留任务。遗留任务核对只由宿主启动路径执行。
+    task_service = TaskApplicationService(
+        context.paths,
+        site_name=site_name,
+        reconcile_on_start=False,
+    )
+    service = OnlineMrApplicationService(
+        context.paths,
+        site_name=site_name,
+        task_service=task_service,
+    )
     try:
         changed = service.recover_mappings(site_id=site_name)
     finally:

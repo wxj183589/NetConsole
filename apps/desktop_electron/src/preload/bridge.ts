@@ -5,6 +5,7 @@ import { DESKTOP_IPC } from '../shared/bridge'
 import {
   validateCapabilityId,
   validateExternalUrl,
+  validateFileDesktopActionRef,
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
   validateRendererReadyReport,
@@ -41,6 +42,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.downloadBackendResource,
       validateBackendDownloadRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['downloadBackendResource']>,
+    executeFileDesktopAction: (actionRef) => ipcRenderer.invoke(
+      DESKTOP_IPC.executeFileDesktopAction,
+      validateFileDesktopActionRef(actionRef),
+    ) as ReturnType<NetConsoleDesktopBridge['executeFileDesktopAction']>,
     openPath: (capabilityId) => ipcRenderer.invoke(
       DESKTOP_IPC.openPath,
       validateCapabilityId(capabilityId),

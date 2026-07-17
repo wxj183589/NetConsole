@@ -20,6 +20,7 @@ describe('preload bridge', () => {
     expect(Object.keys(bridge).sort()).toEqual([
       'chooseSavePath',
       'downloadBackendResource',
+      'executeFileDesktopAction',
       'getAppInfo',
       'getBackendStatus',
       'getRuntimeConfig',
@@ -61,6 +62,7 @@ describe('preload bridge', () => {
     expect(() => bridge.openExternalUrl('http://192.0.2.10/')).toThrow()
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
+    expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 })

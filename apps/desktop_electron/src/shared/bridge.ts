@@ -84,6 +84,7 @@ export interface NetConsoleDesktopBridge {
   selectDirectory(): Promise<SelectDirectoryResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
+  executeFileDesktopAction(actionRef: string): Promise<NativeActionResult>
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
@@ -100,6 +101,7 @@ export const DESKTOP_IPC = Object.freeze({
   selectDirectory: 'netconsole:desktop:select-directory',
   chooseSavePath: 'netconsole:desktop:choose-save-path',
   downloadBackendResource: 'netconsole:desktop:download-backend-resource',
+  executeFileDesktopAction: 'netconsole:desktop:execute-file-action',
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
   openExternalUrl: 'netconsole:desktop:open-external-url',
@@ -119,6 +121,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.selectDirectory,
   DESKTOP_IPC.chooseSavePath,
   DESKTOP_IPC.downloadBackendResource,
+  DESKTOP_IPC.executeFileDesktopAction,
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
   DESKTOP_IPC.openExternalUrl,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+import threading
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import unquote
@@ -13,6 +16,7 @@ from netconsole.backend.api.file_management_router import router
 from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
@@ -24,6 +28,7 @@ from netconsole.services.file_management_service import (
     FileReferenceNotFound,
     run_file_management_download,
 )
+from netconsole.services.external_terminal import WinScpLaunchResult
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.job_registry import dispatch_job
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -142,6 +147,92 @@ def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_director
     assert site_root.current_entry_id == site_root.root_entry_id
     with pytest.raises(FileReferenceNotFound):
         service.list_local_files("demo", directory_id="fl1_" + "0" * 32)
+
+
+def test_file_desktop_actions_are_one_time_controlled_and_winscp_omits_password(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(
+            name="MR-DESKTOP",
+            device_type="MR",
+            primary_address="192.0.2.90",
+            ssh_enabled=True,
+            ssh_username="admin",
+            ssh_password="secret",
+        )
+    )
+    opened: list[Path] = []
+
+    class FakeDesktopActionService:
+        runtime_mode = RuntimeMode.DESKTOP
+
+        def open_controlled_path(self, path: Path, *, expect_directory: bool):
+            assert expect_directory is True
+            opened.append(path)
+            return SimpleNamespace(success=True, code="completed", message="")
+
+    winscp_calls: list[tuple[str, bool]] = []
+
+    def fake_launch_winscp(selected, _settings, _sessions=None, *, include_password=True):
+        winscp_calls.append((selected.device_uuid, include_password))
+        return WinScpLaunchResult(True, "已启动 WinSCP。", [])
+
+    monkeypatch.setattr(
+        "netconsole.services.file_management_service.launch_winscp",
+        fake_launch_winscp,
+    )
+    monkeypatch.setattr(
+        "netconsole.services.file_management_service.find_winscp_exe",
+        lambda _settings: r"C:\\Tools\\WinSCP.exe",
+    )
+    service = FileManagementApplicationService(
+        paths,
+        desktop_action_service=FakeDesktopActionService(),
+    )
+    local = service.list_local_files("demo")
+    open_action = service.desktop_action(
+        "open_local",
+        site_id="demo",
+        local_entry_id=local.current_entry_id,
+    )
+    assert service.execute_desktop_action(open_action.action_ref).success is True
+    assert opened == [paths.file_downloads_root("demo").resolve()]
+    with pytest.raises(FileReferenceNotFound):
+        service.execute_desktop_action(open_action.action_ref)
+
+    winscp_action = service.desktop_action(
+        "winscp",
+        site_id="demo",
+        device_id=device.device_uuid,
+    )
+    assert service.execute_desktop_action(winscp_action.action_ref).success is True
+    assert winscp_calls == [(device.device_uuid, False)]
+    assert service.status("demo").winscp.available is True
+
+
+def test_file_desktop_action_reference_expires_before_execution(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    service = FileManagementApplicationService(paths)
+    local = service.list_local_files("demo")
+    prepared = service.desktop_action(
+        "open_local",
+        site_id="demo",
+        local_entry_id=local.current_entry_id,
+    )
+    stored = service._desktop_actions[prepared.action_ref]
+    service._desktop_actions[prepared.action_ref] = replace(
+        stored,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    with pytest.raises(FileReferenceNotFound):
+        service.consume_desktop_action(prepared.action_ref)
+    assert prepared.action_ref not in service._desktop_actions
 
 
 def test_download_job_only_validates_and_returns_original_ref_without_creating_files(tmp_path: Path) -> None:
@@ -271,6 +362,75 @@ def test_completed_mesh_import_failure_can_be_retried_and_cleared_as_failed(tmp_
     assert cleared.cleared_count == 1
     assert task.task_id not in {item.task_id for item in service.list_download_tasks("demo")}
     service.close()
+
+
+def test_download_queue_thread_follows_explicit_host_lifecycle(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+
+    class FakeProcessAdapter:
+        def start_job(self, job: BackgroundJob) -> str:
+            return job.job_id
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=FakeProcessAdapter(),
+    )
+
+    assert service._queue_thread is None
+    service.start()
+    first = service._queue_thread
+    service.start()
+    assert first is not None and first.is_alive()
+    assert service._queue_thread is first
+
+    service.close()
+    assert service._queue_thread is None
+
+
+def test_download_queue_close_waits_for_inflight_repository_work_before_process_shutdown(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    entered = threading.Event()
+    release = threading.Event()
+    shutdown_called = threading.Event()
+
+    class BlockingProcessAdapter:
+        def start_job(self, job: BackgroundJob) -> str:
+            return job.job_id
+
+        def shutdown(self) -> None:
+            shutdown_called.set()
+
+    adapter = BlockingProcessAdapter()
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=adapter,
+    )
+    service._owns_process_adapter = True
+
+    def block_dispatch(_site: str) -> None:
+        entered.set()
+        release.wait(timeout=5)
+
+    service._dispatch_next_waiting = block_dispatch  # type: ignore[method-assign]
+    service.start()
+    assert entered.wait(timeout=2)
+
+    closer = threading.Thread(target=service.close)
+    closer.start()
+    closer.join(timeout=0.2)
+    assert closer.is_alive()
+    assert service._queue_thread is not None
+    assert shutdown_called.is_set() is False
+
+    release.set()
+    closer.join(timeout=2)
+    assert closer.is_alive() is False
+    assert service._queue_thread is None
+    assert shutdown_called.is_set() is True
 
 
 def test_remote_file_web_flow_uses_session_entries_persistent_device_file_results_and_rejects_cross_device_reuse(tmp_path: Path, monkeypatch) -> None:
@@ -469,7 +629,16 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         )
         assert binary_started.status_code == 202
         binary_task_id = binary_started.json()["task_id"]
-        binary_job = captured[-1]
+        binary_descriptor = service._task_descriptor(
+            task_service.repository("demo"),
+            binary_task_id,
+        )
+        assert binary_descriptor is not None
+        binary_job = BackgroundJob(
+            job_id=binary_task_id,
+            task_type="file_management_download",
+            params=service._job_params("demo", binary_descriptor),
+        )
         binary_result = run_file_management_download(JobContext.from_job(binary_job))
         assert binary_result["name"] == "启动_配置.bin"
         assert ":" not in str(binary_job.params["target_relative_path"])
@@ -507,7 +676,16 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         assert batch_cancel.status_code == 200
         cancelled = client.post(f"/api/file-management/downloads/{task_id}/cancel", params={"site_id": "demo"})
         assert cancelled.status_code == 422
-        assert client.post("/api/file-management/desktop-actions/winscp", json={"device_id": device_a.device_uuid}).status_code == 404
+        prepared_action = client.post(
+            "/api/file-management/desktop-actions/winscp",
+            json={"device_id": device_a.device_uuid},
+        )
+        assert prepared_action.status_code == 200
+        assert prepared_action.json()["action_ref"].startswith("fda1_")
+        assert "password" not in prepared_action.text.casefold()
+        assert client.post(
+            f"/api/file-management/desktop-actions/{prepared_action.json()['action_ref']}/execute"
+        ).status_code == 422
         assert client.post("/api/file-management/downloads", params={"site_id": "demo"}, json={"connection_id": connection_id, "remote_entry_id": "fe1_" + "0" * 32}).status_code == 404
 
         unsafe_job = BackgroundJob(
@@ -611,8 +789,10 @@ def test_desktop_action_contract_is_opaque_one_time_and_never_contains_password(
     assert prepared.action_ref.startswith("fda1_")
     assert "top-secret" not in prepared.model_dump_json()
     command = service.consume_desktop_action(prepared.action_ref)
-    assert command.host == "192.0.2.40"
-    assert command.username == "ops"
+    assert command.site_id == "demo"
+    assert command.device_id == device.device_uuid
+    assert not hasattr(command, "host")
+    assert not hasattr(command, "username")
     assert not hasattr(command, "password")
     with pytest.raises(FileReferenceNotFound):
         service.consume_desktop_action(prepared.action_ref)

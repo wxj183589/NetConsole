@@ -28,6 +28,7 @@ function createHarness(overrides: {
   onRendererReady?: (healthOk: boolean) => void
   openTaskWindow?: (value: unknown) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
+  fetchImpl?: typeof fetch
 } = {}) {
   const ipcMain = new FakeIpcMain()
   const sender = {}
@@ -62,6 +63,7 @@ function createHarness(overrides: {
     logger: overrides.logger,
     onRendererReady: overrides.onRendererReady,
     openTaskWindow: overrides.openTaskWindow,
+    fetchImpl: overrides.fetchImpl,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
 }
@@ -160,6 +162,27 @@ describe('desktop IPC', () => {
     await expect(handler({ sender }, 'https://admin:secret@192.0.2.10/')).resolves.toEqual({ success: false, error: '桌面操作失败' })
     expect(shell.openExternal).toHaveBeenCalledOnce()
     expect(shell.openExternal).toHaveBeenCalledWith('https://192.0.2.10:8443/')
+  })
+
+  it('executes only opaque file actions through the fixed loopback endpoint', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ action: 'open_local', success: true, message: '已打开目录。' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const { ipcMain, sender } = createHarness({ fetchImpl: fetchMock })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.executeFileDesktopAction)!
+    const actionRef = `fda1_${'a'.repeat(32)}`
+
+    await expect(handler({ sender }, actionRef)).resolves.toEqual({ success: true })
+    expect(() => handler({ sender }, 'C:\\private')).toThrow('reference is invalid')
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `http://127.0.0.1:43123/api/file-management/desktop-actions/${actionRef}/execute`,
+    )
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'X-NetConsole-Session': 'secret-token' },
+      redirect: 'error',
+    })
   })
 
   it('rejects arbitrary backend download URLs at the main-process boundary', async () => {

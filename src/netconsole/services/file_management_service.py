@@ -15,10 +15,13 @@ from uuid import uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.file_management import (
     FileConnectionDTO,
     FileDesktopActionDTO,
+    FileDesktopActionResultDTO,
     FileDownloadBatchDTO,
     FileDownloadClearDTO,
     FileDownloadResultDTO,
@@ -50,10 +53,12 @@ from netconsole.services.file_transfer_service import (
     parent_remote_path,
     safe_device_name,
 )
+from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 if TYPE_CHECKING:
+    from netconsole.application.desktop import DesktopActionService
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
     from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -73,7 +78,7 @@ RAW_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt", "
 SESSION_SUFFIXES = {".csv", ".json", ".jsonl", ".log", ".pcap", ".pcapng", ".txt", ".yaml", ".yml"}
 REMOTE_FILES_UNAVAILABLE = "当前局点没有可用的设备资料库。"
 REMOTE_FILES_AVAILABLE = "设备文件通过受控 SFTP 会话读取。"
-WINSCP_INTEGRATION_MESSAGE = "WinSCP 需要 Desktop Action Service；当前 Web 宿主未提供桥接。"
+WINSCP_INTEGRATION_MESSAGE = "当前桌面宿主未提供 WinSCP 联动。"
 ACTIVE_DOWNLOAD_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 TERMINAL_DOWNLOAD_STATES = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}
 DOWNLOAD_DESCRIPTOR_EVENT = "file_management_descriptor"
@@ -122,11 +127,9 @@ class FileDesktopActionCommand:
     """仅供未来 Native Bridge 消费的一次性强类型动作，不进入 HTTP DTO。"""
 
     action: str
+    site_id: str = ""
     path: Path | None = None
     device_id: str = ""
-    host: str = ""
-    port: int = 22
-    username: str = ""
 
 
 @dataclass
@@ -168,6 +171,7 @@ class FileManagementApplicationService:
         device_resolver: DeviceResolver | None = None,
         transfer_factory: TransferServiceFactory = FileTransferService,
         mesh_auto_import_enabled: bool = True,
+        desktop_action_service: DesktopActionService | None = None,
     ) -> None:
         self.paths = paths
         self.site_name = str(site_name or "demo")
@@ -176,6 +180,7 @@ class FileManagementApplicationService:
         self._device_resolver = device_resolver
         self._transfer_factory = transfer_factory
         self._mesh_auto_import_enabled = bool(mesh_auto_import_enabled)
+        self._desktop_action_service = desktop_action_service
         self._sessions: dict[str, _RemoteSession] = {}
         self._sessions_lock = threading.RLock()
         self._local_entries: dict[str, _LocalEntry] = {}
@@ -196,7 +201,19 @@ class FileManagementApplicationService:
 
             self.process_adapter = LocalProcessAdapter(self.task_service)
             self._owns_process_adapter = True
-        if self.task_service is not None and callable(getattr(self.process_adapter, "start_job", None)):
+
+    def start(self) -> None:
+        """启动持久下载队列；只由宿主生命周期调用。"""
+
+        if (
+            self._queue_stop.is_set()
+            or self.task_service is None
+            or not callable(getattr(self.process_adapter, "start_job", None))
+        ):
+            return
+        with self._queue_lock:
+            if self._queue_thread is not None and self._queue_thread.is_alive():
+                return
             self._queue_thread = threading.Thread(
                 target=self._run_download_queue,
                 name="file-management-download-queue",
@@ -207,9 +224,15 @@ class FileManagementApplicationService:
     def close(self) -> None:
         """幂等关闭全部 Web 会话；FastAPI lifespan 必须在 shutdown 调用。"""
         self._queue_stop.set()
-        if self._queue_thread is not None and self._queue_thread is not threading.current_thread():
-            self._queue_thread.join(timeout=1.0)
-        self._queue_thread = None
+        queue_thread = self._queue_thread
+        if queue_thread is threading.current_thread():
+            return
+        if queue_thread is not None:
+            # 队列可能正处于 SQLite busy wait；必须等它真正退出后才能关闭共享进程宿主。
+            queue_thread.join()
+            with self._queue_lock:
+                if self._queue_thread is queue_thread:
+                    self._queue_thread = None
         with self._sessions_lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
@@ -243,7 +266,7 @@ class FileManagementApplicationService:
                 available=device_db_exists,
                 message=REMOTE_FILES_AVAILABLE if device_db_exists else REMOTE_FILES_UNAVAILABLE,
             ),
-            winscp=FileManagementCapabilityDTO(available=False, message=WINSCP_INTEGRATION_MESSAGE),
+            winscp=self._winscp_capability(),
         )
 
     def list_local_files(
@@ -582,34 +605,34 @@ class FileManagementApplicationService:
             device = self._resolve_device(site, device_id)
             command = FileDesktopActionCommand(
                 action=selected,
+                site_id=site,
                 device_id=str(device.device_uuid or device.id or ""),
-                host=str(device.primary_address or ""),
-                port=max(1, int(device.ssh_port or 22)),
-                username=str(device.ssh_username or ""),
             )
         if selected == "open_result_dir":
             path, _name = self.open_download(site, task_id)
-            command = FileDesktopActionCommand(action=selected, path=path.parent)
+            command = FileDesktopActionCommand(action=selected, site_id=site, path=path.parent)
         elif selected == "open_local":
             entry = self._local_entry(site, local_entry_id)
-            command = FileDesktopActionCommand(action=selected, path=entry.path)
+            command = FileDesktopActionCommand(action=selected, site_id=site, path=entry.path)
         elif selected != "winscp":
             raise FileManagementError("不支持的桌面动作")
         expires_at = datetime.now(UTC) + timedelta(seconds=60)
         action_ref = f"fda1_{uuid4().hex}"
         with self._desktop_actions_lock:
+            now = datetime.now(UTC)
+            self._desktop_actions = {
+                key: value
+                for key, value in self._desktop_actions.items()
+                if value.expires_at >= now
+            }
             self._desktop_actions[action_ref] = _DesktopAction(site, expires_at, command)
         return FileDesktopActionDTO(
             action=selected,
             action_ref=action_ref,
             expires_at=expires_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
             accepted=True,
-            integration_required=True,
-            message=(
-                WINSCP_INTEGRATION_MESSAGE
-                if selected == "winscp"
-                else "桌面动作已登记；等待 Task Window Native Bridge 消费。"
-            ),
+            integration_required=False,
+            message="桌面动作已登记。",
         )
 
     def consume_desktop_action(self, action_ref: str) -> FileDesktopActionCommand:
@@ -622,6 +645,48 @@ class FileManagementApplicationService:
         if action is None or action.expires_at < datetime.now(UTC):
             raise FileReferenceNotFound("桌面动作引用不存在或已过期")
         return action.command
+
+    def execute_desktop_action(self, action_ref: str) -> FileDesktopActionResultDTO:
+        command = self.consume_desktop_action(action_ref)
+        service = self._desktop_action_service
+        if service is None or service.runtime_mode is not RuntimeMode.DESKTOP:
+            raise FileManagementError("当前运行模式不允许桌面动作")
+        if command.action in {"open_local", "open_result_dir"}:
+            if command.path is None:
+                raise FileManagementError("桌面动作目标不存在")
+            result = service.open_controlled_path(command.path, expect_directory=True)
+            if not result.success:
+                raise FileManagementError(result.message or result.code)
+            return FileDesktopActionResultDTO(
+                action=command.action,
+                success=True,
+                message="已打开目录。",
+            )
+        if command.action == "winscp":
+            device = self._resolve_device(command.site_id, command.device_id)
+            result = launch_winscp(
+                device,
+                SettingsStore(self.paths),
+                include_password=False,
+            )
+            if not result.success:
+                raise FileManagementError(result.message)
+            return FileDesktopActionResultDTO(
+                action=command.action,
+                success=True,
+                message=result.message,
+            )
+        raise FileManagementError("不支持的桌面动作")
+
+    def _winscp_capability(self) -> FileManagementCapabilityDTO:
+        service = self._desktop_action_service
+        if service is None or service.runtime_mode is not RuntimeMode.DESKTOP:
+            return FileManagementCapabilityDTO(available=False, message=WINSCP_INTEGRATION_MESSAGE)
+        available = bool(find_winscp_exe(SettingsStore(self.paths)))
+        return FileManagementCapabilityDTO(
+            available=available,
+            message="" if available else "未找到 WinSCP，请先在系统设置中配置 WinSCP.exe。",
+        )
 
     def list_files(
         self,
@@ -1305,7 +1370,14 @@ class FileManagementApplicationService:
             ).resolve()
             target_kind = "device_file"
         directory.mkdir(parents=True, exist_ok=True)
-        name = resolve_local_download_name(remote_file, str(device.name or device.system_name or "device"))
+        name = _download_display_name(
+            resolve_local_download_name(
+                remote_file,
+                str(device.name or device.system_name or "device"),
+            )
+        )
+        if not name:
+            raise FileManagementError("远程文件名不能转换为安全的本地文件名")
         return self._reserve_target(directory / name), target_kind
 
     def _reserve_target(self, target: Path) -> Path:

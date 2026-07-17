@@ -10,6 +10,7 @@ from netconsole.models.api.file_management import (
     DeviceFileConnectionRequestDTO,
     FileConnectionDTO,
     FileDesktopActionDTO,
+    FileDesktopActionResultDTO,
     FileDesktopActionRequestDTO,
     FileDownloadBatchDTO,
     FileDownloadBatchRequestDTO,
@@ -322,6 +323,18 @@ def prepare_desktop_action(
             task_id=payload.task_id,
         )
     )
+
+
+@router.post(
+    "/desktop-actions/{action_ref}/execute",
+    response_model=FileDesktopActionResultDTO,
+    dependencies=[Depends(require_feature("web.file_management_desktop_actions"))],
+)
+def execute_desktop_action(
+    request: Request,
+    action_ref: str,
+) -> FileDesktopActionResultDTO:
+    return _call(lambda: _service(request).execute_desktop_action(action_ref))
 
 
 def _remote_call(callback):

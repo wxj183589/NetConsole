@@ -93,6 +93,10 @@ class DesktopActionResolver:
     def artifact(self, artifact_id: str) -> Path:
         return self._path(artifact_id, self._artifacts, "unknown_artifact", expect_directory=False)
 
+    def controlled_path(self, path: Path, *, expect_directory: bool) -> Path:
+        """校验由受信 Application Service 解析出的动态本机路径。"""
+        return self._validate_path(path, expect_directory=expect_directory)
+
     def terminal(self, action_id: str, object_id: str) -> RegisteredLaunch:
         return self._launch(action_id, object_id, self._terminals, "unknown_terminal_action")
 
@@ -122,6 +126,9 @@ class DesktopActionResolver:
         candidate = registry.get(key)
         if candidate is None:
             raise DesktopActionResolutionError(unknown_code, "本机目标未登记")
+        return self._validate_path(candidate, expect_directory=expect_directory)
+
+    def _validate_path(self, candidate: Path, *, expect_directory: bool) -> Path:
         raw = Path(candidate)
         if not raw.is_absolute() or _is_unc(raw):
             raise DesktopActionResolutionError("invalid_registered_path", "登记路径必须是本机绝对路径")
@@ -232,6 +239,23 @@ class DesktopActionService:
         except DesktopActionResolutionError as exc:
             result = _rejected(exc)
         return self._audit_result("open_controlled_artifact", target, result)
+
+    def open_controlled_path(self, path: Path, *, expect_directory: bool) -> DesktopActionResult:
+        """打开由业务服务生成、且仍位于受控根目录中的动态目标。"""
+        target = "dynamic_directory" if expect_directory else "dynamic_artifact"
+        self._audit_attempt("open_controlled_path", target)
+        if rejection := self._server_rejection():
+            return self._audit_result("open_controlled_path", target, rejection)
+        try:
+            resolved = self.resolver.controlled_path(path, expect_directory=expect_directory)
+            result = (
+                self.adapter.open_controlled_directory(resolved)
+                if expect_directory
+                else self.adapter.open_controlled_artifact(resolved)
+            )
+        except DesktopActionResolutionError as exc:
+            result = _rejected(exc)
+        return self._audit_result("open_controlled_path", target, result)
 
     def launch_registered_terminal(self, action_id: str, object_id: str) -> DesktopActionResult:
         target = _audit_identifier(action_id, object_id)

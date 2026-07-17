@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QScrollArea, QTableWidget
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
@@ -24,7 +24,9 @@ from netconsole.services.external_terminal import (
     available_external_terminal_configs,
     build_external_terminal_command,
     build_winscp_command,
+    find_winscp_exe,
     launch_external_terminal,
+    launch_winscp,
 )
 from netconsole.services.netmiko_connection import ConnectionTarget, choose_connection_target
 from netconsole.services.securecrt_session_export import export_securecrt_sessions, sanitize_path_part
@@ -164,6 +166,14 @@ def test_winscp_command_uses_sftp_and_masks_password():
     assert "sec ret" not in _safe_command(args, device)
     assert "sec%20ret" not in _safe_command(args, device)
 
+    desktop_args = build_winscp_command(
+        device,
+        target,
+        r"C:\Tools\WinSCP.exe",
+        include_password=False,
+    )
+    assert desktop_args == [r"C:\Tools\WinSCP.exe", "sftp://admin@10.0.0.1:22/", "/newinstance"]
+
 
 def test_winscp_tunnel_target_uses_localhost_port():
     device = Device(name="SW1", ssh_password="secret")
@@ -172,6 +182,86 @@ def test_winscp_tunnel_target_uses_localhost_port():
     args = build_winscp_command(device, target, r"C:\Tools\WinSCP.exe")
 
     assert args[1] == "sftp://admin:secret@127.0.0.1:32022/"
+
+
+def test_find_winscp_exe_rejects_other_existing_programs(tmp_path, monkeypatch):
+    configured = tmp_path / "powershell.exe"
+    configured.touch()
+    settings = FakeSettings()
+    settings.values["external_terminal/winscp_path"] = str(configured)
+    monkeypatch.setattr("netconsole.services.external_terminal.shutil.which", lambda _name: None)
+    monkeypatch.setattr("netconsole.services.external_terminal.WINSCP_COMMON_PATHS", ())
+
+    assert find_winscp_exe(settings) == ""
+
+    winscp = tmp_path / "WinSCP.exe"
+    winscp.touch()
+    settings.values["external_terminal/winscp_path"] = str(winscp)
+    assert find_winscp_exe(settings) == str(winscp)
+
+
+def test_winscp_tunnel_reports_start_failure_before_return(monkeypatch):
+    device = Device(name="SW1", ssh_password="secret")
+    target = ConnectionTarget("SSH", "hp_comware", "10.0.0.1", 22, "admin", "secret", via_tunnel=True)
+    closed: list[bool] = []
+
+    class FakeTunnel:
+        def __enter__(self):
+            return ConnectionTarget("SSH", "hp_comware", "127.0.0.1", 32022, "admin", "secret", via_tunnel=True)
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    monkeypatch.setattr("netconsole.services.external_terminal.find_winscp_exe", lambda _settings: r"C:\Tools\WinSCP.exe")
+    monkeypatch.setattr("netconsole.services.external_terminal.connection_targets", lambda _device: [target])
+    monkeypatch.setattr("netconsole.services.external_terminal.prepared_connection_target", lambda _target: FakeTunnel())
+    monkeypatch.setattr(
+        "netconsole.services.external_terminal.subprocess.Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("WinSCP 启动失败")),
+    )
+
+    result = launch_winscp(device)
+
+    assert result.success is False
+    assert result.message == "WinSCP 启动失败"
+    assert closed == [True]
+
+
+def test_winscp_tunnel_starts_process_before_success(monkeypatch):
+    device = Device(name="SW1", ssh_password="secret")
+    target = ConnectionTarget("SSH", "hp_comware", "10.0.0.1", 22, "admin", "secret", via_tunnel=True)
+    calls: list[str] = []
+
+    class FakeTunnel:
+        def __enter__(self):
+            calls.append("tunnel")
+            return ConnectionTarget("SSH", "hp_comware", "127.0.0.1", 32022, "admin", "secret", via_tunnel=True)
+
+        def __exit__(self, *_args):
+            calls.append("closed")
+
+    class FakeProcess:
+        def wait(self):
+            calls.append("waited")
+
+    def fake_popen(*_args, **_kwargs):
+        calls.append("popen")
+        return FakeProcess()
+
+    monkeypatch.setattr("netconsole.services.external_terminal.find_winscp_exe", lambda _settings: r"C:\Tools\WinSCP.exe")
+    monkeypatch.setattr("netconsole.services.external_terminal.connection_targets", lambda _device: [target])
+    monkeypatch.setattr("netconsole.services.external_terminal.prepared_connection_target", lambda _target: FakeTunnel())
+    monkeypatch.setattr("netconsole.services.external_terminal.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("netconsole.services.external_terminal.shutdown_manager.register_process", lambda *_args, **_kwargs: calls.append("registered"))
+    monkeypatch.setattr("netconsole.services.external_terminal.shutdown_manager.unregister_process", lambda *_args, **_kwargs: calls.append("unregistered"))
+    sessions: list[object] = []
+
+    result = launch_winscp(device, sessions=sessions)
+    sessions[-1].join(timeout=1)
+
+    assert result.success is True
+    assert calls[:3] == ["tunnel", "popen", "registered"]
+    assert calls[-3:] == ["waited", "unregistered", "closed"]
 
 
 def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):

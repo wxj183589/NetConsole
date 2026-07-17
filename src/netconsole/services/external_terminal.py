@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -132,25 +133,36 @@ def find_winscp_exe(settings: SettingsLike | None = None) -> str:
     configured = ""
     if settings is not None:
         configured = str(settings.get_value(WINSCP_SETTING_KEY, "") or "").strip()
-    if configured and Path(configured).is_file():
+    if configured and _is_winscp_exe(configured):
         return configured
     path_candidate = shutil.which("WinSCP.exe") or shutil.which("winscp.exe")
-    if path_candidate:
+    if path_candidate and _is_winscp_exe(path_candidate):
         return path_candidate
     for candidate in WINSCP_COMMON_PATHS:
-        if Path(candidate).is_file():
+        if _is_winscp_exe(candidate):
             return candidate
     return ""
 
 
-def build_winscp_command(device: Device, target: ConnectionTarget, exe_path: str) -> list[str]:
+def _is_winscp_exe(path: str) -> bool:
+    candidate = Path(path)
+    return candidate.name.casefold() == "winscp.exe" and candidate.is_file()
+
+
+def build_winscp_command(
+    device: Device,
+    target: ConnectionTarget,
+    exe_path: str,
+    *,
+    include_password: bool = True,
+) -> list[str]:
     exe = str(exe_path or "").strip()
     if not exe:
         raise ValueError("未找到 WinSCP，请先配置 WinSCP.exe 路径。")
     if str(target.protocol or "").casefold() != "ssh":
         raise ValueError("当前设备未配置 SSH/SFTP 登录信息。")
     username = quote(str(target.username or ""), safe="")
-    password = quote(str(target.password or ""), safe="")
+    password = quote(str(target.password or ""), safe="") if include_password else ""
     auth = username
     if password:
         auth = f"{username}:{password}"
@@ -158,7 +170,13 @@ def build_winscp_command(device: Device, target: ConnectionTarget, exe_path: str
     return [exe, url, "/newinstance"]
 
 
-def launch_winscp(device: Device, settings: SettingsLike | None = None, sessions: list[object] | None = None) -> WinScpLaunchResult:
+def launch_winscp(
+    device: Device,
+    settings: SettingsLike | None = None,
+    sessions: list[object] | None = None,
+    *,
+    include_password: bool = True,
+) -> WinScpLaunchResult:
     exe = find_winscp_exe(settings)
     if not exe:
         return WinScpLaunchResult(False, "未找到 WinSCP，请先配置 WinSCP.exe 路径。", [])
@@ -166,14 +184,23 @@ def launch_winscp(device: Device, settings: SettingsLike | None = None, sessions
     if target is None or not str(target.username or "").strip():
         return WinScpLaunchResult(False, "当前设备未配置 SSH/SFTP 登录信息。", [])
     if target.via_tunnel:
-        thread = threading.Thread(target=_launch_winscp_via_tunnel, args=(device, target, exe, sessions), daemon=True)
-        thread.start()
+        tunnel = ExitStack()
+        try:
+            prepared = tunnel.enter_context(prepared_connection_target(target))
+            args = build_winscp_command(device, prepared, exe, include_password=include_password)
+            process = subprocess.Popen(args, shell=False)
+            shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
+        except Exception as exc:
+            tunnel.close()
+            return WinScpLaunchResult(False, sanitize_sensitive_text(str(exc), device), [])
+        thread = threading.Thread(target=_wait_winscp_via_tunnel, args=(process, tunnel), daemon=True)
         if sessions is not None:
+            sessions.append(process)
             sessions.append(thread)
-        args_preview = [exe, "sftp://***@127.0.0.1:0/", "/newinstance"]
-        return WinScpLaunchResult(True, "已启动 WinSCP。", args_preview, _safe_command(args_preview, device))
+        thread.start()
+        return WinScpLaunchResult(True, "已启动 WinSCP。", args, _safe_command(args, device))
     try:
-        args = build_winscp_command(device, target, exe)
+        args = build_winscp_command(device, target, exe, include_password=include_password)
         process = subprocess.Popen(args, shell=False)
         shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
     except Exception as exc:
@@ -181,17 +208,12 @@ def launch_winscp(device: Device, settings: SettingsLike | None = None, sessions
     return WinScpLaunchResult(True, "已启动 WinSCP。", args, _safe_command(args, device))
 
 
-def _launch_winscp_via_tunnel(device: Device, target: ConnectionTarget, exe: str, sessions: list[object] | None) -> None:
-    with prepared_connection_target(target) as prepared:
-        args = build_winscp_command(device, prepared, exe)
-        process = subprocess.Popen(args, shell=False)
-        shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
-        if sessions is not None:
-            sessions.append(process)
-        try:
-            process.wait()
-        finally:
-            shutdown_manager.unregister_process(process)
+def _wait_winscp_via_tunnel(process: subprocess.Popen[bytes], tunnel: ExitStack) -> None:
+    try:
+        process.wait()
+    finally:
+        shutdown_manager.unregister_process(process)
+        tunnel.close()
 
 
 def launch_external_terminal(device: Device, config: ExternalTerminalConfig) -> ExternalTerminalLaunchResult:

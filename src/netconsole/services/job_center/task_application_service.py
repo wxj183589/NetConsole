@@ -34,6 +34,7 @@ class TaskApplicationService:
         event_hub: TaskEventHub | None = None,
         *,
         site_name: str = "demo",
+        reconcile_on_start: bool = True,
     ) -> None:
         self.paths = paths or PathResolver()
         self.site_name = str(site_name or "demo")
@@ -41,8 +42,10 @@ class TaskApplicationService:
         self._repositories: dict[str, TaskRepository] = {}
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
+        self._reconcile_on_start = bool(reconcile_on_start)
         self.events.add_guard(self._persist_event)
-        self.reconcile_orphaned_local_tasks()
+        if self._reconcile_on_start:
+            self.reconcile_orphaned_local_tasks()
 
     @property
     def events(self) -> TaskEventHub:
@@ -56,7 +59,8 @@ class TaskApplicationService:
             self._repositories[site] = repository
         if site not in self._reconciled_sites:
             self._reconciled_sites.add(site)
-            repository.reconcile_orphaned_local_tasks(self._is_process_alive)
+            if self._reconcile_on_start:
+                repository.reconcile_orphaned_local_tasks(self._is_process_alive)
         return repository
 
     def prepare(self, job: BackgroundJob) -> TaskLaunch:
@@ -428,10 +432,10 @@ class TaskApplicationService:
             return {TaskState.COMPLETED}
         if event_type == "artifact_rejected":
             return {snapshot.status}
-        if snapshot.status in TERMINAL_TASK_STATES:
-            return set()
         if event_type == "state":
             target = TaskState(str(payload.get("state") or snapshot.status.value))
+            if snapshot.status in TERMINAL_TASK_STATES:
+                return {snapshot.status} if target is snapshot.status else set()
             if target is TaskState.PENDING:
                 return {TaskState.PENDING}
             if target is TaskState.STARTING:
@@ -439,6 +443,8 @@ class TaskApplicationService:
             if target is TaskState.RUNNING:
                 return {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING}
             return _ACTIVE_TASK_STATES
+        if snapshot.status in TERMINAL_TASK_STATES:
+            return set()
         if event_type in {"finished", "error", "cancelled"}:
             return _ACTIVE_TASK_STATES
         return {snapshot.status}
