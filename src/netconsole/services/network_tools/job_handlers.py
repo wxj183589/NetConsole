@@ -169,22 +169,26 @@ def _run_continuous_ping(context: JobContext, params: dict[str, Any], path: Path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("", encoding="utf-8")
     sample_count = 0
-    while True:
-        context.check_cancelled()
-        result = run_single_ping(
-            params["target"],
-            count=1,
-            size=params["packet_size"],
-            timeout_ms=params["timeout_ms"],
-            source_ip=params["source_ip"],
-        )
-        _append_jsonl_row(path, _safe_probe_row(result))
-        sample_count += 1
-        context.progress("network_probe", sample_count, 0, f"已完成第 {sample_count} 次 Ping")
-        deadline = time.monotonic() + params["interval_ms"] / 1000
-        while time.monotonic() < deadline:
+    try:
+        while True:
             context.check_cancelled()
-            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+            result = run_single_ping(
+                params["target"],
+                count=1,
+                size=params["packet_size"],
+                timeout_ms=params["timeout_ms"],
+                source_ip=params["source_ip"],
+            )
+            _append_jsonl_row(path, _safe_probe_row(result))
+            sample_count += 1
+            context.progress("network_probe", sample_count, 0, f"已完成第 {sample_count} 次 Ping")
+            deadline = time.monotonic() + params["interval_ms"] / 1000
+            while time.monotonic() < deadline:
+                context.check_cancelled()
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    except BackgroundTaskCancelled:
+        context.progress("network_probe", sample_count, 0, f"持续 Ping 已停止，共保留 {sample_count} 条结果")
+        raise
 
 
 def _run_subnet_ping(

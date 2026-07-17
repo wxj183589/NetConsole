@@ -37,6 +37,7 @@ const runDetail = ref<WirelessScanRunDetail | null>(null)
 const selectedResult = ref<Record<string, unknown> | null>(null)
 const selectedTask = ref<NetworkToolTask | null>(null)
 const loading = ref(false)
+const scanStarting = ref(false)
 const form = reactive({
   adapter_guid: '',
   project_id: '',
@@ -50,11 +51,21 @@ const form = reactive({
   radio: '',
   search: '',
 })
+let scanStatusTimer: number | null = null
 let autoRefreshTimer: number | null = null
+let scanMonitorGeneration = 0
+let mounted = true
 const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
+const SCAN_STATUS_INTERVAL_MS = 500
 const tasks = computed(() => taskStore.tasks.filter((item) => item.owner === 'web_network_tools' && ['network_tools.wireless_scan', 'network_tools.wireless_export'].includes(item.type)))
-const runningTask = computed(() => tasks.value.find((item) => item.type === 'network_tools.wireless_scan' && ACTIVE_STATUSES.includes(item.status)) || null)
-const selectedTaskSummary = computed(() => tasks.value.find((item) => item.id === selectedTask.value?.id) || selectedTask.value)
+const runningTask = computed(() => {
+  if (selectedTask.value?.type === 'network_tools.wireless_scan') {
+    if (ACTIVE_STATUSES.includes(selectedTask.value.status)) return selectedTask.value
+    return tasks.value.find((item) => item.id !== selectedTask.value?.id && item.type === 'network_tools.wireless_scan' && ACTIVE_STATUSES.includes(item.status)) || null
+  }
+  return tasks.value.find((item) => item.type === 'network_tools.wireless_scan' && ACTIVE_STATUSES.includes(item.status)) || null
+})
+const selectedTaskSummary = computed(() => selectedTask.value)
 const selectedTaskRunning = computed(() => selectedTaskSummary.value && ACTIVE_STATUSES.includes(selectedTaskSummary.value.status))
 const selectedExportCompleted = computed(() => selectedTaskSummary.value?.type === 'network_tools.wireless_export' && selectedTaskSummary.value.status === 'COMPLETED')
 const detailVisible = computed({
@@ -69,9 +80,17 @@ const rowKeys = computed(() => {
 
 onMounted(async () => {
   await Promise.all([refresh(), taskStore.refresh()])
+  if (!mounted) return
+  const activeScan = runningTask.value
+  if (activeScan) {
+    selectedTask.value = await getWirelessTask(activeScan.id)
+    monitorWirelessTask(activeScan.id)
+  }
 })
 
 onBeforeUnmount(() => {
+  mounted = false
+  stopWirelessMonitor()
   stopAutoRefresh()
 })
 
@@ -121,7 +140,9 @@ async function deleteProject(): Promise<void> {
 }
 
 async function startScan(notify = true): Promise<void> {
-  if (runningTask.value) return
+  if (runningTask.value || scanStarting.value) return
+  scanStarting.value = true
+  stopAutoRefresh()
   try {
     const adapter = adapters.value.find((item) => item.guid === form.adapter_guid)
     const response = await startWirelessScan({
@@ -131,10 +152,14 @@ async function startScan(notify = true): Promise<void> {
       scan_source: form.scan_source,
     })
     selectedTask.value = response.task
+    monitorWirelessTask(response.task.id)
     await taskStore.refresh()
     if (notify) ElMessage.success(`无线扫描已提交：${response.task.id}`)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描启动失败')
+    if (form.auto_refresh) scheduleNextScan()
+  } finally {
+    scanStarting.value = false
   }
 }
 
@@ -145,7 +170,7 @@ async function stopScan(): Promise<void> {
   if (!current) return
   try {
     selectedTask.value = await cancelWirelessTask(current.id)
-    await taskStore.refresh()
+    monitorWirelessTask(current.id)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描停止失败')
   }
@@ -154,14 +179,76 @@ async function stopScan(): Promise<void> {
 function toggleAutoRefresh(): void {
   stopAutoRefresh()
   if (!form.auto_refresh) return
-  autoRefreshTimer = window.setInterval(() => {
+  if (!runningTask.value) scheduleNextScan()
+}
+
+function stopAutoRefresh(): void {
+  if (autoRefreshTimer !== null) window.clearTimeout(autoRefreshTimer)
+  autoRefreshTimer = null
+}
+
+function scheduleNextScan(): void {
+  stopAutoRefresh()
+  if (!mounted || !form.auto_refresh) return
+  autoRefreshTimer = window.setTimeout(() => {
+    autoRefreshTimer = null
     if (!runningTask.value) void startScan(false)
   }, form.refresh_interval * 1000)
 }
 
-function stopAutoRefresh(): void {
-  if (autoRefreshTimer !== null) window.clearInterval(autoRefreshTimer)
-  autoRefreshTimer = null
+function monitorWirelessTask(taskId: string): void {
+  stopWirelessMonitor()
+  const generation = scanMonitorGeneration
+  scheduleWirelessPoll(taskId, generation, 0)
+}
+
+function stopWirelessMonitor(): void {
+  scanMonitorGeneration += 1
+  if (scanStatusTimer !== null) window.clearTimeout(scanStatusTimer)
+  scanStatusTimer = null
+}
+
+function scheduleWirelessPoll(taskId: string, generation: number, delay: number): void {
+  if (!mounted || generation !== scanMonitorGeneration) return
+  scanStatusTimer = window.setTimeout(() => void pollWirelessTask(taskId, generation), delay)
+}
+
+async function pollWirelessTask(taskId: string, generation: number): Promise<void> {
+  scanStatusTimer = null
+  try {
+    const current = await getWirelessTask(taskId)
+    if (!mounted || generation !== scanMonitorGeneration || selectedTask.value?.id !== taskId) return
+    selectedTask.value = current
+    if (ACTIVE_STATUSES.includes(current.status)) {
+      scheduleWirelessPoll(taskId, generation, SCAN_STATUS_INTERVAL_MS)
+      return
+    }
+    await taskStore.refresh()
+    if (!mounted || generation !== scanMonitorGeneration || selectedTask.value?.id !== taskId) return
+    if (current.type === 'network_tools.wireless_scan') await refreshCompletedScan(current, generation)
+    if (mounted && generation === scanMonitorGeneration && form.auto_refresh) scheduleNextScan()
+  } catch (cause) {
+    if (mounted && generation === scanMonitorGeneration) scheduleWirelessPoll(taskId, generation, SCAN_STATUS_INTERVAL_MS)
+  }
+}
+
+async function refreshCompletedScan(task: NetworkToolTask, generation: number): Promise<void> {
+  await refresh()
+  if (!mounted || generation !== scanMonitorGeneration) return
+  const scanId = String(task.result?.result_id || '')
+  if (!scanId) return
+  resultPage.value = 1
+  const run = runs.value.find((item) => item.scan_id === scanId)
+  if (run) {
+    await selectRun(run)
+    return
+  }
+  const [page, detail] = await Promise.all([loadResultPage(scanId), getWirelessRunDetail(scanId)])
+  if (!mounted || generation !== scanMonitorGeneration) return
+  selectedRun.value = { ...detail, site: '', raw_file: `${scanId}.txt` }
+  results.value = page.items
+  resultTotal.value = page.total
+  runDetail.value = detail
 }
 
 async function selectRun(run: WirelessScanRun): Promise<void> {
@@ -224,7 +311,9 @@ async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
   if (!run) return
   try {
     const response = await exportWirelessScan(run.scan_id, format)
+    stopWirelessMonitor()
     selectedTask.value = response.task
+    monitorWirelessTask(response.task.id)
     await taskStore.refresh()
     ElMessage.success(`无线扫描导出任务已提交：${response.task.id}`)
   } catch (cause) {
@@ -234,7 +323,9 @@ async function exportRun(format: 'csv' | 'xlsx'): Promise<void> {
 
 async function selectTask(task: TaskItem): Promise<void> {
   try {
+    stopWirelessMonitor()
     selectedTask.value = await getWirelessTask(task.id)
+    if (ACTIVE_STATUSES.includes(selectedTask.value.status)) monitorWirelessTask(selectedTask.value.id)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描任务详情加载失败')
   }
@@ -244,7 +335,7 @@ async function cancelSelectedTask(): Promise<void> {
   if (!selectedTask.value) return
   try {
     selectedTask.value = await cancelWirelessTask(selectedTask.value.id)
-    await taskStore.refresh()
+    monitorWirelessTask(selectedTask.value.id)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '无线扫描任务停止失败')
   }

@@ -361,6 +361,88 @@ def test_batch_probe_dispatches_registered_handler_and_never_embeds_rows(tmp_pat
     assert all("raw_output" not in row for row in first["items"])
 
 
+def test_long_probe_results_support_bounded_offset_and_incremental_cursor_paging(tmp_path: Path) -> None:
+    service, _adapter = _service(tmp_path)
+    task_id = "a" * 32
+    now = utc_now_iso()
+    service.task_service.repository("demo").save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type=NETWORK_BATCH_PING_TASK,
+            task_name="长结果分页",
+            status=TaskState.COMPLETED,
+            created_time=now,
+            updated_time=now,
+            finished_time=now,
+            current=10_000,
+            owner=NETWORK_TOOL_OWNER,
+            source=NETWORK_TASK_SOURCE,
+            site_name="demo",
+            result={"result_id": task_id, "row_count": 10_000},
+        )
+    )
+    result_path = service.paths.toolbox_outputs_dir("demo") / f"{task_id}.jsonl"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"sequence": index, "target": f"host-{index}"}) for index in range(10_000)]
+    lines.insert(9_005, "{broken-json")
+    result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    deep_page = service.list_network_task_results(task_id, offset=9_000, limit=5)
+    cursor_page = service.list_network_task_results(
+        task_id,
+        offset=deep_page["next_offset"],
+        limit=5,
+        cursor=deep_page["next_cursor"],
+    )
+
+    assert deep_page["total"] == 10_000
+    assert [row["sequence"] for row in deep_page["items"]] == list(range(9_000, 9_005))
+    assert deep_page["has_more"] is True
+    assert [row["sequence"] for row in cursor_page["items"]] == list(range(9_005, 9_010))
+    assert cursor_page["next_offset"] == 9_010
+    assert cursor_page["next_cursor"] > deep_page["next_cursor"]
+
+    with TestClient(_app(tmp_path, service)) as client:
+        invalid_cursor = client.get(
+            f"/api/network-tools/runs/{task_id}/results",
+            params={"offset": 9_000, "limit": 5, "cursor": deep_page["next_cursor"] + 1},
+        )
+    assert invalid_cursor.status_code == 422
+
+
+def test_active_probe_incomplete_tail_does_not_request_immediate_cursor_page(
+    tmp_path: Path,
+) -> None:
+    service, _adapter = _service(tmp_path)
+    task_id = "b" * 32
+    now = utc_now_iso()
+    service.task_service.repository("demo").save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type=NETWORK_CONTINUOUS_PING_TASK,
+            task_name="持续 Ping",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            current=2,
+            owner=NETWORK_TOOL_OWNER,
+            source=NETWORK_TASK_SOURCE,
+            site_name="demo",
+            result={"result_id": task_id},
+        )
+    )
+    result_path = service.paths.toolbox_outputs_dir("demo") / f"{task_id}.jsonl"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_bytes(b'{"sequence": 1}\n{"sequence": 2')
+
+    page = service.list_network_task_results(task_id, limit=500, cursor=0)
+
+    assert page["items"] == [{"sequence": 1}]
+    assert page["total"] == 2
+    assert page["next_offset"] == 1
+    assert page["has_more"] is False
+
+
 def test_subnet_ping_uses_existing_adapter_source_full_range_and_reports_engine(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 

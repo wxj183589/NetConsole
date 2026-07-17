@@ -60,6 +60,9 @@ export interface NetworkTaskResultPage {
   offset: number
   limit: number
   total: number
+  next_offset: number
+  next_cursor: number
+  has_more: boolean
 }
 
 export interface NetworkToolArtifact {

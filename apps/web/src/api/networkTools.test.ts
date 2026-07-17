@@ -41,7 +41,7 @@ describe('network tools API client', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task: { id: 'task-1' } }) })
     vi.stubGlobal('fetch', fetchMock)
 
-    await listNetworkTaskResults('probe-1', 100, 50)
+    await listNetworkTaskResults('probe-1', 100, 50, 2048)
     await getNetworkProbeEnvironment()
     await exportNetworkTask('probe-1', 'csv')
     await getNetworkExportArtifact('export-1')
@@ -55,7 +55,7 @@ describe('network tools API client', () => {
     await getWirelessExportArtifact('wireless-export-1')
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      '/api/network-tools/runs/probe-1/results?offset=100&limit=50',
+      '/api/network-tools/runs/probe-1/results?offset=100&limit=50&cursor=2048',
       '/api/network-tools/toolbox/probe-environment',
       '/api/network-tools/runs/probe-1/export',
       '/api/network-tools/runs/export-1/artifact',

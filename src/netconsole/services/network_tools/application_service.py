@@ -195,6 +195,7 @@ class NetworkToolsApplicationService:
         *,
         offset: int = 0,
         limit: int = 100,
+        cursor: int | None = None,
     ) -> dict[str, object]:
         task = self._get_scoped_task(task_id, NETWORK_PROBE_TASK_TYPES)
         if task is None:
@@ -203,24 +204,51 @@ class NetworkToolsApplicationService:
         size = max(1, min(int(limit), 500))
         path = self._controlled_task_result_path(task.task_id)
         rows: list[dict[str, object]] = []
-        total = 0
+        next_offset = start
+        next_cursor = 0
+        file_size = 0
+        has_complete_tail = False
+        total_hint = max(int(task.current or 0), int(task.result.get("row_count") or 0))
         if path is not None:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
+            file_size = path.stat().st_size
+            selected_cursor = None if cursor is None else int(cursor)
+            if selected_cursor is not None and (selected_cursor < 0 or selected_cursor > file_size):
+                raise ValueError("结果游标超出文件范围")
+            with path.open("rb") as handle:
+                if selected_cursor:
+                    handle.seek(selected_cursor - 1)
+                    if handle.read(1) != b"\n":
+                        raise ValueError("结果游标不是 JSONL 行边界")
+                    handle.seek(selected_cursor)
+                valid_rows = start if selected_cursor is not None else 0
+                next_cursor = handle.tell()
+                while len(rows) < size:
+                    raw_line = handle.readline()
+                    if not raw_line or not raw_line.endswith(b"\n"):
+                        break
+                    next_cursor = handle.tell()
                     try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
+                        row = json.loads(raw_line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
                         continue
                     if not isinstance(row, dict):
                         continue
-                    if start <= total < start + size:
+                    if selected_cursor is not None or valid_rows >= start:
                         rows.append(dict(row))
-                    total += 1
+                    valid_rows += 1
+                next_offset = valid_rows
+                handle.seek(next_cursor)
+                tail_line = handle.readline()
+                has_complete_tail = bool(tail_line and tail_line.endswith(b"\n"))
+        total = max(total_hint, next_offset)
         return {
             "items": rows,
             "offset": start,
             "limit": size,
             "total": total,
+            "next_offset": next_offset,
+            "next_cursor": next_cursor,
+            "has_more": has_complete_tail,
         }
 
     async def export_network_task(self, task_id: str, file_format: str, filename: str = "") -> TaskSnapshot:

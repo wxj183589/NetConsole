@@ -142,11 +142,24 @@ def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
 
 
 @router.get("/runs/{task_id}/results", response_model=NetworkTaskResultPageResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
-def list_network_task_results(task_id: str, request: Request, offset: int = 0, limit: int = 100) -> NetworkTaskResultPageResponse:
+def list_network_task_results(
+    task_id: str,
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: int | None = Query(default=None, ge=0),
+) -> NetworkTaskResultPageResponse:
     try:
-        result = network_tools_service(request).list_network_task_results(task_id, offset=offset, limit=limit)
+        result = network_tools_service(request).list_network_task_results(
+            task_id,
+            offset=offset,
+            limit=limit,
+            cursor=cursor,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络探测任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return NetworkTaskResultPageResponse(**result)
 
 

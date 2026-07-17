@@ -75,6 +75,9 @@ class NetworkTaskResultPageResponse(ApiModel):
     offset: int = 0
     limit: int = 100
     total: int = 0
+    next_offset: int = 0
+    next_cursor: int = 0
+    has_more: bool = False
 
 
 class NetworkAdapterResponse(ApiModel):

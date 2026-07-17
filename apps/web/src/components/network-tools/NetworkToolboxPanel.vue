@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import {
@@ -46,9 +46,15 @@ const resultPageSize = 500
 const resultTotal = ref(0)
 const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
 const PROBE_TYPES = ['network_tools.single_ping', 'network_tools.continuous_ping', 'network_tools.batch_ping', 'network_tools.subnet_ping', 'network_tools.tcp_ping']
+const PROBE_POLL_INTERVAL_MS = 500
+let probePollTimer: number | null = null
+let probePollGeneration = 0
+let resultCursor = 0
+let nextResultOffset = 0
+let mounted = true
 const tasks = computed(() => taskStore.tasks.filter((item) => item.owner === 'web_network_tools' && (PROBE_TYPES.includes(item.type) || item.type === 'network_tools.toolbox_export')))
 const loadingTasks = computed(() => taskStore.loading)
-const selectedTaskSummary = computed(() => tasks.value.find((item) => item.id === selectedTask.value?.id) || selectedTask.value)
+const selectedTaskSummary = computed(() => selectedTask.value)
 const selectedAdapter = computed<NetworkAdapter | null>(() => probeEnvironment.value.adapters.find((item) => item.interface_index === selectedAdapterIndex.value) || null)
 
 const rowKeys = computed(() => {
@@ -66,17 +72,13 @@ const selectedExportCompleted = computed(() => selectedTaskSummary.value?.status
 const subnetGrid = computed(() => taskKind.value === 'subnet_ping' ? buildSubnetStatusGrid(probe.target, probe.usable_only, taskResults.value) : [])
 const scanEngine = computed(() => String(selectedTask.value?.result?.engine || probeEnvironment.value.scan_engine))
 
-watch(() => selectedTaskSummary.value?.status, async (status, previous) => {
-  if (!selectedTask.value || !status || status === previous) return
-  selectedTask.value = await getNetworkTask(selectedTask.value.id)
-  if (['COMPLETED', 'CANCELLED'].includes(status) && PROBE_TYPES.includes(selectedTask.value.type)) {
-    resultOffset.value = 0
-    await loadTaskResults()
-  }
-})
-
 onMounted(async () => {
   await Promise.all([taskStore.refresh(), loadProbeEnvironment()])
+})
+
+onBeforeUnmount(() => {
+  mounted = false
+  stopProbeMonitor()
 })
 
 async function loadProbeEnvironment(): Promise<void> {
@@ -132,6 +134,10 @@ async function startProbe(): Promise<void> {
     selectedTask.value = response.task
     taskResults.value = []
     resultTotal.value = 0
+    resultOffset.value = 0
+    resultCursor = 0
+    nextResultOffset = 0
+    monitorProbeTask(response.task.id)
     await refreshTasks()
     ElMessage.success(`网络任务已提交：${response.task.id}`)
   } catch (cause) {
@@ -146,7 +152,9 @@ async function refreshTasks(): Promise<void> {
       const previousStatus = selectedTask.value.status
       const current = await getNetworkTask(selectedTask.value.id)
       selectedTask.value = current
-      if (['COMPLETED', 'CANCELLED'].includes(current?.status || '') && current?.status !== previousStatus && !current.type.endsWith('_export')) {
+      if (ACTIVE_STATUSES.includes(current.status) && PROBE_TYPES.includes(current.type)) {
+        monitorProbeTask(current.id)
+      } else if (['COMPLETED', 'CANCELLED'].includes(current?.status || '') && current?.status !== previousStatus && !current.type.endsWith('_export')) {
         resultOffset.value = 0
         await loadTaskResults()
       }
@@ -157,9 +165,16 @@ async function refreshTasks(): Promise<void> {
 }
 
 async function selectTask(task: TaskItem): Promise<void> {
+  stopProbeMonitor()
   selectedTask.value = await getNetworkTask(task.id)
   resultOffset.value = 0
-  if (['COMPLETED', 'CANCELLED'].includes(selectedTask.value.status) && PROBE_TYPES.includes(selectedTask.value.type)) await loadTaskResults()
+  resultCursor = 0
+  nextResultOffset = 0
+  if (ACTIVE_STATUSES.includes(selectedTask.value.status) && PROBE_TYPES.includes(selectedTask.value.type)) {
+    taskResults.value = []
+    resultTotal.value = 0
+    monitorProbeTask(selectedTask.value.id)
+  } else if (['COMPLETED', 'CANCELLED'].includes(selectedTask.value.status) && PROBE_TYPES.includes(selectedTask.value.type)) await loadTaskResults()
   else {
     taskResults.value = []
     resultTotal.value = 0
@@ -170,7 +185,7 @@ async function cancelTask(): Promise<void> {
   if (!selectedTask.value) return
   try {
     selectedTask.value = await cancelNetworkTask(selectedTask.value.id)
-    await refreshTasks()
+    monitorProbeTask(selectedTask.value.id)
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '停止网络任务失败')
   }
@@ -180,6 +195,7 @@ async function exportTask(format: 'csv' | 'xlsx'): Promise<void> {
   if (!selectedTask.value || !selectedProbeHasResults.value) return
   try {
     const response = await exportNetworkTask(selectedTask.value.id, format)
+    stopProbeMonitor()
     selectedTask.value = response.task
     await taskStore.refresh()
     ElMessage.success(`导出任务已提交：${response.task.id}`)
@@ -194,9 +210,54 @@ async function loadTaskResults(): Promise<void> {
     const page = await listNetworkTaskResults(selectedTask.value.id, resultOffset.value, resultPageSize)
     taskResults.value = page.items
     resultTotal.value = page.total
+    nextResultOffset = page.next_offset
+    resultCursor = page.next_cursor
     selectedSubnetResult.value = null
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '网络任务结果加载失败')
+  }
+}
+
+function monitorProbeTask(taskId: string): void {
+  stopProbeMonitor()
+  const generation = probePollGeneration
+  scheduleProbePoll(taskId, generation, 0)
+}
+
+function stopProbeMonitor(): void {
+  probePollGeneration += 1
+  if (probePollTimer !== null) window.clearTimeout(probePollTimer)
+  probePollTimer = null
+}
+
+function scheduleProbePoll(taskId: string, generation: number, delay: number): void {
+  if (!mounted || generation !== probePollGeneration) return
+  probePollTimer = window.setTimeout(() => void pollProbeTask(taskId, generation), delay)
+}
+
+async function pollProbeTask(taskId: string, generation: number): Promise<void> {
+  probePollTimer = null
+  try {
+    const current = await getNetworkTask(taskId)
+    if (!mounted || generation !== probePollGeneration || selectedTask.value?.id !== taskId) return
+    selectedTask.value = current
+    if (PROBE_TYPES.includes(current.type)) {
+      const page = await listNetworkTaskResults(taskId, nextResultOffset, resultPageSize, resultCursor)
+      if (!mounted || generation !== probePollGeneration || selectedTask.value?.id !== taskId) return
+      if (page.items.length) taskResults.value.push(...page.items)
+      resultTotal.value = page.total
+      nextResultOffset = page.next_offset
+      resultCursor = page.next_cursor
+      if (page.has_more) {
+        scheduleProbePoll(taskId, generation, 0)
+        return
+      }
+    }
+    if (ACTIVE_STATUSES.includes(current.status)) scheduleProbePoll(taskId, generation, PROBE_POLL_INTERVAL_MS)
+  } catch (cause) {
+    if (mounted && generation === probePollGeneration) {
+      scheduleProbePoll(taskId, generation, PROBE_POLL_INTERVAL_MS)
+    }
   }
 }
 

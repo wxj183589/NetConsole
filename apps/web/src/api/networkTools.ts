@@ -69,8 +69,10 @@ export function cancelNetworkTask(id: string): Promise<NetworkToolTask> {
   return apiRequest<NetworkToolTask>(`/api/network-tools/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
 }
 
-export function listNetworkTaskResults(id: string, offset = 0, limit = 100): Promise<NetworkTaskResultPage> {
-  return apiRequest<NetworkTaskResultPage>(`/api/network-tools/runs/${encodeURIComponent(id)}/results?offset=${offset}&limit=${limit}`)
+export function listNetworkTaskResults(id: string, offset = 0, limit = 100, cursor?: number): Promise<NetworkTaskResultPage> {
+  const query = new URLSearchParams({ offset: String(offset), limit: String(limit) })
+  if (cursor !== undefined) query.set('cursor', String(cursor))
+  return apiRequest<NetworkTaskResultPage>(`/api/network-tools/runs/${encodeURIComponent(id)}/results?${query}`)
 }
 
 export function exportNetworkTask(id: string, format: 'csv' | 'xlsx'): Promise<NetworkTaskResponse> {
