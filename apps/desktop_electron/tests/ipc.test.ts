@@ -46,6 +46,7 @@ function createHarness(overrides: {
       ? { canceled: false, filePaths: [selectedDirectory] }
       : { canceled: false, filePaths: [selectedFile] }),
     showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: savedFile })),
+    showMessageBox: vi.fn(async () => ({ response: 1 })),
   }
   registerDesktopIpc({
     ipcMain,
@@ -126,6 +127,21 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!
 
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
+  })
+
+  it('uses only semantic settings ids for native settings actions', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ success: true }), { status: 200 }))
+    const { ipcMain, sender, dialog } = createHarness({ fetchImpl: fetchMock })
+    const event = { sender }
+    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [resolve('iperf3.exe')] })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsTool)!(event, 'iperf3')).resolves.toMatchObject({ cancelled: false })
+    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ filters: [{ name: 'iperf3.exe', extensions: ['exe'] }] }))
+    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [resolve('cmd.exe')] })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsTool)!(event, 'iperf3')).rejects.toThrow('does not match tool id')
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsTool)!(event, 'cmd')).rejects.toThrow('settings tool id is invalid')
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.selectSettingsColor)!(event)).resolves.toEqual({ cancelled: false, color: '#2563EB' })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.executeSettingsAction)!(event, 'launch_ipop')).resolves.toEqual({ success: true })
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://127.0.0.1:43123/api/settings/native-action')
   })
 
   it('parents dialogs and downloads to the calling managed window', async () => {

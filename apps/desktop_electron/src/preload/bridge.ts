@@ -11,6 +11,7 @@ import {
   validateRendererReadyReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -34,6 +35,16 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       validateSelectFileOptions(options),
     ) as ReturnType<NetConsoleDesktopBridge['selectFile']>,
     selectDirectory: () => ipcRenderer.invoke(DESKTOP_IPC.selectDirectory) as ReturnType<NetConsoleDesktopBridge['selectDirectory']>,
+    selectSettingsTool: (toolId) => ipcRenderer.invoke(
+      DESKTOP_IPC.selectSettingsTool, validateSettingsToolId(toolId),
+    ) as ReturnType<NetConsoleDesktopBridge['selectSettingsTool']>,
+    selectSettingsDirectory: (directoryId) => ipcRenderer.invoke(
+      DESKTOP_IPC.selectSettingsDirectory, validateSettingsDirectoryId(directoryId),
+    ) as ReturnType<NetConsoleDesktopBridge['selectSettingsDirectory']>,
+    selectSettingsColor: () => ipcRenderer.invoke(DESKTOP_IPC.selectSettingsColor) as ReturnType<NetConsoleDesktopBridge['selectSettingsColor']>,
+    executeSettingsAction: (actionId) => ipcRenderer.invoke(
+      DESKTOP_IPC.executeSettingsAction, validateSettingsActionId(actionId),
+    ) as ReturnType<NetConsoleDesktopBridge['executeSettingsAction']>,
     chooseSavePath: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.chooseSavePath,
       validateChooseSavePathOptions(options),

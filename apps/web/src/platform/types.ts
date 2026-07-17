@@ -10,6 +10,7 @@ import type {
   SelectDirectoryResult,
   SelectFileOptions,
   SelectFileResult,
+  SettingsActionId, SettingsColorResult, SettingsDirectoryId, SettingsPathResult, SettingsToolId,
 } from '../../../desktop_electron/src/shared/bridge'
 
 export type HostType = 'browser' | 'electron'
@@ -21,6 +22,10 @@ export interface PlatformAdapter {
   getRuntimeConfig(): Promise<DesktopRuntimeConfig>
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
+  selectSettingsTool(toolId: SettingsToolId): Promise<SettingsPathResult>
+  selectSettingsDirectory(directoryId: SettingsDirectoryId): Promise<SettingsPathResult>
+  selectSettingsColor(): Promise<SettingsColorResult>
+  executeSettingsAction(actionId: SettingsActionId): Promise<NativeActionResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openPath(capabilityId: string): Promise<NativeActionResult>

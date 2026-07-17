@@ -37,6 +37,10 @@ Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/des
 | `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
+| `selectSettingsTool` | `iperf3/fping/ipop/securecrt/xshell/putty` 之一 | main 按 tool ID 固定文件名集合，复验绝对路径与 basename；FastAPI 保存与真实执行点再次校验存在性、普通文件和非符号链接 | 系统设置原生 EXE 选择 |
+| `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
+| `selectSettingsColor` | 无 | 只返回 Qt 当前四个受控主题色之一 | 原生主题色选择 |
+| `executeSettingsAction` | `open_settings_config/open_current_site/launch_ipop` 之一 | main 调固定动态回环端点并注入短期会话；Renderer 不提供路径、程序或 argv；后端只打开受控目录或启动经复验的 IPOP | 系统设置本机动作 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
 
 `reportRendererReady` 仅用于自动开发冒烟的 health 结果回报，不接受 URL、路径、命令或令牌。
@@ -66,6 +70,6 @@ Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a downl
 - 把 Agent Token、SSH/SNMP 凭据、密码或完整环境返回给 Renderer；
 - 通过路径选择接口绕过 Artifact/Application Service 权限。
 
-未来新增 `openArtifact`、`launchTerminal` 和 `notification` 仍必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。IPOP 与通用外部程序不在当前白名单。
+未来新增 `openArtifact`、`launchTerminal` 和 `notification` 仍必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。IPOP 仅允许通过 `launch_ipop` 语义动作启动已保存且再次校验的 `IPOP.EXE`；通用外部程序、任意路径和 argv 始终不在白名单。
 
 文件管理模块已实现 `fda1_*`、60 秒有效、一次性消费的强类型动作契约，并在 main/preload/shared 增加独立白名单。Renderer 只能提交动作引用；main 调固定回环端点，Service 仅打开受控目录或启动固定 WinSCP。WinSCP Electron 参数不含密码，不得回退到 Renderer 路径、任意程序/argv 或含密码 URL。验收状态见 [文件管理对等规格](development/parity/file-management.md)。

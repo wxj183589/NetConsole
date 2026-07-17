@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
+from typing import Iterator, Mapping
 
 from netconsole.core.paths import PathResolver
 
@@ -56,6 +62,93 @@ VALID_LANGUAGES = {"zh_CN", "en_US"}
 VALID_CLOSE_BEHAVIORS = {"ask", "minimize_to_tray", "exit"}
 VALID_STARTUP_MODES = {"preload_all", "fast_start"}
 VALID_EXTERNAL_TERMINAL_TYPES = {"putty", "securecrt", "xshell"}
+_PATH_LOCKS: dict[Path, RLock] = {}
+_PATH_LOCKS_GUARD = RLock()
+_MISSING_VERSION = "missing"
+
+
+class SettingsError(RuntimeError):
+    pass
+
+
+class SettingsFileInvalidError(SettingsError):
+    pass
+
+
+class SettingsConflictError(SettingsError):
+    pass
+
+
+def _version(raw: bytes | None) -> str:
+    return _MISSING_VERSION if raw is None else hashlib.sha256(raw).hexdigest()
+
+
+def _path_lock(path: Path) -> RLock:
+    resolved = path.resolve(strict=False)
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(resolved, RLock())
+
+
+@contextmanager
+def _settings_file_lock(path: Path) -> Iterator[None]:
+    with _path_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f".{path.name}.lock")
+        with lock_path.open("a+b") as lock_file:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_settings_file(path: Path) -> tuple[dict[str, object], bytes | None, str]:
+    if not path.exists():
+        return {}, None, _MISSING_VERSION
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise SettingsFileInvalidError(f"设置文件不可读：{exc}") from exc
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SettingsFileInvalidError("设置文件已损坏，已保留原文件并拒绝覆盖") from exc
+    if not isinstance(data, dict):
+        raise SettingsFileInvalidError("设置文件根节点必须是 JSON object，已保留原文件并拒绝覆盖")
+    return data, raw, _version(raw)
+
+
+def _atomic_write_json(path: Path, values: Mapping[str, object]) -> bytes:
+    payload = json.dumps(values, ensure_ascii=False, indent=2).encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            temporary_file.write(payload)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+        return payload
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def normalize_external_terminal_type(value: object) -> str:
@@ -77,15 +170,21 @@ def normalize_external_terminal_type(value: object) -> str:
 class SettingsStore:
     paths: PathResolver
     values: dict[str, object] = field(default_factory=dict)
+    _baseline: dict[str, object] = field(init=False, default_factory=dict, repr=False)
+    _dirty_keys: set[str] = field(init=False, default_factory=set, repr=False)
+    _version: str = field(init=False, default=_MISSING_VERSION, repr=False)
 
     def __post_init__(self) -> None:
-        self.values = {**DEFAULT_SETTINGS, **self._read()}
+        persisted, _raw, self._version = _read_settings_file(self.path)
+        self.values = {**DEFAULT_SETTINGS, **persisted}
+        self._baseline = dict(self.values)
         changed = False
         if self.theme not in VALID_THEMES:
             self.values["theme"] = DEFAULT_SETTINGS["theme"]
             changed = True
-        if self.language not in VALID_LANGUAGES:
-            self.values["language"] = DEFAULT_SETTINGS["language"]
+        normalized_language = self.language
+        if self.values.get("language") != normalized_language:
+            self.values["language"] = normalized_language
             changed = True
         if self.values.get("app/startup_mode") == "preload_all":
             self.values["app/startup_mode"] = DEFAULT_SETTINGS["app/startup_mode"]
@@ -95,11 +194,22 @@ class SettingsStore:
             self.values["external_terminal/type"] = terminal_type
             changed = True
         if changed and self.path.exists():
+            self._dirty_keys.update(
+                key for key, value in self.values.items() if self._baseline.get(key) != value
+            )
             self.save()
 
     @property
     def path(self) -> Path:
         return self.paths.settings_path
+
+    @property
+    def version(self) -> str:
+        return self._version
+
+    @property
+    def dirty_keys(self) -> frozenset[str]:
+        return frozenset(self._dirty_keys)
 
     @property
     def theme(self) -> str:
@@ -108,8 +218,7 @@ class SettingsStore:
     def set_theme(self, theme: str) -> None:
         if theme not in VALID_THEMES:
             raise ValueError(f"unsupported theme: {theme}")
-        self.values["theme"] = theme
-        self.save()
+        self._set_and_save("theme", theme)
 
     @property
     def language(self) -> str:
@@ -127,8 +236,7 @@ class SettingsStore:
             language = "en_US"
         if language not in VALID_LANGUAGES:
             raise ValueError(f"unsupported language: {language}")
-        self.values["language"] = language
-        self.save()
+        self._set_and_save("language", language)
 
     @property
     def theme_color(self) -> str:
@@ -136,24 +244,22 @@ class SettingsStore:
         return value if value.startswith("#") and len(value) == 7 else str(DEFAULT_SETTINGS["theme_color"])
 
     def set_theme_color(self, color: str) -> None:
-        self.values["theme_color"] = color if str(color).startswith("#") else DEFAULT_SETTINGS["theme_color"]
-        self.save()
+        value = color if str(color).startswith("#") else DEFAULT_SETTINGS["theme_color"]
+        self._set_and_save("theme_color", value)
 
     @property
     def mica_enabled(self) -> bool:
         return bool(self.values.get("mica_enabled"))
 
     def set_mica_enabled(self, enabled: bool) -> None:
-        self.values["mica_enabled"] = bool(enabled)
-        self.save()
+        self._set_and_save("mica_enabled", bool(enabled))
 
     @property
     def compact_table(self) -> bool:
         return bool(self.values.get("compact_table"))
 
     def set_compact_table(self, enabled: bool) -> None:
-        self.values["compact_table"] = bool(enabled)
-        self.save()
+        self._set_and_save("compact_table", bool(enabled))
 
     def int_value(self, key: str, default: int, minimum: int = 1, maximum: int = 99999) -> int:
         try:
@@ -162,8 +268,7 @@ class SettingsStore:
             return default
 
     def set_int_value(self, key: str, value: int, minimum: int = 1, maximum: int = 99999) -> None:
-        self.values[key] = max(minimum, min(maximum, int(value)))
-        self.save()
+        self._set_and_save(key, max(minimum, min(maximum, int(value))))
 
     @property
     def last_export_path(self) -> str:
@@ -184,16 +289,14 @@ class SettingsStore:
     def set_close_behavior(self, behavior: str) -> None:
         if behavior not in VALID_CLOSE_BEHAVIORS:
             raise ValueError(f"unsupported close behavior: {behavior}")
-        self.values["app/close_behavior"] = behavior
-        self.save()
+        self._set_and_save("app/close_behavior", behavior)
 
     @property
     def tray_notice_shown(self) -> bool:
         return bool(self.values.get("app/tray_notice_shown"))
 
     def set_tray_notice_shown(self, shown: bool) -> None:
-        self.values["app/tray_notice_shown"] = bool(shown)
-        self.save()
+        self._set_and_save("app/tray_notice_shown", bool(shown))
 
     @property
     def startup_mode(self) -> str:
@@ -203,12 +306,10 @@ class SettingsStore:
     def set_startup_mode(self, mode: str) -> None:
         if mode not in VALID_STARTUP_MODES:
             raise ValueError(f"unsupported startup mode: {mode}")
-        self.values["app/startup_mode"] = mode
-        self.save()
+        self._set_and_save("app/startup_mode", mode)
 
     def set_last_export_path(self, path: str | Path) -> None:
-        self.values["last_export_path"] = str(path)
-        self.save()
+        self._set_and_save("last_export_path", str(path))
 
     def get_value(self, key: str, default: object = None) -> object:
         return self.values.get(key, default)
@@ -216,18 +317,83 @@ class SettingsStore:
     def set_value(self, key: str, value: object) -> None:
         if key == "external_terminal/type":
             value = normalize_external_terminal_type(value)
-        self.values[key] = value
-        self.save()
+        self._set_and_save(key, value)
 
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.values, ensure_ascii=False, indent=2), encoding="utf-8")
+    def update_explicit(
+        self,
+        values: Mapping[str, object],
+        *,
+        expected_version: str | None = None,
+    ) -> None:
+        previous_values = dict(self.values)
+        previous_dirty = set(self._dirty_keys)
+        try:
+            for key, value in values.items():
+                if key == "external_terminal/type":
+                    value = normalize_external_terminal_type(value)
+                self.values[key] = value
+                self._dirty_keys.add(key)
+            self.save(expected_version=expected_version)
+        except Exception:
+            self.values = previous_values
+            self._dirty_keys = previous_dirty
+            raise
+
+    def save(self, *, expected_version: str | None = None) -> None:
+        dirty = set(self._dirty_keys)
+        dirty.update(
+            key
+            for key, value in self.values.items()
+            if self._baseline.get(key, object()) != value
+        )
+        if not dirty:
+            return
+        try:
+            with _settings_file_lock(self.path):
+                persisted, _raw, current_version = _read_settings_file(self.path)
+                if expected_version is not None and expected_version != current_version:
+                    raise SettingsConflictError("设置版本已过期，请重载后重试")
+                if current_version != self._version:
+                    conflicts = {
+                        key
+                        for key in dirty
+                        if persisted.get(key, DEFAULT_SETTINGS.get(key))
+                        != self._baseline.get(key, DEFAULT_SETTINGS.get(key))
+                    }
+                    if conflicts:
+                        names = ", ".join(sorted(conflicts))
+                        raise SettingsConflictError(f"设置已被其他实例修改：{names}")
+                merged = {**DEFAULT_SETTINGS, **persisted}
+                merged.update({key: self.values[key] for key in dirty})
+                raw = _atomic_write_json(self.path, merged)
+        except Exception:
+            self.values = dict(self._baseline)
+            self._dirty_keys.clear()
+            raise
+        self.values = merged
+        self._baseline = dict(merged)
+        self._dirty_keys.clear()
+        self._version = _version(raw)
+
+    def reload(self) -> None:
+        persisted, _raw, version = _read_settings_file(self.path)
+        self.values = {**DEFAULT_SETTINGS, **persisted}
+        self._baseline = dict(self.values)
+        self._dirty_keys.clear()
+        self._version = version
 
     def _read(self) -> dict[str, object]:
-        if not self.path.exists():
-            return {}
+        data, _raw, _file_version = _read_settings_file(self.path)
+        return data
+
+    def _set_and_save(self, key: str, value: object) -> None:
+        previous_values = dict(self.values)
+        previous_dirty = set(self._dirty_keys)
+        self.values[key] = value
+        self._dirty_keys.add(key)
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
+            self.save()
+        except Exception:
+            self.values = previous_values
+            self._dirty_keys = previous_dirty
+            raise

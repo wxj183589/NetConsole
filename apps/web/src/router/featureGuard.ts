@@ -4,6 +4,7 @@ import { isFeatureEnabled, loadWebFeatures } from '../features'
 
 
 export async function enforceRouteFeature(to: Pick<RouteLocationNormalized, 'meta'>) {
+  if (to.meta.desktopOnly === true && !(typeof window !== 'undefined' && window.netconsoleDesktop)) return { name: 'dashboard' }
   const featureId = typeof to.meta.featureId === 'string' ? to.meta.featureId : ''
   if (!featureId) return true
   try {

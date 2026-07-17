@@ -21,6 +21,7 @@ import {
   type NavigationItem,
 } from '../navigation/registry'
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
+import { navigationTitle, t } from '../i18n/runtime'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
 const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
@@ -164,7 +165,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
         <div class="brand-mark">NC</div>
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
-          <span>Web Console</span>
+          <span>{{ t('shell.console', 'Web Console') }}</span>
         </div>
       </div>
       <el-menu
@@ -181,14 +182,14 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           <el-sub-menu v-if="entry.children.length" :index="entry.navigation_id">
             <template #title>
               <el-icon><component :is="iconFor(entry)" /></el-icon>
-              <span>{{ entry.title }}</span>
+              <span>{{ navigationTitle(entry.navigation_id, entry.title) }}</span>
             </template>
             <el-menu-item
               v-for="child in entry.children"
               :key="child.navigation_id"
               :index="child.route_path"
               :disabled="Boolean(child.feature_id && !isFeatureEnabled(child.feature_id))"
-            >{{ child.title }}</el-menu-item>
+            >{{ navigationTitle(child.navigation_id, child.title) }}</el-menu-item>
           </el-sub-menu>
           <el-menu-item
             v-else
@@ -196,25 +197,25 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
             :disabled="Boolean(entry.feature_id && !isFeatureEnabled(entry.feature_id))"
           >
             <el-icon><component :is="iconFor(entry)" /></el-icon>
-            <span>{{ entry.title }}</span>
+            <span>{{ navigationTitle(entry.navigation_id, entry.title) }}</span>
           </el-menu-item>
         </template>
       </el-menu>
-      <div v-if="!sidebarCollapsed" class="sidebar-note">本地网络运维控制台</div>
+      <div v-if="!sidebarCollapsed" class="sidebar-note">{{ t('shell.local_console', '本地网络运维控制台') }}</div>
     </el-aside>
     <el-container class="app-workspace">
       <el-header class="app-header">
         <div class="header-leading">
-          <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" aria-label="切换导航" @click="toggleSidebar" />
+          <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" :aria-label="t('shell.toggle_navigation', '切换导航')" @click="toggleSidebar" />
           <div>
             <div class="header-title">{{ route.meta.title || 'Dashboard' }}</div>
-            <div class="header-subtitle">Vue、FastAPI 与 Python ApplicationService 共用同一业务核心</div>
+            <div class="header-subtitle">{{ t('shell.subtitle', 'Vue、FastAPI 与 Python ApplicationService 共用同一业务核心') }}</div>
           </div>
         </div>
         <div class="header-status">
           <DesktopRuntimeStatus />
           <span :class="['status-dot', backendOnline ? 'online' : 'offline']"></span>
-          <span>{{ backendOnline ? 'Backend Online' : 'Backend Offline' }}</span>
+          <span>{{ backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline') }}</span>
           <el-divider direction="vertical" />
           <span>v{{ version || '--' }}</span>
         </div>
@@ -223,7 +224,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
         <el-alert
           v-if="frontendMismatch"
           class="frontend-build-warning"
-          :title="BUILD_MISMATCH_MESSAGE"
+          :title="t('shell.build_mismatch', BUILD_MISMATCH_MESSAGE)"
           type="warning"
           show-icon
           :closable="false"

@@ -69,6 +69,7 @@ from netconsole.services.rail_transit.wireless_dashboard_query_service import Wi
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
+from netconsole.services.settings_application_service import SettingsApplicationService
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -286,6 +287,7 @@ def create_app(
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
+    app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
     app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
     app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service

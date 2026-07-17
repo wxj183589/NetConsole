@@ -5,6 +5,7 @@ import type {
   RendererReadyReport,
   SelectFileOptions,
   TaskWindowContext,
+  SettingsActionId, SettingsDirectoryId, SettingsToolId,
 } from './bridge'
 
 const MAX_FILTERS = 20
@@ -69,6 +70,25 @@ export function validateSelectFileOptions(value: unknown): SelectFileOptions {
     ...(record.filters === undefined ? {} : { filters: validateFilters(record.filters) }),
     ...(record.multiple === undefined ? {} : { multiple: record.multiple }),
   }
+}
+
+export function validateSettingsToolId(value: unknown): SettingsToolId {
+  if (!['iperf3', 'fping', 'ipop', 'securecrt', 'xshell', 'putty'].includes(String(value))) {
+    throw new TypeError('settings tool id is invalid')
+  }
+  return value as SettingsToolId
+}
+
+export function validateSettingsDirectoryId(value: unknown): SettingsDirectoryId {
+  if (value !== 'securecrt_sessions_root') throw new TypeError('settings directory id is invalid')
+  return value
+}
+
+export function validateSettingsActionId(value: unknown): SettingsActionId {
+  if (!['open_settings_config', 'open_current_site', 'launch_ipop'].includes(String(value))) {
+    throw new TypeError('settings action id is invalid')
+  }
+  return value as SettingsActionId
 }
 
 export function validateChooseSavePathOptions(value: unknown): ChooseSavePathOptions {

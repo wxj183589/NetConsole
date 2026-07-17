@@ -10,6 +10,7 @@ from PySide6.QtCore import QProcess
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.services.tool_path_resolver import get_tool_dir
+from netconsole.services.settings_tool_validation import SettingsToolPathError, validate_settings_tool_path
 
 
 IPOP_SETTINGS_KEY = "external_tools/ipop_path"
@@ -99,17 +100,16 @@ def validate_ipop_executable(
     if normalized is None:
         return ExternalToolValidationResult(False, "IPOP 路径未配置", error_code="not_configured")
     try:
-        if not normalized.exists():
-            return ExternalToolValidationResult(False, f"IPOP 文件不存在：{normalized}", normalized, "not_found")
         if normalized.is_dir():
             return ExternalToolValidationResult(False, f"IPOP 路径指向目录：{normalized}", normalized, "is_directory")
-        if not normalized.is_file():
-            return ExternalToolValidationResult(False, f"IPOP 路径不是普通文件：{normalized}", normalized, "not_file")
-    except OSError as exc:
-        return ExternalToolValidationResult(False, f"IPOP 路径无法访问：{exc}", normalized, "access_denied")
-    if (platform_name or sys.platform) == "win32" and normalized.suffix.casefold() != ".exe":
-        return ExternalToolValidationResult(False, f"IPOP 文件不是 EXE：{normalized}", normalized, "not_exe")
-    return ExternalToolValidationResult(True, "IPOP 路径有效", normalized.resolve())
+        if (platform_name or sys.platform) == "win32" and normalized.suffix.casefold() != ".exe":
+            return ExternalToolValidationResult(False, f"IPOP 文件不是 EXE：{normalized}", normalized, "not_exe")
+        executable = validate_settings_tool_path("ipop", normalized)
+    except SettingsToolPathError as exc:
+        text = str(exc)
+        code = "not_found" if "不存在" in text else "invalid_path"
+        return ExternalToolValidationResult(False, text, normalized, code)
+    return ExternalToolValidationResult(True, "IPOP 路径有效", executable)
 
 
 def launch_ipop(

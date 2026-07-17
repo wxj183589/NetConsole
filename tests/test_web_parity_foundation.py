@@ -184,15 +184,23 @@ def test_shared_task_api_stays_available_when_job_center_page_is_disabled(tmp_pa
     assert snapshot["type"] == "snapshot"
 
 
-def test_unimplemented_web_features_are_registered_but_hidden(tmp_path: Path) -> None:
+def test_system_settings_is_released_while_unimplemented_features_stay_hidden(
+    tmp_path: Path,
+) -> None:
     gate = FeatureGate(tmp_path)
+    assert gate.is_visible("web.system_settings") is True
+    assert gate.is_enabled("web.system_settings") is True
+    assert gate.is_in_client_package("web.system_settings") is True
+
+    assert gate.is_visible("web.feature_switch") is True
+    assert gate.is_enabled("web.feature_switch") is True
+    assert gate.is_in_client_package("web.feature_switch") is False
+
     for feature_id in (
         "web.ac_trackside_ap_plan",
         "web.network_tools_wireless_scan",
         "web.command_reference",
         "web.logs",
-        "web.system_settings",
-        "web.feature_switch",
     ):
         assert gate.is_visible(feature_id) is False
         assert gate.is_enabled(feature_id) is False

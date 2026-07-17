@@ -30,6 +30,7 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'network-tools/overview', redirect: { name: 'network-tools-toolbox' }, meta: { moduleId: 'network', title: '网络工具', desktopOnly: false, hiddenRoute: true } },
       { path: 'tasks', name: 'tasks', component: () => import('../views/job-center/JobCenterView.vue'), meta: { navigationId: 'tasks', featureId: 'web.job_center', moduleId: 'tasks', title: '任务中心', desktopOnly: false } },
       { path: 'agents', name: 'agents', component: () => import('../views/agents/AgentListView.vue'), meta: { navigationId: 'agents', featureId: 'web.agent_management', moduleId: 'agents', title: 'Agent 管理', desktopOnly: false } },
+      { path: 'settings', name: 'system-settings', component: () => import('../views/settings/SystemSettingsView.vue'), meta: { navigationId: 'settings', featureId: 'web.system_settings', moduleId: 'settings', title: '系统设置', desktopOnly: true } },
     ],
   },
 ]

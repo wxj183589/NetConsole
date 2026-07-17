@@ -21,6 +21,7 @@ describe('preload bridge', () => {
       'chooseSavePath',
       'downloadBackendResource',
       'executeFileDesktopAction',
+      'executeSettingsAction',
       'getAppInfo',
       'getBackendStatus',
       'getRuntimeConfig',
@@ -31,6 +32,9 @@ describe('preload bridge', () => {
       'reportRendererReady',
       'selectDirectory',
       'selectFile',
+      'selectSettingsColor',
+      'selectSettingsDirectory',
+      'selectSettingsTool',
       'showItemInFolder',
     ])
     expect('ipcRenderer' in bridge).toBe(false)

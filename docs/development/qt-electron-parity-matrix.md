@@ -2,7 +2,7 @@
 
 ## 目的与事实来源
 
-本文按当前 Qt 源码、Vue 路由、FastAPI Router、Application Service 和测试记录判断迁移状态，不以“页面已经存在”作为完成依据。审计基线为 `main@901e2529`，各模块实现按顺序收敛到累计分支 `codex/electron-parity-integration`。
+本文按当前 Qt 源码、Vue 路由、FastAPI Router、Application Service 和测试记录判断迁移状态，不以“页面已经存在”作为完成依据。当前系统设置审计基线为 `main@ee88fd01`。
 
 正式产品入口固定为：
 
@@ -57,8 +57,8 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | Agent 管理 | 无完整 Qt 一级入口 | Online MR Agent 相关 Dialog | `/agents` / `AgentListView.vue` | Profile、健康、工具、任务、包和远程执行入口 | Agent Controller Service；Agent Router | 真实 Controller 路径与 Fake 验收并存，真实 Agent 环境未通过 | `PARTIAL` |
 | 命令说明 | 命令说明 | `CommandReferencePage` | 规划 `/command-reference`，未注册正式组件 | 命令参考查询 | 未形成永久 API/页面闭环 | 未开始 | `NOT_STARTED` |
 | 日志中心 | 日志 | `AppLogPage` | 规划 `/logs`，未注册正式组件 | 日志分页、筛选和查看 | 未形成永久 API/页面闭环 | 未开始 | `NOT_STARTED` |
-| 系统设置 | 设置 | `SettingsPage` | 规划 `/settings`，未注册正式组件 | 本机路径、工具、主题和运行参数 | Desktop Settings / Native Bridge 待收敛 | 未开始 | `NOT_STARTED` |
-| 功能开关 | 功能开关配置 | `FeatureFlagsPage` | 规划 `/feature-flags`，内部入口未实现 | Feature 状态查看和配置 | Feature Registry / Gate | 未开始 | `NOT_STARTED` |
+| 系统设置 | 设置 | `SettingsPage` | `/settings` / `SystemSettingsView.vue`，仅 Electron Desktop 正式可达 | 当前已接线的主题、语言、主题色；iperf/fping/IPOP；三类终端路径、会话根、端口/编码；保存/重载/默认恢复；局点与维护入口 | `SettingsApplicationService` / Settings Router / 严格 Native Bridge | 设置文件读写、冲突/损坏/失败回滚、外观预览与离页恢复已闭环；全局 i18n 和桌面人工仍未完成 | `PARTIAL` |
+| 功能开关 | 功能开关配置 | `FeatureFlagsPage` | 集成在 `/settings`；仅源码开发态显示 | 四个布尔状态完整读写、影响预览、确认、恢复 | 中央 Feature Registry / Gate / customer profile | 自动化闭环；打包态强制隐藏并拒绝 API | `IMPLEMENTED_UNVERIFIED` |
 | SNMP Center | SNMP 中心 | `SnmpCenterPage` 及 SNMP 子页 | 无 Electron 正式入口 | 旧 SNMP 中心能力 | 保留历史代码 | 当前不迁移；如重启需独立立项 | `BLOCKED` |
 | 无线勘测 | 无线勘测 | `WifiSurveyPage` | 无 Electron 正式入口 | 旧勘测能力 | 保留历史代码 | 当前不迁移；如重启需独立立项，与无线扫描不同 | `BLOCKED` |
 
@@ -74,8 +74,32 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 网络工具 | 部分 | 部分真实 | 部分 | 部分 | 现有 Network/Traffic 定向测试 | `NOT_STARTED` | Agent/无线硬件待验收 | 逐工具纵向闭环与 Qt 对照 |
 | 任务中心 | Web 原生页面 | 部分 | 不适用 | 真实 Task 状态机 | Job Center 定向测试 | `NOT_STARTED` | 随业务任务验收 | 不作为业务模块完成的替代证据 |
 | Agent 管理 | 部分 | 部分/Fake | Agent 包已有 | 部分 | Agent Controller/Fake 测试 | `NOT_STARTED` | `NOT_STARTED` | 真实 Agent、多 Controller 和现场失败恢复 |
-| 命令说明、日志中心、系统设置、功能开关 | 否 | 否 | 否 | 否 | 无对等证据 | `NOT_STARTED` | 不适用 | 尚未迁移 |
+| 系统设置、功能开关 | 设置表单与内部开关页已实现；不迁移 Qt 明示未实现控件 | 真实 `settings.json`、中央 Feature profile 与严格 DTO；外观有预览/确认/失败及离页恢复 | 不适用 | 不适用 | SettingsStore/API、Vue mount、Electron IPC 定向测试 | `MANUAL_DESKTOP_PENDING` | 外部工具为 `REAL_DEVICE_PENDING` | `PARTIAL`；全局业务模块语言消费为 `BLOCKED_ON_GLOBAL_I18N` |
+| 命令说明、日志中心 | 否 | 否 | 否 | 否 | 无对等证据 | `NOT_STARTED` | 不适用 | 尚未迁移 |
 | SNMP Center、无线勘测 | 不迁移 | 不迁移 | 不迁移 | 不迁移 | 不纳入 | 不纳入 | 不纳入 | `BLOCKED` |
+
+## 系统设置 Qt 事实矩阵
+
+只统计 `SettingsPage` 当前实际接线的控件；Qt 中明确标注“未实现”且禁用的 Mica、紧凑表格、全局并发/超时、日志保留、原始回显、默认下载/备份/报告目录和 MIB 目录不作为本轮迁移完成项。
+
+| Qt 可达操作 | Electron 归属与实现 | 当前结论 |
+| --- | --- | --- |
+| 主题、主题色 | 设置页即时预览；保存失败、取消、重载和确认离页均恢复已保存外观 | 自动化通过；`MANUAL_DESKTOP_PENDING` |
+| 语言 | 共享响应式 runtime 已供 Shell 与设置页消费，保存后重启恢复 | 其他业务模块尚未消费，`BLOCKED_ON_GLOBAL_I18N` |
+| iperf、fping、IPOP 路径 | `selectSettingsTool(tool_id)` 原生选择；main、保存 API 和真实执行点按受控 EXE 名称复验 | 恶意路径负例通过；`REAL_DEVICE_PENDING` |
+| 终端类型与路径 | SecureCRT/Xshell/PuTTY 三个独立持久键；切换类型读取对应值 | 挂载交互和后端持久化测试通过；`MANUAL_DESKTOP_PENDING` |
+| SecureCRT 会话根、SSH/Telnet 端口、CRT 编码 | 严格 DTO 写入既有 `settings.json`，目录仅经语义 Bridge 选择 | 自动化通过；`MANUAL_DESKTOP_PENDING` |
+| 保存、重载、恢复表单默认值 | 版本 CAS、原子替换、损坏拒写、失败回滚；默认值只改表单，保存后才落盘 | 自动化通过 |
+| 打开配置目录 | `executeSettingsAction(open_settings_config)`，后端只打开 `PathResolver` 受控目录 | `MANUAL_DESKTOP_PENDING` |
+| IPOP 测试启动 | `executeSettingsAction(launch_ipop)`，后端重新校验已保存 `IPOP.EXE` | `REAL_DEVICE_PENDING` |
+| 当前局点名称、路径 | Settings DTO 读取当前 `site_name` 与 `PathResolver.site_dir` | 自动化数据链已接；桌面显示待人工 |
+| 新建局点、切换局点 | 归 Shell 局点入口，不在 Settings Application Service 复制局点业务 | Shell 集成仍需统一验收，系统设置保持 `PARTIAL` |
+| 打开当前局点目录 | `executeSettingsAction(open_current_site)`，后端只解析当前局点受控目录 | `MANUAL_DESKTOP_PENDING` |
+| 磁盘清理 | 归日志维护页面/服务，不在设置页复制清理逻辑 | 未与设置入口统一集成，系统设置保持 `PARTIAL` |
+| 更新日志、开源许可 | 归 Shell 关于入口 | 未与设置入口统一集成，系统设置保持 `PARTIAL` |
+| 功能开关查看、修改、预览、恢复 | 设置页内部区块复用中央 Registry/Gate/customer profile；写入、预览、恢复均确认 | 源码开发态自动化通过；打包态隐藏并拒绝 API |
+
+系统设置整体不能标记为 `IMPLEMENTED_UNVERIFIED` 或 `COMPLETE`：全局语言、Shell/日志维护归属集成与真实桌面动作仍未清零。SNMP Center 与无线勘测继续排除，不借系统设置入口恢复。
 
 ## 当前推进规则
 

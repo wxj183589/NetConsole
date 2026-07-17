@@ -68,7 +68,7 @@ export const navigationRegistry: NavigationItem[] = [
   item({ navigation_id: 'agents', title: 'Agent 管理', route_name: 'agents', route_path: '/agents', feature_id: 'web.agent_management', order: 90, icon: 'agent', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'command-reference', title: '命令说明', route_path: '/command-reference', feature_id: 'web.command_reference', order: 100, icon: 'system', qt_page_id: 'command_reference', qt_feature_id: 'module.command_reference', parity_state: 'NOT_STARTED', desktop_only: false, internal_only: false, implemented: false }),
   item({ navigation_id: 'logs', title: '日志中心', route_path: '/logs', feature_id: 'web.logs', order: 110, icon: 'system', qt_page_id: 'logs', qt_feature_id: 'module.logs', parity_state: 'NOT_STARTED', desktop_only: false, internal_only: false, implemented: false }),
-  item({ navigation_id: 'settings', title: '系统设置', route_path: '/settings', feature_id: 'web.system_settings', order: 120, icon: 'system', qt_page_id: 'system_settings', qt_feature_id: 'module.system_settings', parity_state: 'NOT_STARTED', desktop_only: true, internal_only: false, implemented: false }),
+  item({ navigation_id: 'settings', title: '系统设置', route_name: 'system-settings', route_path: '/settings', feature_id: 'web.system_settings', order: 120, icon: 'system', qt_page_id: 'system_settings', qt_feature_id: 'module.system_settings', parity_state: 'PARTIAL', desktop_only: true, internal_only: false, implemented: true }),
   item({ navigation_id: 'feature-flags', title: '功能开关配置', route_path: '/feature-flags', feature_id: 'web.feature_switch', order: 130, icon: 'system', qt_page_id: 'feature_flags', qt_feature_id: 'system.feature_flags', parity_state: 'NOT_STARTED', desktop_only: true, internal_only: true, implemented: false }),
 ]
 
@@ -88,6 +88,7 @@ export function visibleNavigation(
     .map((entry) => ({ ...entry, children: visibleNavigation(isVisible, entry.children) }))
     .filter((entry) => {
       if (!entry.implemented) return false
+      if (entry.desktop_only && !(typeof window !== 'undefined' && window.netconsoleDesktop)) return false
       if (entry.feature_id && !isVisible(entry.feature_id)) return false
       return entry.children.length > 0 || Boolean(entry.route_name && entry.route_path)
     })

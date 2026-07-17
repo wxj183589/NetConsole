@@ -1,4 +1,6 @@
-import type { AppInfo, BackendStatus, DesktopRuntimeConfig, TaskWindowContext } from '../shared/bridge'
+import { basename, isAbsolute } from 'node:path'
+
+import type { AppInfo, BackendStatus, DesktopRuntimeConfig, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
@@ -7,6 +9,7 @@ import {
   validateRendererReadyReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
@@ -39,6 +42,7 @@ interface DialogLike {
       filters?: Array<{ name: string; extensions: string[] }>
     },
   ): Promise<{ canceled: boolean; filePath?: string }>
+  showMessageBox(window: unknown, options: { type: 'question'; title: string; message: string; buttons: string[]; cancelId: number }): Promise<{ response: number }>
 }
 
 interface ShellLike {
@@ -150,6 +154,49 @@ export function registerDesktopIpc(
     }),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectSettingsTool,
+    trusted(async (value, event) => {
+      const toolId = validateSettingsToolId(value)
+      const fileNames = SETTINGS_TOOL_NAMES[toolId]
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
+        properties: ['openFile'], filters: [{ name: fileNames[0], extensions: ['exe'] }],
+      })
+      const selected = result.canceled ? undefined : result.filePaths[0]
+      if (!selected) return { cancelled: true }
+      if (!isAbsolute(selected) || !fileNames.some((name) => name.toLowerCase() === basename(selected).toLowerCase())) {
+        throw new Error('settings tool selection does not match tool id')
+      }
+      return { cancelled: false, path: selected }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectSettingsDirectory,
+    trusted(async (value, event) => {
+      validateSettingsDirectoryId(value)
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, { properties: ['openDirectory'] })
+      const selected = result.canceled ? undefined : result.filePaths[0]
+      if (selected && !isAbsolute(selected)) throw new Error('settings directory must be absolute')
+      return { cancelled: !selected, ...(selected ? { path: selected } : {}) }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectSettingsColor,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showMessageBox(dependencies.windowForEvent?.(event) ?? dependencies.window, {
+        type: 'question', title: '选择主题色', message: '选择 NetConsole 主题强调色',
+        buttons: [...SETTINGS_COLORS, '取消'], cancelId: SETTINGS_COLORS.length,
+      })
+      const color = SETTINGS_COLORS[result.response]
+      return { cancelled: !color, ...(color ? { color } : {}) }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.executeSettingsAction,
+    trusted((value) => executeSettingsAction(
+      dependencies.backend, validateSettingsActionId(value), dependencies.fetchImpl ?? fetch, dependencies.logger,
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.chooseSavePath,
     trusted(async (value, event) => {
       const options = validateChooseSavePathOptions(value)
@@ -224,6 +271,12 @@ export function registerDesktopIpc(
   return { shutdown: () => downloadManager.shutdown() }
 }
 
+const SETTINGS_TOOL_NAMES = {
+  iperf3: ['iperf3.exe'], fping: ['Fping_v3.exe', 'fping.exe'], ipop: ['IPOP.EXE'],
+  securecrt: ['SecureCRT.exe'], xshell: ['Xshell.exe'], putty: ['putty.exe'],
+} as const
+const SETTINGS_COLORS: readonly SettingsThemeColor[] = ['#0078D4', '#2563EB', '#0891B2', '#16A34A']
+
 function safeActionError(cause: unknown): string {
   if (cause instanceof Error && /文件授权|桌面桥接只允许/.test(cause.message)) {
     return cause.message
@@ -264,5 +317,25 @@ async function executeFileDesktopAction(
   } catch {
     logger('ELECTRON_FILE_DESKTOP_ACTION_FAILED')
     return { success: false, error: '桌面操作失败，请检查本机设置后重试。' }
+  }
+}
+
+async function executeSettingsAction(
+  backend: BackendLike, action: string, fetchImpl: typeof fetch, logger: DesktopLogger = () => undefined,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const runtime = backend.getRuntimeInfo()
+    const base = new URL(runtime.baseUrl)
+    if (base.protocol !== 'http:' || base.hostname !== '127.0.0.1' || !base.port || base.pathname !== '/') throw new Error('untrusted backend')
+    const response = await fetchImpl(new URL('/api/settings/native-action', base.origin), {
+      method: 'POST', headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ action }), redirect: 'error',
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    logger('ELECTRON_SETTINGS_ACTION_COMPLETED')
+    return { success: true }
+  } catch {
+    logger('ELECTRON_SETTINGS_ACTION_FAILED')
+    return { success: false, error: '系统设置本机操作失败' }
   }
 }

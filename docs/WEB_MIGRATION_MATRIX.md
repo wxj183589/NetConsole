@@ -20,7 +20,7 @@
 | Agent 控制 | 无独立完整 Qt 主入口 | 状态、包、任务与 Fake E2E 已有 | `FAKE` | 永久 Electron/Vue 能力，等待真实 Agent 验收 |
 | Desktop Shell | Qt 为生产入口与稳定回退 | Electron 安全外壳、后端生命周期和 Native Bridge 基础可运行 | `IMPLEMENTED_UNVERIFIED` | 保留唯一 Vue Renderer；签名安装、升级和业务替换另行验收 |
 | 全局 Dashboard | 分散展示 | 轨交看板已有，全局首页未完成 | `PARTIAL` | Vue 统一首页 |
-| 系统设置 | 本机设置为主 | 部分未开始 | `NOT_STARTED` | 用户设置进 Web；本机能力经 Electron 白名单桥接 |
+| 系统设置 | 本机设置为主 | 主题/语言/主题色、工具与终端路径、端口/编码、保存/重载/默认恢复、局点事实与内部 Feature 配置已接入；本机动作经语义白名单 Bridge | `PARTIAL` | 全局 i18n 为 `BLOCKED_ON_GLOBAL_I18N`；Electron 人工与真实外部工具为 `MANUAL_DESKTOP_PENDING / REAL_DEVICE_PENDING` |
 | 命令、日志等传统工具 | 生产入口 | 未完整迁移 | `NOT_STARTED` | 先收敛 Application Service，再建设 Web |
 | SNMP 中心 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |
 | 无线勘测 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |

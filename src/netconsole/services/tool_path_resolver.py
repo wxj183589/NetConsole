@@ -9,6 +9,10 @@ from typing import Iterable
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
+from netconsole.services.settings_tool_validation import (
+    SettingsToolPathError,
+    validate_settings_tool_path,
+)
 
 
 @dataclass(frozen=True)
@@ -139,7 +143,10 @@ def candidate_tool_paths(
             except Exception:
                 value = ""
             if value:
-                candidates.append(Path(value))
+                try:
+                    candidates.append(validate_settings_tool_path(_settings_tool_id(tool_name), value))
+                except SettingsToolPathError:
+                    continue
 
     app_root = paths.app_root
     for tools_root in _platform_tool_roots(app_root, definition):
@@ -173,6 +180,13 @@ def _tool_definition(tool_name: str) -> ToolDefinition:
     if definition is None:
         raise ValueError(f"Unsupported external tool: {tool_name}")
     return definition
+
+
+def _settings_tool_id(tool_name: str) -> str:
+    normalized = TOOL_NAME_ALIASES.get(str(tool_name).strip().casefold(), str(tool_name).strip().casefold())
+    if normalized not in {"fping", "iperf3", "ipop"}:
+        raise SettingsToolPathError("不支持的工具标识")
+    return normalized
 
 
 def _is_compiled_runtime() -> bool:

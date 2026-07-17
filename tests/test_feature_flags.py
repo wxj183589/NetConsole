@@ -139,6 +139,9 @@ def test_packaged_runtime_never_exposes_feature_switch_page(tmp_path: Path, monk
     assert not gate.is_enabled("module.feature_switch")
     assert not gate.is_visible("system.feature_flags")
     assert not gate.is_enabled("system.feature_flags")
+    assert not gate.is_visible("web.feature_switch")
+    assert not gate.is_enabled("web.feature_switch")
+    assert not gate.is_in_client_package("web.feature_switch")
 
 
 def test_engineer_package_option_persists_in_customer_profile(tmp_path: Path) -> None:
