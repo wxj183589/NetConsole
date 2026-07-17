@@ -167,12 +167,10 @@ def test_zip_contract_checks_manifest_required_files_and_path_traversal(tmp_path
 
 
 def test_image_import_rejects_unrelated_file_with_image_extension(tmp_path: Path) -> None:
-    from PySide6.QtGui import QColor, QImage
+    from PIL import Image
 
     valid = tmp_path / "floor.png"
-    image = QImage(16, 12, QImage.Format.Format_RGB32)
-    image.fill(QColor("white"))
-    assert image.save(str(valid), "PNG")
+    Image.new("RGB", (16, 12), "white").save(valid, "PNG")
     result = validate_image_import(valid, expected_module="wifi_survey.floor_plan")
     assert result.metadata == {"width": 16, "height": 12}
 

@@ -6,10 +6,7 @@ import hashlib
 import hmac
 import secrets
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
-
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QWidget
+from typing import Any, NamedTuple
 
 from netconsole.core import app_logger
 from netconsole.core.atomic_file import atomic_write_bytes, locked_file
@@ -522,16 +519,6 @@ def embedded_runtime_dir(root: Path | None = None) -> Path:
     if internal.exists() or root is not None:
         return internal / "netconsole" / "assets" / "runtime"
     return package_resource_path("assets", "runtime")
-
-
-def apply_feature_to_widget(feature_gate: FeatureGate, feature_id: str, widget: QWidget, *, hide_when_invisible: bool = True) -> None:
-    visible = feature_gate.is_visible(feature_id)
-    enabled = feature_gate.is_enabled(feature_id)
-    if hide_when_invisible:
-        widget.setVisible(visible)
-    widget.setEnabled(enabled)
-    if visible and not enabled:
-        widget.setToolTip("当前版本未开放此功能")
 
 
 def default_feature_gate() -> FeatureGate:

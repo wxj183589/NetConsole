@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from PIL import Image, UnidentifiedImageError
+
 from netconsole.core.version import APP_VERSION
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
@@ -271,15 +273,15 @@ def validate_optional_contract_metadata(path: str | Path, *, expected_module: st
 
 def validate_image_import(path: str | Path, *, expected_module: str) -> ImportValidationResult:
     target = _require_file(path, {".png", ".jpg", ".jpeg"})
-    from PySide6.QtGui import QImageReader
-
-    reader = QImageReader(str(target))
-    if not reader.canRead():
-        raise ImportValidationError("文件已损坏或无法读取：不是受支持的图片")
-    size = reader.size()
-    if not size.isValid() or size.width() <= 0 or size.height() <= 0:
+    try:
+        with Image.open(target) as image:
+            detected = str(image.format or "").casefold()
+            width, height = image.size
+            image.verify()
+    except (OSError, UnidentifiedImageError) as exc:
+        raise ImportValidationError("文件已损坏或无法读取：不是受支持的图片") from exc
+    if width <= 0 or height <= 0:
         raise ImportValidationError("文件已损坏或无法读取：图片尺寸无效")
-    detected = bytes(reader.format()).decode("ascii", errors="ignore").casefold()
     expected = "jpeg" if target.suffix.casefold() in {".jpg", ".jpeg"} else "png"
     if detected != expected:
         raise ImportValidationError("文件类型不匹配")
@@ -287,7 +289,7 @@ def validate_image_import(path: str | Path, *, expected_module: str) -> ImportVa
         target,
         detected,
         expected_module,
-        {"width": size.width(), "height": size.height()},
+        {"width": width, "height": height},
         row_count=1,
     )
 

@@ -182,7 +182,7 @@ def copy_file_export(path: Path, payload: Mapping[str, Any], progress: ProgressC
 
 def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     from netconsole.services.log_display import display_log_row
-    from netconsole.ui.logs.log_pagination_engine import iter_logs
+    from netconsole.core.log_pagination import iter_logs
 
     log_path = Path(str(payload.get("log_path") or ""))
     keyword = str(payload.get("keyword") or "").strip() or None

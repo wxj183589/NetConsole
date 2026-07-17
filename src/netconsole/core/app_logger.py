@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from netconsole.ui.logs.log_pagination_engine import LogPage, get_logs as paginate_log_file, iter_logs as iter_paginated_log_file
+from netconsole.core.log_pagination import (
+    LogPage,
+    get_logs as paginate_log_file,
+    iter_logs as iter_paginated_log_file,
+)
 
 
 _paths = PathResolver()

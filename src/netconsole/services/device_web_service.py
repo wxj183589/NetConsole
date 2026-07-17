@@ -71,15 +71,5 @@ def effective_https_port(stored_port: object) -> tuple[int, str]:
     return DEFAULT_HTTPS_PORT, "default"
 
 
-def open_https_url(host: object, port: object) -> bool:
-    url = build_https_url(host, port)
-    if not url:
-        return False
-    from PySide6.QtCore import QUrl
-    from PySide6.QtGui import QDesktopServices
-
-    return bool(QDesktopServices.openUrl(QUrl(url)))
-
-
 def _strip_ansi(value: str) -> str:
     return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", value)
