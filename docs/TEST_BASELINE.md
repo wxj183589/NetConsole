@@ -30,5 +30,8 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 2. 完整前端测试与构建。
 3. Ruff 与文档链接检查。
 4. Agent 代码受影响时运行 Go 测试和对应构建检查。
+5. Electron-only 最终组合运行 [架构一致性审计](ARCHITECTURE_COMPLIANCE.md)定义的 import、直接 SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块、目录 README 和 Qt 迁移映射 Guard。
 
 全量测试只在合并后的真实代码组合上作为最终门槛；单个并行任务不重复执行全量套件。
+
+架构 Guard 必须在 Qt 删除和非 Qt 全量测试之后再次执行。启发式命中需要人工分类和证据；不得用目录级忽略、删除测试或无到期时间的例外换取通过。P0/P1 架构问题为零是 Electron-only 发布门。

@@ -68,6 +68,7 @@
 4. 验证冻结态 `--background-worker --job` 与源码态 `python -m netconsole.background_worker --job`。
 5. 搜索并删除已无生产调用者的 compatibility re-export/legacy 函数；无法证明无调用者时保留并标记。
 6. 最后评估专用线程是否值得迁移，不能与领域 handler 拆分混成一次高风险改动。
+7. Qt 源码、测试和依赖删除且非 Qt 全量验证通过后，执行 [架构一致性审计](ARCHITECTURE_COMPLIANCE.md)；零 Qt 关键字扫描不能替代历史业务逻辑迁移映射。
 
 ## 6. 完成标准
 
@@ -89,3 +90,7 @@
 阶段 4C 已在阶段 4B-2 应用服务上增加 FastAPI Traffic 路由、按 Run 订阅的专用 WebSocket 和 Vue 流量测试页面。阶段 5B-3 至 5B-5 收口 Online MR LOCAL 生命周期并接入 Legacy Qt；阶段 5B-6 至 5B-13A 固化 Agent 契约、包同步/导入和单 Agent executor；阶段 5B-13B 增加独立 Web AGENT 页签与回环 Fake 验收。阶段 5C-10A 的 LOCAL 与 5B-13B 的 AGENT 控制都默认关闭，只提供正常停止，不接受命令、URL、路径或凭据字段，也不修改 MR 命令、Traffic flush、raw、Go Agent、AC、SNMP Center 或无线勘测。
 
 Phase 0.5 第一批 A-D/E 只收口 API/Application 边界：三个 Online MR Router 复用单例 Facade，Traffic Router 复用单例 Web Application Service，基础资料策略复用既有 Import Service，配置与 Network Tools 只接受组合根注入，正式 Router 不再直接依赖 SQLite 异常。Task/Agent/Traffic/LocalProcessAdapter/Online MR Application 单例和原关停预算保持不变，未引入新的运行容器。
+
+## 8. Electron-only 最终架构门
+
+当前 Electron-only 重构仍在 Qt 业务抽离和运行时清理阶段，最终架构合规审计尚未执行。待无 Qt 构建、依赖与非 Qt 全量验证完成后，必须建立 `docs/architecture/MIGRATION_MATRIX.md`，追踪被删除 Qt 文件中的业务规则、Adapter 和删除依据，并生成 `docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md`。Vue、Electron Main/Preload、FastAPI Router、Application Service、Service、Parser、Repository 和 Command Profile 的 P0/P1 边界问题清零前不得发布。

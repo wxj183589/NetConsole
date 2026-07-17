@@ -178,6 +178,8 @@ Nuitka：
 
 Windows Server 支持必须按 [Windows Server 测试清单](07-windows-server-test-checklist.md) 实机或虚机验证；构建成功本身不代表已覆盖所有 Server 版本、权限和图形环境。
 
+Electron-only 发布在无 Qt 构建和非 Qt 全量验证之后，还必须通过[架构一致性审计与遗留业务逻辑回收](ARCHITECTURE_COMPLIANCE.md)。Qt 历史迁移映射缺失、P0/P1 分层问题、Router 直接 SQL/设备操作、生产命令绕过 Command Profile、已删除功能活动入口或无到期时间的架构例外均阻塞发布。
+
 ## 禁止事项
 
 - 禁止把项目根目录整体复制进 release。

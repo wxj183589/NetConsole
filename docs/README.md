@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- |
 | [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | `main.py`、`src/netconsole/app.py`、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
 | [下一代架构](ARCHITECTURE_NEXT.md) | Python Core/FastAPI/Vue/Electron 长期目标、永久层与 Qt 退出边界 | 架构与迁移负责人 | 已确认战略、当前代码与目录规范 | 产品目标、永久技术边界或 Qt/Electron 路线变化 |
+| [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、Vue 双运行时、开发/生产资源启动与 Qt Legacy 边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
 | [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `src/netconsole/core`、`src/netconsole/services`、`src/netconsole/repositories`、`src/netconsole/ui` | 新增跨层依赖、后台执行模型或核心服务 |
 | [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |

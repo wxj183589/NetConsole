@@ -7,6 +7,7 @@
 - 当前实现事实见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 - Web 与 Qt 的实际覆盖状态见 [WEB_MIGRATION_MATRIX.md](WEB_MIGRATION_MATRIX.md) 和 [WEB_QT_PARITY_MATRIX.md](WEB_QT_PARITY_MATRIX.md)。
 - 分阶段迁移方法见 [WEB_MIGRATION_PLAN.md](WEB_MIGRATION_PLAN.md)。
+- Electron-only 最终分层与遗留逻辑回收门见 [ARCHITECTURE_COMPLIANCE.md](ARCHITECTURE_COMPLIANCE.md)。
 
 目标架构不等于当前目录已经完成重排。迁移期间必须同时写清“当前状态”和“目标状态”，不得把规划描述成已实现。
 
@@ -137,6 +138,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 4. **Electron 默认期**：满足 `COMPLETE` 的模块先隐藏 Qt 入口，保留一个发布周期回退。普通浏览器仅保留开发和诊断入口，不进入发布或功能对等验收。
 5. **Electron 外壳期**：安全基础已开始；继续补安装/升级/托盘，并仅在模块达到完整纵向闭环后替换 Qt 入口。
 6. **Qt 删除期**：所有目标模块完成迁移、真实验收、发布回退验证后，删除 Qt 业务层和 Qt 运行依赖。
+7. **架构合规期**：在无 Qt 构建和非 Qt 全量验证后，使用 Git 历史追踪被删除 Qt 文件中的业务逻辑，检查各永久层真实依赖，修复 P0/P1 并生成最终合规报告。
 
 ## 完成定义
 
@@ -146,5 +148,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 - FastAPI/Application Service 是唯一业务控制入口；
 - Electron 不包含业务逻辑且本机桥接完成安全审计；
 - Qt 页面、Qt Web Shell 和 Qt 运行依赖均可删除；
+- 每个被删除 Qt 文件已分类为 `PURE_UI`、`BUSINESS_MOVED`、`ADAPTER_REPLACED`、`DEAD_CODE` 或 `FEATURE_REMOVED`，有效业务逻辑均有新位置和测试；
+- 架构 Guard 通过，Vue、Electron 和 Router 不承载核心业务规则，Repository 和 Command Profile 分别守住数据库与生产命令边界；
 - Agent、任务、会话、Artifact、权限、审计和升级链路通过真实环境验收；
 - Web 或桌面外壳异常时存在明确的服务恢复和数据保护方案。
