@@ -14,7 +14,7 @@ from netconsole.core.i18n import I18n
 from netconsole.services.online_mr_chart_builder import ChartData, ChartEvent
 from netconsole.ui.mesh_chart_font import apply_cjk_font
 from netconsole.ui.mesh_chart_interaction_controller import MeshChartInteractionController
-from netconsole.ui.mesh_chart_payload import preserve_extrema_indices, render_indices
+from netconsole.services.mesh_chart_payload import preserve_extrema_indices, render_indices
 from netconsole.ui.mesh_chart_time_axis import configure_mesh_time_axis
 from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController
 from netconsole.ui.widgets.scrollable_matplotlib_view import AnalysisChartHoverController, ScrollableMatplotlibView

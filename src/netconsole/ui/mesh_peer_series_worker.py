@@ -9,7 +9,7 @@ from PySide6.QtCore import QThread, Signal
 
 from netconsole.core import app_logger
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
-from netconsole.ui.mesh_chart_payload import build_chart_payload
+from netconsole.services.mesh_chart_payload import build_chart_payload
 
 
 class MeshPeerSeriesWorker(QThread):

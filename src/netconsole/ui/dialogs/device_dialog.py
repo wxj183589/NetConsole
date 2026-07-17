@@ -28,7 +28,7 @@ from netconsole.models.device_group import DeviceGroup
 from netconsole.services.netmiko_connection import ConnectionTestResult, extract_sysname_from_prompt
 from netconsole.services.device_import_export import SNMPV3_AUTH_PROTOCOLS, SNMPV3_PRIV_PROTOCOLS, SNMPV3_SECURITY_LEVELS
 from netconsole.ui.connection_worker import DeviceConnectionTestThread
-from netconsole.ui.dialogs.device_form_rules import validate_device_form_data
+from netconsole.services.device_form_rules import validate_device_form_data
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.windowing import fit_default_window_size
 

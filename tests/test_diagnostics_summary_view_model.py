@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from netconsole.ui.diagnostics import (
+from netconsole.models.diagnostics_summary import (
     DIAGNOSTICS_ENABLED_FLAG,
     DIAGNOSTICS_SAMPLES_ENABLED_FLAG,
     DIAGNOSTICS_UI_ENABLED_FLAG,

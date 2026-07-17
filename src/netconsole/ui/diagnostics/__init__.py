@@ -1,4 +1,4 @@
-from netconsole.ui.diagnostics.diagnostics_summary_view_model import (
+from netconsole.models.diagnostics_summary import (
     DIAGNOSTICS_ENABLED_FLAG,
     DIAGNOSTICS_SAMPLES_ENABLED_FLAG,
     DIAGNOSTICS_UI_ENABLED_FLAG,

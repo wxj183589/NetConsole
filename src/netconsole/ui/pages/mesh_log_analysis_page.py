@@ -36,7 +36,8 @@ from PySide6.QtWidgets import (
 )
 
 from netconsole.core import app_logger
-from netconsole.core.feature_flags import apply_feature_to_widget, default_feature_gate
+from netconsole.core.feature_flags import default_feature_gate
+from netconsole.ui.feature_widget import apply_feature_to_widget
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore

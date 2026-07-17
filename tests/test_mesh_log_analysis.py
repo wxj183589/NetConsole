@@ -995,7 +995,7 @@ def test_active_build_order_marks_same_physical_ap_radio_roundtrip_not_ap_pingpo
 
 
 def test_peer_chart_run_context_includes_same_time_standby_from_other_session(tmp_path):
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
@@ -1262,7 +1262,7 @@ def test_run_segment_query_uses_anchor_boundaries_not_second_run(tmp_path):
 
 
 def test_full_active_chart_query_loads_beyond_link_detail_page_size(tmp_path):
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=1005, second_count=0)
@@ -1772,7 +1772,7 @@ def test_active_role_short_missing_point_draws_dashed_bridge(tmp_path):
 
 
 def test_chart_payload_does_not_load_removed_chart_series(tmp_path):
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     row = _chart_row(1, "2025-12-03 10:00:00.000")
     row["duration_seconds"] = 3
@@ -1791,7 +1791,7 @@ def test_chart_payload_does_not_load_removed_chart_series(tmp_path):
 
 
 def test_active_channel_load_payload_does_not_include_next_or_peer_side_metrics():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "ACTIVE", 30, 50, 1, 2),
@@ -1810,7 +1810,7 @@ def test_active_channel_load_payload_does_not_include_next_or_peer_side_metrics(
 
 
 def test_chart_payload_uses_compact_v2_scalar_metrics_without_json_payload():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         {
@@ -1848,7 +1848,7 @@ def test_chart_payload_uses_compact_v2_scalar_metrics_without_json_payload():
 
 
 def test_current_active_payload_excludes_next_active_fields():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "ACTIVE", 24, 34),
@@ -1863,7 +1863,7 @@ def test_current_active_payload_excludes_next_active_fields():
 
 
 def test_current_active_payload_uses_canonical_mac_formats_for_runs():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "ACTIVE", 24, 34),
@@ -1879,7 +1879,7 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
     from netconsole.core.i18n import I18n
     from netconsole.models.mesh_log_models import MeshMrProfile
     from netconsole.ui.dialogs.mesh_peer_detail_dialog import MeshActiveLinkChartDialog
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53),
@@ -1923,7 +1923,7 @@ def test_hover_standby_links_use_compact_rssi_format_and_payload_order(tmp_path)
 
 
 def test_active_payload_backup_links_are_isolated_by_source_and_allow_nearby_time():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     active = _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53, source_file_id=1)
     same_source = _payload_row(2, "2025-12-03 10:00:00.600", "30f5-277a-5a3f", "STANDBY", 27, 37, source_file_id=1)
@@ -1936,7 +1936,7 @@ def test_active_payload_backup_links_are_isolated_by_source_and_allow_nearby_tim
 
 
 def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "ACTIVE", 24, 34),
@@ -1965,7 +1965,7 @@ def test_active_switch_hover_includes_from_and_to_ap_names():
 
     from netconsole.core.i18n import I18n
     from netconsole.ui.mesh_chart_hover import MeshChartHoverController
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "083b-e9ec-de2f", "ACTIVE", 24, 34),
@@ -2002,7 +2002,7 @@ def test_active_switch_hover_includes_from_and_to_ap_names():
 
 
 def test_no_active_and_multi_active_do_not_generate_active_series():
-    from netconsole.ui.mesh_chart_payload import build_chart_payload
+    from netconsole.services.mesh_chart_payload import build_chart_payload
 
     rows = [
         _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "STANDBY", 24, 34),

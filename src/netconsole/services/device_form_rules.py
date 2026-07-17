@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from netconsole.models.device_credentials import format_auth_user, to_bool_int
+from netconsole.models.device_credentials import format_auth_user as format_auth_user
+from netconsole.models.device_credentials import to_bool_int
 
 
 def validate_device_form_data(data: dict[str, object | None]) -> str | None:

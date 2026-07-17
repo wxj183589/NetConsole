@@ -24,7 +24,7 @@ from netconsole.models.mesh_log_models import MeshMrProfile, format_mac_h3c
 from netconsole.ui.mesh_chart_hover import MeshChartHoverController
 from netconsole.ui.mesh_chart_interaction_controller import MeshChartInteractionController
 from netconsole.ui.mesh_chart_font import apply_cjk_font, resolve_matplotlib_cjk_font
-from netconsole.ui.mesh_chart_payload import build_chart_payload, preserve_extrema_indices, render_indices
+from netconsole.services.mesh_chart_payload import build_chart_payload, preserve_extrema_indices, render_indices
 from netconsole.ui.mesh_chart_time_axis import configure_mesh_time_axis
 from netconsole.ui.mesh_peer_series_worker import MeshPeerSeriesWorker
 from netconsole.ui.mesh_time_window_controller import MeshTimeWindowController

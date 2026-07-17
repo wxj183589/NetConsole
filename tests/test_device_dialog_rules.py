@@ -6,7 +6,7 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.netmiko_connection import ConnectionTestResult
 from netconsole.ui.dialogs.device_dialog import DeviceDialog
-from netconsole.ui.dialogs.device_form_rules import format_auth_user, validate_device_form_data
+from netconsole.services.device_form_rules import format_auth_user, validate_device_form_data
 
 
 def test_validate_device_form_requires_name_and_host():
