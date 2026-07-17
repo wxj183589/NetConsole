@@ -2,7 +2,7 @@
 
 ## 1. 架构目标
 
-本文描述当前生产架构。NetConsole 当前以 Python Core Runtime 为主体，Launcher 可选择 Qt、本机 Web 或 Server Shell；Qt 仍是默认生产和回退入口。已确认的长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 只作为迁移层并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
+本文描述当前源码架构。NetConsole 以 Python Core Runtime 为主体，Electron 是唯一正式桌面产品方向；Launcher 中的 Qt、本机 Web 和 Server Shell 是迁移兼容或开发诊断入口，不再构成正式发布回退。长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 仅保留为迁移事实源并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
 
 ## 2. 启动与运行形态
 

@@ -25,7 +25,7 @@ scripts/build/release.py
 - PyInstaller
 - Nuitka
 
-上述仍是 Qt Legacy 正式发布链。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链，不能用 `pnpm start` 产物替代 PyInstaller/Nuitka 发布包。
+上述 PyInstaller/Nuitka 脚本仅保留用于已交付 Qt 成果的历史复现，不再作为 v1.3.9 及后续版本的发布门。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链；`pnpm start` 只能验证生产静态资源和真实 FastAPI 生命周期，不能冒充安装包交付。
 
 Electron 基础验证：
 
@@ -162,7 +162,7 @@ Nuitka：
 
 ## 验证
 
-长期正式桌面产品和所有新业务验收只面向 Electron；迁移期 Qt 仍继续发布并作为生产与回退入口。源码态 `--mode web|server` 仅保留开发诊断、API 联调和无 Shell Core 探针，不是独立产品、客户入口或功能验收对象；`auto` 只选择 Qt，失败时不得静默打开浏览器。发布检查不得把“浏览器可打开”当成 Electron 验收。`web/server` 的兼容导入链仍应在未导入 PySide6 的条件下完成分派，`server` 不得主动打开浏览器且只允许回环地址。Qt probe 必须保持轻量导入，不得依赖 FastAPI/Core 成功导入。真实 Electron 与迁移期 Qt 图形能力仍需在 Windows 图形环境单独验证，不能用 offscreen 单测替代。
+长期正式桌面产品和所有新业务验收只面向 Electron；Qt 只保留为迁移事实源和历史成果复现，不再构建新发布包或进入新版本回归门。源码态 `--mode web|server` 仅保留开发诊断、API 联调和无 Shell Core 探针，不是独立产品、客户入口或功能验收对象；发布检查不得把“浏览器可打开”当成 Electron 验收。`web/server` 的兼容导入链仍应在未导入 PySide6 的条件下完成分派，`server` 不得主动打开浏览器且只允许回环地址。真实 Electron 图形能力仍需在 Windows 图形环境单独验证，不能用单元测试或源码 smoke 代替人工桌面与真实设备验收。
 
 常用验证：
 

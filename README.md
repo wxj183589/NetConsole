@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通车地无线、SNMP/MIB、网络测试、配置采集、文件管理和日志诊断。
 
-当前版本：`v1.3.8`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
+当前版本：`v1.3.9`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
 ## 仓库地址
 
@@ -13,9 +13,9 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
 
-当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Electron、Element Plus、Pinia、Vue Router 和 ECharts。无 Qt 依赖 Launcher 已支持 `auto/qt/web/server`；`apps/desktop_electron` 另提供安全 Electron main/preload、动态端口 Python supervisor 和 Vue 双运行时基础。Qt 仍保留全部现有页面和故障回退能力，Web 功能对等继续按矩阵验收。Python 依赖以 `requirements.txt` 为准，Vue 与 Electron 分别以各自 `apps/*/package.json` 和 `pnpm-lock.yaml` 为准。
+当前开发技术栈为 Python 3.13、Qt 6、PySide6、QFluentWidgets、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Electron、Element Plus、Pinia、Vue Router 和 ECharts。`apps/desktop_electron` 是唯一正式桌面产品方向，复用 FastAPI 与唯一 Vue Renderer；源码态 Browser 仅用于开发、联调和诊断。Qt 源码暂时保留为功能事实源和迁移参考，不再承担新版本发布门或新功能开发，待 Electron 完成全部有效功能的 1:1 可用迁移后单独删除。Python 依赖以 `requirements.txt` 为准，Vue 与 Electron 分别以各自 `apps/*/package.json` 和 `pnpm-lock.yaml` 为准。
 
-长期产品路线已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳**。当前处于 Electron 与 Qt 并行迁移阶段：Qt 仍是生产与回退入口，不再新增 Qt 业务页面；Electron 安全基础已经可运行，但安装包、升级、托盘和业务模块替换尚未完成。对应模块达到 `REPLACE_READY` 后才可先隐藏 Qt 入口，稳定一个发布周期再删除。
+长期产品路线已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳**。当前处于 Electron 功能对等迁移阶段：Qt 只保留为事实源和临时参考；Electron 已完成安全宿主以及设备、AC/FIT-AP、轨交、配置、文件、网络工具、命令参考、系统设置、日志维护等代码闭环，但真实设备和桌面人工验收仍按模块标记为 `REAL_DEVICE_PENDING` 或 `IMPLEMENTED_UNVERIFIED`。Electron 安装包、签名、升级和托盘仍属于后续独立阶段。
 
 ## 当前能力
 

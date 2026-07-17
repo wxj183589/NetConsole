@@ -2,7 +2,7 @@
 
 ## 1. 正式基线
 
-NetConsole 采用渐进式 Electron/Vue 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。正式桌面目标只有 Electron；Qt 仍是迁移期稳定生产与回退界面。本机浏览器和无 Shell Server 只保留开发、诊断及 API 联调能力，不作为独立产品。模块达到 `COMPLETE` 前不删除或隐藏 Qt 页面。
+NetConsole 采用渐进式 Electron/Vue 演进，不重建第二套 Python Core，不搬移现有 `services/`、`repositories/`、`parsers/` 和 `models/`。正式桌面产品只有 Electron；Qt 已退出发布与回退产品范围，只保留源码作为迁移事实源。本机浏览器和无 Shell Server 只保留开发、诊断及 API 联调能力，不作为独立产品。模块达到 `COMPLETE` 前不删除对应 Qt 事实源。
 
 最终方向已经明确：Python Core + FastAPI 是永久业务层，Vue 是永久主界面，Electron 是最终桌面外壳，Qt 只在迁移期保留并最终删除。Electron 安全基础已建立，但业务替换仍必须先收敛 Application Service、薄化 Router并完成 Vue 完整纵向闭环与真实验收。完整目标和阶段门槛见 [下一代架构](ARCHITECTURE_NEXT.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 与 [Web 迁移计划](WEB_MIGRATION_PLAN.md)。
 
@@ -57,7 +57,7 @@ Windows Go Agent 已有独立 REST/Web、任务、真实 fping、iPerf、增量�
 
 RuntimeMode 仍由 Python Core 使用；Electron Native Bridge 位于独立 main/preload 边界，不向 Python Application Service 增加宿主依赖。当前白名单、宿主条件和永久禁止输入见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 
-Electron Desktop 自己持有退出屏障：先拒绝新下载并取消、等待在途写入清理，再请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 回发 `exit`，最后 Electron 才退出。该宿主生命周期加固不提升任何业务页面的对等状态，Online MR 完整操作闭环仍未因本轮工作启动，Qt 继续作为生产与回退入口。
+Electron Desktop 自己持有退出屏障：先拒绝新下载并取消、等待在途写入清理，再请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 回发 `exit`，最后 Electron 才退出。该宿主生命周期加固不自动提升业务页面的对等状态；Qt 只保留为尚未完成真实验收能力的迁移事实源。
 
 ## 4. API 契约
 

@@ -15,7 +15,7 @@
 
 ## 下一阶段 UI 与分层边界
 
-- 长期产品形态是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳；当前 Qt 只作为迁移期生产与回退入口。
+- 长期产品形态是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳；Qt 已退出发布与新功能范围，只保留为完成 1:1 迁移所需的事实源。
 - 不新增 Qt 业务页面或 Qt 专用业务逻辑。新功能默认沿共享规则/Application Service -> FastAPI -> Vue 建设。
 - Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
 - Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。

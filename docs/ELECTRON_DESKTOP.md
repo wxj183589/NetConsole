@@ -12,12 +12,12 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 ## 当前状态
 
-Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。当前正式处于 **Electron 与 Qt 并行迁移阶段**：Qt 仍是生产与回退入口，Electron 是可运行的新宿主基础；这不是安装包发布完成，也不表示任何 Qt 业务模块已经达到替换门槛。
+Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。当前正式处于 **Electron 功能对等迁移阶段**：Electron 是唯一正式桌面产品方向，Qt 只保留为迁移事实源，不再发布或发展新功能；这不是 Electron 安装包发布完成，也不表示尚待人工或真实设备验收的模块已经达到删除 Qt 源码的门槛。
 
 当前并存关系：
 
 ```text
-apps/desktop/              当前 Qt Web Shell，Legacy/生产回退
+apps/desktop/              历史 Qt Web Shell，迁移事实参考
 apps/desktop_electron/     Electron main/preload/shared，目标桌面外壳基础
 apps/web/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
 src/netconsole/            唯一 Python Core/FastAPI/Application Service
@@ -185,7 +185,7 @@ Renderer 当前只能调用：
 
 ## Qt Legacy 策略
 
-当前 Qt 主程序仍是稳定生产与回退入口。允许：
+当前 Qt 主程序只保留为迁移事实源，不再作为正式发布或回退入口。迁移期间仅允许：
 
 - P1/P2 缺陷修复；
 - 数据安全与必要兼容修复；
@@ -213,7 +213,7 @@ Renderer 当前只能调用：
 
 现有 SNMP Center 与无线勘测在 Feature Registry 中继续保持 `DISABLED`，迁移状态为 `BLOCKED`；第 9 项只能在独立重建设计批准后开始。
 
-本轮只加固 Electron 宿主、下载和退出链，没有启动上述第 1 项 Online MR 完整操作闭环迁移，也没有改变 Qt 的生产与回退入口地位。
+Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按对等矩阵继续验收，Qt 只承担未完成能力的源码事实对照。
 
 后续不能只迁移只读列表和详情页。每个模块必须按完整纵向业务闭环迁移，包括创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；在达到 `COMPLETE` 前不能隐藏 Qt 回退入口。浏览器开发联调通过不构成正式产品验收证据。
 

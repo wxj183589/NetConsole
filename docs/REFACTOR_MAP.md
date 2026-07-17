@@ -4,7 +4,7 @@
 
 截至 2026-07-15，NetConsole 已建立统一 Background Job 协议、独立 worker、进程适配器、Job Registry 和 11 个领域 handler 模块；Registry 当前注册 89 个任务类型。Traffic 的三个本地 handler、Online MR Agent 包同步/导入两个 handler 与 AC Mesh-Link 白名单刷新 handler 已直接调用正式 Service/Adapter，Online MR 5B-13A/13B 已增加默认关闭的单 Agent 远端执行器和 Desktop WebHost 控制入口。Phase 0.5 第一批进一步把 18 个正式 FastAPI Router 的静态边界债务清零，但多数既有领域 handler 仍通过 `legacy_handler(...)` 调用 `src/netconsole/services/job_center/handlers/legacy_tasks.py`，因此总体状态仍是“入口与协议统一，领域实现迁移中”，不是“已完成”。
 
-长期界面路线已调整为 Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳，Qt 仅作迁移与回退。该决定不改变本表的当前生产事实；任务迁移应优先形成可被 FastAPI 与迁移期 Qt 共用的 Application Service，详见 [下一代架构](ARCHITECTURE_NEXT.md)。
+长期界面路线已调整为 Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 最终桌面外壳。Qt 已退出发布与回退产品范围，仅作迁移事实源；任务迁移应优先形成可被 FastAPI 与历史 Qt 入口共用的 Application Service，详见 [下一代架构](ARCHITECTURE_NEXT.md)。
 
 ## 2. 状态定义
 

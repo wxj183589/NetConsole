@@ -159,7 +159,7 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 8. CSV 导入预览、错误文件、重复拒绝/跳过/仍新增、取消、确认、持久化和重启后数据。
 9. CSV 不含/含凭据、模板、SecureCRT ZIP、OmniPeek 预览选择和 `.nam` 内容。
 10. SecureCRT/Xshell/PuTTY 配置、选择取消、单台/批量启动及超过 20 台确认。
-11. Electron 退出后 Python/任务/临时文件清理；Qt 仍可独立启动和回退。
+11. Electron 退出后 Python/任务/临时文件清理；Qt 不作为正式回退，只用于迁移期事实对照。
 12. 日志、API 响应、任务消息和导出默认路径中无意外凭据泄露。
 
 ## 未完成验收

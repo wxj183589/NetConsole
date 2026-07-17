@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-唯一 FastAPI Core Runtime 由桌面宿主创建并交给 Electron 的唯一 Vue Renderer；迁移期 Qt Shell 继续复用同一业务层。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口。Qt WebConsoleHost 不再创建或停止 Launcher 所拥有的服务，也不通过 QWebChannel 暴露业务方法。
+唯一 FastAPI Core Runtime 由桌面宿主创建并交给 Electron 的唯一 Vue Renderer。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口；历史 Qt Shell/WebConsoleHost 仅保留为迁移事实参考，不再作为发布或回退产品，也不通过 QWebChannel 暴露业务方法。
 
 迁移期 Qt 主程序托盘和 Fluent 顶部“更多”菜单仍可打开同一 Vue 控制台。默认 `auto/qt` 启动下 Core Runtime 已在 Shell 前监听随机回环端口，但 `auto` 在 Qt 不可用或初始化失败时明确退出，不自动打开浏览器；直接调用旧 `netconsole.app.run()` 时仍保留按需创建 WebHost 的兼容行为。
 
@@ -30,7 +30,7 @@ Core Runtime / FastAPI / Uvicorn
 - 默认 Launcher 在选择 Shell 前创建一次 FastAPI 服务并启动 Uvicorn 线程；
 - 关闭 Web 窗口只关闭显示窗口，主程序和本地服务继续存活，可从托盘重新打开；
 - Launcher 进程退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止 Core Runtime；
-- Electron 启动失败时报告明确错误；不把系统浏览器静默当成正式产品回退，迁移期回退入口仍是 Qt；
+- Electron 启动失败时报告明确错误；不把系统浏览器或 Qt 静默当成正式产品回退；
 - 源码开发态 `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
 - 旧 `--web-shell` 与直接 `netconsole.app.run()` 继续作为兼容路径，不代表新 Launcher 生命周期。
 
@@ -77,4 +77,4 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - SNMP Center 和无线勘测继续保持 `DISABLED`。
 - Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
 - Qt WebHost 不提供本机文件选择、目录、Artifact、外部终端或通知；Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 则继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知仍待后续。所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)，WinSCP、IPOP 和其他通用外部程序不在当前白名单，迁移期继续留在 Qt。
-- Electron 不复用 Qt WebHost 的关闭链：它先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。该宿主差异不表示 Qt 已退出生产或回退入口。
+- Electron 不复用 Qt WebHost 的关闭链：它先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 仅保留为历史迁移参考。

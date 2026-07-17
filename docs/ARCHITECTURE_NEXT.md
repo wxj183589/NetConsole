@@ -16,7 +16,7 @@ NetConsole 的长期产品形态确定为：
 
 > **Python Core + FastAPI 作为永久业务层，Vue 作为永久主界面，Electron 作为最终桌面外壳，Qt 仅保留在迁移期并最终删除。**
 
-当前实施阶段是 **Electron 与 Qt 并行迁移**：Qt 保持生产与回退可用，Electron 独立验证新宿主；两者不得复制 Python 业务逻辑，任何 Qt 入口都只能在对应 Web 纵向闭环达到替换门槛后退出。
+当前实施阶段是 **Electron 功能对等迁移**：Electron 是唯一正式桌面产品方向，Qt 不再发布或发展新功能，只保留为真实功能、字段、命令和交互的迁移事实源；两者不得复制 Python 业务逻辑，Qt 源码只能在对应 Electron 纵向闭环完成真实验收后删除。
 
 永久保留：
 
@@ -28,8 +28,8 @@ NetConsole 的长期产品形态确定为：
 
 过渡或未来替换：
 
-- Qt GUI：迁移期生产入口和故障回退，目标是逐模块隐藏并最终删除；
-- 当前 Qt Web Shell：迁移期 Desktop WebHost 宿主和生产回退，尚未删除；
+- Qt GUI：已退出发布门，仅作迁移事实源，目标是完成对等验收后删除；
+- 当前 Qt Web Shell：历史兼容实现，不再作为正式产品或回退入口；
 - Electron：`apps/desktop_electron/` 已建立可运行安全基础，复用现有 Vue/FastAPI；安装包、升级、托盘和业务模块替换尚未完成。
 
 从本决策起，不再新增 Qt 业务页面，也不在 Qt 页面中建立新的业务规则。新功能默认沿永久链路建设。
@@ -110,7 +110,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 
 所有桥接调用必须验证路径归属、参数类型、允许的目标程序和审计信息。业务控制仍经过 FastAPI 和 Application Service。
 
-所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路当前为 `IMPLEMENTED_UNVERIFIED`，没有启动 Online MR 完整操作闭环迁移，也不改变 Qt 的生产与回退入口地位。
+所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路已完成自动冒烟但仍待人工桌面验收；Qt 只保留为尚未完成真实验收能力的迁移事实源。
 
 ## 冻结和排除范围
 

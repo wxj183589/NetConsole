@@ -11,7 +11,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 ```
 
 - Electron Desktop 是永久桌面产品和 Qt 业务迁移目标。
-- Qt 是迁移期生产与回退入口；模块达到 `COMPLETE` 前不得隐藏或删除对应 Qt 页面。
+- Qt 已退出正式发布与回退产品范围；模块达到 `COMPLETE` 前保留对应源码作为迁移事实依据，达到真实验收门后再删除。
 - 普通浏览器只保留开发、诊断和 API 联调能力，不再作为独立产品形态，不要求单独的功能对等、发布打包或人工验收。
 - Vue、FastAPI 和 Application Service 仍然只有一套；取消浏览器产品入口不等于复制一套 Electron 页面。
 - Electron main/preload 只提供窗口、Python Core 生命周期和白名单本机能力，不实现业务规则。
