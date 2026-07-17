@@ -10,6 +10,8 @@
 
 Electron Desktop Native Bridge 已实现基础白名单，代码位于 `apps/desktop_electron/src/{main,preload,shared}`。除桌面选择器和受控后端文件下载外，设备详情可通过独立 `openExternalUrl` 动作把无凭据 HTTPS 地址交给系统浏览器。普通 Browser/Server Mode 仅作开发诊断，没有正式本机动作能力。
 
+Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `DesktopActionService`、`LocalDesktopAdapter` 与拒绝 Adapter 继续承载后端语义动作和安全校验；原生选择器、路径 capability、下载和 IPC 只以 Electron Main/Preload 实现为事实源，不保留第二套 Qt 桌面桥接。
+
 总体运行方式和启动命令见 [Electron Desktop 基础架构](ELECTRON_DESKTOP.md)。
 
 ## 信任边界

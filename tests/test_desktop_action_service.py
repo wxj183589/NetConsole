@@ -303,30 +303,3 @@ print('qt_imported=false')
 
     assert result.returncode == 0, result.stderr
     assert "qt_imported=false" in result.stdout
-
-
-def test_qt_adapter_maps_resolved_paths_and_argv_without_shell(tmp_path: Path, monkeypatch) -> None:
-    from netconsole.infrastructure.desktop import qt_adapter
-
-    selected = tmp_path / "selected.txt"
-    executable = tmp_path / "tool.exe"
-    calls: list[tuple[object, ...]] = []
-    monkeypatch.setattr(qt_adapter.QFileDialog, "getOpenFileName", lambda *_args: (str(selected), ""))
-    monkeypatch.setattr(
-        qt_adapter.QDesktopServices,
-        "openUrl",
-        lambda url: calls.append(("open", url.toLocalFile())) or True,
-    )
-    monkeypatch.setattr(
-        qt_adapter.QProcess,
-        "startDetached",
-        lambda program, arguments, directory: calls.append(("launch", program, arguments, directory)) or (True, 123),
-    )
-    adapter = qt_adapter.QtDesktopAdapter()
-    launch = RegisteredLaunch(executable, ("-c", "10.0.0.2"), tmp_path)
-
-    assert adapter.select_file(DesktopSelectionPurpose.IMPORT_FILE).paths == (selected.resolve(),)
-    assert adapter.open_controlled_artifact(selected).success is True
-    assert adapter.launch_registered_tool(launch).success is True
-    assert Path(str(calls[0][1])) == selected
-    assert calls[1] == ("launch", str(executable), ["-c", "10.0.0.2"], str(tmp_path))
