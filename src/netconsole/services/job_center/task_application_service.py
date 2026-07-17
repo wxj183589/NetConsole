@@ -8,7 +8,7 @@ from typing import Any
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
-from netconsole.models.task_state import TaskState
+from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
@@ -17,6 +17,11 @@ from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
     sanitize_web_export_event,
     sanitize_web_export_snapshot,
+)
+
+
+_ACTIVE_TASK_STATES = frozenset(
+    {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 )
 
 
@@ -36,7 +41,7 @@ class TaskApplicationService:
         self._repositories: dict[str, TaskRepository] = {}
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
-        self.events.subscribe(self._persist_event)
+        self.events.add_guard(self._persist_event)
         self.reconcile_orphaned_local_tasks()
 
     @property
@@ -125,9 +130,10 @@ class TaskApplicationService:
             source="service",
             payload={"state": TaskState.PENDING.value, "task_type": task_type},
         )
-        repository.record(snapshot, event)
+        if not repository.record(snapshot, event, allowed_from=()):
+            raise ValueError(f"任务已存在：{task_id}")
         self._job_sites[task_id] = selected_site
-        self.events.publish(event.to_dict())
+        self.events.publish_persisted(event.to_dict())
         return snapshot
 
     def record_external_event(
@@ -158,14 +164,15 @@ class TaskApplicationService:
             source=source,
             payload=safe_payload,
         )
+        allowed_from = self._allowed_from(snapshot, event.type, event.payload)
         updated = self._apply_event(snapshot, event.type, event.payload, selected_time)
-        if not repository.record(updated, event):
+        if not repository.record(updated, event, allowed_from=allowed_from):
             current = repository.get(task_id)
             if current is None:
                 raise KeyError(task_id)
             return current
         self._job_sites[task_id] = selected_site
-        self.events.publish(event.to_dict())
+        self.events.publish_persisted(event.to_dict())
         if updated.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
             self._job_sites.pop(task_id, None)
         return updated
@@ -310,21 +317,22 @@ class TaskApplicationService:
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
 
-    def _persist_event(self, envelope: dict[str, object]) -> None:
+    def _persist_event(self, envelope: dict[str, object]) -> bool:
         try:
             task_id = str(envelope.get("task_id") or "")
             if not task_id:
-                return
+                return False
             payload = dict(envelope.get("payload") or {})
             site_name = self._job_sites.get(task_id, self.site_name)
             repository = self.repository(site_name)
             snapshot = repository.get(task_id)
             if snapshot is None:
-                return
+                return False
             if is_web_export_task(snapshot.task_type):
                 payload = sanitize_web_export_event(payload)
-            updated = self._apply_event(snapshot, str(envelope.get("type") or ""), payload, str(envelope.get("time") or utc_now_iso()))
-            repository.record(
+            event_type = str(envelope.get("type") or "")
+            updated = self._apply_event(snapshot, event_type, payload, str(envelope.get("time") or utc_now_iso()))
+            return repository.record(
                 updated,
                 TaskEvent(
                     event_id=str(envelope.get("id") or uuid.uuid4().hex),
@@ -334,9 +342,11 @@ class TaskApplicationService:
                     source=str(envelope.get("source") or "service"),
                     payload=payload,
                 ),
+                allowed_from=self._allowed_from(snapshot, event_type, payload),
             )
         except Exception as exc:
             app_logger.log_error("TASK_EVENT_PERSIST_FAILED", f"task_id={envelope.get('task_id', '')} error={exc}")
+            return False
 
     def _apply_event(self, snapshot: TaskSnapshot, event_type: str, payload: dict[str, Any], event_time: str) -> TaskSnapshot:
         values = asdict(snapshot)
@@ -408,6 +418,31 @@ class TaskApplicationService:
             )
         return TaskSnapshot(**values)
 
+    @staticmethod
+    def _allowed_from(
+        snapshot: TaskSnapshot,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> frozenset[TaskState] | set[TaskState]:
+        if event_type == "artifact_finalized":
+            return {TaskState.COMPLETED}
+        if event_type == "artifact_rejected":
+            return {snapshot.status}
+        if snapshot.status in TERMINAL_TASK_STATES:
+            return set()
+        if event_type == "state":
+            target = TaskState(str(payload.get("state") or snapshot.status.value))
+            if target is TaskState.PENDING:
+                return {TaskState.PENDING}
+            if target is TaskState.STARTING:
+                return {TaskState.PENDING, TaskState.STARTING}
+            if target is TaskState.RUNNING:
+                return {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING}
+            return _ACTIVE_TASK_STATES
+        if event_type in {"finished", "error", "cancelled"}:
+            return _ACTIVE_TASK_STATES
+        return {snapshot.status}
+
     def _artifact_task(
         self,
         site_name: str,
@@ -459,6 +494,7 @@ class TaskApplicationService:
                 source="service",
                 payload={"message": "任务启动失败", "error": message, "cancelled": False},
             ),
+            allowed_from={snapshot.status},
         )
 
     @staticmethod

@@ -18,11 +18,14 @@ const moduleFilter = ref('all')
 const keyword = ref('')
 const drawerVisible = ref(false)
 const lastSavedCapability = ref('')
+const nativeActionError = ref('')
 let downloadGeneration = 0
+const pollingConsumer = 'job-center-view'
 
 function clearSavedCapability(): void {
   downloadGeneration += 1
   lastSavedCapability.value = ''
+  nativeActionError.value = ''
 }
 
 const visibleTasks = computed(() => {
@@ -38,7 +41,7 @@ watch(() => store.selected?.id, clearSavedCapability)
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
-  store.startPolling()
+  store.acquirePolling(pollingConsumer)
   const status = typeof route.query.status === 'string' ? route.query.status : ''
   const module = typeof route.query.module === 'string' ? route.query.module : ''
   if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
@@ -50,7 +53,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearSavedCapability()
   document.removeEventListener('visibilitychange', handleVisibility)
-  store.stopPolling()
+  store.releasePolling(pollingConsumer)
 })
 
 async function openDetail(task: TaskItem): Promise<void> {
@@ -63,8 +66,8 @@ async function openDetail(task: TaskItem): Promise<void> {
 }
 
 function handleVisibility(): void {
-  if (document.hidden) store.stopPolling()
-  else store.startPolling()
+  if (document.hidden) store.releasePolling(pollingConsumer)
+  else store.acquirePolling(pollingConsumer)
 }
 
 function matchesFilter(task: TaskItem): boolean {
@@ -140,8 +143,39 @@ async function downloadArtifact(): Promise<void> {
   } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
 }
 
-const openSaved = () => getPlatformAdapter().openPath(lastSavedCapability.value)
-const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapability.value)
+function nativeFailureMessage(action: 'open' | 'reveal', error = ''): string {
+  if (error.includes('文件授权已过期')) return '文件授权已过期，请重新下载后再试'
+  if (error.includes('文件授权')) return '文件授权已失效，请重新下载后再试'
+  return action === 'open'
+    ? '系统未能打开文件，请检查文件关联后重试'
+    : '系统未能定位文件，请重新下载后再试'
+}
+
+async function runSavedAction(action: 'open' | 'reveal'): Promise<void> {
+  const capabilityId = lastSavedCapability.value
+  if (!capabilityId) return
+  const generation = downloadGeneration
+  nativeActionError.value = ''
+  try {
+    const adapter = getPlatformAdapter()
+    const result = await (action === 'open'
+      ? adapter.openPath(capabilityId)
+      : adapter.showItemInFolder(capabilityId))
+    if (generation !== downloadGeneration || capabilityId !== lastSavedCapability.value) return
+    if (result.success) {
+      ElMessage.success(action === 'open' ? '已请求系统打开文件' : '已在文件夹中定位')
+      return
+    }
+    nativeActionError.value = nativeFailureMessage(action, result.error)
+  } catch {
+    if (generation !== downloadGeneration || capabilityId !== lastSavedCapability.value) return
+    nativeActionError.value = nativeFailureMessage(action)
+  }
+  ElMessage.error(nativeActionError.value)
+}
+
+const openSaved = () => runSavedAction('open')
+const revealSaved = () => runSavedAction('reveal')
 </script>
 
 <template>
@@ -255,6 +289,7 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapabil
             <el-button @click="revealSaved">打开所在目录</el-button>
           </template>
         </div>
+        <el-alert v-if="nativeActionError" :title="nativeActionError" type="error" :closable="false" show-icon class="native-action-error" />
 
         <section class="log-section">
           <div class="log-heading">
@@ -298,6 +333,7 @@ const revealSaved = () => getPlatformAdapter().showItemInFolder(lastSavedCapabil
 .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .detail-alert { margin: 0 0 15px; }
 .association-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.native-action-error { margin-top: 12px; }
 .log-section { margin-top: 22px; }
 .log-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .task-log { min-height: 150px; max-height: 360px; padding: 12px; overflow: auto; color: #d6e0ec; background: #101827; border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }

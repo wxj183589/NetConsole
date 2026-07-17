@@ -6,7 +6,9 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
+from uuid import UUID
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -22,7 +24,6 @@ from netconsole.services.config_collection_job_handlers import CONFIG_WEB_EXPORT
 from netconsole.services.config_collection_web_service import (
     CONFIG_WEB_OWNER,
     CONFIG_WEB_TASK_TYPES,
-    IRREVERSIBLE_CONFIG_TASK_TYPES,
 )
 from netconsole.services.device_management_web_service import (
     DEVICE_TASK_TYPES,
@@ -39,8 +40,14 @@ class JobCenterQueryService:
 
     _ACTIVE_STATES = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
 
-    def __init__(self, paths: PathResolver) -> None:
+    def __init__(
+        self,
+        paths: PathResolver,
+        *,
+        config_cancel_capability: Callable[[str, str], tuple[bool, str]] | None = None,
+    ) -> None:
         self.paths = paths
+        self._config_cancel_capability = config_cancel_capability
 
     def current_site_id(self, default: str = "demo") -> str:
         try:
@@ -171,9 +178,8 @@ class JobCenterQueryService:
             {join}
         """
 
-    @classmethod
-    def _task_from_row(cls, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
-        result = cls._json_object(row.get("result_json")) if include_result else {}
+    def _task_from_row(self, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
+        result = self._json_object(row.get("result_json")) if include_result else {}
         status = str(row.get("status") or "UNKNOWN").upper()
         error_summary = redact_web_task_text(row.get("mapping_error_summary") or row.get("error_message") or "")
         error_code = str(row.get("mapping_error_code") or result.get("error_code") or "")
@@ -189,8 +195,10 @@ class JobCenterQueryService:
         task_id = str(row["task_id"])
         site_name = str(row.get("site_name") or "")
         owner = str(row.get("owner") or "")
-        cancellable, cancel_reason = cls._cancel_capability(owner, task_type, status, source)
-        artifact_download = cls._artifact_download(owner, task_type, task_id, site_name, status, result)
+        cancellable, cancel_reason = self._cancel_capability(
+            owner, task_type, status, source, site_name, task_id
+        )
+        artifact_download = self._artifact_download(owner, task_type, task_id, site_name, status, result)
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
@@ -214,14 +222,14 @@ class JobCenterQueryService:
             started_time=started,
             finished_time=finished,
             updated_time=str(row.get("updated_time") or ""),
-            duration_seconds=cls._duration_seconds(started, finished),
+            duration_seconds=self._duration_seconds(started, finished),
             error_code=redact_web_task_text(error_code),
             error_summary=error_summary,
             has_warning=bool(error_summary and status != "FAILED"),
-            snapshot_id=cls._optional_int(result.get("snapshot_id")),
-            records_count=cls._optional_int(result.get("records_count")),
-            parser_version=redact_web_task_text(cls._first_text(result, "parser_version")),
-            module=cls._module(owner, task_type),
+            snapshot_id=self._optional_int(result.get("snapshot_id")),
+            records_count=self._optional_int(result.get("records_count")),
+            parser_version=redact_web_task_text(self._first_text(result, "parser_version")),
+            module=self._module(owner, task_type),
             cancellable=cancellable,
             cancel_reason=cancel_reason,
             artifact_download=artifact_download,
@@ -238,8 +246,15 @@ class JobCenterQueryService:
             return "files"
         return "other"
 
-    @staticmethod
-    def _cancel_capability(owner: str, task_type: str, status: str, source: str) -> tuple[bool, str]:
+    def _cancel_capability(
+        self,
+        owner: str,
+        task_type: str,
+        status: str,
+        source: str,
+        site_name: str,
+        task_id: str,
+    ) -> tuple[bool, str]:
         if status not in JobCenterQueryService._ACTIVE_STATES:
             return False, "任务已结束"
         if source != "local":
@@ -247,9 +262,14 @@ class JobCenterQueryService:
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return True, ""
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
-            if task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and status in {"RUNNING", "STOPPING"}:
-                return False, "任务已进入不可逆批次，不能再取消"
-            return True, ""
+            if status == "STOPPING":
+                return False, "已请求停止，等待配置任务 owner 收口"
+            if self._config_cancel_capability is None:
+                return False, "配置任务取消接收端不可用"
+            try:
+                return self._config_cancel_capability(site_name, task_id)
+            except Exception:
+                return False, "配置任务取消能力检查失败"
         if owner == "web_file_management" and task_type == "file_management_download":
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
@@ -277,6 +297,26 @@ class JobCenterQueryService:
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", safe_id):
                 return None
             return JobCenterQueryService._artifact_dto(safe_id, name, result.get("size_bytes"), f"/api/file-management/downloads/{task_id}/file", {"site_id": site_name})
+        if task_type.startswith("web_export_") and artifact_id:
+            try:
+                UUID(artifact_id)
+            except ValueError:
+                return None
+            source = str(result.get("artifact_source") or "")
+            artifact_type = str(result.get("artifact_type") or "").casefold()
+            name = JobCenterQueryService._artifact_display_name(
+                result.get("artifact_name")
+            )
+            if not source or not artifact_type or not name:
+                return None
+            if Path(name).suffix.casefold() != f".{artifact_type}":
+                return None
+            return JobCenterQueryService._artifact_dto(
+                artifact_id,
+                name,
+                result.get("size_bytes"),
+                f"/api/job-center/artifacts/{artifact_id}",
+            )
         return None
 
     @staticmethod

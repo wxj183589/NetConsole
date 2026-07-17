@@ -524,7 +524,7 @@ class OnlineMrAgentPackageImporter:
             event_payload: dict[str, Any] = {"result": result_payload}
             if error_summary:
                 event_payload["error"] = error_summary
-            task_repository.record(
+            if not task_repository.record(
                 snapshot,
                 TaskEvent(
                     event_id=f"agent-import-{selected_task_id}-{import_id}",
@@ -534,7 +534,16 @@ class OnlineMrAgentPackageImporter:
                     source="agent_import",
                     payload=event_payload,
                 ),
-            )
+                allowed_from={
+                    TaskState.PENDING,
+                    TaskState.STARTING,
+                    TaskState.RUNNING,
+                    TaskState.STOPPING,
+                }
+                if existing_task is not None
+                else (),
+            ):
+                raise RuntimeError("任务状态已变化，拒绝覆盖现有终态")
         except Exception as exc:
             rollback_errors: list[str] = []
             try:

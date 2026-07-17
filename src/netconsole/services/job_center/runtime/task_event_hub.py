@@ -9,6 +9,7 @@ from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 
 
 TaskEventHandler = Callable[[dict[str, object]], None]
+TaskEventGuard = Callable[[dict[str, object]], bool]
 
 
 class TaskEventSubscription:
@@ -25,9 +26,15 @@ class TaskEventSubscription:
 
 class TaskEventHub:
     def __init__(self) -> None:
+        self._guards: list[TaskEventGuard] = []
         self._handlers: list[TaskEventHandler] = []
         self._streams: list[queue.Queue[dict[str, object]]] = []
         self._lock = RLock()
+
+    def add_guard(self, guard: TaskEventGuard) -> None:
+        with self._lock:
+            if guard not in self._guards:
+                self._guards.append(guard)
 
     def subscribe(self, handler: TaskEventHandler) -> Callable[[], None]:
         with self._lock:
@@ -51,6 +58,23 @@ class TaskEventHub:
         return TaskEventSubscription(self, event_queue)
 
     def publish(self, event: dict[str, object], *, source: str = "service") -> dict[str, object]:
+        envelope = self._normalize(event, source=source)
+        with self._lock:
+            guards = tuple(self._guards)
+        for guard in guards:
+            try:
+                if guard(dict(envelope)) is False:
+                    return envelope
+            except Exception:
+                return envelope
+        return self.publish_persisted(envelope)
+
+    def publish_persisted(
+        self,
+        event: dict[str, object],
+        *,
+        source: str = "service",
+    ) -> dict[str, object]:
         envelope = self._normalize(event, source=source)
         with self._lock:
             handlers = tuple(self._handlers)

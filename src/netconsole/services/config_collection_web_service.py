@@ -305,14 +305,13 @@ class ConfigCollectionApplicationService:
             return None
         if task.status not in ACTIVE_TASK_STATES:
             return self._task_dto(task, site_name=site_name)
-        if task.task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and task.status in {
-            TaskState.RUNNING,
-            TaskState.STOPPING,
-        }:
-            raise ValueError("任务已进入不可逆批次，不能再取消")
+        if task.status is TaskState.STOPPING:
+            return self._task_dto(task, site_name=site_name)
+        cancellable, reason = self.cancel_capability(site_name, task.task_id)
+        if not cancellable:
+            raise ValueError(reason)
         cancel = getattr(self.process_adapter, "cancel_job", None)
-        if not callable(cancel):
-            raise ValueError("配置任务没有受管取消接收端")
+        assert callable(cancel)
         try:
             accepted = cancel(task.task_id)
         except Exception as exc:
@@ -323,6 +322,31 @@ class ConfigCollectionApplicationService:
         if updated is None or updated.status not in {TaskState.STOPPING, TaskState.CANCELLED}:
             raise ValueError("配置任务 owner 未确认停止请求")
         return self._task_dto(updated, site_name=site_name)
+
+    def cancel_capability(self, site_name: str, task_id: str) -> tuple[bool, str]:
+        task = self.task_service.repository(site_name).get(str(task_id or ""))
+        if not self._is_web_task(task, site_name):
+            return False, "配置任务不存在或归属不匹配"
+        if task.status in TERMINAL_TASK_STATES:
+            return False, "任务已结束"
+        if task.status is TaskState.STOPPING:
+            return False, "已请求停止，等待配置任务 owner 收口"
+        is_running = getattr(self.process_adapter, "is_running", None)
+        if not callable(is_running):
+            return False, "配置任务没有受管取消接收端"
+        try:
+            receiver_active = is_running(task.task_id) is True
+        except Exception:
+            return False, "配置任务取消接收端状态检查失败"
+        if not receiver_active:
+            return False, "配置任务已失去受管取消接收端"
+        if task.task_type in IRREVERSIBLE_CONFIG_TASK_TYPES and task.status is TaskState.RUNNING:
+            checkpoint = read_irreversible_checkpoint(self.paths, task.task_id)
+            if checkpoint is not None:
+                if task.task_type == CONFIG_WEB_SAVE_TASK:
+                    return False, "强制保存已进入不可安全中断阶段"
+                return False, "快照删除已进入不可安全中断阶段"
+        return True, ""
 
     def directory_info(self, site_name: str, directory_kind: str) -> ConfigDirectoryDTO:
         kind = str(directory_kind or "").strip()
@@ -485,8 +509,12 @@ class ConfigCollectionApplicationService:
             )
             all_failed = bool(result.get("total")) and int(result.get("failed") or 0) >= int(result["total"])
             recovered_complete = checkpoint_status == "completed" and not all_failed
-            final_status = TaskState.COMPLETED if recovered_complete else snapshot.status
-            if all_failed:
+            final_status = (
+                TaskState.CANCELLED
+                if snapshot.status is TaskState.CANCELLED
+                else TaskState.COMPLETED if recovered_complete else snapshot.status
+            )
+            if all_failed and snapshot.status is not TaskState.CANCELLED:
                 final_status = TaskState.FAILED
             if recovered_complete:
                 message = "不可逆批次已执行完成，终态由检查点恢复"
@@ -519,8 +547,8 @@ class ConfigCollectionApplicationService:
                     "result": result,
                 },
             )
-            if repository.record_once(updated, event):
-                self.task_service.events.publish(event.to_dict())
+            if repository.record_once(updated, event, allowed_from={snapshot.status}):
+                self.task_service.events.publish_persisted(event.to_dict())
             remove_irreversible_checkpoint(self.paths, task_id)
 
     def _recover_irreversible_snapshot(self, site_name: str, snapshot: TaskSnapshot) -> TaskSnapshot:

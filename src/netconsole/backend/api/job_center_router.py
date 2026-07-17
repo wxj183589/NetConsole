@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 
+from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.job_center import JobCenterLogTailDTO, JobCenterSummaryDTO, JobCenterTaskDTO
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.config_collection_web_service import CONFIG_WEB_OWNER, CONFIG_WEB_TASK_TYPES
 from netconsole.services.device_management_web_service import DEVICE_TASK_TYPES, WEB_TASK_OWNER
+from netconsole.services.file_contract import artifact_media_type
 
 
 router = APIRouter(prefix="/job-center", tags=["job-center"])
@@ -14,6 +17,10 @@ router = APIRouter(prefix="/job-center", tags=["job-center"])
 
 def _service(request: Request) -> JobCenterQueryService:
     return request.app.state.job_center_query_service
+
+
+def _artifact_store(request: Request) -> WebArtifactStore:
+    return request.app.state.web_artifact_store
 
 
 def _site_id(request: Request) -> str:
@@ -62,6 +69,25 @@ def logs(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return result
+
+
+@router.get("/artifacts/{artifact_id}")
+def download_artifact(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, display_name, _manifest = _artifact_store(request).open_public(
+            site_id=_site_id(request),
+            artifact_id=artifact_id,
+        )
+    except WebArtifactError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact 不存在或不可用",
+        ) from exc
+    return FileResponse(
+        path,
+        filename=display_name,
+        media_type=artifact_media_type(display_name),
+    )
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=JobCenterTaskDTO)

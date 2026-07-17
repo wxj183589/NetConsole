@@ -5,6 +5,7 @@ import traceback
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, CancelCallback, ProgressCallback
 from netconsole.services.job_center.job_models import JobResult, JobSpec
 from netconsole.services.job_center.job_registry import dispatch_job
+from netconsole.services.job_center.sensitive_bootstrap import SensitiveBootstrap, redact_sensitive_values
 
 
 class JobRunner:
@@ -13,25 +14,38 @@ class JobRunner:
         job: JobSpec,
         progress_callback: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        sensitive_bootstrap: SensitiveBootstrap | None = None,
     ) -> JobResult:
+        secret_values: tuple[str, ...] = ()
+        if sensitive_bootstrap is not None:
+            values = sensitive_bootstrap.consume()
+            secret_values = tuple(values.values())
+            sensitive_bootstrap = SensitiveBootstrap(values)
         try:
-            result = dispatch_job(job, progress_callback, should_cancel)
-            return JobResult(job.job_id, True, dict(result or {}), message="后台任务完成")
+            result = dispatch_job(job, progress_callback, should_cancel, sensitive_bootstrap)
+            safe_result = redact_sensitive_values(dict(result or {}), secret_values)
+            return JobResult(job.job_id, True, safe_result, message="后台任务完成")
         except BackgroundTaskCancelled as exc:
-            return JobResult(job.job_id, False, message=str(exc), error=str(exc), cancelled=True)
+            message = str(redact_sensitive_values(str(exc), secret_values))
+            return JobResult(job.job_id, False, message=message, error=message, cancelled=True)
         except Exception as exc:
+            message = str(redact_sensitive_values(str(exc) or exc.__class__.__name__, secret_values))
             return JobResult(
                 job.job_id,
                 False,
-                message=str(exc) or exc.__class__.__name__,
-                error=str(exc) or exc.__class__.__name__,
-                traceback=traceback.format_exc(),
+                message=message,
+                error=message,
+                traceback=str(redact_sensitive_values(traceback.format_exc(), secret_values)),
             )
+        finally:
+            if sensitive_bootstrap is not None:
+                sensitive_bootstrap.clear()
 
 
 def run_job(
     job: JobSpec,
     progress_callback: ProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
+    sensitive_bootstrap: SensitiveBootstrap | None = None,
 ) -> JobResult:
-    return JobRunner().run(job, progress_callback, should_cancel)
+    return JobRunner().run(job, progress_callback, should_cancel, sensitive_bootstrap)

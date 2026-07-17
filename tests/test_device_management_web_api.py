@@ -77,9 +77,11 @@ class _CapturingProcessAdapter:
         self.second_start_entered = Event()
         self.release_start = Event()
         self.cancelled: list[str] = []
+        self.sensitive_bootstraps: list[dict[str, str] | None] = []
 
     def start_job(self, job, **kwargs) -> str:
         self.jobs.append(job)
+        self.sensitive_bootstraps.append(kwargs.get("sensitive_bootstrap"))
         self.completions.append(kwargs.get("on_complete"))
         if len(self.jobs) > 1:
             self.second_start_entered.set()
@@ -381,6 +383,7 @@ def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path
     }
     assert "secret-password" not in str(adapter.jobs[0].to_dict())
     assert "private-community" not in str(adapter.jobs[0].to_dict())
+    assert adapter.sensitive_bootstraps[0]["ssh_password"] == "secret-password"
 
 
 def test_connection_test_reuses_active_task(tmp_path: Path) -> None:

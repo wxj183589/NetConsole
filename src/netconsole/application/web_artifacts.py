@@ -15,7 +15,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 _SAFE_STEM = re.compile(r"[^0-9A-Za-z._\u4e00-\u9fff-]+")
-_ALLOWED_SUFFIXES = {".xlsx", ".csv", ".zip", ".pdf", ".md"}
+_ALLOWED_SUFFIXES = {".xlsx", ".csv", ".zip", ".pdf", ".md", ".nam"}
 
 
 class WebArtifactError(RuntimeError):
@@ -67,6 +67,7 @@ class WebArtifactStore:
         artifact_id = str(uuid4())
         stem = _SAFE_STEM.sub("_", Path(preferred_name).stem).strip(" ._") or "report"
         root.mkdir(parents=True, exist_ok=True)
+        display_name = f"{stem}{suffix}"
         output_path = (root / f"{stem}-{artifact_id[:12]}{suffix}").resolve()
         self._require_within(output_path, root)
         manifest = {
@@ -83,6 +84,7 @@ class WebArtifactStore:
             "sha256": "",
             "size_bytes": 0,
             "file_name": output_path.name,
+            "display_name": display_name,
         }
         self._write_manifest(site_id, artifact_id, manifest)
         return ReservedWebArtifact(
@@ -234,7 +236,25 @@ class WebArtifactStore:
         task = self._trusted_task(manifest)
         self._validate_completed(manifest, task_result=task.result)
         path = self._validated_output(manifest)
-        return path, str(manifest.get("file_name") or path.name), manifest
+        return path, str(manifest.get("display_name") or manifest.get("file_name") or path.name), manifest
+
+    def open_public(
+        self,
+        *,
+        site_id: str,
+        artifact_id: str,
+    ) -> tuple[Path, str, dict[str, object]]:
+        site_id = self._site(site_id)
+        manifest = self._read_manifest(site_id, artifact_id)
+        if manifest.get("completed") is not True:
+            raise WebArtifactError("报告尚未完成")
+        task = self._trusted_task(manifest)
+        self._validate_completed(manifest, task_result=task.result)
+        path = self._validated_output(manifest)
+        display_name = str(
+            manifest.get("display_name") or manifest.get("file_name") or path.name
+        )
+        return path, display_name, manifest
 
     def _find_task_manifest(
         self,
@@ -325,7 +345,9 @@ class WebArtifactStore:
             "artifact_id": str(manifest.get("artifact_id") or ""),
             "artifact_source": str(manifest.get("source") or ""),
             "artifact_type": str(manifest.get("artifact_type") or ""),
-            "artifact_name": str(manifest.get("file_name") or ""),
+            "artifact_name": str(
+                manifest.get("display_name") or manifest.get("file_name") or ""
+            ),
             "sha256": str(manifest.get("sha256") or ""),
             "size_bytes": int(manifest.get("size_bytes") or 0),
         }
@@ -384,8 +406,13 @@ class WebArtifactStore:
     def _source_root(self, site_id: str, source: str) -> Path:
         roots = {
             "ac_extension_export": self.paths.trackside_ap_outputs_dir(site_id),
+            "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
             "online_mr_report": self.paths.online_mr_root(site_id),
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),
+            "system_logs_current": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
+            "system_logs_all": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
+            "system_open_source_txt": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
+            "system_open_source_xlsx": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
         }
         try:
             return roots[source]

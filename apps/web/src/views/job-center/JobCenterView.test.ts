@@ -11,6 +11,10 @@ const platformMocks = vi.hoisted(() => ({
   open: vi.fn(),
   reveal: vi.fn(),
 }))
+const messageMocks = vi.hoisted(() => ({
+  error: vi.fn(),
+  success: vi.fn(),
+}))
 
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.download,
@@ -43,7 +47,7 @@ vi.mock('element-plus', async () => {
     ElEmpty: empty,
     ElInput: empty,
     ElLoadingDirective: {},
-    ElMessage: { error: vi.fn(), success: vi.fn() },
+    ElMessage: messageMocks,
     ElOption: empty,
     ElProgress: empty,
     ElSelect: passthrough('select'),
@@ -76,7 +80,7 @@ vi.mock('element-plus/es', async () => {
   return {
     ElAlert: passthrough('alert'),
     ElButton: passthrough('button'),
-    ElMessage: { error: vi.fn(), success: vi.fn() },
+    ElMessage: messageMocks,
     ElDescriptions: passthrough('descriptions'),
     ElDescriptionsItem: passthrough('descriptions-item'),
     ElDrawer: passthrough('drawer'),
@@ -217,6 +221,12 @@ function findButton(root: HostNode, label: string): HostNode | undefined {
   return descendants(root).find((target) => target.type === 'button' && textContent(target).includes(label))
 }
 
+function alertTitles(root: HostNode): string[] {
+  return descendants(root)
+    .filter((target) => target.type === 'alert')
+    .map((target) => String(target.props.title || ''))
+}
+
 async function click(target: HostNode): Promise<void> {
   const handler = target.props.onClick as (() => unknown) | undefined
   expect(handler).toBeTypeOf('function')
@@ -227,6 +237,8 @@ async function click(target: HostNode): Promise<void> {
 describe('Job Center saved artifact capability lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    platformMocks.open.mockResolvedValue({ success: true })
+    platformMocks.reveal.mockResolvedValue({ success: true })
     vi.stubGlobal('document', {
       hidden: false,
       addEventListener: vi.fn(),
@@ -242,8 +254,8 @@ describe('Job Center saved artifact capability lifecycle', () => {
     const root = node('root')
     const pinia = createPinia()
     const store = useTaskStore(pinia)
-    vi.spyOn(store, 'startPolling').mockImplementation(() => undefined)
-    vi.spyOn(store, 'stopPolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
     vi.spyOn(store, 'requestCancel').mockResolvedValue(undefined)
     store.selected = task('A')
 
@@ -267,6 +279,18 @@ describe('Job Center saved artifact capability lifecycle', () => {
     await click(findButton(root, '打开所在目录')!)
     expect(platformMocks.open).toHaveBeenCalledWith('cap-A')
     expect(platformMocks.reveal).toHaveBeenCalledWith('cap-A')
+    expect(messageMocks.success).toHaveBeenCalledWith('已请求系统打开文件')
+    expect(messageMocks.success).toHaveBeenCalledWith('已在文件夹中定位')
+
+    platformMocks.open.mockResolvedValueOnce({ success: false, error: '文件授权已过期' })
+    await click(findButton(root, '打开文件')!)
+    expect(alertTitles(root)).toContain('文件授权已过期，请重新下载后再试')
+    expect(messageMocks.error).toHaveBeenCalledWith('文件授权已过期，请重新下载后再试')
+    store.selected = task('A-switched')
+    await nextTick()
+    expect(alertTitles(root)).not.toContain('文件授权已过期，请重新下载后再试')
+    store.selected = task('A')
+    await nextTick()
 
     let finishDownload: (result: { status: 'failed'; error: string }) => void = () => undefined
     platformMocks.download.mockReturnValueOnce(new Promise((resolve) => { finishDownload = resolve }))
@@ -306,9 +330,14 @@ describe('Job Center saved artifact capability lifecycle', () => {
 
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-B' })
     await click(findButton(root, 'Artifact 下载')!)
+    platformMocks.open.mockResolvedValueOnce({ success: false, error: '系统未能打开所选路径 C:\\private\\secret.xlsx' })
+    await click(findButton(root, '打开文件')!)
+    expect(alertTitles(root)).toContain('系统未能打开文件，请检查文件关联后重试')
+    expect(textContent(root)).not.toContain('C:\\private\\secret.xlsx')
     showDrawer?.(false)
     await nextTick()
     expect(findButton(root, '打开文件')).toBeUndefined()
+    expect(alertTitles(root)).not.toContain('系统未能打开文件，请检查文件关联后重试')
 
     showDrawer?.(true)
     await nextTick()

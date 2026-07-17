@@ -271,12 +271,16 @@ def create_app(
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
+    app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
     app.state.ac_management_query_service = AcManagementQueryService(paths)
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
     app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service
-    app.state.job_center_query_service = JobCenterQueryService(paths)
+    app.state.job_center_query_service = JobCenterQueryService(
+        paths,
+        config_cancel_capability=config_collection_service.cancel_capability,
+    )
     app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
     app.state.traffic_web_application_service = TrafficWebApplicationService(

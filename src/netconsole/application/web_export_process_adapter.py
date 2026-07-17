@@ -19,6 +19,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 _SAFE_JOB_ID = re.compile(r"^[0-9A-Za-z_-]{1,100}$")
+_SAFE_TASK_TYPE = re.compile(r"^web_export_[0-9a-z_]{1,100}$")
 
 
 class WebExportProcessAdapter(LocalProcessAdapter):
@@ -35,6 +36,7 @@ class WebExportProcessAdapter(LocalProcessAdapter):
         *,
         task_name: str,
         owner: str,
+        task_type: str = "",
         public_result: dict[str, object] | None = None,
         on_complete: CompletionCallback | None = None,
     ) -> str:
@@ -54,9 +56,13 @@ class WebExportProcessAdapter(LocalProcessAdapter):
             if on_complete is not None:
                 on_complete(value)
 
+        selected_task_type = task_type or f"web_export_{job.job_type}"
+        if not _SAFE_TASK_TYPE.fullmatch(selected_task_type):
+            self._cleanup_export_runtime(job.job_id, failed=True)
+            raise ValueError("Web 导出任务类型无效")
         background = BackgroundJob(
             job_id=job.job_id,
-            task_type=f"web_export_{job.job_type}",
+            task_type=selected_task_type,
             params={
                 "site_name": job.site_name,
                 "task_name": task_name,

@@ -475,6 +475,63 @@ def test_import_updates_existing_agent_task_and_mapping_to_terminal(
     assert len(repository.list()) == 1
 
 
+def test_import_does_not_overwrite_cancelled_controller_task(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    package = _write_package(tmp_path / "source.zip")
+    controller_task_id = "controller-agent-task-cancelled"
+    now = utc_now_iso()
+    task_repository = TaskRepository(paths.site_tasks_db_path(SITE))
+    task_repository.save(
+        TaskSnapshot(
+            task_id=controller_task_id,
+            task_type="online_mr_collection_start",
+            task_name="Online MR - MR-07",
+            status=TaskState.CANCELLED,
+            created_time=now,
+            updated_time=now,
+            owner="controller",
+            device=DEVICE_NAME,
+            agent="agent-a",
+            source="agent",
+            site_name=SITE,
+        )
+    )
+    mapping_repository = OnlineMrTaskSessionRepository(
+        paths.site_tasks_db_path(SITE), site_id=SITE
+    )
+    mapping_repository.create(
+        OnlineMrTaskSessionMapping(
+            controller_task_id=controller_task_id,
+            session_id="agent-session-1",
+            site_id=SITE,
+            device_id=str(DEVICE_ID),
+            device_name=DEVICE_NAME,
+            mr_id=MR_ID,
+            mr_name=MR_NAME,
+            executor_kind=OnlineMrExecutorKind.AGENT,
+            agent_id="agent-a",
+            phase=OnlineMrPhase.FINALIZING,
+            mapping_state=OnlineMrMappingState.LINKED,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    result = _import(
+        OnlineMrAgentPackageImporter(paths),
+        package,
+        controller_task_id=controller_task_id,
+        agent_id="agent-a",
+    )
+
+    task = task_repository.get(controller_task_id)
+    mapping = mapping_repository.get_by_task(controller_task_id)
+    assert not result.success
+    assert any("任务状态已变化" in error for error in result.errors)
+    assert task is not None and task.status is TaskState.CANCELLED
+    assert mapping is not None and mapping.mapping_state is OnlineMrMappingState.LINKED
+
+
 def test_different_zip_with_same_session_is_conflict_without_overwrite(
     tmp_path: Path,
 ) -> None:

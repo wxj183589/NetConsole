@@ -289,7 +289,7 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     subscription = tasks.events.open_stream()
     export.callbacks.pop(started.task_id)
     export.complete(started.task_id, b"recovered-report")
-    live_events = [subscription.get(timeout=1), subscription.get(timeout=1)]
+    live_events = [subscription.get(timeout=1)]
     subscription.close()
     stored_snapshot = tasks.repository("demo").get(started.task_id)
     public_snapshot = tasks.get_task(started.task_id)
@@ -306,6 +306,7 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     assert "output_path" not in stored_snapshot.result
     assert leaked_path not in serialized_public
     assert "output_path" not in serialized_public
+    assert live_events[0]["type"] == "finished"
     assert service.get_task("demo", started.task_id).available is False
 
     recovered = service.recover_tasks("demo")

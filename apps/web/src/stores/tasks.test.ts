@@ -35,7 +35,7 @@ describe('Job Center polling store', () => {
     vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval })
   })
 
-  it('keeps logs hidden by default and stops detail/log polling on cleanup', async () => {
+  it('keeps logs hidden by default and stops detail/log polling on final cleanup', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout
     window.clearTimeout = clearTimeout
@@ -43,7 +43,7 @@ describe('Job Center polling store', () => {
     window.clearInterval = clearInterval
     const store = useTaskStore()
 
-    store.startPolling()
+    store.acquirePolling('main-window')
     await vi.runAllTicks()
     await store.selectTask(task.id)
     expect(store.logsExpanded).toBe(false)
@@ -56,7 +56,7 @@ describe('Job Center polling store', () => {
 
     const detailCalls = vi.mocked(getTask).mock.calls.length
     const logCalls = vi.mocked(getTaskLogs).mock.calls.length
-    store.stopPolling()
+    store.releasePolling('main-window')
     await vi.advanceTimersByTimeAsync(5000)
     expect(getTask).toHaveBeenCalledTimes(detailCalls)
     expect(getTaskLogs).toHaveBeenCalledTimes(logCalls)
@@ -79,6 +79,32 @@ describe('Job Center polling store', () => {
     await store.refresh()
     await store.refresh()
     expect(store.error).toContain('任务中心刷新失败')
+  })
+
+  it('keeps polling until main, task window and network page all release', async () => {
+    vi.useFakeTimers()
+    window.setTimeout = setTimeout
+    window.clearTimeout = clearTimeout
+    window.setInterval = setInterval
+    window.clearInterval = clearInterval
+    const store = useTaskStore()
+
+    store.acquirePolling('main-window')
+    store.acquirePolling('task-window')
+    store.acquirePolling('network-page')
+    await vi.runAllTicks()
+    const initialCalls = vi.mocked(listTasks).mock.calls.length
+
+    store.releasePolling('network-page')
+    store.releasePolling('main-window')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(listTasks).toHaveBeenCalledTimes(initialCalls + 2)
+
+    const callsBeforeFinalRelease = vi.mocked(listTasks).mock.calls.length
+    store.releasePolling('task-window')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(listTasks).toHaveBeenCalledTimes(callsBeforeFinalRelease)
+    vi.useRealTimers()
   })
 
   it('handles cancel success, owner conflict and failure messages', async () => {

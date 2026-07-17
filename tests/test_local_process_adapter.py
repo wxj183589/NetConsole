@@ -18,6 +18,7 @@ from netconsole.services.job_center.local_process_adapter import (
     LocalProcessCompletion,
     _WindowsJobObject,
 )
+from netconsole.services.job_center.sensitive_bootstrap import read_sensitive_bootstrap
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.worker_protocol import encode_event
 
@@ -67,7 +68,9 @@ class _FakeProcess:
         exit_code: int = 0,
         auto_finish: bool = True,
         terminate_exits: bool = False,
+        stdin: object | None = None,
     ) -> None:
+        self.stdin = stdin
         self.stdout = stdout or io.BytesIO()
         self.stderr = stderr or io.BytesIO()
         self._exit_code = exit_code
@@ -146,6 +149,22 @@ class _PopenFactory:
     def __call__(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return self.processes.pop(0)
+
+
+class _RecordingPipe:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes | bytearray) -> int:
+        self.data.extend(data)
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _BlockingPopenFactory(_PopenFactory):
@@ -358,6 +377,33 @@ def test_local_process_adapter_records_start_failure_and_cleans_job_file(tmp_pat
     job_dir = paths.runtime_cache_dir / "background_jobs"
     assert not (job_dir / f"{job_id}.json").exists()
     assert not (job_dir / f"{job_id}.cancel").exists()
+
+
+def test_local_process_adapter_uses_one_shot_sensitive_bootstrap_pipe(
+    tmp_path: Path,
+) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-sensitive-bootstrap"
+    secret = "secret-must-not-be-serialized"
+    stdin = _RecordingPipe()
+    process = _FakeProcess(auto_finish=False, stdin=stdin)
+    adapter = LocalProcessAdapter(service, popen_factory=_PopenFactory(process))
+
+    adapter.start_job(
+        _job(paths, job_id),
+        sensitive_bootstrap={"password": secret},
+    )
+
+    job_path = paths.runtime_cache_dir / "background_jobs" / f"{job_id}.json"
+    assert secret not in job_path.read_text(encoding="utf-8")
+    assert read_sensitive_bootstrap(io.BytesIO(stdin.data)).consume() == {
+        "password": secret
+    }
+    assert stdin.closed is True
+    assert secret.encode() not in paths.site_tasks_db_path("demo").read_bytes()
+
+    process.finish(1)
+    _wait_until(lambda: not adapter.is_running(job_id))
 
 
 def test_local_process_adapter_cancel_uses_grace_then_terminate_and_kill(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const logError = ref('')
   const failures = ref(0)
   const logsExpanded = ref(false)
-  let polling = false
+  const pollingConsumers = new Set<string>()
   let detailVisible = false
   let listBusy = false
   let detailBusy = false
@@ -110,22 +110,25 @@ export const useTaskStore = defineStore('tasks', () => {
     logsExpanded.value = value
     if (logTimer !== null) window.clearInterval(logTimer)
     logTimer = null
-    if (value && polling && detailVisible) {
+    if (value && pollingConsumers.size && detailVisible) {
       void refreshLogs()
       logTimer = window.setInterval(() => void refreshLogs(), 1000)
     }
   }
 
-  function startPolling(): void {
-    if (polling) return
-    polling = true
+  function acquirePolling(consumer: string): void {
+    const key = consumer.trim()
+    if (!key || pollingConsumers.has(key)) return
+    pollingConsumers.add(key)
+    if (pollingConsumers.size !== 1) return
     void refresh().finally(scheduleListRefresh)
     detailTimer = window.setInterval(() => void refreshSelected(), 2000)
     if (logsExpanded.value) setLogsExpanded(true)
   }
 
-  function stopPolling(): void {
-    polling = false
+  function releasePolling(consumer: string): void {
+    pollingConsumers.delete(consumer.trim())
+    if (pollingConsumers.size) return
     for (const timer of [listTimer, detailTimer, logTimer]) {
       if (timer !== null) {
         window.clearTimeout(timer)
@@ -136,7 +139,7 @@ export const useTaskStore = defineStore('tasks', () => {
   }
 
   function scheduleListRefresh(): void {
-    if (!polling) return
+    if (!pollingConsumers.size) return
     const delay = failures.value >= 3 ? 10_000 : runningCount.value ? 2_000 : 5_000
     listTimer = window.setTimeout(async () => {
       await refresh()
@@ -166,7 +169,7 @@ export const useTaskStore = defineStore('tasks', () => {
     requestCancel,
     setDetailVisible,
     setLogsExpanded,
-    startPolling,
-    stopPolling,
+    acquirePolling,
+    releasePolling,
   }
 })

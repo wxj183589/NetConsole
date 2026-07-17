@@ -69,6 +69,15 @@ class _FakeProcessAdapter:
     def shutdown(self) -> None:
         return None
 
+    def is_running(self, task_id: str) -> bool:
+        return self.task_service.is_running(task_id)
+
+    def cancel_job(self, task_id: str) -> bool:
+        if not self.is_running(task_id):
+            return False
+        self.task_service.request_cancel(task_id)
+        return True
+
 
 class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
     def __init__(self, task_service: TaskApplicationService) -> None:
@@ -450,8 +459,8 @@ def test_config_collection_delete_requires_scoped_one_time_confirmation(
     assert deleted.json()["type"] == "config_snapshot_delete_many"
     assert adapter.jobs[-1].params["snapshot_ids"] == [running.id]
     assert replay.status_code == 422
-    assert cancelled.status_code == 422
-    assert "不可逆批次" in cancelled.json()["detail"]
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == TaskState.STOPPING.value
     assert foreign.status_code == 404
     assert directory.status_code == 200
     assert directory.json()["target_id"] == "config_exports:demo"
@@ -880,12 +889,35 @@ def test_config_save_force_batch_keeps_results_when_cancel_arrives_after_first_d
 
 
 def test_config_running_irreversible_task_rejects_cancel(tmp_path: Path) -> None:
-    app, _paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+    app, paths, device, _running, _saved, _adapter = _fixture(tmp_path)
     service = app.state.config_collection_service
     preview = service.preview_save_force("demo", [int(device.id)])
     task = service.confirm_save_force("demo", preview.confirmation_token, preview.digest)
+    context = JobContext.from_job(
+        JobSpec(
+            job_id=task.id,
+            task_type="config_web_save_force",
+            params={
+                "site_name": "demo",
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+            },
+        )
+    )
+    config_collection_job_handlers.write_irreversible_checkpoint(
+        context,
+        {
+            "operation": "save_force",
+            "status": "running",
+            "total": 1,
+            "completed_items": [],
+            "failed_items": [],
+            "current_item": {"device_uuid": device.device_uuid},
+            "pending_items": [],
+        },
+    )
 
-    with pytest.raises(ValueError, match="不可逆批次"):
+    with pytest.raises(ValueError, match="不可安全中断"):
         service.cancel_task("demo", task.id)
 
     status = service.get_task("demo", task.id)

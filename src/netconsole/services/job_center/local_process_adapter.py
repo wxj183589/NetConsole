@@ -7,12 +7,14 @@ import threading
 import time
 from ctypes import wintypes
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import BinaryIO, Callable
 
 from netconsole.core import app_logger
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_runtime import TaskLaunch
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.sensitive_bootstrap import encode_sensitive_bootstrap
 
 
 PopenFactory = Callable[..., subprocess.Popen[bytes]]
@@ -154,6 +156,8 @@ class _RunningLocalProcess:
 
 
 class LocalProcessAdapter:
+    supports_runtime_bootstrap = True
+
     """使用现有 TaskRuntime 协议拉起本地 Worker 的纯 Python 进程宿主。
 
     Worker stdout 仍只承载低频 Job JSONL 协议。Traffic 高频样本应写入
@@ -178,21 +182,55 @@ class LocalProcessAdapter:
         self._state_lock = threading.RLock()
         self._service_lock = threading.RLock()
         self._closing = False
+        self._pending_bootstraps: dict[str, bytearray] = {}
 
-    def start_job(self, job: BackgroundJob, *, on_complete: CompletionCallback | None = None) -> str:
+    def start_job(
+        self,
+        job: BackgroundJob,
+        *,
+        on_complete: CompletionCallback | None = None,
+        sensitive_bootstrap: Mapping[str, str] | None = None,
+        runtime_bootstrap: bytearray | None = None,
+    ) -> str:
         """准备任务并启动已有 ``netconsole.background_worker``。"""
 
         with self._state_lock:
             if self._closing:
                 raise RuntimeError("本地 Worker 进程宿主正在关闭")
+        if sensitive_bootstrap is not None and runtime_bootstrap is not None:
+            raise ValueError("敏感启动数据不能重复提供")
+        bootstrap_values = sensitive_bootstrap
+        if runtime_bootstrap is not None:
+            try:
+                bootstrap_values = {
+                    "runtime_bootstrap": bytes(runtime_bootstrap).decode("utf-8")
+                }
+            except UnicodeDecodeError as exc:
+                raise ValueError("运行时启动数据必须是 UTF-8") from exc
+        prepared_job = job
+        bootstrap_bytes = None
+        if bootstrap_values is not None:
+            bootstrap_bytes = encode_sensitive_bootstrap(bootstrap_values)
+            prepared_job = BackgroundJob(
+                job_id=job.job_id,
+                task_type=job.task_type,
+                params={**dict(job.params or {}), "_requires_sensitive_bootstrap": True},
+                cancel_path=job.cancel_path,
+            )
         with self._service_lock:
-            launch = self.task_service.prepare(job)
+            launch = self.task_service.prepare(prepared_job)
+        if bootstrap_bytes is not None:
+            self._pending_bootstraps[launch.job.job_id] = bootstrap_bytes
         try:
             process = self._start_process(launch)
         except Exception as exc:
             with self._service_lock:
                 self.task_service.fail_start(launch.job.job_id, str(exc) or exc.__class__.__name__)
             raise
+        finally:
+            pending = self._pending_bootstraps.pop(launch.job.job_id, None)
+            if pending is not None:
+                pending[:] = b"\x00" * len(pending)
 
         process_tree = self._bind_process_tree(process, launch.job.job_id)
         state = _RunningLocalProcess(
@@ -343,16 +381,35 @@ class LocalProcessAdapter:
 
     def _start_process(self, launch: TaskLaunch) -> subprocess.Popen[bytes]:
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        return self._popen_factory(
+        bootstrap = self._pending_bootstraps.get(launch.job.job_id)
+        process = self._popen_factory(
             [launch.program, *launch.arguments],
             cwd=str(launch.working_directory),
             env=dict(launch.environment),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if bootstrap is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=False,
             creationflags=creationflags,
         )
+        if bootstrap is not None:
+            try:
+                if process.stdin is None:
+                    raise RuntimeError("Worker 敏感启动管道不可用")
+                process.stdin.write(bootstrap)
+                process.stdin.flush()
+            except Exception:
+                try:
+                    process.terminate()
+                    process.wait(timeout=self._terminate_timeout_seconds)
+                except Exception:
+                    process.kill()
+                raise
+            finally:
+                if process.stdin is not None:
+                    process.stdin.close()
+                bootstrap[:] = b"\x00" * len(bootstrap)
+        return process
 
     def _start_threads(self, state: _RunningLocalProcess) -> None:
         state.stdout_thread = threading.Thread(

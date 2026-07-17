@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
@@ -186,6 +189,175 @@ def test_external_task_persists_before_broadcast_and_rejects_generic_cancel(tmp_
     assert service.get_task("agent-traffic").owner_pid == 0
     assert service.cancel_task("agent-traffic") is False
     assert not (service.paths.runtime_cache_dir / "background_jobs" / "agent-traffic.cancel").exists()
+
+
+@pytest.mark.parametrize("late_event", ["finished", "error"])
+def test_cancelled_terminal_rejects_concurrent_late_completion(
+    tmp_path: Path,
+    monkeypatch,
+    late_event: str,
+) -> None:
+    service = _service(tmp_path)
+    task_id = f"device-export-late-{late_event}"
+    service.create_external_task(
+        task_id=task_id,
+        task_type="device_export_device_csv",
+        task_name="设备导出终态竞态",
+        source="local",
+        owner="device_export_process",
+    )
+    service.record_external_event(
+        task_id,
+        "state",
+        {"state": TaskState.RUNNING.value},
+    )
+    repository = service.repository("demo")
+    original_record = repository.record
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delay_late_record(snapshot, event, *, allowed_from=None):
+        if event.type == late_event:
+            entered.set()
+            assert release.wait(2)
+        return original_record(snapshot, event, allowed_from=allowed_from)
+
+    monkeypatch.setattr(repository, "record", delay_late_record)
+    failures: list[BaseException] = []
+
+    def write_late_terminal() -> None:
+        try:
+            service.record_external_event(
+                task_id,
+                late_event,
+                {"result": {"available": False}}
+                if late_event == "finished"
+                else {"error": "迟到失败"},
+                event_id=f"late-{late_event}",
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    worker = threading.Thread(target=write_late_terminal)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        cancelled = service.record_external_event(
+            task_id,
+            "cancelled",
+            {"message": "导出任务已取消"},
+        )
+        assert cancelled.status is TaskState.CANCELLED
+    finally:
+        release.set()
+        worker.join(2)
+
+    assert not worker.is_alive()
+    assert not failures
+    persisted = repository.get(task_id)
+    assert persisted is not None and persisted.status is TaskState.CANCELLED
+    assert f"late-{late_event}" not in {
+        event["id"] for event in repository.list_events(task_id)
+    }
+
+
+@pytest.mark.parametrize(
+    ("late_event", "payload"),
+    [
+        ("finished", {"result": {"available": False}}),
+        ("progress", {"current": 99, "total": 100}),
+        ("log", {"message": "迟到日志"}),
+    ],
+)
+def test_rejected_late_event_is_not_broadcast(
+    tmp_path: Path,
+    late_event: str,
+    payload: dict[str, object],
+) -> None:
+    service = _service(tmp_path)
+    task_id = "device-export-rejected-broadcast"
+    service.create_external_task(
+        task_id=task_id,
+        task_type="device_export_device_csv",
+        task_name="设备导出终态广播",
+        source="local",
+        owner="device_export_process",
+    )
+    service.record_external_event(
+        task_id,
+        "cancelled",
+        {"message": "导出任务已取消"},
+    )
+    observed: list[dict[str, object]] = []
+    service.events.subscribe(observed.append)
+    stream = service.events.open_stream()
+    try:
+        service.events.publish(
+            {
+                "type": late_event,
+                "job_id": task_id,
+                **payload,
+            },
+            source="worker",
+        )
+        with pytest.raises(queue.Empty):
+            stream.get(timeout=0.05)
+    finally:
+        stream.close()
+
+    assert observed == []
+    persisted = service.repository("demo").get(task_id)
+    assert persisted is not None and persisted.status is TaskState.CANCELLED
+
+
+@pytest.mark.parametrize(
+    ("starting_status", "event_type", "payload", "expected"),
+    [
+        (TaskState.RUNNING, "finished", {"result": {}}, TaskState.COMPLETED),
+        (TaskState.STOPPING, "error", {"error": "owner 失败"}, TaskState.FAILED),
+        (TaskState.STOPPING, "cancelled", {"message": "owner 已取消"}, TaskState.CANCELLED),
+    ],
+)
+def test_expected_state_cas_keeps_normal_external_owner_terminal_transitions(
+    tmp_path: Path,
+    starting_status: TaskState,
+    event_type: str,
+    payload: dict[str, object],
+    expected: TaskState,
+) -> None:
+    service = _service(tmp_path)
+    task_id = f"agent-owner-{starting_status.value.lower()}-{event_type}"
+    service.create_external_task(
+        task_id=task_id,
+        task_type="traffic_agent_iperf_client",
+        task_name="Agent owner 状态转换",
+        source="agent",
+        owner="controller",
+    )
+    service.record_external_event(
+        task_id,
+        "state",
+        {"state": TaskState.RUNNING.value},
+        source="agent",
+    )
+    if starting_status is TaskState.STOPPING:
+        service.record_external_event(
+            task_id,
+            "state",
+            {"state": TaskState.STOPPING.value},
+            source="agent",
+        )
+
+    updated = service.record_external_event(
+        task_id,
+        event_type,
+        payload,
+        source="agent",
+    )
+
+    assert updated.status is expected
+    persisted = service.repository("demo").get(task_id)
+    assert persisted is not None and persisted.status is expected
 
 
 def test_task_api_marks_external_task_not_cancellable(tmp_path: Path) -> None:

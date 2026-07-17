@@ -169,6 +169,7 @@ submit_export_task(
 
 - 本地类型固定为 `traffic_local_iperf_server / traffic_local_iperf_client / traffic_local_fping`，handler 只调用 `LocalTrafficAdapter`；
 - Controller 侧 `LocalProcessAdapter` 只负责 `Popen`、双管道读取、等待、Job Object 进程树回收和 terminate/kill，状态仍由既有 `TaskApplicationService/TaskRuntime` 管理；`shutdown(timeout_seconds)` 的 timeout 是取消派发、协作等待、terminate、kill 和最终状态收口共用的总预算，不再按阶段累加；取消持久化或磁盘写入变慢时不会阻塞宿主超过 deadline；`prepare/Popen/mark_running` 不持有状态锁，关闭与慢启动并发时会拒绝登记并立即回收新进程；Traffic 只订阅完成回调同步自身 Run 终态；
+- Worker Job JSON、Task 快照和日志不得写入设备密码、Community 或临时凭据；确需向本地 Worker 传递时，只能通过带长度上限的一次性 stdin 敏感启动帧，消费后清零字节缓冲。敏感启动帧丢失时任务明确失败，不得从 Task 数据恢复或把凭据降级写入参数。
 - Worker stdout 只返回低频进度、摘要和唯一终态；iPerf interval、RTT、丢包和原始区间直接写 `TrafficEventStore`/业务 Repository，不进入全局 Task Event 表；
 - Agent Traffic 不进入 Worker Process。`AgentTrafficSupervisor` 在持有会话凭据的 Controller 进程内轮询，并通过外部任务入口持久化状态；
 - Agent Task 使用 `source=agent, owner_pid=0`，因此不会被本地 orphan 核对误判；本地 Traffic 继续沿用宿主 PID 退出后标记 `FAILED` 的规则；

@@ -29,6 +29,7 @@ from netconsole.services.file_management_service import FileManagementApplicatio
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
 
 def _sha256(path: Path) -> str:
@@ -102,6 +103,9 @@ class _OwnerCancelAdapter:
             site_name=self.site_name,
         )
         return True
+
+    def is_running(self, task_id: str) -> bool:
+        return bool(task_id)
 
 
 def _install_device_export(
@@ -379,12 +383,53 @@ def test_job_center_redacts_nested_and_direct_log_paths(
     assert r"\\server" not in renderer_text
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            r"读取 C:\Program Files\NetConsole\secret.log 完成 42 条记录",
+            "读取 <redacted-path> 完成 42 条记录",
+        ),
+        (
+            r"路径 C:\采集 结果\设备 一\秘密 日志.txt，业务 ID device-42",
+            "路径 <redacted-path>，业务 ID device-42",
+        ),
+        (
+            r"UNC \\server\share\中文 空格\secret.log 已归档",
+            "UNC <redacted-path> 已归档",
+        ),
+        (
+            r"C:\Program Files\NetConsole",
+            "<redacted-path>",
+        ),
+        (
+            r"\\server\share\中文 空格",
+            "<redacted-path>",
+        ),
+        (
+            r'''引号 "C:\Program Files\NetConsole\secret.log" 和 '\\server\share\raw data.log' 完成''',
+            "引号 <redacted-path> 和 <redacted-path> 完成",
+        ),
+        (
+            r"复制 C:\first path\a.log 到 \\server\share\second path\b.log，时间 2026-07-17T01:02:03Z",
+            "复制 <redacted-path> 到 <redacted-path>，时间 2026-07-17T01:02:03Z",
+        ),
+    ],
+)
+def test_redact_web_task_text_handles_complete_spaced_paths(
+    message: str,
+    expected: str,
+) -> None:
+    assert redact_web_task_text(message) == expected
+
+
 def test_job_center_path_redaction_preserves_business_text(tmp_path: Path) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     repository = TaskRepository(db_path)
     message = (
-        '业务 ID task-42 读取 "C:\\Program Files\\NetConsole\\report 01.csv" 完成 '
-        r"42 条记录，时间 2026-07-17T01:02:03Z；另一路径 \\server\share\raw.log 已归档"
+        r"业务 ID task-42 读取 C:\Program Files\NetConsole\secret.log 完成 "
+        r"42 条记录，时间 2026-07-17T01:02:03Z；中文 C:\采集 结果\设备 一\日志.txt 已归档；"
+        r'''UNC "\\server\share\raw data.log" 已上传；多路径 C:\first path\a.log 到 \\server\share\second path\b.log 完成'''
     )
     repository.record(
         repository.get("quiet-task"),
@@ -402,11 +447,12 @@ def test_job_center_path_redaction_preserves_business_text(tmp_path: Path) -> No
         response = client.get("/api/job-center/tasks/quiet-task/logs")
 
     text = response.json()["lines"][-1]["message"]
-    assert text.count("<redacted-path>") == 2
+    assert text.count("<redacted-path>") == 5
     assert "业务 ID task-42" in text
     assert "42 条记录" in text
     assert "2026-07-17T01:02:03Z" in text
     assert "已归档" in text
+    assert "已上传" in text
     assert "C:\\" not in text
     assert r"\\server" not in text
 
@@ -746,3 +792,57 @@ def test_job_center_artifact_names_are_safe_and_duplicate_names_keep_distinct_id
     assert JobCenterQueryService._artifact_display_name(r"\\server\share\report.xlsx") == ""
     assert first.display_name == second.display_name
     assert first.artifact_id != second.artifact_id
+
+
+def test_job_center_downloads_generic_web_artifact_without_exposing_physical_name(
+    tmp_path: Path,
+) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    task_id = "command-reference-export"
+    store = app.state.web_artifact_store
+    reservation = store.reserve(
+        site_id="demo",
+        owner="web_command_reference",
+        source="command_reference_export",
+        artifact_type="md",
+        task_id=task_id,
+        task_type="web_export_command_reference_markdown",
+        output_root=(
+            app.state.task_service.paths.site_files_dir("demo")
+            / "command_reference"
+            / "exports"
+        ),
+        preferred_name="NetConsole_软件使用命令清单.md",
+    )
+    reservation.output_path.write_text("命令说明", encoding="utf-8")
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type="web_export_command_reference_markdown",
+            task_name="命令说明导出",
+            status=TaskState.COMPLETED,
+            created_time="2026-07-17T10:00:00Z",
+            finished_time="2026-07-17T10:00:01Z",
+            updated_time="2026-07-17T10:00:01Z",
+            owner="web_command_reference",
+            source="local",
+            site_name="demo",
+        )
+    )
+    manifest = store.complete(reservation)
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/job-center/tasks/{task_id}")
+        downloaded = client.get(
+            f"/api/job-center/artifacts/{reservation.artifact_id}"
+        )
+        missing = client.get("/api/job-center/artifacts/not-an-artifact")
+
+    artifact = detail.json()["artifact_download"]
+    assert artifact["display_name"] == "NetConsole_软件使用命令清单.md"
+    assert reservation.artifact_id not in artifact["display_name"]
+    assert manifest["file_name"] != artifact["display_name"]
+    assert downloaded.status_code == 200
+    assert downloaded.content == "命令说明".encode()
+    assert "NetConsole_" in downloaded.headers["content-disposition"]
+    assert missing.status_code == 404

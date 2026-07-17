@@ -2251,8 +2251,10 @@ class DeviceManagementWebService:
                             message = sanitize_sensitive_text(str(exc))
                             self.task_service.record_external_event(task_id, "error", {"message": message, "error": message}, site_name=site)
                         else:
-                            self.task_service.record_external_event(task_id, "finished", safe_payload, site_name=site)
-                            completed = True
+                            updated = self.task_service.record_external_event(
+                                task_id, "finished", safe_payload, site_name=site
+                            )
+                            completed = updated.status is TaskState.COMPLETED
                         terminal = True
                     elif event_type in {"error", "cancelled"}:
                         message = sanitize_sensitive_text(str(event.get("error") or event.get("message") or "导出任务失败"))
@@ -2360,7 +2362,13 @@ class DeviceManagementWebService:
                     "_cancel_grace_ms": 1000,
                 },
             )
-            self.process_adapter.start_job(job)
+            self.process_adapter.start_job(
+                job,
+                sensitive_bootstrap=_connection_sensitive_bootstrap(
+                    device,
+                    selected_protocol,
+                ),
+            )
             snapshot = self.task_service.repository(site).get(task_id)
             if snapshot is None:
                 raise RuntimeError("连接测试任务创建后未写入任务中心")
@@ -2641,6 +2649,14 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     device = repository.get_by_uuid(device_uuid)
     if device is None:
         raise KeyError(f"设备不存在：{device_uuid}")
+    if bool(context.params.get("_requires_sensitive_bootstrap")):
+        bootstrap = context.consume_sensitive_bootstrap()
+        if bootstrap.pop("protocol", "") != protocol:
+            raise RuntimeError("设备连接测试敏感启动数据不匹配")
+        for field, value in bootstrap.items():
+            if field in _DEVICE_SECRET_FIELDS:
+                setattr(device, field, value)
+        device.password = device.ssh_password or device.telnet_password
     DeviceManagementWebService._validate_protocol_enabled(device, protocol)
     context.check_cancelled()
     context.progress("connect", 0, 1, f"正在执行 {protocol} 连接测试")
@@ -2682,6 +2698,30 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     context.progress("connect", 1, 1, f"{protocol} 连接测试完成")
     return payload
+
+
+_DEVICE_SECRET_FIELDS = (
+    "ssh_password",
+    "telnet_password",
+    "tunnel1_password",
+    "tunnel2_password",
+    "snmp_ro_community",
+    "snmp_rw_community",
+    "snmpv3_auth_password",
+    "snmpv3_priv_password",
+)
+
+
+def _connection_sensitive_bootstrap(
+    device: Device,
+    protocol: str,
+) -> dict[str, str]:
+    values = {"protocol": str(protocol)}
+    for field in _DEVICE_SECRET_FIELDS:
+        value = str(getattr(device, field, "") or "")
+        if value:
+            values[field] = value
+    return values
 
 
 def run_device_csv_import(context: JobContext) -> dict[str, object]:

@@ -87,13 +87,19 @@ class TaskRepository:
 
         run_sqlite_with_retry(operation)
 
-    def record(self, snapshot: TaskSnapshot, event: TaskEvent) -> bool:
+    def record(
+        self,
+        snapshot: TaskSnapshot,
+        event: TaskEvent,
+        *,
+        allowed_from: Collection[TaskState] | None = None,
+    ) -> bool:
         recorded = False
 
         def operation() -> None:
             nonlocal recorded
             with self._connect() as conn:
-                if not self._upsert(conn, snapshot):
+                if not self._upsert(conn, snapshot, allowed_from=allowed_from):
                     conn.rollback()
                     return
                 conn.execute(
@@ -117,7 +123,13 @@ class TaskRepository:
         run_sqlite_with_retry(operation)
         return recorded
 
-    def record_once(self, snapshot: TaskSnapshot, event: TaskEvent) -> bool:
+    def record_once(
+        self,
+        snapshot: TaskSnapshot,
+        event: TaskEvent,
+        *,
+        allowed_from: Collection[TaskState] | None = None,
+    ) -> bool:
         """Atomically persist a snapshot/event pair only once by event id."""
 
         recorded = False
@@ -133,7 +145,7 @@ class TaskRepository:
                 if exists is not None:
                     conn.rollback()
                     return
-                if not self._upsert(conn, snapshot):
+                if not self._upsert(conn, snapshot, allowed_from=allowed_from):
                     conn.rollback()
                     return
                 conn.execute(
@@ -277,14 +289,26 @@ class TaskRepository:
                     "cancelled": False,
                 },
             )
-            self.record(updated, event)
-            changed.append(updated)
+            if self.record(updated, event, allowed_from={snapshot.status}):
+                changed.append(updated)
         return changed
 
     @staticmethod
-    def _upsert(conn, snapshot: TaskSnapshot) -> bool:
+    def _upsert(
+        conn,
+        snapshot: TaskSnapshot,
+        *,
+        allowed_from: Collection[TaskState] | None = None,
+    ) -> bool:
+        allowed_values = None if allowed_from is None else sorted(state.value for state in allowed_from)
+        if allowed_values is None:
+            transition_guard = ""
+        elif allowed_values:
+            transition_guard = f"WHERE task_snapshots.status IN ({','.join('?' for _ in allowed_values)})"
+        else:
+            transition_guard = "WHERE 0"
         cursor = conn.execute(
-            """
+            f"""
             INSERT INTO task_snapshots (
                 task_id, task_type, task_name, created_time, started_time, finished_time,
                 status, progress, stage, current, total, message, owner, device, agent,
@@ -311,8 +335,7 @@ class TaskRepository:
                 site_name=excluded.site_name,
                 owner_pid=excluded.owner_pid,
                 updated_time=excluded.updated_time
-            WHERE excluded.status != 'STOPPING'
-               OR task_snapshots.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+            {transition_guard}
             """,
             (
                 snapshot.task_id,
@@ -337,6 +360,7 @@ class TaskRepository:
                 snapshot.site_name,
                 int(snapshot.owner_pid),
                 snapshot.updated_time,
+                *(allowed_values or ()),
             ),
         )
         return cursor.rowcount > 0
