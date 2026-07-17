@@ -296,7 +296,9 @@ describe('Command Reference mounted behavior', () => {
     expect(wrapper.text()).toContain('任务状态刷新暂时失败，正在重试')
     expect(localStorage.getItem(taskStorageKey)).toBe(taskId)
 
-    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(wrapper.text()).toContain('COMPLETED')
     expect(wrapper.text()).not.toContain('任务状态刷新暂时失败，正在重试')
@@ -361,7 +363,9 @@ describe('Command Reference mounted behavior', () => {
 
   it('recovers a routed task and uses unified cancel and safe download contracts', async () => {
     mocks.routeQuery = { task_id: 'task-recovered' }
-    mocks.get.mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'RUNNING' }))
+    mocks.get
+      .mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'RUNNING' }))
+      .mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'CANCELLED', cancellable: false }))
     const wrapper = await renderView()
     expect(mocks.get).toHaveBeenCalledWith('task-recovered')
 
