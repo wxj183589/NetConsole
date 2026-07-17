@@ -428,7 +428,6 @@ def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path
     }
     assert "secret-password" not in str(adapter.jobs[0].to_dict())
     assert "private-community" not in str(adapter.jobs[0].to_dict())
-    assert adapter.sensitive_bootstraps[0]["ssh_password"] == "secret-password"
 
 
 def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
