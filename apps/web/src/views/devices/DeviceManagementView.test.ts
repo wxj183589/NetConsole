@@ -94,6 +94,8 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('cancelDeviceTask')
     expect(source).toContain('useTaskStore')
     expect(source).toContain('taskStore.refresh()')
+    expect(source).toContain('taskStore.acquirePolling(pollingConsumer)')
+    expect(source).toContain('taskStore.releasePolling(pollingConsumer)')
     expect(source).toContain('openTaskWindow')
     expect(source).toContain('downloadBackendResource')
     expect(source).toContain('result.capabilityId')

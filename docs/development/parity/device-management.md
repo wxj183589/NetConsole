@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。CRUD、分组、已保存设备连接测试、诊断 Artifact、Qt 导入导出格式和终端受控启动已有模块实现；未保存表单测试只完成共享 Runtime 消费端契约，因 `codex/electron-task-center-window@c3532f90` 尚无非序列化 worker bootstrap 而默认阻断。统一任务窗口、Artifact capability 和重启恢复也尚未合入本分支，因此当前状态为 `PARTIAL / BLOCKED_ON_JOB_RUNTIME / BLOCKED_ON_TASK_WINDOW`，不是 `COMPLETE` 或 `REAL_DEVICE_PENDING`。
+设备管理已形成真实的 `Vue → FastAPI → DeviceManagementWebService → Repository/Job/Export/Desktop Adapter` 纵向链路。CRUD、分组、已保存设备和未保存表单连接测试、诊断 Artifact、Qt 导入导出格式、终端受控启动、统一任务窗口、停止/恢复与 Artifact capability 已在累计集成分支接通。当前自动实现状态为 `IMPLEMENTED_UNVERIFIED`：代码和定向测试已形成闭环，但尚未完成同数据人工对照、三类外部终端本机验证和真实设备验收，因此不是 `COMPLETE`。
 
 普通浏览器不再是正式产品入口。本页仍可在源码开发服务器中联调真实 API（包括受控写操作），但不形成独立页面、业务分支、发布包或验收链；外部终端、原生文件选择和受管下载只以 Electron Desktop 为正式行为基准。
 
@@ -164,12 +164,12 @@ FastAPI Router 只负责 DTO、Feature Gate、Service 调用和错误映射；Vu
 
 ## 未完成验收
 
-- 未保存表单连接测试：`BLOCKED_ON_JOB_RUNTIME`。共享分支需让 `LocalProcessAdapter.start_job(..., runtime_bootstrap=bytearray)` 仅以内存参数接收最多 64 KiB 数据，以受控 stdin/匿名管道同步交给 worker 后立即关闭写端并清零父进程缓冲；`JobContext.consume_runtime_bootstrap()` 只允许读取一次并返回可清零 `bytearray`，取消、启动失败、超时和宿主关闭必须关闭管道并清零。Job JSON、Task params/result/event/log/DTO 不得出现秘密；不得恢复旧 token/端口或新增秘密文件。
-- 统一任务窗口：`BLOCKED_ON_TASK_WINDOW`。本分支已删除设备页 `trackedTasks`、私有轮询/取消和大任务区，提交后调用正式 `openTaskWindow({taskId,module:'devices',status})` 并从公共 tasks store 恢复紧凑摘要。待合入 `codex/electron-task-center-window@c3532f90`；冲突解决不得恢复页面任务系统。
-- 诊断 Artifact：`BLOCKED_ON_TASK_WINDOW`。共享 `JobCenterQueryService._artifact_download()` 需为 `owner=web_device_management + task_type=device_diagnostic_download` 返回 `/api/device-management/diagnostics/{task}/download`、必需 `artifact_id` 和受控显示名；`apps/desktop_electron/src/shared/validation.ts` 的 `DOWNLOAD_ENDPOINTS` 需加入同一路由并仅允许且要求 `artifact_id`。模块只消费公共 `artifact_download` DTO 和 `capabilityId`，没有 `savedPath` 回退。
+- 未保存表单连接测试的非序列化 Runtime bootstrap 已接入：父进程仅以内存 `bytearray` 传入，worker 单次消费并清零；Job JSON、Task params/result/event/log/DTO 不持久化秘密。仍需用真实 SSH/Telnet/SNMP 参数人工验证成功、失败、取消和进程清理。
+- 统一任务窗口已接入公共 tasks store，设备页只保留紧凑摘要；停止、日志、Artifact、重试和重启恢复不再由页面私建第二套任务系统。仍需 Electron 人工验证子窗口交互和故障恢复。
+- 诊断 Artifact 已加入公共查询与 Electron 下载白名单，使用安全显示名和 `artifact_id` capability；Renderer 不接收服务器绝对路径或本地保存路径。仍需人工检查 ZIP 内容、另存为取消/覆盖、打开文件和打开所在目录。
 - 人工 Qt/Electron 对照：`NOT_STARTED`，不能由自动化代替。
 - 真实设备：SSH/Telnet/SNMP、H3C 详情、光模块和诊断下载待现场设备验证。
 - SecureCRT/Xshell/PuTTY：`MANUAL_DESKTOP_PENDING`，需要用户本机实际安装路径与交互验证，不标为真实设备。
 - 截图：待人工验收时存入版本化文档资产目录，再在本文登记；临时剪贴板路径不得写入仓库。
 
-共享任务窗口依赖补齐并完成人工软件流程后，若只剩现场设备，状态才可升级为 `REAL_DEVICE_PENDING`；所有必需现场项通过后才能升级为 `COMPLETE`。
+完成人工 CRUD、导入导出、任务窗口和至少一种外部终端软件流程后，若只剩现场设备，状态可升级为 `REAL_DEVICE_PENDING`；所有必需现场项通过后才能升级为 `COMPLETE`。

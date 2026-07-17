@@ -161,6 +161,7 @@ const secretClears = reactive<Record<DeviceSecretField, boolean>>({
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let omniPeekPollGeneration = 0
 let componentActive = true
+const pollingConsumer = 'device-management-view'
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const activeTaskStatuses = new Set<TaskStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'])
@@ -169,6 +170,8 @@ const publicDeviceTasks = computed(() => (taskStore.tasks as DevicePublicTask[])
   || task.owner === 'web_device_management'
   || task.type.startsWith('device_')
 )))
+const activeDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => activeTaskStatuses.has(task.status)).length)
+const failedDeviceTaskCount = computed(() => publicDeviceTasks.value.filter((task) => task.status === 'FAILED').length)
 const latestDeviceTask = computed(() => {
   const submittedId = lastSubmittedTask.value?.task_id
   return (submittedId && publicDeviceTasks.value.find((task) => task.id === submittedId))
@@ -206,13 +209,15 @@ const historyColumns = computed(() => {
 
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
-  await Promise.all([loadDevices(), taskStore.refresh()])
+  taskStore.acquirePolling(pollingConsumer)
+  await loadDevices()
 })
 
 onBeforeUnmount(() => {
   componentActive = false
   omniPeekPollGeneration += 1
   savedArtifactCapability.value = ''
+  taskStore.releasePolling(pollingConsumer)
   document.removeEventListener('click', closeContextMenu)
 })
 
@@ -1177,16 +1182,15 @@ function errorMessage(cause: unknown, fallback: string): string {
     </div>
 
     <el-alert
-      v-if="latestDeviceTask"
-      :title="`${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status}`"
-      :description="`${latestDeviceTask.message || '任务状态由统一任务中心恢复'} · ${latestDeviceTask.id}`"
+      :title="`设备任务 · 运行中 ${activeDeviceTaskCount} 项 / 失败 ${failedDeviceTaskCount} 项`"
+      :description="latestDeviceTask ? `${latestDeviceTask.name || latestDeviceTask.type} · ${latestDeviceTask.status} · ${latestDeviceTask.message || latestDeviceTask.id}` : '任务状态由统一任务中心恢复'"
       type="info"
       :closable="false"
       show-icon
       class="task-summary"
     >
       <el-button link type="primary" @click="openTaskWindow()">打开任务窗口</el-button>
-      <el-button v-if="latestDeviceTask.artifact_download" link type="primary" @click="downloadLatestArtifact">另存 Artifact</el-button>
+      <el-button v-if="latestDeviceTask?.artifact_download" link type="primary" @click="downloadLatestArtifact">另存 Artifact</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(false)">打开文件</el-button>
       <el-button v-if="desktopHost && savedArtifactCapability" link type="primary" @click="useSavedArtifact(true)">所在目录</el-button>
     </el-alert>

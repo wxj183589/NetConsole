@@ -134,6 +134,7 @@ _DEVICE_EXPORT_DISPLAY_NAMES = {
     "device_export_device_template_csv": ("设备导入模板", ".csv"),
     "device_export_securecrt_sessions": ("SecureCRT会话", ".zip"),
     "device_export_omnipeek_name_table": ("OmniPeek名称表", ".nam"),
+    "device_diagnostic_download": ("设备诊断", ".zip"),
 }
 def device_export_display_name(task_type: str, value: object = "") -> str:
     contract = _DEVICE_EXPORT_DISPLAY_NAMES.get(str(task_type or ""))

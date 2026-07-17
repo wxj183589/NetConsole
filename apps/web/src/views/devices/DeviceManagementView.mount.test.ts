@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   taskStore: null as null | {
     tasks: Array<Record<string, unknown>>
     refresh: ReturnType<typeof vi.fn>
+    acquirePolling: ReturnType<typeof vi.fn>
+    releasePolling: ReturnType<typeof vi.fn>
   },
 }))
 
@@ -297,6 +299,8 @@ beforeEach(() => {
   const store = reactive({
     tasks: [] as Array<Record<string, unknown>>,
     refresh: vi.fn(async () => undefined),
+    acquirePolling: vi.fn(),
+    releasePolling: vi.fn(),
   })
   mocks.taskStore = store
   mocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: '8a02d34f-ec8f-4c17-9a8a-b266bdf9e137' })

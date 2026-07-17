@@ -66,7 +66,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 
 | 模块 | UI 对等 | 功能对等 | 导入/导出 | 实时任务、停止与恢复 | 自动测试证据 | 人工验收 | 真实设备验收 | 当前缺口 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 设备管理 | 模块侧 CRUD/导入导出/诊断/终端链路已实现，表单测试与统一任务窗口仍有共享依赖 | 真实 CRUD/分组/已保存设备连接测试/采集/终端链路；表单测试严格 bootstrap 消费端与缺失 Runtime 阻断 | CSV 重复策略与确认；诊断 ZIP；CSV/模板/SecureCRT/OmniPeek 实际 Artifact；公共 capability DTO 挂载测试 | 后端 Task 持久化；页面删除私有轮询/取消并消费公共 store；统一任务窗口负责停止、日志、Artifact 和恢复 | `tests/test_device_management_web_api.py`、`tests/test_device_import_export.py`、`tests/test_desktop_action_service.py`、`DeviceManagementView.mount.test.ts` | `NOT_STARTED` | SSH/Telnet/SNMP、采集、光模块和诊断待真实设备；三类终端软件为 `MANUAL_DESKTOP_PENDING` | `BLOCKED_ON_JOB_RUNTIME / BLOCKED_ON_TASK_WINDOW`；人工同数据对照与现场结果 |
+| 设备管理 | Qt 操作区、表格、表单、详情、分组、导入导出、终端和紧凑任务摘要已形成 Electron 实现 | 真实 CRUD/分组、已保存设备与未保存表单连接测试、采集、诊断、终端受控启动 | CSV 重复策略与确认；诊断 ZIP；CSV/模板/SecureCRT/OmniPeek 实际 Artifact；公共 capability DTO | 公共 Task 持久化与轮询；统一任务窗口负责停止、日志、Artifact、重试和恢复；页面不再私建任务系统 | `tests/test_device_management_web_api.py`、`tests/test_device_import_export.py`、`tests/test_local_process_adapter.py`、`tests/test_job_center_web_api.py`、`DeviceManagementView.mount.test.ts` | CRUD、导入导出、任务窗口及 SecureCRT/Xshell/PuTTY 为 `MANUAL_DESKTOP_PENDING` | SSH/Telnet/SNMP、采集、光模块和诊断待真实设备 | `IMPLEMENTED_UNVERIFIED`；人工软件流程通过后再按剩余项升级为 `REAL_DEVICE_PENDING` |
 | AC 管理 | 部分 | 部分/Fake | 部分 | 部分 | 现有 AC 定向测试 | `NOT_STARTED` | `NOT_STARTED` | 规划、光衰独立页、真实写操作和现场验收 |
 | 轨道交通 | 部分 | 只读/部分/Fake 混合 | 部分 | 部分 | 现有 Rail/Online MR/Mesh 定向测试 | `NOT_STARTED` | 列车下电期间冻结 | 不得以聚合看板代替 Qt 业务页 |
 | 配置采集中心 | 部分 | 部分真实 | 已有 | 已有部分 | 现有 Config 定向测试 | `NOT_STARTED` | 待真实设备 | Qt 全操作、错误和恢复对照 |
@@ -81,5 +81,5 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 
 1. 一次只把一个 Qt 模块做成完整纵向切片，不横向增加只读页面。
 2. 自动测试先定向；进入集成和合并前再运行全量 Python、Vue、Electron、Ruff、构建和文档检查。
-3. 当前设备管理只能标记 `PARTIAL / BLOCKED_ON_JOB_RUNTIME / BLOCKED_ON_TASK_WINDOW`。只有共享 Runtime bootstrap、统一任务窗口、诊断 Artifact allowlist 和本机终端人工流程全部完成，且剩余项仅为真实网络设备时，才升级为 `REAL_DEVICE_PENDING`；全部现场项通过后才能升级为 `COMPLETE`。
+3. 当前设备管理标记为 `IMPLEMENTED_UNVERIFIED`。共享 Runtime bootstrap、统一任务窗口和诊断 Artifact allowlist 已接通；本机 CRUD、导入导出、任务窗口和终端人工流程通过，且剩余项仅为真实网络设备时，才升级为 `REAL_DEVICE_PENDING`；全部现场项通过后才能升级为 `COMPLETE`。
 4. 浏览器开发入口不得产生独立导航、业务分支、发布包或验收矩阵；Native 功能只在 Electron 中开放。

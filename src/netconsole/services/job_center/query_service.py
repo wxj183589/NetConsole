@@ -26,6 +26,7 @@ from netconsole.services.config_collection_web_service import (
     CONFIG_WEB_TASK_TYPES,
 )
 from netconsole.services.device_management_web_service import (
+    DEVICE_DIAGNOSTIC_TASK_TYPE,
     DEVICE_TASK_TYPES,
     EXPORT_TASK_TYPES,
     WEB_TASK_OWNER,
@@ -281,11 +282,27 @@ class JobCenterQueryService:
         artifact_id = str(result.get("artifact_id") or "")
         if artifact_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", artifact_id):
             return None
-        if owner == WEB_TASK_OWNER and task_type in EXPORT_TASK_TYPES and artifact_id and result.get("available"):
+        if (
+            owner == WEB_TASK_OWNER
+            and task_type in {*EXPORT_TASK_TYPES, DEVICE_DIAGNOSTIC_TASK_TYPE}
+            and artifact_id
+            and result.get("available")
+        ):
             name = device_export_display_name(task_type, result.get("display_name"))
             if not name:
                 return None
-            return JobCenterQueryService._artifact_dto(artifact_id, name, result.get("size_bytes"), f"/api/device-management/exports/{task_id}/download", {"artifact_id": artifact_id})
+            api_path = (
+                f"/api/device-management/diagnostics/{task_id}/download"
+                if task_type == DEVICE_DIAGNOSTIC_TASK_TYPE
+                else f"/api/device-management/exports/{task_id}/download"
+            )
+            return JobCenterQueryService._artifact_dto(
+                artifact_id,
+                name,
+                result.get("size_bytes"),
+                api_path,
+                {"artifact_id": artifact_id},
+            )
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_EXPORT_TASKS and artifact_id:
             name = JobCenterQueryService._artifact_display_name(result.get("display_name"))
             if not name:

@@ -715,6 +715,7 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     fixtures = [
         ("device-artifact", "device_export_device_csv", "web_device_management", device_result),
         ("device-history", "device_export_device_csv", "web_device_management", historical_device_result),
+        ("device-diagnostic", "device_diagnostic_download", "web_device_management", {"artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef", "artifact_name": "device-diagnostic-0123456789abcdef0123456789abcdef.zip", "available": True, "size_bytes": 42}),
         ("config-artifact", "config_web_export_snapshots", "web_config_collection", {"artifact_id": config_id, "display_name": config_name, "size": 34, "output_path": "C:\\private\\configs.zip"}),
         ("file-artifact", "file_management_download", "web_file_management", file_result),
     ]
@@ -741,6 +742,7 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
 
     device = payloads["device-artifact"]["artifact_download"]
     device_history = payloads["device-history"]["artifact_download"]
+    device_diagnostic = payloads["device-diagnostic"]["artifact_download"]
     config = payloads["config-artifact"]["artifact_download"]
     file = payloads["file-artifact"]["artifact_download"]
     assert device == {
@@ -750,6 +752,14 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     }
     assert device_history["display_name"] == "设备清单.csv"
     assert device_history["display_name"] != historical_device_result["artifact_name"]
+    assert device_diagnostic == {
+        "artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef",
+        "display_name": "设备诊断.zip",
+        "size_bytes": 42,
+        "media_type": "application/zip",
+        "api_path": "/api/device-management/diagnostics/device-diagnostic/download",
+        "query": {"artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef"},
+    }
     assert config["display_name"].startswith("配置_快照_") and config["display_name"].endswith(".zip")
     assert config["size_bytes"] == 34
     assert config["media_type"] == "application/zip"
