@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core import atomic_file
 from netconsole.core.feature_flags import (
     FeatureDisabledError,
     FeatureGate,
@@ -152,6 +153,25 @@ def test_engineer_package_option_persists_in_customer_profile(tmp_path: Path) ->
     assert engineer_package_enabled(profile_path)
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
     assert payload["build_options"] == {"engineer_package": True}
+
+
+def test_customer_profile_atomic_replace_failure_preserves_old_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path = tmp_path / "customer.json"
+    save_profile(profile_path, "customer", {}, build_options={"engineer_package": True})
+    original = profile_path.read_bytes()
+
+    def fail_replace(_source: Path, _target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(atomic_file.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        save_profile(profile_path, "customer", {}, build_options={"engineer_package": False})
+
+    assert profile_path.read_bytes() == original
+    assert engineer_package_enabled(profile_path)
+    assert list(tmp_path.glob(".customer.json.*.tmp")) == []
 
 
 def test_feature_gate_customer_profile_hides_config_and_disabled_feature(tmp_path: Path) -> None:

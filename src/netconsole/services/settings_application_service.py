@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from threading import RLock
 
@@ -8,6 +9,7 @@ from netconsole.core.feature_flags import (
     normalize_feature_states, save_profile, validate_feature_states,
 )
 from netconsole.core.feature_registry import FEATURE_BY_ID, list_features
+from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import DEFAULT_SETTINGS, SettingsStore
 from netconsole.models.api.system_settings import (
@@ -26,6 +28,15 @@ _TOOL_FIELDS = {
     "iperf3": "iperf_path", "fping": "fping_path", "ipop": "ipop_path",
     "putty": "putty", "securecrt": "securecrt", "xshell": "xshell",
 }
+_INTERNAL_TITLE_KEY = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
+
+
+def _readable_feature_title(title_key: str) -> str:
+    translated = TRANSLATIONS["zh_CN"].get(title_key, title_key)
+    if translated != title_key or not _INTERNAL_TITLE_KEY.fullmatch(title_key):
+        return translated
+    fallback = title_key.rsplit(".", 1)[-1].replace("_", " ").replace("-", " ").strip()
+    return fallback.title() or "未命名功能"
 
 
 class SettingsApplicationService:
@@ -80,6 +91,7 @@ class SettingsApplicationService:
             raise ValueError(error)
         normalized = normalize_feature_states(features)
         self._save_customer_profile(normalized)
+        self.feature_gate.reload()
         return self._feature_snapshot(normalized)
 
     def preview_features(self, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
@@ -99,6 +111,7 @@ class SettingsApplicationService:
         self.feature_gate.disable_session_customer_preview(reason="web-settings")
         defaults = default_profile("customer")["features"]
         self._save_customer_profile(defaults)
+        self.feature_gate.reload()
         return self._feature_snapshot(defaults)
 
     def _snapshot(self) -> SystemSettingsSnapshotDTO:
@@ -167,12 +180,12 @@ class SettingsApplicationService:
             items=[
                 FeatureStateDTO(
                     feature_id=item.feature_id,
-                    title=item.title_key,
+                    title=_readable_feature_title(item.title_key),
                     **features[item.feature_id],
                 )
                 for item in list_features()
             ],
-            preview_active=self.feature_gate.is_session_override_active(),
+            preview_active=self.feature_gate.is_customer_preview_active(),
         )
 
 

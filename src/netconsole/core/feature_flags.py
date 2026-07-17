@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from PySide6.QtWidgets import QWidget
 
 from netconsole.core import app_logger
+from netconsole.core.atomic_file import atomic_write_bytes, locked_file
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureItem, FeatureStatus, children_of, list_features
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import app_root, data_root, is_packaged_runtime
@@ -464,8 +465,9 @@ def save_profile(
         "build_options": {"engineer_package": bool(dict(build_options or {}).get("engineer_package", False))},
         "features": normalized,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    with locked_file(path):
+        atomic_write_bytes(path, encoded)
     _feature_switch_log(f"saved customer config: {path}")
 
 

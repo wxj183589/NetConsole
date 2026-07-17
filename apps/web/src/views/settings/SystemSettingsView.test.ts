@@ -3,10 +3,11 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/systemSettings'
+import { loadWebFeatures } from '../../features'
 import { currentAppLocale } from '../../i18n/runtime'
 import type { SystemSettingsSnapshot } from '../../types/systemSettings'
 import SystemSettingsView from './SystemSettingsView.vue'
@@ -19,8 +20,8 @@ vi.mock('../../features', () => ({
 
 const settingsBridge = {
   hostType: 'electron' as const,
-  selectSettingsTool: vi.fn(async () => ({ cancelled: false, path: 'C:\tools\Xshell.exe' })),
-  selectSettingsDirectory: vi.fn(async () => ({ cancelled: false, path: 'C:\sessions' })),
+  selectSettingsTool: vi.fn(async () => ({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })),
+  selectSettingsDirectory: vi.fn(async () => ({ cancelled: false, path: 'C:\\sessions' })),
   selectSettingsColor: vi.fn(async () => ({ cancelled: false, color: '#2563EB' as const })),
   executeSettingsAction: vi.fn(async () => ({ success: true })),
 }
@@ -30,17 +31,18 @@ function snapshot(): SystemSettingsSnapshot {
   const values = {
     theme: 'light' as const, language: 'zh_CN' as const, theme_color: '#0078D4' as const,
     iperf_path: '', fping_path: '', ipop_path: '', terminal_type: 'securecrt' as const,
-    terminal_paths: { securecrt: 'C:\tools\SecureCRT.exe', xshell: 'C:\tools\Xshell.exe', putty: 'C:\tools\putty.exe' },
-    securecrt_sessions_root: 'C:\sessions', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8' as const,
+    terminal_paths: { securecrt: 'C:\\tools\\SecureCRT.exe', xshell: 'C:\\tools\\Xshell.exe', putty: 'C:\\tools\\putty.exe' },
+    securecrt_sessions_root: 'C:\\sessions', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8' as const,
   }
-  return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\data\sites\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
+  return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\\data\\sites\\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
 }
 
 const featureData = { items: [{ feature_id: 'web.agent_management', title: 'Agent', visible: true, enabled: true, client_package: true, internal_only: false }], preview_active: false }
+const featureSnapshot = () => ({ ...featureData, items: featureData.items.map((item) => ({ ...item })) })
 
 async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createRouter> }> {
   vi.mocked(api.getSystemSettings).mockResolvedValue(snapshot())
-  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureData)
+  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
   const wrapper = mount(defineComponent({ template: '<RouterView />' }), { global: { plugins: [router] } })
@@ -55,7 +57,11 @@ async function change(wrapper: VueWrapper, id: string, value: string): Promise<v
 
 beforeEach(() => {
   vi.clearAllMocks(); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
-  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureData)
+  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
+  settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
+  settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
+  settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
+  settingsBridge.executeSettingsAction.mockResolvedValue({ success: true })
 })
 
 describe('SystemSettingsView mounted behavior', () => {
@@ -80,16 +86,16 @@ describe('SystemSettingsView mounted behavior', () => {
   it('keeps the three terminal paths independent and saves with the current version', async () => {
     const { wrapper } = await mounted()
     const pathInput = () => wrapper.findAllComponents({ name: 'ElInput' })[3]!
-    expect(pathInput().props('modelValue')).toBe('C:\tools\SecureCRT.exe')
+    expect(pathInput().props('modelValue')).toBe('C:\\tools\\SecureCRT.exe')
     await change(wrapper, 'terminal-type', 'xshell')
-    expect(pathInput().props('modelValue')).toBe('C:\tools\Xshell.exe')
-    pathInput().vm.$emit('update:modelValue', 'D:\Xshell\Xshell.exe'); await nextTick()
+    expect(pathInput().props('modelValue')).toBe('C:\\tools\\Xshell.exe')
+    pathInput().vm.$emit('update:modelValue', 'D:\\Xshell\\Xshell.exe'); await nextTick()
     await change(wrapper, 'terminal-type', 'putty')
-    expect(pathInput().props('modelValue')).toBe('C:\tools\putty.exe')
+    expect(pathInput().props('modelValue')).toBe('C:\\tools\\putty.exe')
 
     vi.mocked(api.saveSystemSettings).mockImplementationOnce(async (values) => ({ ...snapshot(), values, version: 'next' }))
     await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
-    expect(api.saveSystemSettings).toHaveBeenCalledWith(expect.objectContaining({ terminal_paths: { securecrt: 'C:\tools\SecureCRT.exe', xshell: 'D:\Xshell\Xshell.exe', putty: 'C:\tools\putty.exe' } }), 'missing')
+    expect(api.saveSystemSettings).toHaveBeenCalledWith(expect.objectContaining({ terminal_paths: { securecrt: 'C:\\tools\\SecureCRT.exe', xshell: 'D:\\Xshell\\Xshell.exe', putty: 'C:\\tools\\putty.exe' } }), 'missing')
     wrapper.unmount()
   })
 
@@ -100,6 +106,128 @@ describe('SystemSettingsView mounted behavior', () => {
     await wrapper.find('[data-testid="preview-features"]').trigger('click'); await flushPromises()
     expect(api.previewFeatureSettings).toHaveBeenCalledWith(featureData.items)
     expect(wrapper.text()).toContain('客户配置预览中')
+    wrapper.unmount()
+  })
+
+  it('does not persist either stage when combined changes are not confirmed', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'theme', 'dark')
+    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
+    feature.vm.$emit('update:modelValue', false); await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce(new Error('cancel'))
+
+    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
+
+    expect(api.saveFeatureSettings).not.toHaveBeenCalled()
+    expect(api.saveSystemSettings).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not save normal settings when the feature stage fails', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'theme', 'dark')
+    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
+    feature.vm.$emit('update:modelValue', false); await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    vi.mocked(api.saveFeatureSettings).mockRejectedValueOnce(new Error('profile write failed'))
+
+    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
+
+    expect(api.saveSystemSettings).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('profile write failed')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('refreshes the effective feature gate and reports a later settings failure as partial success', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'theme', 'dark')
+    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
+    feature.vm.$emit('update:modelValue', false); await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
+    vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('settings conflict'))
+
+    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
+
+    expect(loadWebFeatures).toHaveBeenCalledWith(true)
+    expect(vi.mocked(api.saveFeatureSettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.saveSystemSettings).mock.invocationCallOrder[0]!)
+    expect(wrapper.text()).toContain('功能开关已保存，但系统设置保存失败')
+    wrapper.unmount()
+  })
+
+  it('stops before settings save and reports the exact stage when Gate refresh fails', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'theme', 'dark')
+    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
+    feature.vm.$emit('update:modelValue', false); await nextTick()
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
+    vi.mocked(loadWebFeatures).mockRejectedValueOnce(new Error('gate refresh failed'))
+
+    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
+
+    expect(api.saveFeatureSettings).toHaveBeenCalledOnce()
+    expect(api.saveSystemSettings).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('功能开关已保存，但 Gate/导航刷新失败，系统设置未保存')
+    wrapper.unmount()
+  })
+
+  it('does not report reload success when feature loading fails', async () => {
+    const { wrapper } = await mounted()
+    const success = vi.spyOn(ElMessage, 'success')
+    vi.mocked(api.reloadSystemSettings).mockResolvedValueOnce(snapshot())
+    vi.mocked(api.getFeatureSettings).mockRejectedValueOnce(new Error('feature load failed'))
+
+    await wrapper.find('[data-testid="reload"]').trigger('click'); await flushPromises()
+
+    expect(wrapper.text()).toContain('feature load failed')
+    expect(success).not.toHaveBeenCalledWith('已重载')
+    wrapper.unmount()
+  })
+
+  it('saves the selected IPOP path before invoking the semantic launch action', async () => {
+    const { wrapper } = await mounted()
+    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\IPOP\\IPOP.EXE' })
+    vi.mocked(api.saveSystemSettings).mockImplementationOnce(async (values) => ({ ...snapshot(), values, version: 'next' }))
+
+    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
+    await wrapper.find('[data-testid="launch-ipop"]').trigger('click'); await flushPromises()
+
+    expect(api.saveSystemSettings).toHaveBeenCalledWith(expect.objectContaining({ ipop_path: 'D:\\IPOP\\IPOP.EXE' }), 'missing')
+    expect(vi.mocked(api.saveSystemSettings).mock.invocationCallOrder[0]).toBeLessThan(settingsBridge.executeSettingsAction.mock.invocationCallOrder[0]!)
+    expect(settingsBridge.executeSettingsAction).toHaveBeenCalledWith('launch_ipop')
+    wrapper.unmount()
+  })
+
+  it('blocks IPOP launch after a CAS save failure', async () => {
+    const { wrapper } = await mounted()
+    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\IPOP\\IPOP.EXE' })
+    vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('version conflict'))
+
+    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
+    await wrapper.find('[data-testid="launch-ipop"]').trigger('click'); await flushPromises()
+
+    expect(settingsBridge.executeSettingsAction).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('version conflict')
+    wrapper.unmount()
+  })
+
+  it('shows controlled errors for rejected native bridge operations', async () => {
+    const { wrapper } = await mounted()
+    settingsBridge.selectSettingsTool.mockRejectedValueOnce(new Error('tool bridge failed'))
+    settingsBridge.selectSettingsDirectory.mockRejectedValueOnce(new Error('directory bridge failed'))
+    settingsBridge.selectSettingsColor.mockRejectedValueOnce(new Error('color bridge failed'))
+    settingsBridge.executeSettingsAction.mockRejectedValueOnce(new Error('action bridge failed'))
+
+    await wrapper.find('[data-testid="select-ipop"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('tool bridge failed')
+    await wrapper.find('[data-testid="select-sessions"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('directory bridge failed')
+    await wrapper.find('[data-testid="select-color"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('color bridge failed')
+    await wrapper.find('[data-testid="open-settings-config"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('action bridge failed')
     wrapper.unmount()
   })
 })

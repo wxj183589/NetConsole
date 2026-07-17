@@ -3,13 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import RLock
-from typing import Iterator, Mapping
+from typing import Mapping
 
+from netconsole.core.atomic_file import atomic_write_bytes, locked_file
 from netconsole.core.paths import PathResolver
 
 
@@ -62,8 +60,6 @@ VALID_LANGUAGES = {"zh_CN", "en_US"}
 VALID_CLOSE_BEHAVIORS = {"ask", "minimize_to_tray", "exit"}
 VALID_STARTUP_MODES = {"preload_all", "fast_start"}
 VALID_EXTERNAL_TERMINAL_TYPES = {"putty", "securecrt", "xshell"}
-_PATH_LOCKS: dict[Path, RLock] = {}
-_PATH_LOCKS_GUARD = RLock()
 _MISSING_VERSION = "missing"
 
 
@@ -81,41 +77,6 @@ class SettingsConflictError(SettingsError):
 
 def _version(raw: bytes | None) -> str:
     return _MISSING_VERSION if raw is None else hashlib.sha256(raw).hexdigest()
-
-
-def _path_lock(path: Path) -> RLock:
-    resolved = path.resolve(strict=False)
-    with _PATH_LOCKS_GUARD:
-        return _PATH_LOCKS.setdefault(resolved, RLock())
-
-
-@contextmanager
-def _settings_file_lock(path: Path) -> Iterator[None]:
-    with _path_lock(path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.with_name(f".{path.name}.lock")
-        with lock_path.open("a+b") as lock_file:
-            lock_file.seek(0, os.SEEK_END)
-            if lock_file.tell() == 0:
-                lock_file.write(b"\0")
-                lock_file.flush()
-            lock_file.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                lock_file.seek(0)
-                if os.name == "nt":
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_settings_file(path: Path) -> tuple[dict[str, object], bytes | None, str]:
@@ -136,19 +97,8 @@ def _read_settings_file(path: Path) -> tuple[dict[str, object], bytes | None, st
 
 def _atomic_write_json(path: Path, values: Mapping[str, object]) -> bytes:
     payload = json.dumps(values, ensure_ascii=False, indent=2).encode("utf-8")
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as temporary_file:
-            temporary_file.write(payload)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, path)
-        return payload
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    atomic_write_bytes(path, payload, replace=os.replace)
+    return payload
 
 
 def normalize_external_terminal_type(value: object) -> str:
@@ -349,7 +299,7 @@ class SettingsStore:
         if not dirty:
             return
         try:
-            with _settings_file_lock(self.path):
+            with locked_file(self.path):
                 persisted, _raw, current_version = _read_settings_file(self.path)
                 if expected_version is not None and expected_version != current_version:
                     raise SettingsConflictError("设置版本已过期，请重载后重试")

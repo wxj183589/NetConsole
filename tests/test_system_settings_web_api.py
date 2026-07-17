@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from netconsole.backend.api import system_settings_router
 from netconsole.backend.api.main import create_app
 from netconsole.core import settings as settings_module
+from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.services.external_tool_service import ExternalToolLaunchResult
 
 
 TOKEN = "settings-test-session-token-123456"
@@ -87,6 +91,37 @@ def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None
     stale = {**first["values"], "theme": "light", "expected_version": first["version"]}
     assert client.put("/api/settings", json=stale).status_code == 409
     assert client.get("/api/settings").json()["values"]["theme"] == "dark"
+
+
+def test_ipop_native_action_uses_latest_cas_persisted_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, _paths = _client(tmp_path)
+    initial = client.get("/api/settings").json()
+    selected = _exe(tmp_path, "IPOP.EXE")
+    saved = client.put(
+        "/api/settings",
+        json={
+            **initial["values"],
+            "ipop_path": selected,
+            "expected_version": initial["version"],
+        },
+    )
+    assert saved.status_code == 200
+    launched: list[str] = []
+
+    def capture_launch(_paths, *, settings):
+        launched.append(str(settings.get_value("external_tools/ipop_path", "")))
+        return ExternalToolLaunchResult(True, "started", Path(selected))
+
+    monkeypatch.setattr(system_settings_router, "launch_ipop", capture_launch)
+
+    response = client.post(
+        "/api/settings/native-action", json={"action": "launch_ipop"}
+    )
+
+    assert response.status_code == 200
+    assert launched == [selected]
 
 
 def test_corrupt_settings_are_not_overwritten_and_return_503(tmp_path: Path) -> None:
@@ -176,6 +211,68 @@ def test_feature_switch_preview_and_restore_use_real_gate(tmp_path: Path) -> Non
     assert restored_target["visible"] is True
     assert restored_target["enabled"] is True
     assert customer_profile["build_options"] == {"engineer_package": True}
+
+
+def test_feature_save_reloads_effective_gate_without_applying_build_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, _paths = _client(tmp_path)
+    gate = client.app.state.feature_gate
+    original_reload = gate.reload
+    reload_count = 0
+
+    def tracked_reload() -> None:
+        nonlocal reload_count
+        reload_count += 1
+        original_reload()
+
+    monkeypatch.setattr(gate, "reload", tracked_reload)
+    snapshot = client.get("/api/settings/features").json()
+    assert all(item["title"] for item in snapshot["items"])
+    assert all(
+        re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", item["title"])
+        is None
+        for item in snapshot["items"]
+    )
+    devices_module = next(
+        item for item in snapshot["items"] if item["feature_id"] == "module.devices"
+    )
+    assert devices_module["title"] != "nav.devices"
+    target = next(
+        item for item in snapshot["items"] if item["feature_id"] == "web.agent_management"
+    )
+    target.update({"visible": False, "enabled": False, "client_package": False})
+
+    saved = client.put(
+        "/api/settings/features",
+        json={"items": snapshot["items"], "confirmed": True},
+    )
+
+    assert saved.status_code == 200
+    assert reload_count == 1
+    effective = client.get("/api/features").json()["items"]
+    effective_target = next(
+        item for item in effective if item["feature_id"] == "web.agent_management"
+    )
+    assert effective_target == {
+        "feature_id": "web.agent_management",
+        "visible": True,
+        "enabled": True,
+    }
+
+
+def test_feature_title_uses_readable_fallback_when_translation_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delitem(TRANSLATIONS["zh_CN"], "nav.devices")
+    client, _paths = _client(tmp_path)
+
+    snapshot = client.get("/api/settings/features").json()
+    devices_module = next(
+        item for item in snapshot["items"] if item["feature_id"] == "module.devices"
+    )
+
+    assert devices_module["title"] == "Devices"
 
 
 def test_browser_runtime_cannot_read_or_write_settings(tmp_path: Path) -> None:
