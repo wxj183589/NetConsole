@@ -48,7 +48,7 @@ from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepositor
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params, save_site_mesh_analysis_params
 from netconsole.services.mesh_storage_service import MeshStorageService

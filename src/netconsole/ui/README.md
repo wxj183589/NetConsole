@@ -12,6 +12,8 @@
 
 每个删除文件都要按 `PURE_UI`、`BUSINESS_MOVED`、`ADAPTER_REPLACED`、`DEAD_CODE` 或 `FEATURE_REMOVED` 记录去向。无法证明无调用的代码不得标记为 `DEAD_CODE`；Qt 文件删除后以 Git 历史保留，不创建 `legacy/old/backup` 副本。
 
+`job_process_manager.py` 和 `export_process_manager.py` 仅负责 Qt `QProcess`/Signal 生命周期；永久 Task/Export 模型、Application Service、worker 协议和 handler 仍位于 `src/netconsole/services` 与 `src/netconsole/application`。Electron/FastAPI 不得导入这两个 UI Adapter。
+
 ## 测试
 
 迁移期间只运行受影响的 Qt 兼容测试，保证业务抽离不改变历史行为。Electron-only 最终门使用无 Qt 环境和非 Qt 全量测试；Qt 测试不得进入最终发布依赖。

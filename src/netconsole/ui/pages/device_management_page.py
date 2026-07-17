@@ -35,7 +35,7 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import DeviceImportExportService, make_device_export_filename
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, DeviceGroupService, group_filter_to_repository_value
 from netconsole.services.export.export_task_builders import device_csv_spec, device_template_csv_spec, securecrt_sessions_spec
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal

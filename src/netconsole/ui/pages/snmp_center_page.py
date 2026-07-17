@@ -50,7 +50,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.mib_dictionary_service import MibDictionaryService
 from netconsole.services.mib_index_service import MibIndexService
 from netconsole.services.mib_product_reference_compare_service import COMPARE_HEADERS, MibProductReferenceCompareService, ProductReferenceCompareResult

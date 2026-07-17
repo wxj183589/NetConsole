@@ -36,7 +36,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.network_profile_store import AdapterMatch, AdapterProfile, NetworkProfileStore, SecondaryIp
 from netconsole.services.route_profile_store import RouteProfile, RouteProfileEntry, RouteProfileStore
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.windows_network_manager import (
     AdapterIpConfig,
     NetworkAdapterInfo,

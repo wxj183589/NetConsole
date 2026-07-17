@@ -73,7 +73,7 @@ from netconsole.services.ap_online_overview import (
     export_ap_online_overview_xlsx,
 )
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_optical_export import (
@@ -93,7 +93,7 @@ from netconsole.services.export.export_task_builders import (
     fit_ap_extension_template_xlsx_spec,
     fit_ap_extension_xlsx_spec,
 )
-from netconsole.services.export.export_process_manager import ExportProcessManager
+from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
 from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
 from netconsole.ui.ac_collect_worker import AcInfoCollectThread

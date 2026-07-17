@@ -15,10 +15,10 @@ from PySide6.QtWidgets import QApplication
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.background_tasks import BackgroundTaskCancelled, run_background_task
 from netconsole.services.export.export_job import ExportJob
-from netconsole.services.export.export_process_manager import ExportProcessManager
+from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.services.export.export_progress import error_event as export_error_event
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_events import (
@@ -30,7 +30,6 @@ from netconsole.services.job_center.job_events import (
 )
 from netconsole.services.job_center.job_registry import register_handler, registered_task_types
 from netconsole.services.job_center.job_runner import run_job
-from netconsole.services.job_center.task_manager import BackgroundProcessManager as JobCenterProcessManager
 from netconsole.services.job_center.worker_protocol import encode_event, feed_jsonl, parse_event_line
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -70,8 +69,7 @@ def test_registry_contains_all_existing_task_types() -> None:
     } <= tasks
 
 
-def test_legacy_process_manager_import_points_to_job_center() -> None:
-    assert BackgroundProcessManager is JobCenterProcessManager
+def test_qt_process_manager_exposes_job_center_adapter() -> None:
     assert hasattr(BackgroundProcessManager, "is_running")
 
 

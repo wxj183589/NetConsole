@@ -33,7 +33,7 @@ from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.vehicle_mr_online import (
     MatchedAp,
     TrainIdentity,

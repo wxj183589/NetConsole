@@ -14,7 +14,7 @@ from netconsole.models.device import Device
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.handlers import online_mr_jobs
 from netconsole.services.job_center.job_context import JobContext
-from netconsole.services.job_center.task_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.online_mr.agent_download_service import OnlineMrAgentDownloadImportResult
 from netconsole.ui.dialogs.online_mr_agent_packages_dialog import (
     AGENT_TOKEN_ENV,

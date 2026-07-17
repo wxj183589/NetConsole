@@ -21,7 +21,7 @@ from netconsole.core import app_logger
 from netconsole.core.i18n import I18n
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec, table_xlsx_spec
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.services.trackside_ap_plan_io import (

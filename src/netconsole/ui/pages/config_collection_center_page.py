@@ -31,7 +31,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED, group_filter_to_repository_value
 from netconsole.services.config_lifecycle_service import BatchConfigItemResult, ConfigDiffResult, ConfigLifecycleService, safe_device_name, snapshot_timestamp, unique_export_folder_name
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec, markdown_text_file_spec
 from netconsole.ui.config_lifecycle_worker import ConfigLifecycleWorker
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields

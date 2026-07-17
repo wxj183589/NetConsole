@@ -25,7 +25,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
 from netconsole.repositories.ac_repository import AcRepository, FIT_AP_METADATA_FIELDS, FIT_AP_OPTICAL_FIELDS, FIT_AP_RESOURCE_FIELDS
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label, resolve_fit_ap_link_info
 from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog

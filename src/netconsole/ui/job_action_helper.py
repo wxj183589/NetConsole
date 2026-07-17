@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QProgressDialog, QWidget
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.ui.dialogs.message_service import MessageBox
 
 EventCallback = Callable[[dict[str, Any]], None]

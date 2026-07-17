@@ -90,7 +90,7 @@ sequenceDiagram
 - Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
 - Job Registry 按 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 等领域模块组织；测试校验必需能力集合，不再绑定易漂移的任务总数。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
-- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；`task_manager.py` 保留为 Qt/QProcess Adapter。FastAPI 已提供任务路由与 `/ws/tasks`。
+- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；迁移期 Qt/QProcess Adapter 已归位到 `src/netconsole/ui/job_process_manager.py`，正式 Electron/FastAPI 路径不依赖它。FastAPI 已提供任务路由与 `/ws/tasks`。
 - `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
 - `Agent Router -> AgentControllerService -> AgentHttpClient -> Go Agent` 承担配置与健康控制面；Traffic 业务由 `TrafficTestApplicationService -> AgentTrafficAdapter/Supervisor` 在 Controller 进程内调用，并映射到 Task Center。`AgentRepository -> agents.db` 分离配置和运行快照，`AgentEventHub` 独立提供 `/ws/agents`，不复用任务或 Traffic 事件含义。
 

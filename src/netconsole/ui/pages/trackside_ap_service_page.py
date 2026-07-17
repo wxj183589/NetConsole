@@ -35,7 +35,7 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.rail_transit.trackside_optical_collection import DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
@@ -52,7 +52,7 @@ from netconsole.services.offline_ap_ledger import (
     offline_ap_headers,
 )
 from netconsole.services.export import ExportJob
-from netconsole.services.export.export_process_manager import ExportProcessManager
+from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
 from netconsole.ui.dialogs.fit_ap_detail_dialog import FitApDetailDialog
 from netconsole.ui.dialogs.trackside_interface_history_dialog import TracksideInterfaceHistoryDialog

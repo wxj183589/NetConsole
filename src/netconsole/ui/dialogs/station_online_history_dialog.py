@@ -15,7 +15,7 @@ from netconsole.ui.table_utils import auto_resize_table_columns, configure_reado
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_widget_content
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.services.history_export_service import export_station_online_history_xlsx as _export_station_online_history_xlsx
 

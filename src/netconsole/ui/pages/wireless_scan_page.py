@@ -45,7 +45,7 @@ from netconsole.ui.wireless_scan_worker import WirelessAdapterLoadWorker, Wirele
 from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
 from netconsole.ui.widgets.scrollable_toolbar import make_horizontal_scroll_area
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 
 
 WIRELESS_SCAN_TAB_KEYS = ("results", "history", "raw")

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QProgressDialog, QWidget
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.services.export.export_job import ExportJob
-from netconsole.services.export.export_process_manager import ExportProcessManager
+from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.services.export.export_task_builders import ExportTaskSpec
 from netconsole.ui.dialogs.message_service import MessageBox
 

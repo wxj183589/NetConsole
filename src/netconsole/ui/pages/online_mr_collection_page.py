@@ -86,7 +86,7 @@ from netconsole.services.network_tools.iperf_runner import (
 )
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import online_mr_report_xlsx_spec
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text, summarize_active
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore

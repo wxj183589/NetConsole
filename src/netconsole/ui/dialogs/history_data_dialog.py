@@ -10,7 +10,7 @@ from netconsole.ui.table_utils import attach_table_context_menu, auto_resize_tab
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content
 
 

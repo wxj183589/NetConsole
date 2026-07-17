@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import wifi_survey_csv_spec, wifi_survey_heatmap_png_spec
 from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, clean_rssi, rssi_to_color
 from netconsole.ui.export_action_helper import submit_export_task

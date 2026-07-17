@@ -29,7 +29,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, format_trackside_display_value, trackside_row_status
 from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url

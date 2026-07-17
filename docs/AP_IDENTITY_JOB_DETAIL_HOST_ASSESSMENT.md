@@ -12,13 +12,13 @@
 
 ### 2.1 Job Center Manager
 
-`services/job_center/task_manager.py::BackgroundProcessManager` 是 QProcess 生命周期管理器，不是任务列表或详情模型：
+`src/netconsole/ui/job_process_manager.py::BackgroundProcessManager` 是迁移期 Qt QProcess 生命周期 Adapter，不是任务列表或详情模型：
 
 - 运行中只在 `_jobs` 保存 `job/process/job_path/cancel_path` 和临时 JSONL 缓冲。
 - `finished/failed/cancelled` 以完整 event 发给调用方。
 - 终态后立即从 `_jobs` 移除状态、清理 Job/取消文件并释放 QProcess。
 - 不保存历史终态、result metadata、任务标题、页面来源或权限上下文。
-- 兼容入口 `services/background_process_manager.py` 只重导出同一 manager。
+- 原 `services/background_process_manager.py` 兼容重导出已删除，避免永久 Service 反向依赖 Qt Adapter。
 
 因此它不能直接充当 UI 宿主，也不应为了 AP Identity 在服务层导入 UI 或保存完整 result。
 

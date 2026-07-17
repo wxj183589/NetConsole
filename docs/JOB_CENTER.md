@@ -20,7 +20,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
-- `task_manager.py`：保留的 Qt/QProcess Adapter 和 Qt signals。
+- `src/netconsole/ui/job_process_manager.py`：迁移期 Qt/QProcess Adapter 和 Qt signals；不属于永久 Job Center Service，Qt 删除时一并删除。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
 
@@ -35,7 +35,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 - `JobSpec` 是普通后台任务的正式模型。
 - `BackgroundJob` 是 `JobSpec` 的兼容名称，旧导入继续有效。
-- `BackgroundProcessManager` 是 `TaskManager` 的兼容入口。
+- `BackgroundProcessManager`/`TaskManager` 仅是迁移期 Qt Adapter 的兼容类名；永久入口是 `TaskApplicationService`、`TaskRuntime`、`LocalProcessAdapter` 与领域 handler。
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。

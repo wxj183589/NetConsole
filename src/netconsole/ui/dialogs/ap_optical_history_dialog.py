@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QSp
 from netconsole.core.i18n import I18n
 from netconsole.core.settings import SettingsStore
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.ui.dialogs.ap_history_dialog import AP_OPTICAL_HISTORY_COLUMNS
 from netconsole.ui.export_path import EXCEL_FILTER, remember_export_path, select_export_path

@@ -40,7 +40,7 @@ from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import ALL_GROUPS, UNGROUPED
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.external_terminal import launch_winscp
 from netconsole.services.file_transfer_service import (
     FILE_TRANSFER_MAX_CONCURRENCY,

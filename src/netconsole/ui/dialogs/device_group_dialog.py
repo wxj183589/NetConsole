@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QTableWidget, Q
 from netconsole.core.i18n import I18n
 from netconsole.models.device_group import DeviceGroup
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.ui.render.table_render_engine import apply_table_style, set_table_column_fields
 from netconsole.ui.table_utils import configure_readonly_table
 from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_content

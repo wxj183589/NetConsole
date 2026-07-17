@@ -16,7 +16,7 @@ from netconsole.ui.widgets.adaptive_dialog import install_scrollable_dialog_cont
 from netconsole.ui.widgets.pagination_widget import PaginationWidget
 from netconsole.ui.window_popup_service import show_non_focus_window
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_process_manager import BackgroundProcessManager
+from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.export.export_task_builders import repository_query_source, table_xlsx_source_spec
 from netconsole.services.history_export_service import OPTICAL_HISTORY_COLORS, export_ap_history_xlsx as _export_ap_history_xlsx, history_display_value
 
