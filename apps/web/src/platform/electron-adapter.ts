@@ -22,6 +22,7 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     executeSettingsAction: (actionId) => bridge.executeSettingsAction(actionId),
     chooseSavePath: (options) => bridge.chooseSavePath(options),
     downloadBackendResource: (request) => bridge.downloadBackendResource(request),
+    openTaskWindow: (context) => bridge.openTaskWindow(context),
     openPath: (capabilityId) => bridge.openPath(capabilityId),
     showItemInFolder: (capabilityId) => bridge.showItemInFolder(capabilityId),
     openExternalUrl: (url) => bridge.openExternalUrl(url),

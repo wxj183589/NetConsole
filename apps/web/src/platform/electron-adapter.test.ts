@@ -48,6 +48,8 @@ describe('Electron platform adapter', () => {
       apiPath: '/api/file-management/downloads/task-1/file',
       suggestedName: 'report.zip',
     })
+    await adapter.openTaskWindow({ taskId: 'task-1', status: 'RUNNING' })
+    expect(nativeBridge.openTaskWindow).toHaveBeenCalledWith({ taskId: 'task-1', status: 'RUNNING' })
     await adapter.openExternalUrl('https://192.0.2.10/')
     expect(nativeBridge.openExternalUrl).toHaveBeenCalledWith('https://192.0.2.10/')
   })

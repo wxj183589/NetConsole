@@ -16,7 +16,10 @@ describe('API client errors', () => {
       status: 502,
       json: async () => ({ ok: false, error: { code: 'AGENT_TIMEOUT', message: '连接 Agent 超时' } }),
     }))
-    await expect(apiRequest('/api/agents/probe')).rejects.toThrow('连接 Agent 超时')
+    await expect(apiRequest('/api/agents/probe')).rejects.toMatchObject({
+      message: '连接 Agent 超时',
+      status: 502,
+    })
   })
 
   it('leaves multipart content type to the browser so the boundary is preserved', async () => {

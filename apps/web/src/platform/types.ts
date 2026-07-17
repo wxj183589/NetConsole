@@ -11,6 +11,7 @@ import type {
   SelectFileOptions,
   SelectFileResult,
   SettingsActionId, SettingsColorResult, SettingsDirectoryId, SettingsPathResult, SettingsToolId,
+  TaskWindowContext,
 } from '../../../desktop_electron/src/shared/bridge'
 
 export type HostType = 'browser' | 'electron'
@@ -28,6 +29,7 @@ export interface PlatformAdapter {
   executeSettingsAction(actionId: SettingsActionId): Promise<NativeActionResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
+  openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>

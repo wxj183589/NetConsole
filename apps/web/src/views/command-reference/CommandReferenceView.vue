@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
+import { ApiRequestError } from '../../api/client'
 import {
   cancelCommandReferenceExport,
   commandReferenceArtifactDownloadRequest,
@@ -10,16 +11,15 @@ import {
   listCommandReferences,
   startCommandReferenceExport,
 } from '../../api/commandReference'
-import { downloadBackendResource } from '../../platform/runtime'
+import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import type { CommandReference, CommandReferenceExportTask, CommandReferencePage } from '../../types/commandReference'
 import { createCommandReferenceTranslator } from './commandReferenceI18n'
 
 type TaskWindowStatus = 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
-type CommandReferenceTaskWindowBridge = {
-  openTaskWindow(context: { taskId: string; module: 'command-reference'; status: TaskWindowStatus }): Promise<{ success: boolean; error?: string }>
-}
-
 const searchDelayMs = 250
+const exportPollDelayMs = 1_000
+const exportTaskStorageKey = 'netconsole.command-reference.current-export-task-id.v1'
+const exportTaskIdPattern = /^command-reference-export-[0-9a-f]{32}$/
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const taskWindowStatuses = new Set<TaskWindowStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED'])
 const t = createCommandReferenceTranslator()
@@ -33,6 +33,9 @@ const loading = ref(false)
 const exporting = ref(false)
 const error = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+let exportPollTimer: ReturnType<typeof setTimeout> | null = null
+let exportPollGeneration = 0
+let componentActive = true
 let requestGeneration = 0
 
 const state = computed(() => error.value ? 'error' : loading.value ? 'loading' : page.value?.items.length ? 'success' : 'empty')
@@ -97,7 +100,7 @@ async function startExport(): Promise<void> {
   if (!page.value || exporting.value) return
   exporting.value = true
   try {
-    task.value = await startCommandReferenceExport(page.value.items.map((item) => item.id))
+    setExportTask(await startCommandReferenceExport(page.value.items.map((item) => item.id)))
     ElMessage.success(t('taskSubmitted'))
   } catch (reason) {
     ElMessage.error(reason instanceof Error ? reason.message : t('exportFailed'))
@@ -107,9 +110,14 @@ async function startExport(): Promise<void> {
 }
 
 async function recoverTask(taskId: string): Promise<void> {
+  stopExportPolling()
   try {
-    task.value = await getCommandReferenceExport(taskId)
+    setExportTask(await getCommandReferenceExport(taskId))
   } catch (reason) {
+    if (reason instanceof ApiRequestError && reason.status === 404) {
+      clearPersistedExportTask(taskId)
+      task.value = null
+    }
     ElMessage.error(reason instanceof Error ? reason.message : t('restoreFailed'))
   }
 }
@@ -117,10 +125,14 @@ async function recoverTask(taskId: string): Promise<void> {
 async function cancelExport(): Promise<void> {
   if (!task.value?.cancellable) return
   const taskId = task.value.id
+  stopExportPolling()
   try {
-    await cancelCommandReferenceExport(taskId)
-    await recoverTask(taskId)
+    const response = await cancelCommandReferenceExport(taskId)
+    if (task.value?.id === taskId) {
+      task.value = { ...task.value, status: response.status, cancellable: false, message: response.message }
+    }
   } catch (reason) {
+    if (task.value?.id === taskId && !terminalStates.has(task.value.status)) startExportPolling(taskId)
     ElMessage.error(reason instanceof Error ? reason.message : t('cancelFailed'))
   }
 }
@@ -136,20 +148,90 @@ async function openTaskWindow(): Promise<void> {
   if (!task.value || !taskWindowStatuses.has(task.value.status as TaskWindowStatus)) return
   const context = {
     taskId: task.value.id,
-    module: 'command-reference' as const,
     status: task.value.status as TaskWindowStatus,
   }
-  if (window.netconsoleDesktop) {
+  if (getRuntimeConfig().hostType === 'electron') {
     try {
-      const bridge = window.netconsoleDesktop as unknown as CommandReferenceTaskWindowBridge
-      const result = await bridge.openTaskWindow(context)
+      const result = await getPlatformAdapter().openTaskWindow(context)
       if (!result.success) ElMessage.error(result.error || t('taskWindowFailed'))
     } catch (reason) {
       ElMessage.error(reason instanceof Error ? reason.message : t('taskWindowFailed'))
     }
     return
   }
-  await router.push({ name: 'tasks', query: { task_id: context.taskId, module: context.module, status: context.status } })
+  await router.push({ name: 'tasks', query: { task_id: context.taskId, module: 'command-reference', status: context.status } })
+}
+
+function setExportTask(snapshot: CommandReferenceExportTask): void {
+  task.value = snapshot
+  persistExportTask(snapshot.id)
+  if (terminalStates.has(snapshot.status)) stopExportPolling()
+  else startExportPolling(snapshot.id)
+}
+
+function startExportPolling(taskId: string): void {
+  stopExportPolling()
+  const generation = exportPollGeneration
+  scheduleExportPoll(taskId, generation)
+}
+
+function scheduleExportPoll(taskId: string, generation: number): void {
+  exportPollTimer = setTimeout(() => void pollExportTask(taskId, generation), exportPollDelayMs)
+}
+
+async function pollExportTask(taskId: string, generation: number): Promise<void> {
+  if (!componentActive || generation !== exportPollGeneration) return
+  exportPollTimer = null
+  try {
+    const snapshot = await getCommandReferenceExport(taskId)
+    if (!componentActive || generation !== exportPollGeneration) return
+    task.value = snapshot
+    persistExportTask(snapshot.id)
+    if (terminalStates.has(snapshot.status)) stopExportPolling()
+    else scheduleExportPoll(taskId, generation)
+  } catch (reason) {
+    if (!componentActive || generation !== exportPollGeneration) return
+    stopExportPolling()
+    if (reason instanceof ApiRequestError && reason.status === 404) {
+      clearPersistedExportTask(taskId)
+      task.value = null
+    }
+    ElMessage.error(reason instanceof Error ? reason.message : t('restoreFailed'))
+  }
+}
+
+function stopExportPolling(): void {
+  exportPollGeneration += 1
+  if (exportPollTimer) clearTimeout(exportPollTimer)
+  exportPollTimer = null
+}
+
+function persistedExportTask(): string {
+  try {
+    const taskId = localStorage.getItem(exportTaskStorageKey) || ''
+    if (!taskId || exportTaskIdPattern.test(taskId)) return taskId
+    localStorage.removeItem(exportTaskStorageKey)
+  } catch {
+    // 浏览器禁用存储时仍允许当前页面使用导出任务。
+  }
+  return ''
+}
+
+function persistExportTask(taskId: string): void {
+  if (!exportTaskIdPattern.test(taskId)) return
+  try {
+    localStorage.setItem(exportTaskStorageKey, taskId)
+  } catch {
+    // 持久化不可用不影响当前页面轮询。
+  }
+}
+
+function clearPersistedExportTask(taskId: string): void {
+  try {
+    if (localStorage.getItem(exportTaskStorageKey) === taskId) localStorage.removeItem(exportTaskStorageKey)
+  } catch {
+    // 无需处理不可用的浏览器存储。
+  }
 }
 
 function readOnlyText(item: CommandReference): string {
@@ -171,12 +253,14 @@ function zteStatusText(value: string): string {
 
 onMounted(async () => {
   await loadReferences()
-  const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : ''
+  const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : persistedExportTask()
   if (taskId) await recoverTask(taskId)
 })
 
 onUnmounted(() => {
+  componentActive = false
   if (searchTimer) clearTimeout(searchTimer)
+  stopExportPolling()
   requestGeneration += 1
 })
 </script>

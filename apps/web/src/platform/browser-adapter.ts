@@ -21,6 +21,7 @@ export function createBrowserAdapter(apiBaseUrl = ''): PlatformAdapter {
     executeSettingsAction: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     chooseSavePath: async () => ({ cancelled: true }),
     downloadBackendResource: async (value) => startBrowserDownload(value, baseUrl),
+    openTaskWindow: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),

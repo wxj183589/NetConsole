@@ -12,6 +12,7 @@ describe('browser platform adapter', () => {
     expect(await adapter.selectFile()).toEqual({ cancelled: true, paths: [] })
     expect(await adapter.selectDirectory()).toEqual({ cancelled: true })
     expect(await adapter.chooseSavePath({ suggestedName: 'report.xlsx' })).toEqual({ cancelled: true })
+    await expect(adapter.openTaskWindow({ taskId: 'task-1' })).resolves.toMatchObject({ success: false })
     await expect(adapter.openPath('C:\\report.xlsx')).resolves.toMatchObject({ success: false })
   })
 

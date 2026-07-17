@@ -4,7 +4,11 @@ import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '../../api/client'
 import type { CommandReferencePage } from '../../types/commandReference'
+
+const taskId = 'command-reference-export-0123456789abcdef0123456789abcdef'
+const taskStorageKey = 'netconsole.command-reference.current-export-task-id.v1'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -14,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   download: vi.fn(),
   openTaskWindow: vi.fn(),
   routerPush: vi.fn(),
+  hostType: 'electron' as 'browser' | 'electron',
   routeQuery: {} as Record<string, string>,
   messages: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
@@ -25,7 +30,11 @@ vi.mock('../../api/commandReference', async (importOriginal) => ({
   getCommandReferenceExport: mocks.get,
   cancelCommandReferenceExport: mocks.cancel,
 }))
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource: mocks.download }))
+vi.mock('../../platform/runtime', () => ({
+  downloadBackendResource: mocks.download,
+  getPlatformAdapter: () => ({ openTaskWindow: mocks.openTaskWindow }),
+  getRuntimeConfig: () => ({ hostType: mocks.hostType }),
+}))
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: mocks.routeQuery }),
   useRouter: () => ({ push: mocks.routerPush }),
@@ -52,7 +61,7 @@ const page: CommandReferencePage = {
 
 function exportTask(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'task-42', type: 'web_export_command_reference_markdown', name: '命令说明 Markdown 导出', status: 'RUNNING',
+    id: taskId, type: 'web_export_command_reference_markdown', name: '命令说明 Markdown 导出', status: 'RUNNING',
     progress: 10, stage: 'write', current: 1, total: 2, message: '正在导出', error_message: '', cancellable: true, result: {},
     ...overrides,
   }
@@ -139,15 +148,13 @@ beforeEach(() => {
   mocks.list.mockReset().mockResolvedValue(structuredClone(page))
   mocks.start.mockReset().mockResolvedValue(exportTask())
   mocks.get.mockReset().mockResolvedValue(exportTask())
-  mocks.cancel.mockReset().mockResolvedValue({ id: 'task-42', status: 'STOPPING', message: '已请求停止任务' })
+  mocks.cancel.mockReset().mockResolvedValue({ id: taskId, status: 'STOPPING', message: '已请求停止任务' })
   mocks.download.mockReset().mockResolvedValue({ status: 'saved' })
   mocks.openTaskWindow.mockReset().mockResolvedValue({ success: true })
   mocks.routerPush.mockReset().mockResolvedValue(undefined)
+  mocks.hostType = 'electron'
   Object.values(mocks.messages).forEach((item) => item.mockReset())
-  Object.defineProperty(window, 'netconsoleDesktop', {
-    configurable: true,
-    value: { openTaskWindow: mocks.openTaskWindow },
-  })
+  localStorage.clear()
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -157,7 +164,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   document.body.innerHTML = ''
-  Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: undefined })
+  localStorage.clear()
 })
 
 describe('Command Reference mounted behavior', () => {
@@ -204,22 +211,112 @@ describe('Command Reference mounted behavior', () => {
     await flushPromises()
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('display version')
-    expect(mocks.openTaskWindow).toHaveBeenCalledWith({ taskId: 'task-42', module: 'command-reference', status: 'RUNNING' })
+    expect(mocks.openTaskWindow).toHaveBeenCalledWith({ taskId, status: 'RUNNING' })
     expect(mocks.routerPush).not.toHaveBeenCalled()
+
+    mocks.hostType = 'browser'
+    await button(wrapper, '打开统一任务窗口').trigger('click')
+    expect(mocks.routerPush).toHaveBeenCalledWith({
+      name: 'tasks', query: { task_id: taskId, module: 'command-reference', status: 'RUNNING' },
+    })
+  })
+
+  it('polls PENDING through COMPLETED and enables the artifact download', async () => {
+    mocks.start.mockResolvedValueOnce(exportTask({ status: 'PENDING', progress: 0, cancellable: true }))
+    mocks.get
+      .mockResolvedValueOnce(exportTask({ status: 'RUNNING', progress: 60 }))
+      .mockResolvedValueOnce(exportTask({
+        status: 'COMPLETED', progress: 100, cancellable: false,
+        result: { artifact_id: 'artifact-1', artifact_name: 'NetConsole_软件使用命令清单.md' },
+      }))
+    const wrapper = await renderView()
+
+    await button(wrapper, '导出 Markdown').trigger('click')
+    await flushPromises()
+    expect(localStorage.getItem(taskStorageKey)).toBe(taskId)
+    expect(button(wrapper, '下载 Artifact').attributes('disabled')).toBeDefined()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('RUNNING')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('COMPLETED')
+    expect(button(wrapper, '下载 Artifact').attributes('disabled')).toBeUndefined()
+
+    await button(wrapper, '下载 Artifact').trigger('click')
+    await flushPromises()
+    expect(mocks.download).toHaveBeenCalledWith({
+      apiPath: '/api/command-reference/artifacts/artifact-1/download',
+      suggestedName: 'NetConsole_软件使用命令清单.md',
+    })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.get).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('stops polling after cancellation and when the component unmounts', async () => {
+    const cancelled = await renderView()
+    await button(cancelled, '导出 Markdown').trigger('click')
+    await flushPromises()
+    await button(cancelled, '取消').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(cancelled.text()).toContain('STOPPING')
+    cancelled.unmount()
+
+    localStorage.clear()
+    mocks.get.mockClear()
+    mocks.start.mockResolvedValueOnce(exportTask({ id: taskId, status: 'RUNNING' }))
+    const unmounted = await renderView()
+    await button(unmounted, '导出 Markdown').trigger('click')
+    await flushPromises()
+    unmounted.unmount()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.get).not.toHaveBeenCalled()
+  })
+
+  it('stops polling when the export reaches FAILED', async () => {
+    mocks.get.mockResolvedValueOnce(exportTask({ status: 'FAILED', cancellable: false, error_message: '导出失败' }))
+    const wrapper = await renderView()
+    await button(wrapper, '导出 Markdown').trigger('click')
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('FAILED')
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('clears damaged and missing persisted task ids', async () => {
+    localStorage.setItem(taskStorageKey, 'damaged-task-id')
+    const damaged = await renderView()
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(localStorage.getItem(taskStorageKey)).toBeNull()
+    damaged.unmount()
+
+    localStorage.setItem(taskStorageKey, taskId)
+    mocks.get.mockRejectedValueOnce(new ApiRequestError('导出任务不存在', 404))
+    const missing = await renderView()
+    expect(mocks.get).toHaveBeenCalledWith(taskId)
+    expect(localStorage.getItem(taskStorageKey)).toBeNull()
+    expect(missing.text()).not.toContain(taskId)
+    missing.unmount()
   })
 
   it('recovers a routed task and uses unified cancel and safe download contracts', async () => {
     mocks.routeQuery = { task_id: 'task-recovered' }
-    mocks.get
-      .mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'RUNNING' }))
-      .mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'STOPPING', cancellable: false }))
+    mocks.get.mockResolvedValueOnce(exportTask({ id: 'task-recovered', status: 'RUNNING' }))
     const wrapper = await renderView()
     expect(mocks.get).toHaveBeenCalledWith('task-recovered')
 
     await button(wrapper, '取消').trigger('click')
     await flushPromises()
     expect(mocks.cancel).toHaveBeenCalledWith('task-recovered')
-    expect(mocks.get).toHaveBeenLastCalledWith('task-recovered')
+    expect(mocks.get).toHaveBeenCalledTimes(1)
 
     wrapper.unmount()
     mocks.routeQuery = { task_id: 'task-completed' }
