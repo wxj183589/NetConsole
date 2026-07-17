@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import shutil
 import sys
-from datetime import datetime
-from pathlib import Path
 from time import perf_counter
-from time import sleep
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
@@ -21,6 +17,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.resources import icon_path
 from netconsole.core.settings import SettingsStore
 from netconsole.core import version as version_info
+from netconsole.services.site_database_recovery import SiteDatabaseRecoveryService
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
 if TYPE_CHECKING:
@@ -70,37 +67,6 @@ def _start_app_auto_cleanup(window: object, paths: PathResolver) -> None:
     start_app_auto_cleanup(window, paths)
 
 
-def _site_database_paths(paths: PathResolver) -> list[Path]:
-    if not paths.sites_dir.exists():
-        return []
-    return sorted(paths.sites_dir.glob("*/db/*.db"))
-
-
-def _backup_site_databases(paths: PathResolver) -> list[Path]:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backups: list[Path] = []
-    for database_path in _site_database_paths(paths):
-        site_name = database_path.parents[1].name
-        backup_dir = paths.site_backups_dir(site_name) / "db"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        backup_path = backup_dir / f"{database_path.stem}_{timestamp}{database_path.suffix}"
-        shutil.copy2(database_path, backup_path)
-        backups.append(backup_path)
-    return backups
-
-
-def _delete_site_databases(paths: PathResolver) -> None:
-    for database_path in _site_database_paths(paths):
-        for attempt in range(3):
-            try:
-                database_path.unlink(missing_ok=True)
-                break
-            except PermissionError:
-                if attempt == 2:
-                    raise
-                sleep(0.2)
-
-
 def _handle_schema_mismatch(exc: DatabaseSchemaMismatchError, paths: PathResolver) -> str:
     message = QMessageBox()
     message.setWindowTitle("数据库无法自动升级")
@@ -116,13 +82,13 @@ def _handle_schema_mismatch(exc: DatabaseSchemaMismatchError, paths: PathResolve
     message.addButton("取消", QMessageBox.RejectRole)
     message.exec()
     clicked = message.clickedButton()
+    recovery_service = SiteDatabaseRecoveryService(paths)
     if clicked is rebuild_button:
-        backups = _backup_site_databases(paths)
-        _delete_site_databases(paths)
+        backups = recovery_service.backup_and_remove_databases()
         app_logger.log_info("DATABASE_REBUILT", f"backups={len(backups)}")
         return "rebuild"
     if clicked is backup_button:
-        backups = _backup_site_databases(paths)
+        backups = recovery_service.backup_databases()
         QMessageBox.information(None, "数据库已备份", f"已备份 {len(backups)} 个数据库文件。")
         return "backup"
     return "cancel"
