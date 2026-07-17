@@ -45,7 +45,7 @@ onMounted(() => {
   const status = typeof route.query.status === 'string' ? route.query.status : ''
   const module = typeof route.query.module === 'string' ? route.query.module : ''
   if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
-  if (['devices', 'config', 'files'].includes(module)) moduleFilter.value = module
+  if (['devices', 'ac', 'config', 'files'].includes(module)) moduleFilter.value = module
   const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : typeof route.query.task === 'string' ? route.query.task : ''
   if (taskId) void store.selectTask(taskId).then(() => { drawerVisible.value = true }).catch(() => undefined)
 })
@@ -214,7 +214,7 @@ const revealSaved = () => runSavedAction('reveal')
             <el-option label="已中断" value="aborted" />
             <el-option label="有告警" value="warning" />
           </el-select>
-          <el-select v-model="moduleFilter" style="width: 135px"><el-option label="全部模块" value="all" /><el-option label="设备管理" value="devices" /><el-option label="配置采集" value="config" /><el-option label="文件管理" value="files" /></el-select>
+          <el-select v-model="moduleFilter" style="width: 135px"><el-option label="全部模块" value="all" /><el-option label="设备管理" value="devices" /><el-option label="AC 管理" value="ac" /><el-option label="配置采集" value="config" /><el-option label="文件管理" value="files" /></el-select>
           <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
         </div>
       </div>

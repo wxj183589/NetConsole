@@ -640,7 +640,6 @@ def collect_h3c_fit_ap_optical(
         app_logger.log_info("FIT_AP_OPTICAL_SKIPPED_NO_CONNECTABLE_TARGET", _detail(ac_device, collect_run_uuid))
         progress("\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f 0\uff0c\u5931\u8d25 0\uff0c\u79bb\u7ebf 0")
         return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, None)
-    completed = 0
     progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a0/{total}")
     try:
         round_summaries: list[dict[str, object]] = []
@@ -656,7 +655,6 @@ def collect_h3c_fit_ap_optical(
             lambda done, total_count: progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a{done}/{total_count}"),
         )
         rows.extend(first_round_rows)
-        completed = len(rows)
         round_summaries.append(_fit_ap_optical_round_summary(1, worker_count, first_round_rows))
         retry_targets = _retry_fit_ap_optical_targets(resources, first_round_rows)
         retry_count = int(settings["retry_count"]) if settings["adaptive_retry_enabled"] else 0
@@ -891,13 +889,13 @@ def _fit_ap_optical_identity(row: dict[str, object | None]) -> str:
     apid = str(row.get("apid") or row.get("ap_id") or "").strip().casefold()
     if ac_uuid and apid and apid not in {"-", "n/a"}:
         return f"apid:{ac_uuid}:{apid}"
-    for field in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
-        if field == "ap_mac":
-            text = _normalize_mac_text(row.get(field))
+    for field_name in ("ap_uuid", "serial_number", "ap_mac", "ap_name"):
+        if field_name == "ap_mac":
+            text = _normalize_mac_text(row.get(field_name))
         else:
-            text = str(row.get(field) or "").strip().casefold()
+            text = str(row.get(field_name) or "").strip().casefold()
         if text:
-            return f"{field}:{text}"
+            return f"{field_name}:{text}"
     return ""
 
 
@@ -910,7 +908,7 @@ def _merge_failed_fit_ap_optical_row(
     merged["ap_last_valid_rx_power"] = old.get("rx_power") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_rx_power")
     merged["ap_last_valid_collected_at"] = old.get("collected_at") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_collected_at")
     merged["ap_optical_missing_reason"] = _fit_ap_optical_missing_reason(new)
-    for field in (
+    for field_name in (
         "ap_mac",
         "ap_name",
         "serial_number",
@@ -919,8 +917,8 @@ def _merge_failed_fit_ap_optical_row(
         "rx_power",
         "tx_power",
     ):
-        if _is_empty_fit_ap_value(new.get(field)) and not _is_empty_fit_ap_value(old.get(field)):
-            merged[field] = old.get(field)
+        if _is_empty_fit_ap_value(new.get(field_name)) and not _is_empty_fit_ap_value(old.get(field_name)):
+            merged[field_name] = old.get(field_name)
     return merged
 
 

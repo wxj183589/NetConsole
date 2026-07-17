@@ -35,6 +35,8 @@ from netconsole.services.device_management_web_service import (
 from netconsole.services.file_contract import artifact_media_type
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
+AC_WEB_OWNER = "web_ac"
+
 
 class JobCenterQueryService:
     """Web 任务中心的 SQLite 只读查询边界。"""
@@ -245,6 +247,8 @@ class JobCenterQueryService:
             return "config"
         if owner == "web_file_management" and task_type == "file_management_download":
             return "files"
+        if owner == AC_WEB_OWNER:
+            return "ac"
         return "other"
 
     def _cancel_capability(
@@ -272,6 +276,8 @@ class JobCenterQueryService:
             except Exception:
                 return False, "配置任务取消能力检查失败"
         if owner == "web_file_management" and task_type == "file_management_download":
+            return True, ""
+        if owner == AC_WEB_OWNER:
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 

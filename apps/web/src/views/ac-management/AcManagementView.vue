@@ -2,16 +2,19 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, Setting, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
+import { useTaskStore } from '../../stores/tasks'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot } from '../../types/acManagement'
 
 const store = useAcManagementStore()
+const taskStore = useTaskStore()
 const route = useRoute()
+const router = useRouter()
 const activeTab = ref(route.name === 'ac-optical' ? 'optical' : 'aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -20,6 +23,7 @@ const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
 const metadataInput = ref<HTMLInputElement | null>(null)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
+const pollingConsumer = 'ac-management-view'
 const metadataForm = reactive({ site_name: '', mileage: '', location_note: '', direction: '' })
 const historyVisible = ref(false)
 const historyLoading = ref(false)
@@ -62,16 +66,10 @@ const detailRadios = computed(() => (store.selected?.radios || []).filter((radio
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
-const taskCollection = computed(() => (store.refreshTask?.result_summary.collection || {}) as Record<string, unknown>)
-const taskLabel = computed(() => ({
-  ac_info_refresh: 'AC 信息更新',
-  ac_fit_ap_resources_refresh: 'FIT-AP 资源更新',
-  ac_fit_ap_detail_refresh: 'FIT-AP 深度更新',
-  ac_fit_ap_optical_refresh: 'FIT-AP 光衰更新',
-  ac_fit_ap_delete_many: 'FIT-AP 批量删除',
-  fit_ap_metadata_import: 'FIT-AP 元数据导入',
-  fit_ap_metadata_save: 'FIT-AP 元数据保存',
-}[store.refreshTask?.action || ''] || 'AC / FIT-AP 更新'))
+const publicAcTasks = computed(() => taskStore.tasks.filter((task) => task.module === 'ac' || task.owner === 'web_ac'))
+const activeAcTaskCount = computed(() => publicAcTasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'].includes(task.status)).length)
+const failedAcTaskCount = computed(() => publicAcTasks.value.filter((task) => task.status === 'FAILED').length)
+const latestAcTask = computed(() => publicAcTasks.value.find((task) => task.id === store.refreshTask?.task_id) || publicAcTasks.value[0] || null)
 const historyColumns = computed(() => ({
   radio: [
     ['collected_at', '采集时间'], ['ap_name', 'AP 名称'], ['rid', 'Radio ID'], ['status', '状态'], ['mode', '模式'], ['band', '频段'],
@@ -100,6 +98,7 @@ const matchingLines = computed(() => {
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   store.startPolling()
+  taskStore.acquirePolling(pollingConsumer)
   const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
   if (apId) void openDetailById(apId)
 })
@@ -107,11 +106,26 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
+  taskStore.releasePolling(pollingConsumer)
 })
 
 function handleVisibility(): void {
-  if (document.hidden) store.stopPolling()
-  else store.startPolling()
+  if (document.hidden) {
+    store.stopPolling()
+    taskStore.releasePolling(pollingConsumer)
+  } else {
+    store.startPolling()
+    taskStore.acquirePolling(pollingConsumer)
+  }
+}
+
+function openTaskWindow(): void {
+  const taskId = latestAcTask.value?.id || store.refreshTask?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'ac', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'ac', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 function clearFilters(): void {
@@ -328,38 +342,14 @@ function diffLineClass(line: string): string {
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
-    <div v-if="store.refreshTask" class="task-panel">
-      <div class="task-heading">
-        <div>
-          <strong>{{ taskLabel }} · {{ store.refreshTask.status }}</strong>
-          <p>{{ store.refreshTask.message || store.refreshTask.error_message || store.refreshTask.stage || '等待任务事件…' }}</p>
-        </div>
-        <el-button v-if="taskActive" type="danger" plain @click="store.cancelRefreshTask">取消任务</el-button>
-      </div>
-      <el-progress :percentage="store.refreshTask.progress" :status="store.refreshTask.status === 'FAILED' ? 'exception' : store.refreshTask.status === 'COMPLETED' ? 'success' : undefined" />
-      <p v-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_info_refresh'" class="task-result">
-        AC 信息已持久化；HTTPS 端口 {{ taskCollection.https_port || '未解析' }}。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_detail_refresh'" class="task-result">
-        已深度更新选中 AP，BSSID {{ taskCollection.bbssid_rows_parsed || 0 }} 条，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_optical_refresh'" class="task-result">
-        已更新 {{ taskCollection.optical_rows_updated || 0 }} 条光衰记录，失败 {{ taskCollection.failed_aps || 0 }} 个 AP。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'ac_fit_ap_delete_many'" class="task-result">
-        已删除 {{ store.refreshTask.result_summary.count || 0 }} 个 FIT-AP。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'fit_ap_metadata_import'" class="task-result">
-        已更新 {{ store.refreshTask.result_summary.updated || 0 }} 条元数据，跳过 {{ store.refreshTask.result_summary.skipped || 0 }} 条，错误 {{ store.refreshTask.result_summary.errors_count || 0 }} 条。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED' && store.refreshTask.action === 'fit_ap_metadata_save'" class="task-result">
-        FIT-AP 元数据已保存。
-      </p>
-      <p v-else-if="store.refreshTask.status === 'COMPLETED'" class="task-result">
-        已更新 {{ taskCollection.fit_ap_resources_updated || 0 }} 个 AP，LLDP {{ taskCollection.lldp_rows_parsed || 0 }} 条，未认证 AP {{ taskCollection.unauthenticated_rows_updated || 0 }} 条。
-      </p>
-      <el-alert v-if="Array.isArray(taskCollection.failed_commands) && taskCollection.failed_commands.length" :title="`部分命令失败：${taskCollection.failed_commands.join('、')}`" type="warning" :closable="false" show-icon />
-    </div>
+    <el-alert
+      :title="`AC 任务 · 运行中 ${activeAcTaskCount} 项 / 失败 ${failedAcTaskCount} 项`"
+      :description="latestAcTask ? `${latestAcTask.name} · ${latestAcTask.status} · ${latestAcTask.message || latestAcTask.id}` : '任务状态由统一任务中心恢复'"
+      type="info"
+      :closable="false"
+      show-icon
+      class="task-summary"
+    ><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">
@@ -655,9 +645,7 @@ function diffLineClass(line: string): string {
 <style scoped>
 .ac-management { max-width: 1780px; margin: 0 auto; }
 .readonly-alert, .page-error { margin-bottom: 16px; }
-.task-panel { margin-bottom: 16px; padding: 14px 16px; background: #fff; border: 1px solid #dfe7f1; border-radius: 10px; }
-.task-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
-.task-heading p, .task-result { margin: 5px 0 0; color: #718096; font-size: 12px; }
+.task-summary { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }

@@ -500,6 +500,46 @@ def test_job_center_routes_device_export_cancel_to_real_owner(tmp_path: Path, mo
     assert not (app.state.task_service.paths.runtime_cache_dir / "background_jobs" / "device-export-running.cancel").exists()
 
 
+def test_job_center_routes_ac_cancel_to_real_owner(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id="ac-refresh-running",
+            task_type="ac_fit_ap_resources_refresh",
+            task_name="更新 FIT-AP 资源",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T09:00:00Z",
+            updated_time="2026-07-17T09:00:01Z",
+            owner="web_ac",
+            source="local",
+            site_name="demo",
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    def cancel_task(site_id: str, task_id: str) -> None:
+        calls.append((site_id, task_id))
+        app.state.task_service.record_external_event(
+            task_id,
+            "state",
+            {"state": TaskState.STOPPING.value, "message": "AC owner accepted cancellation"},
+            site_name=site_id,
+        )
+
+    app.state.ac_web_application_service = SimpleNamespace(cancel_task=cancel_task)
+
+    with TestClient(app) as client:
+        detail = client.get("/api/job-center/tasks/ac-refresh-running")
+        response = client.post("/api/job-center/tasks/ac-refresh-running/cancel")
+
+    assert detail.status_code == 200
+    assert detail.json()["module"] == "ac"
+    assert detail.json()["cancellable"] is True
+    assert response.status_code == 200
+    assert response.json()["status"] == "STOPPING"
+    assert calls == [("demo", "ac-refresh-running")]
+
+
 @pytest.mark.parametrize(
     ("failure", "install_spec", "install_process", "poll_values"),
     [

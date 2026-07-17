@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 
 import {
   applyAcExtension,
-  acExtensionArtifactDownloadRequest,
-  cancelAcWebTask,
   confirmAcActionPlan,
   createAcActionPlan,
   executeAcActionPlan,
@@ -21,7 +20,6 @@ import {
   startAcLocalRebuild,
 } from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource } from '../../platform/runtime'
 import type { AcActionAudit, AcActionPlan, AcExtension, AcExtensionPreview, AcTracksidePlan, AcWebTask } from '../../types/acWebParity'
 
 const taskStorageKey = 'netconsole.ac-web.last-task'
@@ -39,9 +37,8 @@ const task = ref<AcWebTask | null>(null)
 const error = ref('')
 const loading = ref(false)
 const taskBusy = ref(false)
+const router = useRouter()
 let pollTimer: number | undefined
-
-const taskSummary = computed(() => Object.entries(task.value?.result_summary || {}).map(([key, value]) => ({ key, value: String(value) })))
 
 function message(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
@@ -177,23 +174,13 @@ function exportExtensions(): void {
   void startTask(() => exportAcExtensions('', targetId.value), 'AP 扩展导出启动失败')
 }
 
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  await startTask(() => cancelAcWebTask(task.value!.task_id), 'AC 任务取消失败')
-}
-
-async function downloadArtifact(): Promise<void> {
-  if (!task.value?.available || !task.value.artifact_id) return
-  taskBusy.value = true
-  error.value = ''
-  try {
-    const result = await downloadBackendResource(acExtensionArtifactDownloadRequest(task.value.artifact_id))
-    if (result.status === 'failed') throw new Error(result.error || 'AP 扩展报告下载失败')
-  } catch (cause) {
-    error.value = message(cause, 'AP 扩展报告下载失败')
-  } finally {
-    taskBusy.value = false
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'ac', ...(taskId ? { taskId } : {}) })
+    return
   }
+  void router.push({ name: 'tasks', query: { module: 'ac', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function createPlan(): Promise<void> {
@@ -253,7 +240,13 @@ onBeforeUnmount(stopPolling)
     <div class="toolbar"><el-input v-model="targetId" placeholder="当前局点 AC UUID" /><template v-if="isFeatureEnabled('web.ac_dangerous_actions')"><el-select v-model="actionId"><el-option label="固化新 AP" value="persist_auto_ap" /><el-option label="开启 AP 远程登录" value="enable_ap_remote_login" /></el-select><el-button @click="createPlan">生成命令预览</el-button><el-button :disabled="!actionPlan" @click="confirmPlan">二次确认</el-button><el-button type="danger" :disabled="actionPlan?.status !== 'CONFIRMED'" @click="executePlan">执行真实任务</el-button></template><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('web.ac_refresh')" @click="rebuild('optical')">本地重算光衰视图</el-button></div>
     <el-alert type="warning" title="本地重算只读取当前数据库与缓存，不连接真实 AC。" show-icon :closable="false" />
     <el-alert v-if="isFeatureEnabled('web.ac_dangerous_actions')" type="error" title="AC 写操作会连接真实设备；必须先核对固定命令预览并完成二次确认。" show-icon :closable="false" />
-    <el-card v-if="task" shadow="never" class="task-card"><template #header>任务 {{ task.task_id }}</template><el-descriptions :column="3" border><el-descriptions-item label="动作">{{ task.action }}</el-descriptions-item><el-descriptions-item label="状态">{{ task.status }}</el-descriptions-item><el-descriptions-item label="消息">{{ task.error_message || task.message || '—' }}</el-descriptions-item><el-descriptions-item label="Artifact">{{ task.artifact_id || '—' }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ task.sha256 || '—' }}</el-descriptions-item><el-descriptions-item label="大小">{{ task.size_bytes }}</el-descriptions-item></el-descriptions><el-table v-if="taskSummary.length" :data="taskSummary" size="small"><el-table-column prop="key" label="结果项" /><el-table-column prop="value" label="值" /></el-table><div class="actions"><el-button :disabled="terminalStates.has(task.status) || !isFeatureEnabled('web.ac_refresh')" @click="cancelTask">取消任务</el-button><el-button :disabled="!task.available || !isFeatureEnabled('web.ac_extensions_export')" @click="downloadArtifact">受控下载</el-button></div></el-card>
+    <el-alert
+      :title="task ? `AC 任务 · ${task.action} · ${task.status}` : 'AC 任务 · 暂无记录'"
+      :description="task ? (task.error_message || task.message || task.task_id) : '停止、日志与 Artifact 操作统一在任务窗口完成'"
+      type="info"
+      show-icon
+      :closable="false"
+    ><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>AC 动作计划 {{ actionPlan.plan_id }} · {{ actionPlan.status }}</template><p>审计摘要：{{ actionPlan.plan_digest }}</p><pre>{{ actionPlan.command_summary.join('\n') }}</pre></el-card>
     <el-card v-if="actionAudit" shadow="never" class="plan"><template #header>AC 动作审计 · {{ actionAudit.status }}</template><el-descriptions :column="3" border><el-descriptions-item label="目标">{{ actionAudit.target_id }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionAudit.action_id }}</el-descriptions-item><el-descriptions-item label="任务状态">{{ actionAudit.task_status || '—' }}</el-descriptions-item><el-descriptions-item label="执行器">{{ actionAudit.executor }}</el-descriptions-item><el-descriptions-item label="Task">{{ actionAudit.task_id || '—' }}</el-descriptions-item><el-descriptions-item label="摘要">{{ actionAudit.plan_digest }}</el-descriptions-item></el-descriptions></el-card>
     <div class="grid"><el-card shadow="never"><template #header>AP 扩展导入预览 / 回滚</template><input type="file" accept=".csv,.xlsx" :disabled="!isFeatureEnabled('web.ac_extensions_preview')" @change="chooseFile"><el-alert v-if="extensionPreview" class="preview" type="info" :title="`${extensionPreview.file_name} · ${extensionPreview.row_count} 行 · 摘要 ${extensionPreview.preview_digest}`" :closable="false" /><div class="actions"><el-button type="primary" :loading="taskBusy" :disabled="!extensionPreview || !isFeatureEnabled('web.ac_extensions_apply')" @click="applyExtension">确认写入</el-button><el-button :loading="taskBusy" :disabled="!lastAuditId || !isFeatureEnabled('web.ac_extensions_rollback')" @click="rollbackExtension">回滚最近导入</el-button></div></el-card><el-card shadow="never"><template #header>AP 扩展信息（{{ extensions.length }}）</template><el-table :data="extensions" height="320" empty-text="暂无 AP 扩展信息"><el-table-column prop="ap_name" label="AP" /><el-table-column prop="ap_mac_display" label="MAC" /><el-table-column prop="station_name" label="站点" /><el-table-column prop="section_name" label="区间" /><el-table-column prop="match_status" label="匹配" /></el-table></el-card></div>
@@ -262,5 +255,5 @@ onBeforeUnmount(stopPolling)
 </template>
 
 <style scoped>
-.ac-web-parity { display: flex; flex-direction: column; gap: 16px; min-width: 0; }.heading,.toolbar,.actions { display: flex; align-items: center; gap: 10px; }.heading { justify-content: space-between; }.heading h1 { margin: 4px 0; }.heading p { margin: 0; color: var(--el-text-color-secondary); }.eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; }.toolbar { flex-wrap: wrap; }.toolbar .el-input { width: 240px; }.toolbar .el-select { width: 190px; }.grid { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.2fr); gap: 16px; }.preview { margin: 14px 0; }.plan pre { max-height: 160px; overflow: auto; padding: 10px; background: var(--el-fill-color-light); }.task-card .actions { margin-top: 12px; }@media (max-width: 900px) { .heading { align-items: flex-start; flex-direction: column; }.grid { grid-template-columns: 1fr; } }
+.ac-web-parity { display: flex; flex-direction: column; gap: 16px; min-width: 0; }.heading,.toolbar,.actions { display: flex; align-items: center; gap: 10px; }.heading { justify-content: space-between; }.heading h1 { margin: 4px 0; }.heading p { margin: 0; color: var(--el-text-color-secondary); }.eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; }.toolbar { flex-wrap: wrap; }.toolbar .el-input { width: 240px; }.toolbar .el-select { width: 190px; }.grid { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.2fr); gap: 16px; }.preview { margin: 14px 0; }.plan pre { max-height: 160px; overflow: auto; padding: 10px; background: var(--el-fill-color-light); }@media (max-width: 900px) { .heading { align-items: flex-start; flex-direction: column; }.grid { grid-template-columns: 1fr; } }
 </style>

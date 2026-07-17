@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QMenu, QScrollArea, QSplitter, QTableWidget, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QComboBox, QHeaderView, QMessageBox, QScrollArea, QSplitter, QTableWidget, QWidget
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.database import Database
@@ -46,10 +46,8 @@ from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap
 from netconsole.services.h3c_ac_collect_service import (
     FIT_AP_RESOURCE_COMMANDS,
     FIT_AP_RESOURCE_OPTIONAL_COMMANDS,
-    HTTPS_PORT_COMMANDS,
     RESOURCE_COMMANDS,
     collect_h3c_ac_info,
-    collect_h3c_ac_resources,
     collect_h3c_fit_ap_resources,
 )
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
@@ -6893,7 +6891,6 @@ def test_ap_optical_history_detail_and_column_width_persist(tmp_path):
     qt_app = app()
     paths = PathResolver(tmp_path)
     settings = SettingsStore(paths)
-    repository = AcRepository(make_database(tmp_path))
     rows = [
         {
             "collected_at": "2026-01-02T00:00:00",
@@ -6938,7 +6935,7 @@ def test_ap_optical_history_dialog_hides_raw_log_actions(tmp_path):
 
 
 def test_ap_optical_history_export_contains_full_history(tmp_path, monkeypatch):
-    qt_app = app()
+    app()
     from openpyxl import load_workbook
     from netconsole.ui.dialogs.ap_optical_history_dialog import ApOpticalHistoryDialog
     import netconsole.ui.dialogs.ap_optical_history_dialog as dialog_module
@@ -7367,8 +7364,6 @@ def test_state_engine_compute_state_returns_unified_result():
 
 def test_state_engine_minus_36_96_no_light_unified():
     """rx_power = -36.96 must produce no_light with unified gray colour."""
-    from netconsole.core.state_engine import StateResult
-
     fit_ap_row = {
         "rx_power": "-36.96",
         "rx_low_alarm": "-20.00",
