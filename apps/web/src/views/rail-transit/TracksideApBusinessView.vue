@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
-  cancelTracksideApTask,
   getTracksideApTask,
   listTracksideApBusiness,
   recoverTracksideApTasks,
@@ -12,6 +12,7 @@ import { isFeatureEnabled } from '../../features'
 import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask } from '../../types/tracksideApBusiness'
 
 const storageKey = 'netconsole.trackside-ap.last-task'
+const router = useRouter()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const loading = ref(false)
 const error = ref('')
@@ -50,7 +51,7 @@ async function loadRows(reset = false): Promise<void> {
 
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string): Promise<void> {
   loading.value = true; error.value = ''
-  try { rememberTask(await factory()); poll() }
+  try { rememberTask(await factory()); poll(); openTaskWindow() }
   catch (reason) { error.value = failure(reason, fallback) }
   finally { loading.value = false }
 }
@@ -58,9 +59,13 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
 function updateAll(): void { void startTask(() => startTracksideApUpdate(), '轨旁 AP 光衰更新启动失败') }
 function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败') }
 function updateAp(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ ap_mac: row.ap_mac, ap_name: row.ap_name }), 'AP 更新启动失败') }
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  await startTask(() => cancelTracksideApTask(task.value!.task_id), '轨旁 AP 任务取消失败')
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function recoverTasks(): Promise<void> {
@@ -79,7 +84,7 @@ onBeforeUnmount(stopPolling)
   <section class="trackside-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>交换机端口、当前 AP、光功率与异常状态来自正式设备事实和既有光衰规则。</p></div>
-      <div class="actions"><el-button :loading="loading" @click="loadRows()">刷新</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.rail_trackside_ap_business_update') || !isFeatureEnabled('web.rail_task_control')" @click="updateAll">更新全部光衰</el-button></div>
+      <div class="actions"><el-button :loading="loading" @click="loadRows()">刷新</el-button><el-button type="primary" :disabled="!isFeatureEnabled('web.rail_trackside_ap_business_update') || !isFeatureEnabled('web.rail_task_control')" @click="updateAll">更新全部光衰</el-button><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
     <div v-if="page" class="summary-grid">
@@ -92,7 +97,7 @@ onBeforeUnmount(stopPolling)
       </el-table>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" /></div>
     </div>
-    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>轨旁 AP 任务</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="300"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><div class="actions"><el-button :disabled="terminalStates.has(task.status)" @click="cancelTask">取消任务</el-button></div></div>
+    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>轨旁 AP 更新结果</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="300"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><el-alert title="停止、日志和恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert></div>
   </section>
 </template>
 

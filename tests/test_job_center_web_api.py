@@ -540,6 +540,46 @@ def test_job_center_routes_ac_cancel_to_real_owner(tmp_path: Path) -> None:
     assert calls == [("demo", "ac-refresh-running")]
 
 
+def test_job_center_routes_rail_cancel_to_real_owner(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id="rail-parse-running",
+            task_type="online_mr_parse",
+            task_name="Online MR 会话解析",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T09:00:00Z",
+            updated_time="2026-07-17T09:00:01Z",
+            owner="web_rail_transit",
+            source="local",
+            site_name="demo",
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    def cancel_task(site_id: str, task_id: str) -> None:
+        calls.append((site_id, task_id))
+        app.state.task_service.record_external_event(
+            task_id,
+            "state",
+            {"state": TaskState.STOPPING.value, "message": "轨交 owner 已接收停止请求"},
+            site_name=site_id,
+        )
+
+    app.state.rail_transit_web_application_service = SimpleNamespace(cancel_task=cancel_task)
+
+    with TestClient(app) as client:
+        detail = client.get("/api/job-center/tasks/rail-parse-running")
+        response = client.post("/api/job-center/tasks/rail-parse-running/cancel")
+
+    assert detail.status_code == 200
+    assert detail.json()["module"] == "rail"
+    assert detail.json()["cancellable"] is True
+    assert response.status_code == 200
+    assert response.json()["status"] == "STOPPING"
+    assert calls == [("demo", "rail-parse-running")]
+
+
 @pytest.mark.parametrize(
     ("failure", "install_spec", "install_process", "poll_values"),
     [

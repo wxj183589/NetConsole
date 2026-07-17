@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
+import { addOnlineMrNote, listOnlineMrNotes } from '../../api/onlineMr'
+import { getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import { getTrainCommunicationSummary, listTrainCommunications } from '../../api/trainCommunication'
+import { isFeatureEnabled } from '../../features'
 import { useOnlineMrStore } from '../../stores/onlineMr'
+import type { OnlineMrManualNote } from '../../types/onlineMr'
+import type { RailTransitTask } from '../../types/railTransitWeb'
 import type { MrCommunicationStatus } from '../../types/trainCommunication'
 
 const store = useOnlineMrStore()
 const route = useRoute()
+const router = useRouter()
 const expanded = ref('')
 const rawTab = ref('mesh_link')
 const fpingSource = ref('fping_summary')
@@ -21,6 +27,14 @@ const controlMrId = ref('')
 const controlError = ref('')
 const controlSiteId = ref('')
 const executorTab = ref('local')
+const noteText = ref('')
+const notes = ref<OnlineMrManualNote[]>([])
+const noteLoading = ref(false)
+const parseTask = ref<RailTransitTask | null>(null)
+const parseLoading = ref(false)
+let parseTimer: number | null = null
+const terminalTaskStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const parseTaskStorageKey = 'netconsole.online-mr.parse-task'
 const controlMr = computed(() => controlMrs.value.find((item) => item.mr_id === controlMrId.value) || null)
 const selectedId = computed({
   get: () => store.selected?.session_id || '',
@@ -47,6 +61,7 @@ const acceptanceCommand = computed(() => {
   if (!store.selected) return ''
   return `python -m scripts.maintenance.check_online_mr_session_state --site "${store.selected.site_id}" --session-id "${store.selected.session_id}"`
 })
+const parseActive = computed(() => Boolean(parseTask.value && !terminalTaskStates.has(parseTask.value.status)))
 
 watch(() => store.rawFiles, (files) => {
   if (!files.length) return
@@ -63,6 +78,8 @@ watch([expanded, rawTab, fpingSource], ([section, tab, selectedFping]) => {
   }
   store.setRawExpanded(Boolean(section))
 })
+
+watch(() => store.selected?.session_id, () => { void loadNotes() })
 
 function field(value: Record<string, unknown>, ...names: string[]): string {
   for (const name of names) {
@@ -98,6 +115,130 @@ function handleVisibility(): void {
   else store.startPolling()
 }
 
+function noteAuditSource(note: OnlineMrManualNote): string {
+  const audit = note.payload.audit
+  return audit && typeof audit === 'object'
+    ? String((audit as Record<string, unknown>).source || 'legacy_qt')
+    : 'legacy_qt'
+}
+
+async function loadNotes(): Promise<void> {
+  if (!store.selected) {
+    notes.value = []
+    return
+  }
+  const sessionId = store.selected.session_id
+  noteLoading.value = true
+  try {
+    const loaded = await listOnlineMrNotes(sessionId)
+    if (store.selected?.session_id === sessionId) notes.value = loaded
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '备注加载失败')
+  } finally {
+    noteLoading.value = false
+  }
+}
+
+async function addNote(): Promise<void> {
+  if (!store.selected || !noteText.value.trim()) return
+  const sessionId = store.selected.session_id
+  noteLoading.value = true
+  try {
+    await ElMessageBox.confirm(
+      `确认把备注写入会话 ${sessionId}？`,
+      '记录采集备注',
+      { confirmButtonText: '确认记录', cancelButtonText: '取消', type: 'warning' },
+    )
+    const saved = await addOnlineMrNote(sessionId, noteText.value.trim())
+    if (store.selected?.session_id !== sessionId) return
+    notes.value.push(saved)
+    noteText.value = ''
+    await store.refreshOverview()
+    ElMessage.success('备注已写入会话并保留审计来源')
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') {
+      ElMessage.error(cause instanceof Error ? cause.message : '备注保存失败')
+    }
+  } finally {
+    noteLoading.value = false
+  }
+}
+
+function stopParsePolling(): void {
+  if (parseTimer !== null) window.clearTimeout(parseTimer)
+  parseTimer = null
+}
+
+function rememberParseTask(value: RailTransitTask | null): void {
+  parseTask.value = value
+  if (value) localStorage.setItem(parseTaskStorageKey, value.task_id)
+  else localStorage.removeItem(parseTaskStorageKey)
+}
+
+function pollParseTask(): void {
+  stopParsePolling()
+  if (!parseTask.value || terminalTaskStates.has(parseTask.value.status)) {
+    if (parseTask.value?.status === 'COMPLETED') void store.refreshOverview()
+    return
+  }
+  parseTimer = window.setTimeout(async () => {
+    try {
+      rememberParseTask(await getRailTransitTask(parseTask.value!.task_id))
+      pollParseTask()
+    } catch (cause) {
+      ElMessage.error(cause instanceof Error ? cause.message : '解析任务状态读取失败')
+    }
+  }, 1000)
+}
+
+async function startParse(forceReparse: boolean): Promise<void> {
+  if (!store.selected || parseActive.value || !isFeatureEnabled('web.online_mr_parse')) return
+  const sessionId = store.selected.session_id
+  parseLoading.value = true
+  try {
+    if (forceReparse) {
+      await ElMessageBox.confirm(
+        '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？',
+        '强制重新解析',
+        { confirmButtonText: '重新解析', cancelButtonText: '取消', type: 'warning' },
+      )
+    }
+    rememberParseTask(await parseOnlineMrSession(sessionId, forceReparse))
+    pollParseTask()
+    openTaskWindow()
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') {
+      ElMessage.error(cause instanceof Error ? cause.message : '解析任务启动失败')
+    }
+  } finally {
+    parseLoading.value = false
+  }
+}
+
+async function recoverParse(): Promise<void> {
+  try {
+    const saved = localStorage.getItem(parseTaskStorageKey) || ''
+    const rows = await recoverRailTransitTasks()
+    rememberParseTask(
+      rows.find((item) => item.task_id === saved && item.action === 'online_mr_parse')
+      || rows.find((item) => item.action === 'online_mr_parse' && !terminalTaskStates.has(item.status))
+      || null,
+    )
+    pollParseTask()
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '解析任务恢复失败')
+  }
+}
+
+function openTaskWindow(): void {
+  const taskId = parseTask.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
+}
+
 async function loadControlMrs(): Promise<void> {
   try {
     const [summary, page] = await Promise.all([
@@ -124,12 +265,14 @@ onMounted(async () => {
   await loadControlMrs()
   const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
   if (requestedSession) await store.selectSession(requestedSession)
+  await Promise.all([loadNotes(), recoverParse()])
   store.startPolling()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
+  stopParsePolling()
 })
 </script>
 
@@ -272,6 +415,56 @@ onBeforeUnmount(() => {
         </el-collapse-item>
       </el-collapse>
 
+      <section class="content-card mr-session-actions">
+        <div class="session-action-heading">
+          <div>
+            <h3>采集备注与会话解析</h3>
+            <p>备注持久化到会话；解析使用现有 Job Center，停止、日志和结果统一在任务窗口处理。</p>
+          </div>
+          <el-tag v-if="parseTask">{{ parseTask.status }}</el-tag>
+        </div>
+        <div class="note-actions">
+          <el-input
+            v-model="noteText"
+            maxlength="500"
+            show-word-limit
+            clearable
+            placeholder="输入现场备注、站点或异常说明"
+            @keyup.enter="addNote"
+          />
+          <el-button
+            :loading="noteLoading"
+            :disabled="!noteText.trim() || !isFeatureEnabled('online_mr.collection_notes')"
+            @click="addNote"
+          >记录备注</el-button>
+          <el-button @click="noteText = ''">清空输入</el-button>
+        </div>
+        <el-table v-loading="noteLoading" :data="notes" max-height="230" empty-text="当前会话暂无备注">
+          <el-table-column prop="local_time" label="时间" width="185" />
+          <el-table-column prop="title" label="备注" min-width="280" />
+          <el-table-column label="审计来源" width="190">
+            <template #default="{ row }">{{ noteAuditSource(row) }}</template>
+          </el-table-column>
+        </el-table>
+        <div class="parse-actions">
+          <el-button
+            type="primary"
+            :loading="parseLoading"
+            :disabled="parseActive || !isFeatureEnabled('web.online_mr_parse')"
+            @click="startParse(false)"
+          >解析当前会话</el-button>
+          <el-button
+            type="warning"
+            plain
+            :disabled="parseActive || !isFeatureEnabled('web.online_mr_parse')"
+            @click="startParse(true)"
+          >强制重新解析</el-button>
+          <el-button @click="recoverParse">恢复任务状态</el-button>
+          <el-button @click="openTaskWindow">打开任务窗口</el-button>
+          <span v-if="parseTask">{{ parseTask.error_message || parseTask.message || parseTask.task_id }}</span>
+        </div>
+      </section>
+
       <section class="content-card mr-delivery">
         <div>
           <h3>会话交付</h3>
@@ -313,6 +506,15 @@ onBeforeUnmount(() => {
 .mr-preview-grid strong { display: block; margin-top: 8px; overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .mr-preview-message { margin: 14px; width: auto; }
 .mr-collapse { margin-top: 16px; padding: 0 18px; background: #fff; border: 1px solid #dfe7f1; border-radius: 10px; }
+.mr-session-actions { margin-top: 16px; padding: 18px 20px; }
+.session-action-heading, .note-actions, .parse-actions { display: flex; align-items: center; gap: 12px; }
+.session-action-heading { justify-content: space-between; }
+.session-action-heading h3 { margin: 0; }
+.session-action-heading p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
+.note-actions, .parse-actions { margin-top: 14px; }
+.note-actions .el-input { max-width: 900px; }
+.parse-actions { flex-wrap: wrap; }
+.parse-actions span { color: var(--el-text-color-secondary); font-size: 12px; }
 .mr-raw-toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; color: #7b8798; font-size: 12px; }
 .mr-raw-toolbar > span { margin-left: auto; }
 .mr-raw-tabs { min-width: 560px; }

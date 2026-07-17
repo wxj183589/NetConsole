@@ -93,6 +93,16 @@ class OnlineMrReportRequestDTO(ApiModel):
     output_name: str = ""
 
 
+class OnlineMrParseRequestDTO(ApiModel):
+    force_reparse: bool = False
+
+
+class OnlineMrNoteCreateRequestDTO(ApiModel):
+    note: str = Field(min_length=1, max_length=500)
+    explicit_confirmation: bool = False
+    audit: dict[str, str] = Field(default_factory=dict)
+
+
 class OnlineMrTimelineQueryDTO(ApiModel):
     limit: int = 500
     offset: int = 0
@@ -106,6 +116,8 @@ __all__ = [
     "CarNetworkPointTableExportRequestDTO",
     "CarNetworkPointTableTransformRequestDTO",
     "CarNetworkPointTableWriteRequestDTO",
+    "OnlineMrNoteCreateRequestDTO",
+    "OnlineMrParseRequestDTO",
     "OnlineMrReportRequestDTO",
     "OnlineMrTimelineQueryDTO",
     "RailTransitTaskDTO",

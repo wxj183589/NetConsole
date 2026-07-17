@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
+from netconsole.services.rail_transit.car_network_diagnostic_job import run_car_network_diagnostic
+from netconsole.services.rail_transit.trackside_ap_update_job import run_trackside_ap_optical_update
+from netconsole.services.rail_transit.vehicle_mr_online_collection_job import run_vehicle_mr_online_collection
 
 trackside_interface_history_page = legacy_handler(legacy_tasks._trackside_interface_history_page)
 car_network_point_table_import = legacy_handler(legacy_tasks._car_network_point_table_import)
@@ -31,3 +34,10 @@ HANDLERS = {
         "trackside_fit_ap_detail_resolve",
     )
 }
+HANDLERS.update(
+    {
+        "car_network_diagnostic": run_car_network_diagnostic,
+        "trackside_ap_optical_update": run_trackside_ap_optical_update,
+        "vehicle_mr_online_collection_start": run_vehicle_mr_online_collection,
+    }
+)

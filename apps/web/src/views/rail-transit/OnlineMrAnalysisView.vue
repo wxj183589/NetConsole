@@ -1,24 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
 
 import { getOnlineMrSession, listRecentOnlineMrSessions } from '../../api/onlineMr'
 import {
-  cancelRailTransitTask,
   exportOnlineMrReport,
   getRailTransitTask,
-  onlineMrReportDownloadRequest,
   queryOnlineMrMetrics,
   queryOnlineMrTimeline,
   recoverRailTransitTasks,
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource } from '../../platform/runtime'
 import type { OnlineMrSessionDetail, OnlineMrSessionSummary } from '../../types/onlineMr'
 import type { OnlineMrMetricSeries, OnlineMrTimelineEvent, RailTransitTask } from '../../types/railTransitWeb'
 
 const route = useRoute()
+const router = useRouter()
 const storageKey = 'netconsole.online-mr-analysis.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const sessions = ref<OnlineMrSessionSummary[]>([])
@@ -45,7 +42,6 @@ const metricRows = computed(() => metrics.value.map((series) => ({
     ?? [...series.points].reverse().find((point) => point.text_value)?.text_value
     ?? null,
 })))
-const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
 
 function message(cause: unknown, fallback: string): string { return cause instanceof Error ? cause.message : fallback }
 function display(value: unknown): string { return value === null || value === undefined || value === '' ? '无数据' : String(value) }
@@ -86,15 +82,8 @@ async function loadAnalysis(): Promise<void> {
 async function startReport(): Promise<void> {
   if (!detail.value || !isFeatureEnabled('web.online_mr_report_export')) return
   taskLoading.value = true; error.value = ''
-  try { rememberTask(await exportOnlineMrReport(detail.value.session_id, outputName.value)); poll() }
+  try { rememberTask(await exportOnlineMrReport(detail.value.session_id, outputName.value)); poll(); openTaskWindow() }
   catch (cause) { error.value = message(cause, 'Online MR 报告生成启动失败') }
-  finally { taskLoading.value = false }
-}
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  taskLoading.value = true
-  try { rememberTask(await cancelRailTransitTask(task.value.task_id)); poll() }
-  catch (cause) { error.value = message(cause, 'Online MR 报告任务取消失败') }
   finally { taskLoading.value = false }
 }
 async function recoverTask(): Promise<void> {
@@ -105,15 +94,13 @@ async function recoverTask(): Promise<void> {
     poll()
   } catch (cause) { error.value = message(cause, 'Online MR 报告任务恢复失败') }
 }
-async function downloadReport(): Promise<void> {
-  if (!task.value?.available || !task.value.artifact_id) return
-  taskLoading.value = true
-  try {
-    const result = await downloadBackendResource(onlineMrReportDownloadRequest(task.value.artifact_id))
-    if (result.status === 'failed') throw new Error(result.error || 'Online MR 报告下载失败')
-    if (result.status === 'saved') ElMessage.success('Online MR 报告已保存')
-  } catch (cause) { error.value = message(cause, 'Online MR 报告下载失败') }
-  finally { taskLoading.value = false }
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 onMounted(() => { void Promise.all([loadSessions(), recoverTask()]) })
@@ -129,7 +116,7 @@ onBeforeUnmount(stopPolling)
       <div class="summary-grid"><article><span>会话状态</span><strong>{{ detail.status }}</strong></article><article><span>MR</span><strong>{{ detail.device_name || detail.mr_name }}</strong></article><article><span>完整性</span><strong>{{ detail.data_integrity }}</strong></article><article><span>执行端</span><strong>{{ detail.executor_kind || '无数据' }}</strong></article><article><span>采集时长</span><strong>{{ display(detail.duration_minutes) }} min</strong></article></div>
       <div class="content-card"><div class="toolbar"><strong>指标</strong><el-checkbox-group v-model="metricTypes"><el-checkbox label="rssi">RSSI</el-checkbox><el-checkbox label="ctl_busy">Channel Busy</el-checkbox><el-checkbox label="ping_rtt">fping RTT</el-checkbox><el-checkbox label="ping_loss">丢包</el-checkbox><el-checkbox label="iperf_bitrate">iPerf</el-checkbox></el-checkbox-group><el-button type="primary" :loading="loading" @click="loadAnalysis">重新查询</el-button></div><el-table :data="metricRows" border stripe empty-text="所选会话暂无结构化指标"><el-table-column prop="metric_type" label="指标" width="150" /><el-table-column prop="series_key" label="序列" min-width="220" /><el-table-column prop="count" label="样本" width="90" /><el-table-column label="最小"><template #default="{ row }">{{ display(row.minimum) }}</template></el-table-column><el-table-column label="平均"><template #default="{ row }">{{ display(row.average) }}</template></el-table-column><el-table-column label="最大"><template #default="{ row }">{{ display(row.maximum) }}</template></el-table-column><el-table-column label="最近"><template #default="{ row }">{{ display(row.latest) }}</template></el-table-column></el-table></div>
       <div class="content-card"><h2>会话时间线</h2><el-table :data="timeline" border stripe height="360" empty-text="暂无会话事件"><el-table-column prop="local_time" label="本地时间" width="185" /><el-table-column prop="device_time" label="设备时间" width="185" /><el-table-column prop="source" label="来源" width="130" /><el-table-column prop="event_type" label="事件" width="130" /><el-table-column prop="severity" label="级别" width="90" /><el-table-column prop="title" label="说明" min-width="240" /></el-table></div>
-      <div class="content-card report-card"><div><h2>分析报告</h2><p>报告任务支持取消、重启恢复、失败状态与受控 Artifact 下载。</p></div><div class="report-actions"><el-input v-model="outputName" placeholder="可选报告文件名" /><el-button type="primary" :loading="taskLoading" :disabled="!isFeatureEnabled('web.online_mr_report_export')" @click="startReport">生成 XLSX 报告</el-button></div><template v-if="task"><el-descriptions :column="3" border><el-descriptions-item label="Task">{{ task.task_id }}</el-descriptions-item><el-descriptions-item label="状态">{{ task.status }}</el-descriptions-item><el-descriptions-item label="消息">{{ task.error_message || task.message || '无' }}</el-descriptions-item><el-descriptions-item label="Artifact">{{ task.artifact_id || '待生成' }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ task.sha256 || '待生成' }}</el-descriptions-item><el-descriptions-item label="大小">{{ task.size_bytes }}</el-descriptions-item></el-descriptions><el-table v-if="taskRows.length" :data="taskRows"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><div class="actions"><el-button :disabled="terminalStates.has(task.status)" @click="cancelTask">取消任务</el-button><el-button :disabled="!task.available || !task.artifact_id" @click="downloadReport">保存报告</el-button></div></template></div>
+      <div class="content-card report-card"><div><h2>分析报告</h2><p>报告由 Export Process 生成；停止、日志、Artifact 保存和打开操作统一在任务窗口完成。</p></div><div class="report-actions"><el-input v-model="outputName" placeholder="可选报告文件名" /><el-button type="primary" :loading="taskLoading" :disabled="!isFeatureEnabled('web.online_mr_report_export')" @click="startReport">生成 XLSX 报告</el-button><el-button @click="openTaskWindow">打开任务窗口</el-button></div><el-alert v-if="task" :title="`${task.status} · ${task.error_message || task.message || task.task_id}`" :type="task.status === 'FAILED' ? 'error' : 'info'" :closable="false" /></div>
     </template>
   </section>
 </template>

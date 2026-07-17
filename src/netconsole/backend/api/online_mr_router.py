@@ -11,6 +11,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrCollectorStatusDTO,
     OnlineMrArtifactDTO,
     OnlineMrMetricSeriesDTO,
+    OnlineMrManualNoteDTO,
     OnlineMrRawFileDTO,
     OnlineMrRawTailDTO,
     OnlineMrRealtimePreviewDTO,
@@ -19,7 +20,12 @@ from netconsole.models.api.online_mr import (
     OnlineMrTimelineEventDTO,
 )
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
-from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO, RailTransitTaskDTO
+from netconsole.models.api.rail_transit_web import (
+    OnlineMrNoteCreateRequestDTO,
+    OnlineMrParseRequestDTO,
+    OnlineMrReportRequestDTO,
+    RailTransitTaskDTO,
+)
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 
 
@@ -124,6 +130,52 @@ def timeline(
     offset: int = Query(default=0, ge=0, le=10_000),
 ) -> ApiResponse[list[OnlineMrTimelineEventDTO]]:
     return ApiResponse(data=_rail_service(request).query_timeline(_facade(request).current_site_id(), session_id, limit=limit, offset=offset))
+
+
+@router.get("/sessions/{session_id}/notes", response_model=ApiResponse[list[OnlineMrManualNoteDTO]])
+def notes(
+    request: Request,
+    session_id: str,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ApiResponse[list[OnlineMrManualNoteDTO]]:
+    return ApiResponse(data=_rail_service(request).notes(_facade(request).current_site_id(), session_id, limit=limit, offset=offset))
+
+
+@router.post(
+    "/sessions/{session_id}/notes",
+    response_model=OnlineMrManualNoteDTO,
+    dependencies=[Depends(require_feature("online_mr.collection_notes"))],
+)
+def add_note(request: Request, session_id: str, payload: OnlineMrNoteCreateRequestDTO) -> OnlineMrManualNoteDTO:
+    try:
+        return _rail_service(request).add_online_mr_note(
+            _facade(request).current_site_id(),
+            session_id,
+            note=payload.note,
+            explicit_confirmation=payload.explicit_confirmation,
+            audit=payload.audit,
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.post(
+    "/sessions/{session_id}/parse",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.online_mr_parse")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def parse_session(request: Request, session_id: str, payload: OnlineMrParseRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_online_mr_parse(
+            _facade(request).current_site_id(), session_id, force_reparse=payload.force_reparse
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
 
 
 @router.get("/sessions/{session_id}/database-summary", response_model=ApiResponse[dict[str, object]])
@@ -252,7 +304,7 @@ def task_recover(request: Request) -> list[RailTransitTaskDTO]:
 
 
 def _raise_rail_error(exc: RailTransitWebError) -> None:
-    not_found = {"TASK_NOT_FOUND", "SESSION_NOT_FOUND", "MESH_SESSION_NOT_FOUND", "MESH_RESULT_NOT_FOUND", "ARTIFACT_INVALID"}
+    not_found = {"TASK_NOT_FOUND", "SESSION_NOT_FOUND", "RAW_DATA_NOT_FOUND", "MESH_SESSION_NOT_FOUND", "MESH_RESULT_NOT_FOUND", "ARTIFACT_INVALID"}
     status_code = status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

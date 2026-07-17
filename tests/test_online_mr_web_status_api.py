@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.backend.api.online_mr_router import router as online_mr_router
 from netconsole.core.paths import PathResolver
 from support.online_mr_api import wire_online_mr_api_facade
 
@@ -73,11 +74,20 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(tmp_path: 
     assert detail.json()["data"]["mapping_state"] == "LINKED"
     assert detail.json()["data"]["task_status"] == "PENDING"
     assert meta_path.read_bytes() == before
-    assert all(
-        route.methods == {"GET"}
-        for route in app.routes
-        if getattr(route, "path", "").startswith("/api/online-mr/")
-    )
+    post_paths = {
+        route.path
+        for route in online_mr_router.routes
+        if getattr(route, "path", "").startswith("/online-mr/")
+        and route.methods == {"POST"}
+    }
+    assert post_paths == {
+        "/online-mr/sessions/{session_id}/notes",
+        "/online-mr/sessions/{session_id}/parse",
+        "/online-mr/sessions/{session_id}/report",
+        "/online-mr/mesh-analysis/import",
+        "/online-mr/tasks/{task_id}/cancel",
+        "/online-mr/tasks/recover",
+    }
 
 
 def test_current_session_returns_none_when_only_terminal_sessions_exist(tmp_path: Path) -> None:

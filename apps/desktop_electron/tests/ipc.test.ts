@@ -145,9 +145,10 @@ describe('desktop IPC', () => {
 
     await expect(handler({ sender }, { taskId: 'task-1', module: 'devices', status: 'RUNNING' })).resolves.toEqual({ success: true })
     await expect(handler({ sender }, { module: 'ac' })).resolves.toEqual({ success: true })
+    await expect(handler({ sender }, { module: 'rail' })).resolves.toEqual({ success: true })
     await expect(handler({ sender }, { module: 'unknown' })).rejects.toThrow('module is invalid')
     await expect(handler({ sender }, { taskId: '../unsafe' })).rejects.toThrow('taskId is invalid')
-    expect(openTaskWindow).toHaveBeenCalledTimes(2)
+    expect(openTaskWindow).toHaveBeenCalledTimes(3)
   })
 
   it('opens only credential-free HTTPS urls in the system browser', async () => {

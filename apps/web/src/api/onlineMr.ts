@@ -1,6 +1,7 @@
 import { apiRequest } from './client'
 import type {
   OnlineMrCollectorStatus,
+  OnlineMrManualNote,
   OnlineMrRawFile,
   OnlineMrRawTail,
   OnlineMrRealtimePreview,
@@ -39,4 +40,15 @@ export async function listOnlineMrRawFiles(sessionId: string): Promise<OnlineMrR
 export async function getOnlineMrRawTail(sessionId: string, name: string, tail = 200): Promise<OnlineMrRawTail> {
   const query = new URLSearchParams({ name, tail: String(tail) })
   return (await apiRequest<ApiResponse<OnlineMrRawTail>>(`${root}/${encodeURIComponent(sessionId)}/raw-tail?${query}`)).data
+}
+
+export async function listOnlineMrNotes(sessionId: string): Promise<OnlineMrManualNote[]> {
+  return (await apiRequest<ApiResponse<OnlineMrManualNote[]>>(`${root}/${encodeURIComponent(sessionId)}/notes`)).data
+}
+
+export function addOnlineMrNote(sessionId: string, note: string): Promise<OnlineMrManualNote> {
+  return apiRequest<OnlineMrManualNote>(`${root}/${encodeURIComponent(sessionId)}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ note, explicit_confirmation: true }),
+  })
 }

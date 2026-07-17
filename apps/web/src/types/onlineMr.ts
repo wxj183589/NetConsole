@@ -84,3 +84,15 @@ export interface OnlineMrRawTail {
   modified_at: string | null
   summary: Record<string, unknown>
 }
+
+export interface OnlineMrManualNote {
+  event_id: string
+  session_id: string
+  local_time: string | null
+  device_time: string | null
+  source: string
+  event_type: string
+  severity: string | null
+  title: string
+  payload: Record<string, unknown>
+}

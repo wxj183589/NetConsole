@@ -4,7 +4,9 @@ import hashlib
 import json
 import re
 import shutil
+import threading
 from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Callable, NoReturn
 from uuid import uuid4
@@ -14,7 +16,7 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
-from netconsole.models.api.online_mr import OnlineMrDownsampleMode, OnlineMrMetricType
+from netconsole.models.api.online_mr import OnlineMrDownsampleMode, OnlineMrManualNoteDTO, OnlineMrMetricType
 from netconsole.models.api.rail_transit_web import (
     CarNetworkPointPreviewDTO,
     CarNetworkPointPreviewRowDTO,
@@ -103,6 +105,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
         "vehicle_mr_online_collection_start": "列车在线连续采集",
+        "online_mr_parse": "Online MR 会话解析",
     }
     _UPLOAD_SUFFIXES = {".log", ".txt"}
     _TABLE_SUFFIXES = {".xlsx", ".csv"}
@@ -139,6 +142,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_history": "vehicle_mr_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
     }
+    _NOTE_LOCK = threading.RLock()
 
     def __init__(
         self,
@@ -932,6 +936,75 @@ class RailTransitWebApplicationService:
         ).to_job(task_id)
         return self._start_export(site_id, replace(job, site_name=site_id), "online_mr_report", reservation)
 
+    def add_online_mr_note(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        note: str,
+        explicit_confirmation: bool,
+        audit: dict[str, str] | None = None,
+    ) -> OnlineMrManualNoteDTO:
+        site_id = self._site(site_id)
+        text = str(note or "").strip()
+        if not explicit_confirmation:
+            raise RailTransitWebError("CONFIRMATION_REQUIRED", "记录 Online MR 备注前必须显式确认")
+        if not text:
+            raise RailTransitWebError("NOTE_REQUIRED", "备注内容不能为空")
+        if len(text) > 500:
+            raise RailTransitWebError("NOTE_TOO_LONG", "备注内容不得超过 500 字符")
+        detail, session_dir = self._online_mr_session_dir(site_id, session_id)
+        local_time = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+        audit_payload = {
+            str(key)[:80]: str(value)[:500]
+            for key, value in list(dict(audit or {}).items())[:20]
+            if str(key).strip()
+            and str(value).strip()
+            and str(key) not in {"source", "action"}
+        }
+        audit_payload.update(source="electron_online_mr", action="add_note")
+        payload: dict[str, object] = {
+            "local_time": local_time,
+            "device_aligned_time": None,
+            "session_id": session_id,
+            "device_id": detail.device_id,
+            "device_name": detail.device_name or detail.mr_name or "-",
+            "note": text,
+            "audit": audit_payload,
+        }
+        jsonl_path = session_dir / "manual_notes.jsonl"
+        text_path = session_dir / "manual_notes.txt"
+        if jsonl_path.is_symlink() or text_path.is_symlink():
+            raise RailTransitWebError("NOTE_PATH_INVALID", "Online MR 备注文件路径无效")
+        with self._NOTE_LOCK:
+            with jsonl_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            with text_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"[{local_time}] [{payload['device_name']}] {text}\n")
+        return OnlineMrManualNoteDTO(
+            event_id=f"note-{uuid4().hex}",
+            session_id=session_id,
+            local_time=local_time,
+            title=text,
+            payload={"device_id": detail.device_id, "device_name": payload["device_name"], "audit": audit_payload},
+        )
+
+    def start_online_mr_parse(self, site_id: str, session_id: str, *, force_reparse: bool) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        _detail, session_dir = self._online_mr_session_dir(site_id, session_id)
+        raw_dir = session_dir / "raw"
+        if not raw_dir.is_dir() or raw_dir.is_symlink():
+            raise RailTransitWebError("RAW_DATA_NOT_FOUND", "Online MR 会话缺少可解析的 raw 目录")
+        return self._start_task(
+            site_id,
+            "online_mr_parse",
+            {
+                "session_dir": str(session_dir),
+                "force_reparse": bool(force_reparse),
+                "audit": {"source": "electron_online_mr", "action": "force_reparse" if force_reparse else "parse"},
+            },
+        )
+
     def start_mesh_report(self, site_id: str, session_id: str) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         try:
@@ -1044,6 +1117,9 @@ class RailTransitWebApplicationService:
     def artifacts(self, site_id: str, session_id: str):
         return self.query_service.list_artifacts(self._site(site_id), session_id)
 
+    def notes(self, site_id: str, session_id: str, *, limit: int = 200, offset: int = 0):
+        return self.query_service.list_notes(self._site(site_id), session_id, limit=limit, offset=offset)
+
     def _start_task(
         self,
         site_id: str,
@@ -1150,7 +1226,10 @@ class RailTransitWebApplicationService:
     @staticmethod
     def _result_summary(result: dict[str, object]) -> dict[str, object]:
         summary: dict[str, object] = {}
-        for key in ("count", "row_count", "train_count", "success_count", "failed_count"):
+        for key in (
+            "count", "row_count", "train_count", "success_count", "failed_count",
+            "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
+        ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):
                 summary[key] = value
@@ -1310,6 +1389,18 @@ class RailTransitWebApplicationService:
             shutil.rmtree(staging)
         except FileNotFoundError:
             pass
+
+    def _online_mr_session_dir(self, site_id: str, session_id: str):
+        detail = self.query_service.get_session(site_id, session_id)
+        root = self.paths.online_mr_root(site_id).resolve()
+        candidate = root / detail.session_path_reference
+        if candidate.is_symlink():
+            raise RailTransitWebError("SESSION_NOT_FOUND", "Online MR 会话不存在")
+        session_dir = candidate.resolve()
+        self._require_within(session_dir, root)
+        if not session_dir.is_dir() or session_dir.is_symlink():
+            raise RailTransitWebError("SESSION_NOT_FOUND", "Online MR 会话不存在")
+        return detail, session_dir
 
     def _reconcile_owned_orphans(self, site_id: str):
         repository = self.task_service.repository(site_id)

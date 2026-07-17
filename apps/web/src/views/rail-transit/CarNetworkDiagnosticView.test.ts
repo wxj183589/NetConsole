@@ -7,16 +7,17 @@ describe('car network diagnostic view', () => {
     for (const contract of [
       'startCarNetworkDiagnostic',
       'getCarNetworkDiagnosticTask',
-      'cancelCarNetworkDiagnostic',
       'recoverCarNetworkDiagnostics',
+      "openTaskWindow({ module: 'rail'",
       'web.rail_car_network_diagnostic_execute',
       'web.rail_task_control',
       '开始检测',
-      '取消检测',
+      '打开任务窗口',
       '跨 TC 丢包',
       'CarNetworkPointTableDialog',
       '点表管理',
     ]) expect(source).toContain(contract)
+    expect(source).not.toContain('cancelCarNetworkDiagnostic')
     for (const unrelated of [
       'importMeshAnalysis',
       'exportMeshAnalysisReport',

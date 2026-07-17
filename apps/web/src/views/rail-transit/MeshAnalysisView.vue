@@ -11,8 +11,7 @@ import {
 } from '../../api/meshAnalysis'
 import { listVehicleMrs } from '../../api/railTransitBaseData'
 import {
-  cancelRailTransitTask, exportMeshAnalysisReport, getRailTransitTask, importMeshAnalysis,
-  meshAnalysisReportDownloadRequest, recoverRailTransitTasks,
+  exportMeshAnalysisReport, getRailTransitTask, importMeshAnalysis, recoverRailTransitTasks,
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
@@ -193,7 +192,7 @@ function pollTask(): void {
 }
 async function startTask(factory: () => Promise<RailTransitTask>, fallback: string): Promise<void> {
   taskLoading.value = true; error.value = ''
-  try { rememberTask(await factory()); pollTask() }
+  try { rememberTask(await factory()); pollTask(); openTaskWindow() }
   catch (reason) { error.value = reason instanceof Error ? reason.message : fallback }
   finally { taskLoading.value = false }
 }
@@ -206,10 +205,6 @@ function generateReport(): void {
   if (!selected.value) return
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id), 'MESH 分析报告生成启动失败')
 }
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  await startTask(() => cancelRailTransitTask(task.value!.task_id), 'MESH 任务取消失败')
-}
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
@@ -218,15 +213,12 @@ async function recoverTask(): Promise<void> {
     pollTask()
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务恢复失败' }
 }
-async function downloadGeneratedReport(): Promise<void> {
-  if (!task.value?.available || !task.value.artifact_id) return
-  taskLoading.value = true
-  try {
-    const result = await downloadBackendResource(meshAnalysisReportDownloadRequest(task.value.artifact_id))
-    if (result.status === 'failed') throw new Error(result.error || 'MESH 报告保存失败')
-    if (result.status === 'saved') ElMessage.success('MESH 报告已保存')
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 报告保存失败' }
-  finally { taskLoading.value = false }
+function openTaskWindow(taskId = task.value?.task_id || ''): void {
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
@@ -242,7 +234,7 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
-    <div v-if="task" class="content-card task-card"><div class="detail-heading"><div><h2>MESH 任务 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="220"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><div class="jump-actions"><el-button :disabled="terminalStates.has(task.status)" @click="cancelTask">取消任务</el-button><el-button :disabled="task.action !== 'mesh_analysis_report' || !task.available || !task.artifact_id" @click="downloadGeneratedReport">保存生成报告</el-button><el-button @click="recoverTask">重启恢复</el-button></div></div>
+    <div v-if="task" class="content-card task-card"><div class="detail-heading"><div><h2>MESH 处理结果 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="220"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><el-alert title="停止、日志、恢复与生成报告下载统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow()">打开任务窗口</el-button></el-alert></div>
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(880px, 96vw)"><el-form label-position="top"><el-form-item label="MESH MR profile"><el-select v-model="selectedProfileId" filterable placeholder="选择 profile" style="width:100%"><el-option v-for="profile in profiles" :key="profile.mr_id" :label="`${profile.display_name} · ${profile.source_file_count} 文件`" :value="profile.mr_id" /></el-select></el-form-item><el-form-item label="选择原始日志"><div class="jump-actions"><el-button @click="fileInput?.click()">选择 LOG/TXT 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div><input ref="fileInput" class="hidden-input" type="file" multiple accept=".log,.txt" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles"></el-form-item><el-divider content-position="left">创建新 profile</el-divider><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建 profile</el-button></el-form><template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selectedProfileId || !selectedFiles.length" @click="startImport">开始导入分析</el-button></template></el-dialog>
 
@@ -282,7 +274,7 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
           <el-button @click="router.push('/ac-management/mesh-links')">AC Mesh-Link</el-button>
-          <el-button v-if="selected.session.task_id" @click="router.push({ path: '/tasks', query: { task: selected?.session.task_id } })">任务中心</el-button>
+          <el-button v-if="selected.session.task_id" @click="openTaskWindow(selected.session.task_id)">任务窗口</el-button>
         </div>
       </div>
       <el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />

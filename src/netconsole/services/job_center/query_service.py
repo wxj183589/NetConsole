@@ -36,6 +36,7 @@ from netconsole.services.file_contract import artifact_media_type
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
 AC_WEB_OWNER = "web_ac"
+RAIL_WEB_OWNER = "web_rail_transit"
 
 
 class JobCenterQueryService:
@@ -249,6 +250,8 @@ class JobCenterQueryService:
             return "files"
         if owner == AC_WEB_OWNER:
             return "ac"
+        if owner == RAIL_WEB_OWNER:
+            return "rail"
         return "other"
 
     def _cancel_capability(
@@ -278,6 +281,8 @@ class JobCenterQueryService:
         if owner == "web_file_management" and task_type == "file_management_download":
             return True, ""
         if owner == AC_WEB_OWNER:
+            return True, ""
+        if owner == RAIL_WEB_OWNER:
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 

@@ -37,6 +37,8 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
 RAIL_FEATURE_IDS = (
     "web.rail_car_network_diagnostic",
     "web.online_mr_report_export",
+    "web.online_mr_parse",
+    "online_mr.collection_notes",
     "web.mesh_analysis_import",
     "web.mesh_analysis_report_export",
     "web.rail_car_network_diagnostic_execute",
@@ -86,6 +88,61 @@ def _point_table_csv(rows: list[dict[str, object]]) -> bytes:
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue().encode("utf-8-sig")
+
+
+def _online_mr_session(paths: PathResolver, session_id: str = "session-actions") -> Path:
+    session = paths.online_mr_session_dir("demo", "MR-01", session_id)
+    for name in ("raw", "parsed", "view", "logs", "outputs"):
+        (session / name).mkdir(parents=True, exist_ok=True)
+    (session / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "site": "demo",
+                "mr_name": "MR-01",
+                "device_id": 7,
+                "device_name": "列车07 MR",
+                "status": "STOPPED",
+                "started_at": "2026-07-17 10:00:00",
+                "ended_at": "2026-07-17 10:05:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (session / "raw" / "mesh_link_raw.log").write_text("sample", encoding="utf-8")
+    return session
+
+
+def test_online_mr_note_and_parse_use_real_session_and_task(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    session = _online_mr_session(paths)
+
+    with pytest.raises(RailTransitWebError) as confirmation:
+        service.add_online_mr_note(
+            "demo", "session-actions", note="进入区间", explicit_confirmation=False
+        )
+    assert confirmation.value.code == "CONFIRMATION_REQUIRED"
+
+    note = service.add_online_mr_note(
+        "demo",
+        "session-actions",
+        note="进入区间",
+        explicit_confirmation=True,
+        audit={"source": "伪造来源", "action": "伪造动作", "operator": "tester"},
+    )
+    assert note.title == "进入区间"
+    persisted = json.loads((session / "manual_notes.jsonl").read_text(encoding="utf-8"))
+    assert persisted["audit"]["source"] == "electron_online_mr"
+    assert persisted["audit"]["action"] == "add_note"
+    assert persisted["audit"]["operator"] == "tester"
+    assert service.notes("demo", "session-actions")[0].title == "进入区间"
+
+    task = service.start_online_mr_parse("demo", "session-actions", force_reparse=True)
+    assert normal.jobs[task.task_id].task_type == "online_mr_parse"
+    assert normal.jobs[task.task_id].params["session_dir"] == str(session.resolve())
+    assert normal.jobs[task.task_id].params["force_reparse"] is True
 
 
 def test_point_table_preview_transform_save_and_task_window_blocker(tmp_path: Path) -> None:

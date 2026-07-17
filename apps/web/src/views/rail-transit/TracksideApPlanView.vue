@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
-  cancelTracksideApTask, exportTracksideApPlan, getTracksideApPlan, getTracksideApTask,
-  previewTracksideApPlan, recoverTracksideApTasks, saveTracksideApPlan, tracksideApPlanDownloadRequest,
+  exportTracksideApPlan, getTracksideApPlan, getTracksideApTask,
+  previewTracksideApPlan, recoverTracksideApTasks, saveTracksideApPlan,
 } from '../../api/tracksideApBusiness'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource } from '../../platform/runtime'
 import type { TracksideApPlanPreview, TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
 
 const storageKey = 'netconsole.trackside-ap-plan.last-task'
+const router = useRouter()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const rows = ref<TracksideApPlanRow[]>([])
 const selectedRows = ref<TracksideApPlanRow[]>([])
@@ -70,7 +71,7 @@ function poll(): void {
 }
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string): Promise<void> {
   loading.value = true; error.value = ''
-  try { rememberTask(await factory()); poll() }
+  try { rememberTask(await factory()); poll(); openTaskWindow() }
   catch (reason) { error.value = failure(reason, fallback) }
   finally { loading.value = false }
 }
@@ -96,17 +97,13 @@ function applyPreview(): void {
 async function exportPlan(template: boolean): Promise<void> {
   await startTask(() => exportTracksideApPlan(template), template ? '规划模板导出启动失败' : '轨旁 AP 规划导出启动失败')
 }
-async function downloadTaskArtifact(): Promise<void> {
-  if (!task.value?.available || !task.value.artifact_id) return
-  try {
-    const result = await downloadBackendResource(tracksideApPlanDownloadRequest(task.value.artifact_id, false))
-    if (result.status === 'failed') throw new Error(result.error || '轨旁 AP 规划下载失败')
-    if (result.status === 'saved') ElMessage.success('轨旁 AP 规划已保存')
-  } catch (reason) { error.value = failure(reason, '轨旁 AP 规划下载失败') }
-}
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  await startTask(() => cancelTracksideApTask(task.value!.task_id), '轨旁 AP 规划任务取消失败')
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 async function recoverTasks(): Promise<void> {
   try {
@@ -158,7 +155,7 @@ onBeforeUnmount(stopPolling)
       <div class="task-heading"><div><h2>规划任务</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div>
       <el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" show-icon />
       <p v-else>{{ task.message || '任务处理中' }}</p>
-      <div class="actions"><el-button :disabled="!taskRunning" @click="cancelTask">取消任务</el-button><el-button type="primary" :disabled="!task.available" @click="downloadTaskArtifact">受控下载</el-button></div>
+      <el-alert title="停止、日志、恢复和导出文件保存统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     </div>
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>
       <div v-if="preview" class="preview">

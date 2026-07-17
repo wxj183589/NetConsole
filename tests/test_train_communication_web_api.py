@@ -64,7 +64,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_train_communication_queries_do_not_touch_sources_and_only_diagnostic_routes_write(tmp_path: Path) -> None:
+def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_allowlisted(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     app.state.train_communication_query_service = _ApiService()
@@ -98,8 +98,19 @@ def test_train_communication_queries_do_not_touch_sources_and_only_diagnostic_ro
     assert routes
     write_routes = [route for route in routes if route.methods != {"GET"}]
     assert write_routes
-    assert all("diagnostic" in route.path for route in write_routes)
-    assert not any(any(word in route.path for word in ("delete", "import")) for route in routes)
+    assert {route.path for route in write_routes} == {
+        "/rail-transit/train-communication/trains/{train_id}/diagnostics",
+        "/rail-transit/train-communication/diagnostics/{task_id}/cancel",
+        "/rail-transit/train-communication/diagnostics/recover",
+        "/rail-transit/train-communication/point-table/import/preview",
+        "/rail-transit/train-communication/point-table/transform",
+        "/rail-transit/train-communication/point-table/save",
+        "/rail-transit/train-communication/point-table/generate",
+        "/rail-transit/train-communication/point-table/export",
+        "/rail-transit/train-communication/point-table/tasks/{task_id}/cancel",
+        "/rail-transit/train-communication/point-table/tasks/recover",
+    }
+    assert not any("delete" in route.path for route in routes)
 
 
 def test_missing_iperf_raw_tail_returns_chinese_empty_state(tmp_path: Path) -> None:

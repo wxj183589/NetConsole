@@ -6,7 +6,11 @@ from fastapi.responses import FileResponse
 from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.job_center import JobCenterLogTailDTO, JobCenterSummaryDTO, JobCenterTaskDTO
-from netconsole.services.job_center.query_service import AC_WEB_OWNER, JobCenterQueryService
+from netconsole.services.job_center.query_service import (
+    AC_WEB_OWNER,
+    RAIL_WEB_OWNER,
+    JobCenterQueryService,
+)
 from netconsole.services.config_collection_web_service import CONFIG_WEB_OWNER, CONFIG_WEB_TASK_TYPES
 from netconsole.services.device_management_web_service import DEVICE_TASK_TYPES, WEB_TASK_OWNER
 from netconsole.services.file_contract import artifact_media_type
@@ -106,6 +110,10 @@ def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
             request.app.state.file_management_service.cancel_download(task.site_name, task_id)
         elif task.owner == AC_WEB_OWNER:
             request.app.state.ac_web_application_service.cancel_task(task.site_name, task_id)
+        elif task.owner == RAIL_WEB_OWNER:
+            request.app.state.rail_transit_web_application_service.cancel_task(
+                task.site_name, task_id
+            )
         else:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务 owner 未接入统一停止能力")
     except (KeyError, ValueError) as exc:

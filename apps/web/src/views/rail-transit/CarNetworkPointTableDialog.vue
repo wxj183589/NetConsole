@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
-  cancelCarNetworkPointTableTask, carNetworkPointTableDownloadRequest, exportCarNetworkPointTable,
+  exportCarNetworkPointTable,
   generateCarNetworkPointTable, getCarNetworkPointTable, getCarNetworkPointTableTask,
   previewCarNetworkPointTable, recoverCarNetworkPointTableTasks, saveCarNetworkPointTable,
   transformCarNetworkPointTable,
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource } from '../../platform/runtime'
 import type { CarNetworkPointPreview, CarNetworkPointRow, RailTransitTask } from '../../types/railTransitWeb'
 
 const props = defineProps<{ modelValue: boolean }>()
+const router = useRouter()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 const storageKey = 'netconsole.car-network-point-table.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -104,7 +105,7 @@ function poll(): void {
 }
 async function startTask(factory: () => Promise<RailTransitTask>, fallback: string): Promise<void> {
   loading.value = true; error.value = ''
-  try { rememberTask(await factory()); poll() }
+  try { rememberTask(await factory()); poll(); openTaskWindow() }
   catch (reason) { error.value = failure(reason, fallback) }
   finally { loading.value = false }
 }
@@ -140,17 +141,13 @@ function applyPreview(): void {
   ElMessage.success('导入结果已应用到编辑区，请确认后保存')
 }
 async function exportTable(): Promise<void> { await startTask(() => exportCarNetworkPointTable(exportFormat.value), '车内通信点表导出启动失败') }
-async function downloadTaskArtifact(): Promise<void> {
-  if (!task.value?.available || !task.value.artifact_id) return
-  try {
-    const result = await downloadBackendResource(carNetworkPointTableDownloadRequest(task.value.artifact_id, exportFormat.value))
-    if (result.status === 'failed') throw new Error(result.error || '车内通信点表下载失败')
-    if (result.status === 'saved') ElMessage.success('车内通信点表已保存')
-  } catch (reason) { error.value = failure(reason, '车内通信点表下载失败') }
-}
-async function cancelTask(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  await startTask(() => cancelCarNetworkPointTableTask(task.value!.task_id), '点表任务取消失败')
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
+  }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 async function recoverTasks(): Promise<void> {
   try {
@@ -207,7 +204,7 @@ onBeforeUnmount(stopPolling)
         <el-table-column v-for="field in [{k:'tc',l:'TC'},{k:'end',l:'端位'},{k:'node_name',l:'节点名称'},{k:'node_type',l:'节点类型'},{k:'device_id',l:'设备ID'},{k:'device_name',l:'设备名称'},{k:'device_group',l:'设备组'},{k:'station',l:'站点'},{k:'primary_address',l:'主用地址'},{k:'backup_address',l:'备用地址'},{k:'ip_vehicle',l:'车内IP'},{k:'ip_uplink',l:'落地IP'},{k:'ssh_host',l:'SSH地址'},{k:'vrrp_ip',l:'VRRP IP'},{k:'primary_address_role',l:'主用角色'},{k:'backup_address_role',l:'备用角色'},{k:'remark',l:'备注'}]" :key="field.k" :label="field.l" width="140"><template #default="{ row }"><el-input v-model="row[field.k]" :disabled="locked" @input="markDirty" /></template></el-table-column>
         <el-table-column label="映射模式" width="120"><template #default="{ row }"><el-select v-model="row.address_mapping_mode" :disabled="locked" @change="markDirty"><el-option label="全局" value="global" /><el-option label="自定义" value="custom" /></el-select></template></el-table-column>
       </el-table>
-      <div v-if="task" class="task-bar"><span>任务 {{ task.task_id }}</span><el-tag>{{ task.status }}</el-tag><span>{{ task.error_message || task.message }}</span><el-button :disabled="!taskRunning" @click="cancelTask">取消任务</el-button><el-button type="primary" :disabled="!task.available" @click="downloadTaskArtifact">受控下载</el-button></div>
+      <div v-if="task" class="task-bar"><span>任务 {{ task.task_id }}</span><el-tag>{{ task.status }}</el-tag><span>{{ task.error_message || task.message }}</span><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
     <el-dialog v-model="previewVisible" title="点表导入预览" width="900px" append-to-body>
       <div v-if="preview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><el-table :data="preview.rows" border height="350"><el-table-column prop="row_number" label="行" width="70" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="key" label="节点" min-width="180" /><el-table-column prop="message" label="说明" min-width="260" /></el-table><el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div>

@@ -106,6 +106,12 @@ export function exportOnlineMrReport(sessionId: string, outputName = ''): Promis
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/report`, { method: 'POST', body: JSON.stringify({ output_name: outputName }) })
 }
 
+export function parseOnlineMrSession(sessionId: string, forceReparse = false): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/parse`, {
+    method: 'POST', body: JSON.stringify({ force_reparse: forceReparse }),
+  })
+}
+
 export function exportMeshAnalysisReport(sessionId: string): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`/api/rail-transit/mesh-analysis/sessions/${encodeURIComponent(sessionId)}/report`, { method: 'POST' })
 }

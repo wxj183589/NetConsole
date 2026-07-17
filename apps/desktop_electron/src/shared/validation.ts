@@ -48,7 +48,7 @@ export function validateTaskWindowContext(value: unknown): TaskWindowContext {
     result.taskId = record.taskId
   }
   if (record.module !== undefined) {
-    if (!['devices', 'ac', 'config', 'files'].includes(String(record.module))) throw new TypeError('module is invalid')
+    if (!['devices', 'ac', 'rail', 'config', 'files'].includes(String(record.module))) throw new TypeError('module is invalid')
     result.module = record.module as TaskWindowContext['module']
   }
   if (record.status !== undefined) {

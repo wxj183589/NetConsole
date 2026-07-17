@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
-  cancelCarNetworkDiagnostic,
   getCarNetworkDiagnosticTask,
   listOnlineTrains,
   recoverCarNetworkDiagnostics,
@@ -13,6 +13,7 @@ import type { OnlineTrainRow, RailTransitTask } from '../../types/railTransitWeb
 import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
 
 const storageKey = 'netconsole.car-network-diagnostic.last-task'
+const router = useRouter()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const trains = ref<OnlineTrainRow[]>([])
 const selectedTrainId = ref('')
@@ -83,6 +84,7 @@ async function startDiagnostic(): Promise<void> {
   try {
     rememberTask(await startCarNetworkDiagnostic(selectedTrainId.value))
     poll()
+    openTaskWindow()
   } catch (reason) {
     error.value = failure(reason, '车内通信检测启动失败')
   } finally {
@@ -90,18 +92,13 @@ async function startDiagnostic(): Promise<void> {
   }
 }
 
-async function cancelDiagnostic(): Promise<void> {
-  if (!task.value || terminalStates.has(task.value.status)) return
-  loading.value = true
-  error.value = ''
-  try {
-    rememberTask(await cancelCarNetworkDiagnostic(task.value.task_id))
-    poll()
-  } catch (reason) {
-    error.value = failure(reason, '车内通信检测取消失败')
-  } finally {
-    loading.value = false
+function openTaskWindow(): void {
+  const taskId = task.value?.task_id || ''
+  if (window.netconsoleDesktop) {
+    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    return
   }
+  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function recoverDiagnostic(): Promise<void> {
@@ -127,7 +124,7 @@ onBeforeUnmount(stopPolling)
   <section class="diagnostic-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · CAR NETWORK</p><h1>车内通信检测</h1><p>按列车执行 AC 在线状态、MR SSH、跨 TC 丢包与核心侧辅助 Ping 检测。</p></div>
-      <div class="actions"><el-button :loading="loading" @click="loadTrains">刷新列车</el-button><el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_write')" @click="pointTableVisible = true">点表管理</el-button><el-button type="primary" :disabled="!canStart" :loading="loading" @click="startDiagnostic">开始检测</el-button><el-button type="danger" plain :disabled="!task || terminalStates.has(task.status)" @click="cancelDiagnostic">取消检测</el-button></div>
+      <div class="actions"><el-button :loading="loading" @click="loadTrains">刷新列车</el-button><el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_write')" @click="pointTableVisible = true">点表管理</el-button><el-button type="primary" :disabled="!canStart" :loading="loading" @click="startDiagnostic">开始检测</el-button><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverDiagnostic">恢复任务状态</el-button></el-alert>
@@ -147,6 +144,7 @@ onBeforeUnmount(stopPolling)
 
     <div v-if="task" class="content-card task-card">
       <div class="task-heading"><div><h2>检测任务</h2><p>{{ task.task_id }}</p></div><el-tag :type="task.status === 'COMPLETED' ? 'success' : task.status === 'FAILED' ? 'danger' : task.status === 'CANCELLED' ? 'warning' : 'primary'">{{ task.status }}</el-tag></div>
+      <el-alert title="停止、日志和任务恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
       <el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" show-icon />
       <p v-else-if="task.message" class="task-message">{{ task.message }}</p>
       <el-table v-if="resultRows.length" :data="resultRows" border max-height="460"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="诊断结果" min-width="520" show-overflow-tooltip /></el-table>
