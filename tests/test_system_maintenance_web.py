@@ -324,6 +324,46 @@ def test_tasks_reuse_shared_service_and_real_artifact_store(tmp_path: Path) -> N
     assert name == "app_log_all.csv"
 
 
+def test_cancel_reports_when_no_adapter_owns_active_task(tmp_path: Path) -> None:
+    service, process, _export = _service(_paths(tmp_path))
+    task = service.start_cleanup("demo", dry_run=True)
+    process.jobs.pop(task.task_id)
+
+    with pytest.raises(SystemMaintenanceError) as captured:
+        service.cancel_task("demo", task.task_id)
+
+    assert captured.value.code == "TASK_NOT_CANCELLABLE"
+    assert service.get_task("demo", task.task_id).status == "RUNNING"
+
+
+def test_external_link_indices_reject_negative_or_zero_values(tmp_path: Path) -> None:
+    service, process, _export = _service(_paths(tmp_path))
+    for value in ("repository-0", "repository--1", "repository-invalid"):
+        with pytest.raises(SystemMaintenanceError) as captured:
+            service.about_link(value)
+        assert captured.value.code == "LINK_NOT_FOUND"
+
+    task = service.start_open_source_scan("demo")
+    process.complete(
+        task.task_id,
+        {
+            "components": [
+                {
+                    "name": "demo",
+                    "version": "1.0",
+                    "license": "MIT",
+                    "purpose": "test",
+                    "homepage": "https://example.com",
+                    "note": "",
+                }
+            ]
+        },
+    )
+    with pytest.raises(SystemMaintenanceError) as captured:
+        service.open_source_link("demo", task.task_id, -1)
+    assert captured.value.code == "LINK_NOT_FOUND"
+
+
 def test_task_dto_tolerates_damaged_persisted_progress_details(tmp_path: Path) -> None:
     service, _process, _export = _service(_paths(tmp_path))
     task = service.start_cleanup("demo", dry_run=True)

@@ -35,7 +35,7 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import sanitize_web_export_snapshot
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
-from netconsole.ui.logs.log_display import display_log_row
+from netconsole.services.log_display import display_log_row
 
 
 class SystemMaintenanceError(RuntimeError):
@@ -297,9 +297,13 @@ class SystemMaintenanceApplicationService:
 
     def cancel_task(self, site_id: str, task_id: str) -> MaintenanceTaskDTO:
         task = self.get_task(site_id, task_id)
-        if task.status not in {state.value for state in TERMINAL_TASK_STATES}:
-            if not self.process_adapter.cancel_job(task_id):
-                self.export_adapter.cancel_job(task_id)
+        if task.status in {state.value for state in TERMINAL_TASK_STATES}:
+            return task
+        cancelled = self.process_adapter.cancel_job(task_id)
+        if not cancelled:
+            cancelled = self.export_adapter.cancel_job(task_id)
+        if not cancelled:
+            raise SystemMaintenanceError("TASK_NOT_CANCELLABLE", "任务当前不支持取消或执行进程已退出")
         return self.get_task(site_id, task_id)
 
     def open_artifact(self, site_id: str, kind: str, artifact_id: str) -> tuple[Path, str]:
@@ -339,6 +343,8 @@ class SystemMaintenanceApplicationService:
     def about_link(self, link_id: str) -> ExternalLinkDTO:
         try:
             index = int(str(link_id).removeprefix("repository-")) - 1
+            if index < 0:
+                raise IndexError(index)
             url = REPOSITORY_WEB_URLS[index]
         except (ValueError, IndexError) as exc:
             raise SystemMaintenanceError("LINK_NOT_FOUND", "外链标识无效") from exc
@@ -349,6 +355,8 @@ class SystemMaintenanceApplicationService:
         if task.action != "open_source_scan" or task.status != TaskState.COMPLETED.value:
             raise SystemMaintenanceError("LINK_NOT_READY", "依赖扫描任务尚未完成")
         try:
+            if component_index < 0:
+                raise IndexError(component_index)
             url = task.components[component_index].homepage
         except IndexError as exc:
             raise SystemMaintenanceError("LINK_NOT_FOUND", "组件外链不存在") from exc
