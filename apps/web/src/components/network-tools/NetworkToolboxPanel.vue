@@ -244,12 +244,22 @@ async function pollProbeTask(taskId: string, generation: number): Promise<void> 
     if (PROBE_TYPES.includes(current.type)) {
       const page = await listNetworkTaskResults(taskId, nextResultOffset, resultPageSize, resultCursor)
       if (!mounted || generation !== probePollGeneration || selectedTask.value?.id !== taskId) return
-      if (page.items.length) taskResults.value.push(...page.items)
+      if (page.items.length) {
+        taskResults.value.push(...page.items)
+        if (taskResults.value.length > resultPageSize) {
+          taskResults.value.splice(0, taskResults.value.length - resultPageSize)
+        }
+      }
       resultTotal.value = page.total
       nextResultOffset = page.next_offset
       resultCursor = page.next_cursor
       if (page.has_more) {
         scheduleProbePoll(taskId, generation, 0)
+        return
+      }
+      if (['COMPLETED', 'CANCELLED'].includes(current.status) && page.total > resultPageSize) {
+        resultOffset.value = 0
+        await loadTaskResults()
         return
       }
     }
