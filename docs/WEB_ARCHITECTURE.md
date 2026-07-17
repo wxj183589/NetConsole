@@ -8,22 +8,22 @@ NetConsole 采用渐进式 Electron/Vue 演进，不重建第二套 Python Core�
 
 ## 2. 运行形态
 
-### 2.1 Launcher 与 Desktop Mode
+### 2.1 Electron Desktop Mode
 
 ```mermaid
 flowchart TD
-    L["No-Qt Launcher"] --> API["唯一 FastAPI Core Runtime"]
-    L --> QS["Qt Desktop Shell"]
-    L -.开发诊断.-> B["Local Browser Shell"]
-    QS --> WV["QWebEngineView / external fallback"]
-    WV --> API
+    E["Electron Main / Preload"] --> V["唯一 Vue Renderer"]
+    E --> R["受管 Electron Backend Runtime"]
+    R --> API["唯一 FastAPI Core Runtime"]
+    L["Python 诊断 Launcher"] -.显式 web/server.-> B["Local Browser / No Shell"]
     B --> API
+    V --> API
     API --> CORE["Existing Python Services"]
     CORE --> REPO["Existing Repositories / Parsers"]
     CORE --> JOB["Job Registry / Worker Process"]
 ```
 
-`python main.py` 当前仍等价 `--mode auto`，只选择迁移期 Qt；Qt 不可用或初始化失败时明确退出，不再自动回退系统浏览器。`--mode qt` 强制 Qt。只有开发者显式指定 `--mode web` 或旧 `--web-shell` 时才进入浏览器兼容诊断，不再承担客户发布、Qt 功能对等或人工验收；后续可在 Launcher 收口阶段移除，而不是在业务模块迁移中复制或删除 Vue/FastAPI 逻辑。
+正式桌面开发从 `apps/desktop_electron` 启动。无参数 `python main.py` 不再启动任何桌面 Shell；`--mode auto/qt`、Qt probe 和旧 `--web-shell` 已删除。只有开发者显式指定 `--mode web|server` 才进入本机兼容诊断，不承担客户发布、Qt 功能对等或人工验收，也不产生第二套 Vue/FastAPI 逻辑。
 
 ### 2.2 Server Mode
 
@@ -71,7 +71,7 @@ Electron Desktop 自己持有退出屏障：先拒绝新下载并取消、等待
 
 ```mermaid
 flowchart TD
-    QT["Qt Adapter"] --> APP["TaskApplicationService"]
+    LEGACY["Qt Adapter（待回收事实源）"] --> APP["TaskApplicationService"]
     FA["FastAPI Task Adapter"] --> APP
     APP --> RT["Pure Python TaskRuntime"]
     RT --> REG["Existing JobSpec / Registry / Handlers"]
@@ -208,11 +208,12 @@ apps/web/src/views/network-tools/TrafficTestView.vue
 ## 8. 启动与验证
 
 ```powershell
-# 默认自动选择；Qt 可用时进入 Qt Shell
-.\.venv\Scripts\python.exe main.py
+# 正式桌面开发入口
+cd apps/desktop_electron
+pnpm dev
+cd ../..
 
-# 显式 Shell
-.\.venv\Scripts\python.exe main.py --mode qt
+# 显式本机开发诊断
 .\.venv\Scripts\python.exe main.py --mode web
 .\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
 
@@ -222,9 +223,6 @@ pnpm install
 pnpm test
 pnpm build
 cd ..
-
-# 旧 Qt WebEngine Shell（兼容）
-.\.venv\Scripts\python.exe main.py --web-shell
 
 # FastAPI Server Mode
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main

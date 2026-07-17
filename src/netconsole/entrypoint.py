@@ -78,11 +78,10 @@ def main() -> int:
         return 0
     _enable_faulthandler()
     try:
-        if len(sys.argv) >= 2 and sys.argv[1] == "--qt-probe":
-            from netconsole.launcher.qt_probe import run_qt_probe
+        if len(sys.argv) >= 2 and sys.argv[1] == "--electron-backend":
+            from netconsole.backend.electron_runtime import main as run_electron_backend
 
-            component = sys.argv[2] if len(sys.argv) >= 3 else "widgets"
-            return run_qt_probe(component)
+            return run_electron_backend(sys.argv[2:])
         if len(sys.argv) >= 2 and sys.argv[1] == "--export-worker":
             from netconsole.export_worker import main as run_export_worker
 
@@ -95,14 +94,6 @@ def main() -> int:
             from netconsole.background_worker import main as run_background_worker
 
             return run_background_worker(sys.argv[2:])
-        if len(sys.argv) >= 2 and sys.argv[1] == "--admin-network-manager":
-            from netconsole.app import run
-
-            return run()
-        if len(sys.argv) >= 2 and sys.argv[1] == "--web-shell":
-            from apps.desktop.web_shell import run_web_shell
-
-            return run_web_shell()
         if os.environ.get("NETCONSOLE_RUNTIME_SMOKE_TEST") == "1":
             from netconsole.core.bootstrap import create_demo_context
 
@@ -123,6 +114,9 @@ def main() -> int:
         if os.environ.get("NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST") == "1":
             _verify_release_contract()
             return 0
+        if not sys.argv[1:]:
+            print("NetConsole 桌面端请启动 Electron；Python 入口仅用于受管 Backend、Worker 和本机开发诊断。", file=sys.stderr)
+            return 2
         from netconsole.launcher.launcher import launch
 
         return launch(sys.argv[1:])

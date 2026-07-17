@@ -6,7 +6,7 @@
 
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
-| [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | `main.py`、`src/netconsole/app.py`、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
+| [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | Electron Main、`main.py`、Electron Runtime、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
 | [下一代架构](ARCHITECTURE_NEXT.md) | Python Core/FastAPI/Vue/Electron 长期目标、永久层与 Qt 退出边界 | 架构与迁移负责人 | 已确认战略、当前代码与目录规范 | 产品目标、永久技术边界或 Qt/Electron 路线变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、Vue 双运行时、开发/生产资源启动与 Qt Legacy 边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
@@ -14,7 +14,7 @@
 | [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
 | [Web 迁移计划](WEB_MIGRATION_PLAN.md) | 固定迁移流程、状态门槛、执行顺序和 Electron 时机 | Web 迁移指挥与模块负责人 | 当前实现、验收记录、迁移决策 | 阶段顺序、替换门槛或交付要求变化 |
 | [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md) | 模块级长期去向、当前阶段和冻结范围 | Web 迁移指挥与集成 | Feature Registry、Web 导航、详细对等矩阵 | 模块阶段、排除范围或长期去向变化 |
-| [Qt WebHost](WEB_HOST.md) | 普通主程序内嵌 Web、托盘、临时会话、fallback 和前端打包 | Desktop WebHost 开发 | `src/netconsole/ui/web_host`、FastAPI、Vue 构建 | WebHost 生命周期、认证、fallback 或打包变化 |
+| [Desktop WebHost](WEB_HOST.md) | Electron Web Runtime、开发诊断入口及历史 Qt WebHost 边界 | Desktop/Core/Web 开发 | Electron Runtime、`src/netconsole/launcher`、历史 `src/netconsole/ui/web_host` | WebHost 生命周期、认证、诊断入口或打包变化 |
 | [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md) | Qt 页面/动作与 Electron Route、Feature、验收和完成状态 | Electron 迁移指挥与模块开发 | Qt 页面、Navigation Registry、Router、Feature Registry、测试 | Qt/Electron 能力、归属或验收状态变化 |
 | [轨道交通 Qt/Electron 逐操作矩阵](development/parity/rail-transit.md) | 轨交 Qt 独立页面、按钮、写入、导入导出、异常恢复与 Electron 真实闭环 | 轨交迁移与验收 | Rail/Online MR/MESH 页面、Application Service、Router、测试 | 任一轨交 Qt 操作、Electron 闭环、公共依赖或现场验收变化 |
 | [设备管理对等规格](development/parity/device-management.md) | 设备管理逐字段、逐操作、调用链和人工验收清单 | 设备管理迁移与验收 | Qt 设备页、DeviceManagementView、Device API/Service、测试 | 设备管理能力或验收状态变化 |

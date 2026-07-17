@@ -2,34 +2,34 @@
 
 ## 1. 架构目标
 
-本文描述当前源码架构。NetConsole 以 Python Core Runtime 为主体，Electron 是唯一正式桌面产品方向；Launcher 中的 Qt、本机 Web 和 Server Shell 是迁移兼容或开发诊断入口，不再构成正式发布回退。长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 仅保留为迁移事实源并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
+本文描述当前源码架构。NetConsole 以 Python Core Runtime 为主体，Electron Main 是唯一正式桌面入口；本机 Browser 和无 Shell Server 仅用于源码开发、诊断与 API 联调，不构成独立产品或发布回退。长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 源码仅保留为迁移事实源并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
 
 ## 2. 启动与运行形态
 
-`main.py` 是唯一程序入口。它先识别工作进程、smoke 和旧 Qt Web Shell 参数，再由无 Qt 依赖 Launcher 创建 Core Runtime 并选择 Shell：
+Electron Main 负责正式桌面启动、窗口和受管 Backend 生命周期。`main.py` 是 Python 内部兼容入口，只分派冻结 Backend、worker、smoke 和显式本机开发诊断：
 
 ```mermaid
 flowchart TD
-    MAIN["main.py"] --> MODE{"启动参数"}
+    ELECTRON["Electron Main"] --> VUE["唯一 Vue Renderer"]
+    ELECTRON -->|"--electron-backend"| MAIN["NetConsoleBackend.exe / main.py"]
+    MAIN --> MODE{"内部或诊断参数"}
+    MODE -->|"--electron-backend"| EBACKEND["Electron Runtime\n127.0.0.1:随机端口"]
     MODE -->|"--background-worker --job"| BJ["netconsole.background_worker"]
     MODE -->|"--export-worker / --export-worker-job"| EW["netconsole.export_worker"]
     MODE -->|"smoke 参数"| SMOKE["构建验证入口"]
-    MODE -->|"--web-shell"| LEGACY["兼容 Qt Web Shell"]
-    MODE -->|"普通启动"| LAUNCHER["无 Qt Launcher"]
-    LAUNCHER --> CORE["唯一 FastAPI Core Runtime"]
-    LAUNCHER -->|"auto / qt"| QT["Qt Shell"]
-    LAUNCHER -->|"web"| BROWSER["本机浏览器 Shell"]
-    LAUNCHER -->|"server"| NONE["无 Shell Server"]
-    CORE --> QT
-    CORE --> BROWSER
-    CORE --> NONE
+    MODE -->|"--mode web"| BROWSER["本机浏览器诊断"]
+    MODE -->|"--mode server"| SERVER["无 Shell 诊断服务"]
+    EBACKEND --> CORE["唯一 FastAPI Core Runtime"]
+    BROWSER --> CORE
+    SERVER --> CORE
+    CORE --> VUE
 ```
 
-`--mode auto` 为默认值：隔离子进程实际初始化 Qt Widgets/platform，成功后进入 Qt；能力探测失败时优先打开本机浏览器，无图形/浏览器能力时保持 Server Shell。`--mode web` 与 `--mode server` 的通用路径不导入 PySide6；前者固定使用 Desktop Runtime、随机回环端口和短期会话，后者使用 Server Runtime、默认 `127.0.0.1:8000` 且不主动打开浏览器。远程鉴权完成前，Launcher 只允许 `localhost` 或 IP loopback。Qt WebEngine 单独通过轻量子模块探测，不加载 FastAPI/Core 导入链，也不影响 Qt 原生页面启动。
+打包态 Electron 启动独立 Backend 可执行文件并传入内部 `--electron-backend`；源码开发态直接运行 `netconsole.backend.electron_runtime`。两者都使用随机回环端口、短期桌面会话令牌和受管退出握手。`--mode web` 与 `--mode server` 不导入 PySide6；前者打开本机浏览器诊断，后者默认监听 `127.0.0.1:8000` 且不主动打开浏览器。Launcher 只允许 `localhost` 或 IP loopback。无参数 `main.py`、`--mode auto/qt`、Qt probe、`--web-shell` 和旧提权 Qt 子入口均已删除；无参数调用会明确提示改用 Electron 并返回失败。
 
-Launcher 对普通启动执行进程级文件锁；worker、smoke 和内部提权网络管理入口不参与该锁，避免破坏既有子进程协议。Core Runtime 先于 Shell 启动并统一停止 Uvicorn/FastAPI lifespan；Qt 的 WebConsoleHost 只消费该服务，不再拥有其生命周期。`--web-shell` 暂保留原 Qt WebEngine 语义作为兼容入口。当前尚未把所有旧 Qt 页面各自创建的 `BackgroundProcessManager/TaskApplicationService` 全面注入同一容器，不能将本阶段描述为页面级服务对象已经全部统一。
+Electron 的单实例锁和退出屏障由 Main 持有；Python 诊断 Launcher 只保护自己的单个诊断进程，worker、smoke 和受管 Electron Backend 不复用该锁。Electron Runtime 统一持有并停止 Uvicorn/FastAPI lifespan。旧 Qt 页面仍有未迁移的页面级对象和业务逻辑，因此本阶段只是删除 Qt 启动壳，不能描述为全仓零 Qt或页面业务已经全部统一。
 
-开发态工作进程使用当前 Python；冻结态使用当前可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。发布脚本会构建并打包 `apps/web/dist`，详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md) 和 [Desktop WebHost](WEB_HOST.md)。
+开发态工作进程使用当前 Python；冻结态使用 Backend 可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。Electron 安装包与无 Qt Backend bundle 尚未完成，当前生产资源构建只验证 `apps/web/dist`、Electron main/preload 和真实 FastAPI 生命周期。详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [Desktop WebHost 历史边界](WEB_HOST.md)。
 
 ## 3. 分层与依赖方向
 

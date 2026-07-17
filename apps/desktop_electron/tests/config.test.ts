@@ -58,7 +58,7 @@ describe('desktop config', () => {
     })
 
     expect(config.backendExecutable).toBe('C:\\installed\\resources\\backend\\NetConsoleBackend.exe')
-    expect(config.backendArgumentsPrefix).toEqual([])
+    expect(config.backendArgumentsPrefix).toEqual(['--electron-backend'])
   })
 
   it('shows the default menu only for an explicitly enabled development server', () => {

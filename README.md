@@ -38,7 +38,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 ## 仓库结构
 
 ```text
-apps/       独立应用：Agent、Desktop Web Shell、Web 前端
+apps/       独立应用：Agent、Electron Desktop、Web 前端和待回收 Qt 事实源
 src/        可安装的 Python 包（src/netconsole）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则
@@ -56,18 +56,16 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 
 ```mermaid
 flowchart LR
-    L["Launcher\nauto / qt / web / server"] --> CORE["Core Runtime"]
-    L --> UI
-    L --> WS
-    UI["Qt6 / PySide6 / QFluentWidgets UI"] --> SVC["Services"]
-    WS["Local Browser / Server Web Shell"] --> VUE["Vue Task / Agent / Traffic"]
+    E["Electron Main / Preload"] --> CORE["受管 Python Backend"]
+    E --> VUE["唯一 Vue Renderer"]
+    DEV["显式 web / server\n开发诊断"] -.-> CORE
     CORE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
     VUE --> API
     API --> SVC
     SVC --> REPO["Repositories"]
     REPO --> DB["SQLite / 文件数据"]
-    UI --> JOB["Background Job Process"]
-    UI --> EXP["Export Process"]
+    SVC --> JOB["Background Job Process"]
+    SVC --> EXP["Export Process"]
     JOB --> REG["Job Registry / Domain Handlers"]
     EXP --> WRITER["Export Handlers"]
     REG --> SVC
@@ -81,7 +79,7 @@ flowchart LR
 ```
 
 - UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
-- 普通后台任务走 `Qt BackgroundProcessManager -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
+- 正式桌面后台任务走 `Vue/FastAPI Application Service -> LocalProcessAdapter -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`；Qt `QProcess` Adapter 仅服务待回收页面。
 - 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。
 - Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。
 - 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
@@ -109,13 +107,13 @@ flowchart LR
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
-.\.venv\Scripts\python.exe main.py
-.\.venv\Scripts\python.exe main.py --mode qt
 .\.venv\Scripts\python.exe main.py --mode web
 .\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
-.\.venv\Scripts\python.exe main.py --web-shell
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 .\.venv\Scripts\python.exe -m pytest
+
+cd apps\desktop_electron
+pnpm dev
 ```
 
 前端首次运行或依赖变化后执行：
@@ -135,7 +133,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - H3C 私有 MIB 不随仓库分发，需由用户导入合法取得的官方归档或参考资料。
 - `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
-- 发布包必须保留 `_internal`、`data`、`runtime` 目录，以及 PySide6、网络工具和 VC++ 运行库等运行依赖；这些目录是发布包内部契约，不代表开发数据写入源码仓库。
+- 历史 Qt 发布包的 `_internal`、`data`、`runtime` 和 PySide6 约束只用于既有成果复现。未来 Electron-only 安装包必须使用无 Qt Backend bundle，并通过依赖、许可证、SBOM 和资源 Guard；该发布链尚未完成。
 - 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 
 ## 重点专题
@@ -153,6 +151,6 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面，阶段 4D 已完成 Qt Web Shell 的真实启动、路由和关闭冒烟。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 兼容入口以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 是历史验收成果，其活动启动入口现已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 事实源以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
 
-Web parity foundation 已固定源码/冻结前端资源边界、build id 校验、统一 Navigation Registry、模块归属和响应式深色菜单。Launcher 默认在 Qt 能力可用时选择 Qt Shell，Qt 当前仍是稳定生产和回退界面；Electron 安全基础复用同一 Vue/FastAPI，尚未改变模块替换状态。后续继续收敛 Application Service，并按完整纵向闭环迁移；SNMP Center 和无线勘测归入 `EXCLUDED/FUTURE_REBUILD`，网络工具无线扫描仍按独立能力评估。
+Electron-only E1 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt WebShell 与无调用 Qt Native Adapter；打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。源码态 `main.py --mode web|server` 只用于本机开发诊断。Qt 页面和 Qt-only 测试仍在本分支持续回收，尚不能把当前阶段描述为全仓或安装包零 Qt；SNMP Center 和无线勘测保持排除并将在独立数据安全门后正式删除。

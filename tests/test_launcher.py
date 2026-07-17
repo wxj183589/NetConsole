@@ -56,11 +56,18 @@ def _reset_fake_runtime() -> None:
     _FakeRuntime.instances.clear()
 
 
-def test_parse_launch_options_preserves_qt_arguments() -> None:
-    options = launcher.parse_launch_options(["--mode", "qt", "--admin-network-manager", "-style", "fusion"])
+def test_parse_launch_options_defaults_to_server_diagnostics() -> None:
+    options = launcher.parse_launch_options([])
 
-    assert options.mode == "qt"
-    assert options.shell_args == ("--admin-network-manager", "-style", "fusion")
+    assert options.mode == "server"
+    assert options.host == "127.0.0.1"
+    assert options.port == 8000
+
+
+@pytest.mark.parametrize("removed_mode", ["auto", "qt"])
+def test_parse_launch_options_rejects_removed_qt_modes(removed_mode: str) -> None:
+    with pytest.raises(SystemExit):
+        launcher.parse_launch_options(["--mode", removed_mode])
 
 
 def test_parse_launch_options_rejects_invalid_port() -> None:
@@ -92,43 +99,36 @@ def test_help_exit_is_not_recorded_as_startup_failure(tmp_path: Path, monkeypatc
     assert not (tmp_path / "startup_error.log").exists()
 
 
-def test_admin_network_manager_keeps_legacy_qt_child_path(monkeypatch) -> None:
-    from netconsole import app, entrypoint
+def test_empty_python_entrypoint_rejects_legacy_desktop_start(capsys, monkeypatch) -> None:
+    from netconsole import entrypoint
 
-    calls: list[str] = []
-    monkeypatch.setattr(sys, "argv", ["NetConsole", "--admin-network-manager"])
-    monkeypatch.setattr(app, "run", lambda: calls.append("qt") or 0)
+    monkeypatch.setattr(sys, "argv", ["NetConsole"])
 
-    assert entrypoint.main() == 0
-    assert calls == ["qt"]
+    assert entrypoint.main() == 2
+    assert "请启动 Electron" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    ("mode", "report", "expected"),
-    [
-        ("qt", launcher.CapabilityReport(qt_widgets_available=True), launcher.ShellMode.QT),
-        ("qt", launcher.CapabilityReport(), None),
-        ("web", launcher.CapabilityReport(), launcher.ShellMode.BROWSER),
-        ("server", launcher.CapabilityReport(), launcher.ShellMode.NONE),
-        ("auto", launcher.CapabilityReport(qt_widgets_available=True), launcher.ShellMode.QT),
-        ("auto", launcher.CapabilityReport(external_browser_available=True), None),
-        ("auto", launcher.CapabilityReport(), None),
-    ],
-)
-def test_shell_mode_resolution(mode, report, expected) -> None:
-    assert launcher._resolve_shell_mode(mode, report) is expected
+def test_entrypoint_dispatches_packaged_electron_backend(monkeypatch) -> None:
+    from netconsole import entrypoint
+    from netconsole.backend import electron_runtime
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--electron-backend", "--host", "127.0.0.1", "--port", "0"])
+    monkeypatch.setattr(electron_runtime, "main", lambda argv: calls.append(argv) or 7)
+
+    assert entrypoint.main() == 7
+    assert calls == [["--host", "127.0.0.1", "--port", "0"]]
 
 
-def test_web_mode_opens_browser_without_qt_probe(tmp_path: Path, monkeypatch) -> None:
+def test_web_mode_opens_browser_without_qt(tmp_path: Path, monkeypatch) -> None:
     import netconsole.launcher.runtime_supervisor as supervisor_module
 
     opened: list[str] = []
     monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
-    monkeypatch.setattr(launcher, "_capabilities_for", lambda mode: launcher.CapabilityReport())
     monkeypatch.setattr(launcher, "_open_browser_shell", lambda runtime, paths: opened.append(runtime.base_url) or True)
     monkeypatch.setattr(launcher, "_log_frontend_status", lambda runtime: None)
 
-    result = launcher._launch_once(launcher.LaunchOptions("web", "0.0.0.0", 9000, ()), PathResolver(tmp_path))
+    result = launcher._launch_once(launcher.LaunchOptions("web", "127.0.0.1", 9000), PathResolver(tmp_path))
 
     runtime = _FakeRuntime.instances[0]
     assert result == 0
@@ -143,11 +143,10 @@ def test_server_mode_uses_requested_bind_and_never_opens_browser(tmp_path: Path,
     import netconsole.launcher.runtime_supervisor as supervisor_module
 
     monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
-    monkeypatch.setattr(launcher, "_capabilities_for", lambda mode: launcher.CapabilityReport())
     monkeypatch.setattr(launcher, "_open_browser_shell", lambda *args: pytest.fail("server mode opened browser"))
     monkeypatch.setattr(launcher, "_log_frontend_status", lambda runtime: None)
 
-    result = launcher._launch_once(launcher.LaunchOptions("server", "127.0.0.2", 9000, ()), PathResolver(tmp_path))
+    result = launcher._launch_once(launcher.LaunchOptions("server", "127.0.0.2", 9000), PathResolver(tmp_path))
 
     runtime = _FakeRuntime.instances[0]
     assert result == 0
@@ -155,41 +154,6 @@ def test_server_mode_uses_requested_bind_and_never_opens_browser(tmp_path: Path,
     assert runtime.host == "127.0.0.2"
     assert runtime.port == 9000
     assert runtime.stopped is True
-
-
-def test_qt_shell_receives_core_owned_web_server(monkeypatch) -> None:
-    import netconsole.app as qt_app
-
-    received: list[tuple[object, str]] = []
-    runtime = SimpleNamespace(web_server=object())
-    options = launcher.LaunchOptions("qt", "127.0.0.1", 8000, ("-style", "fusion"))
-    monkeypatch.setattr(
-        qt_app,
-        "run",
-        lambda *, web_server: received.append(
-            (web_server, os.environ["NETCONSOLE_QT_WEBENGINE_AVAILABLE"])
-        )
-        or 7,
-    )
-
-    assert launcher._run_qt_shell(runtime, options, launcher.CapabilityReport()) == 7
-    assert received == [(runtime.web_server, "0")]
-    assert "NETCONSOLE_QT_WEBENGINE_AVAILABLE" not in os.environ
-
-
-def test_auto_does_not_hide_qt_business_failure(monkeypatch) -> None:
-    import netconsole.app as qt_app
-
-    runtime = SimpleNamespace(web_server=object())
-    options = launcher.LaunchOptions("auto", "127.0.0.1", 8000, ())
-    monkeypatch.setattr(qt_app, "run", lambda *, web_server: (_ for _ in ()).throw(RuntimeError("db failed")))
-
-    with pytest.raises(RuntimeError, match="db failed"):
-        launcher._run_qt_shell(
-            runtime,
-            options,
-            launcher.CapabilityReport(external_browser_available=True),
-        )
 
 
 def test_single_instance_guard_rejects_second_owner(tmp_path: Path) -> None:
@@ -244,59 +208,6 @@ print('qt_imported=false')
 
     assert result.returncode == 0, result.stderr
     assert "qt_imported=false" in result.stdout
-
-
-def test_auto_qt_initialization_failure_does_not_open_browser(tmp_path: Path, monkeypatch) -> None:
-    import netconsole.launcher.runtime_supervisor as supervisor_module
-
-    opened: list[str] = []
-    monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
-    monkeypatch.setattr(
-        launcher,
-        "_capabilities_for",
-        lambda _mode: launcher.CapabilityReport(
-            qt_widgets_available=False,
-            external_browser_available=True,
-            qt_detail="widgets=initialization-failed",
-        ),
-    )
-    monkeypatch.setattr(launcher, "_open_browser_shell", lambda runtime, _paths: opened.append(runtime.base_url) or True)
-    monkeypatch.setattr(launcher, "_log_frontend_status", lambda _runtime: None)
-
-    result = launcher._launch_once(launcher.LaunchOptions("auto", "127.0.0.1", 8000, ()), PathResolver(tmp_path))
-
-    assert result == 2
-    assert _FakeRuntime.instances == []
-    assert opened == []
-
-
-def test_qt_probe_import_does_not_load_core_runtime(tmp_path: Path) -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    code = """
-import sys
-import netconsole.launcher.qt_probe
-assert 'netconsole.launcher.launcher' not in sys.modules
-assert 'netconsole.launcher.runtime_supervisor' not in sys.modules
-assert 'netconsole.backend.api.main' not in sys.modules
-print('probe_import_isolated=true')
-"""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(project_root / "src")
-    env["NETCONSOLE_DATA_ROOT"] = str(tmp_path / "data")
-
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=project_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "probe_import_isolated=true" in result.stdout
 
 
 def test_runtime_supervisor_starts_health_endpoint_and_stops(tmp_path: Path) -> None:

@@ -1,10 +1,8 @@
-# Desktop WebHost
+# Desktop WebHost 与历史 Qt 宿主
 
 ## 当前状态
 
-唯一 FastAPI Core Runtime 由桌面宿主创建并交给 Electron 的唯一 Vue Renderer。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口；历史 Qt Shell/WebConsoleHost 仅保留为迁移事实参考，不再作为发布或回退产品，也不通过 QWebChannel 暴露业务方法。
-
-迁移期 Qt 主程序托盘和 Fluent 顶部“更多”菜单仍可打开同一 Vue 控制台。默认 `auto/qt` 启动下 Core Runtime 已在 Shell 前监听随机回环端口，但 `auto` 在 Qt 不可用或初始化失败时明确退出，不自动打开浏览器；直接调用旧 `netconsole.app.run()` 时仍保留按需创建 WebHost 的兼容行为。
+唯一 FastAPI Core Runtime 由 Electron Main 启动的受管 Backend 创建，并交给 Electron 的唯一 Vue Renderer。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口。Qt Shell、`netconsole.app`、Qt probe 和旧 `--web-shell` 启动路径已删除；尚存 `src/netconsole/ui/web_host/` 仅供删除 Qt 页面前追踪历史行为，不再有活动产品入口。
 
 ## 运行结构
 
@@ -16,8 +14,6 @@ Core Runtime / FastAPI / Uvicorn
         |
         +-- Electron / 唯一 Vue Renderer（正式桌面产品）
         |
-        +-- Qt Shell（迁移期生产与回退）
-        |
         +-- Browser / Server（仅源码开发诊断）
 ```
 
@@ -27,12 +23,12 @@ Core Runtime / FastAPI / Uvicorn
 
 ## 生命周期
 
-- 默认 Launcher 在选择 Shell 前创建一次 FastAPI 服务并启动 Uvicorn 线程；
-- 关闭 Web 窗口只关闭显示窗口，主程序和本地服务继续存活，可从托盘重新打开；
-- Launcher 进程退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止 Core Runtime；
+- Electron Main 启动一次受管 Backend，后端就绪后再加载 Vue；
+- 关闭子任务窗口只隐藏窗口，不停止后台任务；退出 Electron 时由统一屏障停止 Backend；
+- Python 诊断 Launcher 退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止诊断 Runtime；
 - Electron 启动失败时报告明确错误；不把系统浏览器或 Qt 静默当成正式产品回退；
 - 源码开发态 `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
-- 旧 `--web-shell` 与直接 `netconsole.app.run()` 继续作为兼容路径，不代表新 Launcher 生命周期。
+- 旧 `--mode auto/qt`、Qt probe、`--web-shell` 与 `netconsole.app.run()` 均不存在活动入口。
 
 ## 构建
 
@@ -57,9 +53,11 @@ cd ../..
 
 WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导航在低于约 `1100px` 时折叠，低于约 `850px` 时切换为抽屉；折叠状态和展开分组保存在当前会话的 `sessionStorage`。
 
-## 当前边界
+## 历史 Qt WebHost 阶段边界
 
-- 本阶段完成 Qt 启动与 WebHost 生命周期解耦，但旧 Qt 页面内部的 Task/Application Service 尚未全部改为依赖注入；Qt WebHost 本身仍无 Native Bridge、EmbeddedLayout、模块 presentation、局点/主题同步。独立 Electron 第一阶段 Bridge 见 [Electron Desktop](ELECTRON_DESKTOP.md)；
+以下清单记录 Qt WebHost 迁移阶段的能力快照，用于追踪旧实现，不代表 v1.3.9 当前 Electron 页面状态。当前模块能力以对等矩阵、Feature Registry、代码和测试为准。
+
+- 本阶段已删除 Qt 启动壳，但旧 Qt 页面内部的 Task/Application Service 和业务逻辑仍需按迁移矩阵审计；不能据此声称全仓零 Qt。Electron Bridge 见 [Electron Desktop](ELECTRON_DESKTOP.md)；
 
 - 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测、Mesh 原始日志分析和轨道交通无线综合看板；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；
@@ -76,5 +74,5 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center 和无线勘测继续保持 `DISABLED`。
 - Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
-- Qt WebHost 不提供本机文件选择、目录、Artifact、外部终端或通知；Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 则继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知仍待后续。所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)，WinSCP、IPOP 和其他通用外部程序不在当前白名单，迁移期继续留在 Qt。
-- Electron 不复用 Qt WebHost 的关闭链：它先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 仅保留为历史迁移参考。
+- Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知按实际 Feature 状态验收；所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+- Electron 先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 只作为 Git 历史和待删除源码的迁移参考。

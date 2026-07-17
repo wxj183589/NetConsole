@@ -63,6 +63,22 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 - 运行路径、孤儿模块和 Qt 迁移映射；
 - 项目目录 README、仓库根运行数据和无 Qt 依赖/安装包残留。
 
+预期入口为：
+
+```text
+scripts/architecture/check_architecture_boundaries.py
+scripts/architecture/check_forbidden_imports.py
+scripts/architecture/check_direct_sql_access.py
+scripts/architecture/check_device_command_hardcoding.py
+scripts/architecture/check_ui_business_logic.py
+scripts/architecture/check_removed_features.py
+scripts/architecture/check_runtime_paths.py
+scripts/architecture/check_orphan_modules.py
+scripts/architecture/check_migration_map.py
+```
+
+如多个检查可以由一个稳定的 AST 引擎承担，可共享实现，但上述发布门必须保留可单独定位的规则 ID 和失败输出。Python 边界检查应验证 Domain、Service、Repository、Application 与 Router 的依赖方向；TypeScript 边界检查应阻止 Vue 导入 Electron Main、Main 导入 Vue Store，以及 Preload 导入业务 Service。Repository、migration、明确的数据维护脚本和测试 fixture 之外的 `sqlite3.connect`/`aiosqlite.connect` 必须失败。生产设备命令只允许出现在版本化 Command Profile；命令 fixture、Parser 样本、文档和历史 Changelog 必须通过精确路径分类，不允许放行整个 `services/`。
+
 UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_ONLY`、`BUSINESS_LOGIC` 或 `FALSE_POSITIVE`，不得自动删除。SQL 和命令文本扫描也只是初筛，需结合 AST、调用图和测试样本判断；不能放行整个 `services/` 或 `apps/web/`。
 
 ## 有限期例外
@@ -87,11 +103,30 @@ UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_O
 
 审计无调用 Service、无路由 Router、无注册 Handler、无引用 DTO/Parser、无入口脚本、空目录和仅有 README 的废弃业务目录。未来契约需由目录 README 说明；待迁移功能必须有 Feature 状态和计划；确认无用途的代码直接删除并依赖 Git 历史，不创建 `legacy/old/backup` 目录。
 
-`docs/DATA_LAYOUT.md` 最终必须为每个活动数据库记录事实源或派生数据、拥有者 Repository、生命周期、备份、迁移和清理策略，重点包括设备、任务、Agent、Traffic、iPerf、Online MR 会话和 MESH catalog/SQLite。
+`docs/DATA_LAYOUT.md` 最终必须为每个活动数据库记录事实源或派生数据、拥有者 Repository、生命周期、备份、迁移和清理策略，重点包括 `devices.db`、`tasks.db`、`agents.db`、`traffic_runs.sqlite`、`iperf_results.sqlite`、Online MR 会话 SQLite 和 MESH catalog/SQLite。还要检查同一业务事实是否无理由重复存储、启动是否全库扫描、connection 是否跨线程共享、是否缺少 WAL/`busy_timeout`、大查询是否分页，以及 schema 修改是否都有 migration。
 
 ## 交付物和发布门
 
-`E10` 必须生成 `docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md`，记录 Qt 删除完整性、迁移映射、各类命中、数据库/API/目录/依赖/资源审计、例外、未解决项和风险。每个问题必须包含文件、行号、规则、影响、建议位置、发布阻塞状态和处理状态。
+`E10` 必须生成 `docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md`，至少逐项记录：
+
+1. Qt 删除完整性；
+2. 被删除 Qt 文件中的业务逻辑迁移结果；
+3. UI 层业务逻辑命中；
+4. Router 业务逻辑命中；
+5. 直接 SQL 命中；
+6. 设备命令硬编码命中；
+7. Core 反向依赖命中；
+8. 孤儿代码；
+9. 无效依赖与资源；
+10. 数据库重复事实和所有权；
+11. API/OpenAPI 覆盖；
+12. 目录 README 覆盖；
+13. SNMP Center 与无线勘测删除结果；
+14. 版本化 Command Profile 覆盖；
+15. 架构例外；
+16. 未解决项、风险等级和后续计划。
+
+每个问题必须包含文件、行号、规则、影响、建议位置、发布阻塞状态和处理状态。报告只能基于实际 Guard、Git 历史和测试结果生成；在 E10 真正执行前不得创建内容为空或声称通过的占位报告。
 
 以下任一项存在时不得标记 Electron-only 重构完成或发布：
 
@@ -111,10 +146,21 @@ P2 如延期，必须有明确问题记录、责任人、原因、临时边界�
 ## 最终执行顺序
 
 1. 完成 Qt 删除、无 Qt 构建和非 Qt 全量测试。
-2. 建立 Qt 历史迁移映射并审计实际分层。
-3. 运行 import、TypeScript、UI、Router、SQL、命令、数据、API、目录、路径、移除功能和孤儿代码 Guard。
-4. 修复所有 P0/P1，记录精确且未过期的有限例外。
-5. 生成架构合规报告并重新运行全部 Guard 和非 Qt 测试。
-6. 确认工作树干净，等待用户确认后才推送。
+2. 扫描 Qt 关键字、依赖、安装包资源和许可证残留。
+3. 建立已删除 Qt 文件业务迁移映射。
+4. 检查 Python import 边界。
+5. 检查 TypeScript 依赖边界。
+6. 检查 Vue/Electron UI 业务逻辑并人工分类命中。
+7. 检查全部 FastAPI Router 与 API DTO/OpenAPI 契约。
+8. 检查直接 SQL、Repository 所有权和数据库一致性。
+9. 检查生产设备命令与版本化 Command Profile。
+10. 检查 SNMP Center、无线勘测和其他移除功能残留。
+11. 检查目录 README、运行路径、仓库 `data/.local`、依赖和资源。
+12. 检查孤儿 Service、Router、DTO、Parser、Handler 和入口。
+13. 修复所有 P0/P1；P2 只有满足延期字段时可保留。
+14. 运行全部架构 Guard、非 Qt 完整测试和 Electron/Vue/API 测试。
+15. 生成架构合规报告和修复提交。
+16. 再次运行全部 Guard 与发布检查。
+17. 确认工作树干净，等待用户确认后才推送。
 
 完成标准是 UI/Router/Electron 无业务算法、Application/Service 无 UI 或协议框架反向依赖、Repository 独占活动数据库访问、Command Profile 独占生产命令定义、Parser 职责中立且版本明确，以及全部 Qt 业务逻辑已迁移或有可核验证据地删除。

@@ -254,13 +254,13 @@ def test_clean_build_spec_scans_runtime_import_graph():
     imports = clean_build_spec.scan_import_graph()
 
     assert {
-        "netconsole.app",
         "netconsole.backend.api.main",
+        "netconsole.backend.electron_runtime",
         "netconsole.launcher.launcher",
-        "netconsole.launcher.qt_probe",
         "netconsole.launcher.runtime_supervisor",
         "netconsole.launcher.web_server",
     } <= set(imports)
+    assert not any(item == "netconsole.ui" or item.startswith("netconsole.ui.") for item in imports)
     assert all(not item.startswith("tests") for item in imports)
     assert all(not item.startswith("project") for item in imports)
 

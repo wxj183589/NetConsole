@@ -4,12 +4,10 @@ import argparse
 import atexit
 import ipaddress
 import os
-import subprocess
 import sys
 import threading
 import webbrowser
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Sequence
 
@@ -20,28 +18,11 @@ from netconsole.core.runtime_mode import RuntimeMode
 if TYPE_CHECKING:
     from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
 
-
-class ShellMode(StrEnum):
-    QT = "qt"
-    BROWSER = "browser"
-    NONE = "none"
-
-
 @dataclass(frozen=True)
 class LaunchOptions:
     mode: str
     host: str
     port: int
-    shell_args: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class CapabilityReport:
-    qt_widgets_available: bool = False
-    qt_webengine_available: bool = False
-    external_browser_available: bool = False
-    qt_detail: str = "not-probed"
-    browser_detail: str = "not-probed"
 
 
 class SingleInstanceGuard:
@@ -91,11 +72,11 @@ class SingleInstanceGuard:
 
 def parse_launch_options(argv: Sequence[str]) -> LaunchOptions:
     parser = argparse.ArgumentParser(prog="NetConsole")
-    parser.add_argument("--mode", choices=("auto", "qt", "web", "server"), default="auto")
+    parser.add_argument("--mode", choices=("web", "server"), default="server")
     parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=_valid_port, default=8000)
-    values, shell_args = parser.parse_known_args(list(argv))
-    return LaunchOptions(values.mode, values.host, values.port, tuple(shell_args))
+    values = parser.parse_args(list(argv))
+    return LaunchOptions(values.mode, values.host, values.port)
 
 
 def launch(argv: Sequence[str] | None = None) -> int:
@@ -114,22 +95,12 @@ def launch(argv: Sequence[str] | None = None) -> int:
 def _launch_once(options: LaunchOptions, paths: PathResolver) -> int:
     from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
 
-    capabilities = _capabilities_for(options.mode)
-    shell_mode = _resolve_shell_mode(options.mode, capabilities)
-    if shell_mode is None:
-        app_logger.log_error("LAUNCHER_QT_UNAVAILABLE", capabilities.qt_detail)
-        return 2
-    host_mode = RuntimeMode.SERVER if shell_mode is ShellMode.NONE else RuntimeMode.DESKTOP
+    host_mode = RuntimeMode.SERVER if options.mode == "server" else RuntimeMode.DESKTOP
     host = _loopback_host(options.host) if host_mode is RuntimeMode.SERVER else "127.0.0.1"
     port = options.port if host_mode is RuntimeMode.SERVER else None
     app_logger.log_info(
         "LAUNCHER_MODE_SELECTED",
-        (
-            f"requested={options.mode} host_mode={host_mode.value} shell_mode={shell_mode.value} "
-            f"qt_widgets={capabilities.qt_widgets_available} "
-            f"qt_webengine={capabilities.qt_webengine_available} "
-            f"external_browser={capabilities.external_browser_available}"
-        ),
+        f"requested={options.mode} host_mode={host_mode.value}",
     )
     runtime = RuntimeSupervisor(host_mode, paths=paths, host=host, port=port)
     if not runtime.start():
@@ -137,102 +108,11 @@ def _launch_once(options: LaunchOptions, paths: PathResolver) -> int:
         return 4
     _log_frontend_status(runtime)
     try:
-        if shell_mode is ShellMode.QT:
-            return _run_qt_shell(runtime, options, capabilities)
-        if shell_mode is ShellMode.BROWSER:
+        if options.mode == "web":
             _open_browser_shell(runtime, paths)
         return runtime.wait()
     finally:
         runtime.stop()
-
-
-def _run_qt_shell(
-    runtime: RuntimeSupervisor,
-    options: LaunchOptions,
-    capabilities: CapabilityReport,
-) -> int:
-    webengine_env = "NETCONSOLE_QT_WEBENGINE_AVAILABLE"
-    previous_webengine = os.environ.get(webengine_env)
-    os.environ[webengine_env] = "1" if capabilities.qt_webengine_available else "0"
-    original_argv = sys.argv[:]
-    sys.argv = [original_argv[0], *options.shell_args]
-    try:
-        try:
-            from netconsole.app import run
-        except (ImportError, OSError) as exc:
-            if options.mode != "auto":
-                raise
-            app_logger.log_error("QT_SHELL_START_FAILED", f"error={exc.__class__.__name__}: {exc}")
-            return 2
-        return run(web_server=runtime.web_server)
-    finally:
-        sys.argv = original_argv
-        if previous_webengine is None:
-            os.environ.pop(webengine_env, None)
-        else:
-            os.environ[webengine_env] = previous_webengine
-
-
-def _capabilities_for(mode: str) -> CapabilityReport:
-    browser_available, browser_detail = _probe_external_browser() if mode == "web" else (False, "not-probed")
-    if mode not in {"auto", "qt"}:
-        return CapabilityReport(
-            external_browser_available=browser_available,
-            browser_detail=browser_detail,
-        )
-    widgets, widgets_detail = _probe_qt_component("widgets")
-    webengine, webengine_detail = _probe_qt_component("webengine") if widgets else (False, "widgets-unavailable")
-    return CapabilityReport(
-        qt_widgets_available=widgets,
-        qt_webengine_available=webengine,
-        external_browser_available=browser_available,
-        qt_detail=f"widgets={widgets_detail}; webengine={webengine_detail}",
-        browser_detail=browser_detail,
-    )
-
-
-def _resolve_shell_mode(mode: str, capabilities: CapabilityReport) -> ShellMode | None:
-    if mode == "qt":
-        return ShellMode.QT if capabilities.qt_widgets_available else None
-    if mode == "web":
-        return ShellMode.BROWSER
-    if mode == "server":
-        return ShellMode.NONE
-    if capabilities.qt_widgets_available:
-        return ShellMode.QT
-    return None
-
-
-def _probe_qt_component(component: str) -> tuple[bool, str]:
-    command = _qt_probe_command(component)
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"{exc.__class__.__name__}: {exc}"
-    detail = (result.stdout or result.stderr or f"exit={result.returncode}").strip()[-500:]
-    return result.returncode == 0, detail
-
-
-def _qt_probe_command(component: str) -> list[str]:
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--qt-probe", component]
-    project_root = Path(__file__).resolve().parents[3]
-    return [sys.executable, str(project_root / "main.py"), "--qt-probe", component]
-
-
-def _probe_external_browser() -> tuple[bool, str]:
-    try:
-        controller = webbrowser.get()
-    except (OSError, webbrowser.Error) as exc:
-        return False, str(exc)
-    return True, controller.__class__.__name__
 
 
 def _open_browser_shell(runtime: RuntimeSupervisor, paths: PathResolver) -> bool:
@@ -301,9 +181,7 @@ def _loopback_host(value: str) -> str:
 
 
 __all__ = [
-    "CapabilityReport",
     "LaunchOptions",
-    "ShellMode",
     "SingleInstanceGuard",
     "launch",
     "parse_launch_options",

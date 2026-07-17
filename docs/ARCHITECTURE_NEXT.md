@@ -77,13 +77,13 @@ API 是永久边界。接口变更必须兼容现有调用方，必要时版本�
 
 | 目标职责 | 当前主要位置 | 迁移说明 |
 | --- | --- | --- |
-| Launcher / 进程生命周期 | `main.py`、`src/netconsole/launcher/` | 已进入 Core 统一生命周期第一阶段，继续去除 Qt 依赖 |
+| Electron / 进程生命周期 | `apps/desktop_electron/`、`src/netconsole/backend/electron_runtime.py` | 正式桌面入口和受管 Backend；`main.py` 只保留内部协议与开发诊断 |
 | Vue 主界面 | `apps/web/` | 永久保留，新用户功能默认进入此处 |
 | FastAPI | `src/netconsole/backend/api/` | 永久保留，Router 保持薄层 |
 | Application / Domain | `src/netconsole/services/`、`src/netconsole/core/` 等 | 逐用例收敛，不为命名整齐进行批量搬迁 |
 | Infrastructure | `src/netconsole/repositories/`、`parsers/`、`adapters/` 等 | 复用现有实现，按实际依赖治理 |
 | Qt 业务界面 | `src/netconsole/ui/` | 迁移期保留，只维护和回退，不新增业务页面 |
-| Qt Legacy 外壳 | `apps/desktop/`、`src/netconsole/ui/` | 当前生产/回退入口，只做缺陷与兼容维护 |
+| Qt Legacy 源码 | `apps/desktop/`、`src/netconsole/ui/` | 无活动启动入口，仅作迁移事实源，按历史映射逐项回收 |
 | Electron 外壳 | `apps/desktop_electron/` | 已有 main/preload/backend supervisor 基础；不复制 `apps/web` 或 Python Core |
 | Agent | `apps/agent/` | 独立运行，继续通过受控 API 与 Core 协作 |
 
@@ -135,7 +135,7 @@ Electron 只提供经过白名单和参数校验的本机能力。第一阶段�
 1. **架构约束期**：固化本文、迁移计划、开发规则和模块矩阵；停止新增 Qt 业务。
 2. **Core/API 收敛期**：逐模块把业务规则从 Qt 页面和 Router 收敛到 Application Service。
 3. **Vue 主界面期**：按真实验收门槛完成 Web 功能，Qt 保持并行回退。
-4. **Electron 默认期**：满足 `COMPLETE` 的模块先隐藏 Qt 入口，保留一个发布周期回退。普通浏览器仅保留开发和诊断入口，不进入发布或功能对等验收。
+4. **Electron 默认期**：Electron 已成为唯一正式桌面入口；Qt 源码和已归档安装成果仅作迁移对照，不再恢复为活动产品入口。普通浏览器仅保留开发和诊断入口，不进入发布或功能对等验收。
 5. **Electron 外壳期**：安全基础已开始；继续补安装/升级/托盘，并仅在模块达到完整纵向闭环后替换 Qt 入口。
 6. **Qt 删除期**：所有目标模块完成迁移、真实验收、发布回退验证后，删除 Qt 业务层和 Qt 运行依赖。
 7. **架构合规期**：在无 Qt 构建和非 Qt 全量验证后，使用 Git 历史追踪被删除 Qt 文件中的业务逻辑，检查各永久层真实依赖，修复 P0/P1 并生成最终合规报告。

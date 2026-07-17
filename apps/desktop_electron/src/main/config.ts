@@ -42,7 +42,9 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   return {
     projectRoot,
     backendExecutable,
-    backendArgumentsPrefix: input.isPackaged ? [] : ['-m', 'netconsole.backend.electron_runtime'],
+    backendArgumentsPrefix: input.isPackaged
+      ? ['--electron-backend']
+      : ['-m', 'netconsole.backend.electron_runtime'],
     ...(devServerUrl ? { devServerUrl, rendererOrigin: new URL(devServerUrl).origin } : {}),
     startupTimeoutMs: parseTimeout(env.NETCONSOLE_BACKEND_TIMEOUT_MS),
   }

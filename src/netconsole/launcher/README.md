@@ -6,13 +6,13 @@
 
 ## 边界
 
-只允许进程与服务生命周期、运行模式和受控 loopback Web Server；不得承载设备、数据库、采集、报告或 UI 业务逻辑。`qt_probe.py` 与 Launcher 的 Qt 分支属于 E1 待删除兼容代码。
+只允许开发诊断服务生命周期、运行模式和受控 loopback Web Server；不得承载设备、数据库、采集、报告或 UI 业务逻辑。Qt probe、`auto/qt` 和 Qt Shell 分支已删除。
 
 ## 主要入口
 
 - `runtime_supervisor.py`：统一持有和停止 FastAPI Runtime。
 - `web_server.py`：随机端口、短期桌面会话和 Uvicorn 生命周期。
-- `launcher.py`：迁移期模式分派，最终由 Electron-only 入口取代 Qt/Browser 产品分支。
+- `launcher.py`：仅分派显式 `web/server` 本机开发诊断；不是正式桌面 Launcher。
 
 ## 依赖关系
 

@@ -1,6 +1,6 @@
 # 构建与发布
 
-当前仓库核对环境为 Python 3.13.9、PySide6 6.11.1、PySide6-Fluent-Widgets 1.11.2；依赖约束仍以 `requirements.txt` 为准，不应把本机已安装版本写成最低支持版本。
+当前仓库核对环境为 Python 3.13.9。迁移期 `requirements.txt` 仍包含 PySide6/QFluentWidgets，供尚未回收的 Qt 事实源和历史成果复现；它们不得进入未来 Electron-only Backend bundle。依赖约束以项目锁定文件为准，不应把本机已安装版本写成最低支持版本。
 
 ## 当前构建入口
 
@@ -25,7 +25,7 @@ scripts/build/release.py
 - PyInstaller
 - Nuitka
 
-上述 PyInstaller/Nuitka 脚本仅保留用于已交付 Qt 成果的历史复现，不再作为 v1.3.9 及后续版本的发布门。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链；`pnpm start` 只能验证生产静态资源和真实 FastAPI 生命周期，不能冒充安装包交付。
+上述 PyInstaller/Nuitka 脚本仅暂留作已交付 Qt 成果的迁移证据，不再保证能构建当前可运行桌面，也不作为 v1.3.9 及后续版本的发布门；它们将在 Qt 依赖回收阶段删除。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链；`pnpm start` 只能验证生产静态资源和真实 FastAPI 生命周期，不能冒充安装包交付。
 
 Electron 基础验证：
 
@@ -37,11 +37,11 @@ pnpm build
 pnpm smoke:dev
 ```
 
-`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
+`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。未来打包态 Main 固定启动 `resources/backend/NetConsoleBackend.exe --electron-backend`，该内部参数只分派受管 Electron Runtime，不是用户启动模式。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
 
 `BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
 
-桌面发布包包含现有完整 Vue Web 控制台。构建脚本在 Python 打包前执行 `apps/web` 的 `pnpm build`，并将 `apps/web/dist` 打入内部 `netconsole/assets/web` 资源。构建前先准备前端依赖：
+历史 Qt 桌面发布包曾包含完整 Vue Web 控制台。暂留构建脚本仍保留在 Python 打包前执行 `apps/web` 的 `pnpm build` 并嵌入资源的历史逻辑，但不再构成当前受支持发布流程。
 
 ```powershell
 cd apps/web
@@ -82,11 +82,11 @@ docs/IPOP_v4.1_notice.md
 
 仓库没有可核验的 IPOP 再分发许可。PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。发布脚本只从 `resources/tools/windows-x64/fping` 和 `resources/tools/windows-x64/iperf3` 白名单复制到包内 `tools/windows-x64/`；最终目录或 ZIP 检测到 IPOP 时以“检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。”中止，不删除开发机上的本地文件。详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
 
-## 发布目录约束
+## 历史 Qt 发布目录约束
 
 构建输出必须进入 `dist/` 下的版本目录，不污染项目根目录。
 
-当前发布白名单：
+历史发布白名单：
 
 ```text
 NetConsole.exe
@@ -112,7 +112,7 @@ netconsole
 - 发布 zip 使用白名单枚举。
 - 打包后有发布目录和 zip 校验，防止开发目录进入包。
 
-## PyInstaller 与 Nuitka
+## 历史 PyInstaller 与 Nuitka
 
 PyInstaller：
 
@@ -126,13 +126,13 @@ Nuitka：
 - 最终目录也会准备 `data/`、`runtime/`、`tools/`。
 - 发布目录和 zip 均需通过白名单校验。
 
-## QFluentWidgets 打包要求
+## 历史 QFluentWidgets 打包要求
 
 - 只打包 `PySide6-Fluent-Widgets==1.11.2` 对应的 `qfluentwidgets`，不要混入 PyQt / PyQt6 / PySide2 版本。
 - 保留 `qfluentwidgets` 包内资源、图标和样式文件。
 - Mica / Acrylic / 毛玻璃效果默认关闭；打包后即使特效不可用，也必须降级为普通背景并正常启动。
 
-## 内部版和客户版
+## 历史 Qt 内部版和客户版
 
 发布脚本支持：
 
@@ -172,7 +172,7 @@ Nuitka：
 
 实际发布前还应执行脚本自带 smoke test；非交互构建可按脚本参数显式跳过，但需要说明原因。
 
-发布后还需确认 `_internal/netconsole/assets/web/` 中同时存在 `index.html` 和 `web-build-meta.json`，并通过启动日志核对 `frontend_source_type=packaged` 及前后端 build id 一致。
+复现历史 Qt 发布包时还需确认 `_internal/netconsole/assets/web/` 中同时存在 `index.html` 和 `web-build-meta.json`，并通过启动日志核对 `frontend_source_type=packaged` 及前后端 build id 一致。未来 Electron-only 包仍必须校验相同的前后端资源身份，但其资源布局由后续安装包任务确定，不预先沿用 `_internal` 目录。
 
 还需验证冻结态内部入口：普通任务使用 `--background-worker --job`，导出使用 `--export-worker --job`；源码态分别使用 `python -m netconsole.background_worker` 和 `python -m netconsole.export_worker`。
 
