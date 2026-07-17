@@ -655,8 +655,6 @@ def test_sftp_enable_command_builder_uses_vendor_and_username():
 
 
 def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_continues(tmp_path, monkeypatch):
-    import netconsole.services.file_transfer_service as service_module
-
     connect_hosts: list[str] = []
     shell_commands: list[str] = []
 
