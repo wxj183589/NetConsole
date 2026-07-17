@@ -1,3 +1,5 @@
+import { currentAppLocale } from '../../i18n/runtime'
+
 const zh = {
   referenceOnly: '仅供参考 · 不执行设备命令', title: '命令说明', subtitle: '查询版本化命令资源，复制模板或导出当前筛选结果。',
   refresh: '刷新', copy: '复制命令模板', exportMarkdown: '导出 Markdown', searchPlaceholder: '搜索命令、用途、模块、源码位置',
@@ -42,12 +44,9 @@ const en: Record<CommandReferenceTextKey, string> = {
   zteNotApplicable: 'Not applicable', ztePhase1: 'Phase 1 reference', ztePhase2: 'Phase 2 reference',
 }
 
-export function createCommandReferenceTranslator(language = runtimeLanguage()) {
-  const messages = language.toLocaleLowerCase().startsWith('zh') ? zh : en
-  return (key: CommandReferenceTextKey): string => messages[key]
-}
-
-function runtimeLanguage(): string {
-  if (typeof document !== 'undefined' && document.documentElement.lang) return document.documentElement.lang
-  return typeof navigator === 'undefined' ? 'zh-CN' : navigator.language
+export function createCommandReferenceTranslator(language?: string) {
+  return (key: CommandReferenceTextKey): string => {
+    const selected = language ?? currentAppLocale()
+    return selected.toLocaleLowerCase().startsWith('zh') ? zh[key] : en[key]
+  }
 }

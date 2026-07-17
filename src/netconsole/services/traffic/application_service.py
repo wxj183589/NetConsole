@@ -28,6 +28,13 @@ from netconsole.services.network_tools.iperf_runner import IperfClientConfig, Ip
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 
 
+TRAFFIC_CONTROLLER_TASK_TYPES = frozenset(
+    f"traffic_{target}_{suffix}"
+    for target in ("local", "agent")
+    for suffix in ("iperf_server", "iperf_client", "fping", "tcp_port_test")
+)
+
+
 class TrafficTestApplicationService:
     """本地和 Agent 流量测试共享的纯 Python 应用层。"""
 

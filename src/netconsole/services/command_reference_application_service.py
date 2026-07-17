@@ -34,9 +34,13 @@ class CommandReferenceApplicationError(ValueError):
         self.safe_message = safe_message
 
 
+COMMAND_REFERENCE_WEB_OWNER = "web_command_reference"
+COMMAND_REFERENCE_EXPORT_TASK = "web_export_command_reference_markdown"
+
+
 class CommandReferenceApplicationService:
-    _OWNER = "web_command_reference"
-    _TASK_TYPE = "web_export_command_reference_markdown"
+    _OWNER = COMMAND_REFERENCE_WEB_OWNER
+    _TASK_TYPE = COMMAND_REFERENCE_EXPORT_TASK
     _ARTIFACT_SOURCE = "command_reference_export"
     _ARTIFACT_DISPLAY_NAME = "NetConsole_软件使用命令清单.md"
 

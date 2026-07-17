@@ -37,6 +37,9 @@ const DOWNLOAD_ENDPOINTS = [
   { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/report-artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/network-tools/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/network-tools/wireless-scan/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/command-reference/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/system-maintenance/artifacts/${DOWNLOAD_SEGMENT}/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/job-center/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
 ]
 
 export function validateTaskWindowContext(value: unknown): TaskWindowContext {
@@ -49,7 +52,7 @@ export function validateTaskWindowContext(value: unknown): TaskWindowContext {
     result.taskId = record.taskId
   }
   if (record.module !== undefined) {
-    if (!['devices', 'ac', 'rail', 'config', 'files'].includes(String(record.module))) throw new TypeError('module is invalid')
+    if (!['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs'].includes(String(record.module))) throw new TypeError('module is invalid')
     result.module = record.module as TaskWindowContext['module']
   }
   if (record.status !== undefined) {

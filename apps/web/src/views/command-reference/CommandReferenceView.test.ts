@@ -5,6 +5,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiRequestError } from '../../api/client'
+import { setAppLocale } from '../../i18n/runtime'
 import type { CommandReferencePage } from '../../types/commandReference'
 
 const taskId = 'command-reference-export-0123456789abcdef0123456789abcdef'
@@ -143,7 +144,7 @@ function button(wrapper: VueWrapper, text: string) {
 
 beforeEach(() => {
   vi.useFakeTimers()
-  document.documentElement.lang = 'zh-CN'
+  setAppLocale('zh_CN')
   mocks.routeQuery = {}
   mocks.list.mockReset().mockResolvedValue(structuredClone(page))
   mocks.start.mockReset().mockResolvedValue(exportTask())
@@ -211,7 +212,7 @@ describe('Command Reference mounted behavior', () => {
     await flushPromises()
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('display version')
-    expect(mocks.openTaskWindow).toHaveBeenCalledWith({ taskId, status: 'RUNNING' })
+    expect(mocks.openTaskWindow).toHaveBeenCalledWith({ taskId, module: 'command-reference', status: 'RUNNING' })
     expect(mocks.routerPush).not.toHaveBeenCalled()
 
     mocks.hostType = 'browser'
@@ -396,9 +397,10 @@ describe('Command Reference mounted behavior', () => {
     expect(button(failed, '重试').exists()).toBe(true)
   })
 
-  it('consumes the current document locale through the compatibility translator', async () => {
-    document.documentElement.lang = 'en-US'
+  it('consumes the shared dynamic application locale', async () => {
     const wrapper = await renderView()
+    setAppLocale('en_US')
+    await flushPromises()
 
     expect(wrapper.text()).toContain('Command Reference')
     expect(wrapper.text()).toContain('Prerequisites')

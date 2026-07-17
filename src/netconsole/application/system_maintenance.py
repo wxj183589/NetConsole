@@ -80,16 +80,20 @@ class SystemMaintenanceResolver:
             raise SystemMaintenanceError("DIRECTORY_KIND_INVALID", "目录类型无效") from exc
 
 
+SYSTEM_MAINTENANCE_WEB_OWNER = "web_system_maintenance"
+SYSTEM_MAINTENANCE_TASK_TYPES = frozenset(
+    {
+        "system_maintenance_cleanup",
+        "open_source_notice_scan",
+        "web_export_app_logs_csv",
+        "web_export_open_source_notices",
+    }
+)
+
+
 class SystemMaintenanceApplicationService:
-    _OWNER = "web_system_maintenance"
-    _TASK_TYPES = frozenset(
-        {
-            "system_maintenance_cleanup",
-            "open_source_notice_scan",
-            "web_export_app_logs_csv",
-            "web_export_open_source_notices",
-        }
-    )
+    _OWNER = SYSTEM_MAINTENANCE_WEB_OWNER
+    _TASK_TYPES = SYSTEM_MAINTENANCE_TASK_TYPES
 
     def __init__(
         self,

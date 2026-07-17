@@ -39,6 +39,9 @@ describe('Electron security policy', () => {
       ['/api/rail-transit/mesh-analysis/report-artifacts/artifact-1/download', undefined],
       ['/api/network-tools/artifacts/artifact-1', undefined],
       ['/api/network-tools/wireless-scan/artifacts/artifact-1', undefined],
+      ['/api/command-reference/artifacts/artifact-1/download', undefined],
+      ['/api/system-maintenance/artifacts/open_source_txt/artifact-1', undefined],
+      ['/api/job-center/artifacts/artifact-1', undefined],
     ] as const
     for (const [apiPath, query] of approved) {
       expect(validateBackendDownloadRequest({ apiPath, query, suggestedName: '报告.zip' })).toMatchObject({ apiPath })

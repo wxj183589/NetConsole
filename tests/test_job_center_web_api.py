@@ -581,6 +581,153 @@ def test_job_center_routes_rail_cancel_to_real_owner(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("owner", "task_type", "module", "service_name", "method_name", "expects_site"),
+    [
+        ("web_network_tools", "network_tools.continuous_ping", "network", "network_tools_service", "cancel_network_task", False),
+        ("web_command_reference", "web_export_command_reference_markdown", "command-reference", "command_reference_application_service", "cancel_task", False),
+        ("web_system_maintenance", "system_maintenance_cleanup", "logs", "system_maintenance_service", "cancel_task", True),
+    ],
+)
+def test_job_center_routes_wave2_cancel_to_real_owner(
+    tmp_path: Path,
+    owner: str,
+    task_type: str,
+    module: str,
+    service_name: str,
+    method_name: str,
+    expects_site: bool,
+) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    task_id = f"{module}-running"
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type=task_type,
+            task_name=f"{module} running",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T09:00:00Z",
+            updated_time="2026-07-17T09:00:01Z",
+            owner=owner,
+            source="local",
+            site_name="demo",
+        )
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def cancel(*args: object) -> None:
+        calls.append(args)
+        app.state.task_service.record_external_event(
+            task_id,
+            "state",
+            {"state": TaskState.STOPPING.value, "message": "owner accepted cancellation"},
+            site_name="demo",
+        )
+
+    setattr(app.state, service_name, SimpleNamespace(**{method_name: cancel}))
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/job-center/tasks/{task_id}")
+        response = client.post(f"/api/job-center/tasks/{task_id}/cancel")
+
+    assert detail.status_code == 200
+    assert detail.json()["module"] == module
+    assert detail.json()["cancellable"] is True
+    assert response.status_code == 200
+    assert response.json()["status"] == "STOPPING"
+    expected_calls = [("demo", task_id)] if expects_site else [(task_id,)]
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize("task_type", ["traffic_local_fping", "traffic_agent_iperf_client"])
+def test_job_center_routes_traffic_controller_cancel_to_real_service(
+    tmp_path: Path,
+    task_type: str,
+) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    task_id = f"{task_type}-running"
+    source = "agent" if task_type.startswith("traffic_agent_") else "local"
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type=task_type,
+            task_name="Traffic running",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T09:00:00Z",
+            updated_time="2026-07-17T09:00:01Z",
+            owner="controller",
+            source=source,
+            site_name="demo",
+        )
+    )
+    calls: list[str] = []
+
+    async def cancel_controller_task(controller_task_id: str) -> None:
+        calls.append(controller_task_id)
+        app.state.task_service.record_external_event(
+            controller_task_id,
+            "state",
+            {"state": TaskState.STOPPING.value, "message": "Traffic accepted cancellation"},
+            site_name="demo",
+        )
+
+    app.state.traffic_web_application_service = SimpleNamespace(
+        cancel_controller_task=cancel_controller_task
+    )
+
+    with TestClient(app) as client:
+        detail = client.get(f"/api/job-center/tasks/{task_id}")
+        response = client.post(f"/api/job-center/tasks/{task_id}/cancel")
+
+    assert detail.status_code == 200
+    assert detail.json()["module"] == "network"
+    assert detail.json()["cancellable"] is True
+    assert response.status_code == 200
+    assert response.json()["status"] == "STOPPING"
+    assert calls == [task_id]
+
+
+def test_job_center_does_not_treat_unrelated_controller_task_as_network(tmp_path: Path) -> None:
+    app, db_path = _app_with_tasks(tmp_path)
+    TaskRepository(db_path).save(
+        TaskSnapshot(
+            task_id="online-mr-controller-task",
+            task_type="online_mr_collection_start",
+            task_name="Online MR",
+            status=TaskState.RUNNING,
+            created_time="2026-07-17T09:00:00Z",
+            updated_time="2026-07-17T09:00:01Z",
+            owner="controller",
+            source="local",
+            site_name="demo",
+        )
+    )
+
+    with TestClient(app) as client:
+        detail = client.get("/api/job-center/tasks/online-mr-controller-task")
+
+    assert detail.status_code == 200
+    assert detail.json()["module"] == "other"
+    assert detail.json()["cancellable"] is False
+
+
+def test_job_center_exposes_network_export_artifact_in_shared_window() -> None:
+    artifact_id = "a" * 32
+    artifact = JobCenterQueryService._artifact_download(
+        "web_network_tools",
+        "network_tools.toolbox_export",
+        "network-export-task",
+        "demo",
+        "COMPLETED",
+        {"result_id": artifact_id, "filename": "ping-results.csv", "size": 123},
+    )
+
+    assert artifact is not None
+    assert artifact.artifact_id == artifact_id
+    assert artifact.display_name == "ping-results.csv"
+    assert artifact.api_path == f"/api/network-tools/artifacts/{artifact_id}"
+
+
+@pytest.mark.parametrize(
     ("failure", "install_spec", "install_process", "poll_values"),
     [
         ("service-restart", False, False, (None,)),

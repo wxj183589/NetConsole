@@ -10,6 +10,10 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from netconsole.application.system_maintenance import (
+    SYSTEM_MAINTENANCE_TASK_TYPES,
+    SYSTEM_MAINTENANCE_WEB_OWNER,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.job_center import (
@@ -19,12 +23,16 @@ from netconsole.models.api.job_center import (
     JobCenterSummaryDTO,
     JobCenterTaskDTO,
 )
-from netconsole.services.config_lifecycle_service import safe_artifact_display_name
+from netconsole.services.command_reference_application_service import (
+    COMMAND_REFERENCE_EXPORT_TASK,
+    COMMAND_REFERENCE_WEB_OWNER,
+)
 from netconsole.services.config_collection_job_handlers import CONFIG_WEB_EXPORT_TASKS
 from netconsole.services.config_collection_web_service import (
     CONFIG_WEB_OWNER,
     CONFIG_WEB_TASK_TYPES,
 )
+from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.device_management_web_service import (
     DEVICE_DIAGNOSTIC_TASK_TYPE,
     DEVICE_TASK_TYPES,
@@ -33,7 +41,13 @@ from netconsole.services.device_management_web_service import (
     device_export_display_name,
 )
 from netconsole.services.file_contract import artifact_media_type
+from netconsole.services.network_tools.job_handlers import (
+    NETWORK_EXPORT_TASK_TYPES,
+    NETWORK_TOOLBOX_EXPORT_TASK,
+    NETWORK_TOOL_OWNER,
+)
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
+from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -252,6 +266,14 @@ class JobCenterQueryService:
             return "ac"
         if owner == RAIL_WEB_OWNER:
             return "rail"
+        if owner == NETWORK_TOOL_OWNER:
+            return "network"
+        if owner == "controller" and task_type in TRAFFIC_CONTROLLER_TASK_TYPES:
+            return "network"
+        if owner == COMMAND_REFERENCE_WEB_OWNER:
+            return "command-reference"
+        if owner == SYSTEM_MAINTENANCE_WEB_OWNER:
+            return "logs"
         return "other"
 
     def _cancel_capability(
@@ -265,6 +287,8 @@ class JobCenterQueryService:
     ) -> tuple[bool, str]:
         if status not in JobCenterQueryService._ACTIVE_STATES:
             return False, "任务已结束"
+        if owner == "controller" and task_type in TRAFFIC_CONTROLLER_TASK_TYPES:
+            return True, ""
         if source != "local":
             return False, "外部任务 owner 未提供统一停止能力"
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
@@ -283,6 +307,12 @@ class JobCenterQueryService:
         if owner == AC_WEB_OWNER:
             return True, ""
         if owner == RAIL_WEB_OWNER:
+            return True, ""
+        if owner == NETWORK_TOOL_OWNER:
+            return True, ""
+        if owner == COMMAND_REFERENCE_WEB_OWNER and task_type == COMMAND_REFERENCE_EXPORT_TASK:
+            return True, ""
+        if owner == SYSTEM_MAINTENANCE_WEB_OWNER and task_type in SYSTEM_MAINTENANCE_TASK_TYPES:
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 
@@ -325,6 +355,24 @@ class JobCenterQueryService:
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", safe_id):
                 return None
             return JobCenterQueryService._artifact_dto(safe_id, name, result.get("size_bytes"), f"/api/file-management/downloads/{task_id}/file", {"site_id": site_name})
+        if owner == NETWORK_TOOL_OWNER and task_type in NETWORK_EXPORT_TASK_TYPES:
+            network_artifact_id = str(result.get("result_id") or "")
+            if not re.fullmatch(r"[0-9a-f]{32}", network_artifact_id):
+                return None
+            name = JobCenterQueryService._artifact_display_name(result.get("filename"))
+            if not name:
+                return None
+            api_path = (
+                f"/api/network-tools/artifacts/{network_artifact_id}"
+                if task_type == NETWORK_TOOLBOX_EXPORT_TASK
+                else f"/api/network-tools/wireless-scan/artifacts/{network_artifact_id}"
+            )
+            return JobCenterQueryService._artifact_dto(
+                network_artifact_id,
+                name,
+                result.get("size"),
+                api_path,
+            )
         if task_type.startswith("web_export_") and artifact_id:
             try:
                 UUID(artifact_id)

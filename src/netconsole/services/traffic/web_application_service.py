@@ -158,6 +158,10 @@ class TrafficWebApplicationService:
                 return run
             return await self.traffic_service.cancel(run.controller_task_id)
 
+    async def cancel_controller_task(self, controller_task_id: str) -> TrafficRun:
+        async with self._cancel_lock:
+            return await self.traffic_service.cancel(controller_task_id)
+
     async def retry_run(self, traffic_run_id: str) -> TrafficRun:
         run = self._require_run(traffic_run_id)
         if run.status not in TERMINAL_TASK_STATES:

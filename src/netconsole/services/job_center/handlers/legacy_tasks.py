@@ -698,7 +698,6 @@ def _car_network_refresh_all(params: dict[str, Any], progress: ProgressCallback 
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.rail_transit.car_network_diagnostic import (
         CarNetworkPointTableStore,
-        CarNetworkTrain,
         build_car_network_trains,
         sort_car_network_trains,
     )

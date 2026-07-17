@@ -4,6 +4,10 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
 from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
+from netconsole.application.system_maintenance import (
+    SYSTEM_MAINTENANCE_TASK_TYPES,
+    SYSTEM_MAINTENANCE_WEB_OWNER,
+)
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.job_center import JobCenterLogTailDTO, JobCenterSummaryDTO, JobCenterTaskDTO
 from netconsole.services.job_center.query_service import (
@@ -14,6 +18,17 @@ from netconsole.services.job_center.query_service import (
 from netconsole.services.config_collection_web_service import CONFIG_WEB_OWNER, CONFIG_WEB_TASK_TYPES
 from netconsole.services.device_management_web_service import DEVICE_TASK_TYPES, WEB_TASK_OWNER
 from netconsole.services.file_contract import artifact_media_type
+from netconsole.services.command_reference_application_service import (
+    COMMAND_REFERENCE_EXPORT_TASK,
+    COMMAND_REFERENCE_WEB_OWNER,
+)
+from netconsole.services.network_tools.job_handlers import (
+    NETWORK_TOOLBOX_TASK_TYPES,
+    NETWORK_TOOL_OWNER,
+    NETWORK_WIRELESS_TASK_TYPES,
+)
+from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
+from netconsole.services.traffic.errors import TrafficTestError
 
 
 router = APIRouter(prefix="/job-center", tags=["job-center"])
@@ -95,7 +110,7 @@ def download_artifact(request: Request, artifact_id: str) -> FileResponse:
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=JobCenterTaskDTO)
-def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
+async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
     task = _service(request).get_task(_site_id(request), task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
@@ -114,8 +129,23 @@ def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
             request.app.state.rail_transit_web_application_service.cancel_task(
                 task.site_name, task_id
             )
+        elif task.owner == NETWORK_TOOL_OWNER:
+            if task.type in NETWORK_TOOLBOX_TASK_TYPES:
+                request.app.state.network_tools_service.cancel_network_task(task_id)
+            elif task.type in NETWORK_WIRELESS_TASK_TYPES:
+                request.app.state.network_tools_service.cancel_wireless_task(task_id)
+            else:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="网络任务类型不支持统一停止")
+        elif task.owner == COMMAND_REFERENCE_WEB_OWNER and task.type == COMMAND_REFERENCE_EXPORT_TASK:
+            request.app.state.command_reference_application_service.cancel_task(task_id)
+        elif task.owner == SYSTEM_MAINTENANCE_WEB_OWNER and task.type in SYSTEM_MAINTENANCE_TASK_TYPES:
+            request.app.state.system_maintenance_service.cancel_task(task.site_name, task_id)
+        elif task.owner == "controller" and task.type in TRAFFIC_CONTROLLER_TASK_TYPES:
+            await request.app.state.traffic_web_application_service.cancel_controller_task(task_id)
         else:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前任务 owner 未接入统一停止能力")
+    except TrafficTestError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     updated = _service(request).get_task(_site_id(request), task_id)

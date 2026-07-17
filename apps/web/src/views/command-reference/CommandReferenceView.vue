@@ -145,6 +145,7 @@ async function openTaskWindow(): Promise<void> {
   if (!task.value || !taskWindowStatuses.has(task.value.status as TaskWindowStatus)) return
   const context = {
     taskId: task.value.id,
+    module: 'command-reference' as const,
     status: task.value.status as TaskWindowStatus,
   }
   if (getRuntimeConfig().hostType === 'electron') {

@@ -79,7 +79,7 @@ export interface RendererReadyReport {
 
 export interface TaskWindowContext {
   taskId?: string
-  module?: 'devices' | 'ac' | 'rail' | 'config' | 'files'
+  module?: 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'command-reference' | 'logs'
   status?: 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 }
 

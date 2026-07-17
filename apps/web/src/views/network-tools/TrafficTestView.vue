@@ -176,7 +176,7 @@ function formatTime(value: string): string {
 }
 
 function openTaskCenter(): void {
-  if (store.selected) void router.push({ name: 'tasks', query: { task_id: store.selected.controller_task_id } })
+  if (store.selected) void router.push({ name: 'tasks', query: { task_id: store.selected.controller_task_id, module: 'network' } })
 }
 
 function clearCurrentView(): void {
@@ -310,7 +310,7 @@ function clearCurrentView(): void {
     <el-card class="history-card" shadow="never">
       <template #header><div class="card-header"><h2>历史任务</h2><span>{{ store.runs.length }} 条</span></div></template>
       <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" />
-      <TrafficRunHistory :runs="store.runs" :loading="store.loading" @select="selectRun" @cancel="cancelRun" @retry="retryRun" @task="(run) => router.push({ name: 'tasks', query: { task_id: run.controller_task_id } })" />
+      <TrafficRunHistory :runs="store.runs" :loading="store.loading" @select="selectRun" @cancel="cancelRun" @retry="retryRun" @task="(run) => router.push({ name: 'tasks', query: { task_id: run.controller_task_id, module: 'network' } })" />
     </el-card>
   </section>
 </template>
