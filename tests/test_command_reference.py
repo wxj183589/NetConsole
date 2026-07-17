@@ -52,8 +52,12 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 77
+    assert len(items) == 79
     assert len(ids) == len(set(ids))
+    assert {
+        "ac_display_wlan_ap_all_connection_record",
+        "ac_display_wlan_ap_all_radio_type",
+    } <= set(ids)
     assert sum(1 for item in items if not item["is_cli"]) >= 7
     assert any(item["protocol"] == "SNMP" for item in items)
     assert any(item["protocol"] == "RESTful/HTTPS" for item in items)
@@ -73,8 +77,8 @@ def test_command_reference_page_loads_and_filters():
     app()
     page = CommandReferencePage(PathResolver(Path(__file__).resolve().parents[1]))
 
-    assert len(page.references) == 77
-    assert page.table.rowCount() == 77
+    assert len(page.references) == 79
+    assert page.table.rowCount() == 79
     page.search_edit.setText("save force")
     QApplication.processEvents()
     assert page.table.rowCount() == 1
