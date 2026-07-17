@@ -3,7 +3,7 @@ from __future__ import annotations
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.ui.web_host.web_server import DesktopWebServer
+from netconsole.launcher.web_server import DesktopWebServer
 
 
 class RuntimeSupervisor:

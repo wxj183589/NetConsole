@@ -21,8 +21,8 @@ from netconsole.services.site_database_recovery import SiteDatabaseRecoveryServi
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
 if TYPE_CHECKING:
+    from netconsole.launcher.web_server import DesktopWebServer
     from netconsole.ui.main_window import MainWindow
-    from netconsole.ui.web_host.web_server import DesktopWebServer
 
 
 def _elapsed_detail(started_at: float) -> str:

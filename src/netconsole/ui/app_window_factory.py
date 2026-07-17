@@ -15,7 +15,7 @@ from netconsole.ui.main_window import MainWindow
 from netconsole.ui.shell.fluent_bridge import FLUENT_RUNTIME, fluent_available
 
 if TYPE_CHECKING:
-    from netconsole.ui.web_host.web_server import DesktopWebServer
+    from netconsole.launcher.web_server import DesktopWebServer
 
 
 def create_app_window(

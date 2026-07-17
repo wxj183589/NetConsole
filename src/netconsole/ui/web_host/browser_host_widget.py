@@ -14,7 +14,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.version import APP_TITLE_DISPLAY
 
 if TYPE_CHECKING:
-    from netconsole.ui.web_host.web_server import DesktopWebServer
+    from netconsole.launcher.web_server import DesktopWebServer
 
 try:
     if os.environ.get("NETCONSOLE_QT_WEBENGINE_AVAILABLE") == "0":
@@ -153,7 +153,7 @@ class WebConsoleHost(QObject):
 
     def open(self) -> None:
         if self.server is None:
-            from netconsole.ui.web_host.web_server import DesktopWebServer
+            from netconsole.launcher.web_server import DesktopWebServer
 
             self.server = DesktopWebServer(paths=self.paths)
         self.server.start()

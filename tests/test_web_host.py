@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 from netconsole.backend.api.main import DESKTOP_SESSION_COOKIE, create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.ui.web_host.web_server import DesktopWebServer
+from netconsole.launcher.web_server import DesktopWebServer
 
 
 def _protected_app(tmp_path: Path, token: str = "desktop-test-token"):
@@ -45,7 +45,7 @@ def test_desktop_web_rejects_websocket_without_session(tmp_path: Path) -> None:
 
 
 def test_desktop_web_server_logs_frontend_identity_without_session_token(tmp_path: Path, monkeypatch) -> None:
-    from netconsole.ui.web_host import web_server
+    from netconsole.launcher import web_server
 
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(web_server.app_logger, "log_info", lambda event, message: messages.append((event, message)))

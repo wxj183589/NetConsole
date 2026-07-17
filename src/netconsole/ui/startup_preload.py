@@ -15,7 +15,7 @@ from netconsole.ui.main_window import MainWindow
 from netconsole.ui.widgets.startup_splash import StartupSplash
 
 if TYPE_CHECKING:
-    from netconsole.ui.web_host.web_server import DesktopWebServer
+    from netconsole.launcher.web_server import DesktopWebServer
 
 
 @dataclass(frozen=True)
