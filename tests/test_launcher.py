@@ -99,7 +99,7 @@ def test_help_exit_is_not_recorded_as_startup_failure(tmp_path: Path, monkeypatc
     assert not (tmp_path / "startup_error.log").exists()
 
 
-def test_empty_python_entrypoint_rejects_legacy_desktop_start(capsys, monkeypatch) -> None:
+def test_empty_python_entrypoint_dispatches_electron_desktop(capsys, monkeypatch) -> None:
     from netconsole import entrypoint
     from netconsole.launcher import electron_desktop
 
@@ -169,6 +169,68 @@ def test_electron_desktop_plan_accepts_explicit_node_override(tmp_path: Path) ->
 
     assert plan.executable == node.resolve()
     assert "ELECTRON_RUN_AS_NODE" not in plan.environment
+
+
+def test_electron_desktop_plan_reports_missing_locked_dependencies(tmp_path: Path) -> None:
+    from netconsole.launcher.electron_desktop import (
+        ElectronDesktopLaunchError,
+        build_electron_desktop_launch_plan,
+    )
+
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+
+    with pytest.raises(ElectronDesktopLaunchError, match="pnpm install --frozen-lockfile"):
+        build_electron_desktop_launch_plan(
+            project_root=tmp_path,
+            python_executable=python,
+            environment={},
+        )
+
+
+def test_electron_desktop_launch_returns_process_exit_code(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.launcher import electron_desktop
+
+    executable = tmp_path / "electron.exe"
+    executable.write_text("", encoding="utf-8")
+    plan = electron_desktop.ElectronDesktopLaunchPlan(
+        executable=executable,
+        arguments=("dev.mjs",),
+        working_directory=tmp_path,
+        environment={},
+    )
+
+    class FakeProcess:
+        def wait(self, timeout=None):
+            assert timeout is None
+            return 17
+
+    monkeypatch.setattr(electron_desktop, "build_electron_desktop_launch_plan", lambda: plan)
+    monkeypatch.setattr(electron_desktop.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    assert electron_desktop.launch_electron_desktop() == 17
+
+
+def test_electron_desktop_launch_reports_process_creation_failure(tmp_path: Path, monkeypatch, capsys) -> None:
+    from netconsole.launcher import electron_desktop
+
+    executable = tmp_path / "electron.exe"
+    executable.write_text("", encoding="utf-8")
+    plan = electron_desktop.ElectronDesktopLaunchPlan(
+        executable=executable,
+        arguments=("dev.mjs",),
+        working_directory=tmp_path,
+        environment={},
+    )
+    monkeypatch.setattr(electron_desktop, "build_electron_desktop_launch_plan", lambda: plan)
+
+    def fail_to_start(*_args, **_kwargs):
+        raise OSError("process unavailable")
+
+    monkeypatch.setattr(electron_desktop.subprocess, "Popen", fail_to_start)
+
+    assert electron_desktop.launch_electron_desktop() == 2
+    assert "Electron 启动失败" in capsys.readouterr().err
 
 
 def test_entrypoint_dispatches_packaged_electron_backend(monkeypatch) -> None:
