@@ -22,6 +22,24 @@ SAFE_DEVICE_COMMANDS = {
     "display lldp neighbor-information verbose",
 }
 
+DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE = (
+    "screen-length disable",
+    "display current-configuration | include sysname",
+    "display version",
+    "display device",
+    "display device manuinfo",
+    "display boot-loader",
+    "display interface",
+    "display transceiver interface",
+    "display transceiver manuinfo interface",
+    "display transceiver diagnosis interface",
+    "display lldp neighbor-information list",
+    "display lldp neighbor-information verbose",
+)
+SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
+    DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE
+)
+
 SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
     "display wlan ap all",
     "display wlan ap all address",
@@ -133,6 +151,7 @@ SAFE_PERSIST_AUTO_AP_COMMANDS = {
 }
 
 CONTEXT_COMMANDS = {
+    "device.inventory.collect": SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS,
     "device_collect": SAFE_DEVICE_COMMANDS,
     "ac_collect": SAFE_AC_COMMANDS,
     "ac_fit_ap_resource_collect": SAFE_AC_FIT_AP_RESOURCE_COLLECT_COMMANDS,
@@ -147,6 +166,13 @@ CONTEXT_COMMANDS = {
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
     "ac_persist_auto_ap": SAFE_PERSIST_AUTO_AP_COMMANDS,
     "ac_enable_ap_remote_login": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
+}
+
+PROFILE_MANAGED_OPERATIONS = {
+    "device_collect": "device.inventory.collect",
+}
+PROFILE_OPERATION_COMMAND_SEQUENCES = {
+    "device.inventory.collect": DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE,
 }
 
 DANGEROUS_PATTERNS = (
@@ -235,6 +261,29 @@ def validate_command_list(commands: list[str] | tuple[str, ...], context: str) -
             log_command_rejected(command, context, reason)
             raise CommandRejected(f"{command}: {reason}")
         app_logger.log_info("COMMAND_ALLOWED", f"context={context}, command={normalize_command(command)}")
+
+
+def validate_operation_commands(
+    commands: list[str] | tuple[str, ...],
+    *,
+    context: str,
+    operation_id: str,
+) -> None:
+    expected_operation = PROFILE_MANAGED_OPERATIONS.get(context)
+    if expected_operation is None:
+        raise CommandRejected(f"command context is not profile-managed: {context}")
+    normalized_operation = str(operation_id or "").strip().casefold()
+    if normalized_operation != expected_operation:
+        raise CommandRejected(
+            f"operation does not match command context: operation={normalized_operation or 'empty'}, context={context}"
+        )
+    normalized_commands = tuple(normalize_command(command) for command in commands)
+    expected_commands = PROFILE_OPERATION_COMMAND_SEQUENCES.get(normalized_operation)
+    if expected_commands is None or normalized_commands != expected_commands:
+        raise CommandRejected(
+            f"command sequence does not match operation profile: {normalized_operation}"
+        )
+    validate_command_list(commands, normalized_operation)
 
 
 def log_command_rejected(command: str, context: str, reason: str) -> None:

@@ -20,24 +20,35 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, run_netmiko_with_retry, safe_send_command, sanitize_sensitive_text
+from netconsole.services.device_command_profile_service import (
+    DeviceCommandProfile,
+    DeviceCommandProfileError,
+    DeviceCommandStep,
+    resolve_device_inventory_profile,
+)
+from netconsole.services.netmiko_connection import (
+    build_netmiko_params,
+    choose_connection_target,
+    safe_send_command,
+    sanitize_sensitive_text,
+)
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
-COLLECT_COMMANDS = (
-    "display current-configuration | include sysname",
-    "display version",
-    "display device",
-    "display device manuinfo",
-    "display boot-loader",
-    "display interface",
-    "display transceiver interface",
-    "display transceiver manuinfo interface",
-    "display transceiver diagnosis interface",
-    "display lldp neighbor-information list",
-    "display lldp neighbor-information verbose",
-)
 ProgressCallback = Callable[[int, str, str, str], None]
+CLI_FAILURE_MARKERS = (
+    "% unrecognized command",
+    "% incomplete command",
+    "% ambiguous command",
+    "% too many parameters",
+    "% wrong parameter",
+    "% permission denied",
+    "permission denied",
+    "error:",
+    "命令不完整",
+    "无法识别",
+    "权限不足",
+)
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,73 @@ def collect_h3c_device_details(
 
     command_results: list[CommandResult] = []
     connection = None
+    try:
+        profile = resolve_device_inventory_profile(device, paths=paths)
+        command_guard.validate_operation_commands(
+            profile.commands,
+            context="device_collect",
+            operation_id=profile.operation_id,
+        )
+    except (DeviceCommandProfileError, command_guard.CommandRejected) as exc:
+        message = str(exc)
+        _emit_progress(progress_callback, 100, "batch_collect.stage.failed", message=message)
+        _write_raw_files(
+            raw_log_file,
+            commands_file,
+            device,
+            "",
+            collect_run_uuid,
+            command_results,
+            target_protocol="",
+            fatal_error=message,
+            disconnected_at=_now(),
+        )
+        _finalize_failed(repository, collect_run_uuid, message)
+        app_logger.log_error(
+            "COMMAND_PROFILE_REJECTED",
+            _detail(device, collect_run_uuid, error=message),
+        )
+        app_logger.log_error(
+            "COLLECT_FAILED",
+            _detail(
+                device,
+                collect_run_uuid,
+                error=message,
+                raw_log_path=relative_raw_log_path,
+            ),
+        )
+        app_logger.log_error(
+            "REAL_DEVICE_COLLECT_FAILED",
+            _detail(
+                device,
+                collect_run_uuid,
+                error=message,
+                raw_log_path=relative_raw_log_path,
+            ),
+        )
+        return CollectDeviceResult(
+            False,
+            str(device.device_uuid),
+            collect_run_uuid,
+            result_raw_log_path,
+            False,
+            0,
+            0,
+            0,
+            message,
+            command_results,
+        )
+    app_logger.log_info(
+        "COMMAND_PROFILE_RESOLVED",
+        _detail(
+            device,
+            collect_run_uuid,
+            metadata=(
+                f"operation_id={profile.operation_id}, profile_id={profile.profile_id}, "
+                f"compatibility={profile.compatibility}"
+            ),
+        ),
+    )
     target = choose_connection_target(device)
     if target is None:
         message = "未启用连接方式"
@@ -108,22 +186,24 @@ def collect_h3c_device_details(
         return CollectDeviceResult(False, str(device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, 0, 0, message, command_results)
 
     try:
-        command_guard.validate_command_list(["screen-length disable", *COLLECT_COMMANDS], "device_collect")
         _emit_progress(progress_callback, 5, "batch_collect.stage.connecting")
         connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         _emit_progress(progress_callback, 10, "batch_collect.stage.login_success")
-        _emit_progress(progress_callback, 15, "batch_collect.stage.init_terminal", "screen-length disable")
-        screen_result = _run_command(connection, "screen-length disable", device, collect_run_uuid)
+        pagination_step = profile.steps[0]
+        _emit_progress(progress_callback, 15, "batch_collect.stage.init_terminal", pagination_step.command)
+        screen_result = _run_command(connection, pagination_step, profile, device, collect_run_uuid)
         command_results.append(screen_result)
         outputs: dict[str, str] = {}
-        total_commands = len(COLLECT_COMMANDS)
-        for index, command in enumerate(COLLECT_COMMANDS, start=1):
+        collect_steps = profile.steps[1:]
+        total_commands = len(collect_steps)
+        for index, step in enumerate(collect_steps, start=1):
+            command = step.command
             percent = 20 + int(index / total_commands * 60)
             _emit_progress(progress_callback, percent, f"batch_collect.stage.collecting_command|{index}|{total_commands}", command)
-            result = _run_command(connection, command, device, collect_run_uuid)
+            result = _run_command(connection, step, profile, device, collect_run_uuid)
             command_results.append(result)
             if result.success:
-                outputs[command] = result.output
+                outputs[step.selector] = result.output
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
         write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
         command_failed = any(not result.success for result in command_results)
@@ -172,12 +252,25 @@ def collect_h3c_device_details(
                 pass
 
 
-def _run_command(connection, command: str, device: Device, collect_run_uuid: str) -> CommandResult:
+def _run_command(
+    connection,
+    step: DeviceCommandStep,
+    profile: DeviceCommandProfile,
+    device: Device,
+    collect_run_uuid: str,
+) -> CommandResult:
+    command = step.command
     started_at = _now()
-    reason = command_guard.command_reject_reason(command, "device_collect")
+    reason = command_guard.command_reject_reason(command, profile.operation_id)
     if reason:
-        command_guard.log_command_rejected(command, "device_collect", reason)
-        return CommandResult(command=command, success=False, error_message=reason, started_at=started_at, ended_at=_now())
+        command_guard.log_command_rejected(command, profile.operation_id, reason)
+        return CommandResult(
+            command=command,
+            success=False,
+            error_message=reason,
+            started_at=started_at,
+            ended_at=_now(),
+        )
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
         output = safe_send_command(
@@ -191,9 +284,37 @@ def _run_command(connection, command: str, device: Device, collect_run_uuid: str
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
         app_logger.log_error("COLLECT_COMMAND_FAILED", _detail(device, collect_run_uuid, command=command, error=message))
-        return CommandResult(command=command, success=False, error_message=message, started_at=started_at, ended_at=_now())
+        return CommandResult(
+            command=command,
+            success=False,
+            error_message=message,
+            started_at=started_at,
+            ended_at=_now(),
+        )
+    output_text = clean_h3c_device_text(output)
+    cli_failure = _cli_failure_summary(output_text)
+    if cli_failure:
+        message = sanitize_sensitive_text(cli_failure, device)
+        app_logger.log_error(
+            "COLLECT_COMMAND_FAILED",
+            _detail(device, collect_run_uuid, command=command, error=message),
+        )
+        return CommandResult(
+            command=command,
+            success=False,
+            output=output_text,
+            error_message=message,
+            started_at=started_at,
+            ended_at=_now(),
+        )
     app_logger.log_info("COLLECT_COMMAND_SUCCESS", _detail(device, collect_run_uuid, command=command))
-    return CommandResult(command=command, success=True, output=clean_h3c_device_text(output), started_at=started_at, ended_at=_now())
+    return CommandResult(
+        command=command,
+        success=True,
+        output=output_text,
+        started_at=started_at,
+        ended_at=_now(),
+    )
 
 
 def _emit_progress(
@@ -227,7 +348,6 @@ def _parse_and_write(
     interfaces_updated = 0
     optical_modules_updated = 0
     lldp_neighbors_updated = 0
-    interfaces_for_optical: list[dict[str, object | None]] = []
     parser = H3CParser()
     writing_progress_emitted = False
 
@@ -238,13 +358,20 @@ def _parse_and_write(
             _emit_progress(progress_callback, 95, "batch_collect.stage.saving")
 
     try:
-        facts = parse_device(outputs.get("display version", ""), outputs.get("display device", ""), outputs.get("display device manuinfo", ""))
+        facts = parse_device(
+            outputs.get("inventory.version", ""),
+            outputs.get("inventory.device", ""),
+            outputs.get("inventory.manuinfo", ""),
+        )
         facts["sysname"] = (
-            parse_sysname(outputs.get("display current-configuration | include sysname", ""))
+            parse_sysname(outputs.get("inventory.sysname", ""))
             or facts.get("sysname")
             or _prompt_sysname(outputs)
         )
-        facts["bootrom_version"] = parse_boot_loader(outputs.get("display boot-loader", "")) or facts.get("bootrom_version")
+        facts["bootrom_version"] = (
+            parse_boot_loader(outputs.get("inventory.boot_loader", ""))
+            or facts.get("bootrom_version")
+        )
         if any(value for key, value in facts.items() if key != "vendor"):
             emit_writing_progress()
             repository.upsert_device_fact({"device_uuid": device.device_uuid, **facts, **metadata})
@@ -260,9 +387,11 @@ def _parse_and_write(
         parse_errors.append(message)
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
-        if "display interface" in outputs:
-            interfaces = [_with_metadata(item, metadata) for item in parser.parse_interfaces(outputs.get("display interface", ""))]
-            interfaces_for_optical = interfaces
+        if "inventory.interfaces" in outputs:
+            interfaces = [
+                _with_metadata(item, metadata)
+                for item in parser.parse_interfaces(outputs.get("inventory.interfaces", ""))
+            ]
             emit_writing_progress()
             repository.replace_device_interfaces(str(device.device_uuid), interfaces)
             interfaces_updated = len(interfaces)
@@ -272,17 +401,23 @@ def _parse_and_write(
         parse_errors.append(message)
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
-        if "display transceiver interface" in outputs or "display transceiver manuinfo interface" in outputs or "display transceiver diagnosis interface" in outputs:
+        if any(
+            selector in outputs
+            for selector in (
+                "inventory.transceivers",
+                "inventory.transceiver_manuinfo",
+                "inventory.transceiver_diagnosis",
+            )
+        ):
             modules = parser.parse_optical_repository(
                 "\n".join(
                     [
-                        outputs.get("display transceiver interface", ""),
-                        outputs.get("display transceiver manuinfo interface", ""),
-                        outputs.get("display transceiver diagnosis interface", ""),
+                        outputs.get("inventory.transceivers", ""),
+                        outputs.get("inventory.transceiver_manuinfo", ""),
+                        outputs.get("inventory.transceiver_diagnosis", ""),
                     ]
                 )
             )
-            interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces_for_optical}
             modules = [_with_metadata(item, metadata) for item in modules]
             emit_writing_progress()
             repository.replace_optical_modules(str(device.device_uuid), modules)
@@ -293,10 +428,10 @@ def _parse_and_write(
         parse_errors.append(message)
         app_logger.log_error("COLLECT_PARSE_FAILED", _detail(device, collect_run_uuid, error=message))
     try:
-        if "display lldp neighbor-information list" in outputs or "display lldp neighbor-information verbose" in outputs:
+        if "inventory.lldp_list" in outputs or "inventory.lldp_verbose" in outputs:
             neighbors = parser.parse_lldp(
-                outputs.get("display lldp neighbor-information list", ""),
-                outputs.get("display lldp neighbor-information verbose", ""),
+                outputs.get("inventory.lldp_list", ""),
+                outputs.get("inventory.lldp_verbose", ""),
             )
             neighbors = [_with_metadata(item, metadata) for item in neighbors]
             emit_writing_progress()
@@ -373,6 +508,14 @@ def _command_error_summary(command_results: list[CommandResult]) -> str:
     return "; ".join(failures)
 
 
+def _cli_failure_summary(output: str) -> str:
+    for line in str(output or "").splitlines():
+        normalized = line.strip().casefold()
+        if normalized and any(marker in normalized for marker in CLI_FAILURE_MARKERS):
+            return line.strip()
+    return ""
+
+
 def _prompt_sysname(outputs: dict[str, str]) -> str | None:
     for output in outputs.values():
         for line in output.splitlines():
@@ -385,7 +528,14 @@ def _finalize_failed(repository: DeviceFactRepository, collect_run_uuid: str, me
     repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
 
 
-def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str = "", raw_log_path: str = "") -> str:
+def _detail(
+    device: Device,
+    collect_run_uuid: str,
+    command: str = "",
+    error: str = "",
+    raw_log_path: str = "",
+    metadata: str = "",
+) -> str:
     parts = [f"device={device.name}", f"primary_address={device.primary_address}", f"collect_run_uuid={collect_run_uuid}"]
     if command:
         parts.append(f"command={command}")
@@ -393,6 +543,8 @@ def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str
         parts.append(f"error={error}")
     if raw_log_path:
         parts.append(f"raw_log_path={raw_log_path}")
+    if metadata:
+        parts.append(f"metadata={metadata}")
     return ", ".join(parts)
 
 

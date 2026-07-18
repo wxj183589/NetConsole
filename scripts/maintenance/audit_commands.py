@@ -7,16 +7,31 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from netconsole.services.device_command_profile_service import (
+    load_device_command_profiles,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_PATH = ROOT / "resources" / "command_reference.json"
-SCAN_DIRS = ("src/netconsole",)
+DEVICE_PROFILE_PATH = ROOT / "resources" / "device_command_profiles.json"
+SCAN_DIRS = ("src/netconsole", "apps/agent/mr_collector_py")
 TEXT_SUFFIXES = {".py"}
 SKIP_PATH_PARTS = {"build", "__pycache__"}
+DEFERRED_PROFILE_MIGRATION_COMMANDS: set[tuple[str, str]] = set()
+EXPECTED_LOG_MESSAGE_COMMANDS = {
+    (
+        "src/netconsole/services/h3c_ac_collect_service.py",
+        "display wlan ap unauthenticated failed",
+    ),
+    (
+        "src/netconsole/services/netmiko_connection.py",
+        "display clock failed",
+    ),
+}
 
 COMMAND_PATTERNS = (
     r"dis\s+counters\s+rate\s+(?:inbound|outbound)\s+interface",
-    r"display\s+[a-z0-9][a-z0-9\s\-/|]+",
+    r"display\s+[a-z0-9][a-z0-9<>\s\-/|]+",
     r"screen-length\s+\w+",
     r"system-view",
     r"probe",
@@ -56,15 +71,24 @@ class Candidate:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit command strings against resources/command_reference.json")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat deferred Profile migrations as a failed release gate",
+    )
     args = parser.parse_args()
 
     reference = load_reference()
     candidates = scan_candidates()
     reference_templates = build_reference_templates(reference)
+    profile_templates = load_device_profile_commands()
+    deferred = [item for item in candidates if is_deferred_profile_migration(item)]
     missing = [
         item
         for item in candidates
         if not matches_reference(item.command, reference_templates)
+        and not matches_profile_command(item.command, profile_templates)
+        and not is_deferred_profile_migration(item)
         and not is_expected_noise(item.command, item.path)
     ]
     duplicate_ids = duplicate_values([str(item.get("id") or "") for item in reference])
@@ -72,22 +96,34 @@ def main() -> int:
 
     summary = {
         "reference_count": len(reference),
+        "profile_command_count": len(profile_templates),
         "candidate_count": len(candidates),
         "missing_candidate_count": len(missing),
+        "deferred_profile_migration_count": len(deferred),
         "duplicate_ids": duplicate_ids,
         "duplicate_templates": duplicate_templates,
         "missing_candidates": [
             {"command": item.command, "path": str(item.path.relative_to(ROOT)), "line": item.line_no}
             for item in missing[:200]
         ],
+        "deferred_profile_migration_candidates": [
+            {
+                "command": item.command,
+                "path": str(item.path.relative_to(ROOT)),
+                "line": item.line_no,
+            }
+            for item in deferred
+        ],
     }
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
-        return 1 if missing or duplicate_ids else 0
+        return 1 if missing or duplicate_ids or duplicate_templates or (args.strict and deferred) else 0
 
     print(f"命令清单条目：{summary['reference_count']}")
+    print(f"版本化 Profile 命令：{summary['profile_command_count']}")
     print(f"源码候选命令：{summary['candidate_count']}")
     print(f"疑似未归档候选：{summary['missing_candidate_count']}")
+    print(f"后续 Profile 迁移候选：{summary['deferred_profile_migration_count']}")
     if duplicate_ids:
         print("重复 ID：")
         for value in duplicate_ids:
@@ -102,7 +138,7 @@ def main() -> int:
             print(f"  - {item.path.relative_to(ROOT)}:{item.line_no} {item.command}")
     else:
         print("未发现明显遗漏候选。")
-    return 1 if missing or duplicate_ids else 0
+    return 1 if missing or duplicate_ids or duplicate_templates or (args.strict and deferred) else 0
 
 
 def load_reference() -> list[dict[str, object]]:
@@ -111,6 +147,27 @@ def load_reference() -> list[dict[str, object]]:
     if not isinstance(items, list):
         raise ValueError("resources/command_reference.json must contain a list or an items list")
     return [item for item in items if isinstance(item, dict)]
+
+
+def load_device_profile_commands() -> set[str]:
+    return {
+        normalize(command)
+        for profile in load_device_command_profiles()
+        for command in profile.commands
+    }
+
+
+def matches_profile_command(command: str, profile_commands: set[str]) -> bool:
+    """Profile commands are registrations, so only full normalized equality is valid."""
+    return normalize(command) in profile_commands
+
+
+def is_deferred_profile_migration(candidate: Candidate) -> bool:
+    key = (
+        candidate.path.relative_to(ROOT).as_posix(),
+        normalize(candidate.command),
+    )
+    return key in DEFERRED_PROFILE_MIGRATION_COMMANDS
 
 
 def scan_candidates() -> list[Candidate]:
@@ -146,7 +203,16 @@ def iter_python_string_literals(text: str, path: Path) -> list[tuple[int, str]]:
     except SyntaxError:
         return []
     values: list[tuple[int, str]] = []
+    joined_constant_ids = {
+        id(item)
+        for joined in ast.walk(tree)
+        if isinstance(joined, ast.JoinedStr)
+        for item in joined.values
+        if isinstance(item, ast.Constant)
+    }
     for node in ast.walk(tree):
+        if id(node) in joined_constant_ids:
+            continue
         value = string_node_value(node)
         if value is not None:
             values.append((getattr(node, "lineno", 1), value))
@@ -195,17 +261,17 @@ def matches_reference(command: str, reference_templates: set[str]) -> bool:
         template_core = normalize(strip_optional_segments(template))
         if command_core == template_core:
             return True
-        if placeholder_prefix_match(command_core, template_core):
+        if placeholder_template_match(command_core, template_core):
             return True
     return False
 
 
-def placeholder_prefix_match(command: str, template: str) -> bool:
-    template_prefix = re.split(r"\s+<[^>]+>", template, maxsplit=1)[0].strip()
-    if template_prefix and command.startswith(template_prefix):
-        return True
-    command_prefix = re.split(r"\s+<[^>]+>", command, maxsplit=1)[0].strip()
-    return bool(command_prefix and template.startswith(command_prefix))
+def placeholder_template_match(command: str, template: str) -> bool:
+    if "<" not in template:
+        return False
+    parts = re.split(r"(<[^>]+>)", template)
+    pattern = "".join(r"[^\s]+" if part.startswith("<") and part.endswith(">") else re.escape(part) for part in parts)
+    return re.fullmatch(pattern, command) is not None
 
 
 def strip_optional_segments(value: str) -> str:
@@ -226,6 +292,8 @@ def normalize_candidate(value: str) -> str:
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) client all status", "display ar5drv <radio_id> client all status", text, flags=re.IGNORECASE)
     text = re.sub(r"New-NetRoute -DestinationPrefix '[^']+'", "New-NetRoute -DestinationPrefix <network>", text, flags=re.IGNORECASE)
     text = re.sub(r"Remove-NetRoute -DestinationPrefix '[^']+'", "Remove-NetRoute -DestinationPrefix <network>", text, flags=re.IGNORECASE)
+    text = re.sub(r"New-NetRoute -DestinationPrefix '?<[^>]+>'?", "New-NetRoute -DestinationPrefix <network>", text, flags=re.IGNORECASE)
+    text = re.sub(r"Remove-NetRoute -DestinationPrefix '?<[^>]+>'?", "Remove-NetRoute -DestinationPrefix <network>", text, flags=re.IGNORECASE)
     return text
 
 
@@ -248,11 +316,22 @@ def duplicate_values(values: list[str]) -> list[str]:
 def is_expected_noise(command: str, path: Path) -> bool:
     text = normalize(command)
     relative = path.relative_to(ROOT)
+    if relative.as_posix() == "src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py" and text == "display ar5drv":
+        return True
     if relative.parts[:2] == ("netconsole", "core") and relative.name == "i18n.py":
         return True
-    if text in {"display ", "iperf3", "iperf3.exe", "fping_v3.exe", "restful api"}:
+    if text in {"display ", "iperf3", "iperf3.exe", "fping_v3.exe", "restful api", "winscp.exe"}:
+        return True
+    if (relative.as_posix(), text) in EXPECTED_LOG_MESSAGE_COMMANDS:
+        return True
+    if text.startswith("iperf3") and re.search(r"[\u4e00-\u9fff]", text):
         return True
     if text in {"get-netadapter", "get-netipconfiguration", "get-netroute"}:
+        return True
+    if text in {
+        "new-netroute -destinationprefix <network>",
+        "remove-netroute -destinationprefix <network>",
+    }:
         return True
     if text.startswith("display fields") or text.startswith("display message"):
         return True

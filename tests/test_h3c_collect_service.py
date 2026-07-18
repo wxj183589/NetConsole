@@ -6,12 +6,19 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import h3c_collect_service
-from netconsole.services.h3c_collect_service import COLLECT_COMMANDS, collect_h3c_device_details
 from netconsole.services import h3c_optical_refresh_service
+from netconsole.services.device_command_profile_service import default_device_inventory_profile
+from netconsole.services.h3c_collect_service import collect_h3c_device_details
 from netconsole.services.h3c_optical_refresh_service import OPTICAL_REFRESH_COMMANDS, refresh_h3c_device_optical
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+COLLECT_COMMANDS = default_device_inventory_profile().commands[1:]
+
+
+def make_paths(tmp_path: Path) -> PathResolver:
+    return PathResolver(app_root=PROJECT_ROOT, data_root=tmp_path)
 
 
 def fixture(name: str) -> str:
@@ -77,7 +84,7 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     repository = make_repository(tmp_path)
 
-    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=make_paths(tmp_path))
 
     assert result.success is True
     assert result.facts_updated is True
@@ -116,7 +123,7 @@ def test_collect_service_writes_sysname_back_to_device_table(monkeypatch, tmp_pa
     device = device_repository.create(make_device())
     repository = DeviceFactRepository(database)
 
-    result = collect_h3c_device_details(device, "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_device_details(device, "demo", repository=repository, paths=make_paths(tmp_path))
 
     assert result.success is True
     assert device_repository.get(device.id).sysname == "SW01"
@@ -129,7 +136,7 @@ def test_collect_service_persists_raw_log_when_debug_enabled(monkeypatch, tmp_pa
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     repository = make_repository(tmp_path)
 
-    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=make_paths(tmp_path))
 
     assert result.raw_log_path
     raw_path = tmp_path / "data" / "sites" / "demo" / result.raw_log_path
@@ -142,12 +149,42 @@ def test_collect_service_continues_when_one_command_fails(monkeypatch, tmp_path)
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
     repository = make_repository(tmp_path)
 
-    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_device_details(make_device(), "demo", repository=repository, paths=make_paths(tmp_path))
 
     assert result.success is True
     assert "display lldp neighbor-information verbose" in connection.commands
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "partial_success"
     assert any(item.command == "display transceiver interface" and not item.success for item in result.command_results)
+
+
+def test_collect_service_marks_h3c_cli_error_output_as_partial(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setitem(
+        OUTPUTS,
+        "display boot-loader",
+        "% Unrecognized command found at '^' position.",
+    )
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+
+    result = collect_h3c_device_details(
+        make_device(),
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    boot_loader = next(
+        item for item in result.command_results if item.command == "display boot-loader"
+    )
+    assert result.success is True
+    assert boot_loader.success is False
+    assert "% Unrecognized command" in str(boot_loader.error_message)
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == "partial_success"
 
 
 def test_collect_service_does_not_connect_when_no_protocol_enabled(tmp_path):
@@ -161,7 +198,7 @@ def test_collect_service_does_not_connect_when_no_protocol_enabled(tmp_path):
         device,
         "demo",
         repository=repository,
-        paths=PathResolver(tmp_path),
+        paths=make_paths(tmp_path),
         progress_callback=lambda percent, stage, command="", message="": progress.append((percent, stage, command, message)),
     )
 
@@ -185,12 +222,65 @@ def test_collect_service_validates_commands_before_execution(monkeypatch, tmp_pa
     calls = []
     connection = FakeConnection()
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
-    monkeypatch.setattr(h3c_collect_service.command_guard, "validate_command_list", lambda commands, context: calls.append((list(commands), context)))
+    monkeypatch.setattr(
+        h3c_collect_service.command_guard,
+        "validate_operation_commands",
+        lambda commands, *, context, operation_id: calls.append((list(commands), context, operation_id)),
+    )
     repository = make_repository(tmp_path)
 
-    collect_h3c_device_details(make_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    collect_h3c_device_details(make_device(), "demo", repository=repository, paths=make_paths(tmp_path))
 
-    assert calls == [(["screen-length disable", *COLLECT_COMMANDS], "device_collect")]
+    assert calls == [
+        (["screen-length disable", *COLLECT_COMMANDS], "device_collect", "device.inventory.collect")
+    ]
+
+
+def test_collect_service_rejects_non_h3c_before_connection(monkeypatch, tmp_path):
+    def unexpected_connect(**_kwargs):
+        raise AssertionError("unsupported vendor must not connect")
+
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        unexpected_connect,
+    )
+    repository = make_repository(tmp_path)
+    device = make_device()
+    device.device_vendor = "Huawei"
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is False
+    assert "仅支持 H3C" in str(result.error_message)
+    assert result.command_results == []
+    assert repository.get_collect_run(result.collect_run_uuid)["status"] == "failed"
+
+
+def test_profile_rejection_writes_declared_raw_failure_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("NETCONSOLE_PERSIST_RAW_LOGS", "1")
+    repository = make_repository(tmp_path)
+    device = make_device()
+    device.device_vendor = "Huawei"
+
+    result = collect_h3c_device_details(
+        device,
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is False
+    assert Path(result.raw_log_path).is_file()
+    assert "FATAL ERROR" in Path(result.raw_log_path).read_text(encoding="utf-8")
 
 
 def test_collect_service_reports_connection_command_parse_and_write_progress(monkeypatch, tmp_path):
@@ -203,7 +293,7 @@ def test_collect_service_reports_connection_command_parse_and_write_progress(mon
         make_device(),
         "demo",
         repository=repository,
-        paths=PathResolver(tmp_path),
+        paths=make_paths(tmp_path),
         progress_callback=lambda percent, stage, command="", message="": progress.append((percent, stage, command, message)),
     )
 

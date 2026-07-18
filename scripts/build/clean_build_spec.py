@@ -38,6 +38,7 @@ ALLOWED_DATA = [
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
     ("src/netconsole/assets/IPOP_v4.1_notice.md", "netconsole/assets"),
+    ("resources/device_command_profiles.json", "netconsole/assets"),
 ]
 FORBIDDEN_DATA = [
     (item, item) for item in FORBIDDEN_DATAS

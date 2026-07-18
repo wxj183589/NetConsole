@@ -185,6 +185,10 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
     assert all("/ui/" not in source.replace("\\", "/") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("apps/web/dist", "netconsole/assets/web") in clean_build_spec.ALLOWED_DATA
+    assert (
+        "resources/device_command_profiles.json",
+        "netconsole/assets",
+    ) in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
@@ -292,6 +296,11 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert all(not destination.startswith("tools/") for _source, destination in datas)
     assert any(destination == "netconsole/assets/web" and Path(source).name == "dist" for source, destination in datas)
+    assert any(
+        destination == "netconsole/assets"
+        and Path(source).name == "device_command_profiles.json"
+        for source, destination in datas
+    )
     assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
     assert all(destination != "data" for _source, destination in datas)
 
