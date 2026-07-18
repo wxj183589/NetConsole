@@ -113,7 +113,7 @@ pnpm start
 
 `pnpm build` 构建单文件 main/preload 和 `apps/web/dist`；`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
 
-当前尚未建立 Electron 安装包、冻结 Python backend bundle、代码签名、自动升级或发布白名单；现有 PyInstaller/Nuitka Qt 发布链保持原样。正式 Electron 安装包必须另立发布任务，不得把源码 `.venv` 当作交付依赖。
+Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立，并由依赖批准清单、NOTICE、SBOM 和 package smoke 约束；正式发布仍需在最终组合提交上完成制品验证。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
 
 ## Python 后端生命周期
 
@@ -135,7 +135,7 @@ pnpm start
 ## 本地 API 安全模型
 
 - FastAPI 只监听 `127.0.0.1`。
-- Electron HTTP 请求携带 `X-NetConsole-Session`；原 Qt WebHost 的 `POST /__desktop_session` 和 HttpOnly Cookie 兼容链继续有效。
+- Electron HTTP 请求携带 `X-NetConsole-Session`；桌面会话引导端点和 HttpOnly Cookie 只服务当前 Electron/Vite 受控链，不代表 Qt WebHost 运行时仍存在。
 - Electron 主进程使用非持久化的内存 Session。开发态 Cookie 仅匹配后端 `/ws`，供 WebSocket 自动携带且不发送给普通 Vite/REST 请求；生产态 Vue 与 API 同源，Cookie 匹配 `/` 以便加载受保护的首页和静态资源。两种模式均为 HttpOnly、SameSite Strict，令牌不进入 WebSocket URL，进程退出后 Session 一并销毁。
 - 开发态 CORS 只允许命令行校验后的精确 `http://127.0.0.1:<Vite 端口>`；生产态 Vue 与 API 同源。
 - Vue 只在模块内存保存 `apiBaseUrl`、`apiToken` 和宿主类型；不写 `localStorage`、`sessionStorage`、URL 或 Pinia 持久化状态。
@@ -211,9 +211,9 @@ Electron 后续业务实现继续以已交付 Qt 行为和真实业务契约为�
 
 SNMP Center、通用 MIB/OID 平台与无线勘测已经正式删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
 
-Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按对等矩阵继续验收，Qt 只承担未完成能力的源码事实对照。
+Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按最终迁移矩阵继续验收，Qt 历史只通过 Git 追溯。
 
-后续不能只迁移只读列表和详情页。每个模块必须按完整纵向业务闭环迁移，包括创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；在达到 `COMPLETE` 前不能隐藏 Qt 回退入口。浏览器开发联调通过不构成正式产品验收证据。
+后续不能只保留只读列表和详情页。每个模块必须按完整纵向业务闭环补齐创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；未达到可用门槛的 Electron 入口保持隐藏或明确标记待验收，不能恢复 Qt 回退入口。浏览器开发联调通过不构成正式产品验收证据。
 
 ## 定向验证
 

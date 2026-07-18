@@ -31,7 +31,12 @@ NetConsole/
 ├─ main.py                  # PyCharm/源码 Electron 开发入口与 Backend 诊断分派
 ├─ pyproject.toml           # src 包发现和 editable 安装配置
 ├─ pytest.ini               # pytest 入口配置
-├─ requirements.txt         # Python 运行依赖
+├─ requirements-runtime.txt # Python Backend 直接运行依赖
+├─ requirements-test.txt    # 测试依赖层
+├─ requirements-build.txt   # PyInstaller、许可证与 SBOM 构建依赖层
+├─ requirements-dev.txt     # 完整开发工具依赖层
+├─ requirements.txt         # 指向 requirements-build.txt 的兼容构建入口
+├─ constraints.txt          # CPython 3.13 / Windows x64 精确版本约束
 ├─ AGENTS.md
 ├─ README.md
 └─ LICENSE

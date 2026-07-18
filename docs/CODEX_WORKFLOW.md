@@ -5,7 +5,7 @@
 ## 开始前
 
 1. 阅读本文件和 [开发约定](DEVELOPMENT_CONVENTIONS.md)。
-2. 涉及 UI、导出、网络、解析、大表、数据库、文件扫描或图表时，先阅读 [UI 线程全局规范](ui_thread_policy.md)、[后台任务规范](background_task_policy.md)、[导出进程规范](export_process_policy.md)。
+2. 涉及 UI、导出、网络、解析、大表、数据库、文件扫描或图表时，先阅读 [Renderer 响应性规范](ui_thread_policy.md)、[后台任务规范](background_task_policy.md)、[导出进程规范](export_process_policy.md)。
 3. 明确本次任务范围，避免顺手重构。
 4. 先用 `rg` 查找现有组件、服务、状态和测试。
 5. 优先使用项目 `.venv`：
@@ -28,14 +28,13 @@
 
 ## UI 表格开发规则
 
-新增或修改表格时，必须遵守 [UI 表格与全选框规范](ui_table_guidelines.md)。
+新增或修改表格时，必须遵守 [Vue 表格与高密度数据规范](ui_table_guidelines.md)。
 
 尤其注意：
 
-- 勾选列必须使用全局 `CheckBoxOnlyDelegate`。
-- 不允许 `setCellWidget(QCheckBox)` 作为批量选择列。
-- 表格列宽必须按内容初始化。
-- 不允许默认 `QHeaderView.Stretch` 强行压缩字段。
+- 勾选列使用 `el-table-column type="selection"` 和稳定业务 ID。
+- 表格列宽使用明确宽度或 `min-width`，允许用户手工调整。
+- 不允许为了塞进窗口而强行压缩核心字段。
 - 超宽表格必须使用横向滚动条。
 
 ## 修改范围控制
@@ -52,7 +51,7 @@
 ## 必须避免
 
 - 只改 UI 表象但破坏底层能力。
-- 在 UI 线程直接执行网络连接、设备采集、大查询、大解析、大导出、压缩、图表生成或长时间循环。
+- 在 Renderer 直接执行网络连接、设备采集、大查询、大解析、大导出、压缩、图表生成或长时间循环。
 - 导出按钮直接调用 `Workbook.save()`、`df.to_excel()`、`matplotlib.savefig()` 等重型导出逻辑。
 - 切换主题时重建页面或清空日志。
 - 模块切换时重新初始化所有子页。
@@ -74,8 +73,8 @@
 2. 每个需求对应实现点。
 3. 是否涉及数据库结构。
 4. 是否涉及导入导出模板。
-5. 是否涉及耗时任务，采用 QThread/Worker 还是独立进程。
-6. 是否遵守 UI 线程只做 UI、数据库连接不跨线程/进程共享。
+5. 是否涉及耗时任务，采用 Job Center 还是 Export Process。
+6. 是否遵守 Renderer 只做 UI、数据库连接不跨线程/进程共享。
 7. 验证命令或手动验证步骤。
 8. 已知限制。
 

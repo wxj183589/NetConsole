@@ -41,7 +41,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `selectSettingsTool` | `iperf3/fping/ipop/securecrt/xshell/putty` 之一 | main 按 tool ID 固定文件名集合，复验绝对路径与 basename；FastAPI 保存与真实执行点再次校验存在性、普通文件和非符号链接 | 系统设置原生 EXE 选择 |
 | `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
-| `selectSettingsColor` | 无 | 只返回 Qt 当前四个受控主题色之一 | 原生主题色选择 |
+| `selectSettingsColor` | 无 | 只返回系统设置契约允许的受控主题色之一 | 原生主题色选择 |
 | `executeSettingsAction` | `open_settings_config/open_current_site/launch_ipop` 之一 | main 调固定动态回环端点并注入短期会话；Renderer 不提供路径、程序或 argv；后端只打开受控目录或启动经复验的 IPOP | 系统设置本机动作 |
 | `onBackendStatusChanged` | 固定回调 | 只接收脱敏状态 | 意外退出通知 |
 

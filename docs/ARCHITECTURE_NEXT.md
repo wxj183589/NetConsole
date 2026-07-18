@@ -1,153 +1,29 @@
-# NetConsole 下一代架构
+# NetConsole 永久架构与后续演进
 
-## 文档定位
+## 已确定且不得回退的基线
 
-本文记录 NetConsole 已确认的长期目标架构和不可跨越的依赖边界。
+- Electron Main/Preload + Vue Renderer 是唯一正式桌面界面。
+- FastAPI/Python Core 是永久业务层，Repository、Parser、Job Center、Export Process 和 Agent 不迁入 Node 或 Vue。
+- Browser 只用于本机开发、诊断和 API 联调。
+- Qt/PySide6/QFluentWidgets 不得重新进入源码、依赖、测试环境或发布包。
+- SNMP Center、通用 MIB/OID 平台和无线勘测不再迁移；设备管理只保留 SNMP v1/v2c。
 
-- 当前实现事实见 [ARCHITECTURE.md](ARCHITECTURE.md)。
-- Web 与 Qt 的实际覆盖状态见 [WEB_MIGRATION_MATRIX.md](WEB_MIGRATION_MATRIX.md) 和 [WEB_QT_PARITY_MATRIX.md](WEB_QT_PARITY_MATRIX.md)。
-- 分阶段迁移方法见 [WEB_MIGRATION_PLAN.md](WEB_MIGRATION_PLAN.md)。
-- Electron-only 最终分层与遗留逻辑回收门见 [ARCHITECTURE_COMPLIANCE.md](ARCHITECTURE_COMPLIANCE.md)。
+这组目标已经成为当前架构，不再是“未来 Qt 替换方案”。历史阶段见[Qt → Electron 归档](archive/migrations/qt-to-electron/README.md)，当前事实见[当前架构](ARCHITECTURE.md)和[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
 
-目标架构不等于当前目录已经完成重排。迁移期间必须同时写清“当前状态”和“目标状态”，不得把规划描述成已实现。
+## 后续演进顺序
 
-## 战略结论
+1. 以生产代码和真实设备行为补齐 `PARTIAL/IMPLEMENTED_UNVERIFIED/REAL_DEVICE_PENDING` 模块，不恢复旧桌面入口。
+2. 继续把 `legacy_tasks.py` 中仍有生产调用的领域实现下沉到明确 Service/handler。
+3. 扩展版本化网络设备 Command Profile；未经 fixture/真实设备证据的厂商和版本必须失败关闭。
+4. 完成 Electron 托盘、签名、升级和安装包发布门，不扩大 Native Bridge 白名单。
+5. 运行完整架构 Guard、全量 Python/Vue/Electron/Agent 测试和真实制品 smoke。
+6. 人工桌面与真实设备验收通过后，才提升对应功能状态。
 
-NetConsole 的长期产品形态确定为：
+## 完成标准
 
-> **Python Core + FastAPI 作为永久业务层，Vue 作为永久主界面，Electron 作为最终桌面外壳，Qt 仅保留在迁移期并最终删除。**
-
-当前实施阶段是 **Electron 功能对等迁移**：Electron 是唯一正式桌面产品方向，Qt 不再发布或发展新功能，只保留为真实功能、字段、命令和交互的迁移事实源；两者不得复制 Python 业务逻辑，Qt 源码只能在对应 Electron 纵向闭环完成真实验收后删除。
-
-永久保留：
-
-- Python Core、Application Service、Repository、Parser 与设备适配能力；
-- FastAPI HTTP/WebSocket 接口；
-- Vue Web Console；
-- Windows Go Agent 及后续 Agent 能力；
-- Task、Session、Mapping、Artifact 和审计体系。
-
-过渡或未来替换：
-
-- Qt GUI：已退出发布门，仅作迁移事实源，目标是完成对等验收后删除；
-- 当前 Qt Web Shell：历史兼容实现，不再作为正式产品或回退入口；
-- Electron：`apps/desktop_electron/` 已建立可运行安全基础，复用现有 Vue/FastAPI；安装包、升级、托盘和业务模块替换尚未完成。
-
-从本决策起，不再新增 Qt 业务页面，也不在 Qt 页面中建立新的业务规则。新功能默认沿永久链路建设。
-
-## 目标调用链
-
-```mermaid
-flowchart TD
-    L["Launcher"] --> E["Electron Desktop"]
-    E --> V["Vue Web Console"]
-    V --> A["FastAPI HTTP / WebSocket"]
-    A --> S["Application Service"]
-    S --> D["Domain / Shared Business Rules"]
-    S --> I["Infrastructure"]
-    I --> DB["SQLite / File / SSH / SNMP / Agent / Export"]
-```
-
-迁移期间 Qt 可以调用同一套 Application Service，但不得形成第二套业务实现：
-
-```text
-Qt 页面 ----┐
-            ├─ Application Service ─ Repository / Parser / Adapter
-FastAPI ----┘
-```
-
-## 分层职责与硬边界
-
-| 层 | 允许职责 | 禁止事项 |
-| --- | --- | --- |
-| Vue | 展示、输入、轻量校验、状态绑定 | 设备命令、数据库访问、业务状态机、凭据处理 |
-| Electron | 窗口、托盘、进程生命周期、受控本机桥接、升级 | 设备业务、数据库、采集、命令解析、通用命令执行 |
-| FastAPI Router | DTO 校验、鉴权、调用 Application Service、响应映射 | 直接操作 Repository、SQLite、设备或文件系统业务 |
-| Application Service | 用例编排、权限与审计、Task/Session/Artifact 协调 | 依赖 Vue、Electron 或 Qt 控件 |
-| Domain / Shared Rules | 稳定业务规则、状态与值对象 | 桌面或 Web 框架依赖 |
-| Infrastructure | Repository、设备协议、文件、进程、Agent、导出适配 | 向上持有前端状态 |
-
-API 是永久边界。接口变更必须兼容现有调用方，必要时版本化；不得让 Electron 绕过 FastAPI 直接调用 Python 内部业务对象。
-
-截至 Phase 0.5 第一批，18 个正式 Router 的静态 Application 边界守卫已无临时债务。现有 `src/netconsole/backend/api/main.py:create_app()` 继续作为唯一组合根，集中创建并注入共享 Task、Agent、Traffic、Online MR、Network Tools 和基础资料 Service；没有新增 `ApiRuntimeServices` 类、第二套容器或空 composition 包。该状态只覆盖首批 API 边界，不表示所有 Qt 页面或 legacy handler 已迁移。
-
-## 当前目录与目标职责映射
-
-当前不做大规模搬目录。以下映射用于约束新代码放置，不代表需要立即创建空目录：
-
-| 目标职责 | 当前主要位置 | 迁移说明 |
-| --- | --- | --- |
-| Electron / 进程生命周期 | `apps/desktop_electron/`、`src/netconsole/backend/electron_runtime.py` | 正式桌面入口和受管 Backend；`main.py` 只保留内部协议与开发诊断 |
-| Vue 主界面 | `apps/web/` | 永久保留，新用户功能默认进入此处 |
-| FastAPI | `src/netconsole/backend/api/` | 永久保留，Router 保持薄层 |
-| Application / Domain | `src/netconsole/services/`、`src/netconsole/core/` 等 | 逐用例收敛，不为命名整齐进行批量搬迁 |
-| Infrastructure | `src/netconsole/repositories/`、`parsers/`、`adapters/` 等 | 复用现有实现，按实际依赖治理 |
-| Qt 业务界面 | `src/netconsole/ui/` | 迁移期保留，只维护和回退，不新增业务页面 |
-| Qt Legacy 源码 | `src/netconsole/ui/`（历史 `apps/desktop/` 已回收） | 无活动启动入口，仅作迁移事实源，按历史映射逐项回收 |
-| Electron 外壳 | `apps/desktop_electron/` | 已有 main/preload/backend supervisor 基础；不复制 `apps/web` 或 Python Core |
-| Agent | `apps/agent/` | 独立运行，继续通过受控 API 与 Core 协作 |
-
-未经独立迁移任务批准，不创建空 `domain/`、`application/`、`infrastructure/`，也不为了符合示意图机械移动已有代码。Electron 基础已经落地，但不得在其中建立第二套业务、Renderer 或 Node 后端。
-
-## Electron 本机桥接边界
-
-Electron 只提供经过白名单和参数校验的本机能力。第一阶段已实现：
-
-- `selectFile`
-- `selectDirectory`
-- `chooseSavePath`
-- `downloadBackendResource`：只允许受控 `/api/...` 描述，由 main 访问当前动态回环后端并流式落盘
-- 仅限当前原生对话框已授权路径的 `openPath`
-- 仅限当前原生对话框已授权路径的 `showItemInFolder`
-
-上述下载只搬运 Python Application Service 已授权的 HTTP 响应，不解释 Artifact，也不等同于按业务 ID 打开本机结果。`openArtifact`、受控目录类型、终端和通知仍是后续能力。
-
-禁止提供：
-
-- `execute(command)`；
-- 任意 `open(path)`；
-- 任意 `run(exe)`；
-- 可拼接 Shell、PowerShell 或批处理参数的通用执行接口。
-
-所有桥接调用必须验证路径归属、参数类型、允许的目标程序和审计信息。业务控制仍经过 FastAPI 和 Application Service。
-
-所有受管桌面能力必须加入同一退出屏障。当前顺序固定为：拒绝新下载、取消并等待在途写入清理；Main 请求 Python 停止；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`；Main 再发送 `exit`；会话路径授权清空后 Electron 才退出。该链路已完成自动冒烟但仍待人工桌面验收；Qt 只保留为尚未完成真实验收能力的迁移事实源。
-
-## 已删除范围
-
-以下历史模块已经批准从活动产品删除：
-
-- SNMP 中心与通用 MIB/OID 平台；
-- 无线勘测。
-
-处理原则：
-
-- 删除活动 Registry、Qt/Vue/Electron/API 入口、业务代码、资源、依赖和发布内容；
-- `REMOVED_FEATURE_IDS` 拒绝旧 profile 恢复入口；
-- 旧数据库列、历史局点数据库和用户文件仅做非破坏性保留，当前不读取、不创建、不自动删除；
-- 不在后续路线中重建这些平台。
-
-设备管理只保留 SNMP v1/v2c 只读基础识别。网络工具中的“无线扫描”是独立能力，不等同于已删除的“无线勘测”，仍按迁移计划验收。
-
-## 分阶段落地
-
-1. **架构约束期**：固化本文、迁移计划、开发规则和模块矩阵；停止新增 Qt 业务。
-2. **Core/API 收敛期**：逐模块把业务规则从 Qt 页面和 Router 收敛到 Application Service。
-3. **Vue 主界面期**：按真实验收门槛完成 Web 功能，Qt 保持并行回退。
-4. **Electron 默认期**：Electron 已成为唯一正式桌面入口；Qt 源码和已归档安装成果仅作迁移对照，不再恢复为活动产品入口。普通浏览器仅保留开发和诊断入口，不进入发布或功能对等验收。
-5. **Electron 外壳期**：安全基础已开始；继续补安装/升级/托盘，并仅在模块达到完整纵向闭环后替换 Qt 入口。
-6. **Qt 删除期**：所有目标模块完成迁移、真实验收、发布回退验证后，删除 Qt 业务层和 Qt 运行依赖。
-7. **架构合规期**：在无 Qt 构建和非 Qt 全量验证后，使用 Git 历史追踪被删除 Qt 文件中的业务逻辑，检查各永久层真实依赖，修复 P0/P1 并生成最终合规报告。
-
-## 完成定义
-
-最终完成不是“Electron 窗口能够打开网页”，而是同时满足：
-
-- Vue 覆盖目标业务模块并成为默认主界面；
-- FastAPI/Application Service 是唯一业务控制入口；
-- Electron 不包含业务逻辑且本机桥接完成安全审计；
-- Qt 页面、Qt Web Shell 和 Qt 运行依赖均可删除；
-- 每个被删除 Qt 文件已分类为 `PURE_UI`、`BUSINESS_MOVED`、`ADAPTER_REPLACED`、`DEAD_CODE` 或 `FEATURE_REMOVED`，有效业务逻辑均有新位置和测试；
-- 架构 Guard 通过，Vue、Electron 和 Router 不承载核心业务规则，Repository 和 Command Profile 分别守住数据库与生产命令边界；
-- Agent、任务、会话、Artifact、权限、审计和升级链路通过真实环境验收；
-- Web 或桌面外壳异常时存在明确的服务恢复和数据保护方案。
+- Vue、Electron 和 Router 不承载核心业务算法或直接设备/数据库访问。
+- Application Service 不反向依赖 UI/HTTP/IPC。
+- Repository 独占活动数据库访问；数据路径全部通过 PathResolver/领域路径服务。
+- 生产命令进入版本化 Command Profile 或有明确、限期的迁移记录。
+- 每个已删除 Qt 路径在最终迁移矩阵中具有分类、新位置、测试和删除依据。
+- P0/P1 架构问题清零；延期 P2 具有责任域、原因、边界和复验条件。

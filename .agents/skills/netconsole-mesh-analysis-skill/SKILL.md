@@ -29,8 +29,8 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 # 开始前读取
 
 - `docs/mr_mesh_log_analysis_rules.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`。
-- `src/netconsole/ui/pages/mesh_log_analysis_page.py`、`src/netconsole/ui/mesh_log_workers.py`、`src/netconsole/ui/mesh_peer_series_worker.py`。
-- `src/netconsole/ui/mesh_time_window_controller.py` 和 `src/netconsole/ui/mesh_chart_*.py`。
+- `src/netconsole/backend/api/online_mr_router.py`、`apps/web/src/views/rail-transit/MeshAnalysisView.vue`、`apps/web/src/components/mesh-analysis/`。
+- `src/netconsole/services/mesh_chart_payload.py`、`src/netconsole/services/mesh_peer_mapping_service.py`。
 - `src/netconsole/parsers/mesh_log_parser.py`、`src/netconsole/services/mesh_log_analysis_service.py`、`src/netconsole/services/mesh_analysis_params_service.py`。
 - `src/netconsole/services/mr_mesh_identity_shadow.py`、`src/netconsole/repositories/mesh_catalog_repository.py`、`src/netconsole/repositories/mesh_mr_repository.py`。
 - `src/netconsole/models/mesh_log_models.py`、`src/netconsole/models/mesh_analysis_params.py`、`src/netconsole/resources/mesh_quality_rules.json`、`tests/test_mesh_log_analysis.py`。
@@ -58,4 +58,4 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 - CLI parser：`network-command-parser-skill`。
 - AP Identity：`netconsole-ap-identity-skill`。
 - 报告：`netconsole-export-report-skill`。
-- UI 缺陷：`qt6-ui-fix-skill`。
+- UI 缺陷：按 `docs/UI_DESIGN_SYSTEM.md` 和 Vue/Element Plus 组件测试处理，不恢复 Qt 页面。

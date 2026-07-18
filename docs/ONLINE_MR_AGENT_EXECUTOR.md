@@ -4,7 +4,7 @@
 
 阶段 5B-13A 已在 Python Controller 中实现单 Agent、单 MR 的远程执行闭环；阶段 5B-13B 在 Desktop WebHost 中增加独立 AGENT 控制入口。能力默认关闭，只有设置 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1` 后，`OnlineMrApplicationService` 和 Web AGENT 页签才允许 `executor=AGENT`；关闭时 capability 返回 `agent_executor_enabled=false`，写接口稳定返回 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`。
 
-5B-13B 不修改 Go Agent、Agent 包契约、MR 命令、LOCAL 生命周期、raw 文件名或报告逻辑。Qt 页面仍不承载 Agent 业务；Vue 只收集白名单输入、调用 Application Service 并展示状态。
+5B-13B 不修改 Go Agent、Agent 包契约、MR 命令、LOCAL 生命周期、raw 文件名或报告逻辑。Vue 只收集白名单输入、调用 Application Service 并展示状态；不得在 Renderer 或 Electron Main 复制 Agent 业务。
 
 ## 组件与依赖
 
@@ -95,7 +95,7 @@ POST /api/rail-transit/online-mr-agent/<operation_id>/stop
 
 - 仅单 Agent、单 MR；
 - 无 Agent 强停、多 Agent 编排、远端 package 删除、任意命令或 URL；
-- Qt 不增加 AGENT 控制按钮；Web 在列车通信 MR 详情中以独立 LOCAL/AGENT 页签接入，不共用隐藏字段表单；
+- Electron 在列车通信 MR 详情中以独立 LOCAL/AGENT 页签接入，不共用隐藏字段表单；
 - 不自动解析、不生成报告；导入后沿用既有离线流程；
 - LOCAL 仍以 `raw/collector_output_raw.log` 和 `session_meta.json.stop_reason` 为正式契约；Agent 包继续使用 `raw/init_raw.log` 与 `stop_reason.json`，两类执行端不强行统一文件布局。
 

@@ -33,7 +33,7 @@ description: "AP Identity、CanonicalApIdentity、AP/Radio/BSSID/Peer MAC 归一
 - `docs/TRACKSIDE_AP_IDENTITY_ASSESSMENT.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`、`docs/EXPORT_FIELD_DEDUP_ASSESSMENT.md`。
 - `src/netconsole/services/ap_identity/`、`src/netconsole/services/ac/ac_identity_models.py`、`src/netconsole/services/ac/ac_identity_adapter.py`。
 - `src/netconsole/services/ac/ac_optical_identity_adapter.py`、`src/netconsole/services/mr_mesh_identity_shadow.py`。
-- `src/netconsole/services/rail_transit/trackside_ap_identity_shadow.py`、`src/netconsole/services/export_identity_diagnostics.py`、`src/netconsole/ui/diagnostics/`。
+- `src/netconsole/services/rail_transit/trackside_ap_identity_shadow.py`、`src/netconsole/services/export_identity_diagnostics.py`、`src/netconsole/models/diagnostics_summary.py`。
 - 相关 `tests/test_*identity*.py`。
 
 # 工作流程与边界
@@ -49,7 +49,7 @@ description: "AP Identity、CanonicalApIdentity、AP/Radio/BSSID/Peer MAC 归一
 
 - 当前 AP Identity 主要处于 canonical 工具、各领域 shadow comparison 和只读 diagnostics 阶段。
 - FIT-AP 扩展、光衰、轨旁、MR/MESH 和导出仍以旧业务结果为生产路径；shadow 不授权覆盖。
-- 当前没有统一 Job 详情宿主和安全结果保留层可承载完整 Identity 可见 UI；不得描述为已全面接管。
+- 统一任务窗口只展示受控摘要；现有 Identity 结果仍不足以授权生产接管，不得描述为已全面接管。
 
 # 验证与失败报告
 

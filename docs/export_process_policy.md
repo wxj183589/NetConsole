@@ -1,6 +1,6 @@
 # 导出进程规范
 
-本文定义 NetConsole 所有导出类任务的强制规范，是 [UI 线程全局规范](ui_thread_policy.md) 的配套文档。
+本文定义 NetConsole 所有导出类任务的强制规范，是 [Renderer 响应性规范](ui_thread_policy.md) 的配套文档。
 
 > 2026-07-11 代码核对：当前通用 registry 有 27 个导出类型，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用类型。兼容直接 exporter 仍可能存在，但正式 UI 路径必须使用 Export Process。
 
@@ -8,8 +8,8 @@
 
 ```text
 所有导出按钮都必须使用独立进程。
-按钮回调只能创建 ExportJob，然后启动 ExportProcessManager。
-UI 线程禁止直接 Workbook.save、df.to_excel、matplotlib.savefig。
+页面动作只能提交 ExportJob，由永久 Export Application Service/Process 启动。
+Renderer 禁止直接 Workbook.save、df.to_excel、matplotlib.savefig。
 ```
 
 ## 一、适用范围
@@ -24,7 +24,6 @@ AC FIT-AP 资源导出
 AP 扩展信息导出
 设备管理 CSV / XLSX 导出
 日志中心导出
-SNMP 结果导出
 配置采集中心导出
 文件清单导出
 图表图片批量导出
@@ -57,7 +56,7 @@ python -m netconsole.export_worker --job <job_file.json>
 NetConsole.exe --export-worker --job <job_file.json>
 ```
 
-UI 与导出进程通过 JSONL stdout 通信进度。导出进程不得依赖 UI 对象，不得访问 QWidget。
+Application Service 与导出进程通过 UTF-8 JSONL stdout 通信进度。导出进程不得依赖 Vue、DOM 或 Electron 对象。
 
 ## 三、ExportJob
 
@@ -89,9 +88,7 @@ theme_or_export_style
 禁止传入：
 
 ```text
-QWidget
-QTableWidget
-QApplication
+Renderer / Electron 对象
 sqlite connection
 repository 实例
 未序列化的 model 对象
@@ -158,7 +155,7 @@ ExportProcessManager
 应用退出时终止子进程
 ```
 
-所有页面应复用统一管理器，不要每个页面单独写一套 subprocess/QProcess 逻辑。
+所有页面应复用统一 Export Application Service，不要每个页面单独写一套 subprocess 或 JSONL 解析逻辑。
 
 ## 七、数据库和文件规则
 

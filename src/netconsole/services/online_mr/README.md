@@ -2,7 +2,7 @@
 
 ## 用途
 
-本目录承载 Online MR 的 Application Service、LOCAL/AGENT 执行、Traffic 协调、会话、事件、解析、诊断和查询契约，供 FastAPI、Electron 和迁移期 Qt Adapter 复用。
+本目录承载 Online MR 的 Application Service、LOCAL/AGENT 执行、Traffic 协调、会话、事件、解析、诊断和查询契约，供 FastAPI 与 Electron Renderer 复用。
 
 ## 边界
 
@@ -27,7 +27,7 @@
 
 ## 迁移状态
 
-正式 LOCAL 主路径已由 Application Service 持有 Traffic 和 SSH 生命周期。`netconsole.ui.online_mr_fping_worker` 仅是历史 Qt 页面使用的 Signal/QThread Adapter，删除 Qt 时一并删除，不得把业务逻辑移回 Adapter。
+正式 LOCAL 主路径由 Application Service 持有 Traffic 和 SSH 生命周期。历史 Signal/QThread Adapter 已删除，不得重新建立桌面专属业务层。
 
 ## 相关文档
 

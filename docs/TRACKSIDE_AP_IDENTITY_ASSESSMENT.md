@@ -112,7 +112,7 @@ site + switch device_uuid/name + normalized interface
 
 ### 4.4 当前测试时序
 
-MAC 和名称双击测试会创建真实 `BackgroundProcessManager` 任务，并通过 `process_events_until()` 等待详情窗口构造。完整 `test_ac_management.py` 共享 Qt/异步对象时可能出现三秒等待超时；代表用例在独立 pytest 进程中通过。该问题属于测试生命周期基础设施，本阶段不修改页面或异步实现。
+历史 Qt 双击测试曾通过 `BackgroundProcessManager` 和事件循环等待详情窗口；该测试与 Qt 生命周期基础设施已经删除。当前详情链只以永久 Service/API/Vue 测试和 Electron 人工验收为证据。
 
 ## 5. 缓存和历史数据链路
 
@@ -243,7 +243,7 @@ items[]:
 7. MAC/名称双击仍打开旧 resolver 选中的详情；无匹配和多匹配行为不变。
 8. shadow 失败不改变加载或详情 finished/failed 终态。
 9. 主页面线程结果与兼容 Job 都包含等价摘要。
-10. Qt 双击用例继续独立进程验证；完整 AC UI 套件的共享生命周期问题单独治理。
+10. Vue 详情交互、并发任务隔离和 Electron 窗口生命周期分别通过定向测试与人工验收验证。
 
 ## 11. 回滚策略
 

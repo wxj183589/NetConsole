@@ -1,11 +1,7 @@
-import os
 import sys
 from types import SimpleNamespace
 
 import pytest
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -16,65 +12,9 @@ from netconsole.services.file_transfer_service import (
 )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_path, monkeypatch):
+def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(
+    tmp_path, monkeypatch
+):
     import netconsole.services.file_transfer_service as service_module
 
     connect_hosts: list[str] = []
@@ -130,8 +70,14 @@ def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(tmp_pat
         def close(self):
             closed.append("tunnel")
 
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
-    monkeypatch.setattr(service_module.TunnelManager, "open_tunnel", lambda *_args: FakeTunnelSession())
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()),
+    )
+    monkeypatch.setattr(
+        service_module.TunnelManager, "open_tunnel", lambda *_args: FakeTunnelSession()
+    )
     monkeypatch.setattr(service_module, "sleep", lambda _seconds: None)
 
     device = Device(
@@ -175,7 +121,9 @@ def test_sftp_enable_command_builder_uses_vendor_and_username():
     assert build_sftp_enable_commands("Cisco", "ops") == []
 
 
-def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_continues(tmp_path, monkeypatch):
+def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_continues(
+    tmp_path, monkeypatch
+):
     connect_hosts: list[str] = []
     shell_commands: list[str] = []
 
@@ -217,7 +165,11 @@ def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_cont
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()),
+    )
 
     device = Device(
         id=1,
@@ -239,7 +191,9 @@ def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_cont
     assert shell_commands == []
 
 
-def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(tmp_path, monkeypatch):
+def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(
+    tmp_path, monkeypatch
+):
     import netconsole.services.file_transfer_service as service_module
 
     connect_hosts: list[str] = []
@@ -303,7 +257,11 @@ def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(tmp_p
         def close(self):
             closed.append(f"client-{self.index}")
 
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()),
+    )
     monkeypatch.setattr(service_module, "sleep", lambda _seconds: None)
 
     device = Device(
@@ -332,7 +290,9 @@ def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(tmp_p
     ]
 
 
-def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(tmp_path, monkeypatch):
+def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
+    tmp_path, monkeypatch
+):
     class FakeSSHClient:
         def set_missing_host_key_policy(self, _policy):
             pass
@@ -352,7 +312,11 @@ def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
         def close(self):
             pass
 
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()))
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(SSHClient=FakeSSHClient, AutoAddPolicy=lambda: object()),
+    )
     device = Device(
         id=1,
         name="Huawei-SW",
@@ -372,7 +336,9 @@ def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
     assert "SSH session not active" not in message
 
 
-def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode(tmp_path):
+def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode(
+    tmp_path,
+):
     calls: list[tuple[str, str]] = []
 
     class FakeSftp:
@@ -400,19 +366,15 @@ def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode
     assert calls == []
 
 
-
-
-
-
-
-
-
-
-
-
 class FakeRepository:
     def __init__(self) -> None:
-        self.device = Device(id=1, device_uuid=Device.new_uuid(), name="AC-1", ip_address="192.0.2.1", device_type="AC")
+        self.device = Device(
+            id=1,
+            device_uuid=Device.new_uuid(),
+            name="AC-1",
+            ip_address="192.0.2.1",
+            device_type="AC",
+        )
 
     def list(self):
         return [self.device]

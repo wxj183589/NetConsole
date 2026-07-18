@@ -58,7 +58,7 @@ GET /api/rail-transit/train-communication/mrs/{mr_id}/packages
 
 ## 当前边界
 
-- LOCAL 启停、强停和恢复由 Qt/Electron 共用同一个 `OnlineMrApplicationService`；正式 Electron Runtime 显式启用 LOCAL 控制，其他宿主仍默认关闭；
+- LOCAL 启停、强停和恢复统一由 `OnlineMrApplicationService` 承担；正式 Electron Runtime 显式启用 LOCAL 控制，Browser/Server 诊断宿主默认关闭；
 - 5B-13B 的 AGENT 页签只允许选择已登记 Profile 和正式 MR，通过同一个 Application Service 进行 start/status/normal stop；包下载/导入由 Executor 自动收敛；
 - 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作；已有正式分析结果通过独立的 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md) 查看。
 - 本页的列表和摘要可被 [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只读复用；综合看板继续保持 CT/TC 独立，不重新计算通信状态或阈值。

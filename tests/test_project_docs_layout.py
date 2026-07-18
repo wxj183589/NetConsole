@@ -35,13 +35,22 @@ def _markdown_under(root: Path) -> list[Path]:
     markdown: list[Path] = []
     for current, dirnames, filenames in os.walk(root):
         dirnames[:] = [name for name in dirnames if name not in IGNORED_MARKDOWN_DIRS]
-        markdown.extend(Path(current) / name for name in filenames if name.endswith(".md"))
+        markdown.extend(
+            Path(current) / name for name in filenames if name.endswith(".md")
+        )
     return markdown
 
 
 def _markdown_files() -> list[Path]:
     paths = [ROOT / "README.md", ROOT / "AGENTS.md"]
-    for root in (ROOT / "docs", ROOT / "apps", ROOT / ".agents" / "skills", ROOT / "tools", ROOT / "resources"):
+    for root in (
+        ROOT / "docs",
+        ROOT / "apps",
+        ROOT / "src",
+        ROOT / ".agents" / "skills",
+        ROOT / "tools",
+        ROOT / "resources",
+    ):
         paths.extend(_markdown_under(root))
     return sorted(set(paths))
 
@@ -89,24 +98,54 @@ def test_project_skill_front_matter_is_unique_and_minimal() -> None:
             end = lines.index("---", 1)
         except ValueError as exc:
             raise AssertionError(f"missing front matter end: {skill_file}") from exc
-        keys = [match.group(1) for line in lines[1:end] if (match := FRONT_MATTER_KEY_RE.match(line))]
+        keys = [
+            match.group(1)
+            for line in lines[1:end]
+            if (match := FRONT_MATTER_KEY_RE.match(line))
+        ]
         assert set(keys) == {"name", "description"}, skill_file
-        name = next(line.split(":", 1)[1].strip() for line in lines[1:end] if line.startswith("name:"))
+        name = next(
+            line.split(":", 1)[1].strip()
+            for line in lines[1:end]
+            if line.startswith("name:")
+        )
         assert name == skill_file.parent.name, skill_file
         names.append(name)
     assert len(names) == len(set(names)), names
+
+
+def test_project_skills_do_not_reference_deleted_qt_sources() -> None:
+    forbidden = (
+        "src/netconsole/ui/",
+        "netconsole.ui.",
+        "background_process_manager.py",
+        "qt6-ui-fix-skill",
+        "netconsole-qt6-ui-taste-skill",
+        "Qt UI Skill",
+    )
+    violations = [
+        f"{skill_file.relative_to(ROOT)} contains {needle!r}"
+        for skill_file in sorted((ROOT / ".agents" / "skills").glob("*/SKILL.md"))
+        for needle in forbidden
+        if needle in skill_file.read_text(encoding="utf-8")
+    ]
+    assert not violations, "stale project Skill references:\n" + "\n".join(violations)
 
 
 def test_core_docs_do_not_use_known_old_paths() -> None:
     documents = [
         ROOT / "docs/WEB_ARCHITECTURE.md",
         ROOT / "docs/PROJECT_OVERVIEW.md",
-        ROOT / "docs/02-architecture.md",
+        ROOT / "docs/ARCHITECTURE.md",
         ROOT / "docs/README.md",
         ROOT / "docs/DEVELOPMENT_CONVENTIONS.md",
         ROOT / "apps/agent/README.md",
     ]
-    forbidden = (r"cd frontend", r"(?<!src/)netconsole/app\.py", r"(?<!src/)netconsole/ui/main_window\.py")
+    forbidden = (
+        r"cd frontend",
+        r"(?<!src/)netconsole/app\.py",
+        r"(?<!src/)netconsole/ui/main_window\.py",
+    )
     violations = [
         f"{document.relative_to(ROOT)} contains {needle!r}"
         for document in documents
@@ -114,4 +153,31 @@ def test_core_docs_do_not_use_known_old_paths() -> None:
         if re.search(needle, document.read_text(encoding="utf-8"))
     ]
     assert not violations, "stale project paths:\n" + "\n".join(violations)
-    assert "](../docs/AGENT_TRAFFIC_API.md)" not in (ROOT / "apps/agent/README.md").read_text(encoding="utf-8")
+    assert "](../docs/AGENT_TRAFFIC_API.md)" not in (
+        ROOT / "apps/agent/README.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_active_readmes_do_not_describe_qt_as_current_architecture() -> None:
+    documents = [
+        ROOT / "README.md",
+        ROOT / "src/README.md",
+        ROOT / "src/netconsole/README.md",
+        ROOT / "src/netconsole/services/online_mr/README.md",
+        ROOT / "docs/DEVELOPMENT_HISTORY.md",
+    ]
+    forbidden = (
+        "迁移期 Qt",
+        "当前仓库正式主线仍为 PySide6",
+        "`ui/`：迁移期 Qt",
+        "Qt 事实源，最终删除",
+    )
+    violations = [
+        f"{document.relative_to(ROOT)} contains {needle!r}"
+        for document in documents
+        for needle in forbidden
+        if needle in document.read_text(encoding="utf-8")
+    ]
+    assert not violations, "stale active Qt architecture claims:\n" + "\n".join(
+        violations
+    )

@@ -85,7 +85,7 @@ AC 管理和轨旁 AP 业务围绕 FIT-AP 资源、AP 扩展信息、光衰和�
 - FeatureGate 和 customer profile。
 - 客户版内部调试解锁入口。
 
-## 历史方案标注
+## 当前架构标注
 
-- 如历史讨论过 Web / Electron / FastAPI 原型，当前仓库正式主线仍为 PySide6 桌面应用。
+- PySide6/Qt 是早期桌面阶段的历史事实；当前正式产品为 Electron Main + Preload + Vue，FastAPI/Python Core 是永久业务层。
 - 旧编号 docs 中部分数据库和模块说明可能早于当前实现，后续以当前代码和专题文档为准。

@@ -63,7 +63,7 @@ GET /api/rail-transit/mesh-analysis/sessions/{session_id}/raw-sources/{source_id
 
 ## 当前边界
 
-- Qt/Job Center 继续负责导入、重建、解析和报告；
+- Job/Application Service 继续负责导入、重建、解析和报告；
 - Web 不连接 AC、不控制 Agent、不开放 `executor=AGENT`，也不修改 Online MR 生命周期；
 - 页面只展示现有正式资料匹配结果，不猜测 AP、站点、区间、里程或方向；
 - Excel/WPS 导出不在本阶段新增，现有 XLSX/ZIP 仅作为 artifact 查看或下载。

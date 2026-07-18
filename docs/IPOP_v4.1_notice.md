@@ -9,8 +9,8 @@ IPOP v4.1 为第三方可选外部工具，不随 NetConsole 分发。NetConsole
 - 用户配置存储在现有设置文件的 `external_tools/ipop_path` 键。
 - 有效用户配置优先；未配置时可检查用户手动放置的 `tools/windows-x64/ipop/IPOP.EXE`。
 - NetConsole 不下载、复制、解压、修改、嵌入或后台获取 IPOP。
-- IPOP 通过 Qt `QProcess.startDetached` 启动，NetConsole 不等待或接管其生命周期，主程序退出不会结束它。
+- IPOP 由 `DesktopActionService` 经 Electron 白名单本机动作以 `shell=False` 启动；NetConsole 不传递凭据、不等待或接管其生命周期，主程序退出不会结束它。
 
 ## 发布边界
 
-PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。构建脚本仅白名单复制 `fping` 和 `iperf3`；最终目录或 ZIP 检测到 IPOP 时会中止构建，但不会删除开发机或用户磁盘上的文件。
+PyInstaller Backend、Electron 内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。构建脚本仅白名单复制 `fping` 和 `iperf3`；最终目录或 ZIP 检测到 IPOP 时会中止构建，但不会删除开发机或用户磁盘上的文件。

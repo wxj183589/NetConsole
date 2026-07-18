@@ -31,7 +31,7 @@
 - 为旧字段缺失写猜测逻辑。
 - 为某次导入数据写特殊分支。
 - 用 `try/except` 吃掉结构性错误。
-- 用 `QTimer` / 延迟调用掩盖递归、阻塞或状态错乱。
+- 用 `setTimeout`、无界轮询或延迟调用掩盖递归、阻塞或状态错乱。
 - 只针对截图现象做假修复。
 - 为了兼容历史不一致结果保留旧 `remark` 或旧规则，除非需求明确要求。
 
@@ -49,7 +49,7 @@
 - 后续新增页面、弹窗、导出、后台任务、表格和文本读取必须遵守 [存量例外与新增代码约束](ui_governance_guardrails.md)。
 - 全局强制遵守 [UI 线程全局规范](ui_thread_policy.md)：UI 线程只负责 UI。
 - 耗时任务、网络任务、数据库大查询、文件扫描、解析、压缩、图表生成、设备连接必须使用后台线程或独立进程。
-- 后台线程必须遵守 [后台任务规范](background_task_policy.md)，Worker 不得访问 QWidget，必须通过 signal 返回进度、结果和错误。
+- 后台任务必须遵守[后台任务规范](background_task_policy.md)，Worker 不得访问 DOM、Renderer 或 Electron 对象，进度、结果和错误通过正式任务事件返回。
 - 所有导出类任务必须遵守 [导出进程规范](export_process_policy.md)，使用独立进程，不得在按钮回调或 UI 线程直接写 Excel/CSV/PDF/图表。
 - 大表格不要一次性渲染无分页、无窗口的全量数据。
 - 大图表需要抽样、数据窗口、懒加载、progressive 或等效策略。
@@ -96,11 +96,10 @@
 
 要求：
 
-- 勾选列必须使用全局 `CheckBoxOnlyDelegate`。
-- 不允许 `setCellWidget(QCheckBox)` 作为批量选择列。
-- 全选、反选、清空选择必须同步更新 `CheckStateRole`。
-- 表格列宽必须按内容初始化，并允许用户手动拖动。
-- 不允许默认 `QHeaderView.Stretch` 强行压缩字段。
+- 勾选列使用 `el-table-column type="selection"` 和稳定业务 ID。
+- 全选、反选和清空选择必须同步更新页面状态与批量动作可用性。
+- 表格使用明确宽度或 `min-width`，并允许用户手动拖动。
+- 不允许为塞进窗口而强行压缩核心字段。
 - 超宽表格必须使用横向滚动条。
 
 ## Windows 网络调试安全
@@ -118,5 +117,5 @@
 - 采集解析：覆盖成功、失败、空数据、离线、异常状态。
 - UI 入口：检查显示、隐藏、启用、禁用和状态保留。
 - 打包：检查发布包白名单、禁入目录、工具文件和启动自检。
-- 涉及耗时任务：说明 UI 线程是否只负责 UI、任务使用 QThread/Worker 还是独立进程、是否有进度/取消/失败提示/日志。
+- 涉及耗时任务：说明 Renderer 是否只负责 UI、任务使用 Job Center 还是 Export Process、是否有进度/取消/失败提示/日志和退出清理。
 - 涉及导出：说明是否走独立进程、是否通过 job 参数传递数据、是否避免 UI 线程直接 `Workbook.save()` / `df.to_excel()` / `matplotlib.savefig()`。

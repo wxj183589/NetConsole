@@ -46,7 +46,7 @@ Traffic 停止与 flush
 → Task / Session / Mapping 终态
 ```
 
-同一局点、同一设备已有活动 Mapping 时，重复启动返回既有 operation；这也覆盖 Legacy Qt 已启动的会话。重复停止由 ApplicationService 终态判断幂等，不重复生成 ZIP 或改写终态。页面卸载、切换路由或隐藏只停止前端轮询，不停止后台采集。
+同一局点、同一设备已有活动 Mapping 时，重复启动返回既有 operation；这也覆盖应用重启后恢复的活动会话。重复停止由 Application Service 终态判断幂等，不重复生成 ZIP 或改写终态。页面卸载、切换路由或隐藏只停止前端轮询，不停止后台采集。
 
 强停先走既有有界协作停止，再由 Application Service 决定是否强制终止。无法确认 writer flush 或文件稳定时保留 raw，返回 `data_integrity=partial`，不伪造正常完成或正式完整 ZIP。恢复只核对持久 Mapping/Task/Session，不删除 raw，不从前端路径重建会话。
 

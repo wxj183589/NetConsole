@@ -17,16 +17,22 @@ from netconsole.core.version import APP_VERSION, GIT_COMMIT
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
-def test_source_mode_uses_only_current_project_web_dist(tmp_path: Path, monkeypatch) -> None:
+def test_source_mode_uses_only_current_project_web_dist(
+    tmp_path: Path, monkeypatch
+) -> None:
     paths = PathResolver(tmp_path)
     monkeypatch.setattr(api_main, "is_packaged_runtime", lambda: False)
-    monkeypatch.setattr(api_main, "package_resource_path", lambda *_parts: tmp_path / "old-package-web")
+    monkeypatch.setattr(
+        api_main, "package_resource_path", lambda *_parts: tmp_path / "old-package-web"
+    )
 
     assert api_main._frontend_dist(paths) == paths.app_root / "apps" / "web" / "dist"
     assert api_main._frontend_source_type() == "source"
 
 
-def test_packaged_mode_uses_only_embedded_web_resources(tmp_path: Path, monkeypatch) -> None:
+def test_packaged_mode_uses_only_embedded_web_resources(
+    tmp_path: Path, monkeypatch
+) -> None:
     paths = PathResolver(tmp_path)
     packaged = tmp_path / "_internal" / "netconsole" / "assets" / "web"
     monkeypatch.setattr(api_main, "is_packaged_runtime", lambda: True)
@@ -39,8 +45,13 @@ def test_packaged_mode_uses_only_embedded_web_resources(tmp_path: Path, monkeypa
 def test_missing_legacy_frontend_metadata_shows_rebuild_warning(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><html><body><div id=\"app\"></div></body></html>", encoding="utf-8")
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist)
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body><div id="app"></div></body></html>',
+        encoding="utf-8",
+    )
+    app = create_app(
+        RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist
+    )
 
     with TestClient(app) as client:
         root = client.get("/")
@@ -57,7 +68,10 @@ def test_matching_frontend_metadata_serves_clean_index(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
     build_id = f"{APP_VERSION}+{GIT_COMMIT}"
-    (dist / "index.html").write_text("<!doctype html><html><body><div id=\"app\">current</div></body></html>", encoding="utf-8")
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body><div id="app">current</div></body></html>',
+        encoding="utf-8",
+    )
     (dist / "web-build-meta.json").write_text(
         json.dumps(
             {
@@ -70,7 +84,9 @@ def test_matching_frontend_metadata_serves_clean_index(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist)
+    app = create_app(
+        RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist
+    )
 
     with TestClient(app) as client:
         root = client.get("/")
@@ -84,7 +100,10 @@ def test_matching_frontend_metadata_serves_clean_index(tmp_path: Path) -> None:
 def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><html><body class=\"legacy\"><div id=\"app\"></div></body></html>", encoding="utf-8")
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body class="legacy"><div id="app"></div></body></html>',
+        encoding="utf-8",
+    )
     (dist / "web-build-meta.json").write_text(
         json.dumps(
             {
@@ -97,7 +116,9 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
         ),
         encoding="utf-8",
     )
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist)
+    app = create_app(
+        RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist
+    )
 
     with TestClient(app) as client:
         root = client.get("/")
@@ -117,9 +138,15 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
         ("web.agent_management", "/api/agents"),
         ("network_tools.traffic", "/api/traffic/runs"),
         ("web.rail_transit_base_data", "/api/rail-transit/base-data/summary"),
-        ("web.train_communication_monitoring", "/api/rail-transit/train-communication/summary"),
+        (
+            "web.train_communication_monitoring",
+            "/api/rail-transit/train-communication/summary",
+        ),
         ("web.mesh_analysis", "/api/rail-transit/mesh-analysis/summary"),
-        ("web.rail_transit_wireless_dashboard", "/api/rail-transit/wireless-dashboard/summary"),
+        (
+            "web.rail_transit_wireless_dashboard",
+            "/api/rail-transit/wireless-dashboard/summary",
+        ),
     ],
 )
 def test_disabled_web_page_cannot_bypass_backend_feature_gate(
@@ -127,7 +154,11 @@ def test_disabled_web_page_cannot_bypass_backend_feature_gate(
     feature_id: str,
     path: str,
 ) -> None:
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
     app.state.feature_gate.features[feature_id] = {"visible": False, "enabled": False}
 
     with TestClient(app) as client:
@@ -137,8 +168,15 @@ def test_disabled_web_page_cannot_bypass_backend_feature_gate(
 
 
 def test_disabled_network_toolbox_cannot_start_tcp_port_test(tmp_path: Path) -> None:
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
-    app.state.feature_gate.features["web.network_tools_toolbox"] = {"visible": False, "enabled": False}
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
+    app.state.feature_gate.features["web.network_tools_toolbox"] = {
+        "visible": False,
+        "enabled": False,
+    }
 
     with TestClient(app) as client:
         response = client.post(
@@ -161,7 +199,11 @@ def test_disabled_web_page_cannot_bypass_websocket_feature_gate(
     feature_id: str,
     path: str,
 ) -> None:
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
     app.state.feature_gate.features[feature_id] = {"visible": False, "enabled": False}
 
     with TestClient(app) as client, pytest.raises(WebSocketDenialResponse) as exc_info:
@@ -171,9 +213,18 @@ def test_disabled_web_page_cannot_bypass_websocket_feature_gate(
     assert exc_info.value.status_code == 404
 
 
-def test_shared_task_api_stays_available_when_job_center_page_is_disabled(tmp_path: Path) -> None:
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
-    app.state.feature_gate.features["web.job_center"] = {"visible": False, "enabled": False}
+def test_shared_task_api_stays_available_when_job_center_page_is_disabled(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
+    app.state.feature_gate.features["web.job_center"] = {
+        "visible": False,
+        "enabled": False,
+    }
 
     with TestClient(app) as client:
         response = client.get("/api/tasks")
@@ -196,9 +247,7 @@ def test_wave2_features_are_released_while_unimplemented_features_stay_hidden(
     assert gate.is_enabled("web.feature_switch") is True
     assert gate.is_in_client_package("web.feature_switch") is False
 
-    for feature_id in (
-        "web.ac_trackside_ap_plan",
-    ):
+    for feature_id in ("web.ac_trackside_ap_plan",):
         assert gate.is_visible(feature_id) is False
         assert gate.is_enabled(feature_id) is False
         assert gate.is_in_client_package(feature_id) is False
@@ -236,8 +285,8 @@ def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
     matrix = (
         Path(__file__).resolve().parents[1]
         / "docs"
-        / "development"
-        / "qt-electron-parity-matrix.md"
+        / "architecture"
+        / "MIGRATION_MATRIX.md"
     ).read_text(encoding="utf-8")
     for title in (
         "设备管理",
@@ -275,13 +324,15 @@ def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
         "FUTURE_REBUILD",
     ):
         assert f"`{legacy_state}`" not in matrix
-    assert "| 设备管理 | 设备管理 |" in matrix
-    assert "| `IMPLEMENTED_UNVERIFIED` |" in matrix
+    assert "| 设备管理 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` |" in matrix
 
 
 def test_module_migration_matrix_uses_canonical_states_and_electron_product() -> None:
     matrix = (
-        Path(__file__).resolve().parents[1] / "docs" / "WEB_MIGRATION_MATRIX.md"
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "architecture"
+        / "MIGRATION_MATRIX.md"
     ).read_text(encoding="utf-8")
     for legacy_state in (
         "IN_PROGRESS",
@@ -291,8 +342,8 @@ def test_module_migration_matrix_uses_canonical_states_and_electron_product() ->
         "FUTURE_REBUILD",
     ):
         assert f"`{legacy_state}`" not in matrix
-    assert "先将 Electron 设为默认入口" in matrix
-    assert "普通浏览器只保留源码开发、诊断和 API 联调用途" in matrix
+    assert "Electron Main/Preload + Vue" in matrix
+    assert "Browser" in matrix
 
 
 def test_current_architecture_docs_do_not_reintroduce_legacy_parity_states() -> None:
@@ -303,8 +354,8 @@ def test_current_architecture_docs_do_not_reintroduce_legacy_parity_states() -> 
             "ARCHITECTURE_NEXT.md",
             "ELECTRON_DESKTOP.md",
             "WEB_ARCHITECTURE.md",
-            "WEB_MIGRATION_PLAN.md",
-            "WEB_MIGRATION_MATRIX.md",
+            "ARCHITECTURE_COMPLIANCE.md",
+            "architecture/MIGRATION_MATRIX.md",
         )
     )
     for legacy_state in (

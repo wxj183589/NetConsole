@@ -15,7 +15,7 @@
 
 ## 下一阶段 UI 与分层边界
 
-- 长期产品形态是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳；Qt 已退出发布与新功能范围，只保留为完成 1:1 迁移所需的事实源。
+- 当前产品形态是 Python Core + FastAPI 永久业务层、Vue 唯一主界面和 Electron 桌面外壳；Qt 源码、运行时和入口已删除，历史行为只通过 Git 与最终迁移矩阵追溯。
 - 不新增 Qt 业务页面或 Qt 专用业务逻辑。新功能默认沿共享规则/Application Service -> FastAPI -> Vue 建设。
 - Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
 - Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。
@@ -90,7 +90,7 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 对话框非模态，任务运行时防重复提交。
 - 超过 1 秒显示阶段或进度；可取消任务提供取消入口。
 - 页面切换、主题切换不得清空任务状态和日志。
-- Worker 不访问 QWidget；数据库连接在 Worker 内创建。
+- Worker 不访问 DOM、Renderer 或 Electron 对象；数据库连接在 Worker 内创建。
 
 ## 设备管理 SNMP 边界
 
@@ -108,8 +108,8 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 - FIT-AP 资源采集统一通过 `ac_fit_ap_resources_refresh`；页面只传 device_uuid、site_name、source 和路径，不传 Device、连接或 repository 对象。
 - AC Domain 决定 CLI/SNMP 来源。H3C CLI 信息更完整时保留 CLI；只有明确 OID 与已验证 mapper 同时存在时才允许 SNMP 结果写入 AC repository。
 - `display wlan ap all`、address、radio、LLDP 等命令及其 parser 合并规则保持在现有 Adapter/Service/Parser，不复制到页面或通用 SNMP 层。
-- Domain/Worker 内创建 DeviceRepository、AcRepository 和采集 Client；页面不得创建 AC 资源采集 QThread。
-- FIT-AP 全量与单 AP 光衰采集统一复用 `ac_fit_ap_optical_refresh`；页面不得创建光衰 QThread、直接调用 H3C 光模块 collector 或重新判断 AP 离线关联。
+- Domain/Worker 内创建 DeviceRepository、AcRepository 和采集 Client；页面不得创建 AC 资源采集线程或进程。
+- FIT-AP 全量与单 AP 光衰采集统一复用 `ac_fit_ap_optical_refresh`；页面不得创建私有光衰任务、直接调用 H3C 光模块 collector 或重新判断 AP 离线关联。
 - 光衰命令、解析、阈值、历史合并及 AP 离线关联保持在现有 AC Optical Domain/H3C collector；交换机无光不得直接改写在线 AP 的 AP 侧异常。
 - 光衰异常、AP 离线关联、里程/区间归属、轨旁 AP 业务规则不得下沉到通用 SNMP Collection。
 - FIT-AP 是主应用数据，迁移 facade 和任务入口不得修改 schema 或破坏旧资源、历史和扩展信息兼容。
@@ -129,17 +129,16 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 ## UI、i18n 与日志规则
 
 - 1920×1080 下核心字段和终态操作不可遮挡；复杂页面使用 scroll area/splitter，收起后必须能恢复。
-- 表格支持横向滚动和手工列宽；数字框/下拉框无焦点时不得被滚轮误改；勾选列使用统一 delegate，不创建大量单元格 QCheckBox。
+- 表格支持横向滚动和手工列宽；数字框/下拉框无焦点时不得被滚轮误改；勾选列使用 Element Plus selection column 和稳定业务 ID。
 - 状态同时提供文字与颜色，并覆盖 loading、empty、success、error、cancelled；不能只用颜色表达。
 - 用户可见文案优先进入 i18n；设备密码、community、认证密钥和未经脱敏的身份样本不得写普通日志。
 - 外部命令输出在来源 Adapter 处按明确编码解码；终端乱码不得触发删除中文或改写原始文件。
 
-## Qt 测试生命周期
+## 无 Qt 测试边界
 
-- 需要创建顶层 QWidget/QDialog 的测试模块可通过 `pytestmark = pytest.mark.usefixtures("qt_page_lifecycle")` 显式启用 `tests/conftest.py` 中的生命周期隔离。
-- fixture 在 pytest 进程内强引用唯一 `QApplication`，每条用例后先排空当前事件，再关闭顶层窗口并处理 `DeferredDelete`，避免对象累计到 pytest 最终 GC 时触发 native abort。
-- 不得把页面清理 fixture 全局 autouse；带延迟回调、QThread 或 QProcess 的页面必须先确保任务已完成或已取消，再按模块接入。
-- 如果某个 Qt 模块仍无法安全共享 `QApplication`，应使用独立 pytest 子进程隔离该模块，不在业务代码中加入测试专用延迟或异常吞噬。
+- 测试不得安装或导入 PySide/PyQt/QFluentWidgets，也不得设置 `QT_QPA_PLATFORM` 或恢复 Qt fixture。
+- 页面行为由 Vue/Vitest 和 Electron E2E 覆盖；永久 Python 业务规则由无界面 pytest 覆盖。
+- 发布门必须反向验证 Backend、安装包、许可证与依赖元数据均不携带 Qt 运行时。
 
 ## AP Identity 边界
 
@@ -180,12 +179,10 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 - 阶段7阈值只用于决定是否有资格评估只读展示，不是生产强制规则。identity changed非零、作用域/歧义超阈值或RSSI/备链缺失相对基线增加时，继续使用旧生产路径；不得自动修复、删除字段或调整resolver。
 - 后续只读展示必须使用独立feature flag、默认关闭、可整体禁用，只展示脱敏聚合和不可用状态，不展示shadow items、samples、evidence或warning明文。
 - 阶段8只读展示评估以 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md) 为准。展示层必须先经过严格字段允许列表，未知字段丢弃，`items/samples/evidence/warnings/error`和明文身份/路径不得进入ViewModel、UI、日志或默认报告。
-- 阶段8.1可见展示必须等待真实局点试运行、脱敏复核和单一宿主批准；所有flag默认关闭且internal-only。当前没有独立Job Center详情或通用诊断中心，不得为了展示同时修改多个业务页面、增加任务持久化或直接绑定原始result。
+- 阶段 8 的历史 Qt 宿主方案已终止；任何可见展示必须等待真实局点试运行、脱敏复核，并接入当前统一任务窗口或具名 Vue 页面。所有 flag 默认关闭且 internal-only，不得增加第二套任务持久化或直接绑定原始 result。
 - diagnostics disabled/unavailable/failed只影响诊断区域，不得改变原Job/Export终态、成功提示或旧业务结果；全局kill switch关闭展示时不得停止生产任务或删除业务数据。
-- 阶段8.1统一使用`ui/diagnostics/diagnostics_summary_view_model.py`消费普通mapping；该模块不得导入PySide6、业务Service、Repository、parser、网络、数据库或文件IO，不得保留原始result引用。
-- 阶段8.1的全局/UI逻辑开关缺失时视为关闭；samples开关即使为真也不得暴露明细。当前无统一Job详情宿主，禁止在多个业务页面临时接线；阶段8.2必须另行批准单一宿主。
-- 阶段8.2宿主评审以 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) 为准。当前 manager/helper 只发出瞬时终态，不得为诊断展示在 Job Center 保存完整 result、建立原始事件持久化或反向导入 UI。
-- 阶段8.3在统一任务详情启动点获批前保持hold。未来dialog只能接收`DiagnosticsSummaryViewModel`，不得接收raw result；入口必须显式、非模态、默认关闭，关闭后不得保留跨Job/局点引用。
+- 脱敏结构以 `src/netconsole/models/diagnostics_summary.py` 为永久模型，导出适配位于 `src/netconsole/services/export_identity_diagnostics.py`；两者不得依赖 Renderer、Electron、网络或数据库连接，也不得保留原始 result 引用。
+- 全局/UI 逻辑开关缺失时视为关闭；samples 开关即使为真也不得暴露明细。历史宿主评审文档仅作设计证据，不构成恢复 Qt Dialog/Manager 的授权。
 
 ## 提交前检查
 
@@ -193,5 +190,5 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 - 对应 pytest 覆盖成功、失败、空数据、取消。
 - 搜索 UI 页面是否出现网络连接、Excel 保存、大文件解析和长查询。
 - 搜索 Worker 是否导入 UI page。
-- 检查旧 `BackgroundJob / BackgroundProcessManager / run_background_task / ExportJob / ExportProcessManager` 导入仍可用。
+- 检查生产调用只使用永久 `TaskApplicationService / TaskRuntime / LocalProcessAdapter / ExportJob` 入口，不恢复已删除的 Qt Manager/Helper。
 - 说明是否影响数据库结构、导出模板、编码策略、日志和中文显示。

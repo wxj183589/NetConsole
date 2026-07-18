@@ -56,6 +56,6 @@ Router 只调用 `WirelessDashboardQueryService`，不直接查询 SQLite 或文
 ## 当前边界
 
 - AC Mesh-Link 的受控刷新仍只在原页面创建白名单 Task；综合看板没有刷新入口；
-- 综合看板继续不提供 Online MR 控制；LOCAL 启停位于 Qt 或在线列车通信详情的默认关闭受控入口，Agent 远程 MR 控制和 `executor=AGENT` 仍未开放；
-- Mesh 解析、导入、重建、报告和导出仍由现有 Qt/Job/Service 负责；
+- 综合看板继续不提供 Online MR 控制；LOCAL/Agent 控制只允许从具名 Electron 业务入口调用同一 Application Service，并按 Feature 状态开放；
+- Mesh 解析、导入、重建、报告和导出由永久 Job/Application Service 负责，Vue 只展示状态和触发受控动作；
 - SNMP Center、通用 MIB/OID 平台和无线勘测已删除。

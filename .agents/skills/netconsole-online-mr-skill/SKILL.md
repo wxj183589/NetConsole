@@ -28,7 +28,8 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 
 # 开始前读取
 
-- `src/netconsole/ui/pages/online_mr_collection_page.py`、`src/netconsole/ui/pages/online_mr_collection_analysis_page.py`。
+- `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue`、`apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue`、`apps/web/src/components/OnlineMrLocalControl.vue`。
+- `src/netconsole/backend/api/online_mr_router.py`、`src/netconsole/backend/api/online_mr_control_router.py`、`src/netconsole/services/online_mr/api_facade.py`。
 - `src/netconsole/services/online_mr/`、`src/netconsole/services/online_mr_collector.py`、`src/netconsole/services/online_mr_parser.py`。
 - `src/netconsole/services/online_mr_session_store.py`、`src/netconsole/services/online_mr_terminal_log_parser.py`。
 - `src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py`、`src/netconsole/models/online_mr_models.py`。
@@ -43,7 +44,7 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 4. 采集中允许记录带时间戳备注；iPerf 跟随整体采集启停，不独立延长测试时长。
 5. 设备命令以 `src/netconsole/services/online_mr/collection_commands.py` 为唯一事实源，不改变顺序或文本。
 6. 会话路径以 `src/netconsole/services/online_mr/collection_paths.py` 为事实源；停止后协作取消、关闭 SSH/文件、保存 raw、更新状态并原子打包。
-7. UI 只提交长运行 Job 和绑定事件；大解析走 `online_mr_parse` Job，报告走 Export Process。
+7. Vue 只提交长运行 Job DTO 和绑定事件；大解析走 `online_mr_parse` Job，报告走 Export Process，Router 不承载采集状态机。
 
 # 必须保护的会话文件
 

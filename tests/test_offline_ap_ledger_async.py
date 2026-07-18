@@ -1,8 +1,3 @@
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
@@ -14,9 +9,10 @@ from netconsole.services.offline_ap_ledger import (
     build_offline_ap_ledger,
     is_fit_ap_offline,
 )
-from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, format_trackside_display_value
-
-
+from netconsole.services.trackside_ap_business import (
+    build_trackside_ap_business_rows,
+    format_trackside_display_value,
+)
 
 
 def _database(tmp_path):
@@ -48,8 +44,20 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     repository.replace_fit_ap_resources(
         "ac-1",
         [
-            {"ap_uuid": "ap-off", "ap_name": "AP-OFF", "ap_mac": "0011-2233-4455", "state": "I", "site": "FIT Site"},
-            {"ap_uuid": "ap-on", "ap_name": "AP-ON", "ap_mac": "aabb-ccdd-eeff", "state": "R/M", "site": "FIT Site"},
+            {
+                "ap_uuid": "ap-off",
+                "ap_name": "AP-OFF",
+                "ap_mac": "0011-2233-4455",
+                "state": "I",
+                "site": "FIT Site",
+            },
+            {
+                "ap_uuid": "ap-on",
+                "ap_name": "AP-ON",
+                "ap_mac": "aabb-ccdd-eeff",
+                "state": "R/M",
+                "site": "FIT Site",
+            },
         ],
     )
     repository.replace_fit_ap_optical(
@@ -72,7 +80,14 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
         latest_lldp_by_ap=latest_lldp,
         latest_optical_by_ap=latest_optical,
         device_lookup_by_name=build_device_lookup_by_name(
-            [Device(name="SW-1", sysname="SW-1", station="Device DB Site", device_uuid="sw-1")]
+            [
+                Device(
+                    name="SW-1",
+                    sysname="SW-1",
+                    station="Device DB Site",
+                    device_uuid="sw-1",
+                )
+            ]
         ),
     )
 
@@ -129,11 +144,46 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
         },
     ]
     history = [
-        {"id": 1, "ap_name": "AP-A1", "ap_mac": "00aa-bbcc-0001", "serial_number": "SN-A1", "state_raw": "R/M", "collected_at": "2026-06-30 08:00:00"},
-        {"id": 2, "ap_name": "AP-A1", "ap_mac": "00aa-bbcc-0001", "serial_number": "SN-A1", "state_raw": "Idle", "collected_at": "2026-06-30 09:00:00"},
-        {"id": 3, "ap_name": "AP-A2", "ap_mac": "00aa-bbcc-0003", "serial_number": "SN-A2", "state_raw": "Idle", "collected_at": "2026-06-30 07:00:00"},
-        {"id": 4, "ap_name": "AP-B", "ap_mac": "00aa-bbcc-0002", "serial_number": "SN-B", "state_raw": "R/M", "collected_at": "2026-06-30 06:00:00"},
-        {"id": 5, "ap_name": "AP-B", "ap_mac": "00aa-bbcc-0002", "serial_number": "SN-B", "state_raw": "Idle", "collected_at": "2026-06-30 11:00:00"},
+        {
+            "id": 1,
+            "ap_name": "AP-A1",
+            "ap_mac": "00aa-bbcc-0001",
+            "serial_number": "SN-A1",
+            "state_raw": "R/M",
+            "collected_at": "2026-06-30 08:00:00",
+        },
+        {
+            "id": 2,
+            "ap_name": "AP-A1",
+            "ap_mac": "00aa-bbcc-0001",
+            "serial_number": "SN-A1",
+            "state_raw": "Idle",
+            "collected_at": "2026-06-30 09:00:00",
+        },
+        {
+            "id": 3,
+            "ap_name": "AP-A2",
+            "ap_mac": "00aa-bbcc-0003",
+            "serial_number": "SN-A2",
+            "state_raw": "Idle",
+            "collected_at": "2026-06-30 07:00:00",
+        },
+        {
+            "id": 4,
+            "ap_name": "AP-B",
+            "ap_mac": "00aa-bbcc-0002",
+            "serial_number": "SN-B",
+            "state_raw": "R/M",
+            "collected_at": "2026-06-30 06:00:00",
+        },
+        {
+            "id": 5,
+            "ap_name": "AP-B",
+            "ap_mac": "00aa-bbcc-0002",
+            "serial_number": "SN-B",
+            "state_raw": "Idle",
+            "collected_at": "2026-06-30 11:00:00",
+        },
     ]
 
     stats, ledger = build_offline_ap_ledger(
@@ -154,8 +204,19 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
 def test_offline_ledger_offline_at_falls_back_to_current_fact_and_allows_blank():
     stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=[
-            {"ap_name": "AP-TIME", "ap_mac": "00aa-bbcc-0001", "state": "down", "site": "A", "updated_at": "2026-06-30 12:00:00"},
-            {"ap_name": "AP-BLANK", "ap_mac": "00aa-bbcc-0002", "state": "offline", "site": "A"},
+            {
+                "ap_name": "AP-TIME",
+                "ap_mac": "00aa-bbcc-0001",
+                "state": "down",
+                "site": "A",
+                "updated_at": "2026-06-30 12:00:00",
+            },
+            {
+                "ap_name": "AP-BLANK",
+                "ap_mac": "00aa-bbcc-0002",
+                "state": "offline",
+                "site": "A",
+            },
         ],
         latest_lldp_by_ap={},
         device_lookup_by_name={},
@@ -163,28 +224,45 @@ def test_offline_ledger_offline_at_falls_back_to_current_fact_and_allows_blank()
     )
 
     assert stats["offline_aps"] == 2
-    assert next(row for row in ledger if row["ap_name"] == "AP-TIME")["offline_at"] == "2026-06-30 12:00:00"
-    assert next(row for row in ledger if row["ap_name"] == "AP-BLANK")["offline_at"] == ""
+    assert (
+        next(row for row in ledger if row["ap_name"] == "AP-TIME")["offline_at"]
+        == "2026-06-30 12:00:00"
+    )
+    assert (
+        next(row for row in ledger if row["ap_name"] == "AP-BLANK")["offline_at"] == ""
+    )
 
 
-def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(tmp_path):
+def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(
+    tmp_path,
+):
     repository = AcRepository(_database(tmp_path))
     repository.replace_fit_ap_resources(
         "ac-1",
-        [{"ap_uuid": "ap-off", "ap_name": "30f5-277a-15e0", "ap_mac": "", "state": "I", "site": "FIT Site"}],
+        [
+            {
+                "ap_uuid": "ap-off",
+                "ap_name": "30f5-277a-15e0",
+                "ap_mac": "",
+                "state": "I",
+                "site": "FIT Site",
+            }
+        ],
     )
     resources = repository.list_fit_ap_resources_with_metadata("ac-1")
-    stats, ledger = build_offline_ap_ledger(fit_ap_resources=resources, latest_lldp_by_ap={}, device_lookup_by_name={})
+    stats, ledger = build_offline_ap_ledger(
+        fit_ap_resources=resources, latest_lldp_by_ap={}, device_lookup_by_name={}
+    )
 
     assert stats["offline_aps"] == 1
     assert ledger[0]["ap_mac"] == "30f5-277a-15e0"
     assert ledger[0]["site"] == "FIT Site"
 
 
-
-
 def test_trackside_offline_row_uses_port_type_and_realtime_switch_optical():
-    switch = Device(name="SW-1", sysname="SW-1", station="Device DB Site", device_uuid="sw-1")
+    switch = Device(
+        name="SW-1", sysname="SW-1", station="Device DB Site", device_uuid="sw-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -242,7 +320,9 @@ def test_trackside_offline_row_uses_port_type_and_realtime_switch_optical():
 
 
 def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run():
-    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    switch = Device(
+        name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -283,14 +363,19 @@ def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run(
     assert row["status_reason"] == "室内交换机离线，轨旁AP跟随离线"
     assert row["switch_collection_status"] == "offline"
     assert format_trackside_display_value("switch_optical_status", row) == "交换机离线"
-    assert format_trackside_display_value("ap_optical_status", row) == OFFLINE_AP_STATUS_TEXT
+    assert (
+        format_trackside_display_value("ap_optical_status", row)
+        == OFFLINE_AP_STATUS_TEXT
+    )
     assert format_trackside_display_value("link_status", row) == "DOWN"
     assert format_trackside_display_value("port_type", row) == "access"
     assert format_trackside_display_value("port_type", row) != "DOWN"
 
 
 def test_trackside_ac_idle_marks_ap_offline_when_switch_online():
-    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    switch = Device(
+        name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -303,19 +388,40 @@ def test_trackside_ac_idle_marks_ap_offline_when_switch_online():
                 }
             ]
         },
-        {"sw-1": [{"interface_name": "GigabitEthernet1/0/2", "rx_power": "-6.1", "port_status": "up"}]},
-        [{"neighbor_device_name": "SW-1", "neighbor_interface": "GigabitEthernet1/0/2", "ap_name": "AP-IDLE", "ap_mac": "0011-2233-5566", "state": "Idle"}],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/2",
+                    "rx_power": "-6.1",
+                    "port_status": "up",
+                }
+            ]
+        },
+        [
+            {
+                "neighbor_device_name": "SW-1",
+                "neighbor_interface": "GigabitEthernet1/0/2",
+                "ap_name": "AP-IDLE",
+                "ap_mac": "0011-2233-5566",
+                "state": "Idle",
+            }
+        ],
     )
 
     row = rows[0]
     assert row["offline_reason"] == "ac_idle"
-    assert format_trackside_display_value("ap_optical_status", row) == OFFLINE_AP_STATUS_TEXT
+    assert (
+        format_trackside_display_value("ap_optical_status", row)
+        == OFFLINE_AP_STATUS_TEXT
+    )
     assert format_trackside_display_value("link_status", row) == "UP"
     assert format_trackside_display_value("port_type", row) == "trunk"
 
 
 def test_trackside_same_interface_merges_current_and_historical_rows():
-    switch = Device(name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1")
+    switch = Device(
+        name="SW-1", sysname="SW-1", station="Station A", device_uuid="sw-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -330,7 +436,15 @@ def test_trackside_same_interface_merges_current_and_historical_rows():
                 }
             ]
         },
-        {"sw-1": [{"interface_name": "GigabitEthernet1/0/3", "rx_power": "-7.1", "port_status": "down"}]},
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/3",
+                    "rx_power": "-7.1",
+                    "port_status": "down",
+                }
+            ]
+        },
         [],
         {},
         [],

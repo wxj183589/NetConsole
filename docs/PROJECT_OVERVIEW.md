@@ -1,6 +1,6 @@
 # 项目概览
 
-> 本文是迁移期概览，当前正式桌面入口以 [README](../README.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [当前架构](ARCHITECTURE.md) 为准。Qt 页面仍作为事实源，但不再是启动入口或发布门。
+> 本文描述当前 Electron-only 产品。正式桌面入口以 [README](../README.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [当前架构](ARCHITECTURE.md) 为准；Qt 历史行为只通过 Git 与[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)追溯。
 
 ## 项目定位
 
@@ -17,20 +17,20 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 
 以当前代码为准：
 
-- UI：Vue 3/TypeScript/Vite 由 Electron Renderer 承载；PySide6/Qt 页面仅作为待回收事实源。
+- UI：Vue 3/TypeScript/Vite 由 Electron Renderer 承载；Electron Main/Preload 只提供桌面生命周期和白名单本机能力。
 - 本地存储：SQLite、JSON 配置、站点隔离目录。
 - 设备连接：Netmiko、SSH / Telnet、SFTP / SCP、外部终端集成。
 - Excel：本地 `.xlsx` 导入导出，主要面向 WPS Office / Microsoft Office 打开体验。
-- 图表：当前项目内既有 Qt / Matplotlib / 交互图表相关实现，具体以页面代码为准。
-- 打包：Electron 构建链正在建设；PyInstaller/Nuitka 仅保留 Qt 历史成果迁移证据，发布脚本在 `scripts/build/` 下。
+- 图表：Vue 页面使用 ECharts 和 NetConsole Design Token；Python 无界面报告按既有服务使用 Matplotlib `Agg` 后端。
+- 打包：Electron Builder 负责桌面制品，PyInstaller 只冻结受管 Python Backend；发布脚本位于 `scripts/build/`。
 
-Electron + Vue + FastAPI 是当前正式桌面方向；Qt 只保留为 1:1 迁移事实源，不能新增 Qt 业务页面。
+Electron + Vue + FastAPI/Python Core 是当前正式桌面架构。Qt/PySide6/QFluentWidgets 源码、运行时、入口和发布链已经删除，不得重新引入。
 
 ## 当前入口
 
 - 正式桌面入口：`apps/desktop_electron/`
 - PyCharm/源码桌面入口：无参数 `main.py`（启动同一 Electron 开发编排）；带内部参数时承接受管 Backend、Worker 和开发诊断
-- Qt 事实源主窗口：`src/netconsole/ui/main_window.py`（无活动启动入口）
+- 历史迁移映射：`docs/architecture/MIGRATION_MATRIX.md`
 - 路径管理：`src/netconsole/core/paths.py`
 - 站点管理：`src/netconsole/core/sites.py`
 - 数据库初始化：`src/netconsole/core/database.py`
@@ -53,18 +53,19 @@ Electron + Vue + FastAPI 是当前正式桌面方向；Qt 只保留为 1:1 迁�
 | `src/netconsole/repositories/` | SQLite 持久化访问 |
 | `src/netconsole/services/` | 采集、解析、导入导出、业务规则、外部工具 |
 | `src/netconsole/parsers/` | H3C / AC / Mesh / 文本输出解析 |
-| `src/netconsole/ui/` | PySide6 页面、对话框、Worker、控件、主题 |
+| `apps/desktop_electron/` | Electron Main/Preload、窗口与受管 Backend 生命周期 |
+| `apps/web/` | 唯一 Vue Renderer、Element Plus/ECharts 与设计 Token |
 | `src/netconsole/build/` | 构建辅助 |
 | `scripts/build/` | 发布脚本、构建配置 |
 | `tests/` | pytest 回归测试 |
 | `resources/tools/` | 版本化的 fping/iPerf 运行工具唯一源码来源 |
 | `tools/` | 开发、诊断、维护和协议分析工具，不作为运行时工具来源 |
 
-独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`；Qt 事实源位于 `src/netconsole/ui/`。Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
+独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`。Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
 
 ## 模块边界
 
-- UI 页面负责展示、交互和调度 Worker，不应承载核心解析规则。
+- Vue 页面只负责展示、交互、轻量校验和调用 API，不应承载设备、数据库、采集或业务状态机。
 - 采集、解析、状态判断、导入导出应优先放在 `services/`、`parsers/` 或 `core/`。
 - SQLite 访问通过 repository 层，不在 UI 里散写 SQL。
 - 路径必须通过 `PathResolver` 或现有路径服务，不散落字符串拼接。

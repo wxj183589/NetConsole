@@ -1,6 +1,6 @@
 ---
 name: netconsole-job-center-skill
-description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、JobContext、QProcess、JSONL worker、进度、取消、强制停止、handler 注册或 UI 阻塞迁移任务时使用。纯 Excel/PDF 导出使用 netconsole-export-report-skill；简单同步 UI 更新或纯 parser 修复不使用本 Skill。"
+description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、JobContext、Worker Process、JSONL、进度、取消、强制停止、handler 注册或 Renderer 阻塞迁移任务时使用。纯 Excel/PDF 导出使用 netconsole-export-report-skill；简单同步 UI 更新或纯 parser 修复不使用本 Skill。"
 ---
 
 # 目标
@@ -18,7 +18,7 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 不应触发：
 
 - “新增 Excel 报告导出。”
-- “只更新一个 QLabel 或修复纯 parser 正则。”
+- “只更新一个 Vue 文本状态或修复纯 parser 正则。”
 
 # 输入与输出
 
@@ -29,8 +29,8 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 # 开始前读取
 
 - `docs/ARCHITECTURE.md`、`docs/JOB_CENTER.md`、`docs/REFACTOR_MAP.md`、`docs/background_task_policy.md`。
-- `src/netconsole/background_worker.py`、`src/netconsole/services/background_job.py`、`src/netconsole/services/background_process_manager.py`。
-- `src/netconsole/services/job_center/`、`src/netconsole/ui/job_action_helper.py`、`src/netconsole/ui/background_process_bridge.py`。
+- `src/netconsole/background_worker.py`、`src/netconsole/services/background_job.py`、`src/netconsole/services/job_center/local_process_adapter.py`。
+- `src/netconsole/services/job_center/`、`src/netconsole/backend/api/job_center_router.py`、`apps/web/src/views/job-center/JobCenterView.vue`。
 - `src/netconsole/core/background_tasks.py`、`src/netconsole/core/shutdown_manager.py`、`tests/test_job_center.py`。
 
 # 工作流程
@@ -40,13 +40,13 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 3. 在 `src/netconsole/services/job_center/handlers/<domain>_jobs.py` 注册 handler；新增任务不得继续堆入 `legacy_tasks.py`。
 4. Worker 内创建 service、Repository、SQLite connection 和临时状态，通过 `JobContext` 报进度、日志并检查取消。
 5. stdout 只输出 UTF-8 JSONL 协议事件；普通 print、设备回显和 traceback 进入 stderr/结构化日志。
-6. UI 使用 `submit_background_job()`，处理 progress、log、finished、error、cancelled 和强制停止，并在终态释放 controller。
+6. Application Service 使用 `submit_background_job()`；Vue 通过 Task API 处理 progress、log、finished、error、cancelled 和强制停止，并在终态释放页面订阅。
 7. 覆盖源码与 frozen 启动路径、取消宽限、临时 Job/cancel 文件和进程清理。
 
 # 项目约束
 
-- 不向 Worker 传 QWidget、QObject、连接对象、Repository、SQLite connection 或未序列化 model。
-- Worker 不导入 `netconsole.ui.pages`，不弹窗，不访问 UI。
+- 不向 Worker 传 Renderer/DOM/Electron 对象、连接对象、Repository、SQLite connection 或未序列化 model。
+- Worker 不导入 Vue/Electron/FastAPI Router，不弹窗，不访问 UI。
 - 当前仍有 `handlers/legacy_tasks.py` 兼容实现；它是只迁出、不迁入区域，不得描述为已全部完成迁移。
 - 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署和完整远程 Agent 管理仍未实现。
 - 页面回调只绑定结构化结果，不做重查询、解析或导出。
@@ -61,5 +61,5 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 # 相关 Skills
 
 - 导出进程：`netconsole-export-report-skill`。
-- SNMP Job：`snmp-collector-design-skill`。
+- 设备 SNMP v1/v2c：遵守设备管理 Service/Task 边界；SNMP Center、MIB/OID 与 SNMPv3 已删除。
 - 在线 MR 长任务：`netconsole-online-mr-skill`。

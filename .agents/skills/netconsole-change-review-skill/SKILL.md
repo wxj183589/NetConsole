@@ -34,7 +34,7 @@ description: "评审 NetConsole 当前 git diff、检查是否卡 UI、破坏采
 
 # 评审重点
 
-1. UI 线程阻塞、QThread/QProcess 生命周期、Worker 操作 QWidget、页面大表/导出重任务。
+1. Electron Main/Renderer 事件循环阻塞、受管子进程生命周期、Vue 页面大表/导出重任务和 IPC 越权。
 2. JSONL stdout 污染、取消/强制停止双终态、进程/临时文件残留和文件占用。
 3. SQLite 跨线程、破坏性迁移、路径越界、自动清理误删和旧数据兼容。
 4. 设备命令/顺序误改、raw log 丢失、编码回归和中文替换字符。
@@ -59,5 +59,5 @@ description: "评审 NetConsole 当前 git diff、检查是否卡 UI、破坏采
 # 相关 Skills
 
 - 根据改动领域组合对应 Skill；不要无条件加载全部 Skills。
-- UI 专项审查：`netconsole-qt6-ui-taste-skill`。
+- UI 专项审查：结合 Vue/Element Plus 组件测试、Electron Main/Preload 安全边界和 `docs/UI_DESIGN_SYSTEM.md`。
 - 文档同步：`netconsole-project-docs-skill`。

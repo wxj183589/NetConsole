@@ -18,7 +18,7 @@ Vue 页面
 模块定向测试与真实验收
 ```
 
-除修复现有生产缺陷外，不新增 Qt 业务页面、Qt 业务流程或只供 Qt 使用的新 Service。迁移期 Qt 只能复用永久业务层。
+不得新增或恢复 Qt 业务页面、Qt 业务流程、Qt fixture 或只供 Qt 使用的 Service。历史行为通过 Git 和最终迁移矩阵核对，实际实现只进入永久业务层与 Electron/Vue。
 
 ## 依赖规则
 
@@ -44,7 +44,7 @@ Vue 页面
 - 编排业务用例、权限、确认、审计、Task、Session、Mapping 和 Artifact；
 - 复用现有 Repository、Parser、Adapter 和路径 helper；
 - 不依赖 Vue、Electron 或 QWidget；
-- 同一个操作由 Qt 与 Web 触发时必须产生一致状态，不能生成重复任务。
+- 同一个操作由不同 Electron 页面、任务窗口或 API 客户端触发时必须复用同一事实源，不能生成重复任务。
 
 ### Electron
 
@@ -81,7 +81,7 @@ Electron 安全基础已位于 `apps/desktop_electron/`，只允许：
 
 - 新页面、Tab、动作和按钮默认注册 Feature Registry；
 - Web 导航只展示已开放能力，不以路由存在替代 Feature Gate；
-- Qt 与 Web 并行期，功能状态和默认开关必须有唯一来源；
+- 功能状态和默认开关必须以 Feature Registry 为唯一来源；
 - SNMP 中心、通用 MIB/OID 平台和无线勘测已删除，不得恢复 Web 导航、API、资源或依赖；
 - 网络工具中的无线扫描是独立功能，不能误用无线勘测的排除结论。
 
@@ -97,11 +97,11 @@ Electron 安全基础已位于 `apps/desktop_electron/`，只允许：
 
 ## 禁止的捷径
 
-- 在 Vue、Electron 或 Router 中复制 Qt 的业务代码；
+- 把 Git 历史中的 Qt 业务代码直接复制进 Vue、Electron 或 Router；
 - 为满足目录示意图创建空层或机械移动包；
 - 绕过 Application Service 直接操作设备或数据库；
 - 用前端轮询制造第二套任务状态；
-- 未完成真实验收就隐藏或删除 Qt 页面；
+- 用恢复 Qt 页面规避 Electron 功能缺口，或未完成真实验收就把模块标记为 `COMPLETE`；
 - 为被冻结模块添加临时入口；
 - 为桌面桥接提供任意命令、任意路径或任意程序执行能力。
 
@@ -110,7 +110,7 @@ Electron 安全基础已位于 `apps/desktop_electron/`，只允许：
 开始实现前回答：
 
 - 这个功能属于永久架构还是迁移兼容？
-- 现有 Qt 业务逻辑位于哪里，哪些可以直接复用？
+- 历史 Qt 行为对应的永久 Service/Repository/Parser 在哪里，是否已经迁移并有测试证据？
 - Application Service 是否已存在，Router 是否足够薄？
 - Task、Session、Mapping、Artifact 与权限审计如何复用？
 - Feature Registry、导航、文档和真实验收门槛是什么？

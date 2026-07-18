@@ -48,7 +48,7 @@ Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增
 
 ## AC Mesh-Link 数据方向
 
-现有 Qt 采集器在 AC 上执行 `display clock` 和 `display wlan mesh-link ap`，并复用 `H3CComwareV9VehicleMrMeshLinkParser`。一行 AC 输出的语义是：
+现有 AC Mesh-Link Application Service 在 AC 上执行 `display clock` 和 `display wlan mesh-link ap`，并复用 `H3CComwareV9VehicleMrMeshLinkParser`。一行 AC 输出的语义是：
 
 ```text
 本地 AP/Local MAC = 轨旁 FIT-AP 及其 Mesh Radio

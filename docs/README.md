@@ -7,18 +7,20 @@
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
 | [项目总览](../README.md) | 产品定位、模块、架构摘要、运行入口 | 全体开发/维护人员 | Electron Main、`main.py`、Electron Runtime、Feature Registry | 一级模块、启动方式、版本或总体架构变化 |
-| [下一代架构](ARCHITECTURE_NEXT.md) | Python Core/FastAPI/Vue/Electron 长期目标、永久层与 Qt 退出边界 | 架构与迁移负责人 | 已确认战略、当前代码与目录规范 | 产品目标、永久技术边界或 Qt/Electron 路线变化 |
+| [永久架构与后续演进](ARCHITECTURE_NEXT.md) | Electron-only 永久层、不可回退边界与后续演进顺序 | 架构负责人 | 当前代码、最终迁移矩阵与目录规范 | 永久技术边界或演进顺序变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
-| [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、Vue 双运行时、开发/生产资源启动与 Qt Legacy 边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
-| [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `src/netconsole/core`、`src/netconsole/services`、`src/netconsole/repositories`、`src/netconsole/ui` | 新增跨层依赖、后台执行模型或核心服务 |
-| [Web 演进架构](WEB_ARCHITECTURE.md) | Electron/Server/Agent 模式、API、Browser 诊断、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop_electron`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
-| [Web 迁移计划](WEB_MIGRATION_PLAN.md) | 固定迁移流程、状态门槛、执行顺序和 Electron 时机 | Web 迁移指挥与模块负责人 | 当前实现、验收记录、迁移决策 | 阶段顺序、替换门槛或交付要求变化 |
-| [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md) | 模块级长期去向、当前阶段和冻结范围 | Web 迁移指挥与集成 | Feature Registry、Web 导航、详细对等矩阵 | 模块阶段、排除范围或长期去向变化 |
-| [Desktop WebHost](WEB_HOST.md) | Electron Web Runtime、开发诊断入口及历史 Qt WebHost 边界 | Desktop/Core/Web 开发 | Electron Runtime、`src/netconsole/launcher`、历史 `src/netconsole/ui/web_host` | WebHost 生命周期、认证、诊断入口或打包变化 |
-| [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md) | Qt 页面/动作与 Electron Route、Feature、验收和完成状态 | Electron 迁移指挥与模块开发 | Qt 页面、Navigation Registry、Router、Feature Registry、测试 | Qt/Electron 能力、归属或验收状态变化 |
-| [轨道交通 Qt/Electron 逐操作矩阵](development/parity/rail-transit.md) | 轨交 Qt 独立页面、按钮、写入、导入导出、异常恢复与 Electron 真实闭环 | 轨交迁移与验收 | Rail/Online MR/MESH 页面、Application Service、Router、测试 | 任一轨交 Qt 操作、Electron 闭环、公共依赖或现场验收变化 |
-| [设备管理对等规格](development/parity/device-management.md) | 设备管理逐字段、逐操作、调用链和人工验收清单 | 设备管理迁移与验收 | Qt 设备页、DeviceManagementView、Device API/Service、测试 | 设备管理能力或验收状态变化 |
-| [文件管理对等规格](development/parity/file-management.md) | 文件管理双栏、SFTP、下载队列、恢复与 Native 动作逐项验收 | 文件管理迁移与验收 | Qt 文件页、FileManagementView、File API/Service、测试 | 文件管理能力或验收状态变化 |
+| [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
+| [架构](ARCHITECTURE.md) | Electron-only 分层、启动、后台任务、导出、数据和安全边界 | 架构与跨域开发 | `apps/desktop_electron`、`apps/web`、`src/netconsole/backend`、Services/Repositories | 新增跨层依赖、运行形态或核心服务 |
+| [最终迁移矩阵](architecture/MIGRATION_MATRIX.md) | 已删除 Qt 路径分类、永久去向、自动证据与当前验收状态 | 架构、迁移与验收负责人 | Git 删除历史、Feature/Navigation Registry、生产代码和测试 | 历史映射、模块状态或验收结论变化 |
+| [E10 架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md) | Qt 遗留回收证据、扫描分类、未解决项与发布门 | 架构与发布负责人 | 当前工作树、Guard、定向测试和最终制品 | E10 结果、风险或发布门变化 |
+| [Electron/Vue/FastAPI 架构](WEB_ARCHITECTURE.md) | 唯一 Renderer、API、Browser 诊断和 Desktop Bridge 边界 | Web 与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop_electron`、`apps/web` | Web 接入、运行模式或 Bridge 变化 |
+| [Web 迁移计划（历史兼容）](WEB_MIGRATION_PLAN.md) | 已结束双轨迁移的兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [Web 迁移矩阵（历史兼容）](WEB_MIGRATION_MATRIX.md) | 已结束双轨矩阵的兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [Desktop WebHost](WEB_HOST.md) | Electron Web Runtime、开发诊断入口及历史 Qt WebHost 边界 | Desktop/Core/Web 开发 | Electron Runtime、`src/netconsole/launcher`、Git 历史迁移证据 | WebHost 生命周期、认证、诊断入口或打包变化 |
+| [Qt/Electron 对等矩阵（历史兼容）](development/qt-electron-parity-matrix.md) | 旧详细矩阵兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [轨道交通逐操作矩阵（历史兼容）](development/parity/rail-transit.md) | 已冻结的逐操作迁移规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [设备管理对等规格（历史兼容）](development/parity/device-management.md) | 已冻结的逐字段/逐操作规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [文件管理对等规格（历史兼容）](development/parity/file-management.md) | 已冻结的双栏/SFTP/下载队列规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
 | [下一阶段开发指南](DEVELOPMENT_GUIDE.md) | 永久功能调用链、前端/API/Electron 硬边界和迁移检查 | Web/Core/Desktop 开发 | 下一代架构、开发规则、目录规范 | 新功能链路或跨层约束变化 |
@@ -32,20 +34,24 @@
 | [测试基线](TEST_BASELINE.md) | 定向测试、测试数据隔离和合并前全量门槛 | 所有开发/维护人员 | pytest、Vitest、Ruff、构建与文档检查 | 测试隔离、执行顺序或最终门槛变化 |
 | [Web 双轨迁移第一批更新记录](development/web-migration-wave-1.md) | 当前并行任务、提交、验证、延期项和合并门槛 | Web 迁移指挥与集成 | 独立工作树提交、测试和集成分支 | 第一批任务状态、测试或范围变化 |
 | [Electron 对等迁移第二波归档](development/electron-parity-wave2.md) | 第二波集成、验证、发布边界和任务/worktree 回收记录 | Electron 迁移指挥与集成 | `main` 提交、自动测试与资源清理结果 | 第二波范围、验收或归档状态变化 |
+| [Electron-only 后续开发交接档案](archive/migrations/electron-only/HANDOFF-2026-07-18.md) | Electron-only E1～E6A、命令平台、开发接口和 E2 发布合规的决策、证据与后续门禁 | Electron-only 迁移指挥与后续集成 | 当前 Git 历史、专项归档、生产代码和测试 | 阶段状态、最终提交、发布门或固定产品边界变化 |
 | [Electron-only E1 阶段归档](archive/migrations/electron-only/E1-2026-07-18.md) | Qt 启动入口、旧 WebShell、无调用测试和兼容导入回收记录 | Electron-only 迁移指挥与后续开发 | `refactor/electron-only` 提交、定向测试和当前阻塞 | E1 收口、E2 构建链或 Qt 依赖边界变化 |
+| [Electron-only E2 依赖与发布合规归档](archive/migrations/electron-only/E2-dependencies-release-compliance-2026-07-18.md) | Python/Node 依赖分层、锁定环境、SBOM、许可证和 Qt 发布 Guard 的整改记录 | Electron-only 发布、依赖与合规维护 | 依赖清单、约束文件、Notice/SBOM、打包脚本和定向测试 | 运行依赖、第三方组件、许可证事实或发布门变化 |
 | [Electron-only E4 数据目录迁移归档](archive/migrations/electron-only/E4-2026-07-18.md) | 用户应用数据根、历史数据迁移、冲突和测试残留清理记录 | Electron-only 迁移指挥与存储维护 | `PathResolver`、Electron Main、迁移 manifest、定向测试 | 数据根、迁移规则、清理白名单或回退状态变化 |
 | [Electron-only E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md) | Electron/Python/Vue 单调时间线、首屏关键路径和实测对比 | Electron-only 迁移与性能维护 | Electron Main、Backend lifespan、延迟依赖和真实 smoke 日志 | 启动阶段、依赖加载时机或性能基线变化 |
 | [Electron-only E6 数据库调优归档](archive/migrations/electron-only/E6-2026-07-18.md) | SQLite 查询计划、历史索引、旧库兼容和回滚证据 | Repository/数据库与 Electron-only 迁移维护 | `Database` schema、Repository SQL、真实库 Backup 副本和测试 | 主库 schema、索引、迁移或性能证据变化 |
-| [配置采集 Qt/Electron 对等矩阵](development/parity/config-collection.md) | 配置采集、保存、快照、双栏差异、导出、取消/恢复和真实设备边界 | 配置采集迁移与验收 | Config Service/Repository/API/Vue/Task/Export | 配置入口、命令、持久化、Artifact 或验收状态变化 |
+| [配置采集对等矩阵（历史兼容）](development/parity/config-collection.md) | 已冻结的采集、保存、比较和导出规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Traffic Web 应用边界](development/api-boundary-wave-1/traffic-web-boundary.md) | Traffic 执行端、查询分页、取消/重试和 Router 展示映射边界 | Traffic Web/API 开发 | `TrafficWebApplicationService`、Traffic Router、组合根 | Traffic Web 用例或 REST/WebSocket 契约变化 |
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
-| [表格与 UI 规范](ui_table_guidelines.md) | 表格、列宽、滚动、主题和 1080p | Qt UI 开发 | UI helpers/widgets、相关测试 | 公共控件、页面布局或主题规则变化 |
+| [表格与 UI 规范](ui_table_guidelines.md) | Vue/Element Plus 表格、列宽、滚动、密度和状态 | Vue UI 开发 | `NcTable`、Element Plus、相关测试 | 公共组件、页面布局或表格规则变化 |
+| [NetConsole UI Design System](UI_DESIGN_SYSTEM.md) | Design Token、深浅主题、基础组件与 ECharts 规则 | Vue/Electron UI 开发 | `apps/web/src/theme`、`Nc*` 基础组件 | Token、主题、公共组件或图表语义变化 |
+| [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/web/src/styles`、Element Plus、ECharts | Token、主题、组件或图表规范变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |
 | [独立 Agent](AGENT.md) | Windows Go Agent 的边界、能力和集成状态 | 现场采集/远程执行开发 | `apps/agent/`、Agent API/测试 | Agent 能力、协议、命令或发布方式变化 |
 | [Agent Controller](AGENT_CONTROLLER.md) | 多 Agent 配置、健康检查、认证、REST/WebSocket 与 Web 管理边界 | Agent 控制面开发 | `services/agent`、`repositories/agent_repository.py`、Agent Router | Controller 模型、探测协议、凭据或调度变化 |
 | [Agent 流量测试协议](AGENT_TRAFFIC_API.md) | fping/iPerf 强类型执行、任务事件游标、结果与能力契约 | Agent/流量测试开发 | `apps/agent/internal/{core,fping,iperf,api}`、`AgentHttpClient` | Agent 流量参数、事件、结果或能力变化 |
 | [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md) | 本地/Agent 执行、Task 映射、Traffic 事件、数据与恢复边界 | 流量测试与阶段 4C 开发 | `services/traffic`、`TrafficRunRepository`、Traffic handlers | 执行端、状态、事件、存储、恢复或 Web 接入变化 |
-| [AC 管理](AC_MANAGEMENT.md) | Qt AC 写操作边界、Web 只读资源/光衰/配置查看和刷新策略 | AC/FIT-AP 与 Web 开发 | `src/netconsole/services/ac/query_service.py`、AC Repository、AC Web API/Vue | AC 查询字段、光衰关联、配置查看或 Web 写操作边界变化 |
+| [AC 管理](AC_MANAGEMENT.md) | Electron AC/FIT-AP 查询、受控更新/写操作、光衰、配置和验收边界 | AC/FIT-AP 开发 | AC Application Service/Repository/API/Vue/Task | AC 命令、查询字段、光衰、配置、写操作或验收状态变化 |
 | [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
 | [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) | 基础设施、列车、任务、Agent 与 Mesh 分析只读聚合 | 轨道交通综合监控开发 | `src/netconsole/services/rail_transit/wireless_dashboard_query_service.py`、对应 API/Vue | 聚合来源、告警映射、刷新或只读边界变化 |
 | [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md) | 列车、MR、Mesh-Link、fping/iPerf、任务和采集包的只读聚合 | 轨道交通在线通信监控开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 聚合优先级、状态、刷新或只读边界变化 |
@@ -63,7 +69,7 @@
 | [MR/Mesh 日志分析](mr_mesh_log_analysis_rules.md) | 导入、解析、阈值、切换/乒乓、报表 | Mesh 分析开发 | `mesh_*`、规则 JSON、页面/测试 | parser、阈值、图表或报告变化 |
 | [AP Identity 总览](AP_IDENTITY.md) | Canonical 模型、resolver、只读接入边界 | AP Identity/接入域开发 | `ap_identity*`、domain handlers、测试 | 模型、优先级、接入点或接管结论变化 |
 | [AP Identity 展示评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md) | 允许字段、风险、flag 和不可用状态 | 诊断展示评估 | diagnostics ViewModel、评估测试 | ViewModel、flag、脱敏或展示准入变化 |
-| [AP Identity Job 宿主评估](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 结果流、宿主缺口和阶段 8.3 决策 | Job/诊断宿主评估 | UI 调用链、结果生命周期、测试 | 新增统一详情/历史宿主或结果保留层 |
+| [AP Identity Job 宿主评估（冻结历史）](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 旧 Qt 宿主评估与否决边界，只作历史证据 | 历史维护 | Git 历史、当前统一任务窗口与诊断模型 | 不再作为新增 Qt 宿主授权 |
 | [命令参考规范](软件使用命令说明.md) | 命令资源字段、风险和消费者 | 命令/parser 开发 | `resources/command_reference.json`、解析器 | 命令、参数、风险或消费者变化 |
 
 ## 规则与兼容资料

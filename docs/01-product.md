@@ -1,39 +1,5 @@
-# NetConsole Product
+# 历史产品说明（已归档）
 
-NetConsole is a local Windows desktop tool for network device management.
+本路径仅保留旧文档兼容入口。Qt 时代的产品说明已经退出活动文档；当前产品定位以[项目总览](../README.md)和[当前架构](ARCHITECTURE.md)为准。
 
-Current product direction:
-
-- Python 3.13
-- PySide6 desktop UI
-- SQLite local storage
-- Development and portable runtime layout
-- Local files only, no AppData dependency
-
-The first stage only delivers a usable device management foundation. It is intended for UI testing, table inspection, import/export verification, and future desktop packaging work.
-
-Current scope:
-
-- Main window
-- Chinese/English text switching
-- Demo site
-- SQLite `devices` table
-- Demo devices
-- Device list, add, edit, delete
-- Search and filters
-- CSV import/export
-- CSV template export
-
-Out of scope for this stage:
-
-- SSH
-- Telnet execution
-- Netmiko
-- Task center
-- Config backup
-- Config diff
-- Terminal
-- SNMP collection
-- Optical modules
-- LLDP
-- Topology
+原始内容、冻结提交和读取方式见[Qt → Electron 历史归档](archive/migrations/qt-to-electron/README.md)。

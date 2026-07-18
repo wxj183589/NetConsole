@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
@@ -20,9 +17,12 @@ from netconsole.services.omnipeek_name_table_service import (
     build_omnipeek_entries,
     export_omnipeek_nam,
 )
-from netconsole.utils.mac_utils import H3cMacDeriveError, derive_h3c_r1_mac, derive_h3c_r2_mac, normalize_mac
-
-
+from netconsole.utils.mac_utils import (
+    H3cMacDeriveError,
+    derive_h3c_r1_mac,
+    derive_h3c_r2_mac,
+    normalize_mac,
+)
 
 
 def make_database(tmp_path: Path) -> Database:
@@ -63,9 +63,19 @@ def test_onboard_mr_defaults_export_physical_r1_r2(tmp_path: Path) -> None:
         device_type="Cloud-AP",
     )
     service = OmniPeekNameTableService(AcRepository(make_database(tmp_path)))
-    items = service.collect_items(include_ac_fit_ap=False, include_ap_extensions=False, devices=[device], group_names={1: "车载-MR"})
+    items = service.collect_items(
+        include_ac_fit_ap=False,
+        include_ap_extensions=False,
+        devices=[device],
+        group_names={1: "车载-MR"},
+    )
 
-    entries = build_omnipeek_entries(items, OmniPeekExportConfig(line_name="宁波地铁12号线", output_path=tmp_path / "mr.nam"))
+    entries = build_omnipeek_entries(
+        items,
+        OmniPeekExportConfig(
+            line_name="宁波地铁12号线", output_path=tmp_path / "mr.nam"
+        ),
+    )
 
     assert [(entry.name, entry.mac) for entry in entries] == [
         ("06车头-列车06-MR-CT-物理MAC", "74:AD:CB:9D:33:20"),
@@ -76,11 +86,23 @@ def test_onboard_mr_defaults_export_physical_r1_r2(tmp_path: Path) -> None:
 
 def test_ap_extension_exports_when_ac_fit_ap_is_empty(tmp_path: Path) -> None:
     repository = AcRepository(make_database(tmp_path))
-    repository.upsert_ap_extension_point({"ap_name": "AP001", "ap_mac_display": "74ad-cb9d-35d0"})
+    repository.upsert_ap_extension_point(
+        {"ap_name": "AP001", "ap_mac_display": "74ad-cb9d-35d0"}
+    )
     service = OmniPeekNameTableService(repository)
 
-    items = service.collect_items(include_ac_fit_ap=True, include_ap_extensions=True, include_device_mr=False, ac_device_uuid="empty-ac")
-    entries = build_omnipeek_entries(items, OmniPeekExportConfig(line_name="杭州地铁4号线信号A网", output_path=tmp_path / "ap.nam"))
+    items = service.collect_items(
+        include_ac_fit_ap=True,
+        include_ap_extensions=True,
+        include_device_mr=False,
+        ac_device_uuid="empty-ac",
+    )
+    entries = build_omnipeek_entries(
+        items,
+        OmniPeekExportConfig(
+            line_name="杭州地铁4号线信号A网", output_path=tmp_path / "ap.nam"
+        ),
+    )
 
     assert [(entry.name, entry.mac, entry.group) for entry in entries] == [
         ("AP001-物理MAC", "74:AD:CB:9D:35:D0", "杭州地铁4号线信号A网轨旁AP物理MAC组"),
@@ -113,7 +135,10 @@ def test_export_omnipeek_nam_writes_required_xml_fields(tmp_path: Path) -> None:
     assert '<?xml version="1.0" encoding="UTF-8"?>' in text
     assert '<NameTable Version="3.0">' in text
     assert '<Entry Class="Address">' in text
-    assert '<Address Type="Wireless" Node="Access Point" Resolve="User">74:AD:CB:9D:33:20</Address>' in text
+    assert (
+        '<Address Type="Wireless" Node="Access Point" Resolve="User">74:AD:CB:9D:33:20</Address>'
+        in text
+    )
     assert "<Color>#7030A0</Color>" in text
     assert "<Group>宁波地铁12号线车载MR物理MAC组</Group>" in text
     assert "<Trust>Trusted</Trust>" in text

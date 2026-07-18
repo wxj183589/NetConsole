@@ -184,7 +184,7 @@ AP identity 阶段 2～6.1 已在 AC 扩展信息、AC 光衰、轨旁 AP、MR/M
 - 当前 shadow/diagnostics 未被 UI 消费。停止观测时，只需停止提取附加字段，继续使用旧 result、旧 workbook 和旧页面即可。
 - 任何运行异常都应丢弃观测 summary，不得删除原数据库、raw log 或业务导出；使用步骤 2 的备份恢复测试副本。
 - 临时 result/xlsx/调试输出在生成脱敏 summary 后删除；HMAC 密钥和 token 映射按现场安全制度销毁或归档。
-- 若阶段 8 新增只读展示，必须使用独立 feature flag，默认关闭；关闭后不得影响 Job、Export Process、旧 UI 或业务结果。
+- 若阶段 8 新增只读展示，必须使用独立 feature flag，默认关闭；关闭后不得影响 Job、Export Process、现有 Vue 页面或业务结果。
 - 禁止把“隐藏 diagnostics 展示”误当作禁用生产业务；旧 resolver、mapping、光衰、轨旁和 MR/Mesh 路径始终是回滚基线。
 
 ## 11. 观测结果模板
@@ -273,4 +273,4 @@ AP identity 阶段 2～6.1 已在 AC 扩展信息、AC 光衰、轨旁 AP、MR/M
 单独立项、重新评审、用户明确批准
 ```
 
-阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。阶段 8.1 已实现默认关闭的纯 Python 聚合 ViewModel 和逻辑开关，但尚未执行真实局点采样，也未接入 Qt 宿主、报告或持久化。后续可见展示仍须通过本方案准入；不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。
+阶段 8 已完成观察结果只读展示方案评估，见 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md)。脱敏结构已收敛到永久 Python 模型，但尚未执行真实局点采样，也未接入统一任务窗口或具名 Vue 页面。后续可见展示仍须通过本方案准入；不得修改生产数据、导出字段、报告 SQL、resolver、mapping 或业务判断。

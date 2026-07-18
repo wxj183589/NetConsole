@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_tasks import BackgroundTaskCancelled, run_background_task
+from netconsole.services.background_tasks import (
+    BackgroundTaskCancelled,
+    run_background_task,
+)
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_progress import error_event as export_error_event
 from netconsole.services.job_center.job_context import JobContext
@@ -23,13 +23,18 @@ from netconsole.services.job_center.job_events import (
     log_event,
     progress_event,
 )
-from netconsole.services.job_center.job_registry import register_handler, registered_task_types
+from netconsole.services.job_center.job_registry import (
+    register_handler,
+    registered_task_types,
+)
 from netconsole.services.job_center.job_runner import run_job
-from netconsole.services.job_center.worker_protocol import encode_event, feed_jsonl, parse_event_line
+from netconsole.services.job_center.worker_protocol import (
+    encode_event,
+    feed_jsonl,
+    parse_event_line,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
 
 
 def _jsonl_events(result: subprocess.CompletedProcess[str]) -> list[dict[str, object]]:
@@ -57,8 +62,6 @@ def test_registry_contains_all_existing_task_types() -> None:
     } <= tasks
 
 
-
-
 def test_legacy_run_background_task_dispatches_registry(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
 
@@ -74,16 +77,6 @@ def test_legacy_run_background_task_dispatches_registry(tmp_path: Path) -> None:
     )
 
     assert result == {"changed_count": 0}
-
-
-
-
-
-
-
-
-
-
 
 
 def test_job_events_use_complete_common_fields() -> None:
@@ -120,12 +113,16 @@ def test_worker_protocol_handles_partial_jsonl_and_diagnostics() -> None:
     events, diagnostics, remainder = feed_jsonl("", first[:split_at])
     assert not events
     assert not diagnostics
-    events, diagnostics, remainder = feed_jsonl(remainder, first[split_at:] + "普通诊断\n" + second)
+    events, diagnostics, remainder = feed_jsonl(
+        remainder, first[split_at:] + "普通诊断\n" + second
+    )
 
     assert [event["type"] for event in events] == ["progress", "finished"]
     assert diagnostics == ["普通诊断"]
     assert remainder == ""
-    assert parse_event_line('{"event":"cancelled","job_id":"job-1"}')["cancelled"] is True
+    assert (
+        parse_event_line('{"event":"cancelled","job_id":"job-1"}')["cancelled"] is True
+    )
 
 
 def test_job_runner_returns_structured_cancelled_result() -> None:
@@ -143,7 +140,9 @@ def test_job_runner_returns_structured_cancelled_result() -> None:
 
 
 def test_export_events_reuse_common_protocol() -> None:
-    event = export_error_event("export-1", "已取消", output_path="report.xlsx", cancelled=True)
+    event = export_error_event(
+        "export-1", "已取消", output_path="report.xlsx", cancelled=True
+    )
 
     assert event["type"] == "cancelled"
     assert event["event"] == "cancelled"
@@ -156,11 +155,17 @@ def test_export_events_reuse_common_protocol() -> None:
     [
         [sys.executable, "-m", "netconsole.background_worker"],
         [sys.executable, str(PROJECT_ROOT / "main.py"), "--background-worker"],
-        [sys.executable, str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"), "--background-worker"],
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"),
+            "--background-worker",
+        ],
     ],
     ids=["module", "main-entry", "frozen-entry"],
 )
-def test_background_worker_stdout_is_jsonl_only(tmp_path: Path, entry: list[str]) -> None:
+def test_background_worker_stdout_is_jsonl_only(
+    tmp_path: Path, entry: list[str]
+) -> None:
     job_path = tmp_path / "job.json"
     job_path.write_text(
         json.dumps(
@@ -232,7 +237,11 @@ def test_background_worker_emits_cancelled_jsonl(tmp_path: Path) -> None:
     [
         [sys.executable, "-m", "netconsole.export_worker"],
         [sys.executable, str(PROJECT_ROOT / "main.py"), "--export-worker"],
-        [sys.executable, str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"), "--export-worker"],
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "src" / "netconsole" / "entrypoint.py"),
+            "--export-worker",
+        ],
     ],
     ids=["module", "main-entry", "frozen-entry"],
 )

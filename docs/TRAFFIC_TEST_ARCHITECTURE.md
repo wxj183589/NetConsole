@@ -7,9 +7,9 @@
 - iPerf Server；
 - iPerf Client（TCP/UDP、上传/下载/双向）；
 - fping v5 高频 Ping；
-- TCP 端口测试（本地复用 Qt 工具箱探测函数，Agent 复用既有 `ping_probe`）。
+- TCP 端口测试（本地复用永久 Network Tools Service，Agent 复用既有 `ping_probe`）。
 
-当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center、通用 MIB/OID 平台与无线勘测已删除。
+当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。Online MR 继续通过具名协调器复用 Traffic 能力，不把会话和 MR 状态机搬入通用 Traffic Service。SNMP Center、通用 MIB/OID 平台与无线勘测已删除。
 
 ## 2. 组件关系
 
@@ -17,7 +17,7 @@
 flowchart TD
     WEB["Vue /network-tools/traffic"] --> API["Traffic REST API / ws traffic"]
     API --> APP["TrafficTestApplicationService"]
-    CALLER["Future Qt Adapter"] --> APP
+    CALLER["Online MR / API callers"] --> APP
     APP --> TASK["TaskApplicationService / tasks.db"]
     APP --> RUNS["TrafficRunRepository / traffic_runs.sqlite"]
     APP --> LOCAL["LocalTrafficAdapter"]
@@ -243,7 +243,7 @@ POST /api/traffic/runs/{traffic_run_id}/retry
 /ws/traffic/{traffic_run_id}
 ```
 
-客户端先通过 REST 读取 Run、事件和样本，再以 `after_event`、`after_sample` 排他游标连接 WebSocket。服务端只发送 `ready`、`event/events`、`samples` 和 `heartbeat` 增量消息，不发送全量快照；断线重连前前端重新使用 REST 补齐事实数据。高频 Ping 采样只通过 Traffic 专用 REST/WS 通道传递，不进入全局 `/ws/tasks`。FastAPI lifespan 负责启动和停止 `TrafficTestApplicationService`，从而绑定 `AgentTrafficSupervisor`；普通 `python main.py` 的 Qt 主程序不依赖 FastAPI 才能启动。
+客户端先通过 REST 读取 Run、事件和样本，再以 `after_event`、`after_sample` 排他游标连接 WebSocket。服务端只发送 `ready`、`event/events`、`samples` 和 `heartbeat` 增量消息，不发送全量快照；断线重连前前端重新使用 REST 补齐事实数据。高频 Ping 采样只通过 Traffic 专用 REST/WS 通道传递，不进入全局 `/ws/tasks`。FastAPI lifespan 负责启动和停止 `TrafficTestApplicationService`，从而绑定 `AgentTrafficSupervisor`；无参数 `python main.py` 启动同一 Electron 开发编排链。
 
 Vue 页面位于 `apps/web/src/views/network-tools/TrafficTestView.vue`，菜单入口为“网络工具 / 流量测试”，包含 iPerf Server、iPerf Client、高频 Ping、实时日志、ECharts RTT 曲线、历史任务、停止和原配置重试。
 
@@ -261,6 +261,6 @@ Traffic 错误使用稳定 `TRAFFIC_*` code。启动失败、工具缺失、连�
 - 只接入现有 Windows Go Agent，CentOS Agent 尚未实现；
 - 本地高频 Ping 暂不支持指定源地址，Agent 支持强类型 `source_address`；
 - 现有 Agent `ping_probe` 不生成结构化 result/sample，远端 TCP 端口测试仅能恢复和展示任务终态；
-- 本阶段未迁移 Online MR、原 Qt iPerf/Ping、设备、AC、FIT-AP 或 MESH；SNMP Center 与无线勘测已在后续阶段删除。
+- Traffic Service 不接管设备、AC、FIT-AP 或 MESH 的领域状态机；SNMP Center、通用 MIB/OID 平台与无线勘测已删除。
 
 后续业务迁移不得把执行、Token、工具路径或任意命令下放到页面和路由。

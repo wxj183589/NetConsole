@@ -1,12 +1,14 @@
 # AP Identity 观察结果只读展示方案评估
 
+> 冻结说明：本文的字段允许列表和脱敏边界仍可作为设计证据；其中 Qt Job/Dialog/Manager 候选属于已结束的历史评估，不是活动路径。当前宿主结论见 [AP Identity Job 宿主评估（冻结历史）](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。
+
 ## 1. 背景
 
 AP Identity 阶段 2～6.1 已在 AC 扩展、AC 光衰、轨旁 AP、MR/Mesh 和两个导出入口附加只读 `identity_shadow` 或 `export_identity_diagnostics`。阶段 7 已定义真实局点观测、脱敏汇总、保守阈值和运行手册，但尚未执行真实局点采样。
 
 阶段 8 只评估维护人员或高级诊断用户将来如何查看脱敏聚合。本文不授权实现 UI、启用 feature flag、保存诊断结果、修改 workbook 或让 resolver 接管生产路径。所有展示结论均为“待真实局点观测验证”。
 
-当前代码没有独立的 Job Center 任务详情页面，也没有通用诊断中心。各业务页面持有自己的 `BackgroundProcessManager`，因此“Job Center 任务详情”是优先候选，不是现成可直接接线的页面。阶段 8.1 必须先明确单一展示宿主，不能为了展示新增全局任务持久化或在多个业务页面同时接入。
+当前已有 Electron 统一任务窗口，但 AP Identity 摘要尚未接线。“任务详情”仍是优先候选，不能为了展示新增第二套任务持久化或在多个业务页面同时接入。
 
 ## 2. 非目标
 
@@ -319,7 +321,7 @@ display_allowed =
 - 不保存到仓库、数据库、常规日志、剪贴板历史或默认报告。
 - 不进入普通导出；未来独立摘要也必须显式开启、输出到受控目录并再次脱敏。
 - 不提供“查看原始 JSON”“展开 evidence”“复制完整 result”等逃逸入口。
-- UI 关闭、页面切换和 kill switch 禁用时不得留下 worker、timer、QProcess 或 result 强引用。
+- UI 关闭、页面切换和 kill switch 禁用时不得留下 timer、订阅或 result 强引用。
 - 所有安全拒绝只记录稳定 code 和来源类型，不记录原始值。
 
 ## 11. 阶段 8.1 只读展示最小实现设计
@@ -348,8 +350,8 @@ display_allowed =
 ```text
 src/netconsole/services/ap_identity/diagnostics_summary.py
 src/netconsole/core/feature_registry.py
-src/netconsole/ui/models/ap_identity_diagnostics_summary_model.py
-src/netconsole/ui/dialogs/ap_identity_diagnostics_summary_dialog.py
+src/netconsole/models/diagnostics_summary.py
+apps/web/src/components/<approved-ap-identity-summary>.vue  # 仅在后续明确批准后
 tests/test_ap_identity_diagnostics_summary.py
 tests/test_ap_identity_diagnostics_display.py
 ```
@@ -386,7 +388,7 @@ tests/test_ap_identity_diagnostics_display.py
 8. `unresolved/ambiguous/identity_changed` 只影响风险提示，不改生产结果。
 9. ViewModel 不修改输入 mapping，不保留原始 result 引用。
 10. 禁用或权限不足时不构建 dialog、不订阅异步事件。
-11. UI 关闭、切换和销毁后无 timer、worker、QProcess 或跨局点结果残留。
+11. UI 关闭、切换和销毁后无 timer、订阅或跨局点结果残留。
 12. 原 workbook Sheet、表头、关键行、样式、筛选、冻结和返回类型 golden 完全不变。
 13. Job result metadata 原结构和值完全不变，展示只读消费副本。
 14. 静态检查 UI 不导入 Repository/parser，不写数据库/文件，不访问网络。
@@ -413,7 +415,7 @@ tests/test_ap_identity_diagnostics_display.py
 
 ## 15. 阶段 8.1 当前实现
 
-阶段 8.1 已新增纯 Python `netconsole.ui.diagnostics.DiagnosticsSummaryViewModel`，只从普通 Job/Export result mapping 中读取 `identity_shadow`、`detail_identity_shadow` 或 `export_identity_diagnostics`。实现边界如下：
+阶段 8.1 的历史 ViewModel 已随 Qt UI 删除；允许列表结构现由 `src/netconsole/models/diagnostics_summary.py` 承担，导出适配位于 `src/netconsole/services/export_identity_diagnostics.py`。实现边界如下：
 
 - 全局开关 `ap_identity_diagnostics_enabled` 与 UI 开关 `ap_identity_diagnostics_ui_enabled` 必须同时显式为真；缺失或关闭时状态固定为 `disabled`，默认不展示。
 - `ap_identity_diagnostics_samples_enabled` 仅保留后续策略名称；当前即使显式开启也不读取或暴露 `items/samples/evidence/warnings/error`。
@@ -421,13 +423,13 @@ tests/test_ap_identity_diagnostics_display.py
 - 风险等级仅生成只读建议和 `blocks_takeover` 提示，不修改输入 mapping，不改变 Job/Export 终态，也不触发 resolver、Repository、文件或网络操作。
 - 异常、字段不足、schema 不支持和诊断不可用均降级为安全状态，不向调用方抛出诊断异常。
 
-当前仓库仍没有统一 Job 详情或通用诊断中心，因此阶段 8.1 **未接入真实 Qt 宿主**，也未新增 widget/dialog、页面入口或集中任务持久化。可见 UI 接线延后到阶段 8.2，并继续受真实局点准入、单宿主批准和默认关闭约束。
+当前 Electron 已有统一任务窗口，但 AP Identity 摘要仍未接线，也未新增具名页面或第二套任务持久化。可见 UI 接线继续受真实局点准入、单宿主批准和默认关闭约束。
 
 ## 16. 阶段 8.2 Job 详情宿主评审结论
 
 阶段 8.2 已完成当前 Job/Export UI 宿主、七类任务结果流和六类候选入口的只读评审，详见 [AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md)。
 
-当前没有 Job 详情页、任务历史页、统一结果面板或诊断中心。两个通用 helper 都会在终态关闭 `QProgressDialog` 并释放 controller；各业务页面只在本地 slot 中瞬时消费 result。新增任务详情弹窗是未来首选，但当前缺少统一启动点和安全结果缝隙，因此阶段 8.3 可见 UI 实现状态为 `hold`，不得改多个业务页面或保存完整 result 绕过该缺口。
+当前统一任务窗口已经提供详情启动点，但 AP Identity owner capability 与安全摘要接线尚未批准，因此阶段 8.3 可见 UI 实现状态仍为 `hold`；不得改多个业务页面或保存完整 result 绕过该缺口。
 
 ## 17. 2026-07-11 同步复核
 

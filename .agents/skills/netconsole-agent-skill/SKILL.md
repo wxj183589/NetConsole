@@ -5,7 +5,7 @@ description: "NetConsole Windows Go Agent、apps/agent、Agent HTTP API、内嵌
 
 # 目标
 
-维护 `apps/agent/` Windows Go Agent V1 的 API、内嵌 Web、配置、目标文件、工具路径、任务事件、采集包、sidecar 和构建/运行目录边界。Agent 是独立执行端，不是 Python Qt 主程序的第二套业务核心。
+维护 `apps/agent/` Windows Go Agent V1 的 API、内嵌 Web、配置、目标文件、工具路径、任务事件、采集包、sidecar 和构建/运行目录边界。Agent 是独立执行端，不是 Electron/Python Core 的第二套业务核心。
 
 # 触发场景
 
@@ -16,7 +16,7 @@ description: "NetConsole Windows Go Agent、apps/agent、Agent HTTP API、内嵌
 
 # 不适用范围
 
-- 不处理主程序普通 Qt UI；相关任务使用 Qt UI Skill。
+- 不处理 Electron/Vue 主界面；相关任务按 Vue、FastAPI 和 Electron Main/Preload 边界处理。
 - 不修改 MR 命令顺序、回显解析或采集规则，除非同时读取 `netconsole-online-mr-skill`。
 - 不修改 fping/iPerf 参数语义、阈值、模板或流量指标，除非同时读取 `traffic-test-skill`。
 - 不处理 CentOS 离线部署，除非任务明确要求。
@@ -55,7 +55,7 @@ description: "NetConsole Windows Go Agent、apps/agent、Agent HTTP API、内嵌
 1. 先读取 `docs/AGENT.md`、`apps/agent/README.md`、`docs/BUILD_AND_RELEASE.md`、`docs/AGENT_TRAFFIC_API.md` 和 `resources/tools/README.md`。
 2. 先确认实际代码、测试和构建脚本，再判断改动属于 Agent、Controller、Traffic 或 Online MR 边界。
 3. 修改路径时同步检查 CLI 参数、环境变量、配置/目标查找顺序、交付包内部路径、启动脚本和运行数据目录。
-4. 不跨进程共享 SQLite connection、QWidget、Repository 或凭据；Agent Token 只由 Controller 在请求时提供。
+4. 不跨进程共享 SQLite connection、Renderer 状态、Repository 或凭据；Agent Token 只由 Controller 在请求时提供。
 5. 保留失败、取消、停止、强制结束和采集包清理语义；不通过吞异常、扩大超时或静默跳过掩盖问题。
 
 # 验证
@@ -81,7 +81,7 @@ python -m compileall apps/agent src
 报告必须区分：
 
 - Agent V1 已实现的 API、Web、任务、工具、sidecar 和采集包能力；
-- Controller/Traffic 已接入的部分能力与仍未创建的 Traffic REST/WebSocket/Vue 页面；
+- Controller/Traffic 已接入的 REST/WebSocket/Vue 能力与仍待真实环境验收的边界；
 - CentOS 离线部署、主动注册、多 Controller 和完整远程运维等规划项；
-- iPerf3/Cygwin 许可证和 NOTICE 材料缺口；
+- iPerf3/Cygwin 许可证、NOTICE、来源哈希和对应源码分发责任；
 - 已执行的 Go/Python/compileall/路径检查命令和未执行的构建或现场验证。

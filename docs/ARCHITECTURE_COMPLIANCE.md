@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文定义 Electron-only 重构的最终阶段 `E10`。`E10` 在 Qt 源码、测试和运行依赖删除，Electron-only 构建链稳定，非 Qt 全量验证通过后执行；当前仅固定审计规则和交付物，不表示审计已经完成。
+本文定义 Electron-only 重构最终阶段 `E10` 的永久规则。当前五项遗留清理、最终迁移矩阵和阶段报告已经形成；实际结果、未解决 P1/P2 与发布门见[架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)，不得因报告存在就误称全量 Guard、制品和真实设备验收已完成。
 
 目标是验证实际代码符合 `Electron Main + Preload + Vue + FastAPI + Python Core` 分层，并追踪原 Qt 页面、Worker、Signal 和 Timer 回调中的有效业务逻辑去向。仅通过 Qt 关键字扫描或应用启动冒烟不能满足本阶段要求。
 

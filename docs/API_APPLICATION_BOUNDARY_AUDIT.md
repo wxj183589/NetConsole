@@ -15,7 +15,7 @@ Vue / Electron
 
 初始审计基线为 2026-07-15 的 `main@dc62324cf7a61bb9e8abbcdb144f97543e04ad68`；Phase 0.5 第一批以 `29624b2c` 为集成基线，完成 A-D 领域收口与 E 中央接线，覆盖 `src/netconsole/backend/api/` 下全部 18 个 `*_router.py`。SNMP Center 与无线勘测保持 `EXCLUDED / FUTURE_REBUILD`，不在本轮范围内。
 
-当前结论只表示第一批 Router 静态边界和定向契约已收口，不表示 Qt 已退出、所有领域 Service 已完成迁移或真实设备验收已完成。
+该历史结论只表示当时第一批 Router 静态边界和定向契约已收口，不表示所有领域 Service 或真实设备验收已完成。Qt 退出状态以当前架构与最终迁移矩阵为准。
 
 ## 2. 判定口径
 
@@ -109,7 +109,7 @@ Phase 0.5 第一批 A-D/E 的 Router 边界修复已完成，静态守卫债务�
 
 ## 7. 非目标
 
-- 不新增 Web 或 Qt 页面；
+- 不新增产品页面或恢复已删除的桌面宿主；
 - 不启动 Electron、Launcher 或通用 Native Bridge 实现；
 - 不迁移或审计 SNMP Center、无线勘测；
 - 不连接真实 MR、Agent、AC、设备 IP 或生产凭据；

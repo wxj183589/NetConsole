@@ -32,7 +32,7 @@ Core Runtime / FastAPI / Uvicorn
 
 ## 构建
 
-`scripts/build/build_release.py` 在 Python 打包前执行 `apps/web` 的 `pnpm build`，并把忽略提交的 `apps/web/dist` 作为 `netconsole/assets/web` 内部资源打入 PyInstaller/Nuitka 发布包。构建机需先完成：
+`scripts/build/build_release.py` 在 Python Backend 打包前执行 `apps/web` 的 `pnpm build`，并把忽略提交的 `apps/web/dist` 作为 `netconsole/assets/web` 内部资源打入 PyInstaller Backend bundle。构建机需先完成：
 
 ```powershell
 cd apps/web
@@ -45,7 +45,7 @@ cd ../..
 ## 前端资源身份
 
 - 源码模式只加载当前项目的 `apps/web/dist`，不再按文件存在性优先选择虚拟环境、旧安装目录或 `src/netconsole/assets/web`；
-- PyInstaller/Nuitka 冻结模式只加载包内 `netconsole/assets/web`，不跨模式回退到源码目录；
+- PyInstaller 冻结模式只加载包内 `netconsole/assets/web`，不跨模式回退到源码目录；
 - Vite 生成 `web-build-meta.json`，包含 `app_version`、`git_commit`、`build_time`、`navigation_schema_version` 和 `build_id`；
 - `GET /api/health` 返回后端 `build_id`；新版 Vue 在前后端 build id 不一致时显示固定顶部警告；旧产物缺少 metadata 时 FastAPI 静态入口仍会注入相同警告；
 - Desktop WebHost 启动日志记录 `frontend_root`、`index`、`frontend_build_id`、`backend_build_id` 和 `frontend_source_type`，不记录短期会话令牌；
@@ -57,7 +57,7 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 
 以下清单记录 Qt WebHost 迁移阶段的能力快照，用于追踪旧实现，不代表 v1.3.9 当前 Electron 页面状态。当前模块能力以对等矩阵、Feature Registry、代码和测试为准。
 
-- 本阶段已删除 Qt 启动壳，但旧 Qt 页面内部的 Task/Application Service 和业务逻辑仍需按迁移矩阵审计；不能据此声称全仓零 Qt。Electron Bridge 见 [Electron Desktop](ELECTRON_DESKTOP.md)；
+- Qt 启动壳和页面已经删除，历史业务去向已记录在最终迁移矩阵；模块是否可用仍以自动测试、Electron 人工和真实设备验收为准。Electron Bridge 见 [Electron Desktop](ELECTRON_DESKTOP.md)；
 
 - 当前 Web 页面包含 Dashboard、只读任务中心、Agent 管理、AC FIT-AP 资源、AC Mesh-Link 在线监控、Traffic、只读 Online MR 实时展示、轨道交通基础资料、在线列车通信检测、Mesh 原始日志分析和轨道交通无线综合看板；任务中心通过 GET-only `/api/job-center` 查询任务快照、结构化事件和 Online MR 映射，不提供 stop、force-stop、delete 或 retry；Mesh-Link 页面可跳转查看其刷新任务；
 - 任务列表按运行状态动态使用 2 秒或 5 秒轮询，连续失败后降为 10 秒；详情每 2 秒刷新，日志展开后每秒读取最后 300 条，页面隐藏或关闭后停止全部轮询；
@@ -73,6 +73,6 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - WebHost 只在独立 AGENT 页签开放已登记 Profile 的远程 MR start/status/normal stop，不开放远端包删除、强停、任意命令、任意 URL 或 Agent 配置修改；Application Service 的单 Agent 执行闭环见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center、通用 MIB/OID 平台和无线勘测已删除；网络工具无线扫描独立保留。
-- Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
+- Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
 - Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知按实际 Feature 状态验收；所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
-- Electron 先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 只作为 Git 历史和待删除源码的迁移参考。
+- Electron 先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 只作为 Git 历史迁移参考。

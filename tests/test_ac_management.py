@@ -1,10 +1,7 @@
 import json
-import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
@@ -16,28 +13,57 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.state_engine import compute_state, STATUS_COLORS
 from netconsole.models.device import Device
-from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import parse_fit_ap_lldp_neighbor
-from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_lldp, parse_fit_ap_optical, parse_fit_ap_transceiver, parse_fit_ap_transceiver_diagnosis_snapshots
+from netconsole.parsers.h3c.ac.fit_ap_lldp_neighbor_parser import (
+    parse_fit_ap_lldp_neighbor,
+)
+from netconsole.parsers.h3c.ac.fit_ap_optical_parser import (
+    parse_fit_ap_lldp,
+    parse_fit_ap_optical,
+    parse_fit_ap_transceiver,
+    parse_fit_ap_transceiver_diagnosis_snapshots,
+)
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
-from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import parse_wlan_ap_connection_records
-from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
+from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import (
+    parse_wlan_ap_connection_records,
+)
+from netconsole.parsers.h3c.ac.wlan_ap_parser import (
+    parse_wlan_ap_list,
+    parse_wlan_ap_summary,
+)
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
-from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import parse_wlan_ap_radio_types
+from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import (
+    parse_wlan_ap_radio_types,
+)
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.fit_ap_import_export import AP_EXTENSION_TEMPLATE_FIELDS, FitApImportExportService
-from netconsole.services.fit_ap_link_info import format_h3c_mac, merge_lldp_payload, normalize_interface_key, normalize_mac as normalize_link_mac, resolve_fit_ap_link_info, resolve_optical_match_status
+from netconsole.services.fit_ap_import_export import (
+    AP_EXTENSION_TEMPLATE_FIELDS,
+    FitApImportExportService,
+)
+from netconsole.services.fit_ap_link_info import (
+    format_h3c_mac,
+    merge_lldp_payload,
+    normalize_interface_key,
+    normalize_mac as normalize_link_mac,
+    resolve_fit_ap_link_info,
+    resolve_optical_match_status,
+)
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, parse_https_port
-from netconsole.services.ap_online_overview import build_ap_online_overview_rows, export_ap_online_overview_xlsx
+from netconsole.services.ap_online_overview import (
+    build_ap_online_overview_rows,
+    export_ap_online_overview_xlsx,
+)
 from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
-from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
+from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import (
+    parse_wlan_ap_radio_verbose_bbssid,
+)
 from netconsole.services.h3c_ac_collect_service import (
     FIT_AP_RESOURCE_COMMANDS,
     FIT_AP_RESOURCE_OPTIONAL_COMMANDS,
@@ -58,7 +84,13 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     dedupe_targets,
 )
 from netconsole.services.netmiko_connection import normalize_command_output
-from netconsole.services.neighbor_matcher import find_neighbor_optical_module, find_neighbor_rx_power, match_ap_from_device_lldp, match_neighbor_device, normalize_interface_name
+from netconsole.services.neighbor_matcher import (
+    find_neighbor_optical_module,
+    find_neighbor_rx_power,
+    match_ap_from_device_lldp,
+    match_neighbor_device,
+    normalize_interface_name,
+)
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
@@ -89,8 +121,6 @@ from netconsole.services.trackside_ap_business import (
     trackside_row_status,
 )
 from netconsole.core.optical_severity_engine import display_optical_status
-
-
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
@@ -222,24 +252,6 @@ GigabitEthernet1/0/1 transceiver diagnostic information:
         self.disconnected = True
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def make_database(tmp_path):
     database = Database(tmp_path / "devices.db")
     database.initialize()
@@ -253,17 +265,26 @@ def make_feature_gate(root: Path, *, hidden: tuple[str, ...]) -> FeatureGate:
         json.dumps({"edition": "customer", "feature_profile": "customer"}),
         encoding="utf-8",
     )
-    features = {feature_id: {"visible": False, "enabled": False} for feature_id in hidden}
+    features = {
+        feature_id: {"visible": False, "enabled": False} for feature_id in hidden
+    }
     (runtime / "feature_flags.json").write_text(
-        json.dumps({"schema_version": 1, "profile": "customer", "features": features}, ensure_ascii=False),
+        json.dumps(
+            {"schema_version": 1, "profile": "customer", "features": features},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     return FeatureGate(root)
 
 
-def create_station_switch(repository: DeviceRepository, site_name: str, **kwargs) -> Device:
+def create_station_switch(
+    repository: DeviceRepository, site_name: str, **kwargs
+) -> Device:
     group_repository = DeviceGroupRepository(repository.database, site_name)
-    station_group = group_repository.find_by_name("\u8f66\u7ad9") or group_repository.create("\u8f66\u7ad9")
+    station_group = group_repository.find_by_name(
+        "\u8f66\u7ad9"
+    ) or group_repository.create("\u8f66\u7ad9")
     payload = {
         "group_id": station_group.id,
         "device_type": "SW",
@@ -289,10 +310,28 @@ def test_ac_tables_are_created(tmp_path):
     database = make_database(tmp_path)
 
     with database.connect() as conn:
-        table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-        optical_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_optical_history)").fetchall()]
-        resource_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()]
-        radio_history_columns = [row["name"] for row in conn.execute("PRAGMA table_info(ac_fit_ap_radio_history)").fetchall()]
+        table_names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        optical_history_columns = [
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(ac_fit_ap_optical_history)"
+            ).fetchall()
+        ]
+        resource_columns = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
+        ]
+        radio_history_columns = [
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(ac_fit_ap_radio_history)"
+            ).fetchall()
+        ]
 
     assert "ac_ap_summary" in table_names
     assert "ac_fit_ap_resources" in table_names
@@ -305,9 +344,26 @@ def test_ac_tables_are_created(tmp_path):
     assert "ac_fit_ap_optical_history" in table_names
     assert "ac_fit_ap_radio_history" in table_names
     assert "ac_fit_ap_lldp_history" in table_names
-    for column in ("voltage", "bias_current", "rx_low_alarm", "tx_high_warning", "module_vendor", "wavelength", "transmission_distance", "connector_type"):
+    for column in (
+        "voltage",
+        "bias_current",
+        "rx_low_alarm",
+        "tx_high_warning",
+        "module_vendor",
+        "wavelength",
+        "transmission_distance",
+        "connector_type",
+    ):
         assert column in optical_history_columns
-    for column in ("connection_state", "connection_time", "rid1_status", "rid1_mode", "rid1_band", "rid1_usage", "rid1_clients"):
+    for column in (
+        "connection_state",
+        "connection_time",
+        "rid1_status",
+        "rid1_mode",
+        "rid1_band",
+        "rid1_usage",
+        "rid1_clients",
+    ):
         assert column in resource_columns
     for column in ("status", "mode", "band", "usage", "clients"):
         assert column in radio_history_columns
@@ -320,39 +376,65 @@ def test_ac_repository_summary_upsert_and_replace_lists(tmp_path):
 
     assert repository.get_ac_ap_summary("ac-1")["total_aps"] == 2
 
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
-    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == ["ap-a", "ap-b"]
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}]
+    )
+    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == [
+        "ap-a",
+        "ap-b",
+    ]
     repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-c"}])
-    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == ["ap-c"]
+    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == [
+        "ap-c"
+    ]
 
-    repository.replace_fit_ap_optical("ac-1", [{"ap_name": "ap-c", "status": "success", "neighbor_interface": "GigabitEthernet1/0/1", "rx_power": "-7.55"}])
-    assert repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"] == "GigabitEthernet1/0/1"
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {
+                "ap_name": "ap-c",
+                "status": "success",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "rx_power": "-7.55",
+            }
+        ],
+    )
+    assert (
+        repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"]
+        == "GigabitEthernet1/0/1"
+    )
     assert repository.get_fit_ap_optical_by_ap("ac-1", "ap-c")["rx_power"] == "-7.55"
     assert repository.get_fit_ap_resource("ac-1", "ap-c")["ap_name"] == "ap-c"
 
 
-def test_fit_ap_resource_refresh_persists_radio_and_connection_fields_without_erasing_bssid(tmp_path):
+def test_fit_ap_resource_refresh_persists_radio_and_connection_fields_without_erasing_bssid(
+    tmp_path,
+):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
         "ac-1",
-        [{
-            "ap_name": "ap-a",
-            "serial_number": "SN-001",
-            "connection_ip": "2001::3",
-            "connection_state": "Run",
-            "connection_time": "05-06 09:47:44",
-            "rid1_status": "Up",
-            "rid1_mode": "802.11n",
-            "rid1_band": "5GHz",
-            "rid1_channel": "149",
-            "rid1_bandwidth": "40",
-            "rid1_usage": "27",
-            "rid1_tx_power": "24",
-            "rid1_clients": 3,
-            "rid1_bbssid": "0011-2233-4455",
-        }],
+        [
+            {
+                "ap_name": "ap-a",
+                "serial_number": "SN-001",
+                "connection_ip": "2001::3",
+                "connection_state": "Run",
+                "connection_time": "05-06 09:47:44",
+                "rid1_status": "Up",
+                "rid1_mode": "802.11n",
+                "rid1_band": "5GHz",
+                "rid1_channel": "149",
+                "rid1_bandwidth": "40",
+                "rid1_usage": "27",
+                "rid1_tx_power": "24",
+                "rid1_clients": 3,
+                "rid1_bbssid": "0011-2233-4455",
+            }
+        ],
     )
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "153"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "153"}]
+    )
 
     row = repository.get_fit_ap_resource("ac-1", "ap-a")
     assert row["connection_state"] == "Run"
@@ -376,7 +458,9 @@ def test_single_fit_ap_upsert_keeps_other_resources(tmp_path):
         ],
     )
 
-    repository.upsert_fit_ap_resource("ac-1", {"ap_name": "AP1", "rid1_channel": "153", "rid1_bbssid": "new-bssid"})
+    repository.upsert_fit_ap_resource(
+        "ac-1", {"ap_name": "AP1", "rid1_channel": "153", "rid1_bbssid": "new-bssid"}
+    )
 
     rows = repository.list_fit_ap_resources("ac-1")
     assert [row["ap_name"] for row in rows] == ["AP1", "AP2"]
@@ -426,13 +510,27 @@ def test_fit_ap_resources_reuse_ap_uuid_when_apid_changes(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
         "ac-1",
-        [{"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"}],
+        [
+            {
+                "ap_name": "ap-a",
+                "apid": "1346",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-001",
+            }
+        ],
     )
     first = repository.list_fit_ap_resources("ac-1")[0]
 
     repository.replace_fit_ap_resources(
         "ac-1",
-        [{"ap_name": "ap-a", "apid": "2001", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"}],
+        [
+            {
+                "ap_name": "ap-a",
+                "apid": "2001",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-001",
+            }
+        ],
     )
     second = repository.list_fit_ap_resources("ac-1")[0]
     entity = repository.list_ap_entities("ac-1")[0]
@@ -448,8 +546,18 @@ def test_fit_ap_resources_do_not_merge_different_identity_with_same_apid(tmp_pat
     repository.replace_fit_ap_resources(
         "ac-1",
         [
-            {"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
-            {"ap_name": "ap-b", "apid": "1346", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
+            {
+                "ap_name": "ap-a",
+                "apid": "1346",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-001",
+            },
+            {
+                "ap_name": "ap-b",
+                "apid": "1346",
+                "ap_mac": "0011-2233-5566",
+                "serial_number": "SN-002",
+            },
         ],
     )
 
@@ -459,7 +567,9 @@ def test_fit_ap_resources_do_not_merge_different_identity_with_same_apid(tmp_pat
     assert len(repository.list_ap_entities("ac-1")) == 2
 
 
-def test_fit_ap_resources_same_name_hardware_replacement_inherits_business_fields(tmp_path):
+def test_fit_ap_resources_same_name_hardware_replacement_inherits_business_fields(
+    tmp_path,
+):
     database = make_database(tmp_path)
     repository = AcRepository(database)
     repository.replace_fit_ap_resources(
@@ -526,10 +636,30 @@ def test_fit_ap_resources_allow_empty_or_repeated_apid_without_unique_failure(tm
     repository.replace_fit_ap_resources(
         "ac-1",
         [
-            {"ap_name": "ap-a", "apid": "", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
-            {"ap_name": "ap-b", "apid": "", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
-            {"ap_name": "ap-c", "apid": "1346", "ap_mac": "0011-2233-6677", "serial_number": "SN-003"},
-            {"ap_name": "ap-d", "apid": "1346", "ap_mac": "0011-2233-7788", "serial_number": "SN-004"},
+            {
+                "ap_name": "ap-a",
+                "apid": "",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-001",
+            },
+            {
+                "ap_name": "ap-b",
+                "apid": "",
+                "ap_mac": "0011-2233-5566",
+                "serial_number": "SN-002",
+            },
+            {
+                "ap_name": "ap-c",
+                "apid": "1346",
+                "ap_mac": "0011-2233-6677",
+                "serial_number": "SN-003",
+            },
+            {
+                "ap_name": "ap-d",
+                "apid": "1346",
+                "ap_mac": "0011-2233-7788",
+                "serial_number": "SN-004",
+            },
         ],
     )
 
@@ -541,8 +671,18 @@ def test_fit_ap_resources_allow_empty_or_repeated_apid_without_unique_failure(tm
 def test_fit_ap_resources_repeated_update_is_idempotent(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     rows = [
-        {"ap_name": "ap-a", "apid": "1346", "ap_mac": "0011-2233-4455", "serial_number": "SN-001"},
-        {"ap_name": "ap-b", "apid": "1346", "ap_mac": "0011-2233-5566", "serial_number": "SN-002"},
+        {
+            "ap_name": "ap-a",
+            "apid": "1346",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-001",
+        },
+        {
+            "ap_name": "ap-b",
+            "apid": "1346",
+            "ap_mac": "0011-2233-5566",
+            "serial_number": "SN-002",
+        },
     ]
 
     repository.replace_fit_ap_resources("ac-1", rows)
@@ -557,11 +697,17 @@ def test_fit_ap_resources_repeated_update_is_idempotent(tmp_path):
 
 def test_fit_ap_optical_and_metadata_use_ap_uuid_association(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}]
+    )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
-    repository.replace_fit_ap_optical("ac-1", [{"ap_uuid": ap_uuid, "ap_name": "renamed-ap", "rx_power": "-7.55"}])
-    repository.upsert_fit_ap_metadata({"ap_uuid": ap_uuid, "ap_name": "renamed-ap", "site_name": "Station A"})
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "ap_name": "renamed-ap", "rx_power": "-7.55"}]
+    )
+    repository.upsert_fit_ap_metadata(
+        {"ap_uuid": ap_uuid, "ap_name": "renamed-ap", "site_name": "Station A"}
+    )
 
     assert repository.get_fit_ap_optical_by_uuid("ac-1", ap_uuid)["rx_power"] == "-7.55"
     assert repository.get_fit_ap_metadata_by_uuid(ap_uuid)["site_name"] == "Station A"
@@ -569,10 +715,22 @@ def test_fit_ap_optical_and_metadata_use_ap_uuid_association(tmp_path):
 
 def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "ap_mac": "0011"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "ap_mac": "0011"}]
+    )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
-    repository.replace_fit_ap_optical("ac-1", [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "rx_power": "-8", "collected_at": "2026-01-01T00:00:00"}])
+    repository.replace_fit_ap_optical(
+        "ac-1",
+        [
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": "ap-a",
+                "rx_power": "-8",
+                "collected_at": "2026-01-01T00:00:00",
+            }
+        ],
+    )
     repository.replace_fit_ap_optical(
         "ac-1",
         [
@@ -618,7 +776,9 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
 
 def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "ap_mac": "0011"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "ap_mac": "0011"}]
+    )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
     repository.replace_fit_ap_optical(
@@ -696,7 +856,9 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
         "collected_at": "2026-01-02T00:00:00",
     }
     repository.replace_fit_ap_optical("ac-1", [direct_payload])
-    repository.replace_fit_ap_optical("ac-1", [{**direct_payload, "collected_at": "2026-01-03T00:00:00"}])
+    repository.replace_fit_ap_optical(
+        "ac-1", [{**direct_payload, "collected_at": "2026-01-03T00:00:00"}]
+    )
 
     resource = repository.get_fit_ap_resource_by_uuid("ac-1", ap_uuid)
     history = repository.list_fit_ap_lldp_history_by_ap(ap_uuid)
@@ -707,23 +869,45 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
     assert resource["optical_interface"] == "GigabitEthernet1/0/2"
     assert resource["optical_rx_power"] == -7.55
     assert resource["optical_match_status"] == "matched"
-    assert [row["source"] for row in history[:3]] == ["ap_direct_lldp", "ap_direct_lldp", "ac_bulk_lldp"]
+    assert [row["source"] for row in history[:3]] == [
+        "ap_direct_lldp",
+        "ap_direct_lldp",
+        "ac_bulk_lldp",
+    ]
     assert history[0]["is_changed"] == 0
     assert history[1]["is_changed"] == 1
 
 
 def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}]
+    )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
     repository.replace_fit_ap_optical(
         "ac-1",
-        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "rx_power": "-7.34", "status": "success", "collected_at": "2026-01-01T00:00:00"}],
+        [
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": "ap-a",
+                "rx_power": "-7.34",
+                "status": "success",
+                "collected_at": "2026-01-01T00:00:00",
+            }
+        ],
     )
     repository.replace_fit_ap_optical(
         "ac-1",
-        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "rx_power": "", "status": "timeout", "collected_at": "2026-01-02T00:00:00"}],
+        [
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": "ap-a",
+                "rx_power": "",
+                "status": "timeout",
+                "collected_at": "2026-01-02T00:00:00",
+            }
+        ],
     )
 
     row = repository.get_fit_ap_optical_by_uuid("ac-1", ap_uuid)
@@ -733,12 +917,22 @@ def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):
 
 def test_fit_ap_optical_lldp_only_success_is_not_treated_as_failure(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}]
+    )
     ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
 
     repository.replace_fit_ap_optical(
         "ac-1",
-        [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "status": "success", "neighbor_device_name": "SW01", "neighbor_interface": "GE1/0/1"}],
+        [
+            {
+                "ap_uuid": ap_uuid,
+                "ap_name": "ap-a",
+                "status": "success",
+                "neighbor_device_name": "SW01",
+                "neighbor_interface": "GE1/0/1",
+            }
+        ],
     )
 
     row = repository.get_fit_ap_optical_by_uuid("ac-1", ap_uuid)
@@ -760,8 +954,18 @@ def test_fit_ap_optical_retry_targets_and_concurrency():
     retry = h3c_ac_collect_service._retry_fit_ap_optical_targets(resources, round_rows)
 
     assert [row["ap_uuid"] for row in retry] == ["ap-empty", "ap-missing"]
-    assert h3c_ac_collect_service.retry_fit_ap_optical_concurrency(1000, floor=100, ratio=0.5) == 500
-    assert h3c_ac_collect_service.retry_fit_ap_optical_concurrency(120, floor=100, ratio=0.5) == 100
+    assert (
+        h3c_ac_collect_service.retry_fit_ap_optical_concurrency(
+            1000, floor=100, ratio=0.5
+        )
+        == 500
+    )
+    assert (
+        h3c_ac_collect_service.retry_fit_ap_optical_concurrency(
+            120, floor=100, ratio=0.5
+        )
+        == 100
+    )
 
 
 def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
@@ -858,7 +1062,11 @@ def test_trackside_ap_plan_repository_unified_capacity_and_pvid_plan(tmp_path):
         TRACKSIDE_AP_PLAN_MODE,
         [
             {"station_name": "Station A", "ap_count": 10, "ap_management_vlans": "921"},
-            {"station_name": "Station B", "ap_count": 56, "ap_management_vlans": "922,923"},
+            {
+                "station_name": "Station B",
+                "ap_count": 56,
+                "ap_management_vlans": "922,923",
+            },
         ],
     )
 
@@ -872,7 +1080,10 @@ def test_trackside_ap_plan_repository_unified_capacity_and_pvid_plan(tmp_path):
     assert active_plan["all_vlans"] == {921, 922, 923}
     assert active_plan["station_totals"]["Station B"] == 56
 
-    repository.upsert_trackside_ap_plan_row(TRACKSIDE_AP_PLAN_MODE, {"station_name": "Station A", "ap_count": 30, "ap_management_vlans": "921"})
+    repository.upsert_trackside_ap_plan_row(
+        TRACKSIDE_AP_PLAN_MODE,
+        {"station_name": "Station A", "ap_count": 30, "ap_management_vlans": "921"},
+    )
     updated_details = repository.list_active_trackside_plan_capacity_details()
     assert updated_details["Station A"]["ap_total"] == 30
     assert updated_details["Station A"]["remark"] == "Keep this remark"
@@ -885,10 +1096,20 @@ def test_ap_entity_station_normalizes_aliases_and_preserves_existing_station(tmp
 
     repository.replace_fit_ap_resources(
         ac.device_uuid,
-        [{"ap_uuid": "ap-1", "ap_name": "AP-1", "serial_number": "SN-AP-1", "site_name": "FIT Station", "state": "R/M"}],
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "serial_number": "SN-AP-1",
+                "site_name": "FIT Station",
+                "state": "R/M",
+            }
+        ],
     )
     with database.connect() as conn:
-        row = conn.execute("SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'").fetchone()
+        row = conn.execute(
+            "SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'"
+        ).fetchone()
     assert row["station"] == "FIT Station"
 
     repository.replace_fit_ap_resources(
@@ -905,7 +1126,9 @@ def test_ap_entity_station_normalizes_aliases_and_preserves_existing_station(tmp
         ],
     )
     with database.connect() as conn:
-        row = conn.execute("SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'").fetchone()
+        row = conn.execute(
+            "SELECT station FROM ap_entities WHERE ap_uuid = 'ap-1'"
+        ).fetchone()
     assert row["station"] == "FIT Station"
 
 
@@ -914,7 +1137,9 @@ def test_ap_and_trackside_station_headers_display_ownership_station():
 
     assert i18n.t("ac.station") == "归属站点"
     assert i18n.t("field.station") == "归属站点"
-    assert [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS][0] == "归属站点"
+    assert [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS][
+        0
+    ] == "归属站点"
 
 
 def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
@@ -925,7 +1150,13 @@ def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
     )
     repository.replace_trackside_ap_plan_rows(
         "multi_vlan",
-        [{"station_name": "Station B", "ap_count": 56, "ap_management_vlans": "922,923"}],
+        [
+            {
+                "station_name": "Station B",
+                "ap_count": 56,
+                "ap_management_vlans": "922,923",
+            }
+        ],
     )
 
     unified_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
@@ -933,31 +1164,20 @@ def test_trackside_ap_plan_unified_listing_falls_back_to_legacy_rows(tmp_path):
     assert unified_rows[0]["mode"] == TRACKSIDE_AP_PLAN_MODE
     assert unified_rows[0]["ap_count"] == 56
 
-    repository.upsert_trackside_ap_plan_row(TRACKSIDE_AP_PLAN_MODE, {"station_name": "Station B", "ap_count": 34, "ap_management_vlans": "922"})
+    repository.upsert_trackside_ap_plan_row(
+        TRACKSIDE_AP_PLAN_MODE,
+        {"station_name": "Station B", "ap_count": 34, "ap_management_vlans": "922"},
+    )
     refreshed_rows = repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE)
     assert refreshed_rows[0]["ap_count"] == 34
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_station_online_summary_history_table_created(tmp_path):
     database = make_database(tmp_path)
     with database.connect() as conn:
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ac_station_online_summary_history'").fetchone()
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ac_station_online_summary_history'"
+        ).fetchone()
 
     assert row is not None
 
@@ -965,12 +1185,33 @@ def test_station_online_summary_history_table_created(tmp_path):
 def test_station_online_summary_history_save_and_list_desc(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     rows = [
-        {"site": "Station A", "total": 5, "online": 4, "offline": 1, "online_rate": "80.0%", "remark": "First"},
-        {"site": "合计", "total": 5, "online": 4, "offline": 1, "online_rate": "80.0%", "remark": ""},
+        {
+            "site": "Station A",
+            "total": 5,
+            "online": 4,
+            "offline": 1,
+            "online_rate": "80.0%",
+            "remark": "First",
+        },
+        {
+            "site": "合计",
+            "total": 5,
+            "online": 4,
+            "offline": 1,
+            "online_rate": "80.0%",
+            "remark": "",
+        },
     ]
 
-    assert repository.save_station_online_summary_history(rows, collected_at="2026-01-01T00:00:00") == 1
-    repository.save_station_online_summary_history([{**rows[0], "remark": "Second"}], collected_at="2026-01-02T00:00:00")
+    assert (
+        repository.save_station_online_summary_history(
+            rows, collected_at="2026-01-01T00:00:00"
+        )
+        == 1
+    )
+    repository.save_station_online_summary_history(
+        [{**rows[0], "remark": "Second"}], collected_at="2026-01-02T00:00:00"
+    )
     history = repository.list_station_online_summary_history("Station A")
 
     assert [row["remark"] for row in history] == ["Second", "First"]
@@ -996,8 +1237,12 @@ def test_station_ap_capacity_overrides_incomplete_planned_total(tmp_path):
 
 def test_ac_repository_metadata_crud_batch_edit_and_delete(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
-    repository.replace_fit_ap_optical("ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}]
+    )
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_name": "ap-a"}, {"ap_name": "ap-b"}]
+    )
 
     repository.upsert_fit_ap_metadata(
         {
@@ -1016,7 +1261,9 @@ def test_ac_repository_metadata_crud_batch_edit_and_delete(tmp_path):
     assert repository.update_fit_ap_site(["ap-a", "ap-b"], "S2") == 2
     assert repository.get_fit_ap_metadata("ap-b")["site_name"] == "S2"
     assert repository.delete_fit_aps("ac-1", ["ap-a"]) == 1
-    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == ["ap-b"]
+    assert [row["ap_name"] for row in repository.list_fit_ap_resources("ac-1")] == [
+        "ap-b"
+    ]
     assert repository.get_fit_ap_metadata("ap-a") is None
 
 
@@ -1060,7 +1307,11 @@ ap_under-score                 12   DC   WA6630          SN-DC-0003           gr
     decoded = normalize_command_output(output.encode("gb2312"), "gb18030")
     rows = parse_wlan_ap_list(decoded)
 
-    assert [row["ap_name"] for row in rows] == ["站厅_AP-01", "4c6f-d608-0400", "ap_under-score"]
+    assert [row["ap_name"] for row in rows] == [
+        "站厅_AP-01",
+        "4c6f-d608-0400",
+        "ap_under-score",
+    ]
     assert rows[0]["state_display"] == "JoinAck"
     assert rows[1]["state_display"] == "ImageLoad"
     assert rows[2]["state_display"] == "DataCheck"
@@ -1110,15 +1361,24 @@ def test_state_cpu_and_memory_parsers():
     assert map_fit_ap_state("R/M") == "\u8fd0\u884c(\u4e3b)"
     assert map_fit_ap_state("R/B") == "\u8fd0\u884c(\u5907)"
     assert map_fit_ap_state("JA") == "JoinAck"
-    assert parse_cpu_usage(fixture("display_cpu_usage.txt")) == {"cpu_5s": 16, "cpu_1m": 18, "cpu_5m": 18, "cpu_usage": "16%"}
+    assert parse_cpu_usage(fixture("display_cpu_usage.txt")) == {
+        "cpu_5s": 16,
+        "cpu_1m": 18,
+        "cpu_5m": 18,
+        "cpu_usage": "16%",
+    }
     memory = parse_memory(fixture("display_memory.txt"))
     assert memory["memory_total"] == 770180
     assert memory["memory_free_ratio"] == 53.0
     assert memory["memory_usage"] == "47%"
-    memory_table = parse_memory("Mem:        770180    366008    404172         0      3848    156656       52.9%")
+    memory_table = parse_memory(
+        "Mem:        770180    366008    404172         0      3848    156656       52.9%"
+    )
     assert memory_table["memory_total"] == 770180
     assert memory_table["memory_used"] == 366008
     assert memory_table["memory_usage"] == "47%"
+
+
 def test_wlan_ap_radio_parser_handles_state_column():
     radios = parse_wlan_ap_radios(
         """
@@ -1167,7 +1427,10 @@ ap1                      2    Up        Down         802.11n(2.4GHz)
 
 
 def test_fit_ap_optical_parser_extracts_lldp_and_power_summary():
-    parsed = parse_fit_ap_optical(fixture("display_fit_ap_lldp.txt"), fixture("display_fit_ap_transceiver_diagnosis.txt"))
+    parsed = parse_fit_ap_optical(
+        fixture("display_fit_ap_lldp.txt"),
+        fixture("display_fit_ap_transceiver_diagnosis.txt"),
+    )
 
     assert "SW01-DEMO" in parsed["lldp_neighbor"]
     assert parsed["rx_power"] == "-3.21"
@@ -1230,7 +1493,9 @@ Vendor Name                : H3C
 
 def test_fit_ap_optical_parser_handles_real_machine_lldp_and_transceiver():
     lldp = parse_fit_ap_lldp(ac_fixture("real_fit_ap_lldp_neighbor.txt"))
-    optical = parse_fit_ap_transceiver(ac_fixture("real_fit_ap_transceiver_diagnosis.txt"))
+    optical = parse_fit_ap_transceiver(
+        ac_fixture("real_fit_ap_transceiver_diagnosis.txt")
+    )
 
     assert lldp["lldp_neighbor"] == "HX_1"
     assert lldp["neighbor_interface"] == "GigabitEthernet2/0/19"
@@ -1243,7 +1508,9 @@ def test_fit_ap_optical_parser_handles_real_machine_lldp_and_transceiver():
 
 def test_real_machine_wlan_parsers_read_large_fixture():
     rows = parse_wlan_ap_list(ac_fixture("real_display_wlan_ap_all.txt"))
-    addresses = parse_wlan_ap_addresses(ac_fixture("real_display_wlan_ap_all_address.txt"))
+    addresses = parse_wlan_ap_addresses(
+        ac_fixture("real_display_wlan_ap_all_address.txt")
+    )
     radios = parse_wlan_ap_radios(ac_fixture("real_display_wlan_ap_all_radio.txt"))
 
     assert len(rows) >= 500
@@ -1293,7 +1560,9 @@ AP name                        Local Interface          Neighbor Name           
     assert parsed["30f5-277a-0ea0"]["lldp_local_interface"] == "GigabitEthernet1/0/2"
     assert parsed["30f5-277a-0ea0"]["lldp_neighbor_name"] == "N/A"
     assert parsed["30f5-277a-0ea0"]["lldp_neighbor_mac"] == "903f-8645-6e00"
-    assert parsed["30f5-277a-0ea0"]["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+    assert (
+        parsed["30f5-277a-0ea0"]["lldp_neighbor_interface"] == "GigabitEthernet2/0/19"
+    )
     assert parsed["30f5-277a-0ea0"]["lldp_source"] == "ac_bulk_lldp"
     assert parsed["30f5-277a-0ea0"]["lldp_local_interface_normalized"] == "ge1/0/2"
     assert parsed["30f5-277a-0ea0"]["lldp_neighbor_mac_normalized"] == "903f86456e00"
@@ -1333,7 +1602,11 @@ Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
 
 
 def test_fit_ap_link_normalization_and_merge_prioritize_ap_direct_lldp():
-    assert normalize_interface_key("GE1/0/2") == normalize_interface_key("GigabitEthernet1/0/2") == "ge1/0/2"
+    assert (
+        normalize_interface_key("GE1/0/2")
+        == normalize_interface_key("GigabitEthernet1/0/2")
+        == "ge1/0/2"
+    )
     assert normalize_link_mac("90:3f:86:45:6e:00") == "903f86456e00"
     assert format_h3c_mac("903f86456e00") == "903f-8645-6e00"
 
@@ -1358,8 +1631,18 @@ def test_fit_ap_link_normalization_and_merge_prioritize_ap_direct_lldp():
     assert merged["lldp_source"] == "merged"
     assert merged["lldp_confidence"] == 90
     assert merged["lldp_match_status"] == "matched"
-    assert resolve_optical_match_status(merged, {"optical_interface": "GE1/0/2", "rx_power": "-7.55"}) == "matched"
-    assert resolve_optical_match_status(merged, {"optical_interface": "GE1/0/3", "rx_power": "-7.55"}) == "conflict"
+    assert (
+        resolve_optical_match_status(
+            merged, {"optical_interface": "GE1/0/2", "rx_power": "-7.55"}
+        )
+        == "matched"
+    )
+    assert (
+        resolve_optical_match_status(
+            merged, {"optical_interface": "GE1/0/3", "rx_power": "-7.55"}
+        )
+        == "conflict"
+    )
 
 
 def test_fit_ap_link_view_model_maps_legacy_fields_to_current_fields():
@@ -1387,11 +1670,17 @@ def test_fit_ap_link_view_model_maps_legacy_fields_to_current_fields():
 
 def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
-    result = collect_h3c_fit_ap_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path)
+    )
 
     assert result.success is True
     assert result.summary_updated is True
@@ -1400,13 +1689,27 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert connection.disconnected is True
     assert result.raw_log_path == ""
     assert not (PathResolver(tmp_path).site_dir("demo") / "raw").exists()
-    assert repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")["total_aps"] == 2
-    assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+    assert (
+        repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")[
+            "total_aps"
+        ]
+        == 2
+    )
+    assert (
+        repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0][
+            "ap_ip"
+        ]
+        == "10.0.0.61"
+    )
 
 
 def test_enable_ap_remote_login_uses_per_command_timeouts(monkeypatch, tmp_path):
     connection = FakeTimingConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     device = make_ac_device()
     device.device_vendor = "H3C"
 
@@ -1434,16 +1737,25 @@ def test_enable_ap_remote_login_uses_per_command_timeouts(monkeypatch, tmp_path)
     assert timeouts["wlan ap-execute all exec-console enable"] == 120
     assert timeouts["return"] == 30
     assert timeouts["quit"] == 30
-    assert all(call["strip_prompt"] is False and call["strip_command"] is False for call in connection.calls)
+    assert all(
+        call["strip_prompt"] is False and call["strip_command"] is False
+        for call in connection.calls
+    )
 
 
-def test_enable_ap_remote_login_treats_tail_read_timeout_as_success(monkeypatch, tmp_path):
+def test_enable_ap_remote_login_treats_tail_read_timeout_as_success(
+    monkeypatch, tmp_path
+):
     timeout = RuntimeError(
         "return: read_channel_timing's absolute timer expired. "
         "The network device was continually outputting data for longer than 10 seconds."
     )
     connection = FakeTimingConnection({"return": timeout})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     device = make_ac_device()
     device.device_vendor = "H3C"
 
@@ -1456,7 +1768,9 @@ def test_enable_ap_remote_login_treats_tail_read_timeout_as_success(monkeypatch,
     )
 
     assert result.success is True
-    return_result = next(item for item in result.command_results if item.command == "return")
+    return_result = next(
+        item for item in result.command_results if item.command == "return"
+    )
     assert return_result.success is True
     assert str(return_result.error_message).startswith("warning: read timeout")
     assert "treated as success" in return_result.output
@@ -1464,8 +1778,16 @@ def test_enable_ap_remote_login_treats_tail_read_timeout_as_success(monkeypatch,
 
 
 def test_enable_ap_remote_login_keeps_real_command_error_failed(monkeypatch, tmp_path):
-    connection = FakeTimingConnection({"wlan ap-execute all exec-console enable": "% Unrecognized command found at '^' position."})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    connection = FakeTimingConnection(
+        {
+            "wlan ap-execute all exec-console enable": "% Unrecognized command found at '^' position."
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     device = make_ac_device()
     device.device_vendor = "H3C"
 
@@ -1483,7 +1805,11 @@ def test_enable_ap_remote_login_keeps_real_command_error_failed(monkeypatch, tmp
 
 def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_path):
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
@@ -1497,7 +1823,11 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     assert result.success is True
     assert result.summary_updated is True
     assert result.https_port_collected is False
-    assert connection.commands == ["screen-length disable", *FIT_AP_RESOURCE_COMMANDS, *FIT_AP_RESOURCE_OPTIONAL_COMMANDS]
+    assert connection.commands == [
+        "screen-length disable",
+        *FIT_AP_RESOURCE_COMMANDS,
+        *FIT_AP_RESOURCE_OPTIONAL_COMMANDS,
+    ]
     assert "display cpu-usage" not in connection.commands
     assert "display memory" not in connection.commands
     assert "display version" not in connection.commands
@@ -1508,17 +1838,30 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     assert summary["offline_aps"] == 0
     assert summary["cpu_usage"] is None
     assert summary["model"] is None
-    assert repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0]["ap_ip"] == "10.0.0.61"
+    assert (
+        repository.list_fit_ap_resources("22222222-2222-4222-8222-222222222222")[0][
+            "ap_ip"
+        ]
+        == "10.0.0.61"
+    )
 
 
-def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_target(monkeypatch, tmp_path):
-    connection = FakeConnection({
-        "display wlan ap all radio verbose filter bbssid": (
-            "AP name              RID bbssid\n"
-            "4c6f-d608-0400       1   0011-2233-4455\n"
-        ),
-    })
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_target(
+    monkeypatch, tmp_path
+):
+    connection = FakeConnection(
+        {
+            "display wlan ap all radio verbose filter bbssid": (
+                "AP name              RID bbssid\n"
+                "4c6f-d608-0400       1   0011-2233-4455\n"
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     repository = AcRepository(make_database(tmp_path))
     ac_uuid = "22222222-2222-4222-8222-222222222222"
     repository.replace_fit_ap_resources(
@@ -1541,13 +1884,22 @@ def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_
     assert result.success is True
     assert "display wlan ap all radio verbose filter bbssid" in connection.commands
     assert "display wlan ap unauthenticated" not in connection.commands
-    assert repository.get_fit_ap_resource(ac_uuid, "4c6f-d608-0400")["rid1_bbssid"] == "0011-2233-4455"
+    assert (
+        repository.get_fit_ap_resource(ac_uuid, "4c6f-d608-0400")["rid1_bbssid"]
+        == "0011-2233-4455"
+    )
     assert repository.get_fit_ap_resource(ac_uuid, "AP-KEEP")["rid1_channel"] == "6"
 
 
-def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(monkeypatch, tmp_path):
+def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(
+    monkeypatch, tmp_path
+):
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     repository = AcRepository(database)
     ac_uuid = "22222222-2222-4222-8222-222222222222"
@@ -1583,13 +1935,26 @@ def test_h3c_ac_resource_only_collect_preserves_static_summary_fields(monkeypatc
     assert summary["software_version"] == "Version 7.1"
 
 
-def test_h3c_ac_resource_only_collect_does_not_overwrite_summary_when_ap_all_fails(monkeypatch, tmp_path):
+def test_h3c_ac_resource_only_collect_does_not_overwrite_summary_when_ap_all_fails(
+    monkeypatch, tmp_path
+):
     connection = FakeConnection({"display wlan ap all": RuntimeError("command failed")})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     repository = AcRepository(database)
     ac_uuid = "22222222-2222-4222-8222-222222222222"
-    repository.upsert_ac_ap_summary({"ac_device_uuid": ac_uuid, "total_aps": 82, "online_aps": 58, "offline_aps": 24})
+    repository.upsert_ac_ap_summary(
+        {
+            "ac_device_uuid": ac_uuid,
+            "total_aps": 82,
+            "online_aps": 58,
+            "offline_aps": 24,
+        }
+    )
 
     result = collect_h3c_fit_ap_resources(
         make_ac_device(),
@@ -1620,7 +1985,11 @@ Total number of connected APs: 756
 
 def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     messages: list[str] = []
 
     result = collect_h3c_fit_ap_resources(
@@ -1641,12 +2010,21 @@ def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
 
 def test_h3c_ac_collect_service_saves_https_port(monkeypatch, tmp_path):
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(
+        ac_device,
+        "demo",
+        repository=AcRepository(database),
+        paths=PathResolver(tmp_path),
+    )
 
     assert result.success is True
     assert result.https_port == 443
@@ -1657,13 +2035,26 @@ def test_h3c_ac_collect_service_saves_https_port(monkeypatch, tmp_path):
 
 
 def test_h3c_ac_collect_service_saves_non_default_https_port(monkeypatch, tmp_path):
-    connection = FakeConnection({"display ip https": "<AC>display ip https\nHTTPS port: 10443\nOperation status : Enabled\n<AC>"})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    connection = FakeConnection(
+        {
+            "display ip https": "<AC>display ip https\nHTTPS port: 10443\nOperation status : Enabled\n<AC>"
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(
+        ac_device,
+        "demo",
+        repository=AcRepository(database),
+        paths=PathResolver(tmp_path),
+    )
 
     assert result.success is True
     assert result.https_port == 10443
@@ -1674,13 +2065,28 @@ def test_h3c_ac_collect_service_saves_non_default_https_port(monkeypatch, tmp_pa
 
 def test_h3c_ac_collect_service_reports_https_port_save_failure(monkeypatch, tmp_path):
     connection = FakeConnection({"display ip https": "HTTPS port: 10443\n"})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
-    monkeypatch.setattr(h3c_ac_collect_service.DeviceRepository, "update_https_port", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("no such column: https_port")))
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.DeviceRepository,
+        "update_https_port",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("no such column: https_port")
+        ),
+    )
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(
+        ac_device,
+        "demo",
+        repository=AcRepository(database),
+        paths=PathResolver(tmp_path),
+    )
 
     assert result.success is True
     assert result.https_port == 10443
@@ -1693,7 +2099,12 @@ def test_h3c_ac_collect_service_reports_https_port_save_failure(monkeypatch, tmp
 def test_https_port_parser_and_url_builder_are_strict():
     assert parse_https_port("HTTPS port: 443") == 443
     assert parse_https_port("HTTPS port: 10443") == 10443
-    assert parse_https_port("<AC>display ip https | include port\r\nHTTPS port : 8443\r\n<AC>") == 8443
+    assert (
+        parse_https_port(
+            "<AC>display ip https | include port\r\nHTTPS port : 8443\r\n<AC>"
+        )
+        == 8443
+    )
     assert parse_https_port("\x1b[24D HTTPS port：443") == 443
     assert parse_https_port("HTTP port: 80\nSSH server port: 22") is None
     assert parse_https_port("HTTPS port: 70000") is None
@@ -1703,60 +2114,93 @@ def test_https_port_parser_and_url_builder_are_strict():
 
 
 def test_h3c_ac_collect_service_falls_back_to_full_https_command(monkeypatch, tmp_path):
-    connection = FakeConnection({"display ip https": "", "display ip https | include port": "<AC>display ip https | include port\nHTTPS port: 8443\n<AC>"})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    connection = FakeConnection(
+        {
+            "display ip https": "",
+            "display ip https | include port": "<AC>display ip https | include port\nHTTPS port: 8443\n<AC>",
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
 
-    result = collect_h3c_ac_info(ac_device, "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(
+        ac_device,
+        "demo",
+        repository=AcRepository(database),
+        paths=PathResolver(tmp_path),
+    )
 
     assert result.success is True
     assert result.https_port == 8443
-    assert connection.commands[-2:] == ["display ip https", "display ip https | include port"]
+    assert connection.commands[-2:] == [
+        "display ip https",
+        "display ip https | include port",
+    ]
     assert device_repository.get(int(ac_device.id)).https_port == 8443
 
 
-def test_h3c_ac_collect_service_keeps_existing_https_port_on_collect_failure(monkeypatch, tmp_path):
-    connection = FakeConnection({"display ip https | include port": RuntimeError("unsupported"), "display ip https": ""})
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+def test_h3c_ac_collect_service_keeps_existing_https_port_on_collect_failure(
+    monkeypatch, tmp_path
+):
+    connection = FakeConnection(
+        {
+            "display ip https | include port": RuntimeError("unsupported"),
+            "display ip https": "",
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
     ac_device = device_repository.create(make_ac_device())
     device_repository.update_https_port(int(ac_device.id), 443)
 
-    result = collect_h3c_ac_info(device_repository.get(int(ac_device.id)), "demo", repository=AcRepository(database), paths=PathResolver(tmp_path))
+    result = collect_h3c_ac_info(
+        device_repository.get(int(ac_device.id)),
+        "demo",
+        repository=AcRepository(database),
+        paths=PathResolver(tmp_path),
+    )
 
     assert result.success is True
     assert result.https_port is None
     assert device_repository.get(int(ac_device.id)).https_port == 443
 
 
-
-
-
-
-
-
-def test_h3c_ac_collect_service_validates_commands_before_execution(monkeypatch, tmp_path):
+def test_h3c_ac_collect_service_validates_commands_before_execution(
+    monkeypatch, tmp_path
+):
     calls = []
     connection = FakeConnection()
-    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
-    monkeypatch.setattr(h3c_ac_collect_service.command_guard, "validate_command_list", lambda commands, context: calls.append((list(commands), context)))
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.command_guard,
+        "validate_command_list",
+        lambda commands, context: calls.append((list(commands), context)),
+    )
     database = make_database(tmp_path)
     repository = AcRepository(database)
 
-    collect_h3c_fit_ap_resources(make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path))
+    collect_h3c_fit_ap_resources(
+        make_ac_device(), "demo", repository=repository, paths=PathResolver(tmp_path)
+    )
 
-    assert calls == [(["screen-length disable", *RESOURCE_COMMANDS], "ac_fit_ap_resource_collect")]
-
-
-
-
-
-
-
-
+    assert calls == [
+        (["screen-length disable", *RESOURCE_COMMANDS], "ac_fit_ap_resource_collect")
+    ]
 
 
 def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_resource_history():
@@ -1811,7 +2255,9 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
         }
     ]
 
-    rows = build_new_online_ap_overview_rows(current_resources, history_rows, trackside_rows)
+    rows = build_new_online_ap_overview_rows(
+        current_resources, history_rows, trackside_rows
+    )
 
     assert [row["ap_name"] for row in rows] == ["AP-New"]
     assert rows[0]["device_name"] == "SW-1"
@@ -1855,9 +2301,27 @@ def test_build_ap_optical_treatment_records_closes_and_opens_by_history():
         }
     ]
     ap_history = [
-        {"id": 1, "ap_uuid": "ap-1", "rx_power": "-22.00", "optical_alarm_status": "warning", "collected_at": "2026-06-30 09:00:00"},
-        {"id": 2, "ap_uuid": "ap-1", "rx_power": "-8.00", "optical_alarm_status": "normal", "collected_at": "2026-06-30 09:30:00"},
-        {"id": 3, "ap_uuid": "ap-2", "rx_power": "-24.00", "optical_alarm_status": "warning", "collected_at": "2026-06-30 09:00:00"},
+        {
+            "id": 1,
+            "ap_uuid": "ap-1",
+            "rx_power": "-22.00",
+            "optical_alarm_status": "warning",
+            "collected_at": "2026-06-30 09:00:00",
+        },
+        {
+            "id": 2,
+            "ap_uuid": "ap-1",
+            "rx_power": "-8.00",
+            "optical_alarm_status": "normal",
+            "collected_at": "2026-06-30 09:30:00",
+        },
+        {
+            "id": 3,
+            "ap_uuid": "ap-2",
+            "rx_power": "-24.00",
+            "optical_alarm_status": "warning",
+            "collected_at": "2026-06-30 09:00:00",
+        },
     ]
     switch_history = [
         {
@@ -1870,7 +2334,9 @@ def test_build_ap_optical_treatment_records_closes_and_opens_by_history():
         }
     ]
 
-    records = build_ap_optical_treatment_records(trackside_rows, ap_history, switch_history)
+    records = build_ap_optical_treatment_records(
+        trackside_rows, ap_history, switch_history
+    )
 
     assert [field for _key, field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS][0] == "site"
     assert len(records) == 2
@@ -1940,10 +2406,15 @@ def test_trackside_ap_business_treatment_records_complete_ap_identity_and_normal
         {"ap_name": "AP-BAGG", "ap_mac": "00aa-bbcc-ddee", "serial_number": "SN-BAGG"},
     ]
 
-    records = build_ap_optical_treatment_records(trackside_rows, ap_history, switch_history, resources)
+    records = build_ap_optical_treatment_records(
+        trackside_rows, ap_history, switch_history, resources
+    )
 
     switch_records = [row for row in records if row["side"] == "交换机侧"]
-    assert {row["interface_name"] for row in switch_records} == {"GigabitEthernet2/0/1", "Bridge-Aggregation121"}
+    assert {row["interface_name"] for row in switch_records} == {
+        "GigabitEthernet2/0/1",
+        "Bridge-Aggregation121",
+    }
     assert {row["serial_number"] for row in switch_records} == {"SN-GE", "SN-BAGG"}
     ap_record = next(row for row in records if row["side"] == "AP侧")
     assert ap_record["ap_name"] == "AP-GE"
@@ -1966,7 +2437,9 @@ def test_trackside_ap_business_treatment_records_complete_identity_by_serial_onl
             "updated_at": "2026-06-30 10:00:00",
         }
     ]
-    resources = [{"serial_number": "SN-ONLY", "ap_name": "AP-SERIAL", "ap_mac": "083b.e9ec.da40"}]
+    resources = [
+        {"serial_number": "SN-ONLY", "ap_name": "AP-SERIAL", "ap_mac": "083b.e9ec.da40"}
+    ]
 
     records = build_ap_optical_treatment_records(trackside_rows, [], [], resources)
 
@@ -2013,10 +2486,17 @@ def test_trackside_ap_business_treatment_records_use_offline_ledger_by_serial():
         }
     ]
     offline_ledger_rows = [
-        {"site": "Station A", "ap_name": "AP-OFFLINE", "ap_mac": "083b.e9ec.da40", "serial_number": "SN-OFFLINE"}
+        {
+            "site": "Station A",
+            "ap_name": "AP-OFFLINE",
+            "ap_mac": "083b.e9ec.da40",
+            "serial_number": "SN-OFFLINE",
+        }
     ]
 
-    records = build_ap_optical_treatment_records(trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows)
+    records = build_ap_optical_treatment_records(
+        trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows
+    )
 
     assert records[0]["ap_name"] == "AP-OFFLINE"
     assert records[0]["ap_mac"] == "083b-e9ec-da40"
@@ -2048,7 +2528,9 @@ def test_trackside_ap_business_treatment_records_use_offline_ledger_by_switch_in
         }
     ]
 
-    records = build_ap_optical_treatment_records(trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows)
+    records = build_ap_optical_treatment_records(
+        trackside_rows, [], [], [], [], offline_ledger_rows=offline_ledger_rows
+    )
 
     assert records[0]["ap_name"] == "AP-PORT"
     assert records[0]["ap_mac"] == "083b-e9ec-da40"
@@ -2059,15 +2541,20 @@ def test_trackside_ap_business_treatment_records_ignore_unmatched_switch_history
     records = build_ap_optical_treatment_records(
         [],
         [],
-        [{"device_uuid": "sw-ordinary", "interface_name": "GE1/0/1", "rx_power": "-24", "optical_alarm_status": "warning"}],
+        [
+            {
+                "device_uuid": "sw-ordinary",
+                "interface_name": "GE1/0/1",
+                "rx_power": "-24",
+                "optical_alarm_status": "warning",
+            }
+        ],
         [],
         [],
         offline_ledger_rows=[],
     )
 
     assert records == []
-
-
 
 
 def test_trackside_export_omits_ap_port_change_columns_and_sheet(tmp_path):
@@ -2107,7 +2594,15 @@ def test_trackside_export_omits_ap_port_change_columns_and_sheet(tmp_path):
     workbook = load_workbook(export_path)
     assert "AP端口变化" not in workbook.sheetnames
     headers = [cell.value for cell in workbook["轨旁AP业务"][1]]
-    for forbidden in ("AP端口变化", "AP端口变化原因", "上次交换机", "上次端口", "本次交换机", "本次端口", "历史对比时间"):
+    for forbidden in (
+        "AP端口变化",
+        "AP端口变化原因",
+        "上次交换机",
+        "上次端口",
+        "本次交换机",
+        "本次端口",
+        "历史对比时间",
+    ):
         assert forbidden not in headers
 
 
@@ -2191,15 +2686,31 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     abnormal_sheet = workbook["当前异常光衰"]
     source_headers = [cell.value for cell in source_sheet[1]]
     abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
-    assert abnormal_headers == [*source_headers, "异常原因", "异常侧", "异常等级", "异常说明"]
-    assert [abnormal_sheet.cell(row=row, column=3).value for row in range(2, abnormal_sheet.max_row + 1)] == ["GigabitEthernet1/0/2", "GigabitEthernet1/0/4"]
+    assert abnormal_headers == [
+        *source_headers,
+        "异常原因",
+        "异常侧",
+        "异常等级",
+        "异常说明",
+    ]
+    assert [
+        abnormal_sheet.cell(row=row, column=3).value
+        for row in range(2, abnormal_sheet.max_row + 1)
+    ] == ["GigabitEthernet1/0/2", "GigabitEthernet1/0/4"]
     reason_column = abnormal_headers.index("异常原因") + 1
     assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP离线"
-    assert abnormal_sheet["A2"].fill.fgColor.rgb == source_sheet["A3"].fill.fgColor.rgb == "00FEF9C3"
+    assert (
+        abnormal_sheet["A2"].fill.fgColor.rgb
+        == source_sheet["A3"].fill.fgColor.rgb
+        == "00FEF9C3"
+    )
     assert abnormal_sheet["A1"].font.bold
     assert abnormal_sheet.freeze_panes == "A2"
     assert abnormal_sheet.auto_filter.ref == abnormal_sheet.dimensions
-    assert abnormal_sheet.column_dimensions["A"].width == source_sheet.column_dimensions["A"].width
+    assert (
+        abnormal_sheet.column_dimensions["A"].width
+        == source_sheet.column_dimensions["A"].width
+    )
 
 
 def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_path):
@@ -2232,7 +2743,7 @@ def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_p
                 "ap_name": "-",
                 "ap_rx_power": "-",
                 "ap_optical_status": "-",
-            }
+            },
         ],
         TRACKSIDE_AP_BUSINESS_COLUMNS,
         [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
@@ -2240,7 +2751,9 @@ def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_p
 
     sheet = load_workbook(export_path)["当前异常光衰"]
     assert sheet.max_row == 2
-    assert sheet["A2"].value == "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
+    assert (
+        sheet["A2"].value == "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
+    )
 
 
 def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_light():
@@ -2287,44 +2800,6 @@ def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_li
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_enrich_fit_ap_optical_rows_adds_ap_mac_and_station_from_resources():
     rows = [{"ap_name": "AP-A", "site": None, "optical_alarm_status": "normal"}]
     resources = [{"ap_name": "AP-A", "ap_mac": "0011-2233-4455", "site": "Station A"}]
@@ -2336,24 +2811,14 @@ def test_enrich_fit_ap_optical_rows_adds_ap_mac_and_station_from_resources():
 
 
 def test_enrich_fit_ap_optical_rows_uses_unassigned_and_filters_invalid_neighbor():
-    rows = [{"ap_name": "AP-A", "neighbor_device_name": "* -- -- Nearest customer bridge"}]
+    rows = [
+        {"ap_name": "AP-A", "neighbor_device_name": "* -- -- Nearest customer bridge"}
+    ]
 
     enriched = enrich_fit_ap_optical_rows(rows, [])
 
     assert enriched[0]["site"] == "未归属"
     assert enriched[0]["neighbor_device_name"] is None
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_display_optical_status_uses_chinese_labels():
@@ -2366,16 +2831,6 @@ def test_display_optical_status_uses_chinese_labels():
     assert display_optical_status("skipped") == "未检查"
     assert display_optical_status("not_collected") == "未采集"
     assert display_optical_status("unknown") == "未知"
-
-
-
-
-
-
-
-
-
-
 
 
 def test_optical_color_legend_does_not_expose_threshold_rules():
@@ -2394,9 +2849,30 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
 
     overview = build_ap_online_overview_rows(planned_aps=rows, fit_ap_resources=rows)
 
-    assert overview[0] == {"site": "01小洋江站", "total": 3, "online": 1, "offline": 2, "remark": "", "online_rate": "33.3%"}
-    assert overview[1] == {"site": "02云龙火车站站", "total": 2, "online": 2, "offline": 0, "remark": "", "online_rate": "100.0%"}
-    assert overview[-1] == {"site": "\u5408\u8ba1", "total": 5, "online": 3, "offline": 2, "remark": "", "online_rate": "60.0%"}
+    assert overview[0] == {
+        "site": "01小洋江站",
+        "total": 3,
+        "online": 1,
+        "offline": 2,
+        "remark": "",
+        "online_rate": "33.3%",
+    }
+    assert overview[1] == {
+        "site": "02云龙火车站站",
+        "total": 2,
+        "online": 2,
+        "offline": 0,
+        "remark": "",
+        "online_rate": "100.0%",
+    }
+    assert overview[-1] == {
+        "site": "\u5408\u8ba1",
+        "total": 5,
+        "online": 3,
+        "offline": 2,
+        "remark": "",
+        "online_rate": "60.0%",
+    }
 
 
 def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
@@ -2407,7 +2883,9 @@ def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
     overview = build_ap_online_overview_rows(
         planned_aps=[],
         fit_ap_resources=resources,
-        capacity_details={"Metadata Station": {"ap_total": 5, "remark": "Keep watching"}},
+        capacity_details={
+            "Metadata Station": {"ap_total": 5, "remark": "Keep watching"}
+        },
     )
 
     assert [row["site"] for row in overview] == ["Metadata Station", "\u5408\u8ba1"]
@@ -2419,10 +2897,14 @@ def test_ap_online_overview_uses_fit_ap_resource_site_capacity_and_unassigned():
 
 
 def test_ap_online_overview_matches_dirty_resource_site_back_to_plan():
-    resources = [{"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "site": "Demo", "state": "R"}]
+    resources = [
+        {"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "site": "Demo", "state": "R"}
+    ]
     plans = [{"AP_MAC": "0011.2233.4455", "ap_name": "AP-A", "station": "01小洋江站"}]
 
-    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources)
+    overview = build_ap_online_overview_rows(
+        planned_aps=plans, fit_ap_resources=resources
+    )
 
     assert [row["site"] for row in overview] == ["01小洋江站", "\u5408\u8ba1"]
     assert overview[0]["total"] == 1
@@ -2431,10 +2913,14 @@ def test_ap_online_overview_matches_dirty_resource_site_back_to_plan():
 
 
 def test_ap_online_overview_unmatched_online_does_not_enter_unassigned():
-    resources = [{"ap_mac": "00aa-bbcc-ddee", "ap_name": "AP-Z", "site": "Demo", "state": "R/M"}]
+    resources = [
+        {"ap_mac": "00aa-bbcc-ddee", "ap_name": "AP-Z", "site": "Demo", "state": "R/M"}
+    ]
     plans = [{"ap_mac": "0011-2233-4455", "ap_name": "AP-A", "station": "01小洋江站"}]
 
-    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources)
+    overview = build_ap_online_overview_rows(
+        planned_aps=plans, fit_ap_resources=resources
+    )
 
     assert [row["site"] for row in overview] == ["01小洋江站", "\u5408\u8ba1"]
     assert overview[0]["online"] == 0
@@ -2443,13 +2929,25 @@ def test_ap_online_overview_unmatched_online_does_not_enter_unassigned():
 
 
 def test_ap_online_overview_excludes_bulk_unmatched_when_plan_coverage_is_missing():
-    resources = [{"ap_mac": f"00aa-bbcc-{index:04x}", "site": "Demo", "state": "R/M"} for index in range(20)]
+    resources = [
+        {"ap_mac": f"00aa-bbcc-{index:04x}", "site": "Demo", "state": "R/M"}
+        for index in range(20)
+    ]
     plans = [{"ap_mac": "0011-2233-4455", "station": "Station A"}]
-    capacities = {"Station A": {"ap_total": 30, "remark": ""}, "Station B": {"ap_total": 56, "remark": ""}}
+    capacities = {
+        "Station A": {"ap_total": 30, "remark": ""},
+        "Station B": {"ap_total": 56, "remark": ""},
+    }
 
-    overview = build_ap_online_overview_rows(planned_aps=plans, fit_ap_resources=resources, capacity_details=capacities)
+    overview = build_ap_online_overview_rows(
+        planned_aps=plans, fit_ap_resources=resources, capacity_details=capacities
+    )
 
-    assert [row["site"] for row in overview] == ["Station A", "Station B", "\u5408\u8ba1"]
+    assert [row["site"] for row in overview] == [
+        "Station A",
+        "Station B",
+        "\u5408\u8ba1",
+    ]
     assert all(row["site"] != "Demo" for row in overview)
     assert overview[-1]["total"] == 86
     assert overview[-1]["online"] == 0
@@ -2457,29 +2955,105 @@ def test_ap_online_overview_excludes_bulk_unmatched_when_plan_coverage_is_missin
 
 def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
     plan_rows = [
-        *({"ap_uuid": f"s1-plan-{index}", "ap_name": f"S1-AP-{index}", "site_name": "01小洋江站"} for index in range(30)),
-        *({"ap_uuid": f"s2-plan-{index}", "ap_name": f"S2-AP-{index}", "site_name": "02云龙火车站站"} for index in range(56)),
-        {"ap_uuid": "unknown-plan-0", "ap_name": "UNKNOWN-AP-0", "site_name": "\u672a\u5f52\u5c5e"},
+        *(
+            {
+                "ap_uuid": f"s1-plan-{index}",
+                "ap_name": f"S1-AP-{index}",
+                "site_name": "01小洋江站",
+            }
+            for index in range(30)
+        ),
+        *(
+            {
+                "ap_uuid": f"s2-plan-{index}",
+                "ap_name": f"S2-AP-{index}",
+                "site_name": "02云龙火车站站",
+            }
+            for index in range(56)
+        ),
+        {
+            "ap_uuid": "unknown-plan-0",
+            "ap_name": "UNKNOWN-AP-0",
+            "site_name": "\u672a\u5f52\u5c5e",
+        },
     ]
     resource_rows = [
-        *({"ap_uuid": f"s1-plan-{index}", "ap_name": f"S1-AP-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R/M"} for index in range(26)),
-        *({"ap_uuid": f"s2-plan-{index}", "ap_name": f"S2-AP-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R"} for index in range(48)),
-        {"ap_uuid": "unknown-plan-0", "ap_name": "UNKNOWN-AP-0", "site": "\u672a\u5f52\u5c5e", "state": "online"},
+        *(
+            {
+                "ap_uuid": f"s1-plan-{index}",
+                "ap_name": f"S1-AP-{index}",
+                "site": "\u672a\u5f52\u5c5e",
+                "state": "R/M",
+            }
+            for index in range(26)
+        ),
+        *(
+            {
+                "ap_uuid": f"s2-plan-{index}",
+                "ap_name": f"S2-AP-{index}",
+                "site": "\u672a\u5f52\u5c5e",
+                "state": "R",
+            }
+            for index in range(48)
+        ),
+        {
+            "ap_uuid": "unknown-plan-0",
+            "ap_name": "UNKNOWN-AP-0",
+            "site": "\u672a\u5f52\u5c5e",
+            "state": "online",
+        },
     ]
 
-    overview = build_ap_online_overview_rows(planned_aps=plan_rows, fit_ap_resources=resource_rows)
+    overview = build_ap_online_overview_rows(
+        planned_aps=plan_rows, fit_ap_resources=resource_rows
+    )
 
-    assert overview[0] == {"site": "01小洋江站", "total": 30, "online": 26, "offline": 4, "remark": "", "online_rate": "86.7%"}
-    assert overview[1] == {"site": "02云龙火车站站", "total": 56, "online": 48, "offline": 8, "remark": "", "online_rate": "85.7%"}
-    assert overview[2] == {"site": "\u672a\u5f52\u5c5e", "total": 1, "online": 1, "offline": 0, "remark": "", "online_rate": "100.0%"}
-    assert overview[-1] == {"site": "\u5408\u8ba1", "total": 87, "online": 75, "offline": 12, "remark": "", "online_rate": "86.2%"}
+    assert overview[0] == {
+        "site": "01小洋江站",
+        "total": 30,
+        "online": 26,
+        "offline": 4,
+        "remark": "",
+        "online_rate": "86.7%",
+    }
+    assert overview[1] == {
+        "site": "02云龙火车站站",
+        "total": 56,
+        "online": 48,
+        "offline": 8,
+        "remark": "",
+        "online_rate": "85.7%",
+    }
+    assert overview[2] == {
+        "site": "\u672a\u5f52\u5c5e",
+        "total": 1,
+        "online": 1,
+        "offline": 0,
+        "remark": "",
+        "online_rate": "100.0%",
+    }
+    assert overview[-1] == {
+        "site": "\u5408\u8ba1",
+        "total": 87,
+        "online": 75,
+        "offline": 12,
+        "remark": "",
+        "online_rate": "86.2%",
+    }
 
 
 def test_ap_online_overview_does_not_use_fit_ap_resource_count_as_total_when_plan_exists():
-    plan_rows = [{"ap_uuid": f"plan-{index}", "site_name": "Station A"} for index in range(948)]
-    resource_rows = [{"ap_uuid": f"plan-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R/M"} for index in range(773)]
+    plan_rows = [
+        {"ap_uuid": f"plan-{index}", "site_name": "Station A"} for index in range(948)
+    ]
+    resource_rows = [
+        {"ap_uuid": f"plan-{index}", "site": "\u672a\u5f52\u5c5e", "state": "R/M"}
+        for index in range(773)
+    ]
 
-    overview = build_ap_online_overview_rows(planned_aps=plan_rows, fit_ap_resources=resource_rows)
+    overview = build_ap_online_overview_rows(
+        planned_aps=plan_rows, fit_ap_resources=resource_rows
+    )
 
     assert overview[0]["site"] == "Station A"
     assert overview[0]["total"] == 948
@@ -2518,8 +3092,14 @@ def test_ap_online_overview_capacity_total_takes_priority_over_incomplete_plan()
 
 def test_ap_online_overview_matches_by_known_resource_station_when_metadata_key_missing():
     resources = [
-        *({"ap_name": f"UNKNOWN-A-{index}", "site_name": "01小洋江站", "state": "R"} for index in range(26)),
-        *({"ap_name": f"UNKNOWN-B-{index}", "site_name": "02云龙火车站", "state": "R"} for index in range(48)),
+        *(
+            {"ap_name": f"UNKNOWN-A-{index}", "site_name": "01小洋江站", "state": "R"}
+            for index in range(26)
+        ),
+        *(
+            {"ap_name": f"UNKNOWN-B-{index}", "site_name": "02云龙火车站", "state": "R"}
+            for index in range(48)
+        ),
     ]
     rows = build_ap_online_overview_rows(
         planned_aps=[],
@@ -2540,12 +3120,24 @@ def test_ap_online_overview_matches_by_known_resource_station_when_metadata_key_
 
 def test_ap_online_overview_matches_online_by_metadata_name_even_when_resource_site_is_dirty():
     metadata_rows = [
-        *({"ap_name": f"STA-A-{index}", "site_name": "01小洋江站"} for index in range(26)),
-        *({"ap_name": f"STA-B-{index}", "site_name": "02云龙火车站"} for index in range(48)),
+        *(
+            {"ap_name": f"STA-A-{index}", "site_name": "01小洋江站"}
+            for index in range(26)
+        ),
+        *(
+            {"ap_name": f"STA-B-{index}", "site_name": "02云龙火车站"}
+            for index in range(48)
+        ),
     ]
     resources = [
-        *({"ap_name": f" STA-A-{index} ", "site_name": "Demo", "state": "R"} for index in range(26)),
-        *({"ap_name": f"STA-B-{index}", "site": "体育中心站", "state": "R"} for index in range(48)),
+        *(
+            {"ap_name": f" STA-A-{index} ", "site_name": "Demo", "state": "R"}
+            for index in range(26)
+        ),
+        *(
+            {"ap_name": f"STA-B-{index}", "site": "体育中心站", "state": "R"}
+            for index in range(48)
+        ),
     ]
     rows = build_ap_online_overview_rows(
         metadata_rows=metadata_rows,
@@ -2567,8 +3159,22 @@ def test_ap_online_overview_matches_online_by_metadata_name_even_when_resource_s
 def test_ap_online_overview_metadata_empty_uses_optical_site_by_uuid():
     rows = build_ap_online_overview_rows(
         metadata_rows=[{"ap_uuid": "", "ap_name": "", "site_name": ""}],
-        fit_ap_resources=[{"ap_uuid": "A", "ap_name": "AP001", "ap_mac": "30f5-277a-82c0", "state": "R"}],
-        optical_rows=[{"ap_uuid": "A", "ap_name": "AP001", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
+        fit_ap_resources=[
+            {
+                "ap_uuid": "A",
+                "ap_name": "AP001",
+                "ap_mac": "30f5-277a-82c0",
+                "state": "R",
+            }
+        ],
+        optical_rows=[
+            {
+                "ap_uuid": "A",
+                "ap_name": "AP001",
+                "ap_mac": "30f5-277a-82c0",
+                "site": "01小洋江站",
+            }
+        ],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
     by_site = {row["site"]: row for row in rows}
@@ -2580,8 +3186,12 @@ def test_ap_online_overview_metadata_empty_uses_optical_site_by_uuid():
 def test_ap_online_overview_matches_optical_site_by_mac_without_uuid():
     rows = build_ap_online_overview_rows(
         metadata_rows=[],
-        fit_ap_resources=[{"ap_name": "AP001", "ap_mac": "30:f5:27:7a:82:c0", "state": "ONLINE"}],
-        optical_rows=[{"ap_name": "OTHER", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}],
+        fit_ap_resources=[
+            {"ap_name": "AP001", "ap_mac": "30:f5:27:7a:82:c0", "state": "ONLINE"}
+        ],
+        optical_rows=[
+            {"ap_name": "OTHER", "ap_mac": "30f5-277a-82c0", "site": "01小洋江站"}
+        ],
         capacity_details={"01小洋江站": {"ap_total": 30, "remark": ""}},
     )
 
@@ -2686,11 +3296,30 @@ def _make_standard_ap_online_overview_fixture():
         for index in range(total):
             ap_name = f"{station}-AP-{index:03d}"
             mac = f"30f527{len(planned_aps):06x}"[-12:]
-            planned_aps.append({"ap_name": ap_name, "ap_mac": mac, "site_name": station})
+            planned_aps.append(
+                {"ap_name": ap_name, "ap_mac": mac, "site_name": station}
+            )
             if index < station_online[station]:
-                dirty_site = "Demo" if station == "01小洋江站" and index == 0 else ("体育中心站" if station == "02云龙火车站" and index == 0 else station)
-                resources.append({"ap_name": f" {ap_name} ", "ap_mac": mac.upper(), "site": dirty_site, "state": "R/M"})
-                optical_rows.append({"ap_name": ap_name, "ap_mac": mac, "site": station})
+                dirty_site = (
+                    "Demo"
+                    if station == "01小洋江站" and index == 0
+                    else (
+                        "体育中心站"
+                        if station == "02云龙火车站" and index == 0
+                        else station
+                    )
+                )
+                resources.append(
+                    {
+                        "ap_name": f" {ap_name} ",
+                        "ap_mac": mac.upper(),
+                        "site": dirty_site,
+                        "state": "R/M",
+                    }
+                )
+                optical_rows.append(
+                    {"ap_name": ap_name, "ap_mac": mac, "site": station}
+                )
     return planned_aps, resources, optical_rows
 
 
@@ -2728,7 +3357,14 @@ def test_ap_online_overview_standard_large_sample_matches_expected_totals():
     assert by_site["10大目湾站"]["remark"] == "大目湾校减-8"
     assert "Demo" not in by_site
     assert "体育中心站" not in by_site
-    assert rows[-1] == {"site": "\u5408\u8ba1", "total": 948, "online": 773, "offline": 175, "remark": "", "online_rate": "81.5%"}
+    assert rows[-1] == {
+        "site": "\u5408\u8ba1",
+        "total": 948,
+        "online": 773,
+        "offline": 175,
+        "remark": "",
+        "online_rate": "81.5%",
+    }
 
 
 def test_ap_online_overview_name_match_without_mac_and_unmatched_is_excluded():
@@ -2737,7 +3373,9 @@ def test_ap_online_overview_name_match_without_mac_and_unmatched_is_excluded():
         {"ap_name": "AP-001", "site": "Demo", "state": "ONLINE"},
         {"ap_name": "AP-Z", "site": "体育中心站", "state": "R"},
     ]
-    rows = build_ap_online_overview_rows(planned_aps=planned_aps, fit_ap_resources=resources)
+    rows = build_ap_online_overview_rows(
+        planned_aps=planned_aps, fit_ap_resources=resources
+    )
     by_site = {row["site"]: row for row in rows}
 
     assert by_site["01小洋江站"]["online"] == 1
@@ -2756,7 +3394,9 @@ def test_ap_online_overview_unassigned_only_comes_from_metadata_rows():
         for index in range(13)
     ]
 
-    rows = build_ap_online_overview_rows(planned_aps=planned_aps, fit_ap_resources=resources)
+    rows = build_ap_online_overview_rows(
+        planned_aps=planned_aps, fit_ap_resources=resources
+    )
     by_site = {row["site"]: row for row in rows}
 
     assert by_site["未归属"]["total"] == 2
@@ -2765,39 +3405,35 @@ def test_ap_online_overview_unassigned_only_comes_from_metadata_rows():
     assert rows[-1]["online"] == 0
 
 
-
-
 def test_ap_online_overview_deduplicates_by_uuid_serial_and_mac():
     rows = [
-        {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_mac": "mac-1", "site": "S1", "state": "R/M"},
-        {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_mac": "mac-1", "site": "S1", "state": "R/M"},
+        {
+            "ap_uuid": "ap-1",
+            "serial_number": "SN-1",
+            "ap_mac": "mac-1",
+            "site": "S1",
+            "state": "R/M",
+        },
+        {
+            "ap_uuid": "ap-1",
+            "serial_number": "SN-1",
+            "ap_mac": "mac-1",
+            "site": "S1",
+            "state": "R/M",
+        },
         {"serial_number": "SN-2", "ap_mac": "mac-2", "site": "S1", "state": "R/B"},
         {"serial_number": "SN-2", "ap_mac": "mac-2", "site": "S1", "state": "R/B"},
         {"ap_mac": "mac-3", "site": "S1", "state": "I"},
         {"ap_mac": "mac-3", "site": "S1", "state": "I"},
     ]
 
-    overview = build_ap_online_overview_rows(planned_aps=rows, fit_ap_resources=rows, capacities={"S1": 5})
+    overview = build_ap_online_overview_rows(
+        planned_aps=rows, fit_ap_resources=rows, capacities={"S1": 5}
+    )
 
     assert overview[0]["total"] == 5
     assert overview[0]["online"] == 2
     assert overview[0]["offline"] == 3
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
@@ -2849,8 +3485,13 @@ def test_trackside_ap_normalizes_mac_and_interface_names():
     assert normalize_mac("bc5a.3457.cbe0") == "bc5a-3457-cbe0"
     assert normalize_mac("BC-5A-34-57-CB-E0") == "bc5a-3457-cbe0"
     assert normalize_trackside_interface_name("GE2/0/22") == "GigabitEthernet2/0/22"
-    assert normalize_trackside_interface_name("GigabitEthernet2/0/22") == "GigabitEthernet2/0/22"
-    assert normalize_trackside_interface_name("XGE1/0/49") == "Ten-GigabitEthernet1/0/49"
+    assert (
+        normalize_trackside_interface_name("GigabitEthernet2/0/22")
+        == "GigabitEthernet2/0/22"
+    )
+    assert (
+        normalize_trackside_interface_name("XGE1/0/49") == "Ten-GigabitEthernet1/0/49"
+    )
     assert normalize_trackside_interface_name("BAGG1") == "Bridge-Aggregation1"
 
 
@@ -2872,10 +3513,18 @@ def test_trackside_ap_interface_matches_description_or_pvid_plan():
     switch = Device(name="SW", station="Station A", device_uuid="sw-1")
 
     base = {"interface_name": "GigabitEthernet1/0/1", "port_status": "access"}
-    assert is_trackside_ap_interface(switch, {**base, "description": "", "pvid": "921"}, plan) == (True, "pvid")
-    assert is_trackside_ap_interface(switch, {**base, "description": "to AP", "pvid": "1"}, plan) == (True, "description")
-    assert is_trackside_ap_interface(switch, {**base, "description": "to AP", "pvid": "921"}, plan) == (True, "description+pvid")
-    assert is_trackside_ap_interface(switch, {**base, "description": "", "pvid": "922"}, plan) == (False, "none")
+    assert is_trackside_ap_interface(
+        switch, {**base, "description": "", "pvid": "921"}, plan
+    ) == (True, "pvid")
+    assert is_trackside_ap_interface(
+        switch, {**base, "description": "to AP", "pvid": "1"}, plan
+    ) == (True, "description")
+    assert is_trackside_ap_interface(
+        switch, {**base, "description": "to AP", "pvid": "921"}, plan
+    ) == (True, "description+pvid")
+    assert is_trackside_ap_interface(
+        switch, {**base, "description": "", "pvid": "922"}, plan
+    ) == (False, "none")
 
 
 def test_trackside_ap_interface_prefers_station_vlans_and_falls_back_global():
@@ -2895,10 +3544,22 @@ def test_trackside_ap_business_rows_include_pvid_match_source():
     switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
     rows = build_trackside_ap_business_rows(
         [switch],
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "", "pvid": "921"}]},
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "description": "",
+                    "pvid": "921",
+                }
+            ]
+        },
         {"sw-1": []},
         [],
-        trackside_ap_plan={"mode": TRACKSIDE_AP_PLAN_MODE, "station_vlans": {"Station A": {921}}, "all_vlans": {921}},
+        trackside_ap_plan={
+            "mode": TRACKSIDE_AP_PLAN_MODE,
+            "station_vlans": {"Station A": {921}},
+            "all_vlans": {921},
+        },
     )
 
     assert len(rows) == 1
@@ -2907,7 +3568,9 @@ def test_trackside_ap_business_rows_include_pvid_match_source():
 
 
 def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
-    switch = Device(name="HX_1", sysname="HX_SYS", station="Station A", device_uuid="sw-1")
+    switch = Device(
+        name="HX_1", sysname="HX_SYS", station="Station A", device_uuid="sw-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -2928,27 +3591,38 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
         },
         {
             "sw-1": [
-                {"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10", "status": "normal"},
-                {"interface_name": "GigabitEthernet2/0/1", "rx_power": "-7.20", "status": "warning"},
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "rx_power": "-6.10",
+                    "status": "normal",
+                },
+                {
+                    "interface_name": "GigabitEthernet2/0/1",
+                    "rx_power": "-7.20",
+                    "status": "warning",
+                },
             ]
         },
         [
-                {
-                    "ac_device_uuid": "ac-1",
-                    "ap_uuid": "ap-10",
-                    "ap_mac": "bc5a-3457-cbe0",
-                    "neighbor_device_name": "HX_1",
-                    "neighbor_interface": "GigabitEthernet2/0/10",
-                    "ap_name": "AP10",
-                    "rx_power": "-14.35",
-                    "rx_low_alarm": "-19.00",
-                    "rx_low_warning": "-16.99",
-                    "updated_at": "2026-01-02T00:00:00",
-                }
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-10",
+                "ap_mac": "bc5a-3457-cbe0",
+                "neighbor_device_name": "HX_1",
+                "neighbor_interface": "GigabitEthernet2/0/10",
+                "ap_name": "AP10",
+                "rx_power": "-14.35",
+                "rx_low_alarm": "-19.00",
+                "rx_low_warning": "-16.99",
+                "updated_at": "2026-01-02T00:00:00",
+            }
         ],
     )
 
-    assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/1", "GigabitEthernet2/0/10"]
+    assert [row["interface_name"] for row in rows] == [
+        "GigabitEthernet2/0/1",
+        "GigabitEthernet2/0/10",
+    ]
     assert rows[1]["switch_rx_power"] == "-6.10"
     assert rows[1]["link_status"] == "UP"
     assert format_trackside_display_value("link_status", rows[1]) == "UP"
@@ -2959,7 +3633,9 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
 
 
 def test_trackside_ap_business_keeps_same_ap_on_different_interfaces():
-    switch = Device(name="04-横溪站1", sysname="HX_1", station="03横溪站", device_uuid="sw-hx-1")
+    switch = Device(
+        name="04-横溪站1", sysname="HX_1", station="03横溪站", device_uuid="sw-hx-1"
+    )
     rows = build_trackside_ap_business_rows(
         [switch],
         {
@@ -2984,14 +3660,25 @@ def test_trackside_ap_business_keeps_same_ap_on_different_interfaces():
         [],
         {
             "sw-hx-1": [
-                {"local_interface": "GE2/0/16", "neighbor_mac": "bc5a-3457-9c60", "neighbor_sysname": "bc5a-3457-9c60"},
-                {"local_interface": "GE2/0/32", "neighbor_mac": "bc5a-3457-9c60", "neighbor_sysname": "bc5a-3457-9c60"},
+                {
+                    "local_interface": "GE2/0/16",
+                    "neighbor_mac": "bc5a-3457-9c60",
+                    "neighbor_sysname": "bc5a-3457-9c60",
+                },
+                {
+                    "local_interface": "GE2/0/32",
+                    "neighbor_mac": "bc5a-3457-9c60",
+                    "neighbor_sysname": "bc5a-3457-9c60",
+                },
             ]
         },
         [],
     )
 
-    assert [row["interface_name"] for row in rows] == ["GigabitEthernet2/0/16", "GigabitEthernet2/0/32"]
+    assert [row["interface_name"] for row in rows] == [
+        "GigabitEthernet2/0/16",
+        "GigabitEthernet2/0/32",
+    ]
     assert {row["ap_mac"] for row in rows} == {"bc5a-3457-9c60"}
 
 
@@ -2999,9 +3686,24 @@ def test_trackside_ap_business_link_and_port_type_are_separate():
     assert normalize_link_state("up") == "UP"
     assert normalize_link_state("Administratively DOWN") == "DOWN"
     assert normalize_link_state("") == "-"
-    assert format_trackside_display_value("link_status", {"link_status": "DOWN", "port_type": "access"}) == "DOWN"
-    assert format_trackside_display_value("port_type", {"link_status": "DOWN", "port_type": "access"}) == "access"
-    assert format_trackside_display_value("port_type", {"port_type": "DOWN", "port_status": "UP"}) == "unknown"
+    assert (
+        format_trackside_display_value(
+            "link_status", {"link_status": "DOWN", "port_type": "access"}
+        )
+        == "DOWN"
+    )
+    assert (
+        format_trackside_display_value(
+            "port_type", {"link_status": "DOWN", "port_type": "access"}
+        )
+        == "access"
+    )
+    assert (
+        format_trackside_display_value(
+            "port_type", {"port_type": "DOWN", "port_status": "UP"}
+        )
+        == "unknown"
+    )
 
 
 def test_trackside_ap_business_offline_ap_keeps_link_state():
@@ -3035,15 +3737,30 @@ def test_trackside_ap_business_offline_ap_keeps_link_state():
     assert rows[0]["is_ap_offline"] is True
     assert format_trackside_display_value("link_status", rows[0]) == "DOWN"
     assert format_trackside_display_value("port_type", rows[0]) == "access"
-    assert format_trackside_display_value("ap_optical_status", rows[0]) == OFFLINE_AP_STATUS_TEXT
+    assert (
+        format_trackside_display_value("ap_optical_status", rows[0])
+        == OFFLINE_AP_STATUS_TEXT
+    )
 
 
 def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
     switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
     rows = build_trackside_ap_business_rows(
         [switch],
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/22", "description": "To_AP22"}]},
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/22", "rx_power": "-6.10", "status": "normal"}]},
+        {
+            "sw-1": [
+                {"interface_name": "GigabitEthernet2/0/22", "description": "To_AP22"}
+            ]
+        },
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/22",
+                    "rx_power": "-6.10",
+                    "status": "normal",
+                }
+            ]
+        },
         [
             {
                 "ac_device_uuid": "ac-1",
@@ -3055,7 +3772,15 @@ def test_trackside_ap_business_matches_fit_ap_by_lldp_neighbor_mac():
                 "rx_low_warning": "-16.99",
             }
         ],
-        {"sw-1": [{"local_interface": "GE2/0/22", "neighbor_mac": "BC:5A:34:57:CB:E0", "neighbor_interface": "GigabitEthernet1/0/2"}]},
+        {
+            "sw-1": [
+                {
+                    "local_interface": "GE2/0/22",
+                    "neighbor_mac": "BC:5A:34:57:CB:E0",
+                    "neighbor_interface": "GigabitEthernet1/0/2",
+                }
+            ]
+        },
     )
 
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe0"
@@ -3069,10 +3794,25 @@ def test_trackside_ap_business_matches_fit_ap_resource_by_lldp_neighbor_mac():
     rows = build_trackside_ap_business_rows(
         [switch],
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/23", "description": "AP23"}]},
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/23", "rx_power": "-6.20", "status": "normal"}]},
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/23",
+                    "rx_power": "-6.20",
+                    "status": "normal",
+                }
+            ]
+        },
         [],
         {"sw-1": [{"local_interface": "GE2/0/23", "neighbor_mac": "bc5a.3457.cbe1"}]},
-        [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-23", "ap_mac": "bc5a-3457-cbe1", "ap_name": "Renamed-AP-23"}],
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-23",
+                "ap_mac": "bc5a-3457-cbe1",
+                "ap_name": "Renamed-AP-23",
+            }
+        ],
     )
 
     assert rows[0]["ap_mac"] == "bc5a-3457-cbe1"
@@ -3089,7 +3829,16 @@ def test_trackside_ap_business_keeps_neighbor_mac_when_fit_ap_not_found():
     rows = build_trackside_ap_business_rows(
         [switch],
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "description": "AP24"}]},
-            {"sw-1": [{"interface_name": "GigabitEthernet2/0/24", "rx_power": "-6.20", "rx_low_alarm": "-20.00", "rx_low_warning": "-8.00"}]},
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/24",
+                    "rx_power": "-6.20",
+                    "rx_low_alarm": "-20.00",
+                    "rx_low_warning": "-8.00",
+                }
+            ]
+        },
         [],
         {"sw-1": [{"local_interface": "GE2/0/24", "neighbor_mac": "bc5a-3457-cbe2"}]},
     )
@@ -3108,7 +3857,15 @@ def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
     rows = build_trackside_ap_business_rows(
         [switch],
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/25", "description": "AP25"}]},
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/25", "rx_power": "-6.20", "status": "normal"}]},
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet2/0/25",
+                    "rx_power": "-6.20",
+                    "status": "normal",
+                }
+            ]
+        },
         [
             {
                 "ap_uuid": "ap-25",
@@ -3128,8 +3885,22 @@ def test_trackside_ap_business_keeps_switch_and_ap_status_separate():
 
 
 def test_trackside_ap_business_row_status_uses_more_severe_side():
-    assert trackside_row_status({"switch_optical_status": "warning", "ap_optical_status": "normal"}) == "warning"
-    assert trackside_row_status({"switch_optical_status": "normal", "ap_optical_status": "alarm", "ap_side_has_data": True}) == "alarm"
+    assert (
+        trackside_row_status(
+            {"switch_optical_status": "warning", "ap_optical_status": "normal"}
+        )
+        == "warning"
+    )
+    assert (
+        trackside_row_status(
+            {
+                "switch_optical_status": "normal",
+                "ap_optical_status": "alarm",
+                "ap_side_has_data": True,
+            }
+        )
+        == "alarm"
+    )
 
 
 def test_trackside_ap_side_missing_data_formats_as_dash():
@@ -3221,7 +3992,11 @@ def test_trackside_ap_optical_status_uses_default_profile_without_thresholds():
     switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
     rows = build_trackside_ap_business_rows(
         [switch],
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}]},
+        {
+            "sw-1": [
+                {"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}
+            ]
+        },
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10"}]},
         [
             {
@@ -3252,16 +4027,39 @@ def test_trackside_row_status_ignores_missing_ap_side_data():
 
 def test_trackside_ap_business_filter_by_site_and_search():
     rows = [
-        {"site": "Station A", "ap_name": "AP-A", "device_name": "HX_1", "interface_name": "GigabitEthernet1/0/1"},
-        {"site": "Station B", "ap_name": "AP-B", "device_name": "HX_2", "interface_name": "GigabitEthernet1/0/2"},
-        {"site": "Station C", "ap_name": "AP-C", "device_name": "HX_3", "interface_name": "GigabitEthernet1/0/3"},
+        {
+            "site": "Station A",
+            "ap_name": "AP-A",
+            "device_name": "HX_1",
+            "interface_name": "GigabitEthernet1/0/1",
+        },
+        {
+            "site": "Station B",
+            "ap_name": "AP-B",
+            "device_name": "HX_2",
+            "interface_name": "GigabitEthernet1/0/2",
+        },
+        {
+            "site": "Station C",
+            "ap_name": "AP-C",
+            "device_name": "HX_3",
+            "interface_name": "GigabitEthernet1/0/3",
+        },
     ]
 
     assert len(filter_trackside_ap_business_rows(rows, "", "")) == 3
     assert len(filter_trackside_ap_business_rows(rows, None, "")) == 3
-    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station A", "")] == ["AP-A"]
-    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "", "hx_2")] == ["AP-B"]
-    assert [row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "Station B", "1/0/2")] == ["AP-B"]
+    assert [
+        row["ap_name"]
+        for row in filter_trackside_ap_business_rows(rows, "Station A", "")
+    ] == ["AP-A"]
+    assert [
+        row["ap_name"] for row in filter_trackside_ap_business_rows(rows, "", "hx_2")
+    ] == ["AP-B"]
+    assert [
+        row["ap_name"]
+        for row in filter_trackside_ap_business_rows(rows, "Station B", "1/0/2")
+    ] == ["AP-B"]
 
 
 def test_trackside_ap_i18n_zh_cn_keys_are_translated():
@@ -3270,9 +4068,10 @@ def test_trackside_ap_i18n_zh_cn_keys_are_translated():
     assert zh.t("trackside_ap.update") == "\u66f4\u65b0"
     assert zh.t("trackside_ap.cancel_update") == "\u53d6\u6d88\u66f4\u65b0"
     assert zh.t("trackside_ap.not_collected") == "\u672a\u91c7\u96c6"
-    assert zh.t("trackside_ap.vendor_not_supported") == "\u5f53\u524d\u5382\u5546\u6682\u672a\u9002\u914d\u5149\u8870\u91c7\u96c6\u547d\u4ee4"
-
-
+    assert (
+        zh.t("trackside_ap.vendor_not_supported")
+        == "\u5f53\u524d\u5382\u5546\u6682\u672a\u9002\u914d\u5149\u8870\u91c7\u96c6\u547d\u4ee4"
+    )
 
 
 def test_trackside_ap_progress_text_has_no_mojibake_or_i18n_key():
@@ -3289,23 +4088,71 @@ def test_trackside_ap_progress_text_has_no_mojibake_or_i18n_key():
 
 
 def test_trackside_optical_command_adapter_supports_h3c_aliases_and_rejects_reserved_vendors():
-    assert OpticalCommandAdapter.get_optical_diagnosis_commands("H3C", "SW") == TRACKSIDE_OPTICAL_COMMANDS
-    assert OpticalCommandAdapter.get_optical_diagnosis_commands("\u65b0\u534e\u4e09", "\u4ea4\u6362\u673a") == TRACKSIDE_OPTICAL_COMMANDS
+    assert (
+        OpticalCommandAdapter.get_optical_diagnosis_commands("H3C", "SW")
+        == TRACKSIDE_OPTICAL_COMMANDS
+    )
+    assert (
+        OpticalCommandAdapter.get_optical_diagnosis_commands(
+            "\u65b0\u534e\u4e09", "\u4ea4\u6362\u673a"
+        )
+        == TRACKSIDE_OPTICAL_COMMANDS
+    )
     for vendor in ("Huawei", "\u534e\u4e3a", "ZTE", "\u4e2d\u5174"):
         with pytest.raises(UnsupportedVendor):
             OpticalCommandAdapter.get_optical_diagnosis_commands(vendor, "SW")
 
 
-def test_trackside_station_switch_target_filter_uses_station_group_and_switch_types(tmp_path):
+def test_trackside_station_switch_target_filter_uses_station_group_and_switch_types(
+    tmp_path,
+):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     groups = DeviceGroupRepository(database, "demo")
     station = groups.create("车站")
     onboard = groups.create("车载")
-    switch_a = repository.create(Device(name="A", group_id=station.id, device_type="SW", device_vendor="H3C", ip_address="10.0.0.1", ssh_username="u", ssh_password="p"))
-    repository.create(Device(name="B", group_id=station.id, device_type="FAT-AP", ip_address="10.0.0.2", ssh_username="u", ssh_password="p"))
-    repository.create(Device(name="C", group_id=onboard.id, device_type="FAT-AP", ip_address="10.0.0.3", ssh_username="u", ssh_password="p"))
-    switch_d = repository.create(Device(name="D", group_id=station.id, device_type="交换机", device_vendor="\u65b0\u534e\u4e09", ip_address="10.0.0.4", ssh_username="u", ssh_password="p"))
+    switch_a = repository.create(
+        Device(
+            name="A",
+            group_id=station.id,
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.1",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="B",
+            group_id=station.id,
+            device_type="FAT-AP",
+            ip_address="10.0.0.2",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="C",
+            group_id=onboard.id,
+            device_type="FAT-AP",
+            ip_address="10.0.0.3",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    switch_d = repository.create(
+        Device(
+            name="D",
+            group_id=station.id,
+            device_type="交换机",
+            device_vendor="\u65b0\u534e\u4e09",
+            ip_address="10.0.0.4",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
 
     targets, skipped = build_station_switch_targets(repository, "demo")
 
@@ -3317,10 +4164,34 @@ def test_trackside_station_switch_target_filter_can_scope_station(tmp_path):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     station_group = DeviceGroupRepository(database, "demo").create("车站")
-    station_a = repository.create(Device(name="A", station="Station A", group_id=station_group.id, device_type="SW", device_vendor="H3C", ip_address="10.0.0.1", ssh_username="u", ssh_password="p"))
-    repository.create(Device(name="B", station="Station B", group_id=station_group.id, device_type="SW", device_vendor="H3C", ip_address="10.0.0.2", ssh_username="u", ssh_password="p"))
+    station_a = repository.create(
+        Device(
+            name="A",
+            station="Station A",
+            group_id=station_group.id,
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.1",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="B",
+            station="Station B",
+            group_id=station_group.id,
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.2",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
 
-    targets, skipped = build_station_switch_targets(repository, "demo", station="Station A")
+    targets, skipped = build_station_switch_targets(
+        repository, "demo", station="Station A"
+    )
 
     assert [target.device_id for target in targets] == [station_a.id]
     assert skipped == []
@@ -3330,7 +4201,17 @@ def test_trackside_station_switch_target_skips_unsupported_vendor(tmp_path):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     station = DeviceGroupRepository(database, "demo").create("车站")
-    repository.create(Device(name="HW", group_id=station.id, device_type="SW", device_vendor="Huawei", ip_address="10.0.0.5", ssh_username="u", ssh_password="p"))
+    repository.create(
+        Device(
+            name="HW",
+            group_id=station.id,
+            device_type="SW",
+            device_vendor="Huawei",
+            ip_address="10.0.0.5",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
 
     targets, skipped = build_station_switch_targets(repository, "demo")
 
@@ -3341,91 +4222,197 @@ def test_trackside_station_switch_target_skips_unsupported_vendor(tmp_path):
 def test_trackside_ap_targets_skip_missing_connection_info(tmp_path):
     database = make_database(tmp_path)
     device_repository = DeviceRepository(database)
-    connectable = device_repository.create(Device(name="AP-OK", device_type="FAT-AP", ip_address="10.0.0.10", ssh_username="u", ssh_password="p"))
-    device_repository.create(Device(name="AP-NO-PASSWORD", device_type="FAT-AP", ip_address="10.0.0.11", ssh_username="u", ssh_password=""))
+    connectable = device_repository.create(
+        Device(
+            name="AP-OK",
+            device_type="FAT-AP",
+            ip_address="10.0.0.10",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    device_repository.create(
+        Device(
+            name="AP-NO-PASSWORD",
+            device_type="FAT-AP",
+            ip_address="10.0.0.11",
+            ssh_username="u",
+            ssh_password="",
+        )
+    )
     ac_repository = AcRepository(database)
     ac_repository.replace_fit_ap_resources(
         "ac-1",
         [
             {"ap_uuid": "ap-ok", "ap_name": "AP-OK", "ap_ip": "10.0.0.10"},
             {"ap_uuid": "ap-no-ip", "ap_name": "AP-NO-IP", "ap_ip": ""},
-            {"ap_uuid": "ap-no-password", "ap_name": "AP-NO-PASSWORD", "ap_ip": "10.0.0.11"},
+            {
+                "ap_uuid": "ap-no-password",
+                "ap_name": "AP-NO-PASSWORD",
+                "ap_ip": "10.0.0.11",
+            },
         ],
     )
 
-    targets, skipped = build_trackside_ap_targets(ac_repository, device_repository, [{"ap_uuid": "ap-ok"}, {"ap_uuid": "ap-no-ip"}, {"ap_uuid": "ap-no-password"}])
+    targets, skipped = build_trackside_ap_targets(
+        ac_repository,
+        device_repository,
+        [{"ap_uuid": "ap-ok"}, {"ap_uuid": "ap-no-ip"}, {"ap_uuid": "ap-no-password"}],
+    )
 
     assert [target.device_id for target in targets] == [connectable.id]
     assert {item.name for item in skipped} == {"AP-NO-IP", "AP-NO-PASSWORD"}
 
 
-def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(tmp_path):
+def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
+    tmp_path,
+):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     groups = DeviceGroupRepository(database, "demo")
     station = groups.create("车站")
-    shared = repository.create(Device(name="Shared", group_id=station.id, device_type="SW", ip_address="10.0.0.10", ssh_username="u", ssh_password="p"))
+    shared = repository.create(
+        Device(
+            name="Shared",
+            group_id=station.id,
+            device_type="SW",
+            ip_address="10.0.0.10",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
     ac_repository = AcRepository(database)
-    ac_repository.replace_fit_ap_resources("ac-1", [{"ap_uuid": "ap-shared", "ap_name": "Shared", "ap_ip": "10.0.0.10"}])
+    ac_repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_uuid": "ap-shared", "ap_name": "Shared", "ap_ip": "10.0.0.10"}]
+    )
     switch_targets, _ = build_station_switch_targets(repository, "demo")
-    ap_targets, _ = build_trackside_ap_targets(ac_repository, repository, [{"ap_uuid": "ap-shared"}])
+    ap_targets, _ = build_trackside_ap_targets(
+        ac_repository, repository, [{"ap_uuid": "ap-shared"}]
+    )
 
     assert DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY == 1000
     assert len(dedupe_targets([*switch_targets, *ap_targets])) == 1
     assert switch_targets[0].device_id == shared.id
 
 
-def test_trackside_optical_collection_runs_commands_writes_database_and_skips_raw_files(tmp_path, monkeypatch):
+def test_trackside_optical_collection_runs_commands_writes_database_and_skips_raw_files(
+    tmp_path, monkeypatch
+):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     groups = DeviceGroupRepository(database, "demo")
     station = groups.create("车站")
-    repository.create(Device(name="OK", group_id=station.id, device_type="SW", ip_address="10.0.0.10", ssh_username="u", ssh_password="p"))
-    repository.create(Device(name="FAIL", group_id=station.id, device_type="SW", ip_address="10.0.0.99", ssh_username="u", ssh_password="p"))
+    repository.create(
+        Device(
+            name="OK",
+            group_id=station.id,
+            device_type="SW",
+            ip_address="10.0.0.10",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="FAIL",
+            group_id=station.id,
+            device_type="SW",
+            ip_address="10.0.0.99",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
     FakeOpticalConnection.instances = []
-    monkeypatch.setattr(trackside_optical_collection.netmiko_connection, "ConnectHandler", FakeOpticalConnection)
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        FakeOpticalConnection,
+    )
 
-    result = collect_trackside_optical(repository, "demo", PathResolver(tmp_path), [], concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
+    result = collect_trackside_optical(
+        repository,
+        "demo",
+        PathResolver(tmp_path),
+        [],
+        concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
+    )
 
     assert result.concurrency == 1000
     assert result.success_count == 1
     assert result.failed_count == 1
-    assert any(connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS) for connection in FakeOpticalConnection.instances)
+    assert any(
+        connection.commands == list(TRACKSIDE_OPTICAL_COMMANDS)
+        for connection in FakeOpticalConnection.instances
+    )
     assert not (result.session_dir / "raw").exists()
     assert (result.session_dir / "session_meta.json").exists()
-    parsed_dir = PathResolver(tmp_path).trackside_ap_update_parsed_session_dir("demo", result.session_id)
+    parsed_dir = PathResolver(tmp_path).trackside_ap_update_parsed_session_dir(
+        "demo", result.session_id
+    )
     with sqlite3.connect(parsed_dir / "trackside_update_results.sqlite") as conn:
-        rows = conn.execute("SELECT device_name, rx_power, error_message FROM optical_results").fetchall()
+        rows = conn.execute(
+            "SELECT device_name, rx_power, error_message FROM optical_results"
+        ).fetchall()
     assert len(rows) >= 2
     assert any(row[1] == "-6.10" for row in rows)
     assert any(row[2] for row in rows)
     ok_device = next(device for device in repository.list() if device.name == "OK")
-    interfaces = DeviceFactRepository(database).list_device_interfaces(ok_device.device_uuid)
+    interfaces = DeviceFactRepository(database).list_device_interfaces(
+        ok_device.device_uuid
+    )
     assert interfaces[0]["pvid"] == "921"
     assert interfaces[0]["description"] == "To AP"
 
 
-def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(tmp_path, monkeypatch):
+def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
+    tmp_path, monkeypatch
+):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
     groups = DeviceGroupRepository(database, "demo")
     station = groups.create("车站")
-    switch = repository.create(Device(name="SW", group_id=station.id, device_type="SW", ip_address="10.0.0.10", ssh_username="u", ssh_password="p"))
+    switch = repository.create(
+        Device(
+            name="SW",
+            group_id=station.id,
+            device_type="SW",
+            ip_address="10.0.0.10",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
     ac = repository.create(make_ac_device())
     ac_repo = AcRepository(database)
     ac_repo.replace_fit_ap_resources(
         ac.device_uuid,
         [
-            {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_name": "AP1", "ap_ip": "10.0.0.21"},
-            {"ap_uuid": "ap-2", "serial_number": "SN-2", "ap_name": "AP2", "ap_ip": "10.0.0.22"},
-            {"ap_uuid": "ap-skip", "serial_number": "SN-SKIP", "ap_name": "AP-SKIP", "ap_ip": ""},
+            {
+                "ap_uuid": "ap-1",
+                "serial_number": "SN-1",
+                "ap_name": "AP1",
+                "ap_ip": "10.0.0.21",
+            },
+            {
+                "ap_uuid": "ap-2",
+                "serial_number": "SN-2",
+                "ap_name": "AP2",
+                "ap_ip": "10.0.0.22",
+            },
+            {
+                "ap_uuid": "ap-skip",
+                "serial_number": "SN-SKIP",
+                "ap_name": "AP-SKIP",
+                "ap_ip": "",
+            },
         ],
     )
     paths = PathResolver(tmp_path)
     fit_calls = []
     resource_calls = []
 
-    def fake_resource_collect(ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True):
+    def fake_resource_collect(
+        ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True
+    ):
         resource_calls.append((ac_device.device_uuid, site_name, refresh_ac_overview))
         run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / "resource-run"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -3433,12 +4420,29 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         repository.replace_fit_ap_resources(
             ac_device.device_uuid,
             [
-                {"ap_uuid": "ap-1", "serial_number": "SN-1", "ap_name": "AP1", "ap_ip": "10.0.0.21"},
-                {"ap_uuid": "ap-2", "serial_number": "SN-2", "ap_name": "AP2", "ap_ip": "10.0.0.22"},
-                {"ap_uuid": "ap-skip", "serial_number": "SN-SKIP", "ap_name": "AP-SKIP", "ap_ip": ""},
+                {
+                    "ap_uuid": "ap-1",
+                    "serial_number": "SN-1",
+                    "ap_name": "AP1",
+                    "ap_ip": "10.0.0.21",
+                },
+                {
+                    "ap_uuid": "ap-2",
+                    "serial_number": "SN-2",
+                    "ap_name": "AP2",
+                    "ap_ip": "10.0.0.22",
+                },
+                {
+                    "ap_uuid": "ap-skip",
+                    "serial_number": "SN-SKIP",
+                    "ap_name": "AP-SKIP",
+                    "ap_ip": "",
+                },
             ],
         )
-        return SimpleNamespace(success=True, collect_run_uuid="resource-run", error_message=None)
+        return SimpleNamespace(
+            success=True, collect_run_uuid="resource-run", error_message=None
+        )
 
     def fake_fit_collect(
         ac_device,
@@ -3451,18 +4455,40 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         target_ap_names=None,
         target_stations=None,
     ):
-        fit_calls.append((ac_device.device_uuid, site_name, max_workers, target_ap_uuids, target_ap_macs, target_ap_names, target_stations))
+        fit_calls.append(
+            (
+                ac_device.device_uuid,
+                site_name,
+                max_workers,
+                target_ap_uuids,
+                target_ap_macs,
+                target_ap_names,
+                target_stations,
+            )
+        )
         run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / "fit-run" / "fit_ap"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "AP1.log").write_text("fit raw", encoding="utf-8")
-        return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), "fit-run", 2, 0, None)
+        return FitApOpticalCollectResult(
+            True, False, str(ac_device.device_uuid), "fit-run", 2, 0, None
+        )
 
     FakeOpticalConnection.instances = []
-    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect)
-    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect)
-    monkeypatch.setattr(trackside_optical_collection.netmiko_connection, "ConnectHandler", FakeOpticalConnection)
+    monkeypatch.setattr(
+        trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        FakeOpticalConnection,
+    )
 
-    result = collect_trackside_optical(repository, "demo", paths, [], concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
+    result = collect_trackside_optical(
+        repository, "demo", paths, [], concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY
+    )
 
     assert resource_calls == [(ac.device_uuid, "demo", False)]
     assert fit_calls == [(ac.device_uuid, "demo", 1000, None, None, None, None)]
@@ -3476,32 +4502,84 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     assert switch.id is not None
 
 
-def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(tmp_path, monkeypatch):
+def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
+    tmp_path, monkeypatch
+):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
-    target_switch = create_station_switch(repository, "demo", name="SW-A", station="Station A", ip_address="10.0.0.10", ssh_username="u", ssh_password="p")
-    create_station_switch(repository, "demo", name="SW-B", station="Station A", ip_address="10.0.0.11", ssh_username="u", ssh_password="p")
+    target_switch = create_station_switch(
+        repository,
+        "demo",
+        name="SW-A",
+        station="Station A",
+        ip_address="10.0.0.10",
+        ssh_username="u",
+        ssh_password="p",
+    )
+    create_station_switch(
+        repository,
+        "demo",
+        name="SW-B",
+        station="Station A",
+        ip_address="10.0.0.11",
+        ssh_username="u",
+        ssh_password="p",
+    )
     ac = repository.create(make_ac_device())
     ac_repo = AcRepository(database)
     ac_repo.replace_fit_ap_resources(
         ac.device_uuid,
         [
-            {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.0.0.21", "site": "Station A", "state": "R"},
-            {"ap_uuid": "ap-2", "ap_name": "AP2", "ap_mac": "bc5a-3457-cbe1", "ap_ip": "10.0.0.22", "site": "Station A", "state": "R"},
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "bc5a-3457-cbe0",
+                "ap_ip": "10.0.0.21",
+                "site": "Station A",
+                "state": "R",
+            },
+            {
+                "ap_uuid": "ap-2",
+                "ap_name": "AP2",
+                "ap_mac": "bc5a-3457-cbe1",
+                "ap_ip": "10.0.0.22",
+                "site": "Station A",
+                "state": "R",
+            },
         ],
     )
     paths = PathResolver(tmp_path)
     fit_calls = []
 
-    def fake_resource_collect(ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True):
+    def fake_resource_collect(
+        ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True
+    ):
         repository.replace_fit_ap_resources(
             ac_device.device_uuid,
             [
-                {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "bc5a-3457-cbe0", "ap_ip": "10.0.0.21", "site": "Station A", "state": "I", "state_display": "Idle"},
-                {"ap_uuid": "ap-2", "ap_name": "AP2", "ap_mac": "bc5a-3457-cbe1", "ap_ip": "10.0.0.22", "site": "Station A", "state": "R", "state_display": "Online"},
+                {
+                    "ap_uuid": "ap-1",
+                    "ap_name": "AP1",
+                    "ap_mac": "bc5a-3457-cbe0",
+                    "ap_ip": "10.0.0.21",
+                    "site": "Station A",
+                    "state": "I",
+                    "state_display": "Idle",
+                },
+                {
+                    "ap_uuid": "ap-2",
+                    "ap_name": "AP2",
+                    "ap_mac": "bc5a-3457-cbe1",
+                    "ap_ip": "10.0.0.22",
+                    "site": "Station A",
+                    "state": "R",
+                    "state_display": "Online",
+                },
             ],
         )
-        return SimpleNamespace(success=True, collect_run_uuid="resource-run", error_message=None)
+        return SimpleNamespace(
+            success=True, collect_run_uuid="resource-run", error_message=None
+        )
 
     def fake_fit_collect(
         ac_device,
@@ -3514,24 +4592,46 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(tmp_
         target_ap_names=None,
         target_stations=None,
     ):
-        fit_calls.append((target_ap_uuids, target_ap_macs, target_ap_names, target_stations))
-        return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), "fit-run", 1, 0, None)
+        fit_calls.append(
+            (target_ap_uuids, target_ap_macs, target_ap_names, target_stations)
+        )
+        return FitApOpticalCollectResult(
+            True, False, str(ac_device.device_uuid), "fit-run", 1, 0, None
+        )
 
     FakeOpticalConnection.instances = []
-    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect)
-    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect)
-    monkeypatch.setattr(trackside_optical_collection.netmiko_connection, "ConnectHandler", FakeOpticalConnection)
+    monkeypatch.setattr(
+        trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection, "collect_h3c_fit_ap_optical", fake_fit_collect
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection.netmiko_connection,
+        "ConnectHandler",
+        FakeOpticalConnection,
+    )
 
     result = collect_trackside_optical(
         repository,
         "demo",
         paths,
-        [{"site": "Station A", "ap_uuid": "ap-1", "ap_name": "AP1", "device_uuid": target_switch.device_uuid, "device_name": target_switch.name}],
+        [
+            {
+                "site": "Station A",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "device_uuid": target_switch.device_uuid,
+                "device_name": target_switch.name,
+            }
+        ],
         concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
         target_ap_uuid="ap-1",
     )
 
-    assert [connection.host for connection in FakeOpticalConnection.instances] == ["10.0.0.10"]
+    assert [connection.host for connection in FakeOpticalConnection.instances] == [
+        "10.0.0.10"
+    ]
     assert fit_calls == [(["ap-1"], None, None, ["Station A"])]
     assert result.scope == "ap"
     assert result.target_label == "AP1"
@@ -3543,16 +4643,6 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(tmp_
         meta = json.load(handle)
     assert meta["target_ap_offline"] is True
     assert meta["switch_scope"] == "ap_switch"
-
-
-
-
-
-
-
-
-
-
 
 
 def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):
@@ -3572,7 +4662,12 @@ def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):
     i18n = I18n("en_US")
     export_path = tmp_path / "trackside_hidden.xlsx"
 
-    export_trackside_ap_business_xlsx(export_path, rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+    )
 
     sheet = load_workbook(export_path).active
     headers = [cell.value for cell in sheet[1]]
@@ -3623,7 +4718,12 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
     i18n = I18n("zh_CN")
     export_path = tmp_path / "trackside_ap_missing.xlsx"
 
-    export_trackside_ap_business_xlsx(export_path, rows, TRACKSIDE_AP_BUSINESS_COLUMNS, [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS])
+    export_trackside_ap_business_xlsx(
+        export_path,
+        rows,
+        TRACKSIDE_AP_BUSINESS_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
+    )
 
     sheet = load_workbook(export_path).active
     headers = [cell.value for cell in sheet[1]]
@@ -3638,75 +4738,6 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
     assert sheet.cell(2, ap_rx_column).value == "-"
     assert sheet.cell(2, alarm_column).value != "无光模块"
     assert sheet.cell(3, alarm_column).value == "无光模块"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_trackside_export_backfills_latest_valid_ap_rx_from_history():
@@ -3741,36 +4772,23 @@ def test_trackside_export_backfills_latest_valid_ap_rx_from_history():
     assert enriched[0]["ap_optical_missing_reason"] == "overwritten_by_failed_row"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_demo_data_contains_ac_management_rows(tmp_path):
     context = create_demo_context(PathResolver(tmp_path))
-    ac = next(device for device in context.repository.list(device_type="AC") if device.ip_address == "10.0.0.51")
+    ac = next(
+        device
+        for device in context.repository.list(device_type="AC")
+        if device.ip_address == "10.0.0.51"
+    )
     repository = AcRepository(context.database)
 
-    assert repository.get_ac_ap_summary(ac.device_uuid)["remaining_local_ap_licenses"] == 59998
+    assert (
+        repository.get_ac_ap_summary(ac.device_uuid)["remaining_local_ap_licenses"]
+        == 59998
+    )
     assert repository.get_ac_ap_summary(ac.device_uuid)["cpu_usage"] == "16%"
-    assert [row["ap_name"] for row in repository.list_fit_ap_resources(ac.device_uuid)] == ["4c6f-d608-0400", "4c6f-de4b-0500"]
+    assert [
+        row["ap_name"] for row in repository.list_fit_ap_resources(ac.device_uuid)
+    ] == ["4c6f-d608-0400", "4c6f-de4b-0500"]
     assert len(repository.list_fit_ap_optical(ac.device_uuid)) == 2
     assert repository.get_fit_ap_metadata("4c6f-d608-0400")["site_name"] == "体育中心站"
 
@@ -3779,13 +4797,34 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     from openpyxl import Workbook
 
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00", "serial_number": "SN-1"}])
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00", "serial_number": "SN-1"}],
+    )
     service = FitApImportExportService(repository)
     import_path = tmp_path / "metadata.xlsx"
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(AP_EXTENSION_TEMPLATE_FIELDS)
-    sheet.append(["renamed-ap", "30F5:277A:1B00", "站点", "Station X", "", "", "", "", "", "", "", "K12+450", "Platform", "上下行", ""])
+    sheet.append(
+        [
+            "renamed-ap",
+            "30F5:277A:1B00",
+            "站点",
+            "Station X",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "K12+450",
+            "Platform",
+            "上下行",
+            "",
+        ]
+    )
     workbook.save(import_path)
 
     result = service.import_metadata_file(import_path)
@@ -3799,7 +4838,19 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert entity["direction"] == "上下行"
 
     export_path = tmp_path / "export.csv"
-    service.export_ap_csv(export_path, [{"ap_name": "ap-a", "ap_ip": "10.0.0.1", "state_display": "运行(主)", "site": "体育中心站", "mileage": "1020", "direction": "上行"}])
+    service.export_ap_csv(
+        export_path,
+        [
+            {
+                "ap_name": "ap-a",
+                "ap_ip": "10.0.0.1",
+                "state_display": "运行(主)",
+                "site": "体育中心站",
+                "mileage": "1020",
+                "direction": "上行",
+            }
+        ],
+    )
     text = export_path.read_text(encoding="utf-8-sig")
     assert "AP名称" in text
     assert "ap-a" in text
@@ -3810,18 +4861,20 @@ def test_import_and_export_fit_ap_metadata(tmp_path):
     assert "RID2信道" in text
     assert "RID3信道" not in text
     headers = text.splitlines()[0].split(",")
-    assert headers.index("RID2功率") < headers.index("归属站点") < headers.index("更新时间")
+    assert (
+        headers.index("RID2功率")
+        < headers.index("归属站点")
+        < headers.index("更新时间")
+    )
     assert "归属区间" in headers
     assert "归属类型" in headers
 
 
-
-
-
-
 def test_import_ap_extension_metadata_skips_empty_or_unmatched_mac(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}]
+    )
     service = FitApImportExportService(repository)
 
     result = service.import_metadata_rows(
@@ -3841,16 +4894,23 @@ def test_import_ap_extension_metadata_skips_empty_or_unmatched_mac(tmp_path):
 
 def test_import_ap_extension_metadata_rejects_legacy_matching_headers(tmp_path):
     repository = AcRepository(make_database(tmp_path))
-    repository.replace_fit_ap_resources("ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}])
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "ap_mac": "30f5-277a-1b00"}]
+    )
     service = FitApImportExportService(repository)
 
     with pytest.raises(ValueError, match="Unsupported AP metadata template header"):
-        service.import_metadata_rows(["AP名称", "归属站点", "里程", "点位说明", "上下行"], [["ap-a", "Legacy Station", "", "", ""]])
+        service.import_metadata_rows(
+            ["AP名称", "归属站点", "里程", "点位说明", "上下行"],
+            [["ap-a", "Legacy Station", "", "", ""]],
+        )
 
     assert repository.list_ap_entities("ac-1")[0]["station"] == ""
 
 
-def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_station(tmp_path):
+def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_station(
+    tmp_path,
+):
     from openpyxl import load_workbook
 
     service = FitApImportExportService(AcRepository(make_database(tmp_path)))
@@ -3871,7 +4931,16 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
                 "site": "Resource Station",
             }
         ],
-        [{"ap_uuid": "ap-1", "ap_mac": "0011-2233-4455", "station": "Entity Station", "direction": "uplink", "milestone": "K12+450", "location_note": "platform"}],
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "station": "Entity Station",
+                "direction": "uplink",
+                "milestone": "K12+450",
+                "location_note": "platform",
+            }
+        ],
     )
 
     sheet = load_workbook(export_path).active
@@ -3879,7 +4948,17 @@ def test_export_ap_extension_template_xlsx_contains_editable_headers_and_entity_
 
     assert headers == AP_EXTENSION_TEMPLATE_FIELDS
     assert "归属站点" in headers
-    for forbidden in ("AP_IP", "APID", "SN", "型号", "状态", "AP状态", "AP组", "在线时长", "更新时间"):
+    for forbidden in (
+        "AP_IP",
+        "APID",
+        "SN",
+        "型号",
+        "状态",
+        "AP状态",
+        "AP组",
+        "在线时长",
+        "更新时间",
+    ):
         assert forbidden not in headers
     assert "站点/位置" not in headers
     assert "site" not in headers
@@ -3910,52 +4989,12 @@ def test_export_ap_extension_template_xlsx_allows_empty_template(tmp_path):
     assert sheet.max_row == 1
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Device", sysname="HX_1", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(name="HX Device", sysname="HX_1", ip_address="10.0.0.2")
+    )
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_device_interfaces(
         device.device_uuid,
@@ -3989,13 +5028,20 @@ def test_neighbor_matcher_matches_sysname_mac_and_rx_power(tmp_path):
     assert by_sysname.station is None
     assert by_mac.device_uuid == device.device_uuid
     assert by_mac.matched_by == "mac"
-    assert find_neighbor_rx_power("demo", device.device_uuid, "GigabitEthernet2/0/19", paths=paths) == "-6.66 dBm"
+    assert (
+        find_neighbor_rx_power(
+            "demo", device.device_uuid, "GigabitEthernet2/0/19", paths=paths
+        )
+        == "-6.66 dBm"
+    )
 
 
 def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Switch", station="Station A", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(name="HX Switch", station="Station A", ip_address="10.0.0.2")
+    )
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_lldp_neighbors(
         device.device_uuid,
@@ -4011,7 +5057,9 @@ def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
         ],
     )
 
-    match = match_ap_from_device_lldp("demo", ap_mac="bc5a-3457-cbe0", paths=PathResolver(tmp_path))
+    match = match_ap_from_device_lldp(
+        "demo", ap_mac="bc5a-3457-cbe0", paths=PathResolver(tmp_path)
+    )
 
     assert match.device_uuid == device.device_uuid
     assert match.device_name == "HX Switch"
@@ -4023,7 +5071,9 @@ def test_neighbor_matcher_reverse_matches_ap_mac_from_device_lldp(tmp_path):
 def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Switch", station="Station B", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(name="HX Switch", station="Station B", ip_address="10.0.0.2")
+    )
     DeviceFactRepository(database).replace_lldp_neighbors(
         device.device_uuid,
         [
@@ -4038,7 +5088,9 @@ def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
         ],
     )
 
-    match = match_ap_from_device_lldp("demo", ap_name="bc5a-3457-cbe1", paths=PathResolver(tmp_path))
+    match = match_ap_from_device_lldp(
+        "demo", ap_name="bc5a-3457-cbe1", paths=PathResolver(tmp_path)
+    )
 
     assert match.device_uuid == device.device_uuid
     assert match.local_interface == "GE2/0/23"
@@ -4047,7 +5099,9 @@ def test_neighbor_matcher_reverse_matches_ap_sysname_from_device_lldp(tmp_path):
 def test_neighbor_optical_module_matches_interface_alias(tmp_path):
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Switch", station="Station A", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(name="HX Switch", station="Station A", ip_address="10.0.0.2")
+    )
     DeviceFactRepository(database).replace_optical_modules(
         device.device_uuid,
         [
@@ -4060,7 +5114,9 @@ def test_neighbor_optical_module_matches_interface_alias(tmp_path):
         ],
     )
 
-    module = find_neighbor_optical_module("demo", device.device_uuid, "GE2/0/22", paths=PathResolver(tmp_path))
+    module = find_neighbor_optical_module(
+        "demo", device.device_uuid, "GE2/0/22", paths=PathResolver(tmp_path)
+    )
 
     assert normalize_interface_name("GE2/0/22") == "GigabitEthernet2/0/22"
     assert normalize_interface_name("XGE1/0/49") == "Ten-GigabitEthernet1/0/49"
@@ -4070,7 +5126,14 @@ def test_neighbor_optical_module_matches_interface_alias(tmp_path):
 def test_neighbor_matcher_prefers_fact_sysname_and_returns_station(tmp_path):
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Device", sysname="HX_DEVICE", station="Station A", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(
+            name="HX Device",
+            sysname="HX_DEVICE",
+            station="Station A",
+            ip_address="10.0.0.2",
+        )
+    )
     fact_repository = DeviceFactRepository(database)
     fact_repository.upsert_device_fact(
         {
@@ -4081,7 +5144,9 @@ def test_neighbor_matcher_prefers_fact_sysname_and_returns_station(tmp_path):
         }
     )
 
-    match = match_neighbor_device("demo", neighbor_sysname="HX_1", paths=PathResolver(tmp_path))
+    match = match_neighbor_device(
+        "demo", neighbor_sysname="HX_1", paths=PathResolver(tmp_path)
+    )
 
     assert match.device_uuid == device.device_uuid
     assert match.device_name == "HX Device"
@@ -4097,8 +5162,13 @@ def test_fit_ap_optical_command_guard_allows_only_expected_commands():
         "display transceiver manuinfo interface",
     }
 
-    assert all(command_guard.is_command_allowed(command, "fit_ap_collect") for command in allowed)
-    assert command_guard.is_command_allowed("display interface", "fit_ap_collect") is False
+    assert all(
+        command_guard.is_command_allowed(command, "fit_ap_collect")
+        for command in allowed
+    )
+    assert (
+        command_guard.is_command_allowed("display interface", "fit_ap_collect") is False
+    )
     assert command_guard.is_command_allowed("reboot", "fit_ap_collect") is False
 
 
@@ -4119,7 +5189,9 @@ def test_ac_log_event_names_do_not_contain_password():
 
 
 def test_database_runtime_has_no_legacy_migration_chain():
-    text = (Path(__file__).parents[1] / "src" / "netconsole" / "core" / "database.py").read_text(encoding="utf-8")
+    text = (
+        Path(__file__).parents[1] / "src" / "netconsole" / "core" / "database.py"
+    ).read_text(encoding="utf-8")
 
     assert text.count("ALTER TABLE") == 1
     assert "ALTER TABLE ac_trackside_ap_plan ADD COLUMN remark TEXT" in text
@@ -4128,21 +5200,31 @@ def test_database_runtime_has_no_legacy_migration_chain():
     assert "legacy_table_adapter" not in text
 
 
-
-
 def test_build_device_optical_status_lookup_indexes_by_name_and_sysname(tmp_path):
     """The lookup must resolve both device.name and device.sysname."""
     database = make_database(tmp_path / "data" / "sites" / "demo" / "db")
     device_repository = DeviceRepository(database)
-    device = device_repository.create(Device(name="HX Switch", sysname="HX_1", ip_address="10.0.0.2"))
+    device = device_repository.create(
+        Device(name="HX Switch", sysname="HX_1", ip_address="10.0.0.2")
+    )
     fact_repository = DeviceFactRepository(database)
     fact_repository.replace_optical_modules(
         device.device_uuid,
-        [{"interface_name": "GigabitEthernet2/0/10", "status": "warning", "collected_at": "2026-01-01T00:00:00"}],
+        [
+            {
+                "interface_name": "GigabitEthernet2/0/10",
+                "status": "warning",
+                "collected_at": "2026-01-01T00:00:00",
+            }
+        ],
     )
 
     devices = device_repository.list()
-    optical_by_device = {str(device.device_uuid): fact_repository.list_optical_modules(device.device_uuid)}
+    optical_by_device = {
+        str(device.device_uuid): fact_repository.list_optical_modules(
+            device.device_uuid
+        )
+    }
     lookup = build_switch_data_lookup(devices, optical_by_device)
 
     # Both name and sysname should resolve to the raw optical module row
@@ -4155,14 +5237,16 @@ def test_build_device_optical_status_lookup_indexes_by_name_and_sysname(tmp_path
     assert lookup.get(("nonexistent", "gigabitethernet2/0/10")) is None
 
 
-
-
 def test_trackside_ap_optical_status_computes_from_raw_data():
     """Trackside ap_optical_status must be computed real-time from raw FIT-AP rx_power."""
     switch = Device(name="HX_1", station="Station A", device_uuid="sw-1")
     rows = build_trackside_ap_business_rows(
         [switch],
-        {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}]},
+        {
+            "sw-1": [
+                {"interface_name": "GigabitEthernet2/0/10", "description": "To_AP10"}
+            ]
+        },
         {"sw-1": [{"interface_name": "GigabitEthernet2/0/10", "rx_power": "-6.10"}]},
         [
             {
@@ -4190,16 +5274,22 @@ def test_state_engine_compute_state_returns_unified_result():
     """compute_state must return a StateResult with all status fields populated."""
     from netconsole.core.state_engine import StateResult
 
-    result = compute_state({
-        "switch_rx_power": "-14.35",
-        "switch_alarm_low": "-19.00",
-        "switch_warning_low": "-16.99",
-        "fit_ap_row": {"rx_power": "-20.32", "rx_low_alarm": "-20.00", "rx_low_warning": "-17.00"},
-    })
+    result = compute_state(
+        {
+            "switch_rx_power": "-14.35",
+            "switch_alarm_low": "-19.00",
+            "switch_warning_low": "-16.99",
+            "fit_ap_row": {
+                "rx_power": "-20.32",
+                "rx_low_alarm": "-20.00",
+                "rx_low_warning": "-17.00",
+            },
+        }
+    )
     assert isinstance(result, StateResult)
     assert result.switch_status == "notice"
     assert result.ap_status == "alarm"
-    assert result.optical_status == "alarm"   # worse of notice/alarm
+    assert result.optical_status == "alarm"  # worse of notice/alarm
     assert result.severity > 0
     assert result.color == STATUS_COLORS["alarm"]
 
@@ -4234,11 +5324,13 @@ def test_state_engine_minus_20_32_alarm_unified():
 def test_state_engine_link_down_unified_pink():
     """link_down / link_abnormal must produce unified pink colour."""
     for status in ("link_down", "link_abnormal"):
-        result = compute_state({
-            "switch_rx_power": "-10.00",
-            "switch_port_status": "DOWN",
-            "fit_ap_row": {"rx_power": "-10.00", "ap_port_status": "DOWN"},
-        })
+        result = compute_state(
+            {
+                "switch_rx_power": "-10.00",
+                "switch_port_status": "DOWN",
+                "fit_ap_row": {"rx_power": "-10.00", "ap_port_status": "DOWN"},
+            }
+        )
         assert result.optical_status in ("link_abnormal",)
         assert result.color == STATUS_COLORS["link_abnormal"]
 

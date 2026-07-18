@@ -2,11 +2,11 @@
 
 ## 用途
 
-本目录承载 NetConsole 的 Python Core、FastAPI、Application Service、Repository、Parser、模型、基础设施和迁移期 Qt 实现。
+本目录承载 NetConsole 的 Python Core、FastAPI、Application Service、Repository、Parser、模型、基础设施和只读版本化资源。
 
 ## 边界
 
-永久业务代码不得依赖 Electron、Vue、FastAPI Request/Response 或 Qt 控件。`ui/`、`app.py` 和 Qt 专属 Adapter 正在 Electron-only 的 E1 阶段退出，不能作为新功能落点。
+永久业务代码不得依赖 Electron、Vue、FastAPI Request/Response 或桌面控件。旧 `ui/`、`app.py` 和 Qt 专属 Adapter 已删除，不得重新创建或作为新功能落点。
 
 ## 主要入口
 
@@ -14,7 +14,6 @@
 - `application/`、`services/`：业务用例编排和领域服务。
 - `repositories/`、`parsers/`、`infrastructure/`：存储、协议和外部适配。
 - `core/`、`models/`：共享规则、路径、版本和稳定数据模型。
-- `ui/`：迁移期 Qt 事实源，最终删除。
 
 ## 依赖关系
 
@@ -26,7 +25,7 @@
 
 ## 测试
 
-测试位于 `../../tests/`。开发阶段先运行受影响定向测试，最终组合按测试基线执行全量非 Qt 门。
+测试位于 `../../tests/`。开发阶段先运行受影响定向测试，最终组合按测试基线执行全量门禁。
 
 ## 修改规则
 

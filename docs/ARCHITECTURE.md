@@ -1,202 +1,64 @@
-# NetConsole 架构
+# NetConsole 当前架构
 
-## 1. 架构目标
+## 产品边界
 
-本文描述当前源码架构。NetConsole 以 Python Core Runtime 为主体，Electron Main 是唯一正式桌面入口；本机 Browser 和无 Shell Server 仅用于源码开发、诊断与 API 联调，不构成独立产品或发布回退。长期目标是 Python Core + FastAPI 永久业务层、Vue 永久主界面和 Electron 最终桌面外壳，Qt 源码仅保留为迁移事实源并最终删除，详见 [下一代架构](ARCHITECTURE_NEXT.md)。当前架构的首要目标仍是：UI 保持可响应，网络/磁盘/CPU 工作可取消，导出失败不污染目标文件，局点数据边界清晰，历史功能可渐进迁移而不一次性重写。
+NetConsole 当前正式桌面产品只有 Electron。Electron Main/Preload 承载窗口、受管 Backend 生命周期和白名单本机能力；Vue 3 是唯一 Renderer；FastAPI/Python Core 是永久业务层。本机 Browser 与无 Shell Server 只用于源码开发、诊断和 API 联调，不构成独立产品或失败回退。
 
-## 2. 启动与运行形态
+Qt/PySide6/QFluentWidgets 源码、入口、运行依赖和发布链已经删除。历史行为只通过 Git 与[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)追踪，不能恢复 Qt 入口规避未完成业务。
 
-Electron Main 负责正式桌面启动、窗口和受管 Backend 生命周期。无参数 `main.py` 是供 PyCharm/源码开发使用的便捷入口，会调用项目本地 Electron 编排链；同一 Python 入口还分派冻结 Backend、worker、smoke 和显式本机开发诊断：
-
-```mermaid
-flowchart TD
-    PYCHARM["PyCharm / python main.py"] --> DEV["项目本地 Electron 开发编排"]
-    DEV --> ELECTRON
-    ELECTRON["Electron Main"] --> VUE["唯一 Vue Renderer"]
-    ELECTRON -->|"--electron-backend"| MAIN["NetConsoleBackend.exe / main.py"]
-    MAIN --> MODE{"内部或诊断参数"}
-    MODE -->|"--electron-backend"| EBACKEND["Electron Runtime\n127.0.0.1:随机端口"]
-    MODE -->|"--background-worker --job"| BJ["netconsole.background_worker"]
-    MODE -->|"--export-worker / --export-worker-job"| EW["netconsole.export_worker"]
-    MODE -->|"smoke 参数"| SMOKE["构建验证入口"]
-    MODE -->|"--mode web"| BROWSER["本机浏览器诊断"]
-    MODE -->|"--mode server"| SERVER["无 Shell 诊断服务"]
-    EBACKEND --> CORE["唯一 FastAPI Core Runtime"]
-    BROWSER --> CORE
-    SERVER --> CORE
-    CORE --> VUE
-```
-
-打包态 Electron 启动独立 Backend 可执行文件并传入内部 `--electron-backend`；源码开发态由 Electron 编排器运行 `netconsole.backend.electron_runtime`。两者都使用随机回环端口、短期桌面会话令牌和受管退出握手。`--mode web` 与 `--mode server` 不导入 PySide6；前者打开本机浏览器诊断，后者默认监听 `127.0.0.1:8000` 且不主动打开浏览器。Launcher 只允许 `localhost` 或 IP loopback。`--mode auto/qt`、Qt probe、`--web-shell` 和旧提权 Qt 子入口均已删除；无参数 `main.py` 只启动 Electron，不恢复 Qt 或 Browser 产品回退。
-
-Electron 的单实例锁和退出屏障由 Main 持有；Python 诊断 Launcher 只保护自己的单个诊断进程，worker、smoke 和受管 Electron Backend 不复用该锁。Electron Runtime 统一持有并停止 Uvicorn/FastAPI lifespan。旧 Qt 页面仍有未迁移的页面级对象和业务逻辑，因此本阶段只是删除 Qt 启动壳，不能描述为全仓零 Qt或页面业务已经全部统一。
-
-开发态工作进程使用当前 Python；冻结态使用 Backend 可执行文件并带内部参数。页面和服务不得自行拼接另一套 worker 启动协议。Electron 安装包与无 Qt Backend bundle 尚未完成，当前生产资源构建只验证 `apps/web/dist`、Electron main/preload 和真实 FastAPI 生命周期。详细边界见 [Web 演进架构](WEB_ARCHITECTURE.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [Desktop WebHost 历史边界](WEB_HOST.md)。
-
-## 3. 分层与依赖方向
+## 启动链
 
 ```mermaid
 flowchart LR
-    UI["UI\n页面、对话框、widgets"] --> SVC["Services\n业务编排、解析、导出模型"]
-    UI --> VM["Models / ViewModels\n稳定数据与展示模型"]
-    SVC --> REPO["Repositories\n数据访问与查询"]
-    SVC --> PARSER["Parsers / Adapters\n外部格式与设备边界"]
-    REPO --> STORE["SQLite / JSON / 日志 / 原始文件"]
-    UI --> CORE["Core\n路径、设置、Feature、日志、版本"]
-    SVC --> CORE
-    REPO --> CORE
-    JOB["Background Job Process"] --> SVC
-    EXP["Export Process"] --> SVC
+    P["PyCharm / python main.py"] --> D["Electron 开发编排"]
+    D --> E["Electron Main / Preload"]
+    E --> V["Vue Renderer"]
+    E --> B["受管 FastAPI Backend"]
+    V --> B
+    B --> A["Application Service"]
+    A --> S["Domain Service / Parser"]
+    A --> R["Repository"]
+    A --> J["Task / Export Process"]
+    R --> DB["SQLite / 受控文件"]
 ```
 
-约束：
+- 无参数 `main.py` 与 `apps/desktop_electron` 的 `pnpm dev` 进入同一开发编排链。
+- 打包态由 Electron 以内部 `--electron-backend` 启动冻结 Backend。
+- Backend 只监听随机 loopback 端口，桌面会话令牌每次启动重新生成，不写 URL、日志或 SQLite。
+- `main.py --mode web|server` 只用于显式本机开发诊断。
 
-- UI 负责输入、状态、轻量 ViewModel 和结果呈现，不承载长任务或大规模业务计算。
-- Services 不依赖具体页面；需要向 UI 通知时使用结果对象、事件或回调。
-- Repositories 负责数据库连接、事务、查询和数据映射，不放页面文案。
-- `core/paths.py` 是路径事实来源；业务模块不得散落硬编码的本机绝对路径。
-- `resources/` 存放只读资源和规则；运行数据不得写入源码、`docs/` 或 `tests/`。
-- 用户可见文案通过 i18n 资源/服务管理；日志通过 core logger 记录稳定事件，设备密码和认证材料不得进入普通日志。
+## 永久分层
 
-## 4. 后台任务架构
+| 层 | 允许职责 | 禁止职责 |
+| --- | --- | --- |
+| Electron Main/Preload | 窗口、进程、IPC、原生选择器、受控打开/下载 | 设备命令、SQL、Parser、业务状态机、任意命令/路径桥接 |
+| Vue Renderer | 页面、表单、表格、图表、轻量显示转换 | SSH/SNMP、数据库、文件业务、命令选择、核心算法 |
+| FastAPI Router | 鉴权、DTO、Service 调用、HTTP/WS 映射 | 直接 SQL、设备连接、目录扫描、长任务和业务规则 |
+| Application Service | 用例编排、校验、任务、事务与跨服务协作 | Electron/Vue/FastAPI Request、宿主对象 |
+| Domain Service / Parser | 设备与业务规则、解析、归一化、报告 | UI、HTTP、IPC |
+| Repository | SQLite 查询、事务、迁移、分页与记录映射 | UI、设备命令和业务判定 |
 
-### 4.1 普通 Background Job
+## 后台任务与导出
 
-```mermaid
-sequenceDiagram
-    participant P as UI Page
-    participant M as Qt BackgroundProcessManager
-    participant T as TaskApplicationService/Runtime
-    participant W as background_worker
-    participant R as JobRunner/Registry
-    participant H as Domain Handler
-    P->>M: start_job(JobSpec)
-    M->>T: prepare(JobSpec)
-    T->>T: 写 .local/runtime/cache/background_jobs/*.json
-    M->>W: QProcess 启动
-    W->>R: 加载任务并运行
-    R->>H: handler(JobContext)
-    H-->>R: progress / result
-    R-->>W: JobResult
-    W-->>M: UTF-8 JSONL 字节
-    M->>T: 解析/状态/终态
-    T-->>M: 结构化事件
-    M-->>P: progress / finished / error / cancelled
-```
+预计超过 300ms 的网络、磁盘、解析、批量和 CPU 工作进入 Job Center。`TaskApplicationService/TaskRuntime` 维护七状态、JSONL 事件、协作取消和 `tasks.db`；`LocalProcessAdapter` 负责 Worker 进程和 Windows 进程树回收。所有正式导出进入独立 Export Process，先写临时文件，成功后原子替换。
 
-关键契约：
+页面关闭不等于停止任务。任务取消、重试、Artifact 下载和打开能力必须由任务 owner 明确授权，不能由前端伪造状态。
 
-- `JobSpec` 包含 `job_id`、`task_type`、`params` 和取消文件路径。
-- worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
-- 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
-- Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
-- Job Registry 按 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、Traffic 等活动领域模块组织；网络工具无线扫描的既有任务由独立兼容 handler 承接。测试校验必需能力集合，不再绑定易漂移的任务总数。
-- 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
-- `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；迁移期 Qt/QProcess Adapter 已归位到 `src/netconsole/ui/job_process_manager.py`，正式 Electron/FastAPI 路径不依赖它。FastAPI 已提供任务路由与 `/ws/tasks`。
-- `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
-- `Agent Router -> AgentControllerService -> AgentHttpClient -> Go Agent` 承担配置与健康控制面；Traffic 业务由 `TrafficTestApplicationService -> AgentTrafficAdapter/Supervisor` 在 Controller 进程内调用，并映射到 Task Center。`AgentRepository -> agents.db` 分离配置和运行快照，`AgentEventHub` 独立提供 `/ws/agents`，不复用任务或 Traffic 事件含义。
+## 数据与资源
 
-设备批量连接测试（默认 50、上限 200）和批量详情采集（默认 20、上限 50）目前仍是专用线程/线程池路径。它们有取消、逐设备进度和错误隔离，但不属于上述进程 Job 协议。
+- 版本唯一来源：`src/netconsole/core/version.py`。
+- Feature 唯一来源：`src/netconsole/core/feature_registry.py`。
+- 路径唯一来源：`src/netconsole/core/paths.py`。
+- 开发数据位于 `.local/`，打包态位于系统应用数据目录；运行数据不得写回源码。
+- 主应用、Task、Agent、Traffic、Online MR 与 MESH 数据各有独立 Repository/领域路径，不跨线程或进程共享 SQLite connection。
+- 随包 fping/iPerf 唯一来源为 `resources/tools/`，构建不得联网下载业务工具。
 
-### 4.2 Export Process
+## 当前完成边界
 
-```mermaid
-sequenceDiagram
-    participant P as UI Page
-    participant M as ExportProcessManager
-    participant W as export_worker
-    participant E as Export Handler
-    P->>M: start_export(ExportJob)
-    M->>M: 写 .local/runtime/cache/export_jobs/*.json
-    M->>W: QProcess 启动
-    W->>E: 读取 repository/file/jsonl 数据
-    E->>E: 写 output.tmp
-    E-->>W: 成功
-    W->>W: os.replace(tmp, output)
-    W-->>M: UTF-8 JSONL 终态
-    M-->>P: finished / error / cancelled
-```
+“Qt 已删除”只表示技术栈和启动架构完成收口，不表示所有业务都通过人工或真实设备验收。模块状态以[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)、Navigation Registry、Feature Registry 和测试为准；自动测试不能把 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING` 提升为 `COMPLETE`。
 
-正式导出必须进入独立进程。当前通用注册导出类型 27 个，另有 `trackside_ap_business` 和 `mesh_link_detail` 两个专用入口。默认优先传递数据库路径、文件路径、查询条件或 JSONL，而不是把大数据行塞进 Job JSON；兼容 inline rows 仅显式启用且上限 5000 行。
+SNMP Center、通用 MIB/OID 平台和无线勘测属于批准删除项。设备管理只保留 SNMP v1/v2c 基础识别；网络工具无线扫描是独立能力。
 
-失败或取消时删除临时文件，只有完整成功才原子替换目标文件。页面不得先创建一个看似成功的半成品；WPS/Excel 占用目标文件时，应提示用户关闭占用后重试。
+## 架构门
 
-## 5. 数据与 SQLite
-
-```mermaid
-flowchart TD
-    ROOT["应用根目录"] --> DATA["data/ 持久业务数据"]
-    ROOT --> RUN["runtime/ 临时协议、缓存、应用日志"]
-    DATA --> GLOBAL["global/ 历史全局数据（如存在则保留）"]
-    DATA --> SITES["sites/<site>/ 局点数据"]
-    SITES --> DB["db/ devices.db / tasks.db / agents.db"]
-    SITES --> RAIL["rail_transit/ 原始、解析、输出"]
-```
-
-- 通用 SQLite 连接默认 timeout 30 秒、`busy_timeout` 10 秒；需要 WAL 的 repository 显式调用 WAL 初始化，并采用 `synchronous=NORMAL`。
-- 并发 worker 各自创建连接，不跨线程共享 SQLite connection。
-- 设备管理、FIT AP 资源等主应用数据库默认保持兼容；会话解析数据库和可重建分析表可在明确范围内重构。
-- 自动清理只针对受控的运行日志、缓存和临时目录；局点业务文件、数据库、配置和备份不得自动删除。
-- `tasks.db` 是持久任务索引，不承担业务原始数据或大结果存储；大结果只记录 `result_path`。
-
-完整目录见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
-
-## 6. Feature 与 UI
-
-- 一级模块和子能力以 `core/feature_registry.py` 为唯一注册表。
-- 经批准删除的 Feature ID 进入 `REMOVED_FEATURE_IDS` 防御集合，profile、开发覆盖和直接页面入口都不能重新开启。SNMP Center 与无线勘测已从活动 Registry、代码、资源和发布依赖中删除。
-- 新页面、Tab、动作或按钮必须登记 Feature key，通过 `FeatureGate` 统一控制可见性和可用性。
-- 表格必须使用 item/delegate，不为每个单元格创建 QWidget；首屏可自动列宽，之后尊重用户拖动并持久化。
-- 对话框和复杂页面要覆盖 1920×1080，工具栏可滚动或换行，内容使用 splitter/scroll area，深浅主题同时保证文本和状态颜色可辨认。
-
-详见 [FEATURE_MODULES.md](FEATURE_MODULES.md) 和 [ui_table_guidelines.md](ui_table_guidelines.md)。
-
-## 7. 关键业务边界
-
-- Online MR：原始日志是事实来源；实时解析用于视图，正式离线解析由 `online_mr_parse` Job 完成，报告由 Export Process 输出。
-- 设备 SNMP：只允许 v1/v2c 的只读连接测试和基础识别，复用设备管理 Application Service；不提供 v3、RW community、SET、通用查询、批量采集、MIB/OID 字典、Trap、Poll 或拓扑平台。
-- AP Identity：只读 shadow/diagnostics，不改旧 resolver、数据库 schema、workbook 字段或业务统计；阶段 8.3 可见 UI 继续暂缓。
-- MR/Mesh：目录数据库可仅作索引，源文件明细应解析到 `source_files.parsed_db_path` 指向的数据库；大样本图表按可见窗口或保留关键点的下采样结果绘制。
-
-阶段 5B-3 的 Online MR LOCAL Application 入口复用现有 `online_mr_collection_start` Worker，不创建第二套 Core。Worker 内纯 Python `OnlineMrTrafficCoordinator` 持有 fping/iPerf 子线程：停止时先显式 stop/join Traffic，再关闭 SSH collector/writer，稳定 metadata 后原子打包，最后退出 Worker 让 Task Runtime 发布终态。强停由 Application Service 先有界协作等待，再通过 `LocalProcessAdapter` 终止进程树；无法确认 flush 时保留 raw、不发布新 ZIP，并把 Session/Mapping 收敛到带警告终态。阶段 5B-4 已让 Legacy Qt 页面通过 `OnlineMrCollectorWorker` 兼容 Adapter 使用该入口；Qt signals、实时 raw tail、快照和页面状态绑定继续保留，页面不再为这些会话重复启动自有 Traffic Worker。
-
-阶段 5B-7 增加纯 Python Agent package importer：只处理已下载 ZIP，在所属局点 staging 中校验路径、公共 JSON、raw 契约和哈希后原子落入 Online MR Session，并登记同局点终态 Task/Mapping；同哈希幂等、不同哈希冲突且不覆盖。该能力现由 5B-13A/13B 的 Agent executor 在远端任务终态后调用，不改变 LOCAL 生命周期。
-
-阶段 5B-8 在现有 `AgentHttpClient` 统一响应和鉴权逻辑上增加 Online MR 类型化客户端，可查询 ping、Agent/工具状态、任务和包列表，并将受大小、超时和取消约束的 ZIP 流式下载到所属局点临时目录后交给 5B-7 importer。固定 start/status/normal stop 路由现由 5B-13A executor 调用；不接受任意 URL、路径或命令。
-
-阶段 5B-11 在 Legacy Qt Online MR 页面增加 Agent 已有采集包同步/导入入口。网络查询、下载和导入通过 `online_mr_agent_packages_sync` / `online_mr_agent_package_import` Worker Process 执行；唯一 IP 候选才允许自动导入，`already_imported` 幂等跳过，`conflict` 不覆盖，无匹配或多匹配只允许经人工选择正式设备并二次确认。Token 只通过该 Worker 的临时环境传递，不进入 Job JSON、SQLite、日志或事件。该入口不开放远程 start/stop、`executor=AGENT` 或 Go Agent 修改，也不改变 LOCAL 生命周期。
-
-阶段 5B-13A/13B 在 `OnlineMrApplicationService` 下增加默认关闭的单 Agent executor 与 Desktop WebHost AGENT 适配层。Vue 只在列车通信 MR 详情的独立页签提交白名单 DTO；Router 严格校验 Desktop、`127.0.0.1` 和短期 Cookie，Service 只从 Agent Profile/会话凭据解析连接信息。远程轮询、时长、重启恢复、下载和导入都留在 Controller；Web 不提供强停、删除、任意命令或 URL。
-
-Online MR 会话生命周期：
-
-```mermaid
-stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> CONNECTING
-    CONNECTING --> INITIALIZING
-    INITIALIZING --> COLLECTING
-    COLLECTING --> RECONNECTING: 连接中断且允许重连
-    RECONNECTING --> COLLECTING: 重连成功
-    COLLECTING --> STOPPING: 用户停止
-    STOPPING --> STOPPED: 协作停止并打包
-    STOPPING --> FORCED_STOPPED: 强制停止
-    CONNECTING --> FAILED: 启动失败
-    INITIALIZING --> FAILED: 初始化失败
-    COLLECTING --> FAILED: 不可恢复错误
-    CREATED --> ABORTED: 启动前中止
-    STOPPED --> [*]
-    FORCED_STOPPED --> [*]
-    FAILED --> [*]
-    ABORTED --> [*]
-```
-
-## 8. 关停与清理
-
-`ShutdownManager` 负责登记内部任务和子进程。关闭应用时应请求协作取消，必要时终止内部进程；按策略标记为外部工具的进程不由应用盲目 kill。自动清理在主窗口启动后延时执行，不应阻塞首屏。
-
-## 9. 架构变更准入
-
-新增功能至少回答：它是否位于永久架构、运行在哪个进程/线程、如何取消、进度如何传递、数据从哪里读写、Feature key 是什么、失败是否会留下半成品、如何验证。新用户功能默认经 Application Service -> FastAPI -> Vue 建设，不新增 Qt 业务页面；若预计超过 300 ms，默认进入 Job Center；若产生用户文件，默认进入 Export Process。
-
-打包环境由 `main.py` 复用同一入口分派冻结 worker；发布目录和外部工具边界见 [BUILD_AND_RELEASE.md](BUILD_AND_RELEASE.md)。仓库现有独立的 Windows Go Agent V1，并已接入 Python 多 Agent 配置、健康检查、版本、能力、iPerf/fping 调度和默认关闭的单 Agent Online MR 远程执行；CentOS Agent、主动注册、上传与多 Agent MR 编排仍未接入。边界见 [独立 Agent](AGENT.md)、[Agent Controller](AGENT_CONTROLLER.md) 与 [统一流量测试架构](TRAFFIC_TEST_ARCHITECTURE.md)。
+新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。架构边界、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)及[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)。

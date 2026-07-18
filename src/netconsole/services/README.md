@@ -6,7 +6,7 @@
 
 ## 边界
 
-永久 Service 必须是可独立测试的 Python 代码，不依赖 Qt 控件、Electron、Vue 或 FastAPI Request/Response。当前少量 Qt/QProcess/QThread 适配文件属于 E1 待删除兼容层，不得被新代码复用。
+永久 Service 必须是可独立测试的 Python 代码，不依赖桌面控件、Electron、Vue 或 FastAPI Request/Response。Qt/QProcess/QThread 适配层已删除，不得重新创建或被新代码复用。
 
 ## 主要入口
 

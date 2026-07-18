@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-- `netconsole/`：Python Core、FastAPI、Application Service、Repository、Parser 和迁移期 Qt 源码。
+- `netconsole/`：Python Core、FastAPI、Application Service、Repository、Parser 和只读版本化资源。
 
 ## 依赖关系
 

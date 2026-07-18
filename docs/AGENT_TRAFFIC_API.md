@@ -84,7 +84,7 @@ result.json
 
 停止、失败和异常退出会尽力提交当前摘要。`packet_size` 在 Agent 和本地 Python fping Runner 中都实际传给 `-b`；本地默认与 Agent 使用相同的 1～65507 字节业务约束。
 
-## 5. iPerf 3.20
+## 5. iPerf 3.21
 
 现有 `/api/v1/iperf/server/*` 和 `/api/v1/iperf/client/*` 保持兼容。本阶段增加以下强类型参数：
 

@@ -1,6 +1,6 @@
 # Job Center 使用说明
 
-Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理和配置采集主页只保留紧凑摘要与打开入口；文件管理因 Qt 对等要求保留业务下载队列，但通用日志、跨模块筛选和统一详情仍进入任务窗口。停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备 Export 还必须同时持有当前进程内的受管 Export spec、与持久化 `ExportJob` 一致的专用 cancel 路径和仍活跃的受管进程，服务重建、spec/进程丢失或终态竞态均拒绝写 `STOPPING`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、类型和受控 endpoint。关闭任务窗口不改变后台任务生命周期。
+Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理和配置采集主页只保留紧凑摘要与打开入口；文件管理保留领域下载队列，但通用日志、跨模块筛选和统一详情仍进入任务窗口。停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备 Export 还必须同时持有当前进程内的受管 Export spec、与持久化 `ExportJob` 一致的专用 cancel 路径和仍活跃的受管进程，服务重建、spec/进程丢失或终态竞态均拒绝写 `STOPPING`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、类型和受控 endpoint。关闭任务窗口不改变后台任务生命周期。
 
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
@@ -15,19 +15,19 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `job_runner.py`：统一捕获取消、异常和 traceback。
 - `worker_protocol.py`：UTF-8 JSONL 编码、解析和分块缓冲。
 - `services/job_center/runtime/task_state.py`：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED` 状态契约。
-- `services/job_center/runtime/task_event_hub.py`：统一任务 Worker/Service 事件，提供 Qt callback 与 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
+- `services/job_center/runtime/task_event_hub.py`：统一任务 Worker/Service 事件并提供 WebSocket stream；Agent 配置和健康状态使用独立 `AgentEventHub`。
 - `services/job_center/runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
-- `src/netconsole/ui/job_process_manager.py`：迁移期 Qt/QProcess Adapter 和 Qt signals；不属于永久 Job Center Service，Qt 删除时一并删除。
+- 历史 `src/netconsole/ui/job_process_manager.py` 已删除；其状态、取消和事件职责分别由永久 Service/Runtime/Adapter 承担，旧路径只在最终迁移矩阵中追溯。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
 
 ## Worker Process 约束
 
 - 普通任务由 `background_worker.py` 执行，导出由 `export_worker.py` 执行。
-- Worker Process 不导入 PySide6 UI 页面，不访问 QWidget。
+- Worker Process 不导入 Renderer、Electron 或 FastAPI 对象，也不访问 DOM。
 - 网络、重 IO、重 CPU、解析和批量操作在进程内创建自己的 service/repository/数据库连接。
 - stdout 只写统一 JSONL，原始日志和诊断信息进入 stderr 或结构化 log event。
 
@@ -35,7 +35,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 - `JobSpec` 是普通后台任务的正式模型。
 - `BackgroundJob` 是 `JobSpec` 的兼容名称，旧导入继续有效。
-- `BackgroundProcessManager`/`TaskManager` 仅是迁移期 Qt Adapter 的兼容类名；永久入口是 `TaskApplicationService`、`TaskRuntime`、`LocalProcessAdapter` 与领域 handler。
+- 永久入口是 `TaskApplicationService`、`TaskRuntime`、`LocalProcessAdapter` 与领域 handler；已删除的 Qt Manager/Adapter 名称不得重新作为兼容入口。
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
@@ -47,9 +47,9 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约。启动连接失败时 Task 为 `FAILED`，已创建会话 metadata 同步为 `FAILED`；显式恢复核对可将没有活动 Task 宿主的旧会话标为 `ABORTED`，但不触发解析、打包或 raw 清理。
 
-阶段 5B-3 的 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用现有协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile。阶段 5B-5 后 Legacy Qt 兼容 Adapter 只接受该 Application Service 入口，重复停止幂等，页面不再通过旧 manager 二次取消或为新会话直接停止 fping/iPerf；AGENT 仍返回不支持。
+LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile，重复停止不得二次取消或重复生成 ZIP。
 
-阶段 5B-11 的 Qt Agent 包入口新增 `online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 通过单个 QProcess 的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载，Worker 不访问 QWidget；远程任务 start/stop 不在这两个 handler 中。
+`online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 是两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 只通过受管进程的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载；远程任务 start/stop 不在这两个 handler 中。
 
 ## Task Center API
 
@@ -127,46 +127,23 @@ HANDLERS["device_status_refresh"] = device_status_refresh
 
 应用日志与安全维护复用 `system_maintenance_cleanup`：扫描只返回白名单候选，正式清理必须携带 1～365 天、非空且不重复的类别白名单和明确确认。Worker 删除前重新扫描，并在每项后写带 `details` 的标准进度；取消保留未处理文件。CSV/TXT/XLSX 通过现有 Export Process 和公共 `WebArtifactStore` 最终化，Task DTO 与 Renderer 只获得安全显示名和 Artifact ID，不获得服务端物理路径。
 
-## 从 UI 提交普通任务
+## 从 Vue 提交普通任务
 
-```python
-job_id = submit_background_job(
-    self,
-    BackgroundJob(task_type="device_status_refresh", params={"device_uuid": uuid}),
-    progress_title="正在刷新设备状态",
-    on_finished=self._apply_result,
-    on_failed=self._show_error,
-)
-```
-
-helper 创建非模态 QProgressDialog、管理取消、过滤 job_id，并在终态清理 controller。页面不得在回调中继续做重查询或解析。
+Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Application Service 创建或复用 Job，并返回安全 task id/状态。页面通过 Task API 或 WebSocket 恢复状态，取消时调用 owner 的正式取消入口。页面不得自行创建进程、解析 JSONL 或在完成回调中做重查询/解析。
 
 ## 新增导出任务
 
 1. 在 `services/export/export_handlers.py` 或专用导出 service 实现 handler。
-2. UI 只传数据库路径、筛选、ID、输出路径和轻量上下文。
+2. UI 只传筛选、业务 ID、格式和明确确认；数据库路径、临时输出根与 Artifact 由 Application Service 解析。
 3. 由导出进程读取数据、生成临时文件、完成后替换目标文件。
 4. 通过同一 JSONL 协议回传进度和终态。
 
-```python
-submit_export_task(
-    self,
-    ExportJob(
-        job_id=uuid.uuid4().hex,
-        job_type="mesh_link_detail",
-        db_path=str(db_path),
-        output_path=str(output_path),
-        filters=filters,
-    ),
-)
-```
-
-不得从 QTableWidget 遍历全量行后塞进 Job。小型静态数据的 inline 例外必须符合现有导出 builder 限制。
+不得从 Renderer 当前表格遍历无上限行后塞进 Job。小型静态数据的 inline 例外必须符合现有导出 builder 限制。
 
 ## 取消任务
 
-- 普通任务：`manager.cancel_job(job_id)`。
-- 导出任务：`manager.cancel_export(job_id)`。
+- 普通任务：调用 owner Application Service 的 `cancel` 入口。
+- 导出任务：调用 Export Application Service 的专用取消入口，且必须确认受管 spec/进程仍存在。
 - manager 写入 UTF-8 取消文件并请求进程退出；超时后 kill。
 - handler 应在批次边界检查取消文件，返回 cancelled 终态。
 - 失败/取消后 manager 清理 Job、cancel 和临时输出文件。
@@ -185,10 +162,10 @@ submit_export_task(
 
 - `online_mr_collection_start` 是持续运行的本地 Worker Process 任务，而不是一次性查询；任务建立 SSH 会话后持续采集并把状态作为 JSONL progress 事件返回。
 - 页面只提交可序列化配置。设备连接目标由 Worker 使用自己的 repository/数据库连接重建，页面不携带 Netmiko 会话对象。
-- terminal monitor、隐藏 probe 模式和 ar5drv 命令序列集中在 `services/online_mr/collection_commands.py`，原始设备回显只写 session 的 UTF-8 raw log。
-- 用户停止由 `BackgroundProcessManager.cancel_job()` 写取消文件。在线 MR 使用可配置的清理宽限期，让 handler 协作取消采集循环、关闭 SSH 和文件句柄、更新会话状态并完成打包；超时仍由 manager 强制结束，避免孤儿进程。
+- terminal monitor、隐藏 probe 模式和 ar5drv 命令序列集中在 `src/netconsole/services/online_mr/collection_commands.py`，原始设备回显只写 session 的 UTF-8 raw log。
+- 用户停止由对应 owner Application Service 请求 TaskRuntime 写入协作取消。在线 MR 使用可配置的清理宽限期，让 handler 关闭采集循环、SSH 和文件句柄、更新会话状态并完成打包；超时再由 LocalProcessAdapter 强制回收进程树。
 - 停止后的压缩包原子写入 session 的 `outputs` 目录；失败时删除临时包但保留完整 session/raw 目录。
-- 页面可用 QTimer 轻量跟踪已落盘日志尾部，但不得读取后在 UI 线程做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
+- Vue 可通过受控游标轮询或 WebSocket 跟踪日志尾部，但不得在 Renderer 做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
 - 当前执行端仍是本地 Worker Process，未实现 Windows/CentOS Agent；命令、配置、路径、会话与打包均已脱离 UI，为后续替换执行端保留边界。
 
 ## AC 资源刷新 Job
@@ -224,7 +201,7 @@ submit_export_task(
 ## 避免 UI 卡死
 
 - UI 不直接等待进程，不调用 `subprocess.wait()`。
-- QProcess 的 stdout/stderr 由信号增量读取。
+- LocalProcessAdapter 对 stdout/stderr 做可用字节增量读取，不等待缓冲区填满或进程退出。
 - 大表结果分页或写入结果文件，避免通过 signal 传输超大对象。
 - progress slot 只更新控件，不执行查询、解析、导出或逐行昂贵布局刷新。
 
@@ -244,21 +221,20 @@ submit_export_task(
 - 成功后使用原子替换；异常、取消、启动失败和进程退出均执行清理。
 - 占用错误保留“关闭 WPS/Excel 后重试”的用户提示。
 
-## 迁移旧 QThread / QProcess
+## 永久任务接入核对
 
-1. 标记页面内 worker 的输入、进度、结果、错误和取消。
-2. 将重逻辑移到 Domain Service 或 Export handler。
-3. 用 Job/ExportJob 表达可序列化输入。
+1. 标记业务操作的输入、进度、结果、错误、取消和恢复语义。
+2. 将重逻辑放入 Application/Domain Service 或 Export handler。
+3. 用 Job/ExportJob 表达最小可序列化输入。
+4. 复用统一 Service/Runtime/Adapter，不在页面创建进程或解析 JSONL。
+5. 回归成功、失败、取消、窗口关闭、应用退出和冻结模式。
 
-迁移完成不能只以“已注册 task type”为依据。还需确认生产页面已切换、handler 不再调用对应 legacy 逻辑、取消/失败/冻结态经过验证，并清理或明确保留旧入口。当前状态和逐领域清单见 [REFACTOR_MAP.md](REFACTOR_MAP.md)。
+完成不能只以“已注册 task type”为依据。还需确认生产页面已接线、owner capability 正确、取消/失败/恢复/冻结态经过验证，且不存在第二套状态源。当前状态见[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
 
 ## 禁止事项
 
-- Worker/handler 不得操作 QWidget 或持有页面对象。
-- Job params 不得传 SQLite connection、Repository/Client 实例、Qt 对象或不可 JSON 序列化对象。
+- Worker/handler 不得操作 DOM/Electron 对象或持有页面对象。
+- Job params 不得传 SQLite connection、Repository/Client 实例、Renderer/Electron 对象或不可 JSON 序列化对象。
 - 子进程协议 stdout 不得混入普通 print、设备回显或第三方库输出；诊断统一进入 stderr/日志。
 - 不得绕开 `.cancel` 和 manager 生命周期另造取消语义，也不得同时发出 finished/failed/cancelled 多个终态。
-- 不得在 UI 线程执行大型 Excel/CSV/PDF/图片导出；正式文件导出统一走 Export Process。
-4. 用统一 manager/helper 替代页面内进程创建和 JSON 解析。
-5. 保留旧入口 shim，先更新调用方，再删除不再使用的页面 worker。
-6. 回归成功、失败、取消、页面关闭和应用冻结模式。
+- 不得在 Renderer 执行大型 Excel/CSV/PDF/图片导出；正式文件导出统一走 Export Process。

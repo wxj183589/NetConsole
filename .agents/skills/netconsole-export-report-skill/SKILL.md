@@ -18,7 +18,7 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 不应触发：
 
 - “修改实时 MR 采集。”
-- “只调整 QTableWidget 的列宽或做不落文件的数据分析。”
+- “只调整 Vue 表格的列宽或做不落文件的数据分析。”
 
 # 输入与输出
 
@@ -31,12 +31,12 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 - `docs/export_process_policy.md`、`docs/JOB_CENTER.md`、`docs/DEVELOPMENT_RULES.md`。
 - `src/netconsole/export_worker.py`、`src/netconsole/services/export/`、`src/netconsole/services/export_task_models.py`。
 - `src/netconsole/services/excel_autosize.py`、`src/netconsole/services/excel_report_utils.py`、`src/netconsole/services/excel_stream_exporter.py`。
-- 目标报告 service、`src/netconsole/ui/export_action_helper.py`、`src/netconsole/utils/excel_workbook.py`。
+- 目标报告 Service、对应 FastAPI Router/Vue 下载入口、`src/netconsole/utils/excel_workbook.py`。
 - `tests/test_export_process_framework.py` 和目标报告测试。
 
 # 工作流程
 
-1. UI 只构造 `ExportTaskSpec`/`ExportJob` 并调用 `submit_export_task()`；不得直接 `Workbook.save()`、`to_excel()` 或 `savefig()`。
+1. Vue 只提交受控导出 DTO；Application Service 构造 `ExportTaskSpec`/`ExportJob` 并调用 `submit_export_task()`。Renderer/Router 不得直接 `Workbook.save()`、`to_excel()` 或 `savefig()`。
 2. 优先传数据库/结果文件/筛选/ID等数据源；不得遍历全量 UI 表格传入 Worker。仅符合现有 builder 限制的小型静态 inline rows 可例外并说明原因。
 3. Worker 写目标旁临时文件；成功后 `os.replace` 原子替换，失败/取消/启动异常清理 tmp、Job 和 cancel 文件。
 4. handler 分阶段报告查询、生成、样式、落盘；UI 显示进度、失败原因、取消结果和打开目录入口。

@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import os
 import subprocess
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 from netconsole.core.shutdown_manager import ShutdownManager
-
-
 
 
 class FakeTask:
@@ -53,8 +48,6 @@ class FakeProcess:
             self.returncode = 0
             return 0
         raise subprocess.TimeoutExpired(self.args, timeout)
-
-
 
 
 def test_shutdown_request_exit_only_runs_once() -> None:
@@ -114,7 +107,9 @@ def test_shutdown_manager_ignores_external_tool_processes() -> None:
     manager = ShutdownManager()
     process = FakeProcess()
 
-    handle = manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
+    handle = manager.register_process(
+        process, "WinSCP", kind="external_tool", shutdown_policy="ignore"
+    )
     assert handle is not None
     assert manager.snapshot().process_count == 0
     assert manager.snapshot().external_process_count == 1
@@ -131,7 +126,9 @@ def test_shutdown_manager_ignores_late_external_tool_processes() -> None:
     process = FakeProcess()
     assert manager.request_exit("test") is True
 
-    handle = manager.register_process(process, "SecureCRT", kind="external_tool", shutdown_policy="ignore")
+    handle = manager.register_process(
+        process, "SecureCRT", kind="external_tool", shutdown_policy="ignore"
+    )
 
     assert handle is not None
     assert process.terminated is False
