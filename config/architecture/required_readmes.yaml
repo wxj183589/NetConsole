@@ -1,0 +1,21 @@
+[
+  "apps/agent/README.md",
+  "apps/desktop_electron/README.md",
+  "apps/web/README.md",
+  "apps/web/src/layouts/README.md",
+  "apps/web/src/stores/README.md",
+  "apps/web/src/styles/README.md",
+  "apps/web/src/theme/README.md",
+  "config/architecture/README.md",
+  "scripts/architecture/README.md",
+  "src/netconsole/README.md",
+  "src/netconsole/application/README.md",
+  "src/netconsole/backend/README.md",
+  "src/netconsole/core/README.md",
+  "src/netconsole/infrastructure/README.md",
+  "src/netconsole/models/README.md",
+  "src/netconsole/parsers/README.md",
+  "src/netconsole/repositories/README.md",
+  "src/netconsole/services/README.md",
+  "tests/architecture/README.md"
+]

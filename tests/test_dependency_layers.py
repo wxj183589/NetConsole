@@ -9,6 +9,8 @@ from scripts.build.check_runtime_deps import (
     check_locked_environment,
     check_python_environment,
 )
+from scripts.architecture.checks import architecture_boundary_findings
+from scripts.architecture.guard_core import apply_exceptions, load_exceptions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -218,3 +220,10 @@ def test_release_installer_applies_constraints() -> None:
 
     assert '"constraints.txt"' in source
     assert "check_locked_environment" in source
+
+
+def test_python_and_typescript_layer_guards_have_no_unwaived_debt() -> None:
+    active, _ = apply_exceptions(
+        architecture_boundary_findings(), load_exceptions()
+    )
+    assert active == ()

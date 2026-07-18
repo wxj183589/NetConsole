@@ -27,6 +27,11 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
 from netconsole.services.job_center.runtime import TaskApplicationService, TaskState
 from netconsole.services.job_center.worker_protocol import encode_event
+from scripts.architecture.checks import (
+    architecture_boundary_findings,
+    ui_business_logic_findings,
+)
+from scripts.architecture.guard_core import apply_exceptions, load_exceptions
 
 
 def test_runtime_mode_and_api_dtos_are_stable() -> None:
@@ -474,3 +479,14 @@ def test_task_event_bus_isolates_host_consumer_failures(tmp_path: Path) -> None:
     service.abandon("isolated-job")
 
     assert received == ["state", "state", "state"]
+
+
+def test_web_and_electron_ast_guards_have_no_unwaived_findings() -> None:
+    exceptions = load_exceptions()
+    findings = [
+        item
+        for item in architecture_boundary_findings()
+        if item.rule_id.startswith("TS_") or item.rule_id == "LEGACY_NAV_FIELD_SCOPE"
+    ]
+    active, _ = apply_exceptions(findings + ui_business_logic_findings(), exceptions)
+    assert active == ()

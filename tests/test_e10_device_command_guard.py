@@ -1,5 +1,7 @@
 import pytest
 
+from scripts.architecture.checks import device_command_findings
+
 from netconsole.services.command_guard import (
     CommandRejected,
     is_command_allowed,
@@ -67,3 +69,7 @@ def test_operation_guard_requires_the_exact_registered_sequence(mutation: str) -
             context="device_collect",
             operation_id=DEVICE_INVENTORY_OPERATION_ID,
         )
+
+
+def test_architecture_command_guard_reuses_strict_command_audit() -> None:
+    assert device_command_findings() == []
