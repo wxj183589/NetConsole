@@ -15,7 +15,7 @@ const typescriptCli = resolve(dirname(require.resolve('typescript/package.json')
 const buildScript = resolve(appRoot, 'scripts', 'build.mjs')
 const devPort = 5173
 const devUrl = `http://127.0.0.1:${devPort}`
-const smoke = process.argv.includes('--smoke')
+const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
 
 function spawnNode(args, options = {}) {
   return spawn(process.execPath, args, {

@@ -46,6 +46,7 @@ describe('Electron shell product contract', () => {
     expect(devSource).toContain("require.resolve('typescript/package.json')")
     expect(devSource).toContain('Electron main/preload build')
     expect(devSource).toContain('delete electronEnv.ELECTRON_RUN_AS_NODE')
+    expect(devSource).toContain("process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'")
   })
 
   it('keeps one hide-on-close task window without stopping the backend', () => {
