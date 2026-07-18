@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -17,10 +18,12 @@ from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
-BACKENDS = ("pyinstaller", "nuitka")
+BACKENDS = ("pyinstaller",)
 BUILD_EDITIONS = ("internal", "customer", "engineer", "both", "all")
-NUITKA_ALLOWED_RELEASE_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
-PYINSTALLER_ALLOWED_APP_ITEMS = frozenset({"NetConsole.exe", "_internal", "data", "runtime", "tools"})
+BACKEND_ALLOWED_RELEASE_ITEMS = frozenset(
+    {"NetConsoleBackend.exe", "_internal", "tools"}
+)
+EDITION_STAGING_ALLOWED_ITEMS = BACKEND_ALLOWED_RELEASE_ITEMS | {"runtime"}
 FORBIDDEN_RELEASE_DIR_NAMES = frozenset({"docs", "tests", "project", "netconsole"})
 
 
@@ -34,37 +37,25 @@ def main() -> int:
     parser.add_argument("--skip-install", action="store_true", help="do not install build dependencies")
     parser.add_argument("--no-smoke-test", action="store_true", help="skip source and packaged smoke tests")
     parser.add_argument("--no-zip", action="store_true", help="do not create release zip")
-    parser.add_argument("--jobs", default="8", help="Nuitka worker count")
     parser.add_argument("--dry-run", action="store_true", help="print command plan without compiling")
-    parser.add_argument("--build-editions", choices=BUILD_EDITIONS, default="both", help="release editions to generate")
-    parser.add_argument("--feature-profile", default=None, help="feature profile for single-edition customer/internal builds")
-    parser.add_argument("--admin-unlock-password", default=None, help="customer edition temporary full-mode unlock password")
     args = parser.parse_args()
 
     try:
         config = load_config()
-        editions = selected_editions(args.build_editions)
-        validate_config(config, editions=editions)
+        validate_config(config)
         print(f"APP_NAME={config.app_name}")
         print(f"APP_VERSION={config.app_version}")
         print(f"BACKEND={args.backend}")
         if args.dry_run:
-            print_command_plan(config, args.backend, args.jobs)
+            print_command_plan(config)
             return 0
         if not args.skip_install:
             install_dependencies(args.backend)
         preflight(config, smoke_test=not args.no_smoke_test)
-        if args.backend == "pyinstaller":
-            payload = build_pyinstaller(config, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
-        else:
-            payload = build_nuitka(config, jobs=args.jobs, smoke_test=not args.no_smoke_test, make_zip=not args.no_zip)
-        create_edition_releases(
+        build_pyinstaller(
             config,
-            payload,
-            args.build_editions,
-            feature_profile=args.feature_profile,
+            smoke_test=not args.no_smoke_test,
             make_zip=not args.no_zip,
-            admin_unlock_password=args.admin_unlock_password or os.environ.get("NETCONSOLE_ADMIN_UNLOCK_PASSWORD"),
         )
         assert_root_clean(config.root)
         validate_release_version_tree(config.release_version_dir)
@@ -97,10 +88,19 @@ def validate_config(config: BuildConfig, *, editions: tuple[str, ...] = ()) -> N
 
 
 def install_dependencies(backend: str) -> None:
-    if backend == "pyinstaller":
-        run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt"])
-        return
-    run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-U", "nuitka", "ordered-set", "zstandard"])
+    if backend != "pyinstaller":
+        raise BuildError(f"Unsupported Python backend builder: {backend}")
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-r",
+            "requirements.txt",
+        ]
+    )
 
 
 def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
@@ -136,54 +136,31 @@ def build_pyinstaller(config: BuildConfig, *, smoke_test: bool, make_zip: bool) 
     build_root = config.backend_build_dir("pyinstaller")
     release_root = config.backend_release_dir("pyinstaller")
     dist_root = build_root / "dist"
-    app_dist = dist_root / config.app_name
+    app_dist = dist_root / "NetConsoleBackend"
     clean_backend_dirs(build_root, release_root)
 
     clean_build_spec.write_spec()
     command = pyinstaller_command(config)
     run(command)
-    (app_dist / "data").mkdir(parents=True, exist_ok=True)
-    (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
     copy_release_tools(config, app_dist)
     clean_build_spec.validate_dist()
-    final_app = release_root / config.app_name
-    validate_payload_source(app_dist, PYINSTALLER_ALLOWED_APP_ITEMS)
+    final_app = release_root / "NetConsoleBackend"
+    validate_payload_source(app_dist, BACKEND_ALLOWED_RELEASE_ITEMS)
     copy_tree(app_dist, final_app)
-    validate_release_app_dir(final_app, PYINSTALLER_ALLOWED_APP_ITEMS)
+    validate_release_app_dir(final_app, BACKEND_ALLOWED_RELEASE_ITEMS)
     if smoke_test:
-        run_packaged_smoke(final_app / f"{config.app_name}.exe", final_app)
+        run_packaged_smoke(final_app / "NetConsoleBackend.exe", final_app)
     if make_zip:
-        zip_directory(final_app, config.zip_path("pyinstaller"), release_root, PYINSTALLER_ALLOWED_APP_ITEMS)
+        zip_directory(
+            final_app,
+            config.zip_path("pyinstaller"),
+            release_root,
+            BACKEND_ALLOWED_RELEASE_ITEMS,
+        )
         validate_zip_file(config.zip_path("pyinstaller"))
-    validate_release_app_dir(final_app, PYINSTALLER_ALLOWED_APP_ITEMS)
-    print("PyInstaller output:", final_app / f"{config.app_name}.exe")
+    validate_release_app_dir(final_app, BACKEND_ALLOWED_RELEASE_ITEMS)
+    print("PyInstaller output:", final_app / "NetConsoleBackend.exe")
     return final_app
-
-
-def build_nuitka(config: BuildConfig, *, jobs: str, smoke_test: bool, make_zip: bool) -> Path:
-    build_root = config.backend_build_dir("nuitka")
-    release_root = config.backend_release_dir("nuitka")
-    clean_backend_dirs(build_root, release_root)
-    package_config = write_nuitka_package_config(config, build_root)
-    command = nuitka_command(config, jobs, package_config)
-    run(command)
-    built_exe = build_root / f"{config.app_name}.exe"
-    if not built_exe.is_file():
-        raise BuildError(f"Nuitka onefile output not found: {built_exe}")
-    final_exe = release_root / f"{config.app_name}.exe"
-    shutil.copy2(built_exe, final_exe)
-    copy_release_tools(config, release_root)
-    prepare_writable_release_dirs(release_root)
-    validate_release_app_dir(release_root, NUITKA_ALLOWED_RELEASE_ITEMS)
-    validate_release_fping(release_root)
-    if smoke_test:
-        run_packaged_smoke(final_exe, release_root)
-    if make_zip:
-        zip_directory(release_root, config.zip_path("nuitka"), release_root, NUITKA_ALLOWED_RELEASE_ITEMS)
-        validate_zip_file(config.zip_path("nuitka"))
-    validate_release_app_dir(release_root, NUITKA_ALLOWED_RELEASE_ITEMS)
-    print("Nuitka output:", final_exe)
-    return release_root
 
 
 def create_edition_releases(
@@ -204,16 +181,21 @@ def create_edition_releases(
         unlock_password = admin_unlock_password if edition == "customer" else None
         install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
         validate_embedded_feature_gate(destination, edition=edition, profile=profile)
-        validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+        validate_release_app_dir(destination, EDITION_STAGING_ALLOWED_ITEMS)
         validate_release_fping(destination)
         validate_no_ipop_artifacts(destination)
-        run_packaged_release_contract(destination / f"{config.app_name}.exe", destination)
+        run_packaged_release_contract(destination / "NetConsoleBackend.exe", destination)
         if make_zip:
             zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
-            zip_directory(destination, zip_path, destination, NUITKA_ALLOWED_RELEASE_ITEMS)
+            zip_directory(
+                destination,
+                zip_path,
+                destination,
+                EDITION_STAGING_ALLOWED_ITEMS,
+            )
             validate_zip_file(zip_path)
-        validate_release_app_dir(destination, NUITKA_ALLOWED_RELEASE_ITEMS)
-        print(f"{edition.title()} output:", destination / f"{config.app_name}.exe")
+        validate_release_app_dir(destination, EDITION_STAGING_ALLOWED_ITEMS)
+        print(f"{edition.title()} output:", destination / "NetConsoleBackend.exe")
 
 
 def selected_editions(value: str) -> tuple[str, ...]:
@@ -281,69 +263,12 @@ def pyinstaller_command(config: BuildConfig) -> list[str]:
         str(config.backend_build_dir("pyinstaller") / "dist"),
         "--workpath",
         str(config.backend_build_dir("pyinstaller") / "build"),
-        str(config.backend_build_dir("pyinstaller") / "spec" / "NetConsole.spec"),
+        str(config.backend_build_dir("pyinstaller") / "spec" / "NetConsoleBackend.spec"),
     ]
 
 
-def nuitka_command(config: BuildConfig, jobs: str, package_config: Path) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "nuitka",
-        "--onefile",
-        "--msvc=latest",
-        f"--jobs={jobs}",
-        "--enable-plugin=pyside6",
-        "--include-qt-plugins=sensible",
-        "--windows-console-mode=disable",
-        "--assume-yes-for-downloads",
-        f"--report={config.backend_build_dir('nuitka') / 'nuitka-report.xml'}",
-        f"--output-dir={config.backend_build_dir('nuitka')}",
-        f"--output-filename={config.app_name}.exe",
-        f"--windows-icon-from-ico={config.icon_file}",
-        f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'fping'}=tools/windows-x64/fping",
-        f"--include-raw-dir={config.tools_dir / 'windows-x64' / 'iperf3'}=tools/windows-x64/iperf3",
-        f"--include-data-dir={config.root / 'src' / 'netconsole' / 'ui' / 'icons'}=netconsole/ui/icons",
-        f"--include-data-dir={config.web_dir / 'dist'}=netconsole/assets/web",
-        f"--include-data-file={config.changelog_file}=netconsole/assets/changelog.md",
-        f"--include-data-file={config.root / 'src' / 'netconsole' / 'assets' / 'open_source_notices.json'}=netconsole/assets/open_source_notices.json",
-        f"--include-data-file={config.root / 'src' / 'netconsole' / 'assets' / 'THIRD_PARTY_COMPONENTS.md'}=netconsole/assets/THIRD_PARTY_COMPONENTS.md",
-        f"--include-data-file={config.root / 'src' / 'netconsole' / 'assets' / 'IPOP_v4.1_notice.md'}=netconsole/assets/IPOP_v4.1_notice.md",
-        str(config.entry_file),
-    ]
-
-
-def write_nuitka_package_config(config: BuildConfig, build_root: Path) -> Path:
-    build_root.mkdir(parents=True, exist_ok=True)
-    path = build_root / "netconsole.nuitka-package.config.yml"
-    path.write_text(
-        "\n".join(
-            [
-                "- module-name: 'netconsole'",
-                "  data-files:",
-                "    dirs:",
-                f"      - '{(config.tools_dir / 'windows-x64' / 'fping').as_posix()}'",
-                f"      - '{(config.tools_dir / 'windows-x64' / 'iperf3').as_posix()}'",
-                "      - 'netconsole/ui/icons'",
-                "    patterns:",
-                "      - 'netconsole/assets/changelog.md'",
-                "      - 'netconsole/assets/open_source_notices.json'",
-                "      - 'netconsole/assets/THIRD_PARTY_COMPONENTS.md'",
-                "      - 'netconsole/assets/IPOP_v4.1_notice.md'",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def print_command_plan(config: BuildConfig, backend: str, jobs: str) -> None:
-    if backend == "pyinstaller":
-        print(subprocess.list2cmdline(pyinstaller_command(config)))
-    else:
-        package_config = config.backend_build_dir("nuitka") / "netconsole.nuitka-package.config.yml"
-        print(subprocess.list2cmdline(nuitka_command(config, jobs, package_config)))
+def print_command_plan(config: BuildConfig) -> None:
+    print(subprocess.list2cmdline(pyinstaller_command(config)))
 
 
 def clean_backend_dirs(build_root: Path, release_root: Path) -> None:
@@ -409,26 +334,27 @@ def validate_release_fping(release_root: Path) -> None:
         raise BuildError(f"Release is missing fping runtime DLLs: {fping_dir}")
 
 
-def prepare_writable_release_dirs(release_root: Path) -> None:
-    (release_root / "data").mkdir(parents=True, exist_ok=True)
-    (release_root / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
-
-
 def run_packaged_smoke(exe: Path, cwd: Path) -> None:
-    env = os.environ.copy()
-    env["NETCONSOLE_SMOKE_TEST"] = "1"
-    run([str(exe)], cwd=cwd, env=env, timeout=30)
-    env = os.environ.copy()
-    env["NETCONSOLE_RUNTIME_SMOKE_TEST"] = "1"
-    run([str(exe)], cwd=cwd, env=env, timeout=30)
-    env = os.environ.copy()
-    env["NETCONSOLE_TOOL_SMOKE_TEST"] = "1"
-    run([str(exe)], cwd=cwd, env=env, timeout=30)
-    run_packaged_release_contract(exe, cwd)
+    with tempfile.TemporaryDirectory(prefix="netconsole-backend-smoke-") as data_root:
+        for marker in (
+            "NETCONSOLE_SMOKE_TEST",
+            "NETCONSOLE_RUNTIME_SMOKE_TEST",
+            "NETCONSOLE_TOOL_SMOKE_TEST",
+        ):
+            env = os.environ.copy()
+            env["NETCONSOLE_DATA_ROOT"] = data_root
+            env[marker] = "1"
+            run([str(exe)], cwd=cwd, env=env, timeout=30)
+        run_packaged_release_contract(exe, cwd, data_root=Path(data_root))
 
 
-def run_packaged_release_contract(exe: Path, cwd: Path) -> None:
+def run_packaged_release_contract(exe: Path, cwd: Path, *, data_root: Path | None = None) -> None:
+    if data_root is None:
+        with tempfile.TemporaryDirectory(prefix="netconsole-backend-contract-") as temporary_data_root:
+            run_packaged_release_contract(exe, cwd, data_root=Path(temporary_data_root))
+        return
     env = os.environ.copy()
+    env["NETCONSOLE_DATA_ROOT"] = str(data_root)
     env["NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST"] = "1"
     run([str(exe)], cwd=cwd, env=env, timeout=30)
 
@@ -542,7 +468,12 @@ def validate_zip_file(zip_path: Path) -> None:
 
 
 def _strip_zip_app_root(parts: tuple[str, ...]) -> tuple[str, ...]:
-    if len(parts) >= 2 and parts[0] == "netconsole" and parts[1] in {"netconsole.exe", "_internal", "data", "runtime", "tools"}:
+    if len(parts) >= 2 and parts[0] in {"netconsole", "netconsolebackend"} and parts[1] in {
+        "netconsolebackend.exe",
+        "_internal",
+        "runtime",
+        "tools",
+    }:
         return parts[1:]
     return parts
 

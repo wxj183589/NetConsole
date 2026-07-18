@@ -16,14 +16,14 @@ PYINSTALLER_BUILD_ROOT = PROJECT_ROOT / "dist" / "_build" / "pyinstaller"
 BUILD_ROOT = PYINSTALLER_BUILD_ROOT / "build"
 DIST_ROOT = PYINSTALLER_BUILD_ROOT / "dist"
 SPEC_ROOT = PYINSTALLER_BUILD_ROOT / "spec"
-SPEC_FILE = SPEC_ROOT / "NetConsole.spec"
+SPEC_FILE = SPEC_ROOT / "NetConsoleBackend.spec"
 ENTRY_FILE = PROJECT_ROOT / "main.py"
 RUNTIME_ROOT = BUILD_ROOT / "clean_runtime"
 RUNTIME_MANIFEST = BUILD_ROOT / "clean_runtime_manifest.txt"
 
-APP_NAME = "NetConsole"
-EXE_NAME = "NetConsole.exe"
-ICON_SOURCE = PROJECT_ROOT / "src" / "netconsole" / "ui" / "icons" / "love.ico"
+APP_NAME = "NetConsoleBackend"
+EXE_NAME = "NetConsoleBackend.exe"
+ICON_SOURCE = PROJECT_ROOT / "resources" / "branding" / "netconsole.ico"
 INTERNAL_DIR = "_internal"
 
 FORBIDDEN_PROJECT_SOURCES = ("docs", "tests", "project", ".git", "__pycache__")
@@ -32,7 +32,6 @@ FORBIDDEN_DIST_DIRS = ("docs", "tests", "project", "build", "spec")
 FORBIDDEN_RUNTIME_NAMES = set(FORBIDDEN_PROJECT_SOURCES) | {"build", "dist", "spec"}
 ALLOWED_RUNTIME = (
     "src/netconsole",
-    "src/netconsole/ui/icons",
     "src/netconsole/assets",
     "src/netconsole/assets/open_source_notices.json",
     "src/netconsole/assets/third_party_components.md",
@@ -58,7 +57,6 @@ ALLOWED_RUNTIME = (
     "tools/windows-x64/iperf3/cygwin1.dll",
     "tools/windows-x64/iperf3/cygz.dll",
     "tools/windows-x64/iperf3/iperf3.exe",
-    "netconsole/ui/icons",
     "netconsole/assets",
     "netconsole/assets/changelog.md",
     "netconsole/assets/open_source_notices.json",
@@ -66,14 +64,14 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/ipop_v4.1_notice.md",
     "netconsole/assets/web",
 )
-ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "data", "runtime", "tools")
+ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "tools")
 REQUIRED_PYINSTALLER_ARGS = (
     "--onedir",
-    "--windowed",
+    "--console",
     "--name",
     APP_NAME,
     "--icon",
-    "netconsole/ui/icons/love.ico",
+    "resources/branding/netconsole.ico",
 )
 
 
@@ -109,11 +107,11 @@ def validate_allowed_runtime(datas: Iterable[Sequence[object]]) -> None:
 
 def validate_pyinstaller_command(args: Sequence[str]) -> None:
     normalized = [arg.replace("\\", "/") for arg in args]
-    for item in ("--onedir", "--windowed"):
+    for item in ("--onedir", "--console"):
         if item not in normalized:
             raise CleanBuildLockError(f"Missing required PyInstaller option: {item}")
     _require_option_value(normalized, "--name", APP_NAME)
-    _require_path_option(normalized, "--icon", ICON_SOURCE, "netconsole/ui/icons/love.ico")
+    _require_path_option(normalized, "--icon", ICON_SOURCE, "resources/branding/netconsole.ico")
     _require_option_value(normalized, "--distpath", str(DIST_ROOT).replace("\\", "/"))
     _require_option_value(normalized, "--workpath", str(BUILD_ROOT).replace("\\", "/"))
 

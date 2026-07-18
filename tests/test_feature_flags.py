@@ -16,7 +16,7 @@ from netconsole.core.feature_flags import (
     save_profile,
 )
 from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus, list_features
-from scripts.build.build_release import NUITKA_ALLOWED_RELEASE_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
+from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
 PROTECTED_INTERNAL_STATE = {"visible": True, "enabled": True, "client_package": False, "internal_only": True}
@@ -416,13 +416,12 @@ def test_customer_effective_state_cascades_parent_flags(tmp_path: Path) -> None:
 def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) -> None:
     app_dir = tmp_path / "customer"
     (app_dir / "_internal").mkdir(parents=True)
-    (app_dir / "data").mkdir()
     (app_dir / "runtime" / "logs").mkdir(parents=True)
-    (app_dir / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dir / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
     install_runtime_feature_files(app_dir, edition="customer", profile="customer")
     zip_path = tmp_path / "NetConsole_customer.zip"
 
-    zip_directory(app_dir, zip_path, app_dir, NUITKA_ALLOWED_RELEASE_ITEMS)
+    zip_directory(app_dir, zip_path, app_dir, EDITION_STAGING_ALLOWED_ITEMS)
     validate_zip_file(zip_path)
 
     import zipfile
@@ -433,7 +432,7 @@ def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) 
         embedded_flags = json.loads(archive.read("_internal/netconsole/assets/runtime/feature_flags.json").decode("utf-8"))
         embedded_full_flags = json.loads(archive.read("_internal/netconsole/assets/runtime/feature_flags.full.json").decode("utf-8"))
 
-    assert "NetConsole.exe" in names
+    assert "NetConsoleBackend.exe" in names
     assert "runtime/feature_flags.json" in names
     assert "_internal/netconsole/assets/runtime/build_info.json" in names
     assert "_internal/netconsole/assets/runtime/feature_flags.json" in names

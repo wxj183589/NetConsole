@@ -34,9 +34,6 @@ SRC_ROOT = ROOT / "src"
 
 ALLOWED_DATA = [
     ("src/netconsole", "netconsole"),
-    ("resources/tools/windows-x64/fping", "tools/windows-x64/fping"),
-    ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3"),
-    ("src/netconsole/ui/icons", "netconsole/ui/icons"),
     ("apps/web/dist", "netconsole/assets/web"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
@@ -110,15 +107,12 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     for module_file in build_runtime_subset_from_import_graph():
         relative = module_file.relative_to(SRC_ROOT)
         datas.append((str(module_file), relative.parent.as_posix()))
-    for icon in sorted((SRC_ROOT / "netconsole" / "ui" / "icons").glob("*")):
-        if icon.is_file():
-            datas.append((str(icon), "netconsole/ui/icons"))
     changelog = SRC_ROOT / "netconsole" / "docs" / "changelog.md"
     if changelog.is_file():
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         source_path = ROOT / source
-        if ((source.startswith("resources/tools/") or source == "apps/web/dist") and source_path.is_dir()) or source_path.is_file():
+        if (source == "apps/web/dist" and source_path.is_dir()) or source_path.is_file():
             if (str(source_path), destination) in datas:
                 continue
             datas.append((str(source_path), destination))
@@ -261,16 +255,12 @@ RUNTIME_IMPORTS = {runtime_imports!r}
 RUNTIME_DATAS = {runtime_datas!r}
 VC_RUNTIME_BINARIES = {vc_runtime_binaries!r}
 
-from PyInstaller.utils.hooks import collect_all
-
-pyside_datas, pyside_binaries, pyside_hiddenimports = collect_all("PySide6")
-
 a = Analysis(
     [{str(ENTRY_FILE)!r}],
     pathex=[{str(SRC_ROOT)!r}],
-    binaries=pyside_binaries + VC_RUNTIME_BINARIES,
-    datas=RUNTIME_DATAS + pyside_datas,
-    hiddenimports=pyside_hiddenimports,
+    binaries=VC_RUNTIME_BINARIES,
+    datas=RUNTIME_DATAS,
+    hiddenimports=RUNTIME_IMPORTS,
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],
@@ -285,12 +275,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='NetConsole',
+    name='NetConsoleBackend',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -307,7 +297,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='NetConsole',
+    name='NetConsoleBackend',
 )
 '''
     validate_project_safety(ALLOWED_DATA, spec_text)
@@ -325,11 +315,8 @@ def write_version_info_file() -> Path:
 
 
 def validate_dist() -> None:
-    app_dist = DIST_ROOT / "NetConsole"
+    app_dist = DIST_ROOT / "NetConsoleBackend"
     validate_dist_output(app_dist)
-    icon = app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico"
-    if not icon.exists():
-        raise CleanBuildLockError("runtime icon is missing")
     check_packaged_tools(app_dist)
     validate_packaged_web_frontend(app_dist)
     runtime_result = check_runtime_deps(app_dist)
@@ -384,11 +371,8 @@ def _default_vc_runtime_search_roots() -> list[Path]:
         Path(sys.executable).resolve().parent,
         Path(sys.base_prefix).resolve(),
         Path(sys.prefix).resolve(),
-        DIST_ROOT / "NetConsole" / "_internal",
+        DIST_ROOT / "NetConsoleBackend" / "_internal",
     ]
-    pyside_spec = importlib.util.find_spec("PySide6")
-    if pyside_spec and pyside_spec.submodule_search_locations:
-        candidates.extend(Path(path).resolve() for path in pyside_spec.submodule_search_locations)
     windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
     if windir:
         candidates.extend([Path(windir) / "System32", Path(windir) / "SysWOW64"])
@@ -423,8 +407,8 @@ def _find_runtime_dll(dll_name: str, roots: list[Path]) -> Path | None:
 
 
 def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: bool = True) -> None:
-    app_dist = Path(app_dist or DIST_ROOT / "NetConsole")
-    if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsole"):
+    app_dist = Path(app_dist or DIST_ROOT / "NetConsoleBackend")
+    if run_version_check and _same_path(app_dist, DIST_ROOT / "NetConsoleBackend"):
         source_root = ROOT / "resources"
         source_files = sorted(
             path.relative_to(source_root)
@@ -435,7 +419,7 @@ def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: boo
             for path in tool_dir.glob("**/*")
             if path.is_file()
         )
-        missing_packaged = [relative for relative in source_files if not (app_dist / "_internal" / relative).is_file()]
+        missing_packaged = [relative for relative in source_files if not (app_dist / relative).is_file()]
         if missing_packaged:
             raise CleanBuildLockError(
                 "packaged tools directory is incomplete: "
@@ -443,7 +427,7 @@ def check_packaged_tools(app_dist: Path | None = None, *, run_version_check: boo
             )
     for relative in REQUIRED_TOOL_FILES:
         packaged_relative = relative.relative_to(Path("resources"))
-        packaged = app_dist / "_internal" / packaged_relative
+        packaged = app_dist / packaged_relative
         if not packaged.is_file():
             raise CleanBuildLockError(f"packaged runtime tool is missing: {packaged}")
         print(f"[OK] {packaged_relative.as_posix()} included")
@@ -483,9 +467,13 @@ def _is_excluded_tool_artifact(path: Path) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate and validate NetConsole clean PyInstaller build")
+    parser = argparse.ArgumentParser(description="Generate and validate the Qt-free NetConsole Backend bundle")
     parser.add_argument("--prepare", action="store_true", help="validate runtime-only graph")
-    parser.add_argument("--write-spec", action="store_true", help="write dist/_build/pyinstaller/spec/NetConsole.spec")
+    parser.add_argument(
+        "--write-spec",
+        action="store_true",
+        help="write dist/_build/pyinstaller/spec/NetConsoleBackend.spec",
+    )
     parser.add_argument("--validate", action="store_true", help="validate existing dist output")
     args = parser.parse_args()
 

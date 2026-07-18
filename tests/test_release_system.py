@@ -141,11 +141,13 @@ def test_build_release_script_uses_project_output_and_release_zip():
     text = (root / "scripts" / "build" / "build_release.bat").read_text(encoding="utf-8")
 
     assert "scripts.build.build_release" in text
-    assert "--backend pyinstaller --build-editions both %*" in text
+    assert "--backend pyinstaller %*" in text
     assert "project\\release.py" not in text
     assert "PROJECT_ROOT=%ROOT%\\project" not in text
     assert "--add-data" not in text
-    assert "scripts.build.build_release --backend pyinstaller --build-editions both %*" in text
+    assert "scripts.build.build_release --backend pyinstaller %*" in text
+    assert "--build-editions" not in text
+    assert "admin-unlock-password" not in text
 
 
 def test_changelog_source_is_chinese_for_zh_ui():
@@ -177,11 +179,11 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("src/netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
-    assert ("resources/tools/windows-x64/fping", "tools/windows-x64/fping") in clean_build_spec.ALLOWED_DATA
-    assert ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3") in clean_build_spec.ALLOWED_DATA
+    assert ("resources/tools/windows-x64/fping", "tools/windows-x64/fping") not in clean_build_spec.ALLOWED_DATA
+    assert ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3") not in clean_build_spec.ALLOWED_DATA
     assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
-    assert ("src/netconsole/ui/icons", "netconsole/ui/icons") in clean_build_spec.ALLOWED_DATA
+    assert all("/ui/" not in source.replace("\\", "/") for source, _destination in clean_build_spec.ALLOWED_DATA)
     assert ("apps/web/dist", "netconsole/assets/web") in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
     assert ("src/netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
@@ -288,9 +290,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all("tests" not in path.parts for path in staged_relative)
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
-    assert any(destination == "netconsole/ui/icons" and source.endswith("love.ico") for source, destination in datas)
-    assert any(destination == "tools/windows-x64/fping" and Path(source).name == "fping" for source, destination in datas)
-    assert any(destination == "tools/windows-x64/iperf3" and Path(source).name == "iperf3" for source, destination in datas)
+    assert all(not destination.startswith("tools/") for _source, destination in datas)
     assert any(destination == "netconsole/assets/web" and Path(source).name == "dist" for source, destination in datas)
     assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
     assert all(destination != "data" for _source, destination in datas)
@@ -306,7 +306,7 @@ def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
 
 
 def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
-    spec_file = tmp_path / "NetConsole.spec"
+    spec_file = tmp_path / "NetConsoleBackend.spec"
     monkeypatch.setattr(clean_build_spec, "SPEC_ROOT", tmp_path)
     monkeypatch.setattr(clean_build_spec, "SPEC_FILE", spec_file)
 
@@ -316,17 +316,18 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "CLEAN_BUILD = True" in text
     assert "RUNTIME_IMPORTS =" in text
     assert "RUNTIME_DATAS =" in text
-    assert 'collect_all("PySide6")' in text
     assert "VC_RUNTIME_BINARIES =" in text
-    assert "pyside_binaries" in text
-    assert "pyside_hiddenimports" in text
     assert "datas=RUNTIME_DATAS" in text
-    assert "datas=RUNTIME_DATAS + pyside_datas" in text
-    assert "binaries=pyside_binaries + VC_RUNTIME_BINARIES" in text
+    assert "binaries=VC_RUNTIME_BINARIES" in text
+    assert "hiddenimports=RUNTIME_IMPORTS" in text
+    assert "PySide" not in text
+    assert "qfluent" not in text.casefold()
     assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
     assert "contents_directory='_internal'" in text
-    assert "tools/windows-x64/fping" in text
-    assert "tools/windows-x64/iperf3" in text
+    assert "console=True" in text
+    assert "name='NetConsoleBackend'" in text
+    assert "tools/windows-x64/fping" not in text
+    assert "tools/windows-x64/iperf3" not in text
     assert "tools/windows-x64/ipop" not in text
     assert "tools/windows-x64/ipop/IPOP.EXE" not in text
     assert "main.py" in text
@@ -366,11 +367,11 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
     root = Path(__file__).resolve().parents[1]
     args = [
         "--onedir",
-        "--windowed",
+        "--console",
         "--name",
-        "NetConsole",
+        "NetConsoleBackend",
         "--icon",
-        str(root / "src" / "netconsole" / "ui" / "icons" / "love.ico"),
+        str(root / "resources" / "branding" / "netconsole.ico"),
         "--distpath",
         str(root / "dist" / "_build" / "pyinstaller" / "dist"),
         "--workpath",
@@ -379,17 +380,15 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
 
     validate_pyinstaller_command(args)
 
-    with pytest.raises(CleanBuildLockError, match="Missing required PyInstaller option: --windowed"):
-        validate_pyinstaller_command([arg for arg in args if arg != "--windowed"])
+    with pytest.raises(CleanBuildLockError, match="Missing required PyInstaller option: --console"):
+        validate_pyinstaller_command([arg for arg in args if arg != "--console"])
 
 
 @pytest.mark.parametrize("forbidden", ["docs", "tests", "project", "build", "spec"])
 def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
-    app_dist = tmp_path / "NetConsole"
+    app_dist = tmp_path / "NetConsoleBackend"
     (app_dist / "_internal" / "netconsole").mkdir(parents=True)
-    (app_dist / "data").mkdir()
-    (app_dist / "runtime" / "logs").mkdir(parents=True)
-    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dist / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
     (app_dist / forbidden).mkdir()
 
     with pytest.raises(CleanBuildLockError, match="CleanBuildLock violation"):
@@ -397,20 +396,15 @@ def test_clean_build_lock_rejects_forbidden_dist_dirs(tmp_path, forbidden):
 
 
 def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
-    app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
-    (app_dist / "data").mkdir()
-    (app_dist / "runtime" / "logs").mkdir(parents=True)
-    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
+    app_dist = tmp_path / "NetConsoleBackend"
+    (app_dist / "_internal" / "netconsole").mkdir(parents=True)
+    (app_dist / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
 
     validate_dist_output(app_dist)
 
     assert sorted(path.name for path in app_dist.iterdir()) == [
-        "NetConsole.exe",
+        "NetConsoleBackend.exe",
         "_internal",
-        "data",
-        "runtime",
     ]
     assert not (app_dist / "docs").exists()
     assert not (app_dist / "tests").exists()
@@ -420,17 +414,14 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
 
 
 def test_clean_build_packaged_tools_validation(tmp_path):
-    app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "netconsole" / "ui" / "icons").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
-    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "netconsole" / "ui" / "icons" / "love.ico").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
+    app_dist = tmp_path / "NetConsoleBackend"
+    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
+        (app_dist / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
 
     clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
 
@@ -445,20 +436,20 @@ def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(mon
 
 
 def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
-    app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    app_dist = tmp_path / "NetConsoleBackend"
+    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
 
     with pytest.raises(CleanBuildLockError, match="packaged runtime tool is missing"):
         clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
 
 
 def test_clean_build_lock_rejects_ipop_in_final_dist(tmp_path):
-    app_dist = tmp_path / "NetConsole"
+    app_dist = tmp_path / "NetConsoleBackend"
     (app_dist / "_internal" / "netconsole").mkdir(parents=True)
     (app_dist / "tools" / "windows-x64" / "ipop").mkdir(parents=True)
-    (app_dist / "NetConsole.exe").write_bytes(b"MZ")
+    (app_dist / "NetConsoleBackend.exe").write_bytes(b"MZ")
     (app_dist / "tools" / "windows-x64" / "ipop" / "IPOP.EXE").write_bytes(b"MZ")
 
     with pytest.raises(CleanBuildLockError, match="检测到未经确认可再分发"):
@@ -489,29 +480,25 @@ def test_collect_vc_runtime_dlls_rejects_missing_required_file(tmp_path):
 
 
 def _make_packaged_runtime(tmp_path: Path) -> Path:
-    app_dist = tmp_path / "NetConsole"
+    app_dist = tmp_path / "NetConsoleBackend"
     internal = app_dist / "_internal"
-    (internal / "PySide6" / "plugins" / "platforms").mkdir(parents=True)
-    (internal / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (internal / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
-    (app_dist / "data").mkdir(parents=True)
-    (app_dist / "runtime" / "logs").mkdir(parents=True)
-    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
-    for name in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "python310.dll"):
-        (internal / "PySide6" / name).write_text("", encoding="utf-8")
+    (internal / "netconsole").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
+    (app_dist / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
+    (internal / "python310.dll").write_text("", encoding="utf-8")
     for name in ("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "CONCRT140.dll", "msvcp140_1.dll", "msvcp140_2.dll"):
         (internal / name).write_text("", encoding="utf-8")
-    (internal / "PySide6" / "plugins" / "platforms" / "qwindows.dll").write_text("", encoding="utf-8")
-    (internal / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (internal / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (internal / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     return app_dist
 
 
 def test_runtime_deps_rejects_missing_internal_dir(tmp_path):
-    app_dist = tmp_path / "NetConsole"
+    app_dist = tmp_path / "NetConsoleBackend"
     app_dist.mkdir()
-    (app_dist / "NetConsole.exe").write_text("", encoding="utf-8")
+    (app_dist / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
 
     result = check_runtime_deps(app_dist)
 
@@ -519,24 +506,26 @@ def test_runtime_deps_rejects_missing_internal_dir(tmp_path):
     assert any("_internal" in message for message in result.messages)
 
 
-def test_runtime_deps_rejects_missing_qtgui_dll(tmp_path):
+def test_runtime_deps_rejects_qt_residue(tmp_path):
     app_dist = _make_packaged_runtime(tmp_path)
-    (app_dist / "_internal" / "PySide6" / "Qt6Gui.dll").unlink()
+    residue = app_dist / "_internal" / "legacy" / "Qt6Gui.dll"
+    residue.parent.mkdir(parents=True)
+    residue.write_text("", encoding="utf-8")
 
     result = check_runtime_deps(app_dist)
 
     assert not result.ok
-    assert any("Qt6Gui.dll missing" in message and "QtGui" in message for message in result.messages)
+    assert any("Qt runtime residue found" in message and "Qt6Gui.dll" in message for message in result.messages)
 
 
-def test_runtime_deps_rejects_missing_qwindows_plugin(tmp_path):
+def test_runtime_deps_rejects_writable_data_inside_bundle(tmp_path):
     app_dist = _make_packaged_runtime(tmp_path)
-    (app_dist / "_internal" / "PySide6" / "plugins" / "platforms" / "qwindows.dll").unlink()
+    (app_dist / "data").mkdir()
 
     result = check_runtime_deps(app_dist)
 
     assert not result.ok
-    assert any("qwindows.dll missing" in message and "Qt platform plugin" in message for message in result.messages)
+    assert any("must not contain writable data" in message for message in result.messages)
 
 
 def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
@@ -545,16 +534,13 @@ def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
     result = check_runtime_deps(app_dist)
 
     assert result.ok
-    assert "[OK] Qt6Core.dll found" in result.messages
-    assert "[OK] Qt6Gui.dll found" in result.messages
-    assert "[OK] Qt6Widgets.dll found" in result.messages
-    assert "[OK] qwindows.dll found" in result.messages
+    assert "[OK] Qt runtime residue not found" in result.messages
     assert "[OK] VCRUNTIME140.dll found" in result.messages
     assert "[OK] MSVCP140.dll found" in result.messages
     assert "[OK] CONCRT140.dll found" in result.messages
     assert "[OK] tools/windows-x64/fping/fping.exe found" in result.messages
     assert "[OK] tools/windows-x64/iperf3/iperf3.exe found" in result.messages
-    assert "[OK] runtime/logs directory found" in result.messages
+    assert "[OK] no writable data/runtime directory in backend bundle" in result.messages
 
 
 def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
@@ -569,28 +555,28 @@ def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
         check=True,
     )
 
-    assert "[OK] Qt6Gui.dll found" in completed.stdout
+    assert "[OK] Qt runtime residue not found" in completed.stdout
     assert "[OK] VCRUNTIME140.dll found" in completed.stdout
 
 
-def test_readme_documents_complete_folder_and_vc_runtime():
+def test_readme_documents_electron_runtime():
     root = Path(__file__).resolve().parents[1]
     text = (root / "README.md").read_text(encoding="utf-8")
 
     assert "NetConsole" in text
-    assert "VC++" in text
     assert "Windows" in text
+    assert "Electron" in text
     assert "runtime" in text.lower()
 
 def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_path, monkeypatch):
-    app_dist = tmp_path / "NetConsole"
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
+    app_dist = tmp_path / "NetConsoleBackend"
+    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
+    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
     for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
+        (app_dist / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
 
     def fake_run(args, **kwargs):
         if str(args[0]).endswith("fping.exe"):
@@ -628,7 +614,7 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     dist_root = root / "dist" / "_build" / "pyinstaller" / "dist"
     build_root = root / "dist" / "_build" / "pyinstaller" / "build"
     spec_root = root / "dist" / "_build" / "pyinstaller" / "spec"
-    app_dist = dist_root / "NetConsole"
+    app_dist = dist_root / "NetConsoleBackend"
     build_env = os.environ.copy()
     existing_pythonpath = build_env.get("PYTHONPATH", "")
     build_env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root / "src"), existing_pythonpath)))
@@ -650,14 +636,13 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
             str(dist_root),
             "--workpath",
             str(build_root),
-            str(spec_root / "NetConsole.spec"),
+            str(spec_root / "NetConsoleBackend.spec"),
         ],
         cwd=root,
         env=build_env,
         check=True,
     )
-    (app_dist / "data").mkdir(exist_ok=True)
-    (app_dist / "runtime" / "logs").mkdir(parents=True, exist_ok=True)
+    build_release.copy_release_tools(build_release.load_config(), app_dist)
     subprocess.run(
         [sys.executable, "-m", "scripts.build.clean_build_spec", "--validate"],
         cwd=root,
@@ -670,14 +655,14 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     assert not (app_dist / "tests").exists()
     assert not (app_dist / "project").exists()
     assert not (app_dist / "netconsole").exists()
-    assert (app_dist / "data").exists()
-    assert (app_dist / "runtime" / "logs").exists()
+    assert not (app_dist / "data").exists()
+    assert not (app_dist / "runtime").exists()
     assert (app_dist / "_internal" / "netconsole").exists()
-    assert (app_dist / "_internal" / "tools" / "windows-x64" / "fping" / "fping.exe").exists()
-    assert (app_dist / "_internal" / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").exists()
+    assert (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").exists()
+    assert (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").exists()
     assert (app_dist / "_internal" / "netconsole" / "assets" / "changelog.md").exists()
     assert not (app_dist / "_internal" / "netconsole" / "docs").exists()
 
     env = os.environ.copy()
     env["NETCONSOLE_SMOKE_TEST"] = "1"
-    subprocess.run([str(app_dist / "NetConsole.exe")], cwd=app_dist, env=env, check=True, timeout=20)
+    subprocess.run([str(app_dist / "NetConsoleBackend.exe")], cwd=app_dist, env=env, check=True, timeout=20)
