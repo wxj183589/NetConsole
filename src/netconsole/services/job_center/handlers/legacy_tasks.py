@@ -1421,28 +1421,14 @@ def _offline_mesh_shadow_rows(site_name: str, paths, profile) -> list[dict[str, 
 
 
 def _online_mr_shadow_rows(db_path: Path) -> list[dict[str, object]]:
-    import sqlite3
+    from netconsole.repositories.online_mr_diagnosis_repository import (
+        OnlineMrDiagnosisRepository,
+    )
 
     path = Path(db_path)
     if not path.is_file():
         raise FileNotFoundError(f"Online MR parsed DB 不存在：{path}")
-    uri = f"{path.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT DISTINCT
-                session_id, radio, peer_name, peer_mac, peer_mac_normalized,
-                resolved_peer_name, bssid, mesh_interface, belong_station,
-                belong_section, belong_type, belonging_source, raw_file
-            FROM main_link_samples
-            WHERE COALESCE(
-                NULLIF(peer_mac, ''), NULLIF(peer_mac_normalized, ''),
-                NULLIF(peer_name, ''), NULLIF(bssid, ''), ''
-            ) <> ''
-            LIMIT 5000
-            """
-        ).fetchall()
+    rows = OnlineMrDiagnosisRepository(path).load_identity_shadow_rows()
     result: list[dict[str, object]] = []
     for index, row in enumerate(rows, start=1):
         payload = dict(row)

@@ -172,6 +172,63 @@ def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract
         assert conn.execute("SELECT COUNT(*) FROM online_parse_metadata").fetchone()[0] == 0
 
 
+def test_online_mr_diagnosis_repository_reads_bounded_identity_shadow_rows(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parsed" / "online_diagnosis.sqlite"
+    repository = OnlineMrDiagnosisRepository(db_path)
+    repository.initialize()
+    repository.insert_rows(
+        "main_link_samples",
+        [
+            (
+                "session-1",
+                f"2026-07-19 10:00:0{index}.000",
+                "",
+                "",
+                "collector_prefix",
+                1,
+                "ACTIVE",
+                f"AP-{index}",
+                f"1111-2222-333{index}",
+                f"1111-2222-333{index}",
+                f"AP-{index}",
+                -40 - index,
+                "",
+                "WLAN-MeshLink1",
+                "站点A",
+                "区间A",
+                "station",
+                "fixture",
+                "",
+                "raw/mesh_link_raw.log",
+                0,
+                100,
+            )
+            for index in range(3)
+        ],
+    )
+
+    rows = repository.load_identity_shadow_rows(limit=2)
+
+    assert len(rows) == 2
+    assert set(rows[0]) == {
+        "session_id",
+        "radio",
+        "peer_name",
+        "peer_mac",
+        "peer_mac_normalized",
+        "resolved_peer_name",
+        "bssid",
+        "mesh_interface",
+        "belong_station",
+        "belong_section",
+        "belong_type",
+        "belonging_source",
+        "raw_file",
+    }
+
+
 def test_online_mr_diagnosis_repository_rolls_back_fping_batch_on_error(
     tmp_path: Path,
 ) -> None:

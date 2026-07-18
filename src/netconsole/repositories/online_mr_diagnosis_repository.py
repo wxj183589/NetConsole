@@ -844,6 +844,30 @@ class OnlineMrDiagnosisRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def load_identity_shadow_rows(self, *, limit: int = 5000) -> list[dict[str, object]]:
+        """Read bounded Online MR identity candidates without mutating the parsed database."""
+
+        safe_limit = max(1, min(int(limit), 5000))
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT DISTINCT
+                    session_id, radio, peer_name, peer_mac, peer_mac_normalized,
+                    resolved_peer_name, bssid, mesh_interface, belong_station,
+                    belong_section, belong_type, belonging_source, raw_file
+                FROM main_link_samples
+                WHERE COALESCE(
+                    NULLIF(peer_mac, ''), NULLIF(peer_mac_normalized, ''),
+                    NULLIF(peer_name, ''), NULLIF(bssid, ''), ''
+                ) <> ''
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_timeline_segments(
         self,
         session_id: str,
