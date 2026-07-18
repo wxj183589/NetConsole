@@ -1,0 +1,33 @@
+# 轨道交通服务
+
+本目录实现轨旁 AP、车载 MR、Mesh 分析、基础资料、通信监控和无线看板的领域查询/Job/写入边界。在线采集、离线导入和报告导出保持独立流程。
+
+主要入口包括 `base_data_*`、`vehicle_mr_*`、`trackside_*`、`mesh_analysis_query_service.py` 和看板查询服务。修改字段、匹配或导入安全时运行轨交专题测试并同步文档。
+
+## 用途与边界
+
+本目录实现轨旁 AP、车载 MR、Mesh 分析、基础资料、通信监控和无线看板的领域查询、Job 和受控写入；在线采集、离线导入和报告导出保持独立流程。
+
+## 主要入口
+
+`base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP，`mesh_analysis_query_service.py` 和看板服务提供聚合查询。
+
+## 依赖关系
+
+服务依赖 Repository、Parser、Online MR/Mesh Service、Job Center、Application Service 和 PathResolver，由 FastAPI/API/页面调用；不把 SQL 或设备连接放进 Router。
+
+## 数据与状态
+
+基础资料、轨旁快照、MR/Mesh 原始/解析/输出和任务状态按局点数据根分层；身份匹配仍保留 shadow/diagnostics，不把不确定结果当生产结论。
+
+## 测试与修改
+
+修改字段、匹配、导入预览/回滚、采集 Job、图表或只读聚合时运行轨交、Online MR、Mesh、Repository、API 和 Web parity 测试。
+
+## 生成与清理
+
+导入预览、原始日志、解析库和报告使用 PathResolver/Job/Export 的目录与原子策略；失败时保留审计和原始证据，不静默删除备份。
+
+## 相关文档
+
+参见 [轨道交通无线业务模型](../../../../docs/RAIL_TRANSIT_WIRELESS.md)、[基础资料](../../../../docs/RAIL_TRANSIT_BASE_DATA.md)、[Online MR](../../../../docs/ONLINE_MR_COLLECTION.md) 和 [MESH 规则](../../../../docs/mr_mesh_log_analysis_rules.md)。
