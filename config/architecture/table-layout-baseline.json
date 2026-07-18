@@ -3,27 +3,6 @@
   "description": "阶段 1 建立时已有的直接 el-table 基线；逐域迁移后必须删除对应项。",
   "direct_el_tables": [
     {
-      "key": "apps/web/src/components/device-detail/DeviceDetailPanel.vue#1",
-      "path": "apps/web/src/components/device-detail/DeviceDetailPanel.vue",
-      "ordinal": 1,
-      "table_id": "legacy:components:device-detail:DeviceDetailPanel:1",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/components/device-detail/DeviceDetailPanel.vue#2",
-      "path": "apps/web/src/components/device-detail/DeviceDetailPanel.vue",
-      "ordinal": 2,
-      "table_id": "legacy:components:device-detail:DeviceDetailPanel:2",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/components/device-detail/DeviceDetailPanel.vue#3",
-      "path": "apps/web/src/components/device-detail/DeviceDetailPanel.vue",
-      "ordinal": 3,
-      "table_id": "legacy:components:device-detail:DeviceDetailPanel:3",
-      "status": "BLOCKED"
-    },
-    {
       "key": "apps/web/src/components/network-tools/NetworkToolboxPanel.vue#1",
       "path": "apps/web/src/components/network-tools/NetworkToolboxPanel.vue",
       "ordinal": 1,
@@ -196,20 +175,6 @@
       "path": "apps/web/src/views/config-collection/ConfigCollectionView.vue",
       "ordinal": 2,
       "table_id": "legacy:views:config-collection:ConfigCollectionView:2",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/devices/DeviceManagementView.vue#1",
-      "path": "apps/web/src/views/devices/DeviceManagementView.vue",
-      "ordinal": 1,
-      "table_id": "legacy:views:devices:DeviceManagementView:1",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/devices/DeviceManagementView.vue#2",
-      "path": "apps/web/src/views/devices/DeviceManagementView.vue",
-      "ordinal": 2,
-      "table_id": "legacy:views:devices:DeviceManagementView:2",
       "status": "BLOCKED"
     },
     {

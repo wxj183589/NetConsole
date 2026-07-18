@@ -16,7 +16,7 @@ export interface ColumnWidthContext {
   measure?: (text: unknown, font: string) => number
 }
 
-export interface CalculateColumnWidthsOptions<Row extends Record<string, unknown>> extends ColumnWidthContext {
+export interface CalculateColumnWidthsOptions<Row extends object> extends ColumnWidthContext {
   columns: readonly NcTableColumn<Row>[]
   rows: readonly Row[]
   manualWidths?: Readonly<Record<string, number>>
@@ -38,7 +38,7 @@ export function stableTableSample<Row>(rows: readonly Row[], limit = 200): reado
   return [...rows.slice(0, headCount), ...rows.slice(rows.length - (limit - headCount))]
 }
 
-export function calculateHeaderRequiredWidth<Row extends Record<string, unknown>>(
+export function calculateHeaderRequiredWidth<Row extends object>(
   rawColumn: NcTableColumn<Row>,
   context: ColumnWidthContext = {},
 ): number {
@@ -50,7 +50,7 @@ export function calculateHeaderRequiredWidth<Row extends Record<string, unknown>
   return Math.ceil(measure(column.label, font) + HEADER_HORIZONTAL_PADDING + iconCount * HEADER_ICON_WIDTH + SAFETY_MARGIN)
 }
 
-function calculateContentRequiredWidth<Row extends Record<string, unknown>>(
+function calculateContentRequiredWidth<Row extends object>(
   column: ResolvedNcTableColumn<Row>,
   rows: readonly Row[],
   context: ColumnWidthContext,
@@ -73,7 +73,7 @@ function calculateContentRequiredWidth<Row extends Record<string, unknown>>(
   return Math.ceil(contentWidth + CELL_HORIZONTAL_PADDING + chrome + (column.cellIconCount ?? 0) * CELL_ICON_WIDTH + SAFETY_MARGIN)
 }
 
-export function calculateTableColumnWidths<Row extends Record<string, unknown>>(
+export function calculateTableColumnWidths<Row extends object>(
   options: CalculateColumnWidthsOptions<Row>,
 ): Record<string, number> {
   const rows = stableTableSample(options.rows, options.sampleLimit)
@@ -104,7 +104,7 @@ export function calculateTableColumnWidths<Row extends Record<string, unknown>>(
   return widths
 }
 
-export interface UseAutoColumnWidthOptions<Row extends Record<string, unknown>> {
+export interface UseAutoColumnWidthOptions<Row extends object> {
   columns: Ref<readonly NcTableColumn<Row>[]>
   rows: Ref<readonly Row[]>
   manualWidths: Ref<Record<string, number>>
@@ -116,7 +116,7 @@ export interface UseAutoColumnWidthOptions<Row extends Record<string, unknown>> 
   measure?: (text: unknown, font: string) => number
 }
 
-export function useAutoColumnWidth<Row extends Record<string, unknown>>(
+export function useAutoColumnWidth<Row extends object>(
   options: UseAutoColumnWidthOptions<Row>,
 ) {
   const widths = ref<Record<string, number>>({})

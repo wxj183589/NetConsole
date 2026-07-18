@@ -24,7 +24,7 @@ export type NcColumnValueType =
 export type NcTableAlignment = 'left' | 'center' | 'right'
 export type NcElementColumnType = 'selection' | 'index' | 'expand'
 
-export interface NcTableColumn<Row extends Record<string, unknown> = Record<string, unknown>> {
+export interface NcTableColumn<Row extends object = Record<string, unknown>> {
   key: string
   label: string
   prop?: keyof Row & string | string
@@ -52,7 +52,7 @@ export interface NcTableColumn<Row extends Record<string, unknown> = Record<stri
   columnAttrs?: Record<string, unknown>
 }
 
-export interface ResolvedNcTableColumn<Row extends Record<string, unknown> = Record<string, unknown>>
+export interface ResolvedNcTableColumn<Row extends object = Record<string, unknown>>
   extends NcTableColumn<Row> {
   prop: string
   valueType: NcColumnValueType
@@ -64,7 +64,7 @@ export interface ResolvedNcTableColumn<Row extends Record<string, unknown> = Rec
   showOverflowTooltip: boolean
 }
 
-export function normalizeNcTableColumn<Row extends Record<string, unknown>>(
+export function normalizeNcTableColumn<Row extends object>(
   column: NcTableColumn<Row>,
 ): ResolvedNcTableColumn<Row> {
   const valueType = column.valueType
@@ -94,7 +94,7 @@ export function displayTableValue(value: unknown): string {
   return String(value)
 }
 
-export function readTableCellValue<Row extends Record<string, unknown>>(
+export function readTableCellValue<Row extends object>(
   row: Row,
   column: ResolvedNcTableColumn<Row>,
   index: number,

@@ -1,4 +1,4 @@
-<script setup lang="ts" generic="Row extends Record<string, unknown>">
+<script setup lang="ts" generic="Row extends object">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { t } from '../../i18n/runtime'
@@ -27,6 +27,7 @@ const props = withDefaults(defineProps<{
   columns: readonly NcTableColumn<Row>[]
   tableId: string
   routeKey: string
+  preferenceScope?: string
   userKey?: string
   language?: string
   height?: string | number
@@ -71,7 +72,7 @@ let resizeObserver: ResizeObserver | undefined
 const identity = computed(() => ({
   userKey: props.userKey,
   routeKey: props.routeKey,
-  tableId: props.tableId,
+  tableId: props.preferenceScope ? `${props.tableId}:${props.preferenceScope}` : props.tableId,
   language: currentLanguage.value,
 }))
 const resolvedEmptyText = computed(() => props.emptyText || t('table.no_data', '暂无数据'))
@@ -219,6 +220,14 @@ function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: { colum
   emit('header-dragend', newWidth, oldWidth, column, event)
 }
 
+function clearSelection(): void {
+  tableRef.value?.clearSelection?.()
+}
+
+function toggleRowSelection(row: Row, selected?: boolean): void {
+  tableRef.value?.toggleRowSelection?.(row, selected)
+}
+
 function refreshFonts(): void {
   const element = containerRef.value
   if (!element || typeof getComputedStyle === 'undefined') return
@@ -261,7 +270,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleViewportChange)
 })
 
-defineExpose({ tableRef, recalculate, resetLayout, autoFit })
+defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, toggleRowSelection })
 </script>
 
 <template>

@@ -14,11 +14,14 @@ import {
 } from '../../api/deviceManagement'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
+import NcDataTable from '../table/NcDataTable.vue'
+import type { NcColumnValueType, NcTableColumn } from '../table/NcTableColumn'
 import type { TaskStatus } from '../../types/task'
 import type {
   DeviceConnectionTest,
   DeviceBusinessAssociationRecord,
   DeviceDataSource,
+  DeviceDetailCapabilityInfo,
   DeviceDetailRecord,
   DeviceDetailSource,
   DeviceDetailSectionResponse,
@@ -38,14 +41,6 @@ interface Props {
   mode: DetailMode
   overview?: DeviceOverviewResponse | null
   connectionTest?: DeviceConnectionTest | null
-}
-
-interface DetailColumn {
-  label: string
-  key: string
-  width?: number
-  minWidth?: number
-  fixed?: boolean
 }
 
 interface HistoryViewPage extends DeviceDetailHistoryPage {
@@ -110,75 +105,105 @@ const sectionLabels: Record<DeviceDetailSection, string> = {
   business: '关联业务',
 }
 
-const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, DetailColumn[]> = {
+function detailColumn(
+  label: string,
+  key: string,
+  valueType: NcColumnValueType = 'text',
+  options: Partial<NcTableColumn<DeviceDetailRecord>> = {},
+): NcTableColumn<DeviceDetailRecord> {
+  return {
+    key,
+    label,
+    valueType,
+    ...(valueType === 'description' ? { align: 'left' as const, alignmentReason: 'description' } : {}),
+    ...(valueType === 'error' ? { align: 'left' as const, alignmentReason: 'long-text' } : {}),
+    displayValue: (row) => formatEnumeratedValue(key, row[key], row),
+    ...options,
+  }
+}
+
+const capabilityColumns: NcTableColumn<DeviceDetailCapabilityInfo>[] = [
+  { key: 'capability_id', label: '能力标识', valueType: 'name' },
+  { key: 'available', label: '可用', valueType: 'status' },
+  { key: 'executable', label: '可执行', valueType: 'status' },
+  { key: 'source', label: '来源', valueType: 'text' },
+  { key: 'profile_id', label: '画像 ID', valueType: 'text' },
+  { key: 'profile_version', label: '画像版本', valueType: 'number' },
+  { key: 'compatibility', label: '兼容性', valueType: 'status' },
+  { key: 'risk', label: '风险', valueType: 'status' },
+  { key: 'real_device_status', label: '设备状态', valueType: 'status' },
+  { key: 'reason', label: '原因', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+]
+
+const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, NcTableColumn<DeviceDetailRecord>[]> = {
   interfaces: [
-    { label: '接口', key: 'interface_name', minWidth: 180, fixed: true },
-    { label: '链路', key: 'link_status', width: 90 },
-    { label: '协议', key: 'protocol_status', width: 90 },
-    { label: '速率', key: 'speed', width: 100 },
-    { label: '双工', key: 'duplex', width: 90 },
-    { label: '接口类型', key: 'interface_type', minWidth: 120 },
-    { label: '端口状态', key: 'port_status', width: 100 },
-    { label: 'PVID', key: 'pvid', width: 80 },
-    { label: '描述', key: 'description', minWidth: 180 },
-    { label: '接口 IP', key: 'ip_address', minWidth: 130 },
-    { label: 'MAC', key: 'mac_address', minWidth: 140 },
-    { label: 'VLAN', key: 'vlan', minWidth: 100 },
-    { label: '采集时间', key: 'collected_at', minWidth: 175 },
+    detailColumn('接口', 'interface_name', 'port', { fixed: 'left' }),
+    detailColumn('链路', 'link_status', 'status'),
+    detailColumn('协议', 'protocol_status', 'status'),
+    detailColumn('速率', 'speed', 'rate'),
+    detailColumn('双工', 'duplex', 'status'),
+    detailColumn('接口类型', 'interface_type'),
+    detailColumn('端口状态', 'port_status', 'status'),
+    detailColumn('PVID', 'pvid', 'number'),
+    detailColumn('描述', 'description', 'description'),
+    detailColumn('接口 IP', 'ip_address', 'ip'),
+    detailColumn('MAC', 'mac_address', 'mac'),
+    detailColumn('VLAN', 'vlan', 'text'),
+    detailColumn('采集时间', 'collected_at', 'datetime'),
   ],
   optical: [
-    { label: '接口', key: 'interface_name', minWidth: 180, fixed: true },
-    { label: '严重性', key: 'severity', width: 110 },
-    { label: '严重性原因', key: 'severity_reason', minWidth: 200 },
-    { label: '接收功率', key: 'rx_power', width: 110 },
-    { label: '发送功率', key: 'tx_power', width: 110 },
-    { label: '温度', key: 'temperature', width: 90 },
-    { label: '电压', key: 'voltage', width: 90 },
-    { label: '偏置电流', key: 'bias_current', width: 110 },
-    { label: '模块型号', key: 'module_model', minWidth: 160 },
-    { label: '序列号', key: 'module_serial_number', minWidth: 160 },
-    { label: '厂商', key: 'module_vendor', minWidth: 120 },
-    { label: '波长', key: 'wavelength', width: 100 },
-    { label: '传输距离', key: 'transmission_distance', width: 110 },
-    { label: '连接器', key: 'connector_type', width: 110 },
-    { label: '采集时间', key: 'collected_at', minWidth: 175 },
+    detailColumn('接口', 'interface_name', 'port', { fixed: 'left' }),
+    detailColumn('严重性', 'severity', 'status'),
+    detailColumn('严重性原因', 'severity_reason', 'error'),
+    detailColumn('接收功率', 'rx_power', 'number'),
+    detailColumn('发送功率', 'tx_power', 'number'),
+    detailColumn('温度', 'temperature', 'number'),
+    detailColumn('电压', 'voltage', 'number'),
+    detailColumn('偏置电流', 'bias_current', 'number'),
+    detailColumn('模块型号', 'module_model', 'name'),
+    detailColumn('序列号', 'module_serial_number', 'text'),
+    detailColumn('厂商', 'module_vendor'),
+    detailColumn('波长', 'wavelength', 'number'),
+    detailColumn('传输距离', 'transmission_distance', 'text'),
+    detailColumn('连接器', 'connector_type'),
+    detailColumn('采集时间', 'collected_at', 'datetime'),
   ],
   lldp: [
-    { label: '本地接口', key: 'local_interface', minWidth: 180, fixed: true },
-    { label: '邻居系统名', key: 'neighbor_sysname', minWidth: 160 },
-    { label: '邻居 MAC', key: 'neighbor_mac', minWidth: 150 },
-    { label: '邻居接口', key: 'neighbor_interface', minWidth: 180 },
-    { label: '邻居 IP', key: 'neighbor_ip', minWidth: 150 },
-    { label: '采集时间', key: 'collected_at', minWidth: 175 },
+    detailColumn('本地接口', 'local_interface', 'port', { fixed: 'left' }),
+    detailColumn('邻居系统名', 'neighbor_sysname', 'name'),
+    detailColumn('邻居 MAC', 'neighbor_mac', 'mac'),
+    detailColumn('邻居接口', 'neighbor_interface', 'port'),
+    detailColumn('邻居 IP', 'neighbor_ip', 'ip'),
+    detailColumn('采集时间', 'collected_at', 'datetime'),
   ],
   configuration: [
-    { label: '配置类型', key: 'snapshot_type', minWidth: 180, fixed: true },
-    { label: '时间', key: 'timestamp', minWidth: 175 },
-    { label: '文件名', key: 'filename', minWidth: 220 },
-    { label: '大小', key: 'size_bytes', width: 110 },
-    { label: 'SHA-256', key: 'sha256', minWidth: 240 },
-    { label: '错误摘要', key: 'error_summary', minWidth: 220 },
+    detailColumn('配置类型', 'snapshot_type', 'text', { fixed: 'left' }),
+    detailColumn('时间', 'timestamp', 'datetime'),
+    detailColumn('文件名', 'filename', 'description'),
+    detailColumn('大小', 'size_bytes', 'number'),
+    detailColumn('SHA-256', 'sha256', 'description'),
+    detailColumn('错误摘要', 'error_summary', 'error'),
   ],
   tasks: [
-    { label: '任务', key: 'task_name', minWidth: 200, fixed: true },
-    { label: '状态', key: 'status', width: 110 },
-    { label: '阶段', key: 'stage', minWidth: 120 },
-    { label: '消息', key: 'message', minWidth: 260 },
-    { label: '耗时', key: 'duration_seconds', width: 100 },
-    { label: '更新时间', key: 'updated_time', minWidth: 175 },
-    { label: '错误摘要', key: 'error_summary', minWidth: 220 },
+    detailColumn('任务', 'task_name', 'name', { fixed: 'left' }),
+    detailColumn('状态', 'status', 'status'),
+    detailColumn('阶段', 'stage'),
+    detailColumn('消息', 'message', 'description'),
+    detailColumn('耗时', 'duration_seconds', 'duration'),
+    detailColumn('更新时间', 'updated_time', 'datetime'),
+    detailColumn('错误摘要', 'error_summary', 'error'),
   ],
   business: [
-    { label: '业务对象', key: 'name', minWidth: 200, fixed: true },
-    { label: '类型', key: 'association_type', minWidth: 140 },
-    { label: '状态', key: 'status', width: 110 },
-    { label: '关联标识', key: 'association_id', minWidth: 220 },
-    { label: '本地接口', key: 'local_interface', minWidth: 150 },
-    { label: '邻居地址', key: 'peer_address', minWidth: 150 },
-    { label: '链路状态', key: 'trackside_link_status', minWidth: 120 },
-    { label: '交换机接收功率', key: 'switch_rx_power', minWidth: 140 },
-    { label: 'AP 接收功率', key: 'ap_rx_power', minWidth: 120 },
-    { label: '更新时间', key: 'updated_at', minWidth: 175 },
+    detailColumn('业务对象', 'name', 'name', { fixed: 'left' }),
+    detailColumn('类型', 'association_type'),
+    detailColumn('状态', 'status', 'status'),
+    detailColumn('关联标识', 'association_id', 'text'),
+    detailColumn('本地接口', 'local_interface', 'port'),
+    detailColumn('邻居地址', 'peer_address', 'ip'),
+    detailColumn('链路状态', 'trackside_link_status', 'status'),
+    detailColumn('交换机接收功率', 'switch_rx_power', 'number'),
+    detailColumn('AP 接收功率', 'ap_rx_power', 'number'),
+    detailColumn('更新时间', 'updated_at', 'datetime'),
   ],
 }
 
@@ -197,11 +222,47 @@ const currentColumns = computed(() => selectedSection.value === 'overview' ? [] 
 const currentRows = computed(() => currentPage.value?.items ?? [])
 const sectionTableHeight = computed(() => props.mode === 'page' ? 'max(320px, calc(100dvh - 390px))' : undefined)
 const sectionTableMaxHeight = computed(() => props.mode === 'drawer' ? 560 : undefined)
-const historyColumns = computed(() => {
+const actionSections: DeviceDetailSection[] = ['interfaces', 'optical', 'lldp', 'configuration', 'tasks']
+const currentTableColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => [
+  ...(selectedSection.value === 'configuration' ? [{
+    key: 'selection', label: '', type: 'selection' as const, valueType: 'selection' as const, fixed: 'left' as const, hideable: false,
+  }] : []),
+  ...currentColumns.value,
+  ...(actionSections.includes(selectedSection.value) ? [{
+    key: 'actions',
+    label: '操作',
+    valueType: 'actions' as const,
+    cellKind: 'actions' as const,
+    actionLabels: ['历史', '详情', '任务中心', '下载'],
+  }] : []),
+])
+const historyRows = computed(() => (historyPage.value?.items ?? []) as unknown as DeviceDetailRecord[])
+const historyColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => {
   const kind = historyPage.value?.kind
-  if (kind === 'interface') return [['采集时间', 'collected_at'], ['接口', 'interface_name'], ['链路', 'link_status'], ['协议', 'protocol_status'], ['速率', 'speed'], ['双工', 'duplex'], ['类型', 'interface_type'], ['端口状态', 'port_status'], ['PVID', 'pvid'], ['描述', 'description'], ['接口 IP', 'ip_address'], ['MAC', 'mac_address'], ['VLAN', 'vlan']]
-  if (kind === 'optical') return [['采集时间', 'collected_at'], ['接口', 'interface_name'], ['严重性', 'severity'], ['严重性原因', 'severity_reason'], ['接收功率', 'rx_power'], ['发送功率', 'tx_power'], ['温度', 'temperature'], ['电压', 'voltage'], ['偏置电流', 'bias_current'], ['模块型号', 'module_model'], ['序列号', 'module_serial_number'], ['厂商', 'module_vendor'], ['波长', 'wavelength'], ['传输距离', 'transmission_distance'], ['连接器', 'connector_type']]
-  return [['采集时间', 'collected_at'], ['本地接口', 'local_interface'], ['邻居系统名', 'neighbor_sysname'], ['邻居 MAC', 'neighbor_mac'], ['邻居接口', 'neighbor_interface'], ['邻居 IP', 'neighbor_ip'], ['关联状态', 'association_status']]
+  if (kind === 'interface') return [
+    detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('接口', 'interface_name', 'port'),
+    detailColumn('链路', 'link_status', 'status'), detailColumn('协议', 'protocol_status', 'status'),
+    detailColumn('速率', 'speed', 'rate'), detailColumn('双工', 'duplex', 'status'),
+    detailColumn('类型', 'interface_type'), detailColumn('端口状态', 'port_status', 'status'),
+    detailColumn('PVID', 'pvid', 'number'), detailColumn('描述', 'description', 'description'),
+    detailColumn('接口 IP', 'ip_address', 'ip'), detailColumn('MAC', 'mac_address', 'mac'), detailColumn('VLAN', 'vlan'),
+  ]
+  if (kind === 'optical') return [
+    detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('接口', 'interface_name', 'port'),
+    detailColumn('严重性', 'severity', 'status'), detailColumn('严重性原因', 'severity_reason', 'error'),
+    detailColumn('接收功率', 'rx_power', 'number'), detailColumn('发送功率', 'tx_power', 'number'),
+    detailColumn('温度', 'temperature', 'number'), detailColumn('电压', 'voltage', 'number'),
+    detailColumn('偏置电流', 'bias_current', 'number'), detailColumn('模块型号', 'module_model', 'name'),
+    detailColumn('序列号', 'module_serial_number'), detailColumn('厂商', 'module_vendor'),
+    detailColumn('波长', 'wavelength', 'number'), detailColumn('传输距离', 'transmission_distance'),
+    detailColumn('连接器', 'connector_type'),
+  ]
+  return [
+    detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('本地接口', 'local_interface', 'port'),
+    detailColumn('邻居系统名', 'neighbor_sysname', 'name'), detailColumn('邻居 MAC', 'neighbor_mac', 'mac'),
+    detailColumn('邻居接口', 'neighbor_interface', 'port'), detailColumn('邻居 IP', 'neighbor_ip', 'ip'),
+    detailColumn('关联状态', 'association_status', 'status'),
+  ]
 })
 const publicDeviceTasks = computed(() => taskStore.tasks.filter((task) => task.module === 'devices' || task.owner === 'web_device_management' || task.type.startsWith('device_')))
 const sectionFilterOptions: Partial<Record<DeviceDetailSection, Array<{ label: string; value: string }>>> = {
@@ -957,18 +1018,14 @@ function errorMessage(cause: unknown, fallback: string): string {
 
               <section class="detail-section">
                 <h3>能力事实</h3>
-                <el-table :data="overview.capabilities" size="small" empty-text="暂无能力事实">
-                  <el-table-column prop="capability_id" label="能力标识" min-width="220" />
-                  <el-table-column label="可用" width="80"><template #default="{ row }">{{ formatValue(row.available) }}</template></el-table-column>
-                  <el-table-column label="可执行" width="90"><template #default="{ row }">{{ formatValue(row.executable) }}</template></el-table-column>
-                  <el-table-column prop="source" label="来源" min-width="130" />
-                  <el-table-column prop="profile_id" label="画像 ID" min-width="140" />
-                  <el-table-column prop="profile_version" label="画像版本" width="100" />
-                  <el-table-column prop="compatibility" label="兼容性" min-width="130" />
-                  <el-table-column prop="risk" label="风险" min-width="110" />
-                  <el-table-column prop="real_device_status" label="设备状态" min-width="140" />
-                  <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
-                </el-table>
+                <NcDataTable
+                  table-id="device-detail-capabilities"
+                  route-key="/devices/:deviceId"
+                  :data="overview.capabilities"
+                  :columns="capabilityColumns"
+                  :show-column-settings="false"
+                  empty-text="暂无能力事实"
+                />
               </section>
 
               <section v-if="connectionTest" class="detail-section">
@@ -992,20 +1049,26 @@ function errorMessage(cause: unknown, fallback: string): string {
               </div>
               <el-alert v-if="sectionErrors[section]" :title="sectionErrors[section]" type="error" show-icon :closable="false" />
               <div class="section-metadata"><span>刷新时间：{{ formatTime(currentPage?.fetched_at) }}</span><span>来源：{{ sourceLabel(currentPage?.source) }}</span><span>任务：{{ formatValue(currentPage?.task_id) }}</span><span v-if="currentPage?.truncated">结果已截断：{{ sourceReason(currentPage?.source) }}</span></div>
-              <el-table v-loading="sectionLoading[section]" :data="currentRows" :height="sectionTableHeight" :max-height="sectionTableMaxHeight" empty-text="暂无数据">
-                <el-table-column v-if="section === 'configuration'" label="选择" width="70" fixed="left"><template #default="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template></el-table-column>
-                <el-table-column v-for="column in currentColumns" :key="column.key" :prop="column.key" :label="column.label" :width="column.width" :min-width="column.minWidth" :fixed="column.fixed ? 'left' : false" show-overflow-tooltip>
-                  <template #default="{ row }"><span :class="opticalRxPowerClass(section, column.key, row)">{{ formatEnumeratedValue(column.key, row[column.key], row) }}</span></template>
-                </el-table-column>
-                <el-table-column v-if="['interfaces', 'optical', 'lldp', 'configuration', 'tasks'].includes(section)" label="操作" width="220" fixed="right">
-                  <template #default="{ row }">
-                    <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
-                    <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
-                    <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
-                    <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
-                  </template>
-                </el-table-column>
-              </el-table>
+              <NcDataTable
+                v-loading="sectionLoading[section]"
+                table-id="device-detail-sections"
+                route-key="/devices/:deviceId"
+                :preference-scope="section"
+                :data="currentRows"
+                :columns="currentTableColumns"
+                :height="sectionTableHeight"
+                :max-height="sectionTableMaxHeight"
+                empty-text="暂无数据"
+              >
+                <template #cell-selection="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template>
+                <template #cell-rx_power="{ row, columnDefinition }"><span :class="opticalRxPowerClass(section, columnDefinition.key, row)">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
+                <template #cell-actions="{ row }">
+                  <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
+                  <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
+                  <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
+                  <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
+                </template>
+              </NcDataTable>
               <el-pagination v-if="currentPage?.total" :current-page="currentPage.page" :page-size="currentPage.page_size" :total="currentPage.total" :page-sizes="[20, 50, 100, 200]" layout="total, sizes, prev, pager, next" @current-change="(page: number) => { sectionQuery.page = page; loadSection(section) }" @size-change="(size: number) => { sectionQuery.page_size = size; sectionQuery.page = 1; loadSection(section) }" />
             </template>
           </el-tab-pane>
@@ -1015,9 +1078,15 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-dialog v-model="historyVisible" :title="`历史数据 · ${formatValue(historyPage?.object_name)}`" width="min(1180px, 96vw)">
       <div v-loading="historyLoading">
-        <el-table :data="historyPage?.items || []" max-height="620" empty-text="暂无历史数据">
-          <el-table-column v-for="column in historyColumns" :key="column[1]" :label="column[0]" :prop="column[1]" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ formatEnumeratedValue(column[1], row[column[1]], row) }}</template></el-table-column>
-        </el-table>
+        <NcDataTable
+          table-id="device-detail-history"
+          route-key="/devices/:deviceId"
+          :preference-scope="historyPage?.kind || 'unknown'"
+          :data="historyRows"
+          :columns="historyColumns"
+          :max-height="620"
+          empty-text="暂无历史数据"
+        />
         <el-pagination v-if="historyPage?.total" :current-page="historyPage.page" :page-size="historyPage.page_size" :total="historyPage.total" layout="total, prev, pager, next" @current-change="loadHistoryPage" @size-change="changeHistoryPageSize" />
       </div>
       <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>

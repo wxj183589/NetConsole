@@ -64,6 +64,15 @@ describe('Device Management Web view', () => {
     expect(source).toContain('copyDeviceInfo')
   })
 
+  it('uses the unified table contract for the device and OmniPeek tables', () => {
+    expect(source).toContain('table-id="device-list"')
+    expect(source).toContain('table-id="device-omnipeek-export"')
+    expect(source).toContain(':columns="deviceColumns"')
+    expect(source).toContain(':columns="omniPeekColumns"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
+  })
+
   it('uses safe file upload and controlled server exports', () => {
     expect(source).toContain('type="file"')
     expect(source).toContain('previewDeviceImport(importFile.value)')

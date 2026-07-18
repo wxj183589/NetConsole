@@ -15,7 +15,7 @@
 
 ### 桌面与发布
 
-- 建立全局表格与字段展示阶段 1 基础：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `finalWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。新增增量 Guard 与自动清单，当前登记 87 张旧 `el-table` 为 `BLOCKED`，尚未逐域迁移，不能据此宣称全局视觉整改完成。
+- 建立全局表格与字段展示基础：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `finalWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。增量 Guard 初始登记 87 张旧 `el-table`；设备管理与设备详情 5 张表完成迁移后剩余 82 张 `BLOCKED`，尚未全域完成，不能据此宣称全局视觉整改结束。
 - 统一 Vue/Electron 全局主题：浅色、深色和跟随系统现在同时驱动侧栏、顶部栏、内容区、Element Plus 浮层与 ECharts，不再默认固定深色侧栏；系统设置仍是唯一持久化来源。Renderer 只通过严格单向 IPC 报告解析后的 `light|dark`，Electron Main 只映射预定义窗口背景，不能接收任意颜色或窗口参数。历史页面状态色已收口到语义 Token；Guard 已收窄 `--nc-text-primary` 被误判为状态色的规则并增加单元测试。Electron 多尺寸/多缩放人工视觉验收仍为 `PENDING`，自动测试不代表视觉通过。
 - 将 Windows x64 iPerf3 运行包升级并固定为用户提供的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`，补齐发行来源、四文件 SHA-256、GPLv3/LGPLv3/链接例外及 Cygwin 3.6.7-1 对应源码方案；fping 5.5/Cygwin 3.6.9-1 同步归档实际 ICMP 兼容补丁、构建配方、完整许可证与精确对应源码。Electron 与 Agent 打包复制前后只校验并复制仓库本地白名单工具，拒绝联网补齐、同名替换、来源篡改和额外文件；旧 3.20 来源不匹配文件不再保留。
 - 新增 `pnpm dev:codex` 本机受控调试链：Electron Main 继续持有唯一 FastAPI 生命周期，Vite/FastAPI 固定绑定 `127.0.0.1:5173/8000`，每次启动生成短期 Session 与系统临时数据根；浏览器 Vue 可复用正式 REST、WebSocket 和下载契约。新增鉴权、回环限定且路径脱敏的 `/api/dev/runtime-status`；生产 Electron 不注册该接口、不接受固定开发端口，也不暴露令牌、OpenAPI 或 DevTools。

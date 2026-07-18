@@ -17,6 +17,8 @@
 
 组件依赖 Vue、Element Plus、NetConsole Design Token、`deviceManagement` API、统一 Task Store 和受控 Artifact 下载桥接。设备详情数据、分页、筛选枚举和任务状态来自后端 API/Task Store；组件不直接访问数据库、Agent、Electron Main/Preload 或 Python Service。
 
+能力事实、动态分区和历史记录统一使用 `NcDataTable`。分区和历史分别以 section/kind 作为偏好 scope，避免接口、光模块、LLDP、配置和任务列布局相互污染；固定首列、操作列、长文本对齐和列宽均由公共列定义表达，组件不直接声明 `el-table-column`。
+
 ## 数据与状态
 
 打开抽屉或完整详情只读取数据库中的最近 overview 快照，不立即连接设备；其余页签首次激活后按后端 DTO 分页加载并缓存。筛选和分页值必须使用后端传输枚举，展示文案可以本地化。刷新通过 `device.inventory.collect` 进入现有 Task Center，组件通过共享 Task Store polling 跟踪状态，不另建 WebSocket 或第二套任务模型。任务完成、失败或取消后重新加载 overview 及已经加载的页签；请求使用 generation 防止切换设备、页签或筛选后的旧响应覆盖新状态。卸载时释放 Task Store polling，并清理本组件请求状态、图表和观察器。
@@ -33,7 +35,7 @@
 
 ## 测试
 
-修改后先运行设备详情 API、Panel mount/static、设备管理视图和路由定向测试；最终集成再运行 `vue-tsc` 与生产构建。测试应覆盖 overview 快照读取、动态页签、缺失值、正确传输枚举、分页缓存、刷新任务、任务终态刷新、请求竞态、卸载清理、完整详情路由、键盘 resize 和受控详情字段。当前低 CPU 模式下，本轮设备详情前端 3 个定向文件 12 项测试和 `vue-tsc` 已通过；全量测试、生产构建和 Electron 视觉检查仍延后。
+修改后先运行设备详情 Panel mount/static、设备管理视图、公共表格和路由定向测试，并运行 `vue-tsc` 与 UI Guard；最终集成再运行全量测试和生产构建。测试应覆盖 overview 快照读取、动态页签、缺失值、正确传输枚举、分页缓存、刷新任务、任务终态刷新、请求竞态、卸载清理、完整详情路由、键盘 resize 和受控详情字段。Electron 多尺寸/多缩放视觉检查仍属于最终人工验收。
 
 ## 修改规则
 
@@ -45,4 +47,4 @@
 
 ## 相关文档
 
-参见 [设备管理页面](../../views/devices/README.md)、[Web 组件规范](../README.md)、[表格规范](../../../../../docs/ui_table_guidelines.md)、[UI 设计系统](../../../../../docs/UI_DESIGN_SYSTEM.md) 和 [Codex Skills](../../../../../docs/CODEX_SKILLS.md)。业务事实来源以 Python 后端 DTO、`visible_sections`、capability/profile、阈值和 Task Center 契约为准；当前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
+参见 [设备管理页面](../../views/devices/README.md)、[统一表格组件](../table/README.md)、[表格规范](../../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[UI 设计系统](../../../../../docs/UI_DESIGN_SYSTEM.md) 和 [Codex Skills](../../../../../docs/CODEX_SKILLS.md)。业务事实来源以 Python 后端 DTO、`visible_sections`、capability/profile、阈值和 Task Center 契约为准；当前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。

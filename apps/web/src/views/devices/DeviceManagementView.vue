@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
@@ -39,6 +38,8 @@ import {
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
@@ -72,6 +73,11 @@ type DeviceTaskWindowBridge = {
   openTaskWindow(context: { taskId?: string; module: 'devices'; status?: TaskStatus }): Promise<{ success: boolean; error?: string }>
 }
 
+interface TableSelectionController<Row> {
+  clearSelection(): void
+  toggleRowSelection(row: Row, selected?: boolean): void
+}
+
 const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
 const router = useRouter()
 const taskStore = useTaskStore()
@@ -93,7 +99,7 @@ const writeConnectionLoading = ref(false)
 const writeConnectionTest = ref<DeviceConnectionTest | null>(null)
 const writeTestProtocol = ref<DeviceConnectionProtocol>('SSH')
 const selectedUuids = ref<string[]>([])
-const deviceTable = ref<TableInstance>()
+const deviceTable = ref<TableSelectionController<DeviceListItem>>()
 const groupVisible = ref(false)
 const groupName = ref('')
 const groupAssignVisible = ref(false)
@@ -113,7 +119,7 @@ const omniPeekLineName = ref('NetConsole')
 const omniPeekPreview = ref<DeviceOmniPeekPreview | null>(null)
 const omniPeekSelectedKeys = ref<string[]>([])
 const omniPeekForceKeys = ref<string[]>([])
-const omniPeekTable = ref<TableInstance>()
+const omniPeekTable = ref<TableSelectionController<DeviceOmniPeekPreviewItem>>()
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
 const terminalSettingsVisible = ref(false)
@@ -138,6 +144,34 @@ const filters = reactive({
   page: 1,
   page_size: 50,
 })
+const deviceColumns: NcTableColumn<DeviceListItem>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false },
+  { key: 'name', label: '名称', valueType: 'name', fixed: 'left' },
+  { key: 'group_name', label: '分组', valueType: 'text' },
+  { key: 'system_name', label: '系统名', valueType: 'name' },
+  { key: 'station', label: '站点', valueType: 'text' },
+  { key: 'primary_address', label: '主地址', valueType: 'ip' },
+  { key: 'backup_address', label: '备用地址', valueType: 'ip' },
+  {
+    key: 'login_protocol',
+    label: '登录协议',
+    valueType: 'text',
+    displayValue: (row) => [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '—',
+  },
+  { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
+  { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'] },
+]
+const omniPeekColumns: NcTableColumn<DeviceOmniPeekPreviewItem>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false, columnAttrs: { reserveSelection: true } },
+  { key: 'name', label: '名称', valueType: 'name', fixed: 'left' },
+  { key: 'physical_mac', label: '物理 MAC', valueType: 'mac' },
+  { key: 'r1_mac', label: 'R1', valueType: 'mac' },
+  { key: 'r2_mac', label: 'R2', valueType: 'mac' },
+  { key: 'location', label: '位置', valueType: 'text' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'force_export', label: '强制导出', valueType: 'actions', cellKind: 'plain', hideable: false },
+]
 const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const secretClears = reactive<Record<DeviceSecretField, boolean>>({
   ssh_password: false,
@@ -1212,19 +1246,23 @@ function errorMessage(cause: unknown, fallback: string): string {
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="state-alert" />
     <div v-loading="loading" class="content-card table-card" :data-state="isEmpty ? 'empty' : 'success'">
       <el-empty v-if="isEmpty" description="没有符合条件的设备" />
-      <el-table ref="deviceTable" v-else :data="pageData.items" row-key="device_uuid" stripe height="calc(100vh - 380px)" empty-text="暂无设备" @selection-change="onSelectionChange" @row-dblclick="openDetail" @row-contextmenu="showContextMenu">
-        <el-table-column type="selection" width="44" fixed="left" />
-        <el-table-column prop="name" label="名称" min-width="180" fixed="left" show-overflow-tooltip />
-        <el-table-column prop="group_name" label="分组" min-width="120" />
-        <el-table-column prop="system_name" label="系统名" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="station" label="站点" min-width="160" />
-        <el-table-column prop="primary_address" label="主地址" min-width="135" />
-        <el-table-column prop="backup_address" label="备用地址" min-width="135" />
-        <el-table-column label="登录协议" min-width="110"><template #default="{ row }">{{ [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '--' }}</template></el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" min-width="175" />
-        <el-table-column label="连接状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template></el-table-column>
-        <el-table-column label="操作" width="180" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(row)">编辑</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([row.device_uuid])">删除</el-button></template></el-table-column>
-      </el-table>
+      <NcDataTable
+        v-else
+        ref="deviceTable"
+        table-id="device-list"
+        route-key="/devices"
+        :data="pageData.items"
+        :columns="deviceColumns"
+        row-key="device_uuid"
+        height="calc(100vh - 380px)"
+        empty-text="暂无设备"
+        @selection-change="onSelectionChange"
+        @row-dblclick="openDetail"
+        @row-contextmenu="showContextMenu"
+      >
+        <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
+        <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(row)">编辑</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
+      </NcDataTable>
       <el-pagination
         v-if="pageData.total"
         v-model:current-page="filters.page"
@@ -1369,16 +1407,20 @@ function errorMessage(cause: unknown, fallback: string): string {
     <el-dialog v-model="omniPeekVisible" title="导出 OmniPeek 名称表" width="min(1120px, 96vw)" @closed="stopOmniPeekPreview">
       <el-form label-width="90px"><el-form-item label="线路名称"><el-input v-model="omniPeekLineName" maxlength="200" /></el-form-item></el-form>
       <el-alert v-if="omniPeekPreview" :title="`共 ${omniPeekPreview.stats.total || 0} 项，异常 ${omniPeekPreview.stats.abnormal || 0} 项；异常项需人工确认后才能强制导出。`" type="info" show-icon :closable="false" />
-      <el-table ref="omniPeekTable" v-loading="omniPeekLoading" :data="omniPeekPreview?.items || []" row-key="key" max-height="520" empty-text="暂无可导出数据" @selection-change="onOmniPeekSelectionChange">
-        <el-table-column type="selection" width="48" reserve-selection />
-        <el-table-column prop="name" label="名称" min-width="180" fixed />
-        <el-table-column prop="physical_mac" label="物理 MAC" min-width="150" />
-        <el-table-column prop="r1_mac" label="R1" min-width="150" />
-        <el-table-column prop="r2_mac" label="R2" min-width="150" />
-        <el-table-column prop="location" label="位置" min-width="140" />
-        <el-table-column prop="status" label="状态" width="110" />
-        <el-table-column label="强制导出" width="100"><template #default="{ row }"><el-checkbox :model-value="omniPeekForceKeys.includes(row.key)" :disabled="row.status === '正常' || !omniPeekSelectedKeys.includes(row.key)" @change="setOmniPeekForce(row.key, Boolean($event))" /></template></el-table-column>
-      </el-table>
+      <NcDataTable
+        ref="omniPeekTable"
+        v-loading="omniPeekLoading"
+        table-id="device-omnipeek-export"
+        route-key="/devices"
+        :data="omniPeekPreview?.items || []"
+        :columns="omniPeekColumns"
+        row-key="key"
+        :max-height="520"
+        empty-text="暂无可导出数据"
+        @selection-change="onOmniPeekSelectionChange"
+      >
+        <template #cell-force_export="{ row }"><el-checkbox :model-value="omniPeekForceKeys.includes(row.key)" :disabled="row.status === '正常' || !omniPeekSelectedKeys.includes(row.key)" @change="setOmniPeekForce(row.key, Boolean($event))" /></template>
+      </NcDataTable>
       <template #footer><el-button @click="omniPeekVisible = false">取消</el-button><el-button type="primary" :loading="omniPeekLoading" :disabled="!omniPeekPreview || !omniPeekSelectedKeys.length" @click="exportOmniPeek">确认导出</el-button></template>
     </el-dialog>
 

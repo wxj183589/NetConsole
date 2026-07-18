@@ -4,9 +4,11 @@
 
 | 路由 | 页面 | 表格 ID | 当前组件 | 表头/内容居中 | 自动列宽 | 表头最小宽度 | 整改状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `embedded:DeviceDetailPanel` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:960` | `legacy:components:device-detail:DeviceDetailPanel:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `embedded:DeviceDetailPanel` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:995` | `legacy:components:device-detail:DeviceDetailPanel:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `embedded:DeviceDetailPanel` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1018` | `legacy:components:device-detail:DeviceDetailPanel:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1021` | `device-detail-capabilities` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1052` | `device-detail-sections` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1081` | `device-detail-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1249` | `device-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1410` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:323` | `legacy:components:network-tools:NetworkToolboxPanel:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:343` | `legacy:components:network-tools:NetworkToolboxPanel:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:349` | `legacy:components:network-tools:NetworkToolboxPanel:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
@@ -32,8 +34,6 @@
 | `/command-reference` | `apps/web/src/views/command-reference/CommandReferenceView.vue:300` | `legacy:views:command-reference:CommandReferenceView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:569` | `legacy:views:config-collection:ConfigCollectionView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:588` | `legacy:views:config-collection:ConfigCollectionView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1215` | `legacy:views:devices:DeviceManagementView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1372` | `legacy:views:devices:DeviceManagementView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:453` | `legacy:views:file-management:FileManagementView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:480` | `legacy:views:file-management:FileManagementView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:517` | `legacy:views:file-management:FileManagementView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
@@ -92,4 +92,4 @@
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:339` | `legacy:views:system:SystemMaintenanceView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:349` | `legacy:views:system:SystemMaintenanceView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
 
-总计：0 张已迁移，87 张待迁移。
+总计：5 张已迁移，82 张待迁移。

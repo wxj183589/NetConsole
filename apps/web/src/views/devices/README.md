@@ -12,6 +12,8 @@
 
 快速抽屉和完整页必须复用同一套 API、DTO 和 presentation 组件。Renderer 只负责布局、筛选、分页、展示和轻量交互，不识别设备版本、不判断设备能力、不选择设备命令，也不直接访问 SQLite、SSH、Agent 或 Electron Main。
 
+设备主列表、OmniPeek 预览、能力事实、详情分区和历史表格已迁移到 `NcDataTable`。表头/内容默认居中，描述和错误等长文本按列类型明确左对齐；列宽由公共文本测量和字段类型基线计算，分区/历史偏好按 section/kind 隔离。页面不再散写 Element Plus 列宽、`header-align` 或 `measureText()`。
+
 ## 读取与刷新顺序
 
 1. 打开抽屉或完整页时只读取数据库中的最近 overview 快照，不立即连接设备。
@@ -56,7 +58,7 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 
 新增字段或页签时先更新 Python DTO/Application/Query Service，再同步 Router、TypeScript 类型、API client 和展示；不得在 Vue 中补设备版本、阈值或关联业务规则。新增用户可见文本进入 i18n，样式使用 Element Plus 和 NetConsole Design Token。
 
-开发阶段只运行受影响的 Python API/Service、Vue 组件/路由定向测试。当前用户要求低 CPU 模式，本轮未运行全量测试、`vue-tsc`、生产构建或 Electron Package Smoke；这些最终门禁必须在用户解除限制后于集成代码组合上补跑。
+开发阶段只运行受影响的 Python API/Service、Vue 组件/路由定向测试。表格展示改动运行设备页面/组件 Vitest、公共表格测试、`vue-tsc` 和 UI Guard；全量测试、Electron Package Smoke 和多尺寸人工视觉矩阵只在最终集成组合执行。
 
 ## 相关文档
 
