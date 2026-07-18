@@ -6,6 +6,17 @@ import it without creating circular dependencies.
 """
 from __future__ import annotations
 
+import re
+
+
+_DISPLAY_PREFIXES = (
+    (re.compile(r"^(?:HundredGigE|Hundred-?GigabitEthernet|100GigabitEthernet)\s*", re.IGNORECASE), "100GE"),
+    (re.compile(r"^(?:FortyGigE|Forty-?GigabitEthernet|40GigabitEthernet)\s*", re.IGNORECASE), "40GE"),
+    (re.compile(r"^(?:Twenty-?FiveGigE|Twenty-?Five-?GigabitEthernet|25GigabitEthernet)\s*", re.IGNORECASE), "25GE"),
+    (re.compile(r"^(?:Ten-GigabitEthernet|TenGigabitEthernet|XGigabitEthernet)\s*", re.IGNORECASE), "XGE"),
+    (re.compile(r"^GigabitEthernet\s*", re.IGNORECASE), "GE"),
+)
+
 
 def normalize_interface_name(value: object) -> str:
     """Expand abbreviated interface names (GE, XGE, …) to their canonical form.
@@ -43,4 +54,15 @@ def normalize_interface_name(value: object) -> str:
             suffix = text[len(prefix):]
             if suffix and suffix[0].isdigit():
                 return full + suffix
+    return text
+
+
+def display_interface_name(value: object) -> str:
+    """Shorten common physical interface prefixes without changing the port path."""
+
+    text = str(value or "").strip()
+    for pattern, replacement in _DISPLAY_PREFIXES:
+        match = pattern.match(text)
+        if match:
+            return f"{replacement}{text[match.end():]}"
     return text

@@ -19,6 +19,10 @@ export function startTracksideApUpdate(payload: TracksideApUpdateRequest = {}): 
   return apiRequest(`${root}/update`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
+export function startTracksideApBusinessExport(): Promise<TracksideApTask> {
+  return apiRequest(`${root}/export`, { method: 'POST' })
+}
+
 export function getTracksideApTask(taskId: string): Promise<TracksideApTask> {
   return apiRequest(`${root}/tasks/${encodeURIComponent(taskId)}`)
 }
@@ -55,4 +59,9 @@ export function exportTracksideApPlan(template = false): Promise<TracksideApTask
 export const tracksideApPlanDownloadRequest = (artifactId: string, template = false): BackendDownloadRequest => ({
   apiPath: `${root}/plan/artifacts/${encodeURIComponent(artifactId)}/download`,
   suggestedName: template ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx',
+})
+
+export const tracksideApBusinessDownloadRequest = (artifactId: string): BackendDownloadRequest => ({
+  apiPath: `${root}/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName: '轨旁AP业务.xlsx',
 })

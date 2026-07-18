@@ -115,6 +115,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx",
         "web_export_mesh_analysis_report",
         "web_export_car_network_point_table",
+        "web_export_trackside_ap_business",
         "web_export_table_xlsx",
         "web_export_vehicle_mr_history_xlsx",
     }
@@ -123,6 +124,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "web_export_online_mr_report_xlsx",
         "mesh_analysis_report": "web_export_mesh_analysis_report",
         "car_network_point_table": "web_export_car_network_point_table",
+        "trackside_ap_business": "web_export_trackside_ap_business",
         "trackside_ap_plan": "web_export_table_xlsx",
         "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
         "vehicle_mr_mapping_template": "web_export_table_xlsx",
@@ -131,6 +133,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
         "web_export_car_network_point_table": "car_network_point_table_export",
+        "web_export_trackside_ap_business": "trackside_ap_business_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
         "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
     }
@@ -138,6 +141,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "online_mr_report",
         "mesh_analysis_report": "mesh_analysis_report",
         "car_network_point_table": "car_network_point_table_export",
+        "trackside_ap_business": "trackside_ap_business_export",
         "trackside_ap_plan": "trackside_ap_plan_export",
         "vehicle_mr_history": "vehicle_mr_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
@@ -485,6 +489,44 @@ class RailTransitWebApplicationService:
     ) -> tuple[Path, str]:
         artifact_type = "csv" if file_format == "csv" else "xlsx"
         return self._open_artifact(site_id, artifact_id, "car_network_point_table", artifact_type)
+
+    def start_trackside_ap_business_export(self, site_id: str) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        task_id = f"rail-export-{uuid4().hex}"
+        try:
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="trackside_ap_business",
+                artifact_type="xlsx",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_business"],
+                output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_business",
+                preferred_name=f"轨旁AP业务_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            )
+        except WebArtifactError as exc:
+            self._task_window_blocked("轨旁 AP 业务导出", exc)
+        job = ExportJob(
+            job_id=task_id,
+            job_type="trackside_ap_business",
+            site_name=site_id,
+            output_path=str(reservation.output_path),
+            db_path=str(self.paths.site_db_path(site_id)),
+            params={"language": "zh_CN"},
+        )
+        return self._start_export(
+            site_id,
+            job,
+            "trackside_ap_business_export",
+            reservation,
+        )
+
+    def open_trackside_ap_business_export(
+        self,
+        site_id: str,
+        artifact_id: str,
+    ) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "trackside_ap_business")
 
     def get_trackside_ap_plan(self, site_id: str) -> TracksideApPlanDTO:
         site_id = self._site(site_id)

@@ -409,6 +409,7 @@ class WebArtifactStore:
             "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
             "online_mr_report": self.paths.online_mr_root(site_id),
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),
+            "trackside_ap_business": self.paths.trackside_ap_outputs_dir(site_id),
             "system_logs_current": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
             "system_logs_all": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",
             "system_open_source_txt": self.paths.site_files_dir(site_id) / "system_maintenance" / "outputs",

@@ -174,7 +174,10 @@ def export_trackside_ap_business_from_database(
     check_cancel()
     emit("query_trackside_data", 0, 0, "正在读取轨旁AP业务数据")
     snapshot = load_trackside_ap_business_snapshot(repository, site_name, generation=0)
-    app_logger.log_info("TRACKSIDE_AP_EXPORT_STARTED", f"site={site_name} rows={len(snapshot.rows)} output={output}")
+    app_logger.log_info(
+        "TRACKSIDE_AP_EXPORT_STARTED",
+        f"site={site_name} rows={len(snapshot.rows)} output={output.name}",
+    )
     check_cancel()
 
     emit("query_fit_ap_resources", 0, 0, "正在读取AP信息")
@@ -269,7 +272,10 @@ def export_trackside_ap_business_from_database(
     )
     os.replace(tmp, output)
     emit("done", len(rows), len(rows), "完成")
-    app_logger.log_info("TRACKSIDE_AP_EXPORT_COMPLETED", f"site={site_name} rows={len(rows)} output={output}")
+    app_logger.log_info(
+        "TRACKSIDE_AP_EXPORT_COMPLETED",
+        f"site={site_name} rows={len(rows)} output={output.name}",
+    )
     return {"path": str(output), "row_count": len(rows)}
 
 

@@ -2696,7 +2696,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert [
         abnormal_sheet.cell(row=row, column=3).value
         for row in range(2, abnormal_sheet.max_row + 1)
-    ] == ["GigabitEthernet1/0/2", "GigabitEthernet1/0/4"]
+    ] == ["GE1/0/2", "GE1/0/4"]
     reason_column = abnormal_headers.index("异常原因") + 1
     assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP离线"
     assert (

@@ -23,6 +23,7 @@ from netconsole.services.rail_transit.trackside_ap_business_query_service import
 router = APIRouter(prefix="/rail-transit/trackside-ap-business", tags=["trackside-ap-business"])
 _ACTIONS = {
     "trackside_ap_optical_update",
+    "trackside_ap_business_export",
     "trackside_ap_plan_save",
     "trackside_ap_plan_export",
 }
@@ -63,6 +64,47 @@ def rows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post(
+    "/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="导出轨旁 AP 业务工作簿",
+    responses={
+        422: {"description": "局点或导出参数无效"},
+        503: {"description": "导出任务暂不可用"},
+    },
+    dependencies=[
+        Depends(require_feature("web.rail_trackside_ap_business_export")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def export_business(request: Request) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_trackside_ap_business_export(
+            _site_id(request)
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    summary="下载轨旁 AP 业务工作簿",
+    responses={404: {"description": "Artifact 不存在或不属于当前局点"}},
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_export"))],
+)
+def download_business_artifact(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_trackside_ap_business_export(
+            _site_id(request),
+            artifact_id,
+        )
+        return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
 
 
 @router.get(
@@ -222,6 +264,7 @@ def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
 def _raise_error(exc: RailTransitWebError) -> None:
     status_code = {
         "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "ARTIFACT_INVALID": status.HTTP_404_NOT_FOUND,
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc

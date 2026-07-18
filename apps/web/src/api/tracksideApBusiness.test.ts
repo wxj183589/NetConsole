@@ -8,7 +8,9 @@ import {
   listTracksideApBusiness,
   recoverTracksideApTasks,
   saveTracksideApPlan,
+  startTracksideApBusinessExport,
   startTracksideApUpdate,
+  tracksideApBusinessDownloadRequest,
 } from './tracksideApBusiness'
 
 describe('trackside AP business API', () => {
@@ -18,6 +20,7 @@ describe('trackside AP business API', () => {
 
     await listTracksideApBusiness({ station: '站点A', optical_anomaly_only: true })
     await startTracksideApUpdate({ station: '站点A' })
+    await startTracksideApBusinessExport()
     await getTracksideApTask('task-1')
     await cancelTracksideApTask('task-1')
     await recoverTracksideApTasks()
@@ -28,6 +31,7 @@ describe('trackside AP business API', () => {
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/trackside-ap-business/rows?station=%E7%AB%99%E7%82%B9A&optical_anomaly_only=true',
       '/api/rail-transit/trackside-ap-business/update',
+      '/api/rail-transit/trackside-ap-business/export',
       '/api/rail-transit/trackside-ap-business/tasks/task-1',
       '/api/rail-transit/trackside-ap-business/tasks/task-1/cancel',
       '/api/rail-transit/trackside-ap-business/tasks/recover',
@@ -35,5 +39,9 @@ describe('trackside AP business API', () => {
       '/api/rail-transit/trackside-ap-business/plan/save',
       '/api/rail-transit/trackside-ap-business/plan/export',
     ])
+    expect(tracksideApBusinessDownloadRequest('artifact / 1')).toEqual({
+      apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact%20%2F%201/download',
+      suggestedName: '轨旁AP业务.xlsx',
+    })
   })
 })

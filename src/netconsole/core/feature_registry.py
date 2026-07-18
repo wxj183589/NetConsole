@@ -194,6 +194,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.rail_car_network_point_table_export", "车内通信点表导出（Web）", "web.rail_car_network_diagnostic", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_trackside_ap_business", "轨旁 AP 业务（Web）", "module.rail_transit", "page", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_trackside_ap_business_update", "轨旁 AP 光衰更新（Web）", "web.rail_trackside_ap_business", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.rail_trackside_ap_business_export", "轨旁 AP 业务导出（Web）", "web.rail_trackside_ap_business", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_trackside_ap_plan", "轨旁 AP 规划（Web）", "module.rail_transit", "page", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_trackside_ap_plan_write", "轨旁 AP 规划维护（Web）", "web.rail_trackside_ap_plan", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.rail_trackside_ap_plan_export", "轨旁 AP 规划导出（Web）", "web.rail_trackside_ap_plan", "action", status=FeatureStatus.DEVELOPMENT),

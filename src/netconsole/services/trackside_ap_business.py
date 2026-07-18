@@ -17,7 +17,7 @@ from netconsole.services.offline_ap_ledger import (
     write_offline_ap_ledger_sheet,
     write_offline_ap_stats_sheet,
 )
-from netconsole.utils.interface_normalize import normalize_interface_name
+from netconsole.utils.interface_normalize import display_interface_name, normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.station_normalize import normalize_station_value
 
@@ -1613,7 +1613,21 @@ def export_trackside_ap_business_xlsx(
         stats_sheet = workbook.create_sheet("AP\u79bb\u7ebf\u60c5\u51b5")
         write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
         ledger_sheet = workbook.create_sheet("\u79bb\u7ebfAP\u53f0\u8d26")
-        write_offline_ap_ledger_sheet(ledger_sheet, offline_ap_ledger_rows, offline_ap_ledger_headers or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS])
+        display_ledger_rows = [
+            {
+                **row,
+                "historical_switch_interface": display_interface_name(
+                    row.get("historical_switch_interface")
+                ),
+            }
+            for row in offline_ap_ledger_rows
+        ]
+        write_offline_ap_ledger_sheet(
+            ledger_sheet,
+            display_ledger_rows,
+            offline_ap_ledger_headers
+            or [key for key, _field in OFFLINE_AP_LEDGER_COLUMNS],
+        )
         log_write_phase("write_offline_ap_sheets", phase_start, rows=len(offline_ap_ledger_rows or []))
     _raise_if_trackside_export_cancelled(should_cancel)
     _emit_trackside_export_progress(progress_callback, "write_summary", 0, len(rows), "正在写入汇总统计")
@@ -1624,6 +1638,8 @@ def export_trackside_ap_business_xlsx(
     _emit_trackside_export_progress(progress_callback, "style_autofit", 0, len(workbook.worksheets), "正在设置样式和列宽")
     phase_start = perf_counter()
     for worksheet in workbook.worksheets:
+        _format_export_sheet(worksheet, alignment, border, header_font, header_fill)
+        worksheet.auto_filter.ref = worksheet.dimensions
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
     log_write_phase("autofit_sheets", phase_start, sheets=len(workbook.worksheets))
@@ -2088,6 +2104,8 @@ def _export_value(field: str, row: dict[str, object | None], *, preserve_ap_iden
     if preserve_ap_identity and field in {"ap_name", "ap_mac", "serial_number"}:
         value = row.get(field)
         return str(value) if value not in (None, "") else AP_SIDE_MISSING_DISPLAY
+    if field == "interface_name":
+        return display_interface_name(row.get(field)) or AP_SIDE_MISSING_DISPLAY
     return format_trackside_display_value(field, row)
 
 
@@ -2494,4 +2512,4 @@ def _ap_state(row: dict[str, object | None]) -> str:
 
 
 def _short_interface_name(value: object) -> str:
-    return str(value or "-").replace("GigabitEthernet", "GE")
+    return display_interface_name(value) or "-"
