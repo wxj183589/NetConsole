@@ -38,7 +38,7 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 ## 仓库结构
 
 ```text
-apps/       独立应用：Agent、Electron Desktop、Web 前端和待回收 Qt 事实源
+apps/       独立应用：Agent、Electron Desktop 和 Web 前端；Qt 事实源位于 `src/netconsole/ui/`
 src/        可安装的 Python 包（src/netconsole）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则

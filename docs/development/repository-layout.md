@@ -14,7 +14,6 @@ NetConsole/
 ├─ .codex/                  # 本地 Codex 状态，允许存在但不提交
 ├─ apps/
 │  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
-│  ├─ desktop/              # 待回收 Qt Web Shell 事实源，无活动产品入口
 │  ├─ desktop_electron/     # Electron main/preload/shared 安全外壳
 │  └─ web/                  # Vue/TypeScript/Vite 前端
 ├─ src/
@@ -54,7 +53,7 @@ NetConsole/
 ## 4. 应用边界
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
-- `apps/desktop` 只放待回收的 Qt Web Shell 历史实现，不再提供活动产品入口，也不新增 Qt 业务页面。
+- Qt 历史 Web Shell 已从 `apps/desktop/` 回收；剩余 Qt 事实源统一位于 `src/netconsole/ui/`，不提供活动产品入口，也不新增 Qt 业务页面。
 - `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试和应用级开发脚本；不得复制 Python Core、业务 Service 或 Vue 页面。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
 - `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser、UI 和包内静态资源；包名仍为 `netconsole`。
@@ -152,7 +151,7 @@ apps/agent/
 | 迁移前 | 迁移后 | 说明 |
 | --- | --- | --- |
 | `agent/` | `apps/agent/` | 独立 Go Agent |
-| `desktop/` | `apps/desktop/` | 待回收 Qt Web Shell 事实源；活动入口已删除 |
+| `desktop/` | Git 历史 | Qt Web Shell 已回收；不得重新创建该目录 |
 | 新增 Electron 外壳 | `apps/desktop_electron/` | 仅 main/preload/shared；唯一 Renderer 仍为 `apps/web/` |
 | `frontend/` | `apps/web/` | Vue Web 前端 |
 | `netconsole/` | `src/netconsole/` | 共享 Python 包，导入名仍是 `netconsole` |

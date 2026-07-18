@@ -4,8 +4,8 @@ from netconsole.ui.dialogs.message_service import MessageBox
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -30,9 +30,8 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.ui.job_process_manager import BackgroundProcessManager
-from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.services.trackside_ap_business import TRACKSIDE_AP_DEVICE_COLUMNS, format_trackside_display_value, trackside_row_status
-from netconsole.services.device_web_service import build_https_url, effective_https_port, open_https_url
+from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.export.export_task_builders import markdown_text_file_spec
 from netconsole.services.h3c_collect_service import CollectDeviceResult
 from netconsole.services.h3c_optical_refresh_service import OpticalRefreshResult
@@ -359,10 +358,11 @@ class DeviceDetailDialog(QDialog):
 
     def open_device_web(self) -> None:
         port, _source = effective_https_port(self.device.https_port)
-        if not build_https_url(self.device.primary_address, port):
+        url = build_https_url(self.device.primary_address, port)
+        if not url:
             MessageBox.information(self, self.windowTitle(), self.i18n.t("ac.https_port_not_collected"))
             return
-        if not open_https_url(self.device.primary_address, port):
+        if not QDesktopServices.openUrl(QUrl(url)):
             MessageBox.warning(self, self.windowTitle(), self.i18n.t("ac.open_web_failed"))
 
     def _interfaces_tab(self) -> QWidget:

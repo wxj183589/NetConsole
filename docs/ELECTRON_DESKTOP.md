@@ -17,7 +17,7 @@ Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯�
 当前并存关系：
 
 ```text
-apps/desktop/              历史 Qt Web Shell，迁移事实参考
+src/netconsole/ui/         Qt 页面与迁移事实源；历史 `apps/desktop` WebShell 已回收
 apps/desktop_electron/     Electron main/preload/shared，目标桌面外壳基础
 apps/web/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
 src/netconsole/            唯一 Python Core/FastAPI/Application Service

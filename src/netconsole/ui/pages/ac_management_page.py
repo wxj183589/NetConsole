@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -39,7 +38,6 @@ from netconsole.core.i18n import I18n
 from netconsole.core.optical_severity_engine import display_optical_status
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.state_engine import STATUS_COLORS
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -48,9 +46,7 @@ from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_BUSINESS_HEADER_TOOLTIPS,
-    build_trackside_ap_business_rows,
     build_trackside_site_filter_items,
-    filter_station_switch_devices,
     filter_trackside_ap_business_rows,
     trackside_row_status,
 )
@@ -68,19 +64,14 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.services.ap_online_overview import (
     AP_ONLINE_OVERVIEW_COLUMNS,
-    ApOnlineOverviewService,
-    build_ap_online_overview_rows,
-    export_ap_online_overview_xlsx,
 )
 from netconsole.services.background_job import BackgroundJob
 from netconsole.ui.job_process_manager import BackgroundProcessManager
-from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.services.fit_ap_import_export import FitApImportExportService, make_ap_extension_template_filename, make_fit_ap_export_filename
 from netconsole.services.fit_ap_optical_export import (
     evaluate_fit_ap_ap_status,
     evaluate_fit_ap_row_status,
     evaluate_fit_ap_switch_status,
-    export_fit_ap_optical_xlsx,
 )
 from netconsole.services.fit_ap_link_info import lldp_display_status, lldp_source_label
 from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name
@@ -95,7 +86,7 @@ from netconsole.services.export.export_task_builders import (
 )
 from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.services.external_terminal import TERMINAL_LABELS, available_external_terminal_configs, launch_external_terminal
-from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port, open_https_url
+from netconsole.services.device_web_service import DEFAULT_HTTPS_PORT, build_https_url, effective_https_port
 from netconsole.ui.ac_collect_worker import AcInfoCollectThread
 from netconsole.ui.app_events import app_events
 from netconsole.ui.dialogs.device_detail_dialog import DeviceDetailDialog
@@ -104,7 +95,7 @@ from netconsole.ui.dialogs.omnipeek_export_dialog import OmniPeekExportDialog
 from netconsole.ui.export_action_helper import submit_export_task
 from netconsole.ui.dialogs.station_online_history_dialog import StationOnlineHistoryDialog
 from netconsole.ui.pages.trackside_ap_plan_page import TracksideApPlanPage
-from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, PaginationState, paginate_rows
+from netconsole.ui.pagination import DEFAULT_PAGE_SIZE, paginate_rows
 from netconsole.ui.render.table_render_engine import STATUS_COLOR_MAP, apply_table_style, set_table_column_fields
 from netconsole.ui.shell.fluent_bridge import FIF
 from netconsole.ui.theme.contrast_engine import apply_item_contrast, apply_status_item_contrast
@@ -1377,10 +1368,11 @@ class AcManagementPage(QWidget):
         if device is None:
             return
         port, _source = effective_https_port(device.https_port)
-        if not build_https_url(device.ip_address, port):
+        url = build_https_url(device.ip_address, port)
+        if not url:
             MessageBox.information(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.https_port_not_collected"))
             return
-        if not open_https_url(device.ip_address, port):
+        if not QDesktopServices.openUrl(QUrl(url)):
             MessageBox.warning(self, self.i18n.t("ac.open_web"), self.i18n.t("ac.open_web_failed"))
 
     def update_open_web_button(self) -> None:

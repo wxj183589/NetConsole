@@ -15,6 +15,7 @@
 ### 桌面与发布
 
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 不再启动桌面，正式桌面统一由 Electron Main 启动。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
+- E1 回收无调用的 `apps/desktop` Qt WebShell、包标记和 Qt-only 运行测试；仍被 Qt 页面引用的 `src/netconsole/ui/web_host` 兼容层暂不删除，等待对应业务迁移矩阵收口。
 - 固化 Electron-only 最终 E10 架构一致性门：逐项追踪已删除 Qt 文件中的业务逻辑，检查 UI/Router/Service/Repository/Command Profile、数据库事实源、孤儿模块和移除功能残留，并要求有限期例外、迁移矩阵、自动 Guard 与最终合规报告；当前只完成规范，不表示全仓审计已经通过。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
 - Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品方向。Qt 已完成既有打包成果，本版本起不再作为新版本发布门或新功能入口，源码暂留作 1:1 迁移事实源，待 Electron 全部有效功能完成真实验收后单独删除。

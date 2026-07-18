@@ -41,6 +41,9 @@ from netconsole.services.external_terminal import ExternalTerminalConfig, Extern
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services import command_guard
 from netconsole.services.device_web_service import build_https_url, effective_https_port, parse_https_port
+from netconsole.services.ap_online_overview import build_ap_online_overview_rows, export_ap_online_overview_xlsx
+from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
+from netconsole.services.fit_ap_optical_export import export_fit_ap_optical_xlsx
 from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
 from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
 from netconsole.services.h3c_ac_collect_service import (
@@ -104,14 +107,10 @@ from netconsole.ui.pages.ac_management_page import (
     AcManagementPage,
     FIT_AP_OPTICAL_COLUMNS,
     FIT_AP_RESOURCE_COLUMNS,
-    build_ap_online_overview_rows,
     build_site_filter_items,
-    enrich_fit_ap_optical_rows,
     evaluate_fit_ap_ap_status,
     evaluate_fit_ap_row_status,
     evaluate_fit_ap_switch_status,
-    export_ap_online_overview_xlsx,
-    export_fit_ap_optical_xlsx,
     filter_fit_ap_optical_rows,
     sort_fit_ap_optical_rows,
 )

@@ -187,7 +187,7 @@ Web parity foundation 已建立：
 阶段 0～3 新增：
 
 ```text
-apps/desktop/                    # 当前 Qt Web Shell，Legacy/生产回退
+src/netconsole/ui/               # 待回收 Qt 页面与事实源
 apps/desktop_electron/           # Electron main/preload/shared 安全基础
 src/netconsole/backend/api/          # FastAPI Application/API 骨架
 src/netconsole/models/api/           # Pydantic API DTO

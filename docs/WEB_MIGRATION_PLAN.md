@@ -81,7 +81,7 @@ Electron 安全外壳基础已在独立目录建立；这不授权批量改名�
 
 基础外壳已提前完成，用于尽早验证生命周期、安全边界和唯一 Vue Renderer；继续扩展仍以 Electron 主流程稳定、API 契约成熟为前提：
 
-- Electron 独立位于 `apps/desktop_electron/`，Qt Legacy 继续位于 `apps/desktop/`，当前不互相替换；
+- Electron 独立位于 `apps/desktop_electron/`，Qt Legacy 页面继续位于 `src/netconsole/ui/`；历史 `apps/desktop` WebShell 已回收，当前不互相替换业务事实源；
 - 当前已具备安全窗口、Python 进程生命周期和白名单 Native Bridge，托盘、签名安装、升级仍待后续任务；
 - 复用现有 Vue 构建和 FastAPI 服务，不复制页面或业务逻辑；
 - 完成本机路径、终端启动、升级签名和安全审计后，再进入默认桌面发布。

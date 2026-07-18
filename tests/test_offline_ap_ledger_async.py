@@ -19,6 +19,7 @@ from netconsole.services.offline_ap_ledger import (
     is_fit_ap_offline,
 )
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, format_trackside_display_value
+from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
 from netconsole.ui.pages.ac_management_page import AcManagementPage
 
 
@@ -189,7 +190,7 @@ def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(
 
 
 def test_fit_ap_optical_idle_row_displays_offline_alarm():
-    from netconsole.ui.pages.ac_management_page import enrich_fit_ap_optical_rows, evaluate_fit_ap_ap_status
+    from netconsole.ui.pages.ac_management_page import evaluate_fit_ap_ap_status
 
     rows = enrich_fit_ap_optical_rows(
         [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "rx_power": "-3.00", "rx_low_alarm": "-20.00"}],

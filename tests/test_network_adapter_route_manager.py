@@ -254,69 +254,6 @@ def test_is_admin_returns_bool_without_requiring_real_admin() -> None:
     assert isinstance(admin_module.is_admin(), bool)
 
 
-def test_development_admin_launch_uses_python_and_absolute_main(monkeypatch, tmp_path: Path) -> None:
-    calls = []
-    main_py = tmp_path / "main.py"
-    main_py.write_text("from netconsole.app import run\n", encoding="utf-8")
-    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
-    python_exe.parent.mkdir(parents=True)
-    python_exe.write_text("", encoding="utf-8")
-    pythonw_exe = python_exe.with_name("pythonw.exe")
-    pythonw_exe.write_text("", encoding="utf-8")
-
-    def shell_execute(hwnd, verb, file, parameters, working_dir, show):
-        calls.append((hwnd, verb, file, parameters, working_dir, show))
-        return 33
-
-    monkeypatch.setattr(admin_module.sys, "platform", "win32")
-    monkeypatch.setattr(admin_module.sys, "executable", str(python_exe))
-    monkeypatch.setattr(admin_module.sys, "frozen", False, raising=False)
-
-    result = admin_module.open_network_manager_as_admin(app_root=tmp_path, shell_execute=shell_execute)
-    assert result.success is True
-    assert calls[0][1] == "runas"
-    assert calls[0][2] == str(pythonw_exe.resolve())
-    assert calls[0][3] == f'"{main_py.resolve()}" --admin-network-manager'
-    assert calls[0][4] == str(tmp_path.resolve())
-
-
-def test_development_admin_launch_falls_back_to_python_when_pythonw_missing(monkeypatch, tmp_path: Path) -> None:
-    main_py = tmp_path / "main.py"
-    main_py.write_text("from netconsole.app import run\n", encoding="utf-8")
-    python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
-    python_exe.parent.mkdir(parents=True)
-    python_exe.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(admin_module.sys, "platform", "win32")
-    monkeypatch.setattr(admin_module.sys, "executable", str(python_exe))
-    monkeypatch.setattr(admin_module.sys, "frozen", False, raising=False)
-
-    plan = admin_module.build_network_manager_admin_launch_plan(app_root=tmp_path)
-    assert plan.executable == str(python_exe.resolve())
-    assert plan.parameters == f'"{main_py.resolve()}" --admin-network-manager'
-
-
-def test_frozen_admin_launch_uses_exe_and_admin_argument(monkeypatch, tmp_path: Path) -> None:
-    calls = []
-    exe = tmp_path / "NetConsole.exe"
-    exe.write_text("", encoding="utf-8")
-
-    def shell_execute(hwnd, verb, file, parameters, working_dir, show):
-        calls.append((hwnd, verb, file, parameters, working_dir, show))
-        return 33
-
-    monkeypatch.setattr(admin_module.sys, "platform", "win32")
-    monkeypatch.setattr(admin_module.sys, "executable", str(exe))
-    monkeypatch.setattr(admin_module.sys, "frozen", True, raising=False)
-
-    result = admin_module.open_network_manager_as_admin(shell_execute=shell_execute)
-    assert result.success is True
-    assert calls[0][1] == "runas"
-    assert calls[0][2] == str(exe.resolve())
-    assert calls[0][3] == "--admin-network-manager"
-    assert calls[0][4] == str(tmp_path.resolve())
-
-
 def test_shell_execute_failure_returns_user_facing_message(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(admin_module.sys, "platform", "win32")
     monkeypatch.setattr(admin_module.sys, "executable", sys.executable)
@@ -389,51 +326,6 @@ def test_powershell_empty_and_single_object_json_results(monkeypatch) -> None:
     assert manager_module._ensure_list(rows)[0]["Name"] == "Ethernet"
 
 
-def test_admin_network_manager_arg_opens_network_tools_without_removed_tab() -> None:
-    from netconsole.app import open_admin_network_manager
-
-    class FakeNavigation:
-        current_row = None
-
-        def find_page(self, page_id):
-            assert page_id == "network_tools"
-            return 6
-
-        def setCurrentRow(self, row):
-            self.current_row = row
-
-    class FakeStack:
-        current = None
-
-        def setCurrentWidget(self, page):
-            self.current = page
-
-    class FakeTabs:
-        current_index = None
-
-        def count(self):
-            return 3
-
-        def setCurrentIndex(self, index):
-            self.current_index = index
-
-    class FakeWindow:
-        def __init__(self):
-            self.navigation = FakeNavigation()
-            self.stack = FakeStack()
-            self.page = type("FakePage", (), {"tabs": FakeTabs()})()
-
-        def get_or_create_page(self, page_id):
-            assert page_id == "network_tools"
-            return self.page
-
-    window = FakeWindow()
-    open_admin_network_manager(window)
-    assert window.navigation.current_row == 6
-    assert window.stack.current is window.page
-    assert window.page.tabs.current_index is None
-
-
 def test_admin_launch_success_updates_log_without_success_modal(monkeypatch, tmp_path: Path) -> None:
     import os
     from PySide6.QtWidgets import QApplication, QMessageBox
@@ -464,7 +356,7 @@ def test_admin_launch_success_updates_log_without_success_modal(monkeypatch, tmp
 
 def test_admin_launch_success_quits_normal_app_without_close_confirm(monkeypatch, tmp_path: Path) -> None:
     import os
-    from PySide6.QtWidgets import QApplication, QHeaderView, QSplitter
+    from PySide6.QtWidgets import QApplication
     from netconsole.core.admin import AdminLaunchResult
     from netconsole.core.i18n import I18n
     from netconsole.ui.pages import network_adapter_route_page as page_module
@@ -501,7 +393,7 @@ def test_admin_launch_success_quits_normal_app_without_close_confirm(monkeypatch
 
 def test_admin_launch_cancel_does_not_quit_normal_app(monkeypatch, tmp_path: Path) -> None:
     import os
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication
     from netconsole.core.admin import AdminLaunchResult
     from netconsole.core.i18n import I18n
     from netconsole.ui.pages import network_adapter_route_page as page_module

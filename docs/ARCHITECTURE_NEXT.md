@@ -83,7 +83,7 @@ API 是永久边界。接口变更必须兼容现有调用方，必要时版本�
 | Application / Domain | `src/netconsole/services/`、`src/netconsole/core/` 等 | 逐用例收敛，不为命名整齐进行批量搬迁 |
 | Infrastructure | `src/netconsole/repositories/`、`parsers/`、`adapters/` 等 | 复用现有实现，按实际依赖治理 |
 | Qt 业务界面 | `src/netconsole/ui/` | 迁移期保留，只维护和回退，不新增业务页面 |
-| Qt Legacy 源码 | `apps/desktop/`、`src/netconsole/ui/` | 无活动启动入口，仅作迁移事实源，按历史映射逐项回收 |
+| Qt Legacy 源码 | `src/netconsole/ui/`（历史 `apps/desktop/` 已回收） | 无活动启动入口，仅作迁移事实源，按历史映射逐项回收 |
 | Electron 外壳 | `apps/desktop_electron/` | 已有 main/preload/backend supervisor 基础；不复制 `apps/web` 或 Python Core |
 | Agent | `apps/agent/` | 独立运行，继续通过受控 API 与 Core 协作 |
 

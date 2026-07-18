@@ -11,7 +11,7 @@
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、Vue 双运行时、开发/生产资源启动与 Qt Legacy 边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
 | [架构](ARCHITECTURE.md) | 分层、启动、后台任务、导出、数据流和线程边界 | 架构与跨域开发 | `src/netconsole/core`、`src/netconsole/services`、`src/netconsole/repositories`、`src/netconsole/ui` | 新增跨层依赖、后台执行模型或核心服务 |
-| [Web 演进架构](WEB_ARCHITECTURE.md) | Desktop/Server/Agent 模式、API、Web Shell、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
+| [Web 演进架构](WEB_ARCHITECTURE.md) | Electron/Server/Agent 模式、API、Browser 诊断、冻结和迁移边界 | Web 演进与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop_electron`、Task Runtime、RuntimeMode | Web 接入、运行模式、任务 Adapter 或迁移阶段变化 |
 | [Web 迁移计划](WEB_MIGRATION_PLAN.md) | 固定迁移流程、状态门槛、执行顺序和 Electron 时机 | Web 迁移指挥与模块负责人 | 当前实现、验收记录、迁移决策 | 阶段顺序、替换门槛或交付要求变化 |
 | [Web 迁移矩阵](WEB_MIGRATION_MATRIX.md) | 模块级长期去向、当前阶段和冻结范围 | Web 迁移指挥与集成 | Feature Registry、Web 导航、详细对等矩阵 | 模块阶段、排除范围或长期去向变化 |
 | [Desktop WebHost](WEB_HOST.md) | Electron Web Runtime、开发诊断入口及历史 Qt WebHost 边界 | Desktop/Core/Web 开发 | Electron Runtime、`src/netconsole/launcher`、历史 `src/netconsole/ui/web_host` | WebHost 生命周期、认证、诊断入口或打包变化 |

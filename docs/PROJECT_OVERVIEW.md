@@ -1,5 +1,7 @@
 # 项目概览
 
+> 本文是迁移期概览，当前正式桌面入口以 [README](../README.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [当前架构](ARCHITECTURE.md) 为准。Qt 页面仍作为事实源，但不再是启动入口或发布门。
+
 ## 项目定位
 
 NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重点服务以下场景：
@@ -15,20 +17,20 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 
 以当前代码为准：
 
-- UI：PySide6 / Qt Widgets。
+- UI：Vue 3/TypeScript/Vite 由 Electron Renderer 承载；PySide6/Qt 页面仅作为待回收事实源。
 - 本地存储：SQLite、JSON 配置、站点隔离目录。
 - 设备连接：Netmiko、SSH / Telnet、SFTP / SCP、外部终端集成。
 - Excel：本地 `.xlsx` 导入导出，主要面向 WPS Office / Microsoft Office 打开体验。
 - 图表：当前项目内既有 Qt / Matplotlib / 交互图表相关实现，具体以页面代码为准。
-- 打包：PyInstaller / Nuitka 双后端，发布脚本在 `scripts/build/` 下。
+- 打包：Electron 构建链正在建设；PyInstaller/Nuitka 仅保留 Qt 历史成果迁移证据，发布脚本在 `scripts/build/` 下。
 
-历史上如讨论过 React、Electron、FastAPI 或其他原型，均不得写成当前架构。当前仓库的正式桌面主线是 PySide6。
+Electron + Vue + FastAPI 是当前正式桌面方向；Qt 只保留为 1:1 迁移事实源，不能新增 Qt 业务页面。
 
 ## 当前入口
 
-- 应用入口：`main.py`
-- 主窗口：`src/netconsole/ui/main_window.py`
-- 应用启动：`src/netconsole/app.py`
+- 正式桌面入口：`apps/desktop_electron/`
+- Python 内部入口：`main.py`（仅受管 Backend、Worker 和开发诊断）
+- Qt 事实源主窗口：`src/netconsole/ui/main_window.py`（无活动启动入口）
 - 路径管理：`src/netconsole/core/paths.py`
 - 站点管理：`src/netconsole/core/sites.py`
 - 数据库初始化：`src/netconsole/core/database.py`
@@ -58,7 +60,7 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 | `resources/tools/` | 版本化的 fping/iPerf 运行工具唯一源码来源 |
 | `tools/` | 开发、诊断、维护和协议分析工具，不作为运行时工具来源 |
 
-独立应用位于 `apps/agent/`、`apps/desktop/` 和 `apps/web/`；Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
+独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`；Qt 事实源位于 `src/netconsole/ui/`。Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
 
 ## 模块边界
 
