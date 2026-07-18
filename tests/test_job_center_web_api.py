@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 import threading
 
@@ -20,20 +20,30 @@ from netconsole.models.online_mr_application import (
 )
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
-from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
+from netconsole.repositories.online_mr_task_session_repository import (
+    OnlineMrTaskSessionRepository,
+)
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_collection_job_handlers import _artifact_target
 from netconsole.services.export.export_job import ExportJob
-from netconsole.services.file_management_service import FileManagementApplicationService, run_file_management_download
+from netconsole.services.file_management_service import (
+    FileManagementApplicationService,
+    run_file_management_download,
+)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.query_service import JobCenterQueryService
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import (
+    TaskApplicationService,
+)
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _sqlite_snapshot(path: Path) -> tuple[str, ...]:
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        conn.execute("PRAGMA query_only = ON")
+        return tuple(conn.iterdump())
 
 
 def _text_values(value: object) -> list[str]:
@@ -47,7 +57,9 @@ def _text_values(value: object) -> list[str]:
 class _FakeExportProcess:
     stdout = None
 
-    def __init__(self, poll_values: tuple[int | None, ...] = (None,), on_poll=None) -> None:
+    def __init__(
+        self, poll_values: tuple[int | None, ...] = (None,), on_poll=None
+    ) -> None:
         self._poll_values = poll_values
         self._on_poll = on_poll
         self._poll_count = 0
@@ -86,7 +98,9 @@ class _NoopThread:
 
 
 class _OwnerCancelAdapter:
-    def __init__(self, task_service: TaskApplicationService, *, site_name: str, accept: bool) -> None:
+    def __init__(
+        self, task_service: TaskApplicationService, *, site_name: str, accept: bool
+    ) -> None:
         self.task_service = task_service
         self.site_name = site_name
         self.accept = accept
@@ -99,7 +113,10 @@ class _OwnerCancelAdapter:
         self.task_service.record_external_event(
             task_id,
             "state",
-            {"state": TaskState.STOPPING.value, "message": "owner accepted cancellation"},
+            {
+                "state": TaskState.STOPPING.value,
+                "message": "owner accepted cancellation",
+            },
             site_name=self.site_name,
         )
         return True
@@ -143,7 +160,9 @@ def _install_device_export(
         site_name="demo",
         output_path=str(target),
         db_path=str(service.paths.site_db_path("demo")),
-    ).with_runtime_paths(tmp_path=str(target.with_suffix(".tmp")), cancel_path=str(cancel_path))
+    ).with_runtime_paths(
+        tmp_path=str(target.with_suffix(".tmp")), cancel_path=str(cancel_path)
+    )
     job_path.write_text(json.dumps(job.to_dict(), ensure_ascii=False), encoding="utf-8")
     if install_spec:
         service._export_artifacts[task_id] = {
@@ -161,7 +180,7 @@ def _install_device_export(
 
 
 def _app_with_tasks(tmp_path: Path):
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     db_path = paths.site_tasks_db_path("demo")
     repository = TaskRepository(db_path)
     repository.record(
@@ -203,7 +222,9 @@ def _app_with_tasks(tmp_path: Path):
             type="error",
             time="2026-07-14T08:01:01Z",
             source="worker",
-            payload={"traceback": "failed at C:\\private\\worker.py and \\\\server\\share\\secret.log"},
+            payload={
+                "traceback": "failed at C:\\private\\worker.py and \\\\server\\share\\secret.log"
+            },
         ),
     )
     repository.save(
@@ -238,21 +259,26 @@ def _app_with_tasks(tmp_path: Path):
         )
     )
     service = TaskApplicationService(paths=paths, site_name="demo")
-    return create_app(RuntimeMode.SERVER, paths=paths, task_service=service, frontend_dist=tmp_path / "missing"), db_path
+    return create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=service,
+        frontend_dist=tmp_path / "missing",
+    ), db_path
 
 
-def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path) -> None:
+def test_job_center_get_api_is_read_only_and_returns_associations(
+    tmp_path: Path,
+) -> None:
     app, db_path = _app_with_tasks(tmp_path)
 
     with TestClient(app) as client:
-        before_hash = _sha256(db_path)
-        before_mtime = db_path.stat().st_mtime_ns
+        before = _sqlite_snapshot(db_path)
         listing = client.get("/api/job-center/tasks")
         detail = client.get("/api/job-center/tasks/online-mr-task")
         logs = client.get("/api/job-center/tasks/online-mr-task/logs?tail=300")
         summary = client.get("/api/job-center/summary")
-        after_hash = _sha256(db_path)
-        after_mtime = db_path.stat().st_mtime_ns
+        after = _sqlite_snapshot(db_path)
 
     assert listing.status_code == 200
     assert detail.status_code == 200
@@ -270,12 +296,21 @@ def test_job_center_get_api_is_read_only_and_returns_associations(tmp_path: Path
     assert "must-not-leak" not in detail.text
     assert logs.status_code == 200
     assert logs.json()["lines"][0]["message"] == "采集运行中"
-    assert logs.json()["lines"][1]["message"] == "failed at <redacted-path> and <redacted-path>"
+    assert (
+        logs.json()["lines"][1]["message"]
+        == "failed at <redacted-path> and <redacted-path>"
+    )
     assert "C:\\private" not in logs.text
     assert "server\\share" not in logs.text
     assert "must-not-leak" not in logs.text
-    assert summary.json() == {"total": 2, "active": 0, "completed": 1, "failed": 1, "warning": 1}
-    assert (after_hash, after_mtime) == (before_hash, before_mtime)
+    assert summary.json() == {
+        "total": 2,
+        "active": 0,
+        "completed": 1,
+        "failed": 1,
+        "warning": 1,
+    }
+    assert after == before
 
 
 def test_job_center_logs_missing_and_unknown_task_are_explicit(tmp_path: Path) -> None:
@@ -286,7 +321,11 @@ def test_job_center_logs_missing_and_unknown_task_are_explicit(tmp_path: Path) -
         missing = client.get("/api/job-center/tasks/not-found")
 
     assert empty_logs.status_code == 200
-    assert empty_logs.json() == {"task_id": "quiet-task", "lines": [], "message": "暂无日志"}
+    assert empty_logs.json() == {
+        "task_id": "quiet-task",
+        "lines": [],
+        "message": "暂无日志",
+    }
     assert missing.status_code == 404
     assert missing.json()["detail"] == "任务不存在"
 
@@ -407,7 +446,7 @@ def test_job_center_redacts_nested_and_direct_log_paths(
             "<redacted-path>",
         ),
         (
-            r'''引号 "C:\Program Files\NetConsole\secret.log" 和 '\\server\share\raw data.log' 完成''',
+            r"""引号 "C:\Program Files\NetConsole\secret.log" 和 '\\server\share\raw data.log' 完成""",
             "引号 <redacted-path> 和 <redacted-path> 完成",
         ),
         (
@@ -429,7 +468,7 @@ def test_job_center_path_redaction_preserves_business_text(tmp_path: Path) -> No
     message = (
         r"业务 ID task-42 读取 C:\Program Files\NetConsole\secret.log 完成 "
         r"42 条记录，时间 2026-07-17T01:02:03Z；中文 C:\采集 结果\设备 一\日志.txt 已归档；"
-        r'''UNC "\\server\share\raw data.log" 已上传；多路径 C:\first path\a.log 到 \\server\share\second path\b.log 完成'''
+        r"""UNC "\\server\share\raw data.log" 已上传；多路径 C:\first path\a.log 到 \\server\share\second path\b.log 完成"""
     )
     repository.record(
         repository.get("quiet-task"),
@@ -481,7 +520,9 @@ def test_job_center_rejects_cancel_without_owner_capability(tmp_path: Path) -> N
     assert response.status_code == 409
 
 
-def test_job_center_routes_device_export_cancel_to_real_owner(tmp_path: Path, monkeypatch) -> None:
+def test_job_center_routes_device_export_cancel_to_real_owner(
+    tmp_path: Path, monkeypatch
+) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     cancel_path, _process = _install_device_export(app, db_path)
     monkeypatch.setattr(
@@ -497,7 +538,11 @@ def test_job_center_routes_device_export_cancel_to_real_owner(tmp_path: Path, mo
     assert response.json()["status"] == "STOPPING"
     assert persisted is not None and persisted.status is TaskState.STOPPING
     assert cancel_path.read_text(encoding="utf-8") == "cancelled"
-    assert not (app.state.task_service.paths.runtime_cache_dir / "background_jobs" / "device-export-running.cancel").exists()
+    assert not (
+        app.state.task_service.paths.runtime_cache_dir
+        / "background_jobs"
+        / "device-export-running.cancel"
+    ).exists()
 
 
 def test_job_center_routes_ac_cancel_to_real_owner(tmp_path: Path) -> None:
@@ -522,7 +567,10 @@ def test_job_center_routes_ac_cancel_to_real_owner(tmp_path: Path) -> None:
         app.state.task_service.record_external_event(
             task_id,
             "state",
-            {"state": TaskState.STOPPING.value, "message": "AC owner accepted cancellation"},
+            {
+                "state": TaskState.STOPPING.value,
+                "message": "AC owner accepted cancellation",
+            },
             site_name=site_id,
         )
 
@@ -566,7 +614,9 @@ def test_job_center_routes_rail_cancel_to_real_owner(tmp_path: Path) -> None:
             site_name=site_id,
         )
 
-    app.state.rail_transit_web_application_service = SimpleNamespace(cancel_task=cancel_task)
+    app.state.rail_transit_web_application_service = SimpleNamespace(
+        cancel_task=cancel_task
+    )
 
     with TestClient(app) as client:
         detail = client.get("/api/job-center/tasks/rail-parse-running")
@@ -583,9 +633,30 @@ def test_job_center_routes_rail_cancel_to_real_owner(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("owner", "task_type", "module", "service_name", "method_name", "expects_site"),
     [
-        ("web_network_tools", "network_tools.continuous_ping", "network", "network_tools_service", "cancel_network_task", False),
-        ("web_command_reference", "web_export_command_reference_markdown", "command-reference", "command_reference_application_service", "cancel_task", False),
-        ("web_system_maintenance", "system_maintenance_cleanup", "logs", "system_maintenance_service", "cancel_task", True),
+        (
+            "web_network_tools",
+            "network_tools.continuous_ping",
+            "network",
+            "network_tools_service",
+            "cancel_network_task",
+            False,
+        ),
+        (
+            "web_command_reference",
+            "web_export_command_reference_markdown",
+            "command-reference",
+            "command_reference_application_service",
+            "cancel_task",
+            False,
+        ),
+        (
+            "web_system_maintenance",
+            "system_maintenance_cleanup",
+            "logs",
+            "system_maintenance_service",
+            "cancel_task",
+            True,
+        ),
     ],
 )
 def test_job_center_routes_wave2_cancel_to_real_owner(
@@ -619,7 +690,10 @@ def test_job_center_routes_wave2_cancel_to_real_owner(
         app.state.task_service.record_external_event(
             task_id,
             "state",
-            {"state": TaskState.STOPPING.value, "message": "owner accepted cancellation"},
+            {
+                "state": TaskState.STOPPING.value,
+                "message": "owner accepted cancellation",
+            },
             site_name="demo",
         )
 
@@ -638,7 +712,9 @@ def test_job_center_routes_wave2_cancel_to_real_owner(
     assert calls == expected_calls
 
 
-@pytest.mark.parametrize("task_type", ["traffic_local_fping", "traffic_agent_iperf_client"])
+@pytest.mark.parametrize(
+    "task_type", ["traffic_local_fping", "traffic_agent_iperf_client"]
+)
 def test_job_center_routes_traffic_controller_cancel_to_real_service(
     tmp_path: Path,
     task_type: str,
@@ -666,7 +742,10 @@ def test_job_center_routes_traffic_controller_cancel_to_real_service(
         app.state.task_service.record_external_event(
             controller_task_id,
             "state",
-            {"state": TaskState.STOPPING.value, "message": "Traffic accepted cancellation"},
+            {
+                "state": TaskState.STOPPING.value,
+                "message": "Traffic accepted cancellation",
+            },
             site_name="demo",
         )
 
@@ -686,7 +765,9 @@ def test_job_center_routes_traffic_controller_cancel_to_real_service(
     assert calls == [task_id]
 
 
-def test_job_center_does_not_treat_unrelated_controller_task_as_network(tmp_path: Path) -> None:
+def test_job_center_does_not_treat_unrelated_controller_task_as_network(
+    tmp_path: Path,
+) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     TaskRepository(db_path).save(
         TaskSnapshot(
@@ -755,8 +836,10 @@ def test_job_center_device_export_cancel_fails_without_live_receiver(
         install_process=install_process,
     )
     if failure == "invalid-job":
-        job_path = app.state.task_service.paths.runtime_cache_dir / "export_jobs" / (
-            f"device-export-{failure}.json"
+        job_path = (
+            app.state.task_service.paths.runtime_cache_dir
+            / "export_jobs"
+            / (f"device-export-{failure}.json")
         )
         job_path.write_text("{}", encoding="utf-8")
     elif failure == "wrong-cancel-path":
@@ -820,7 +903,11 @@ def test_job_center_device_export_cancel_cas_blocks_terminal_overwrite(
     original = service.task_service.record_external_event
 
     def delayed_record(selected_id, event_type, payload, **kwargs):
-        if selected_id == task_id and event_type == "state" and payload.get("state") == "STOPPING":
+        if (
+            selected_id == task_id
+            and event_type == "state"
+            and payload.get("state") == "STOPPING"
+        ):
             entered.set()
             assert release.wait(2)
         return original(selected_id, event_type, payload, **kwargs)
@@ -865,10 +952,34 @@ def test_job_center_device_export_cancel_cas_blocks_terminal_overwrite(
 @pytest.mark.parametrize(
     ("owner", "task_type", "service_name", "accept", "expected_status"),
     [
-        ("web_config_collection", "config_web_snapshot_fetch", "config_collection_service", True, 200),
-        ("web_config_collection", "config_web_snapshot_fetch", "config_collection_service", False, 409),
-        ("web_file_management", "file_management_download", "file_management_service", True, 200),
-        ("web_file_management", "file_management_download", "file_management_service", False, 409),
+        (
+            "web_config_collection",
+            "config_web_snapshot_fetch",
+            "config_collection_service",
+            True,
+            200,
+        ),
+        (
+            "web_config_collection",
+            "config_web_snapshot_fetch",
+            "config_collection_service",
+            False,
+            409,
+        ),
+        (
+            "web_file_management",
+            "file_management_download",
+            "file_management_service",
+            True,
+            200,
+        ),
+        (
+            "web_file_management",
+            "file_management_download",
+            "file_management_service",
+            False,
+            409,
+        ),
     ],
 )
 def test_job_center_config_and_file_cancel_require_owner_confirmation(
@@ -894,7 +1005,9 @@ def test_job_center_config_and_file_cancel_require_owner_confirmation(
             site_name="demo",
         )
     )
-    adapter = _OwnerCancelAdapter(app.state.task_service, site_name="demo", accept=accept)
+    adapter = _OwnerCancelAdapter(
+        app.state.task_service, site_name="demo", accept=accept
+    )
     getattr(app.state, service_name).process_adapter = adapter
 
     with TestClient(app) as client:
@@ -907,7 +1020,9 @@ def test_job_center_config_and_file_cancel_require_owner_confirmation(
     assert persisted.status is (TaskState.STOPPING if accept else TaskState.RUNNING)
 
 
-def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_path: Path) -> None:
+def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(
+    tmp_path: Path,
+) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     repository = TaskRepository(db_path)
     device_service = app.state.device_management_service
@@ -916,35 +1031,97 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     device_target.write_bytes(b"device export")
     device_result = device_service._finalize_export_artifact(
         {
-            "artifact_id": "device-abc", "artifact_root": device_root,
-            "artifact_name": device_target.name, "display_name": "设备:清单?.csv",
-            "export_type": "device_csv", "target": device_target, "tmp_path": device_target,
+            "artifact_id": "device-abc",
+            "artifact_root": device_root,
+            "artifact_name": device_target.name,
+            "display_name": "设备:清单?.csv",
+            "export_type": "device_csv",
+            "target": device_target,
+            "tmp_path": device_target,
         },
         {"path": str(device_target)},
     )
-    config_context = JobContext.from_job(BackgroundJob(
-        job_id="config-artifact", task_type="config_web_export_snapshots",
-        params={"site_name": "demo", "app_root": str(tmp_path), "data_root": str(tmp_path)},
-    ))
-    config_id, _config_path, config_name = _artifact_target(config_context, ".zip", "配置:快照?")
+    config_context = JobContext.from_job(
+        BackgroundJob(
+            job_id="config-artifact",
+            task_type="config_web_export_snapshots",
+            params={
+                "site_name": "demo",
+                "app_root": str(tmp_path),
+                "data_root": str(tmp_path),
+            },
+        )
+    )
+    config_id, _config_path, config_name = _artifact_target(
+        config_context, ".zip", "配置:快照?"
+    )
     files_root = app.state.task_service.paths.site_files_dir("demo") / "outputs"
     files_root.mkdir(parents=True, exist_ok=True)
     source = files_root / "中文报告.zip"
     source.write_bytes(b"capture")
     file_service = FileManagementApplicationService(app.state.task_service.paths)
-    file_ref = next(item.file_ref for item in file_service.list_files("demo").items if item.name == source.name)
-    file_result = run_file_management_download(JobContext.from_job(BackgroundJob(
-        job_id="file-artifact", task_type="file_management_download",
-        params={"site_name": "demo", "file_ref": file_ref, "app_root": str(tmp_path), "data_root": str(tmp_path)},
-    )))
+    file_ref = next(
+        item.file_ref
+        for item in file_service.list_files("demo").items
+        if item.name == source.name
+    )
+    file_result = run_file_management_download(
+        JobContext.from_job(
+            BackgroundJob(
+                job_id="file-artifact",
+                task_type="file_management_download",
+                params={
+                    "site_name": "demo",
+                    "file_ref": file_ref,
+                    "app_root": str(tmp_path),
+                    "data_root": str(tmp_path),
+                },
+            )
+        )
+    )
     historical_device_result = dict(device_result)
     historical_device_result.pop("display_name")
     fixtures = [
-        ("device-artifact", "device_export_device_csv", "web_device_management", device_result),
-        ("device-history", "device_export_device_csv", "web_device_management", historical_device_result),
-        ("device-diagnostic", "device_diagnostic_download", "web_device_management", {"artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef", "artifact_name": "device-diagnostic-0123456789abcdef0123456789abcdef.zip", "available": True, "size_bytes": 42}),
-        ("config-artifact", "config_web_export_snapshots", "web_config_collection", {"artifact_id": config_id, "display_name": config_name, "size": 34, "output_path": "C:\\private\\configs.zip"}),
-        ("file-artifact", "file_management_download", "web_file_management", file_result),
+        (
+            "device-artifact",
+            "device_export_device_csv",
+            "web_device_management",
+            device_result,
+        ),
+        (
+            "device-history",
+            "device_export_device_csv",
+            "web_device_management",
+            historical_device_result,
+        ),
+        (
+            "device-diagnostic",
+            "device_diagnostic_download",
+            "web_device_management",
+            {
+                "artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef",
+                "artifact_name": "device-diagnostic-0123456789abcdef0123456789abcdef.zip",
+                "available": True,
+                "size_bytes": 42,
+            },
+        ),
+        (
+            "config-artifact",
+            "config_web_export_snapshots",
+            "web_config_collection",
+            {
+                "artifact_id": config_id,
+                "display_name": config_name,
+                "size": 34,
+                "output_path": "C:\\private\\configs.zip",
+            },
+        ),
+        (
+            "file-artifact",
+            "file_management_download",
+            "web_file_management",
+            file_result,
+        ),
     ]
     for task_id, task_type, owner, result in fixtures:
         repository.save(
@@ -960,12 +1137,20 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
                 source="local",
                 site_name="demo",
                 message="saved C:\\secret\\status.log",
-                result={**result, "result_path": "C:\\secret\\result", "session_dir": "C:\\secret\\session", "raw_output_reference": "C:\\secret\\raw.log"},
+                result={
+                    **result,
+                    "result_path": "C:\\secret\\result",
+                    "session_dir": "C:\\secret\\session",
+                    "raw_output_reference": "C:\\secret\\raw.log",
+                },
             )
         )
 
     with TestClient(app) as client:
-        payloads = {task_id: client.get(f"/api/job-center/tasks/{task_id}").json() for task_id, *_rest in fixtures}
+        payloads = {
+            task_id: client.get(f"/api/job-center/tasks/{task_id}").json()
+            for task_id, *_rest in fixtures
+        }
 
     device = payloads["device-artifact"]["artifact_download"]
     device_history = payloads["device-history"]["artifact_download"]
@@ -973,9 +1158,12 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     config = payloads["config-artifact"]["artifact_download"]
     file = payloads["file-artifact"]["artifact_download"]
     assert device == {
-        "artifact_id": "device-abc", "display_name": "设备_清单.csv", "size_bytes": len(b"device export"),
+        "artifact_id": "device-abc",
+        "display_name": "设备_清单.csv",
+        "size_bytes": len(b"device export"),
         "media_type": "text/csv",
-        "api_path": "/api/device-management/exports/device-artifact/download", "query": {"artifact_id": "device-abc"},
+        "api_path": "/api/device-management/exports/device-artifact/download",
+        "query": {"artifact_id": "device-abc"},
     }
     assert device_history["display_name"] == "设备清单.csv"
     assert device_history["display_name"] != historical_device_result["artifact_name"]
@@ -987,7 +1175,9 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
         "api_path": "/api/device-management/diagnostics/device-diagnostic/download",
         "query": {"artifact_id": "device-diagnostic-0123456789abcdef0123456789abcdef"},
     }
-    assert config["display_name"].startswith("配置_快照_") and config["display_name"].endswith(".zip")
+    assert config["display_name"].startswith("配置_快照_") and config[
+        "display_name"
+    ].endswith(".zip")
     assert config["size_bytes"] == 34
     assert config["media_type"] == "application/zip"
     assert config["api_path"].endswith(f"/artifacts/{config_id}")
@@ -997,11 +1187,22 @@ def test_job_center_dto_hides_paths_and_builds_owner_artifact_capabilities(tmp_p
     assert file["media_type"] == "application/zip"
     assert file["api_path"] == "/api/file-management/downloads/file-artifact/file"
     for payload in payloads.values():
-        assert not {"result_path", "output_dir", "package_path", "session_path", "raw_output_reference"} & payload.keys()
+        assert (
+            not {
+                "result_path",
+                "output_dir",
+                "package_path",
+                "session_path",
+                "raw_output_reference",
+            }
+            & payload.keys()
+        )
         assert "C:\\secret" not in str(payload)
 
 
-def test_job_center_router_exposes_only_owner_checked_cancel_mutation(tmp_path: Path) -> None:
+def test_job_center_router_exposes_only_owner_checked_cancel_mutation(
+    tmp_path: Path,
+) -> None:
     app, _db_path = _app_with_tasks(tmp_path)
     routes = {
         (path, method.upper())
@@ -1015,18 +1216,26 @@ def test_job_center_router_exposes_only_owner_checked_cancel_mutation(tmp_path: 
     assert {(path, method) for path, method in routes if method == "POST"} == {
         ("/api/job-center/tasks/{task_id}/cancel", "POST")
     }
-    assert all(not path.endswith(("/stop", "/force-stop", "/retry")) for path, _method in routes)
+    assert all(
+        not path.endswith(("/stop", "/force-stop", "/retry"))
+        for path, _method in routes
+    )
     assert all("delete" not in path for path, _method in routes)
 
 
-def test_job_center_artifact_names_are_safe_and_duplicate_names_keep_distinct_ids() -> None:
+def test_job_center_artifact_names_are_safe_and_duplicate_names_keep_distinct_ids() -> (
+    None
+):
     name = JobCenterQueryService._artifact_display_name("同名:报告?.xlsx")
     first = JobCenterQueryService._artifact_dto("artifact-1", name, 1, "/api/files/1")
     second = JobCenterQueryService._artifact_dto("artifact-2", name, 1, "/api/files/2")
 
     assert name == "同名_报告.xlsx"
     assert JobCenterQueryService._artifact_display_name(r"C:\private\report.xlsx") == ""
-    assert JobCenterQueryService._artifact_display_name(r"\\server\share\report.xlsx") == ""
+    assert (
+        JobCenterQueryService._artifact_display_name(r"\\server\share\report.xlsx")
+        == ""
+    )
     assert first.display_name == second.display_name
     assert first.artifact_id != second.artifact_id
 
@@ -1070,9 +1279,7 @@ def test_job_center_downloads_generic_web_artifact_without_exposing_physical_nam
 
     with TestClient(app) as client:
         detail = client.get(f"/api/job-center/tasks/{task_id}")
-        downloaded = client.get(
-            f"/api/job-center/artifacts/{reservation.artifact_id}"
-        )
+        downloaded = client.get(f"/api/job-center/artifacts/{reservation.artifact_id}")
         missing = client.get("/api/job-center/artifacts/not-an-artifact")
 
     artifact = detail.json()["artifact_download"]

@@ -38,8 +38,12 @@ def _session(paths: PathResolver, session_id: str = "session-1") -> Path:
     return path
 
 
-def test_status_api_returns_current_recent_and_readonly_mapping_state(tmp_path: Path) -> None:
+def test_status_api_returns_current_recent_and_readonly_mapping_state(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)
@@ -90,8 +94,12 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(tmp_path: 
     }
 
 
-def test_current_session_returns_none_when_only_terminal_sessions_exist(tmp_path: Path) -> None:
+def test_current_session_returns_none_when_only_terminal_sessions_exist(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     wire_online_mr_api_facade(app, paths)
     session = _session(paths)

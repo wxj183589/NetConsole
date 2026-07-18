@@ -7,8 +7,10 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 
 
-def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dict[str, Path]]:
-    paths = PathResolver(tmp_path)
+def build_ac_management_fixture(
+    tmp_path: Path,
+) -> tuple[PathResolver, Path, dict[str, Path]]:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
     db_path = paths.site_db_path("demo")
     database = Database(db_path)
@@ -54,9 +56,75 @@ def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dic
                       '接入交换机', ?, 'matched', ?, ?)
             """,
             [
-                ("ac-1", "ap-online", "AP-Online", "10.0.1.1", "0000-0000-0001", "SECRET-SN-1", "R/M", "运行(主)", "车站A", "1", "80", "15", "0000-0001-0001", "36", "80", "17", "0000-0001-0002", "10.0.1.1", "GigabitEthernet1/0/1", now, now),
-                ("ac-1", "ap-offline", "AP-Offline", "10.0.1.2", "0000-0000-0002", "SECRET-SN-2", "Idle", "Idle", "车站B", "6", "40", "13", "0000-0002-0001", "44", "80", "16", "0000-0002-0002", "10.0.1.2", "GigabitEthernet1/0/2", now, now),
-                ("ac-1", "ap-unauth", "AP-Unauth", "10.0.1.3", "0000-0000-0003", "SECRET-SN-3", "R/M", "运行(主)", "车站A", "11", "40", "12", "0000-0003-0001", "149", "80", "14", "0000-0003-0002", "10.0.1.3", "GigabitEthernet1/0/3", now, now),
+                (
+                    "ac-1",
+                    "ap-online",
+                    "AP-Online",
+                    "10.0.1.1",
+                    "0000-0000-0001",
+                    "SECRET-SN-1",
+                    "R/M",
+                    "运行(主)",
+                    "车站A",
+                    "1",
+                    "80",
+                    "15",
+                    "0000-0001-0001",
+                    "36",
+                    "80",
+                    "17",
+                    "0000-0001-0002",
+                    "10.0.1.1",
+                    "GigabitEthernet1/0/1",
+                    now,
+                    now,
+                ),
+                (
+                    "ac-1",
+                    "ap-offline",
+                    "AP-Offline",
+                    "10.0.1.2",
+                    "0000-0000-0002",
+                    "SECRET-SN-2",
+                    "Idle",
+                    "Idle",
+                    "车站B",
+                    "6",
+                    "40",
+                    "13",
+                    "0000-0002-0001",
+                    "44",
+                    "80",
+                    "16",
+                    "0000-0002-0002",
+                    "10.0.1.2",
+                    "GigabitEthernet1/0/2",
+                    now,
+                    now,
+                ),
+                (
+                    "ac-1",
+                    "ap-unauth",
+                    "AP-Unauth",
+                    "10.0.1.3",
+                    "0000-0000-0003",
+                    "SECRET-SN-3",
+                    "R/M",
+                    "运行(主)",
+                    "车站A",
+                    "11",
+                    "40",
+                    "12",
+                    "0000-0003-0001",
+                    "149",
+                    "80",
+                    "14",
+                    "0000-0003-0002",
+                    "10.0.1.3",
+                    "GigabitEthernet1/0/3",
+                    now,
+                    now,
+                ),
             ],
         )
         conn.executemany(
@@ -67,8 +135,26 @@ def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dic
             ) VALUES (?, ?, ?, 'section', ?, ?, ?, ?, ?)
             """,
             [
-                ("ap-online", "AP-Online", "车站A", "A-B 区间", "K1+100", "上行", now, now),
-                ("ap-offline", "AP-Offline", "车站B", "B-C 区间", "K2+200", "下行", now, now),
+                (
+                    "ap-online",
+                    "AP-Online",
+                    "车站A",
+                    "A-B 区间",
+                    "K1+100",
+                    "上行",
+                    now,
+                    now,
+                ),
+                (
+                    "ap-offline",
+                    "AP-Offline",
+                    "车站B",
+                    "B-C 区间",
+                    "K2+200",
+                    "下行",
+                    now,
+                    now,
+                ),
             ],
         )
         conn.executemany(
@@ -81,8 +167,28 @@ def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dic
             ) VALUES ('ac-1', ?, ?, ?, ?, '接入交换机', ?, ?, ?, '35 C', '3.3 V', '5 mA', '-19 dBm', '-17 dBm', 'success', ?, ?)
             """,
             [
-                ("ap-online", "AP-Online", "0000-0000-0001", "10.0.1.1", "GigabitEthernet1/0/1", "-10 dBm", "-3 dBm", now, now),
-                ("ap-offline", "AP-Offline", "0000-0000-0002", "10.0.1.2", "GigabitEthernet1/0/2", "-25 dBm", "-3 dBm", now, now),
+                (
+                    "ap-online",
+                    "AP-Online",
+                    "0000-0000-0001",
+                    "10.0.1.1",
+                    "GigabitEthernet1/0/1",
+                    "-10 dBm",
+                    "-3 dBm",
+                    now,
+                    now,
+                ),
+                (
+                    "ap-offline",
+                    "AP-Offline",
+                    "0000-0000-0002",
+                    "10.0.1.2",
+                    "GigabitEthernet1/0/2",
+                    "-25 dBm",
+                    "-3 dBm",
+                    now,
+                    now,
+                ),
             ],
         )
         conn.execute(
@@ -117,15 +223,27 @@ def build_ac_management_fixture(tmp_path: Path) -> tuple[PathResolver, Path, dic
             ],
         )
 
-        snapshot_dir = paths.site_dir("demo") / "files" / "config_center" / "snapshots" / "ac-1"
+        snapshot_dir = (
+            paths.site_dir("demo") / "files" / "config_center" / "snapshots" / "ac-1"
+        )
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         running = snapshot_dir / "running.txt"
         saved = snapshot_dir / "saved.txt"
         diff = snapshot_dir / "diff.txt"
-        running.write_text("header\n#\nsysname AC-TEST\ninterface Vlan-interface1\n ip address 10.0.0.1\n#\nreturn\n<AC-TEST>\n", encoding="utf-8")
-        saved.write_text("header\n#\nsysname AC-TEST\ninterface Vlan-interface1\n ip address 10.0.0.9\n#\nreturn\n<AC-TEST>\n", encoding="utf-8")
+        running.write_text(
+            "header\n#\nsysname AC-TEST\ninterface Vlan-interface1\n ip address 10.0.0.1\n#\nreturn\n<AC-TEST>\n",
+            encoding="utf-8",
+        )
+        saved.write_text(
+            "header\n#\nsysname AC-TEST\ninterface Vlan-interface1\n ip address 10.0.0.9\n#\nreturn\n<AC-TEST>\n",
+            encoding="utf-8",
+        )
         diff.write_text("--- saved\n+++ running\n", encoding="utf-8")
-        for snapshot_type, path in (("running", running), ("saved", saved), ("diff", diff)):
+        for snapshot_type, path in (
+            ("running", running),
+            ("saved", saved),
+            ("diff", diff),
+        ):
             relative = path.relative_to(paths.site_dir("demo")).as_posix()
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             conn.execute(

@@ -12,11 +12,20 @@ from support.online_mr_api import wire_online_mr_api_facade
 
 def _app_with_session(tmp_path: Path) -> tuple[TestClient, Path]:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     session = paths.online_mr_session_dir("demo", "MR-03", "session-4")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
     (session / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-4", "site": "demo", "mr_name": "MR-03", "status": "COLLECTING"}),
+        json.dumps(
+            {
+                "session_id": "session-4",
+                "site": "demo",
+                "mr_name": "MR-03",
+                "status": "COLLECTING",
+            }
+        ),
         encoding="utf-8",
     )
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
@@ -25,13 +34,24 @@ def _app_with_session(tmp_path: Path) -> tuple[TestClient, Path]:
 
 def test_raw_tail_is_whitelisted_bounded_and_missing_safe(tmp_path: Path) -> None:
     client, session = _app_with_session(tmp_path)
-    (session / "raw" / "mesh_link_raw.log").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (session / "raw" / "mesh_link_raw.log").write_text(
+        "one\ntwo\nthree\n", encoding="utf-8"
+    )
     before = (session / "session_meta.json").read_bytes()
 
     with client:
-        found = client.get("/api/online-mr/sessions/session-4/raw-tail", params={"name": "mesh_link", "tail": 2})
-        missing = client.get("/api/online-mr/sessions/session-4/raw-tail", params={"name": "fping_summary"})
-        rejected = client.get("/api/online-mr/sessions/session-4/raw-tail", params={"name": "../session_meta"})
+        found = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "mesh_link", "tail": 2},
+        )
+        missing = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "fping_summary"},
+        )
+        rejected = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "../session_meta"},
+        )
 
     assert found.status_code == 200
     assert found.json()["data"]["lines"] == ["two", "three"]
@@ -58,11 +78,17 @@ def test_raw_summary_and_fping_summary_expose_no_absolute_paths(tmp_path: Path) 
     )
 
     with client:
-        tail = client.get("/api/online-mr/sessions/session-4/raw-tail", params={"name": "fping_summary"})
+        tail = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "fping_summary"},
+        )
         summary = client.get("/api/online-mr/sessions/session-4/raw-summary")
 
     assert tail.json()["data"]["summary"]["sent"] == 60
-    assert any(item["name"] == "fping_summary" and item["exists"] for item in summary.json()["data"])
+    assert any(
+        item["name"] == "fping_summary" and item["exists"]
+        for item in summary.json()["data"]
+    )
     assert str(tmp_path) not in tail.text + summary.text
 
 
@@ -71,7 +97,10 @@ def test_empty_raw_file_is_reported_as_not_generated(tmp_path: Path) -> None:
     (session / "raw" / "switch_history_latest.log").touch()
 
     with client:
-        response = client.get("/api/online-mr/sessions/session-4/raw-tail", params={"name": "switch_history"})
+        response = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "switch_history"},
+        )
 
     assert response.status_code == 200
     assert response.json()["data"]["exists"] is False

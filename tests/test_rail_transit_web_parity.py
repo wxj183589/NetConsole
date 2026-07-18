@@ -11,21 +11,33 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from mesh_analysis_test_support import EmptyBaseQuery, EmptyOnlineQuery, create_mesh_analysis_fixture
+from mesh_analysis_test_support import (
+    EmptyBaseQuery,
+    EmptyOnlineQuery,
+    create_mesh_analysis_fixture,
+)
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
-from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
+from netconsole.application.rail_transit.web_application_service import (
+    RailTransitWebApplicationService,
+    RailTransitWebError,
+)
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.online_mr_router import mesh_analysis_import
 from netconsole.backend.api.task_router import task_dto
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import (
+    TaskApplicationService,
+)
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
-from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
+from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisQueryService,
+)
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.rail_transit.car_network_diagnostic import (
     POINT_TABLE_FIELDS,
@@ -90,7 +102,9 @@ def _point_table_csv(rows: list[dict[str, object]]) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
-def _online_mr_session(paths: PathResolver, session_id: str = "session-actions") -> Path:
+def _online_mr_session(
+    paths: PathResolver, session_id: str = "session-actions"
+) -> Path:
     session = paths.online_mr_session_dir("demo", "MR-01", session_id)
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
@@ -145,19 +159,30 @@ def test_online_mr_note_and_parse_use_real_session_and_task(tmp_path: Path) -> N
     assert normal.jobs[task.task_id].params["force_reparse"] is True
 
 
-def test_point_table_preview_transform_save_and_task_window_blocker(tmp_path: Path) -> None:
+def test_point_table_preview_transform_save_and_task_window_blocker(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, normal, _export, _tasks = _service(paths)
-    existing = CarNetworkNode(train_id="LC01", train_no="1", node_name="TC1-MR", node_type="MR")
+    existing = CarNetworkNode(
+        train_id="LC01", train_no="1", node_name="TC1-MR", node_type="MR"
+    )
     CarNetworkPointTableStore(paths, "demo").save([existing])
 
     preview = service.preview_car_network_point_table(
         "demo",
         file_name="point-table.csv",
-        content=_point_table_csv([
-            {**existing.__dict__, "remark": "覆盖值"},
-            {**existing.__dict__, "node_name": "TC2-MR", "tc": "TC2", "remark": "新增值"},
-        ]),
+        content=_point_table_csv(
+            [
+                {**existing.__dict__, "remark": "覆盖值"},
+                {
+                    **existing.__dict__,
+                    "node_name": "TC2-MR",
+                    "tc": "TC2",
+                    "remark": "新增值",
+                },
+            ]
+        ),
         duplicate_strategy="replace",
     )
     assert preview.can_apply is True
@@ -186,8 +211,11 @@ def test_point_table_preview_transform_save_and_task_window_blocker(tmp_path: Pa
     assert blocked.value.code == "BLOCKED_ON_TASK_WINDOW"
 
 
-def test_point_table_and_trackside_plan_routes_reach_application_tasks(tmp_path: Path) -> None:
+def test_point_table_and_trackside_plan_routes_reach_application_tasks(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     app = create_app(
@@ -205,7 +233,11 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(tmp_path:
         export_adapter=FakeExportProcessAdapter(app.state.task_service),  # type: ignore[arg-type]
     )
     _enable_features(app)
-    for feature_id in ("web.rail_trackside_ap_plan", "web.rail_trackside_ap_plan_write", "web.rail_trackside_ap_plan_export"):
+    for feature_id in (
+        "web.rail_trackside_ap_plan",
+        "web.rail_trackside_ap_plan_write",
+        "web.rail_trackside_ap_plan_export",
+    ):
         app.state.feature_gate.features[feature_id] = {
             "visible": True,
             "enabled": True,
@@ -231,15 +263,22 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(tmp_path:
 
     assert point_table.status_code == 200
     assert point_save.status_code == 202
-    assert normal.jobs[point_save.json()["task_id"]].task_type == "car_network_save_point_table"
+    assert (
+        normal.jobs[point_save.json()["task_id"]].task_type
+        == "car_network_save_point_table"
+    )
     assert plan.status_code == 200
     assert plan_save.status_code == 202
-    assert normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
+    assert (
+        normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
+    )
     assert blocked_export.status_code == 503
     assert blocked_export.json()["detail"]["code"] == "BLOCKED_ON_TASK_WINDOW"
 
 
-def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(tmp_path: Path) -> None:
+def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, normal, _export, _tasks = _service(paths)
     profile = MeshStorageService("demo", paths).create_mr_profile("车载 MR-01")
@@ -268,7 +307,10 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
         "error_message",
         "result_summary",
     }
-    assert job.params["profile"]["relative_folder_path"] == f"files/rail_transit/mr_raw_mesh/{profile.safe_folder_name}"
+    assert (
+        job.params["profile"]["relative_folder_path"]
+        == f"files/rail_transit/mr_raw_mesh/{profile.safe_folder_name}"
+    )
     assert Path(job.params["files"][0]).is_relative_to(paths.runtime_cache_dir)
 
     cancelled = service.cancel_task("demo", started.task_id)
@@ -276,7 +318,9 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
     assert not staging.exists()
 
 
-def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(tmp_path: Path) -> None:
+def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, _export, _tasks = _service(paths)
     staging = service.create_mesh_staging("demo")
@@ -317,13 +361,22 @@ def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(tmp_path
     assert not (paths.sites_dir.parent / "escaped").exists()
 
 
-def test_online_mr_export_manifest_hash_download_cancel_and_ownership(tmp_path: Path) -> None:
+def test_online_mr_export_manifest_hash_download_cancel_and_ownership(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, export, tasks = _service(paths)
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-1")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-1", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -369,7 +422,14 @@ def test_artifact_download_requires_task_database_anchor(tmp_path: Path) -> None
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-anchor")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-anchor", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        json.dumps(
+            {
+                "session_id": "session-anchor",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -391,7 +451,12 @@ def test_artifact_download_requires_task_database_anchor(tmp_path: Path) -> None
     assert public["result_path"] == ""
     assert all("path" not in key for key in public["result"])
 
-    manifest_path = paths.rail_transit_root("demo") / "web_artifacts" / "manifests" / f"{completed.artifact_id}.json"
+    manifest_path = (
+        paths.rail_transit_root("demo")
+        / "web_artifacts"
+        / "manifests"
+        / f"{completed.artifact_id}.json"
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     forged = b"forged"
     output.write_bytes(forged)
@@ -413,7 +478,14 @@ def test_artifact_finalization_failure_marks_task_failed_and_clears_paths(
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-failure")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-failure", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        json.dumps(
+            {
+                "session_id": "session-failure",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -432,7 +504,9 @@ def test_artifact_finalization_failure_marks_task_failed_and_clears_paths(
     assert service.get_task("demo", started.task_id).available is False
 
 
-def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Path) -> None:
+def test_completed_export_manifest_is_recovered_after_callback_loss(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, export, tasks = _service(paths)
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-recovery")
@@ -449,7 +523,9 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
         encoding="utf-8",
     )
 
-    started = service.start_online_mr_report("demo", "session-recovery", "recovered.xlsx")
+    started = service.start_online_mr_report(
+        "demo", "session-recovery", "recovered.xlsx"
+    )
     leaked_path = str(export.jobs[started.task_id].output_path)
     subscription = tasks.events.open_stream()
     export.callbacks.pop(started.task_id)
@@ -461,7 +537,9 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     stored_events = tasks.list_events(started.task_id, limit=100)
     serialized_public = json.dumps(
         {
-            "task": task_dto(public_snapshot).model_dump(mode="json") if public_snapshot else {},
+            "task": task_dto(public_snapshot).model_dump(mode="json")
+            if public_snapshot
+            else {},
             "events": stored_events,
             "live": live_events,
         },
@@ -481,7 +559,9 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(tmp_path: Pa
     assert completed.available is True
     assert completed.sha256 == hashlib.sha256(b"recovered-report").hexdigest()
 
-    cancelled = service.start_online_mr_report("demo", "session-recovery", "cancel-recovery.xlsx")
+    cancelled = service.start_online_mr_report(
+        "demo", "session-recovery", "cancel-recovery.xlsx"
+    )
     cancelled_job = export.jobs[cancelled.task_id]
     cancelled_output = Path(cancelled_job.output_path)
     cancelled_temp = cancelled_output.with_name(
@@ -505,10 +585,19 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-legacy-path")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-legacy-path", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        json.dumps(
+            {
+                "session_id": "session-legacy-path",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
         encoding="utf-8",
     )
-    started = service.start_online_mr_report("demo", "session-legacy-path", "legacy.xlsx")
+    started = service.start_online_mr_report(
+        "demo", "session-legacy-path", "legacy.xlsx"
+    )
     leak = str(export.jobs[started.task_id].output_path)
     repository = tasks.repository("demo")
     snapshot = repository.get(started.task_id)
@@ -540,8 +629,12 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
     all_events = tasks.list_all_events(limit=100)
     serialized = json.dumps(
         {
-            "task": task_dto(public_task).model_dump(mode="json") if public_task else {},
-            "repository_task": task_dto(repository_task).model_dump(mode="json") if repository_task else {},
+            "task": task_dto(public_task).model_dump(mode="json")
+            if public_task
+            else {},
+            "repository_task": task_dto(repository_task).model_dump(mode="json")
+            if repository_task
+            else {},
             "events": public_events,
             "all_events": all_events,
         },
@@ -558,10 +651,19 @@ def test_rail_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None
     session_dir = paths.online_mr_session_dir("demo", "MR-01", "session-legacy-dto")
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-legacy-dto", "site": "demo", "mr_name": "MR-01", "status": "COMPLETED"}),
+        json.dumps(
+            {
+                "session_id": "session-legacy-dto",
+                "site": "demo",
+                "mr_name": "MR-01",
+                "status": "COMPLETED",
+            }
+        ),
         encoding="utf-8",
     )
-    started = service.start_online_mr_report("demo", "session-legacy-dto", "legacy-dto.xlsx")
+    started = service.start_online_mr_report(
+        "demo", "session-legacy-dto", "legacy-dto.xlsx"
+    )
     leak = str(export.jobs[started.task_id].output_path)
     repository = tasks.repository("demo")
     snapshot = repository.get(started.task_id)
@@ -588,7 +690,10 @@ def test_rail_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None
         ),
     )
 
-    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+    serialized = json.dumps(
+        service.get_task("demo", started.task_id).model_dump(mode="json"),
+        ensure_ascii=False,
+    )
 
     assert leak not in serialized
     assert "output_path" not in serialized
@@ -625,7 +730,10 @@ def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> N
         ),
     )
 
-    serialized = json.dumps(service.get_task("demo", started.task_id).model_dump(mode="json"), ensure_ascii=False)
+    serialized = json.dumps(
+        service.get_task("demo", started.task_id).model_dump(mode="json"),
+        ensure_ascii=False,
+    )
 
     assert leak not in serialized
     assert "rail-secret" not in serialized
@@ -638,7 +746,9 @@ def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> N
 def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> None:
     from test_online_mr_collection import _config
     from netconsole.services.online_mr_session_store import OnlineMrSessionStore
-    from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
+    from netconsole.services.rail_transit.online_mr_diagnosis_parser import (
+        OnlineMrDiagnosisParser,
+    )
 
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
@@ -647,7 +757,9 @@ def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> 
     adapter = WebExportProcessAdapter(tasks)
     service.export_adapter = adapter
     try:
-        started = service.start_online_mr_report("demo", session.meta.session_id, "online-report.xlsx")
+        started = service.start_online_mr_report(
+            "demo", session.meta.session_id, "online-report.xlsx"
+        )
         assert adapter.wait(started.task_id, timeout=30)
         completed = service.get_task("demo", started.task_id)
         path, _name = service.open_online_mr_report("demo", completed.artifact_id)
@@ -659,10 +771,16 @@ def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> 
     assert path.is_file() and path.stat().st_size > 0
 
 
-def test_mesh_report_uses_existing_context_and_artifact_manifest(tmp_path: Path) -> None:
-    paths, session_id, detail_db, _raw, _existing = create_mesh_analysis_fixture(tmp_path)
+def test_mesh_report_uses_existing_context_and_artifact_manifest(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail_db, _raw, _existing = create_mesh_analysis_fixture(
+        tmp_path
+    )
     paths.ensure_site_dirs("demo")
-    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery())
+    mesh_query = MeshAnalysisQueryService(
+        paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery()
+    )
     service, _normal, export, _tasks = _service(paths, mesh_query)
 
     started = service.start_mesh_report("demo", session_id)
@@ -693,9 +811,15 @@ def test_mesh_report_worker_reuses_existing_process_pipeline(tmp_path: Path) -> 
         encoding="utf-8",
     )
     MeshImportService("demo", paths).import_files(profile, [source])
-    source_id = int(MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name)).list_source_files()[0]["id"])
+    source_id = int(
+        MeshMrRepository(
+            paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+        ).list_source_files()[0]["id"]
+    )
     session_id = f"{profile.mr_id}:{source_id}"
-    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery())
+    mesh_query = MeshAnalysisQueryService(
+        paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery()
+    )
     service, _normal, _fake_export, tasks = _service(paths, mesh_query)
     adapter = WebExportProcessAdapter(tasks)
     service.export_adapter = adapter
@@ -707,7 +831,11 @@ def test_mesh_report_worker_reuses_existing_process_pipeline(tmp_path: Path) -> 
             path, _name = service.open_mesh_report("demo", completed.artifact_id)
         else:
             snapshot = tasks.repository("demo").get(started.task_id)
-            pytest.fail(snapshot.error_message if snapshot is not None else "MESH export task missing")
+            pytest.fail(
+                snapshot.error_message
+                if snapshot is not None
+                else "MESH export task missing"
+            )
     finally:
         adapter.shutdown()
 
@@ -715,7 +843,9 @@ def test_mesh_report_worker_reuses_existing_process_pipeline(tmp_path: Path) -> 
     assert path.is_file() and path.stat().st_size > 0
 
 
-def test_task_recovery_is_scoped_to_allowed_owner_source_and_type(tmp_path: Path) -> None:
+def test_task_recovery_is_scoped_to_allowed_owner_source_and_type(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, normal, _export, tasks = _service(paths)
     started = service.start_car_network_diagnostic("demo", train_id="train-1")
@@ -723,7 +853,9 @@ def test_task_recovery_is_scoped_to_allowed_owner_source_and_type(tmp_path: Path
     assert snapshot is not None
     normal.jobs.pop(started.task_id)
     normal.callbacks.pop(started.task_id)
-    tasks.repository("demo").save(replace(snapshot, owner_pid=2_147_483_000, status=TaskState.RUNNING))
+    tasks.repository("demo").save(
+        replace(snapshot, owner_pid=2_147_483_000, status=TaskState.RUNNING)
+    )
     foreign = tasks.create_external_task(
         task_id="foreign-active",
         task_type="car_network_refresh_all",
@@ -771,40 +903,74 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
 
     assert "site_id" not in OnlineMrReportRequestDTO.model_fields
     assert "site_id" not in inspect.signature(mesh_analysis_import).parameters
-    assert "relative_folder_path" not in inspect.signature(mesh_analysis_import).parameters
+    assert (
+        "relative_folder_path" not in inspect.signature(mesh_analysis_import).parameters
+    )
     upload_source = inspect.getsource(mesh_analysis_import)
     assert "asyncio.to_thread" in upload_source
     assert "target.open" not in upload_source
     assert "handle.write" not in upload_source
 
     with TestClient(app) as client:
-        client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=False, enabled=False, client_package=False)
-        blocked_car = client.post("/api/rail-transit/train-communication/trains/train-1/diagnostics")
-        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features[
+            "web.rail_car_network_diagnostic_execute"
+        ].update(visible=False, enabled=False, client_package=False)
+        blocked_car = client.post(
+            "/api/rail-transit/train-communication/trains/train-1/diagnostics"
+        )
+        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(
+            visible=False, enabled=False, client_package=False
+        )
         blocked_mesh = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={"mr_id": profile.mr_id},
         )
-        client.app.state.feature_gate.features["web.online_mr_report_export"].update(visible=False, enabled=False, client_package=False)
-        blocked_online_report = client.post("/api/online-mr/sessions/missing/report", json={})
-        client.app.state.feature_gate.features["web.mesh_analysis_report_export"].update(visible=False, enabled=False, client_package=False)
-        blocked_mesh_report = client.post("/api/rail-transit/mesh-analysis/sessions/missing/report")
-        client.app.state.feature_gate.features["web.rail_task_control"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["web.online_mr_report_export"].update(
+            visible=False, enabled=False, client_package=False
+        )
+        blocked_online_report = client.post(
+            "/api/online-mr/sessions/missing/report", json={}
+        )
+        client.app.state.feature_gate.features[
+            "web.mesh_analysis_report_export"
+        ].update(visible=False, enabled=False, client_package=False)
+        blocked_mesh_report = client.post(
+            "/api/rail-transit/mesh-analysis/sessions/missing/report"
+        )
+        client.app.state.feature_gate.features["web.rail_task_control"].update(
+            visible=False, enabled=False, client_package=False
+        )
         blocked_task_recovery = client.post("/api/online-mr/tasks/recover")
-        client.app.state.feature_gate.features["web.rail_car_network_diagnostic_execute"].update(visible=True, enabled=True, client_package=True)
-        blocked_car_without_control = client.post("/api/rail-transit/train-communication/trains/train-1/diagnostics")
-        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(visible=True, enabled=True, client_package=True)
+        client.app.state.feature_gate.features[
+            "web.rail_car_network_diagnostic_execute"
+        ].update(visible=True, enabled=True, client_package=True)
+        blocked_car_without_control = client.post(
+            "/api/rail-transit/train-communication/trains/train-1/diagnostics"
+        )
+        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(
+            visible=True, enabled=True, client_package=True
+        )
         blocked_mesh_without_control = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={"mr_id": profile.mr_id},
         )
-        client.app.state.feature_gate.features["web.online_mr_report_export"].update(visible=True, enabled=True, client_package=True)
-        blocked_online_report_without_control = client.post("/api/online-mr/sessions/missing/report", json={})
-        client.app.state.feature_gate.features["web.mesh_analysis_report_export"].update(visible=True, enabled=True, client_package=True)
-        blocked_mesh_report_without_control = client.post("/api/rail-transit/mesh-analysis/sessions/missing/report")
-        client.app.state.feature_gate.features["web.rail_task_control"].update(visible=True, enabled=True, client_package=True)
+        client.app.state.feature_gate.features["web.online_mr_report_export"].update(
+            visible=True, enabled=True, client_package=True
+        )
+        blocked_online_report_without_control = client.post(
+            "/api/online-mr/sessions/missing/report", json={}
+        )
+        client.app.state.feature_gate.features[
+            "web.mesh_analysis_report_export"
+        ].update(visible=True, enabled=True, client_package=True)
+        blocked_mesh_report_without_control = client.post(
+            "/api/rail-transit/mesh-analysis/sessions/missing/report"
+        )
+        client.app.state.feature_gate.features["web.rail_task_control"].update(
+            visible=True, enabled=True, client_package=True
+        )
         rejected_site = client.post(
             "/api/online-mr/mesh-analysis/import",
             files={"files": ("fixture.log", b"mesh", "text/plain")},
@@ -815,7 +981,9 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         )
         oversized = client.post(
             "/api/online-mr/mesh-analysis/import",
-            files={"files": ("oversized.log", b"x" * (20 * 1024 * 1024 + 1), "text/plain")},
+            files={
+                "files": ("oversized.log", b"x" * (20 * 1024 * 1024 + 1), "text/plain")
+            },
             data={"mr_id": profile.mr_id},
         )
         accepted = client.post(
@@ -823,7 +991,9 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={"mr_id": profile.mr_id},
         )
-        cancelled = client.post(f"/api/online-mr/tasks/{accepted.json()['task_id']}/cancel")
+        cancelled = client.post(
+            f"/api/online-mr/tasks/{accepted.json()['task_id']}/cancel"
+        )
 
     assert blocked_car.status_code == 404
     assert blocked_mesh.status_code == 404

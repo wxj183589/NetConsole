@@ -12,6 +12,8 @@ from support.online_mr_api import wire_online_mr_api_facade
 
 def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     session = paths.online_mr_session_dir("demo", "MR-02", "session-2")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
@@ -37,14 +39,26 @@ def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
             {
                 "updated_at": "2026-07-14T10:02:00",
                 "display_context": {"station": "甲站", "section": "甲站-乙站"},
-                "collectors": {"mesh_link": {"status": "running", "raw_file": "raw/mesh_link_raw.log"}},
+                "collectors": {
+                    "mesh_link": {
+                        "status": "running",
+                        "raw_file": "raw/mesh_link_raw.log",
+                    }
+                },
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
     (session / "view" / "live_link_status.json").write_text(
-        json.dumps({"available": True, "updated_at": "2026-07-14T10:02:00", "peer_name": "AP-01", "rssi": -61}),
+        json.dumps(
+            {
+                "available": True,
+                "updated_at": "2026-07-14T10:02:00",
+                "peer_name": "AP-01",
+                "rssi": -61,
+            }
+        ),
         encoding="utf-8",
     )
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
@@ -56,7 +70,9 @@ def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
 
     assert preview.status_code == collectors.status_code == 200
     assert preview.json()["data"]["link"]["peer_name"] == "AP-01"
-    mesh = next(item for item in collectors.json()["data"] if item["name"] == "mesh_link")
+    mesh = next(
+        item for item in collectors.json()["data"] if item["name"] == "mesh_link"
+    )
     assert mesh["exists"] is True
     assert mesh["status"] == "stopped"
     assert str(tmp_path) not in preview.text + collectors.text
@@ -64,11 +80,20 @@ def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:
 
 def test_missing_view_files_return_empty_preview_instead_of_500(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     session = paths.online_mr_session_dir("demo", "MR-02", "session-3")
     for name in ("raw", "parsed", "view", "logs", "outputs"):
         (session / name).mkdir(parents=True, exist_ok=True)
     (session / "session_meta.json").write_text(
-        json.dumps({"session_id": "session-3", "site": "demo", "mr_name": "MR-02", "status": "STOPPED"}),
+        json.dumps(
+            {
+                "session_id": "session-3",
+                "site": "demo",
+                "mr_name": "MR-02",
+                "status": "STOPPED",
+            }
+        ),
         encoding="utf-8",
     )
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
