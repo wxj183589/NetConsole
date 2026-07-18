@@ -1,0 +1,29 @@
+:root,
+html[data-theme="light"] {
+  color-scheme: light;
+  --nc-bg-page: #f5f7fa;
+  --nc-bg-card: #ffffff;
+  --nc-bg-sidebar: #0b1220;
+  --nc-bg-sidebar-hover: #17243a;
+  --nc-bg-sidebar-active: #152a40;
+  --nc-bg-elevated: #ffffff;
+  --nc-bg-muted: #f3f6fb;
+  --nc-bg-code: #101827;
+  --nc-text-primary: #1f2329;
+  --nc-text-secondary: #606266;
+  --nc-text-tertiary: #7a8799;
+  --nc-text-disabled: #a8abb2;
+  --nc-text-inverse: #f3f4f6;
+  --nc-text-code: #d6e0ec;
+  --nc-border: #dcdfe6;
+  --nc-border-light: #ebeef5;
+  --nc-border-strong: #cfd6e2;
+  --nc-table-header-bg: #f5f7fa;
+  --nc-table-hover-bg: #ecf5ff;
+  --nc-table-selected-bg: #d9ecff;
+  --nc-status-success-bg: #f0f9eb;
+  --nc-status-warning-bg: #fdf6ec;
+  --nc-status-danger-bg: #fef0f0;
+  --nc-status-info-bg: #f4f4f5;
+  --nc-overlay: rgb(7 16 31 / 50%);
+}

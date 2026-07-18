@@ -1,0 +1,46 @@
+html:root {
+  --el-font-family: var(--nc-font-family);
+  --el-font-size-base: var(--nc-font-size-base);
+  --el-color-primary: var(--nc-primary);
+  --el-color-primary-light-3: color-mix(in srgb, var(--nc-primary), #ffffff 30%);
+  --el-color-primary-light-5: color-mix(in srgb, var(--nc-primary), #ffffff 50%);
+  --el-color-primary-light-7: color-mix(in srgb, var(--nc-primary), #ffffff 70%);
+  --el-color-primary-light-8: color-mix(in srgb, var(--nc-primary), #ffffff 80%);
+  --el-color-primary-light-9: color-mix(in srgb, var(--nc-primary), #ffffff 90%);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--nc-primary), #000000 20%);
+  --el-color-success: var(--nc-success);
+  --el-color-warning: var(--nc-warning);
+  --el-color-danger: var(--nc-danger);
+  --el-color-error: var(--nc-danger);
+  --el-color-info: var(--nc-info);
+  --el-bg-color: var(--nc-bg-card);
+  --el-bg-color-page: var(--nc-bg-page);
+  --el-bg-color-overlay: var(--nc-bg-elevated);
+  --el-fill-color-blank: var(--nc-bg-card);
+  --el-fill-color-light: var(--nc-bg-muted);
+  --el-fill-color-lighter: color-mix(in srgb, var(--nc-bg-muted), var(--nc-bg-card) 35%);
+  --el-fill-color-extra-light: color-mix(in srgb, var(--nc-bg-muted), var(--nc-bg-card) 60%);
+  --el-fill-color-dark: color-mix(in srgb, var(--nc-bg-muted), #000000 8%);
+  --el-text-color-primary: var(--nc-text-primary);
+  --el-text-color-regular: var(--nc-text-secondary);
+  --el-text-color-secondary: var(--nc-text-tertiary);
+  --el-text-color-placeholder: var(--nc-text-disabled);
+  --el-text-color-disabled: var(--nc-text-disabled);
+  --el-border-color: var(--nc-border);
+  --el-border-color-light: var(--nc-border-light);
+  --el-border-color-lighter: color-mix(in srgb, var(--nc-border-light), transparent 20%);
+  --el-border-color-extra-light: color-mix(in srgb, var(--nc-border-light), transparent 45%);
+  --el-border-color-dark: var(--nc-border-strong);
+  --el-border-radius-base: var(--nc-radius-sm);
+  --el-box-shadow-light: var(--nc-shadow-card);
+  --el-box-shadow: var(--nc-shadow-floating);
+}
+
+html[data-theme="dark"] {
+  --el-color-primary-light-3: color-mix(in srgb, var(--nc-primary), #000000 22%);
+  --el-color-primary-light-5: color-mix(in srgb, var(--nc-primary), #000000 38%);
+  --el-color-primary-light-7: color-mix(in srgb, var(--nc-primary), #000000 52%);
+  --el-color-primary-light-8: color-mix(in srgb, var(--nc-primary), #000000 60%);
+  --el-color-primary-light-9: color-mix(in srgb, var(--nc-primary), #000000 68%);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--nc-primary), #ffffff 20%);
+}

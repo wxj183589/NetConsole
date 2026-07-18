@@ -158,7 +158,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
   <el-container class="app-shell">
     <div v-if="mobile && drawerOpen" class="sidebar-overlay" @click="drawerOpen = false"></div>
     <el-aside
-      :width="sidebarCollapsed ? '64px' : '224px'"
+      :width="sidebarCollapsed ? 'var(--nc-shell-sidebar-collapsed-width)' : 'var(--nc-shell-sidebar-width)'"
       :class="['app-sidebar', { collapsed: sidebarCollapsed, mobile, open: drawerOpen }]"
     >
       <div class="brand">

@@ -8,9 +8,13 @@ import {
   getPlatformAdapter,
   initializePlatformRuntime,
 } from './platform/runtime'
+import 'element-plus/theme-chalk/dark/css-vars.css'
+import './theme/tokens.css'
+import './theme/light.css'
+import './theme/dark.css'
+import './theme/element-plus.css'
 import './styles/main.css'
-import { getSystemSettings } from './api/systemSettings'
-import { applySystemAppearance } from './settings/appearance'
+import { initializeSystemAppearance } from './settings/appearance'
 
 async function bootstrap(): Promise<void> {
   try {
@@ -22,12 +26,10 @@ async function bootstrap(): Promise<void> {
     return
   }
   createApp(App).use(createPinia()).use(router).mount('#app')
+  void initializeSystemAppearance()
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
     runtime.reportRendererReady(true, 'mounted')
-    void getSystemSettings().then((settings) => applySystemAppearance(settings.values)).catch(() => {
-      // 设置页会显示受控错误；启动仍保留默认外观。
-    })
     try {
       const health = await getHealth()
       runtime.reportRendererReady(health.status === 'ok', 'interactive')

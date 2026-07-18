@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import type { TrafficEvent } from '../../types/traffic'
 
 const props = defineProps<{ events: TrafficEvent[] }>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: { setOption: (option: unknown) => void; resize: () => void; dispose: () => void } | null = null
+let unsubscribeTheme: (() => void) | null = null
 
 onMounted(async () => {
   const [core, charts, components, renderers] = await Promise.all([
@@ -18,6 +20,7 @@ onMounted(async () => {
   await nextTick()
   if (container.value) {
     chart = core.init(container.value)
+    unsubscribeTheme = subscribeNetConsoleChartTheme(render)
     render()
     window.addEventListener('resize', resize)
   }
@@ -25,6 +28,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resize)
+  unsubscribeTheme?.()
+  unsubscribeTheme = null
   chart?.dispose()
   chart = null
 })
@@ -37,6 +42,13 @@ function resize(): void {
 
 function render(): void {
   if (!chart) return
+  const theme = readNetConsoleChartTokens()
+  const axisStyle = {
+    axisLabel: { color: theme.textSecondary },
+    axisLine: { lineStyle: { color: theme.border } },
+    axisTick: { lineStyle: { color: theme.border } },
+    splitLine: { lineStyle: { color: theme.splitLine } },
+  }
   const groups = new Map<string, [string, number][]>()
   for (const event of props.events) {
     if (event.type !== 'sample' || event.payload.metric !== 'iperf_interval') continue
@@ -49,11 +61,18 @@ function render(): void {
   }
   chart.setOption({
     animation: false,
-    tooltip: { trigger: 'axis' },
-    legend: { top: 0, type: 'scroll' },
+    color: theme.series,
+    textStyle: { color: theme.text },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: theme.background,
+      borderColor: theme.border,
+      textStyle: { color: theme.text },
+    },
+    legend: { top: 0, type: 'scroll', textStyle: { color: theme.textSecondary } },
     grid: { left: 56, right: 24, top: 44, bottom: 36 },
-    xAxis: { type: 'time' },
-    yAxis: { type: 'value', name: 'Mbps', min: 0 },
+    xAxis: { type: 'time', ...axisStyle },
+    yAxis: { type: 'value', name: 'Mbps', nameTextStyle: { color: theme.textSecondary }, min: 0, ...axisStyle },
     series: Array.from(groups.entries()).map(([name, data]) => ({ name, type: 'line', showSymbol: false, data })),
   })
 }

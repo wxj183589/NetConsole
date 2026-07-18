@@ -1,0 +1,43 @@
+:root {
+  /* Brand and state primitives. The active primary may be overridden by System Settings. */
+  --nc-primary: #1677ff;
+  --nc-accent: var(--nc-primary);
+  --nc-primary-hover: color-mix(in srgb, var(--nc-primary), #ffffff 20%);
+  --nc-primary-active: color-mix(in srgb, var(--nc-primary), #000000 18%);
+  --nc-success: #52c41a;
+  --nc-warning: #faad14;
+  --nc-danger: #ff4d4f;
+  --nc-info: #909399;
+
+  /* Typography. */
+  --nc-font-family: "Microsoft YaHei UI", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+  --nc-font-family-mono: Consolas, "Microsoft YaHei UI", monospace;
+  --nc-font-size-xs: 12px;
+  --nc-font-size-sm: 13px;
+  --nc-font-size-base: 14px;
+  --nc-font-size-title: 20px;
+  --nc-line-height-base: 1.5;
+
+  /* Density and geometry. */
+  --nc-space-1: 4px;
+  --nc-space-2: 8px;
+  --nc-space-3: 12px;
+  --nc-space-4: 16px;
+  --nc-space-5: 20px;
+  --nc-space-6: 24px;
+  --nc-radius-sm: 4px;
+  --nc-radius-base: 8px;
+  --nc-radius-lg: 10px;
+  --nc-card-padding: 16px;
+  --nc-content-padding: 20px;
+  --nc-card-gap: 16px;
+  --nc-table-row-height: 40px;
+  --nc-shell-header-height: 56px;
+  --nc-shell-sidebar-width: 220px;
+  --nc-shell-sidebar-collapsed-width: 64px;
+
+  /* Elevation and motion. */
+  --nc-shadow-card: 0 5px 20px rgb(16 33 59 / 7%);
+  --nc-shadow-floating: 0 14px 38px rgb(7 16 31 / 24%);
+  --nc-transition-fast: 160ms ease;
+}
