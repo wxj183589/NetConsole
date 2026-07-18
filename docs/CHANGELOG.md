@@ -16,6 +16,7 @@
 
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
+- 无线勘测热力图后台 Job 与 Export Process 已从 `QImage/QPixmap/QGuiApplication` 迁到 Pillow 中立图像对象；活动永久 Python 层不再直接导入 PySide6，Qt 页面仅保留迁移期颜色适配，等待 E1 页面整体回收。
 - E1 回收无调用的 `apps/desktop` Qt WebShell、包标记和 Qt-only 运行测试；仍被 Qt 页面引用的 `src/netconsole/ui/web_host` 兼容层暂不删除，等待对应业务迁移矩阵收口。
 - 固化 Electron-only 最终 E10 架构一致性门：逐项追踪已删除 Qt 文件中的业务逻辑，检查 UI/Router/Service/Repository/Command Profile、数据库事实源、孤儿模块和移除功能残留，并要求有限期例外、迁移矩阵、自动 Guard 与最终合规报告；当前只完成规范，不表示全仓审计已经通过。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。

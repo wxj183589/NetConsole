@@ -6,10 +6,12 @@
 
 ## 2. 启动与运行形态
 
-Electron Main 负责正式桌面启动、窗口和受管 Backend 生命周期。`main.py` 是 Python 内部兼容入口，只分派冻结 Backend、worker、smoke 和显式本机开发诊断：
+Electron Main 负责正式桌面启动、窗口和受管 Backend 生命周期。无参数 `main.py` 是供 PyCharm/源码开发使用的便捷入口，会调用项目本地 Electron 编排链；同一 Python 入口还分派冻结 Backend、worker、smoke 和显式本机开发诊断：
 
 ```mermaid
 flowchart TD
+    PYCHARM["PyCharm / python main.py"] --> DEV["项目本地 Electron 开发编排"]
+    DEV --> ELECTRON
     ELECTRON["Electron Main"] --> VUE["唯一 Vue Renderer"]
     ELECTRON -->|"--electron-backend"| MAIN["NetConsoleBackend.exe / main.py"]
     MAIN --> MODE{"内部或诊断参数"}
@@ -25,7 +27,7 @@ flowchart TD
     CORE --> VUE
 ```
 
-打包态 Electron 启动独立 Backend 可执行文件并传入内部 `--electron-backend`；源码开发态直接运行 `netconsole.backend.electron_runtime`。两者都使用随机回环端口、短期桌面会话令牌和受管退出握手。`--mode web` 与 `--mode server` 不导入 PySide6；前者打开本机浏览器诊断，后者默认监听 `127.0.0.1:8000` 且不主动打开浏览器。Launcher 只允许 `localhost` 或 IP loopback。无参数 `main.py`、`--mode auto/qt`、Qt probe、`--web-shell` 和旧提权 Qt 子入口均已删除；无参数调用会明确提示改用 Electron 并返回失败。
+打包态 Electron 启动独立 Backend 可执行文件并传入内部 `--electron-backend`；源码开发态由 Electron 编排器运行 `netconsole.backend.electron_runtime`。两者都使用随机回环端口、短期桌面会话令牌和受管退出握手。`--mode web` 与 `--mode server` 不导入 PySide6；前者打开本机浏览器诊断，后者默认监听 `127.0.0.1:8000` 且不主动打开浏览器。Launcher 只允许 `localhost` 或 IP loopback。`--mode auto/qt`、Qt probe、`--web-shell` 和旧提权 Qt 子入口均已删除；无参数 `main.py` 只启动 Electron，不恢复 Qt 或 Browser 产品回退。
 
 Electron 的单实例锁和退出屏障由 Main 持有；Python 诊断 Launcher 只保护自己的单个诊断进程，worker、smoke 和受管 Electron Backend 不复用该锁。Electron Runtime 统一持有并停止 Uvicorn/FastAPI lifespan。旧 Qt 页面仍有未迁移的页面级对象和业务逻辑，因此本阶段只是删除 Qt 启动壳，不能描述为全仓零 Qt或页面业务已经全部统一。
 
