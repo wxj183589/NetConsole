@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PIL import Image
+
+
+RgbaColor = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -15,53 +17,60 @@ class HeatmapSample:
     rssi_dbm: float
 
 
-def rssi_to_color(rssi_dbm: float | None, alpha: int = 130) -> QColor:
+def rssi_to_color(rssi_dbm: float | None, alpha: int = 130) -> RgbaColor:
     if rssi_dbm is None:
-        return QColor(140, 145, 152, alpha)
+        return 140, 145, 152, alpha
     if rssi_dbm >= -55:
-        return QColor(10, 120, 60, alpha)
+        return 10, 120, 60, alpha
     if rssi_dbm >= -67:
-        return QColor(58, 180, 90, alpha)
+        return 58, 180, 90, alpha
     if rssi_dbm >= -72:
-        return QColor(180, 210, 70, alpha)
+        return 180, 210, 70, alpha
     if rssi_dbm >= -78:
-        return QColor(235, 165, 45, alpha)
+        return 235, 165, 45, alpha
     if rssi_dbm >= -80:
-        return QColor(220, 90, 55, alpha)
-    return QColor(120, 45, 45, alpha)
+        return 220, 90, 55, alpha
+    return 120, 45, 45, alpha
 
 
-def generate_idw_heatmap_image(width: int, height: int, samples: list[tuple[float, float, float]], step: int = 10) -> QImage | None:
+def generate_idw_heatmap_image(
+    width: int,
+    height: int,
+    samples: list[tuple[float, float, float]],
+    step: int = 10,
+) -> Image.Image | None:
     if width <= 0 or height <= 0 or len(samples) < 3:
         return None
     step = max(6, min(20, int(step)))
     low_width = max(1, math.ceil(width / step))
     low_height = max(1, math.ceil(height / step))
-    image = QImage(low_width, low_height, QImage.Format_ARGB32)
-    image.fill(Qt.transparent)
+    image = Image.new("RGBA", (low_width, low_height), (0, 0, 0, 0))
+    pixels = image.load()
     for y in range(low_height):
         for x in range(low_width):
             px = x * step
             py = y * step
             rssi = _idw_value(px, py, samples)
-            image.setPixelColor(x, y, rssi_to_color(rssi, 120))
-    return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            pixels[x, y] = rssi_to_color(rssi, 120)
+    return image.resize((width, height), Image.Resampling.BICUBIC)
 
 
-def generate_idw_heatmap(width: int, height: int, samples: list[tuple[float, float, float]], step: int = 10) -> QPixmap | None:
-    image = generate_idw_heatmap_image(width, height, samples, step)
-    return QPixmap.fromImage(image) if image is not None else None
+def generate_idw_heatmap(
+    width: int,
+    height: int,
+    samples: list[tuple[float, float, float]],
+    step: int = 10,
+) -> Image.Image | None:
+    return generate_idw_heatmap_image(width, height, samples, step)
 
 
-def render_heatmap_png(base: QPixmap, overlay: QPixmap | None) -> QPixmap:
-    result = QPixmap(base.size())
-    result.fill(Qt.transparent)
-    painter = QPainter(result)
-    painter.drawPixmap(0, 0, base)
-    if overlay is not None:
-        painter.drawPixmap(0, 0, overlay)
-    painter.end()
-    return result
+def render_heatmap_png(base: Image.Image, overlay: Image.Image | None) -> Image.Image:
+    result = base.convert("RGBA")
+    if overlay is None:
+        return result
+    if overlay.size != result.size:
+        overlay = overlay.resize(result.size, Image.Resampling.BICUBIC)
+    return Image.alpha_composite(result, overlay.convert("RGBA"))
 
 
 def build_heatmap_samples(

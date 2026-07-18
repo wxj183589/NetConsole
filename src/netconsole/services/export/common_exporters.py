@@ -574,15 +574,12 @@ def export_wifi_survey_csv(path: Path, payload: Mapping[str, Any], progress: Pro
 
 
 def export_wifi_survey_heatmap_png(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    from PySide6.QtGui import QGuiApplication, QPixmap
+    from PIL import Image
 
     from netconsole.core.database import Database
     from netconsole.repositories.wifi_survey_repository import WifiSurveyRepository
     from netconsole.services.wifi_survey.heatmap import build_heatmap_samples, generate_idw_heatmap, render_heatmap_png
 
-    app = QGuiApplication.instance()
-    if app is None:
-        app = QGuiApplication(["netconsole-export-worker"])
     db_path = Path(str(payload.get("db_path") or ""))
     floor_plan_id = int(payload.get("floor_plan_id") or 0)
     session_id = int(payload.get("session_id") or 0)
@@ -591,8 +588,10 @@ def export_wifi_survey_heatmap_png(path: Path, payload: Mapping[str, Any], progr
     selected_bssids = {str(value) for value in payload.get("selected_bssids") or []}
     repository = WifiSurveyRepository(Database(db_path))
     floor_plan = repository.get_floor_plan(floor_plan_id)
-    base = QPixmap(str(floor_plan.get("image_path") or ""))
-    if base.isNull():
+    try:
+        with Image.open(str(floor_plan.get("image_path") or "")) as source_image:
+            base = source_image.convert("RGBA")
+    except (OSError, ValueError):
         raise ValueError("无线勘测图纸文件无法读取")
     _emit(progress, "wifi_survey_heatmap_prepare", 0, 1, "正在生成无线热力图")
     _check_cancel(should_cancel)
@@ -602,14 +601,13 @@ def export_wifi_survey_heatmap_png(path: Path, payload: Mapping[str, Any], progr
     overlay = None
     if len(samples) >= 3:
         overlay = generate_idw_heatmap(
-            base.width(),
-            base.height(),
+            base.width,
+            base.height,
             [(sample.x_px, sample.y_px, sample.rssi_dbm) for sample in samples],
         )
     rendered = render_heatmap_png(base, overlay)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not rendered.save(str(path), "PNG"):
-        raise OSError(f"保存无线热力图失败：{path}")
+    rendered.save(path, format="PNG")
     _emit(progress, "wifi_survey_heatmap_save", 1, 1, "无线热力图导出完成")
     return len(samples)
 

@@ -664,7 +664,7 @@ class WifiSurveyPage(QWidget):
         if self.heatmap_pixmap is None and self.current_filter is None:
             return QColor("#2563eb")
         rssi = self.rssi_for_point(int(point["id"]))
-        return rssi_to_color(rssi, 220)
+        return QColor(*rssi_to_color(rssi, 220))
 
     def point_tooltip(self, point: dict[str, object]) -> str:
         observations = self._observations_for_point(int(point["id"]))

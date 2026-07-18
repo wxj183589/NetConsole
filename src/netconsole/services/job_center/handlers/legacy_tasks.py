@@ -1871,8 +1871,9 @@ def _wifi_survey_heatmap_render(params: dict[str, Any], progress: ProgressCallba
     _check_cancel(should_cancel)
     output_path = Path(str(params.get("output_path") or ""))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if image is None or not image.save(str(output_path), "PNG"):
+    if image is None:
         raise RuntimeError("WiFi 热力图生成失败")
+    image.save(output_path, format="PNG")
     return {"path": str(output_path), "valid_count": len(samples), "point_count": len(points), "mode": mode}
 
 

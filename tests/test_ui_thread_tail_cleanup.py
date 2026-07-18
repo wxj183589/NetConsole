@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtGui import QColor, QImage
+from PIL import Image
 
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.background_tasks import run_background_task
+from netconsole.services.export.common_exporters import export_wifi_survey_heatmap_png
 
 
 def _run(task_type: str, params: dict[str, object]) -> dict[str, object]:
@@ -18,9 +16,7 @@ def _run(task_type: str, params: dict[str, object]) -> dict[str, object]:
 def test_wifi_survey_background_round_trip_and_heatmap(tmp_path: Path) -> None:
     db_path = tmp_path / "site.db"
     source = tmp_path / "station.png"
-    image = QImage(120, 80, QImage.Format_ARGB32)
-    image.fill(QColor("white"))
-    assert image.save(str(source), "PNG")
+    Image.new("RGBA", (120, 80), "white").save(source, format="PNG")
 
     imported = _run(
         "wifi_survey_floor_import",
@@ -76,4 +72,20 @@ def test_wifi_survey_background_round_trip_and_heatmap(tmp_path: Path) -> None:
     )
     assert rendered["valid_count"] == 3
     assert output.is_file()
+
+    exported = tmp_path / "exported-heatmap.png"
+    row_count = export_wifi_survey_heatmap_png(
+        exported,
+        {
+            "db_path": str(db_path),
+            "floor_plan_id": int(floor["id"]),
+            "session_id": int(session["id"]),
+            "mode": "ssid",
+            "selected_ssids": ["CBTC"],
+        },
+    )
+    assert row_count == 3
+    with Image.open(exported) as exported_image:
+        assert exported_image.size == (120, 80)
+        assert exported_image.format == "PNG"
 
