@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   flattenNavigation,
   navigationRegistry,
+  normalizeNavigationItem,
+  NAVIGATION_SCHEMA_VERSION,
   visibleNavigation,
   type NavigationItem,
 } from './registry'
@@ -69,6 +71,28 @@ describe('Web navigation registry', () => {
     const routes = flat.flatMap((item) => item.route_path ? [item.route_path] : [])
     expect(new Set(ids).size).toBe(ids.length)
     expect(new Set(routes).size).toBe(routes.length)
+  })
+
+  it('writes legacy metadata with neutral names while reading schema v1 fields', () => {
+    expect(NAVIGATION_SCHEMA_VERSION).toBe(2)
+    expect(flattenNavigation().some((entry) => 'qt_page_id' in entry || 'qt_feature_id' in entry)).toBe(false)
+
+    const migrated = normalizeNavigationItem({
+      navigation_id: 'legacy',
+      title: 'legacy',
+      order: 1,
+      icon: 'system',
+      qt_page_id: 'old-page',
+      qt_feature_id: 'old-feature',
+      parity_state: 'COMPLETE',
+      desktop_only: false,
+      internal_only: true,
+      implemented: false,
+    })
+    expect(migrated.legacy_page_id).toBe('old-page')
+    expect(migrated.legacy_feature_id).toBe('old-feature')
+    expect('qt_page_id' in migrated).toBe(false)
+    expect('qt_feature_id' in migrated).toBe(false)
   })
 
   it('keeps device management at implemented but unverified', () => {
