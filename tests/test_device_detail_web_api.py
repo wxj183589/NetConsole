@@ -247,6 +247,28 @@ def test_device_detail_routes_declare_contract_metadata_and_router_boundary(
         "severity",
         "severity_reason",
     }.issubset(transceiver_properties)
+    ac_ap_properties = schema["components"]["schemas"][
+        "DeviceAcApAssociationFactsDTO"
+    ]["properties"]
+    assert {
+        "ac_id",
+        "ac_name",
+        "ip_address",
+        "model",
+        "state_display",
+        "switch_name",
+        "switch_interface",
+        "optical_severity",
+    }.isdisjoint(ac_ap_properties)
+    mr_session_properties = schema["components"]["schemas"][
+        "DeviceMrSessionAssociationFactsDTO"
+    ]["properties"]
+    assert {
+        "mr_name",
+        "phase",
+        "duration_seconds",
+        "task_id",
+    }.isdisjoint(mr_session_properties)
 
     source = inspect.getsource(device_management_router)
     for forbidden in (

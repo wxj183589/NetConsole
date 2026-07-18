@@ -888,6 +888,11 @@ class DeviceDetailQueryService:
     def _transceiver(row: dict[str, object | None]) -> DeviceTransceiverDTO:
         severity, severity_reason, _threshold_source = _optical_severity(row)
         interface_name = str(row.get("interface_name") or "")
+        public_reason = (
+            None
+            if severity == "normal"
+            else _translate_optical_reason(severity_reason)
+        )
         return DeviceTransceiverDTO(
             interface_name=interface_name,
             normalized_interface_name=normalize_interface_name(interface_name),
@@ -911,7 +916,7 @@ class DeviceDetailQueryService:
             tx_low_warning=_number(row.get("tx_low_warning")),
             tx_high_warning=_number(row.get("tx_high_warning")),
             severity=severity,
-            severity_reason=_translate_optical_reason(severity_reason),
+            severity_reason=public_reason,
             collected_at=_text(row.get("collected_at")),
         )
 
@@ -1000,12 +1005,7 @@ class DeviceDetailQueryService:
                 getattr(row, "mac", "") or getattr(row, "ip", "")
             ),
             fit_ap=DeviceAcApAssociationFactsDTO(
-                ac_id=str(getattr(row, "ac_id", "") or ""),
-                ac_name=_text(getattr(row, "ac_name", "")),
-                ip_address=_text(getattr(row, "ip", "")),
                 mac_address=_text(getattr(row, "mac", "")),
-                model=_text(getattr(row, "model", "")),
-                state_display=_text(getattr(row, "state_display", "")),
                 radio1_status=_text(getattr(row, "radio1_status", "")),
                 radio1_channel=_text(getattr(row, "radio1_channel", "")),
                 radio1_power=_text(getattr(row, "radio1_power", "")),
@@ -1013,10 +1013,7 @@ class DeviceDetailQueryService:
                 radio2_channel=_text(getattr(row, "radio2_channel", "")),
                 radio2_power=_text(getattr(row, "radio2_power", "")),
                 lldp_status=_text(getattr(row, "lldp_status", "")),
-                switch_name=_text(getattr(row, "switch_name", "")),
-                switch_interface=_text(getattr(row, "switch_interface", "")),
                 optical_status=_text(getattr(row, "optical_status", "")),
-                optical_severity=_text(getattr(row, "optical_severity", "")),
                 optical_rx_power=_number(getattr(row, "optical_rx_power", None)),
             ),
             updated_at=_text(getattr(row, "updated_at", "")),
@@ -1065,13 +1062,9 @@ class DeviceDetailQueryService:
             status=_text(getattr(row, "status", "")),
             online_mr_session=DeviceMrSessionAssociationFactsDTO(
                 site_id=str(getattr(row, "site_id", "") or site),
-                mr_name=str(getattr(row, "mr_name", "") or ""),
-                phase=_text(getattr(row, "phase", "")),
                 started_at=_text(getattr(row, "started_at", "")),
                 stopped_at=_text(getattr(row, "stopped_at", "")),
-                duration_seconds=_number(getattr(row, "duration_seconds", None)),
                 executor_kind=_text(getattr(row, "executor_kind", "")),
-                task_id=_text(getattr(row, "controller_task_id", "")),
                 has_raw_data=bool(getattr(row, "has_raw_data", False)),
                 has_parsed_data=bool(getattr(row, "has_parsed_data", False)),
                 has_package=bool(getattr(row, "has_package", False)),

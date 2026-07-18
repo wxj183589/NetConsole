@@ -17,7 +17,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain('sectionQuery.status')
     expect(source).toContain('sectionQuery.severity')
     expect(source).toContain('mapBusinessAssociation')
-    expect(source).toContain('item.fit_ap?.ac_name')
+    expect(source).toContain('item.fit_ap?.mac_address')
     expect(source).not.toContain("key: 'ac_type'")
     expect(source).not.toContain("key: 'mr_type'")
     expect(source).not.toContain("key: 'switch_type'")
@@ -59,13 +59,26 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain("'rx threshold is missing': '接收功率阈值缺失'")
     expect(source).toContain("'rx power below alarm low threshold': '接收功率低于告警低阈值'")
     expect(source).toContain('exactDisplayValueLabels[key]?.[normalizedValue]')
-    expect(source).toContain('formatEnumeratedValue(column.key, row[column.key])')
-    expect(source).toContain('formatDetailValue(field.key, field.value)')
+    expect(source).toContain('formatEnumeratedValue(column.key, row[column.key], row)')
+    expect(source).toContain('formatEnumeratedValue(column[1], row[column[1]], row)')
+    expect(source).toContain('formatDetailValue(field.key, field.value, field.context)')
+    expect(source).toContain("key === 'severity_reason' && isNormalSeverity(context?.severity)")
+    expect(source).toContain("normalizedValue === 'normal' || normalizedValue === '正常'")
     expect(source).toContain("['alarm', 'critical', 'no_light', 'no_module', 'link_abnormal', 'link_down', 'offline'].includes(severity)")
     expect(source).toContain("['warning', 'notice', 'not_collected', 'skipped'].includes(severity)")
     expect(source).toContain('color: var(--nc-danger)')
     expect(source).toContain('color: var(--nc-warning)')
     expect(source).not.toContain("['连接器', 'connector_type'], ['状态', 'status']")
+    const businessColumns = source
+      .split("business: [")[1]
+      .split('const visibleSections')[0]
+    for (const removedColumnKey of ['ac_id', 'ac_name', 'ac_ip', 'ap_model', 'ap_state', 'switch_name', 'switch_interface', 'optical_severity', 'mr_name', 'mr_phase', 'mr_duration_seconds', 'mr_task_id']) {
+      expect(businessColumns).not.toContain(`key: '${removedColumnKey}'`)
+    }
+    expect(source).toContain(':height="sectionTableHeight"')
+    expect(source).toContain("props.mode === 'page' ? 'max(320px, calc(100dvh - 390px))'")
+    expect(source).not.toContain('820px')
+    expect(source).toContain("props.mode === 'drawer' ? 560")
   })
 
   it('centralizes missing value formatting and task client lifecycle', () => {
@@ -96,5 +109,21 @@ describe('DeviceDetailPanel', () => {
     expect(transceiverContract).not.toContain('status')
     expect(transceiverContract).not.toContain('threshold_source')
     expect(source).not.toContain("{ label: '状态', key: 'status', width: 100 }")
+  })
+
+  it('收窄关联业务的前端公开类型', () => {
+    const acFacts = deviceManagementTypes
+      .split('export interface DeviceAcApAssociationFacts')[1]
+      .split('export interface DeviceMrSessionAssociationFacts')[0]
+    for (const removedField of ['ac_id', 'ac_name', 'ip_address', 'model', 'state_display', 'switch_name', 'switch_interface', 'optical_severity']) {
+      expect(acFacts).not.toMatch(new RegExp(`\\b${removedField}\\??:`))
+    }
+
+    const mrFacts = deviceManagementTypes
+      .split('export interface DeviceMrSessionAssociationFacts')[1]
+      .split('export type DeviceBusinessAssociationType')[0]
+    for (const removedField of ['mr_name', 'phase', 'duration_seconds', 'task_id']) {
+      expect(mrFacts).not.toMatch(new RegExp(`\\b${removedField}\\??:`))
+    }
   })
 })

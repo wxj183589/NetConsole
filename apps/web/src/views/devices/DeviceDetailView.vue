@@ -28,7 +28,14 @@ function backToDevices(): void {
 </template>
 
 <style scoped>
-.device-detail-page { max-width: 1720px; margin: 0 auto; }
+.device-detail-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: calc(100dvh - var(--nc-shell-header-height) - var(--nc-content-padding) - var(--nc-content-padding));
+  margin: 0;
+}
+.device-detail-page :deep(.device-detail-panel) { flex: 1; min-height: 0; }
 .page-heading { margin-bottom: 16px; }
 .page-heading h1 { margin: 5px 0 0; }
 .page-heading p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }

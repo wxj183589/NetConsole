@@ -254,12 +254,7 @@ class DeviceTracksideApAssociationFactsDTO(ApiModel):
 
 
 class DeviceAcApAssociationFactsDTO(ApiModel):
-    ac_id: str
-    ac_name: str | None = None
-    ip_address: str | None = None
     mac_address: str | None = None
-    model: str | None = None
-    state_display: str | None = None
     radio1_status: str | None = None
     radio1_channel: str | None = None
     radio1_power: str | None = None
@@ -267,22 +262,15 @@ class DeviceAcApAssociationFactsDTO(ApiModel):
     radio2_channel: str | None = None
     radio2_power: str | None = None
     lldp_status: str | None = None
-    switch_name: str | None = None
-    switch_interface: str | None = None
     optical_status: str | None = None
-    optical_severity: str | None = None
     optical_rx_power: float | None = None
 
 
 class DeviceMrSessionAssociationFactsDTO(ApiModel):
     site_id: str
-    mr_name: str
-    phase: str | None = None
     started_at: str | None = None
     stopped_at: str | None = None
-    duration_seconds: float | None = None
     executor_kind: str | None = None
-    task_id: str | None = None
     has_raw_data: bool = False
     has_parsed_data: bool = False
     has_package: bool = False

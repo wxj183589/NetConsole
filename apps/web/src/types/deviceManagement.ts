@@ -299,12 +299,7 @@ export interface DeviceTracksideApAssociationFacts {
 }
 
 export interface DeviceAcApAssociationFacts {
-  ac_id: string
-  ac_name: string | null
-  ip_address: string | null
   mac_address: string | null
-  model: string | null
-  state_display: string | null
   radio1_status: string | null
   radio1_channel: string | null
   radio1_power: string | null
@@ -312,22 +307,15 @@ export interface DeviceAcApAssociationFacts {
   radio2_channel: string | null
   radio2_power: string | null
   lldp_status: string | null
-  switch_name: string | null
-  switch_interface: string | null
   optical_status: string | null
-  optical_severity: string | null
   optical_rx_power: number | null
 }
 
 export interface DeviceMrSessionAssociationFacts {
   site_id: string
-  mr_name: string
-  phase: string | null
   started_at: string | null
   stopped_at: string | null
-  duration_seconds: number | null
   executor_kind: string | null
-  task_id: string | null
   has_raw_data: boolean
   has_parsed_data: boolean
   has_package: boolean

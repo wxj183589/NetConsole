@@ -177,18 +177,6 @@ const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, DetailC
     { label: '链路状态', key: 'trackside_link_status', minWidth: 120 },
     { label: '交换机接收功率', key: 'switch_rx_power', minWidth: 140 },
     { label: 'AP 接收功率', key: 'ap_rx_power', minWidth: 120 },
-    { label: 'AC ID', key: 'ac_id', minWidth: 160 },
-    { label: 'AC 名称', key: 'ac_name', minWidth: 150 },
-    { label: 'AC IP', key: 'ac_ip', minWidth: 140 },
-    { label: 'AP 型号', key: 'ap_model', minWidth: 140 },
-    { label: 'AP 状态', key: 'ap_state', minWidth: 120 },
-    { label: '交换机', key: 'switch_name', minWidth: 150 },
-    { label: '交换机接口', key: 'switch_interface', minWidth: 160 },
-    { label: '光模块严重性', key: 'optical_severity', minWidth: 130 },
-    { label: 'MR 会话', key: 'mr_name', minWidth: 160 },
-    { label: 'MR 阶段', key: 'mr_phase', minWidth: 120 },
-    { label: 'MR 耗时', key: 'mr_duration_seconds', minWidth: 110 },
-    { label: 'MR 任务', key: 'mr_task_id', minWidth: 180 },
     { label: '更新时间', key: 'updated_at', minWidth: 175 },
   ],
 }
@@ -206,6 +194,8 @@ const currentPage = computed(() => {
 
 const currentColumns = computed(() => selectedSection.value === 'overview' ? [] : columnsBySection[selectedSection.value])
 const currentRows = computed(() => currentPage.value?.items ?? [])
+const sectionTableHeight = computed(() => props.mode === 'page' ? 'max(320px, calc(100dvh - 390px))' : undefined)
+const sectionTableMaxHeight = computed(() => props.mode === 'drawer' ? 560 : undefined)
 const historyColumns = computed(() => {
   const kind = historyPage.value?.kind
   if (kind === 'interface') return [['采集时间', 'collected_at'], ['接口', 'interface_name'], ['链路', 'link_status'], ['协议', 'protocol_status'], ['速率', 'speed'], ['双工', 'duplex'], ['类型', 'interface_type'], ['端口状态', 'port_status'], ['PVID', 'pvid'], ['描述', 'description'], ['接口 IP', 'ip_address'], ['MAC', 'mac_address'], ['VLAN', 'vlan']]
@@ -387,16 +377,8 @@ function mapBusinessAssociation(item: DeviceBusinessAssociationRecord): DeviceDe
   if (item.association_type === 'fit_ap') {
     return {
       ...base,
-      ac_id: item.fit_ap?.ac_id,
-      ac_name: item.fit_ap?.ac_name,
-      ac_ip: item.fit_ap?.ip_address,
       ac_mac: item.fit_ap?.mac_address,
-      ap_model: item.fit_ap?.model,
-      ap_state: item.fit_ap?.state_display,
-      switch_name: item.fit_ap?.switch_name,
-      switch_interface: item.fit_ap?.switch_interface,
       optical_status: item.fit_ap?.optical_status,
-      optical_severity: item.fit_ap?.optical_severity,
       optical_rx_power: item.fit_ap?.optical_rx_power,
     }
   }
@@ -404,13 +386,9 @@ function mapBusinessAssociation(item: DeviceBusinessAssociationRecord): DeviceDe
     return {
       ...base,
       mr_site_id: item.online_mr_session?.site_id,
-      mr_name: item.online_mr_session?.mr_name,
-      mr_phase: item.online_mr_session?.phase,
       mr_started_at: item.online_mr_session?.started_at,
       mr_stopped_at: item.online_mr_session?.stopped_at,
-      mr_duration_seconds: item.online_mr_session?.duration_seconds,
       mr_executor_kind: item.online_mr_session?.executor_kind,
-      mr_task_id: item.online_mr_session?.task_id,
       mr_has_raw_data: item.online_mr_session?.has_raw_data,
       mr_has_parsed_data: item.online_mr_session?.has_parsed_data,
       mr_has_package: item.online_mr_session?.has_package,
@@ -631,6 +609,7 @@ interface DetailField {
   label: string
   key: string
   value: unknown
+  context: DeviceDetailRecord
 }
 
 const detailFieldsBySection: Partial<Record<DeviceDetailSection, Array<[string, string]>>> = {
@@ -660,10 +639,8 @@ const detailFieldsBySection: Partial<Record<DeviceDetailSection, Array<[string, 
   business: [
     ['业务类型', 'association_type'], ['关联标识', 'association_id'], ['业务对象', 'name'], ['状态', 'status'], ['本地接口', 'local_interface'],
     ['邻居地址', 'peer_address'], ['链路状态', 'trackside_link_status'], ['交换机接收功率', 'switch_rx_power'], ['AP 接收功率', 'ap_rx_power'],
-    ['AC ID', 'ac_id'], ['AC 名称', 'ac_name'], ['AC IP', 'ac_ip'], ['AC MAC', 'ac_mac'], ['AP 型号', 'ap_model'], ['AP 状态', 'ap_state'],
-    ['交换机', 'switch_name'], ['交换机接口', 'switch_interface'], ['光模块状态', 'optical_status'], ['光模块严重性', 'optical_severity'],
-    ['光模块接收功率', 'optical_rx_power'], ['MR 站点', 'mr_site_id'], ['MR 会话', 'mr_name'], ['MR 阶段', 'mr_phase'],
-    ['MR 耗时', 'mr_duration_seconds'], ['MR 任务', 'mr_task_id'], ['更新时间', 'updated_at'],
+    ['AC MAC', 'ac_mac'], ['光模块状态', 'optical_status'], ['光模块接收功率', 'optical_rx_power'],
+    ['MR 站点', 'mr_site_id'], ['更新时间', 'updated_at'],
   ],
 }
 
@@ -675,22 +652,22 @@ const selectedDetailFields = computed<DetailField[]>(() => {
     const transceiver = record.transceiver as DeviceDetailRecord | null
     const neighbors = Array.isArray(record.lldp_neighbors) ? record.lldp_neighbors : []
     return [
-      ...((detailFieldsBySection.interfaces ?? []).map(([label, key]) => ({ label, key, value: interfaceRecord[key] }))),
-      { label: '光模块型号', key: 'module_model', value: transceiver?.module_model },
-      { label: '光模块严重性', key: 'severity', value: transceiver?.severity },
-      { label: 'LLDP 邻居数', key: 'lldp_neighbor_count', value: neighbors.length },
-      { label: 'LLDP 结果截断', key: 'lldp_truncated', value: record.lldp_truncated },
-      { label: '来源', key: 'source', value: (record.source as DeviceDetailSource | undefined)?.source },
+      ...((detailFieldsBySection.interfaces ?? []).map(([label, key]) => ({ label, key, value: interfaceRecord[key], context: interfaceRecord }))),
+      { label: '光模块型号', key: 'module_model', value: transceiver?.module_model, context: transceiver ?? {} },
+      { label: '光模块严重性', key: 'severity', value: transceiver?.severity, context: transceiver ?? {} },
+      { label: 'LLDP 邻居数', key: 'lldp_neighbor_count', value: neighbors.length, context: record },
+      { label: 'LLDP 结果截断', key: 'lldp_truncated', value: record.lldp_truncated, context: record },
+      { label: '来源', key: 'source', value: (record.source as DeviceDetailSource | undefined)?.source, context: record },
     ]
   }
   const fields = detailFieldsBySection[selectedRecordSection.value] ?? []
-  return fields.map(([label, key]) => ({ label, key, value: record[key] }))
+  return fields.map(([label, key]) => ({ label, key, value: record[key], context: record }))
 })
 
-function formatDetailValue(key: string, value: unknown): string {
-  if (Array.isArray(value)) return value.length ? value.map((item) => formatEnumeratedValue(key, item)).join(', ') : '—'
+function formatDetailValue(key: string, value: unknown, context: DeviceDetailRecord): string {
+  if (Array.isArray(value)) return value.length ? value.map((item) => formatEnumeratedValue(key, item, context)).join(', ') : '—'
   if (value && typeof value === 'object') return '—'
-  return formatEnumeratedValue(key, value)
+  return formatEnumeratedValue(key, value, context)
 }
 
 function toggleConfigurationSelection(snapshotId: number, checked: boolean): void {
@@ -773,7 +750,6 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
     not_collected: '未采集',
     skipped: '已跳过',
   },
-  optical_severity: {},
   association_status: {
     matched: '已关联',
     unresolved: '未关联',
@@ -800,7 +776,6 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
   },
   task_status: {},
 }
-displayEnumLabels.optical_severity = displayEnumLabels.severity
 displayEnumLabels.task_status = displayEnumLabels.status
 
 const exactDisplayValueLabels: Record<string, Record<string, string>> = {
@@ -816,13 +791,19 @@ const exactDisplayValueLabels: Record<string, Record<string, string>> = {
   },
 }
 
-function formatEnumeratedValue(key: string, value: unknown): string {
+function formatEnumeratedValue(key: string, value: unknown, context?: DeviceDetailRecord): string {
+  if (key === 'severity_reason' && isNormalSeverity(context?.severity)) return '—'
   if (typeof value !== 'string') return formatValue(value)
   const normalizedValue = value.trim().toLowerCase()
   const exactLabel = exactDisplayValueLabels[key]?.[normalizedValue]
   if (exactLabel) return exactLabel
   const label = displayEnumLabels[key]?.[normalizedValue]
   return label ?? formatValue(value)
+}
+
+function isNormalSeverity(value: unknown): boolean {
+  const normalizedValue = String(value ?? '').trim().toLowerCase()
+  return normalizedValue === 'normal' || normalizedValue === '正常'
 }
 
 function opticalRxPowerClass(section: DeviceDetailSection, key: string, row: DeviceDetailRecord): string[] {
@@ -1004,10 +985,10 @@ function errorMessage(cause: unknown, fallback: string): string {
               </div>
               <el-alert v-if="sectionErrors[section]" :title="sectionErrors[section]" type="error" show-icon :closable="false" />
               <div class="section-metadata"><span>刷新时间：{{ formatTime(currentPage?.fetched_at) }}</span><span>来源：{{ sourceLabel(currentPage?.source) }}</span><span>任务：{{ formatValue(currentPage?.task_id) }}</span><span v-if="currentPage?.truncated">结果已截断：{{ sourceReason(currentPage?.source) }}</span></div>
-              <el-table v-loading="sectionLoading[section]" :data="currentRows" max-height="560" empty-text="暂无数据">
+              <el-table v-loading="sectionLoading[section]" :data="currentRows" :height="sectionTableHeight" :max-height="sectionTableMaxHeight" empty-text="暂无数据">
                 <el-table-column v-if="section === 'configuration'" label="选择" width="70" fixed="left"><template #default="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template></el-table-column>
                 <el-table-column v-for="column in currentColumns" :key="column.key" :prop="column.key" :label="column.label" :width="column.width" :min-width="column.minWidth" :fixed="column.fixed ? 'left' : false" show-overflow-tooltip>
-                  <template #default="{ row }"><span :class="opticalRxPowerClass(section, column.key, row)">{{ formatEnumeratedValue(column.key, row[column.key]) }}</span></template>
+                  <template #default="{ row }"><span :class="opticalRxPowerClass(section, column.key, row)">{{ formatEnumeratedValue(column.key, row[column.key], row) }}</span></template>
                 </el-table-column>
                 <el-table-column v-if="['interfaces', 'optical', 'lldp', 'configuration', 'tasks'].includes(section)" label="操作" width="220" fixed="right">
                   <template #default="{ row }">
@@ -1028,7 +1009,7 @@ function errorMessage(cause: unknown, fallback: string): string {
     <el-dialog v-model="historyVisible" :title="`历史数据 · ${formatValue(historyPage?.object_name)}`" width="min(1180px, 96vw)">
       <div v-loading="historyLoading">
         <el-table :data="historyPage?.items || []" max-height="620" empty-text="暂无历史数据">
-          <el-table-column v-for="column in historyColumns" :key="column[1]" :label="column[0]" :prop="column[1]" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ formatEnumeratedValue(column[1], row[column[1]]) }}</template></el-table-column>
+          <el-table-column v-for="column in historyColumns" :key="column[1]" :label="column[0]" :prop="column[1]" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ formatEnumeratedValue(column[1], row[column[1]], row) }}</template></el-table-column>
         </el-table>
         <el-pagination v-if="historyPage?.total" :current-page="historyPage.page" :page-size="historyPage.page_size" :total="historyPage.total" layout="total, prev, pager, next" @current-change="loadHistoryPage" @size-change="changeHistoryPageSize" />
       </div>
@@ -1037,7 +1018,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-dialog v-model="recordDetailVisible" title="详情" width="min(760px, 94vw)">
       <el-descriptions :column="1" border>
-        <el-descriptions-item v-for="field in selectedDetailFields" :key="field.label" :label="field.label">{{ formatDetailValue(field.key, field.value) }}</el-descriptions-item>
+        <el-descriptions-item v-for="field in selectedDetailFields" :key="field.label" :label="field.label">{{ formatDetailValue(field.key, field.value, field.context) }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
   </section>

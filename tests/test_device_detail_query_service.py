@@ -528,7 +528,7 @@ def test_optical_public_reason_uses_exact_chinese_mapping(
         (
             "normal",
             "RX power is above maintenance normal line",
-            "接收光功率位于维护正常线以上",
+            None,
         ),
         (
             "notice",
@@ -662,6 +662,16 @@ def test_ac_and_mr_business_associations_are_real_named_summaries(
     assert ac_page.items[0].fit_ap is not None
     assert ac_page.items[0].fit_ap.radio1_status == "up"
     assert ac_page.items[0].fit_ap.lldp_status == "matched"
+    assert {
+        "ac_id",
+        "ac_name",
+        "ip_address",
+        "model",
+        "state_display",
+        "switch_name",
+        "switch_interface",
+        "optical_severity",
+    }.isdisjoint(ac_page.items[0].fit_ap.model_dump())
     assert mr_page.source.available is True
     assert mr_page.items[0].association_type == "online_mr_session"
     assert mr_page.items[0].online_mr_session is not None
@@ -669,6 +679,12 @@ def test_ac_and_mr_business_associations_are_real_named_summaries(
     assert mr_page.items[0].online_mr_session.rssi_available is True
     assert mr_page.items[0].online_mr_session.fping_available is True
     assert mr_page.items[0].online_mr_session.iperf_available is True
+    assert {
+        "mr_name",
+        "phase",
+        "duration_seconds",
+        "task_id",
+    }.isdisjoint(mr_page.items[0].online_mr_session.model_dump())
     assert "attributes" not in ac_page.model_dump_json()
     assert "session_path" not in mr_page.model_dump_json()
 

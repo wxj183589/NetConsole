@@ -188,12 +188,13 @@ describe('DeviceDetailPanel mounted interactions', () => {
       if (section === 'optical') {
         return Promise.resolve({
           items: [
-            { interface_name: 'GE1/0/1', severity: 'normal', severity_reason: 'Optical module is not present', rx_power: -8 },
-            { interface_name: 'GE1/0/2', severity: 'notice', severity_reason: 'RX threshold is missing', rx_power: -18 },
+            { interface_name: 'GE1/0/1', severity: 'normal', severity_reason: 'RX power is above maintenance normal line', rx_power: -8 },
+            { interface_name: 'GE1/0/2', severity: 'notice', severity_reason: 'Optical module is not present', rx_power: -18 },
             { interface_name: 'GE1/0/3', severity: 'alarm', severity_reason: 'RX power below alarm low threshold', rx_power: -28 },
             { interface_name: 'GE1/0/4', severity: 'critical', severity_reason: 'Vendor raw reason', rx_power: -30 },
+            { interface_name: 'GE1/0/5', severity: '正常', severity_reason: 'Port is DOWN', rx_power: -7 },
           ],
-          total: 4, page: 1, page_size: 50, total_pages: 1,
+          total: 5, page: 1, page_size: 50, total_pages: 1,
           source: { available: true, source: 'snapshot', collected_at: '', reason: null },
         })
       }
@@ -227,16 +228,21 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(wrapper.text()).toContain('告警')
     expect(wrapper.text()).toContain('严重告警')
     expect(wrapper.text()).toContain('未检测到光模块')
-    expect(wrapper.text()).toContain('接收功率阈值缺失')
     expect(wrapper.text()).toContain('接收功率低于告警低阈值')
     expect(wrapper.text()).toContain('Vendor raw reason')
+    expect(wrapper.text()).not.toContain('接收功率高于维护正常线')
+    expect(wrapper.text()).not.toContain('RX power is above maintenance normal line')
+    expect(wrapper.text()).not.toContain('端口已断开')
+    expect(wrapper.text()).not.toContain('Port is DOWN')
     const rxPowerCells = wrapper.findAll('.optical-rx-power')
-    expect(rxPowerCells).toHaveLength(4)
+    expect(rxPowerCells).toHaveLength(5)
     expect(rxPowerCells[0].classes()).not.toContain('is-warning')
     expect(rxPowerCells[0].classes()).not.toContain('is-danger')
     expect(rxPowerCells[1].classes()).toContain('is-warning')
     expect(rxPowerCells[2].classes()).toContain('is-danger')
     expect(rxPowerCells[3].classes()).toContain('is-danger')
+    expect(rxPowerCells[4].classes()).not.toContain('is-warning')
+    expect(rxPowerCells[4].classes()).not.toContain('is-danger')
 
     wrapper.unmount()
   })
