@@ -10,6 +10,8 @@ import {
 import { isFeatureEnabled, loadWebFeatures } from '../../features'
 import { t } from '../../i18n/runtime'
 import { getPlatformAdapter } from '../../platform/runtime'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { applySystemAppearance } from '../../settings/appearance'
 import type { FeatureSetting, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 
@@ -31,6 +33,14 @@ const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== 
 const featuresDirty = computed(() => JSON.stringify(features.value) !== featureBaseline.value)
 const anyDirty = computed(() => dirty.value || featuresDirty.value)
 const featureSwitchAvailable = computed(() => isFeatureEnabled('web.feature_switch'))
+const featureColumns: NcTableColumn<FeatureSetting>[] = [
+  { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description' },
+  { key: 'feature_id', label: 'ID', valueType: 'description', alignmentReason: 'code' },
+  { key: 'visible', label: '显示', valueType: 'status' },
+  { key: 'enabled', label: '启用', valueType: 'status' },
+  { key: 'client_package', label: '客户包', valueType: 'status' },
+  { key: 'internal_only', label: '内部', valueType: 'status' },
+]
 
 onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
 onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); if (dirty.value) restoreAppearance() })
@@ -218,7 +228,12 @@ function message(cause: unknown, fallback: string): string { return cause instan
     </section>
 
     <section v-if="featureSwitchAvailable" class="settings-band"><div class="section-heading"><h2>{{ t('settings.features', '功能开关') }}</h2><div><el-tag v-if="featurePreview" type="warning">客户配置预览中</el-tag><el-button data-testid="preview-features" @click="previewFeatures">影响预览</el-button><el-button data-testid="restore-features" @click="restoreFeatures">退出预览/恢复</el-button></div></div>
-      <el-table :data="features" max-height="520"><el-table-column prop="title" label="功能" min-width="260"/><el-table-column prop="feature_id" label="ID" min-width="240"/><el-table-column label="显示" width="90"><template #default="{row}"><el-checkbox v-model="row.visible" :data-testid="`feature-visible-${row.feature_id}`"/></template></el-table-column><el-table-column label="启用" width="90"><template #default="{row}"><el-checkbox v-model="row.enabled"/></template></el-table-column><el-table-column label="客户包" width="100"><template #default="{row}"><el-checkbox v-model="row.client_package"/></template></el-table-column><el-table-column label="内部" width="90"><template #default="{row}"><el-checkbox v-model="row.internal_only"/></template></el-table-column></el-table>
+      <NcDataTable :data="features" :columns="featureColumns" table-id="system-feature-settings" route-key="/system-settings" max-height="520">
+        <template #cell-visible="{ row }"><el-checkbox v-model="row.visible" :data-testid="`feature-visible-${row.feature_id}`" /></template>
+        <template #cell-enabled="{ row }"><el-checkbox v-model="row.enabled" /></template>
+        <template #cell-client_package="{ row }"><el-checkbox v-model="row.client_package" /></template>
+        <template #cell-internal_only="{ row }"><el-checkbox v-model="row.internal_only" /></template>
+      </NcDataTable>
     </section>
   </section>
 </template>

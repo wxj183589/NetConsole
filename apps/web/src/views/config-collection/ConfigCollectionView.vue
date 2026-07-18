@@ -34,6 +34,8 @@ import type {
   ConfigTaskStatus,
 } from '../../types/configCollection'
 import { downloadBackendResource } from '../../platform/runtime'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   nextConfigDiffChangeIndex,
   parseConfigDiffRows,
@@ -84,6 +86,19 @@ const filteredDiffRows = computed(() => {
   return status ? resultDiffRows.value.filter((row) => row.status === status) : resultDiffRows.value
 })
 const diffChangeCount = computed(() => filteredDiffRows.value.filter((row) => row.status !== '=').length)
+const deviceColumns: NcTableColumn<ConfigDevice>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false },
+  { key: 'device', label: '设备', valueType: 'name', measureValue: (row) => `${row.name || '—'} ${row.system_name || '—'}` },
+  { key: 'device_type', label: '类型', valueType: 'text' },
+  { key: 'station', label: '归属站点', valueType: 'text' },
+]
+const snapshotColumns: NcTableColumn<ConfigSnapshot>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false },
+  { key: 'type', label: '类型', valueType: 'status', cellKind: 'tag' },
+  { key: 'timestamp', label: '采集时间', valueType: 'datetime', displayValue: (row) => formatTime(row.timestamp) },
+  { key: 'size_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['设为左侧', '设为右侧', '查看', '下载'] },
+]
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -566,12 +581,19 @@ function formatBytes(value: number | null): string {
     <div class="main-grid">
       <div class="content-card device-card">
         <div class="card-heading"><div><h2>设备选择</h2><p>共 {{ devicePage.total }} 台 H3C 设备</p></div><div class="heading-actions"><el-button type="primary" :disabled="!selectedDevices.length || hasActiveTasks || !isFeatureEnabled('web.config_collection_fetch')" @click="collectSelected">采集 running / saved</el-button><el-button :disabled="!selectedDevices.length || hasActiveTasks || !isFeatureEnabled('web.config_collection_save_force')" @click="saveSelected">保存配置</el-button><el-button :disabled="selectedDevices.length !== 2 || hasActiveTasks || !isFeatureEnabled('web.config_collection_diff')" @click="compareDevices">比较两台设备</el-button></div></div>
-        <el-table v-loading="loading" :data="devicePage.items" row-key="id" stripe height="calc(100vh - 430px)" @row-click="selectDevice" @selection-change="selectedDevices = $event">
-          <el-table-column type="selection" width="48" />
-          <el-table-column label="设备" min-width="170"><template #default="{ row }"><strong>{{ row.name || '--' }}</strong><small>{{ row.system_name || '--' }}</small></template></el-table-column>
-          <el-table-column prop="device_type" label="类型" width="92" />
-          <el-table-column prop="station" label="归属站点" min-width="120" show-overflow-tooltip />
-        </el-table>
+        <NcDataTable
+          v-loading="loading"
+          :data="devicePage.items"
+          :columns="deviceColumns"
+          table-id="config-devices"
+          route-key="/config-collection"
+          row-key="id"
+          height="calc(100vh - 430px)"
+          @row-click="selectDevice"
+          @selection-change="selectedDevices = $event"
+        >
+          <template #cell-device="{ row }"><strong>{{ row.name || '—' }}</strong><small>{{ row.system_name || '—' }}</small></template>
+        </NcDataTable>
         <div class="pagination-row">
           <span>第 {{ devicePage.page }} / {{ devicePage.total_pages }} 页</span>
            <el-pagination :current-page="devicePage.page" :page-size="devicePage.page_size" :total="devicePage.total" layout="prev, next" @current-change="changePage" />
@@ -585,13 +607,19 @@ function formatBytes(value: number | null): string {
           <div class="snapshot-choice" data-testid="right-snapshot-choice"><span>右侧快照</span><strong>{{ snapshotChoiceLabel(rightSnapshotChoice) }}</strong><el-button link :disabled="!rightSnapshotChoice" @click="clearSnapshotChoice('right')">清除</el-button></div>
           <div class="comparison-actions"><el-button type="primary" :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较左右快照</el-button><el-button :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedDiff">导出左右差异</el-button></div>
         </div>
-        <el-table v-loading="snapshotLoading" :data="snapshots" row-key="id" stripe height="calc(100vh - 430px)" @selection-change="selectedSnapshots = $event">
-          <el-table-column type="selection" width="48" />
-          <el-table-column prop="type" label="类型" width="100"><template #default="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template></el-table-column>
-          <el-table-column label="采集时间" min-width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
-          <el-table-column label="大小" width="100"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column label="操作" width="260" fixed="right"><template #default="{ row }"><el-button link @click.stop="chooseSnapshot(row, 'left')">设为左侧</el-button><el-button link @click.stop="chooseSnapshot(row, 'right')">设为右侧</el-button><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template></el-table-column>
-        </el-table>
+        <NcDataTable
+          v-loading="snapshotLoading"
+          :data="snapshots"
+          :columns="snapshotColumns"
+          table-id="config-snapshots"
+          route-key="/config-collection"
+          row-key="id"
+          height="calc(100vh - 430px)"
+          @selection-change="selectedSnapshots = $event"
+        >
+          <template #cell-type="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template>
+          <template #cell-actions="{ row }"><el-button link @click.stop="chooseSnapshot(row, 'left')">设为左侧</el-button><el-button link @click.stop="chooseSnapshot(row, 'right')">设为右侧</el-button><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template>
+        </NcDataTable>
       </div>
     </div>
 

@@ -4,6 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { isFeatureEnabled } from '../../features'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   cancelMaintenanceTask,
   clearLogs,
@@ -50,6 +52,31 @@ const about = ref<AboutInfo>()
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 
 const taskBusy = computed(() => Boolean(currentTask.value && !terminalStates.has(currentTask.value.status)))
+const logColumns: NcTableColumn<LogEntry>[] = [
+  { key: 'time', label: '时间', valueType: 'datetime', fixed: 'left' },
+  { key: 'display_level', label: '级别', valueType: 'status' },
+  { key: 'display_event', label: '事件', valueType: 'description', alignmentReason: 'description' },
+  { key: 'display_detail', label: '详情', valueType: 'description', alignmentReason: 'long-text' },
+  { key: 'actions', label: '复制', valueType: 'actions', cellKind: 'actions', actionLabels: ['整行', '原始事件', '原始详情'] },
+]
+const cleanupColumns: NcTableColumn<CleanupItem>[] = [
+  { key: 'selected', label: '选择', valueType: 'selection', hideable: false },
+  { key: 'title', label: '类别', valueType: 'name' },
+  { key: 'description', label: '范围', valueType: 'description', alignmentReason: 'description' },
+  { key: 'retention_policy', label: '策略', valueType: 'text' },
+  { key: 'file_count', label: '文件数', valueType: 'number' },
+  { key: 'total_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.total_bytes) },
+  { key: 'status', label: '状态', valueType: 'status' },
+]
+const componentColumns: NcTableColumn<OpenSourceComponent>[] = [
+  { key: 'name', label: '组件名称', valueType: 'name', fixed: 'left' },
+  { key: 'version', label: '版本', valueType: 'text' },
+  { key: 'license', label: '许可证', valueType: 'text' },
+  { key: 'purpose', label: '用途', valueType: 'description', alignmentReason: 'description' },
+  { key: 'homepage', label: '项目地址', valueType: 'description', alignmentReason: 'path' },
+  { key: 'note', label: '备注', valueType: 'description', alignmentReason: 'description' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['复制', '打开'] },
+]
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : '操作失败'
@@ -323,20 +350,18 @@ onBeforeUnmount(() => {
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('current')">导出当前页</el-button>
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('all')">导出全部筛选结果</el-button>
         </div>
-        <el-table v-loading="loading" :data="logs" height="520" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
-          <el-table-column prop="time" label="时间" width="170" fixed />
-          <el-table-column prop="display_level" label="级别" width="90" />
-          <el-table-column prop="display_event" label="事件" min-width="210" show-overflow-tooltip />
-          <el-table-column prop="display_detail" label="详情" min-width="360" show-overflow-tooltip />
-          <el-table-column label="复制" width="250" fixed="right"><template #default="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template></el-table-column>
-        </el-table>
+        <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="520" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
+          <template #cell-actions="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template>
+        </NcDataTable>
         <div class="pagination"><span>共 {{ total }} 条</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next" :total="total" @change="loadLogs()" /></div>
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>
       </el-tab-pane>
 
       <el-tab-pane label="安全清理" name="cleanup">
         <div class="toolbar"><span>保留最近</span><el-input-number v-model="retentionDays" :min="1" :max="365" controls-position="right" /><span>天</span><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="scanCleanup">扫描白名单</el-button><el-button type="danger" plain :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup') || !selectedCleanupItemIds.length" @click="confirmCleanup">清理所选项目</el-button><el-button :disabled="!isFeatureEnabled('desktop.native_bridge')" @click="openDirectory('cache')">打开缓存目录</el-button></div>
-        <el-table :data="cleanupItems" empty-text="请先扫描白名单"><el-table-column label="选择" width="72"><template #default="{ row }"><el-checkbox :model-value="selectedCleanupItemIds.includes(row.item_id)" :disabled="row.file_count === 0" @change="setCleanupSelected(row.item_id, $event)" /></template></el-table-column><el-table-column prop="title" label="类别" width="180" /><el-table-column prop="description" label="范围" min-width="280" /><el-table-column prop="retention_policy" label="策略" width="140" /><el-table-column prop="file_count" label="文件数" width="100" /><el-table-column label="大小" width="120"><template #default="{ row }">{{ formatBytes(row.total_bytes) }}</template></el-table-column><el-table-column prop="status" label="状态" width="110" /></el-table>
+        <NcDataTable :data="cleanupItems" :columns="cleanupColumns" table-id="system-cleanup-items" route-key="/logs" empty-text="请先扫描白名单">
+          <template #cell-selected="{ row }"><el-checkbox :model-value="selectedCleanupItemIds.includes(row.item_id)" :disabled="row.file_count === 0" @change="setCleanupSelected(row.item_id, $event)" /></template>
+        </NcDataTable>
         <p v-if="currentTask?.action === 'cleanup_clean'" class="hint">已处理 {{ currentTask.processed_files }} 项，已删除 {{ currentTask.deleted_files }} 项，失败 {{ currentTask.failed_count }} 项，释放 {{ formatBytes(currentTask.freed_bytes) }}。</p>
       </el-tab-pane>
 
@@ -346,7 +371,9 @@ onBeforeUnmount(() => {
 
       <el-tab-pane label="开源许可" name="open-source">
         <div class="toolbar"><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.open_source')" @click="scanOpenSource">刷新组件列表</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('txt')">导出 TXT</el-button><el-button :disabled="taskBusy || !isFeatureEnabled('system.open_source')" @click="runOpenSourceExport('xlsx')">导出 XLSX</el-button></div>
-        <el-table :data="components" height="520" empty-text="请先扫描运行依赖"><el-table-column prop="name" label="组件名称" min-width="150" fixed /><el-table-column prop="version" label="版本" width="120" /><el-table-column prop="license" label="许可证" min-width="160" /><el-table-column prop="purpose" label="用途" min-width="180" /><el-table-column prop="homepage" label="项目地址" min-width="240" show-overflow-tooltip /><el-table-column prop="note" label="备注" min-width="180" /><el-table-column label="操作" width="130" fixed="right"><template #default="{ row, $index }"><el-button link @click="copyText(componentText(row), '组件信息已复制')">复制</el-button><el-button link :disabled="!row.homepage" @click="openComponentLink($index)">打开</el-button></template></el-table-column></el-table>
+        <NcDataTable :data="components" :columns="componentColumns" table-id="system-open-source-components" route-key="/logs" height="520" empty-text="请先扫描运行依赖">
+          <template #cell-actions="{ row, $index }"><el-button link @click="copyText(componentText(row), '组件信息已复制')">复制</el-button><el-button link :disabled="!row.homepage" @click="openComponentLink($index)">打开</el-button></template>
+        </NcDataTable>
       </el-tab-pane>
 
       <el-tab-pane label="关于" name="about">

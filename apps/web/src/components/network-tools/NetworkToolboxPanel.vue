@@ -18,6 +18,8 @@ import {
   summarizeRoutes,
 } from '../../api/networkTools'
 import { downloadBackendResource } from '../../platform/runtime'
+import NcDataTable from '../table/NcDataTable.vue'
+import type { NcTableColumn } from '../table/NcTableColumn'
 import { useTaskStore } from '../../stores/tasks'
 import type { NetworkAdapter, NetworkProbeEnvironment, NetworkToolTask, ToolboxResult } from '../../types/networkTools'
 import type { TaskItem } from '../../types/task'
@@ -71,6 +73,22 @@ const selectedProbeHasResults = computed(() => selectedProbeTerminal.value && re
 const selectedExportCompleted = computed(() => selectedTaskSummary.value?.status === 'COMPLETED' && selectedTaskSummary.value.type === 'network_tools.toolbox_export')
 const subnetGrid = computed(() => taskKind.value === 'subnet_ping' ? buildSubnetStatusGrid(probe.target, probe.usable_only, taskResults.value) : [])
 const scanEngine = computed(() => String(selectedTask.value?.result?.engine || probeEnvironment.value.scan_engine))
+const calculatorResultColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => rowKeys.value.map((key) => ({
+  key,
+  label: key,
+  valueType: 'text',
+})))
+const taskColumns: NcTableColumn<TaskItem>[] = [
+  { key: 'name', label: '任务', valueType: 'name' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'progress', label: '进度', valueType: 'percentage', displayValue: (row) => `${row.progress}%` },
+  { key: 'message', label: '消息', valueType: 'description', alignmentReason: 'description' },
+]
+const probeResultColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => Object.keys(resultRows.value[0] ?? {}).map((key) => ({
+  key,
+  label: key,
+  valueType: 'text',
+})))
 
 onMounted(async () => {
   await Promise.all([taskStore.refresh(), loadProbeEnvironment()])
@@ -320,9 +338,14 @@ function clearTaskResults(): void {
       <el-button type="primary" :loading="calculating" @click="calculate">计算</el-button>
     </div>
     <el-alert v-if="result.errors.length" :title="result.errors.join('；')" type="error" show-icon :closable="false" />
-    <el-table v-if="result.rows.length" :data="result.rows" stripe max-height="360">
-      <el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" />
-    </el-table>
+    <NcDataTable
+      v-if="result.rows.length"
+      :data="result.rows"
+      :columns="calculatorResultColumns"
+      table-id="network-toolbox-calculator-results"
+      route-key="/network-tools"
+      max-height="360"
+    />
     <el-descriptions v-if="Object.keys(result.summary).length" :column="3" border class="summary">
       <el-descriptions-item v-for="([key, value]) in Object.entries(result.summary)" :key="key" :label="key">{{ value }}</el-descriptions-item>
     </el-descriptions>
@@ -340,13 +363,11 @@ function clearTaskResults(): void {
       <el-button type="primary" data-testid="start-probe" @click="startProbe">开始检测</el-button>
     </el-form>
     <el-divider />
-    <el-table v-loading="loadingTasks" :data="tasks" empty-text="暂无网络工具任务" stripe @row-click="selectTask">
-      <el-table-column prop="name" label="任务" min-width="140" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="100"><template #default="{ row }">{{ `${row.progress}%` }}</template></el-table-column><el-table-column prop="message" label="消息" min-width="220" />
-    </el-table>
+    <NcDataTable v-loading="loadingTasks" :data="tasks" :columns="taskColumns" table-id="network-toolbox-tasks" route-key="/network-tools" empty-text="暂无网络工具任务" @row-click="selectTask" />
     <div v-if="selectedTaskSummary" class="task-detail"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="taskRunning" link type="danger" data-testid="stop-task" @click="cancelTask">停止</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-csv" @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-xlsx" @click="exportTask('xlsx')">导出 XLSX</el-button><el-button v-if="resultRows.length" link @click="clearTaskResults">清空显示</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
     <div v-if="subnetGrid.length" class="subnet-grid" data-testid="subnet-status-grid"><button v-for="host in subnetGrid" :key="host.ip" type="button" class="subnet-host" :class="`is-${host.status}`" :disabled="!host.in_range" :title="host.ip" @click="selectSubnetResult(host.detail)">{{ host.host_number }}</button></div>
     <el-descriptions v-if="selectedSubnetResult" :column="3" border class="subnet-detail" data-testid="subnet-detail"><el-descriptions-item v-for="([key, value]) in Object.entries(selectedSubnetResult)" :key="key" :label="key">{{ value }}</el-descriptions-item></el-descriptions>
-    <el-table v-if="resultRows.length" :data="resultRows" stripe max-height="360" @row-click="selectSubnetResult"><el-table-column v-for="key in Object.keys(resultRows[0])" :key="key" :prop="key" :label="key" min-width="140" /></el-table>
+    <NcDataTable v-if="resultRows.length" :data="resultRows" :columns="probeResultColumns" table-id="network-toolbox-probe-results" route-key="/network-tools" max-height="360" @row-click="selectSubnetResult" />
     <el-pagination v-if="resultTotal > resultPageSize" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
   </el-card>
 </template>

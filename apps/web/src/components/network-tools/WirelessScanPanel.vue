@@ -17,6 +17,8 @@ import {
   startWirelessScan,
 } from '../../api/networkTools'
 import { downloadBackendResource } from '../../platform/runtime'
+import NcDataTable from '../table/NcDataTable.vue'
+import type { NcTableColumn } from '../table/NcTableColumn'
 import { useTaskStore } from '../../stores/tasks'
 import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun, WirelessScanRunDetail } from '../../types/networkTools'
 import type { TaskItem } from '../../types/task'
@@ -77,6 +79,24 @@ const rowKeys = computed(() => {
   for (const row of results.value) for (const key of Object.keys(row)) if (!keys.includes(key) && !key.endsWith('_json')) keys.push(key)
   return keys
 })
+const taskColumns: NcTableColumn<TaskItem>[] = [
+  { key: 'name', label: '任务', valueType: 'name' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'progress', label: '进度', valueType: 'percentage', displayValue: (row) => `${row.progress}%` },
+  { key: 'message', label: '消息', valueType: 'description', alignmentReason: 'description' },
+]
+const runColumns: NcTableColumn<WirelessScanRun>[] = [
+  { key: 'started_at', label: '扫描时间', valueType: 'datetime' },
+  { key: 'project_name', label: '项目', valueType: 'name' },
+  { key: 'adapter_name', label: '无线网卡', valueType: 'name' },
+  { key: 'network_count', label: '结果数', valueType: 'number' },
+  { key: 'status', label: '状态', valueType: 'status' },
+]
+const resultColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => rowKeys.value.map((key) => ({
+  key,
+  label: key,
+  valueType: 'text',
+})))
 
 onMounted(async () => {
   await Promise.all([refresh(), taskStore.refresh()])
@@ -376,22 +396,18 @@ function showDetail(row: Record<string, unknown>): void {
     </el-collapse>
 
     <el-divider content-position="left">后台任务</el-divider>
-    <el-table :data="tasks" empty-text="暂无无线扫描任务" stripe max-height="260" @row-click="selectTask">
-      <el-table-column prop="name" label="任务" min-width="180" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="90"><template #default="{ row }">{{ row.progress }}%</template></el-table-column><el-table-column prop="message" label="消息" min-width="220" />
-    </el-table>
+    <NcDataTable :data="tasks" :columns="taskColumns" table-id="wireless-scan-tasks" route-key="/network-tools" empty-text="暂无无线扫描任务" max-height="260" @row-click="selectTask" />
     <div v-if="selectedTaskSummary" class="actions"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="selectedTaskRunning" link type="danger" @click="cancelSelectedTask">停止任务</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
 
     <el-divider content-position="left">扫描历史与结果</el-divider>
-    <el-table v-loading="loading" :data="runs" empty-text="暂无无线扫描记录" stripe @row-click="selectRun">
-      <el-table-column prop="started_at" label="扫描时间" min-width="170" /><el-table-column prop="project_name" label="项目" min-width="140" /><el-table-column prop="adapter_name" label="无线网卡" min-width="160" /><el-table-column prop="network_count" label="结果数" width="90" /><el-table-column prop="status" label="状态" width="100" />
-    </el-table>
+    <NcDataTable v-loading="loading" :data="runs" :columns="runColumns" table-id="wireless-scan-runs" route-key="/network-tools" empty-text="暂无无线扫描记录" @row-click="selectRun" />
     <el-pagination v-if="runTotal > runPageSize" v-model:current-page="runPage" :total="runTotal" :page-size="runPageSize" layout="prev, pager, next, total" @current-change="changeRunPage" />
     <div class="actions"><el-button v-if="runs.length" link type="primary" @click="exportRun('csv')">导出 CSV</el-button><el-button v-if="runs.length" link type="primary" @click="exportRun('xlsx')">导出 XLSX</el-button></div>
 
     <el-tabs v-if="selectedRun" class="result-tabs">
       <el-tab-pane label="扫描结果">
         <div class="filters"><el-checkbox v-model="form.only_trackside">仅轨旁 AP</el-checkbox><el-select v-model="form.band" clearable placeholder="全部频段"><el-option label="2.4G" value="2.4G" /><el-option label="5G" value="5G" /><el-option label="6G" value="6G" /></el-select><el-select v-model="form.radio" clearable placeholder="全部 Radio"><el-option v-for="radio in ['1', '2', '3']" :key="radio" :label="radio" :value="radio" /></el-select><el-input v-model="form.search" clearable placeholder="SSID、BSSID、AP、车站或区间" @keyup.enter="applyResultFilters" /><el-button @click="applyResultFilters">筛选</el-button></div>
-        <el-table :data="results" stripe max-height="520" @row-dblclick="showDetail"><el-table-column v-for="key in rowKeys" :key="key" :prop="key" :label="key" min-width="140" show-overflow-tooltip /></el-table>
+        <NcDataTable :data="results" :columns="resultColumns" table-id="wireless-scan-results" route-key="/network-tools" max-height="520" @row-dblclick="showDetail" />
         <el-pagination v-model:current-page="resultPage" v-model:page-size="resultPageSize" :total="resultTotal" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next, total" @current-change="changeResultPage" @size-change="changeResultPageSize" />
       </el-tab-pane>
       <el-tab-pane label="Raw"><el-input :model-value="runDetail?.raw_output || ''" type="textarea" :rows="18" readonly /></el-tab-pane>

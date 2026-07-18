@@ -12,6 +12,8 @@ import {
   startCommandReferenceExport,
 } from '../../api/commandReference'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { CommandReference, CommandReferenceExportTask, CommandReferencePage } from '../../types/commandReference'
 import { createCommandReferenceTranslator } from './commandReferenceI18n'
 
@@ -51,6 +53,17 @@ const filterFields = computed(() => [
   ['category', t('category'), page.value?.filters.categories],
   ['risk_level', t('riskLevel'), page.value?.filters.risk_levels],
 ] as const)
+const commandColumns = computed<NcTableColumn<CommandReference>[]>(() => [
+  { key: 'category', label: t('category'), valueType: 'text' },
+  { key: 'command_template', label: t('command'), valueType: 'description', alignmentReason: 'code' },
+  { key: 'purpose', label: t('purpose'), valueType: 'description', alignmentReason: 'description' },
+  { key: 'module', label: t('module'), valueType: 'text' },
+  { key: 'pre_commands', label: t('prerequisites'), valueType: 'description', alignmentReason: 'code', displayValue: (row) => row.pre_commands.join(', ') || t('none') },
+  { key: 'device_scope', label: t('deviceScope'), valueType: 'text' },
+  { key: 'vendor', label: t('vendor'), valueType: 'text' },
+  { key: 'risk_level', label: t('riskLevel'), valueType: 'status', displayValue: (row) => riskText(row.risk_level) },
+  { key: 'notes', label: t('notes'), valueType: 'description', alignmentReason: 'description' },
+])
 
 watch(() => filters.query, scheduleSearch)
 
@@ -297,13 +310,15 @@ onUnmounted(() => {
       <el-empty v-if="!loading && !error && !page?.items.length" :description="t('empty')" />
       <template v-else-if="page?.items.length">
         <el-card shadow="never" class="table-card">
-          <el-table :data="page.items" highlight-current-row height="100%" @current-change="selected = $event">
-            <el-table-column prop="category" :label="t('category')" width="140" /><el-table-column prop="command_template" :label="t('command')" min-width="260" show-overflow-tooltip />
-            <el-table-column prop="purpose" :label="t('purpose')" min-width="220" show-overflow-tooltip /><el-table-column prop="module" :label="t('module')" width="160" />
-            <el-table-column prop="pre_commands" :label="t('prerequisites')" min-width="180"><template #default="scope">{{ scope.row.pre_commands.join(', ') || t('none') }}</template></el-table-column>
-            <el-table-column prop="device_scope" :label="t('deviceScope')" width="140" /><el-table-column prop="vendor" :label="t('vendor')" width="110" />
-            <el-table-column prop="risk_level" :label="t('riskLevel')" width="120"><template #default="scope">{{ riskText(scope.row.risk_level) }}</template></el-table-column><el-table-column prop="notes" :label="t('notes')" min-width="220" show-overflow-tooltip />
-          </el-table>
+          <NcDataTable
+            :data="page.items"
+            :columns="commandColumns"
+            table-id="command-reference-list"
+            route-key="/command-reference"
+            highlight-current-row
+            height="100%"
+            @current-change="selected = $event"
+          />
         </el-card>
         <el-card shadow="never" class="detail-card"><template #header>{{ t('details') }}</template>
           <el-descriptions v-if="selected" :column="1" border>

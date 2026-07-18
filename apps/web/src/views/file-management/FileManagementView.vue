@@ -22,6 +22,8 @@ import {
 } from '../../api/fileManagement'
 import { isFeatureEnabled } from '../../features'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type {
   FileConnection,
   FileDownloadTask,
@@ -84,6 +86,33 @@ const filteredDevices = computed(() => {
   })
 })
 const batchSummaries = computed(() => summarizeDownloadBatches(tasks.value).slice(0, 5))
+const localFileColumns: NcTableColumn<LocalFileEntry>[] = [
+  { key: 'name', label: '名称', valueType: 'name', align: 'left', alignmentReason: 'long-text' },
+  { key: 'type', label: '类型', valueType: 'text', displayValue: (row) => row.is_dir ? '目录' : row.file_type },
+  { key: 'size_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'modified_at', label: '修改时间', valueType: 'datetime' },
+]
+const remoteFileColumns: NcTableColumn<RemoteFileEntry>[] = [
+  {
+    key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false,
+    columnAttrs: { selectable: (row: RemoteFileEntry) => !row.is_dir && row.downloadable },
+  },
+  { key: 'name', label: '名称', valueType: 'name', align: 'left', alignmentReason: 'long-text' },
+  { key: 'category', label: '分类', valueType: 'text' },
+  { key: 'size_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'modified_at', label: '修改时间', valueType: 'datetime' },
+]
+const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
+  {
+    key: 'file', label: '文件', valueType: 'description', alignmentReason: 'long-text',
+    measureValue: (row) => `${row.remote_name || row.result?.name || row.task_id} ${row.device_name || ''}`,
+  },
+  { key: 'batch', label: '批次', valueType: 'text', displayValue: (row) => row.batch_id ? row.batch_id.slice(0, 10) : '—' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'progress', label: '进度', valueType: 'percentage', measureValue: (row) => `${row.progress}% ${formatBytes(row.downloaded_bytes)} / ${formatBytes(row.total_bytes)}` },
+  { key: 'message', label: '信息', valueType: 'description', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '保存', '打开', '所在目录'] },
+]
 
 function openTaskWindow(): void {
   if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'files' })
@@ -450,12 +479,16 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button v-if="isFeatureEnabled('web.file_management_local_write')" :disabled="!localPage" @click="createDirectory">{{ t('newDirectory') }}</el-button>
           <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :disabled="!localPage" @click="prepareLocalOpen">{{ t('openCurrent') }}</el-button>
         </div>
-        <el-table :data="localPage?.items || []" border stripe height="430" empty-text="当前目录为空" v-loading="localLoading" @row-dblclick="openLocal">
-          <el-table-column prop="name" label="名称" min-width="220" show-overflow-tooltip />
-          <el-table-column label="类型" width="90"><template #default="{ row }">{{ row.is_dir ? '目录' : row.file_type }}</template></el-table-column>
-          <el-table-column label="大小" width="105"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column prop="modified_at" label="修改时间" width="170" />
-        </el-table>
+        <NcDataTable
+          v-loading="localLoading"
+          :data="localPage?.items || []"
+          :columns="localFileColumns"
+          table-id="file-local-entries"
+          route-key="/file-management"
+          height="430"
+          empty-text="当前目录为空"
+          @row-dblclick="openLocal"
+        />
         <el-pagination
           v-if="localPage && localPage.total > localPage.limit"
           v-model:current-page="localPageNumber"
@@ -477,17 +510,12 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button :disabled="!connection" @click="selectAllRemote(true)">{{ t('meshLogs') }}</el-button>
           <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">{{ t('downloadSelected') }}（{{ remoteSelected.length }}）</el-button>
         </div>
-        <el-table
+        <NcDataTable
           ref="remoteTable" :data="remotePage?.items || []" border stripe height="430" row-key="entry_id"
+          :columns="remoteFileColumns" table-id="file-remote-entries" route-key="/file-management"
           empty-text="暂无远程文件或尚未连接" v-loading="remoteLoading"
           @selection-change="selectRemote" @row-dblclick="openRemote"
-        >
-          <el-table-column type="selection" width="46" :selectable="(row: RemoteFileEntry) => !row.is_dir && row.downloadable" />
-          <el-table-column prop="name" label="名称" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="category" label="分类" width="90" />
-          <el-table-column label="大小" width="105"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-          <el-table-column prop="modified_at" label="修改时间" width="170" />
-        </el-table>
+        />
         <el-pagination
           v-if="remotePage && remotePage.total > remotePage.limit"
           v-model:current-page="remotePageNumber"
@@ -514,13 +542,11 @@ function messageOf(reason: unknown, fallback: string): string {
           {{ batch.batchId.slice(0, 10) }}：{{ batch.completed }}/{{ batch.total }} 完成，{{ batch.failed }} 失败，{{ batch.cancelled }} 取消，{{ batch.active }} 进行中
         </el-tag>
       </div>
-      <el-table :data="tasks" border stripe empty-text="暂无下载任务">
-        <el-table-column label="文件" min-width="210"><template #default="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${row.result.mesh_import_status}` : '' }}</small></template></el-table-column>
-        <el-table-column label="批次" width="105"><template #default="{ row }">{{ row.batch_id ? row.batch_id.slice(0, 10) : '-' }}</template></el-table-column>
-        <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column label="进度" min-width="210"><template #default="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template></el-table-column>
-        <el-table-column prop="message" label="信息" min-width="220" show-overflow-tooltip />
-        <el-table-column label="操作" width="300" fixed="right"><template #default="{ row }">
+      <NcDataTable :data="tasks" :columns="downloadTaskColumns" table-id="file-download-queue" route-key="/file-management" empty-text="暂无下载任务">
+        <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${row.result.mesh_import_status}` : '' }}</small></template>
+        <template #cell-status="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template>
+        <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template>
+        <template #cell-actions="{ row }">
           <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
           <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
@@ -528,8 +554,8 @@ function messageOf(reason: unknown, fallback: string): string {
             <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'open')">{{ t('open') }}</el-button>
             <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'folder')">{{ t('containingFolder') }}</el-button>
           </template>
-        </template></el-table-column>
-      </el-table>
+        </template>
+      </NcDataTable>
     </article>
   </section>
 </template>
