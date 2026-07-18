@@ -891,15 +891,20 @@ def _write_sqlite_rows(db_path: Path, result: TracksideDeviceCollectionResult) -
 
 def _result_row(target: TracksideOpticalTarget, parsed: dict[str, object | None]) -> dict[str, object | None]:
     collected_at = _now()
-    severity = compute_optical_severity(
-        {
-            "switch_rx_power" if target.target_type == "SWITCH" else "ap_rx_power": parsed.get("rx_power"),
-            "alarm_low": parsed.get("rx_low_alarm"),
-            "alarm_high": parsed.get("rx_high_alarm"),
-            "warning_low": parsed.get("rx_low_warning"),
-            "device_type": "switch" if target.target_type == "SWITCH" else "ap",
-        }
-    ).severity
+    collector_status = str(parsed.get("status") or "").strip().casefold()
+    severity = (
+        "no_module"
+        if collector_status == "no_module"
+        else compute_optical_severity(
+            {
+                "switch_rx_power" if target.target_type == "SWITCH" else "ap_rx_power": parsed.get("rx_power"),
+                "alarm_low": parsed.get("rx_low_alarm"),
+                "alarm_high": parsed.get("rx_high_alarm"),
+                "warning_low": parsed.get("rx_low_warning"),
+                "device_type": "switch" if target.target_type == "SWITCH" else "ap",
+            }
+        ).severity
+    )
     return {
         **parsed,
         "device_name": target.name,

@@ -388,6 +388,43 @@ GigabitEthernet2/0/1 transceiver diagnostic information:
     assert item["tx_high_warning"] == "-3.00"
 
 
+def test_transceiver_parsers_mark_explicitly_absent_module():
+    for parser, heading in (
+        (parse_transceivers, "transceiver information"),
+        (parse_transceiver_manuinfo, "transceiver manufacture information"),
+        (parse_transceiver_diagnosis, "transceiver diagnostic information"),
+    ):
+        parsed_absent = parser(
+            f"GigabitEthernet2/0/3 {heading}:\nThe transceiver is absent."
+        )
+        assert parsed_absent == [
+            {
+                "interface_name": "GigabitEthernet2/0/3",
+                "status": "no_module",
+            }
+        ]
+
+    output = """
+GigabitEthernet2/0/3 transceiver diagnostic information:
+The transceiver is absent.
+
+GigabitEthernet2/0/4 transceiver diagnostic information:
+Current diagnostic parameters:
+Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+31 3.28 15.34 -40.00 -6.01
+"""
+
+    parsed = parse_transceiver_diagnosis(output)
+
+    assert parsed[0] == {
+        "interface_name": "GigabitEthernet2/0/3",
+        "status": "no_module",
+    }
+    assert parsed[1]["interface_name"] == "GigabitEthernet2/0/4"
+    assert parsed[1]["rx_power"] == "-40.00"
+    assert "status" not in parsed[1]
+
+
 def test_fit_ap_transceiver_selects_ten2_when_ten1_is_absent():
     parsed = parse_fit_ap_transceiver(
         """

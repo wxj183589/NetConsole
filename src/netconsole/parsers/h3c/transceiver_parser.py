@@ -23,6 +23,9 @@ def parse_transceivers(output: str) -> list[dict[str, object | None]]:
             continue
         if current is None:
             continue
+        if _is_explicitly_absent(line):
+            current["status"] = "no_module"
+            continue
         _set_if_match(current, "module_model", line, r"(?i)(?:Transceiver Type|Part Number|Model)\s*[:\uff1a]\s*(.+)")
         _set_if_match(current, "module_model", line, r"(?i)Ordering Name\s*[:\uff1a]\s*(.+)", overwrite=True)
         _set_if_match(current, "module_serial_number", line, r"(?i)(?:Serial Number|S/N)\s*[:\uff1a]\s*(.+)")
@@ -51,6 +54,9 @@ def parse_transceiver_manuinfo(output: str) -> list[dict[str, object | None]]:
             continue
         if current is None:
             continue
+        if _is_explicitly_absent(line):
+            current["status"] = "no_module"
+            continue
         _set_if_match(current, "module_serial_number", line, r"(?i)Manu\.\s*Serial Number\s*[:\uff1a]\s*(.+)")
         _set_if_match(current, "module_vendor", line, r"(?i)Vendor Name\s*[:\uff1a]\s*(.+)")
     if current:
@@ -74,6 +80,9 @@ def parse_transceiver_diagnosis(output: str) -> list[dict[str, object | None]]:
             section = ""
             continue
         if current is None:
+            continue
+        if _is_explicitly_absent(line):
+            current["status"] = "no_module"
             continue
         lowered = line.lower()
         if lowered.startswith("current diagnostic parameters"):
@@ -145,6 +154,10 @@ def _format_wavelength(value: str) -> str:
 def _format_distance(value: str) -> str:
     text = value.strip()
     return text if re.search(r"(?i)\bkm\b", text) else f"{text} km"
+
+
+def _is_explicitly_absent(text: str) -> bool:
+    return bool(re.fullmatch(r"(?i)the\s+transceiver\s+is\s+absent\.?", text.strip()))
 
 
 def _to_float(value: object) -> float | None:

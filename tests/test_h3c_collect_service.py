@@ -114,6 +114,37 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
 
 
+def test_collect_service_persists_explicitly_absent_transceiver(monkeypatch, tmp_path):
+    monkeypatch.setitem(
+        OUTPUTS,
+        "display transceiver diagnosis interface",
+        fixture("display_transceiver_diagnosis_interface.txt")
+        + """
+
+GigabitEthernet1/0/2 transceiver diagnostic information:
+The transceiver is absent.
+""",
+    )
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+
+    result = collect_h3c_device_details(
+        make_device(), "demo", repository=repository, paths=make_paths(tmp_path)
+    )
+
+    assert result.success is True
+    by_name = {
+        item["interface_name"]: item
+        for item in repository.list_optical_modules(str(make_device().device_uuid))
+    }
+    assert by_name["GigabitEthernet1/0/2"]["status"] == "no_module"
+
+
 def test_collect_service_writes_sysname_back_to_device_table(monkeypatch, tmp_path):
     connection = FakeConnection()
     monkeypatch.setattr(h3c_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
@@ -354,6 +385,36 @@ def test_optical_refresh_service_runs_three_commands_and_writes_interfaces_optic
     assert optical["module_serial_number"] == "KEEP-SN-001"
     assert optical["module_model"] == "SFP-GE-LX-SM1310"
     assert repository.get_latest_raw_log_path(str(device.device_uuid)) is None
+
+
+def test_optical_refresh_clears_stale_module_identity_when_module_is_absent():
+    merged = h3c_optical_refresh_service.merge_existing_optical_modules(
+        [
+            {
+                "interface_name": "GigabitEthernet2/0/3",
+                "module_model": "SFP-GE-LX-SM1310",
+                "module_serial_number": "STALE-SN",
+            }
+        ],
+        [
+            {
+                "interface_name": "GigabitEthernet2/0/3",
+                "status": "success",
+                "optical_alarm_status": "no_module",
+            }
+        ],
+        [],
+        {"collected_at": "2026-07-19T00:00:00"},
+    )
+
+    assert merged == [
+        {
+            "interface_name": "GigabitEthernet2/0/3",
+            "status": "no_module",
+            "optical_alarm_status": "no_module",
+            "collected_at": "2026-07-19T00:00:00",
+        }
+    ]
 
 
 def test_optical_refresh_service_validates_optical_context(monkeypatch, tmp_path):

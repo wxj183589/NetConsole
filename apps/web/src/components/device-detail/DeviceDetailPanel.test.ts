@@ -66,6 +66,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain("normalizedValue === 'normal' || normalizedValue === '正常'")
     expect(source).toContain("['alarm', 'critical', 'no_light', 'no_module', 'link_abnormal', 'link_down', 'offline'].includes(severity)")
     expect(source).toContain("['warning', 'notice', 'not_collected', 'skipped'].includes(severity)")
+    expect(source).toContain("no_module: '无光模块'")
     expect(source).toContain('color: var(--nc-danger)')
     expect(source).toContain('color: var(--nc-warning)')
     expect(source).not.toContain("['连接器', 'connector_type'], ['状态', 'status']")

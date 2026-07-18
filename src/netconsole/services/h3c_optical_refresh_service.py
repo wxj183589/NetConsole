@@ -197,15 +197,28 @@ def merge_existing_optical_modules(
     metadata: dict[str, object | None],
 ) -> list[dict[str, object | None]]:
     by_interface = {str(item.get("interface_name") or ""): dict(item) for item in existing if item.get("interface_name")}
-    interfaces_by_name = {str(item.get("interface_name") or ""): item for item in interfaces}
     for diagnostic in diagnostics:
         interface_name = str(diagnostic.get("interface_name") or "")
         if not interface_name:
             continue
-        merged = dict(by_interface.get(interface_name, {"interface_name": interface_name}))
-        preserved = {field: merged.get(field) for field in BASE_OPTICAL_FIELDS if merged.get(field)}
+        module_absent = any(
+            str(diagnostic.get(field) or "").strip().casefold() == "no_module"
+            for field in ("status", "optical_alarm_status")
+        )
+        merged = (
+            {"interface_name": interface_name}
+            if module_absent
+            else dict(by_interface.get(interface_name, {"interface_name": interface_name}))
+        )
+        preserved = (
+            {}
+            if module_absent
+            else {field: merged.get(field) for field in BASE_OPTICAL_FIELDS if merged.get(field)}
+        )
         merged.update({key: value for key, value in diagnostic.items() if value is not None})
         merged.update(preserved)
+        if module_absent:
+            merged["status"] = "no_module"
         merged.update(metadata)
         by_interface[interface_name] = merged
     return list(by_interface.values())
@@ -224,7 +237,7 @@ def _write_raw_files(
         return
     raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        f"Collect Type: optical_refresh",
+        "Collect Type: optical_refresh",
         f"Collect Time: {_now()}",
         f"Collect Run UUID: {collect_run_uuid}",
         f"Device Name: {device.name}",

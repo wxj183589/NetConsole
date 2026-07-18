@@ -143,6 +143,30 @@ def test_collection_writes_failure_result_as_one_row(tmp_path: Path) -> None:
     assert row[12:] == ("relative/failure.log", "connection failed")
 
 
+def test_collection_preserves_explicit_no_module_status() -> None:
+    target = TracksideOpticalTarget(
+        key="device:1",
+        name="SW-NO-MODULE",
+        host="10.0.0.98",
+        port=22,
+        protocol="SSH",
+        target_type="SWITCH",
+        group_name="车站",
+        device=Device(name="SW-NO-MODULE", ip_address="10.0.0.98"),
+    )
+
+    row = trackside_optical_collection._result_row(
+        target,
+        {
+            "interface_name": "GigabitEthernet2/0/3",
+            "status": "no_module",
+        },
+    )
+
+    assert row["status"] == "success"
+    assert row["optical_alarm_status"] == "no_module"
+
+
 def test_collection_has_no_direct_sqlite_calls() -> None:
     source_path = Path(trackside_optical_collection.__file__)
     tree = ast.parse(source_path.read_text(encoding="utf-8"))

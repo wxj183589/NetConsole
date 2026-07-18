@@ -215,7 +215,7 @@ const sectionFilterOptions: Partial<Record<DeviceDetailSection, Array<{ label: s
     { label: '告警', value: 'alarm' },
     { label: '链路异常', value: 'link_abnormal' },
     { label: '无光', value: 'no_light' },
-    { label: '无模块', value: 'no_module' },
+    { label: '无光模块', value: 'no_module' },
     { label: '未知', value: 'unknown' },
   ],
   tasks: [
@@ -743,7 +743,7 @@ const displayEnumLabels: Record<string, Record<string, string>> = {
     critical: '严重告警',
     unknown: '未知',
     no_light: '无光',
-    no_module: '无模块',
+    no_module: '无光模块',
     link_abnormal: '链路异常',
     link_down: '链路中断',
     offline: '离线',
