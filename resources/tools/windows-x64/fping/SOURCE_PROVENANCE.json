@@ -1,0 +1,92 @@
+{
+  "schema_version": "netconsole.tool-provenance.v1",
+  "component": "fping-windows-x64-cygwin",
+  "version": "5.5",
+  "platform": "windows-x64-cygwin",
+  "verified_at": "2026-07-18",
+  "build": {
+    "method": "local Cygwin x86_64 build",
+    "built_at": "2026-06-27T00:28:00+08:00",
+    "git_describe_at_build": "v5.5-dirty",
+    "source_state": "upstream v5.5 plus archived Cygwin ICMP compatibility patch",
+    "configure_args": ["--disable-ipv6", "--enable-safe-limits"],
+    "patch_file": "CYGWIN_ICMP_COMPAT.patch",
+    "patch_sha256": "f245e88cbc111d4bc3476c1146713cc1462fff5011baf41926f2dfdabb30bf83",
+    "recipe_file": "BUILD_RECIPE.md",
+    "recipe_sha256": "e1019b55830d91a97314b26985193b254507b3495f225681cc101288fa1ca1f5",
+    "network_required_during_product_packaging": false
+  },
+  "files": [
+    {
+      "name": "fping.exe",
+      "version": "5.5",
+      "sha256": "9c9ab2f26d3d32818b53ed7b664ec53546fc5cd59f4d953e06f9d3e28673f9d9"
+    },
+    {
+      "name": "cygwin1.dll",
+      "version": "3.6.9-1",
+      "sha256": "d5562774ec1475bd1dab84c5249b273e60cc53e6aa968981414a4d6a3f8e2bfd"
+    }
+  ],
+  "license_files": [
+    {
+      "name": "COPYING",
+      "sha256": "6051b27e4b4a648f7bc8b329024da53a6e95ce88fcf0ccc259c371a74b741757"
+    },
+    {
+      "name": "COPYING.LIB",
+      "sha256": "1a45b1d0a8603dfe2cfc644f9dab970b1762f92babe2aac6eb2f5d4572c4a680"
+    },
+    {
+      "name": "GPL-3.0.txt",
+      "sha256": "0ae0485a5bd37a63e63603596417e4eb0e653334fa6c7f932ca3a0e85d4af227"
+    },
+    {
+      "name": "CYGWIN_LICENSE",
+      "sha256": "794433752103cf4bbb4a84a1bdb8fbc150abb1762704bb35fecc9f7f820be984"
+    },
+    {
+      "name": "CYGWIN_LICENSE_NOTE.txt",
+      "sha256": "39872eccdbdb5ed0952e2bf175532227defa3fc97fec69a96a7fef744535fbf4"
+    }
+  ],
+  "compliance_files": [
+    {
+      "name": "CORRESPONDING_SOURCE.md",
+      "sha256": "a0ca3f1e13af8ad8ae66ad5c2db7c11faba3b9392ca9c1426856ae476b9f22f3"
+    },
+    {
+      "name": "BUILD_RECIPE.md",
+      "sha256": "e1019b55830d91a97314b26985193b254507b3495f225681cc101288fa1ca1f5"
+    },
+    {
+      "name": "CYGWIN_ICMP_COMPAT.patch",
+      "sha256": "f245e88cbc111d4bc3476c1146713cc1462fff5011baf41926f2dfdabb30bf83"
+    }
+  ],
+  "upstream_sources": [
+    {
+      "name": "fping",
+      "version": "5.5",
+      "repository": "https://github.com/schweikert/fping",
+      "tag": "v5.5",
+      "tag_commit": "06f9481ef3cf79c2aa973718366fb13927777689"
+    },
+    {
+      "name": "Cygwin Runtime",
+      "version": "3.6.9-1",
+      "source_package": "cygwin-3.6.9-1-src",
+      "source_index": "https://cygwin.com/packages/summary/cygwin-src.html",
+      "source_contents": "https://cygwin.com/packages/src/cygwin-src/cygwin-3.6.9-1-src",
+      "source_archive_path": "src/release/cygwin/cygwin-3.6.9-1-src.tar.xz",
+      "source_archive_size": 9312760,
+      "source_archive_sha512": "771ab64fff17323a32b7cb56140c974d446899a5d4eb5b76115e14cd8fe2e4108be5f30112e441def0f86666d37ab35ba5fb31950910d91ffc12ba69e0934f6e",
+      "repository": "https://cygwin.com/git/newlib-cygwin.git",
+      "tag": "cygwin-3.6.9",
+      "tag_object": "f802d89cdc3fbbfbb47f5a6b3a4e27b7a2363795",
+      "tag_commit": "daabea98682f3f4bef0044829a8d24226135bb71"
+    }
+  ],
+  "corresponding_source_notice": "CORRESPONDING_SOURCE.md",
+  "external_distribution_source_policy": "publish the exact corresponding source archive beside the binary release or provide a valid written offer"
+}

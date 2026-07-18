@@ -32,6 +32,7 @@
   "build": {
     "appId": "com.loveok.netconsole",
     "productName": "NetConsole",
+    "electronDist": "node_modules/electron/dist",
     "asar": true,
     "directories": {
       "output": "../../dist/electron"

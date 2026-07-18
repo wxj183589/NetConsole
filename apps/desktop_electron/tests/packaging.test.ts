@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { cpSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import { describe, expect, it } from 'vitest'
 
@@ -11,6 +13,7 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toContain('electron-builder')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
+    expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
       from: 'dist/package-resources/backend',
       to: 'backend',
@@ -23,6 +26,9 @@ describe('Electron-only packaging', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package.mjs'), 'utf8')
 
     expect(script).toContain('scripts.build.build_release')
+    expect(script).toContain('scripts.build.check_runtime_deps')
+    expect(script).toContain('--locked-environment')
+    expect(script).toContain('constraints.txt')
     expect(script).toContain('NetConsoleBackend.exe')
     expect(script).toContain("'.venv', 'Scripts', 'python.exe'")
   })
@@ -30,9 +36,148 @@ describe('Electron-only packaging', () => {
   it('scans the packaged app for forbidden Qt runtime files', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
 
-    for (const marker of ['pyside6', 'shiboken6', 'qfluentwidgets', 'qt6core', 'qwindows.dll']) {
+    for (const marker of [
+      'pyside2',
+      'pyside6',
+      'pyqt5',
+      'pyqt6',
+      'shiboken2',
+      'shiboken6',
+      'qfluentwidgets',
+      'qt[56]',
+      'qtwebengineprocess.exe',
+      'qt.conf',
+      'sip.pyd',
+      'qwindows.dll',
+      'qwindowsd.dll',
+    ]) {
       expect(script).toContain(marker)
     }
     expect(script).toContain('netconsole_electron_smoke_test'.toLowerCase())
   })
+
+  it('requires runtime-versioned NOTICE and a strict CycloneDX SBOM', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
+
+    expect(script).toContain('open_source_notices.json')
+    expect(script).toContain('third_party_components.md')
+    expect(script).toContain('sbom.cdx.json')
+    expect(script).toContain('electron')
+    expect(script).toContain('chromium')
+    expect(script).toContain('node.js')
+    expect(script).toContain('cygwin runtime')
+    expect(script).toContain('iperf3 windows x64 cygwin dynamic-auth')
+    expect(script).toContain('openssl runtime (iperf3 bundle)')
+    expect(script).toContain('zlib runtime (iperf3 bundle)')
+    expect(script).toContain('electron_run_as_node')
+    expect(script).toContain('license.electron.txt')
+    expect(script).toContain('licenses.chromium.html')
+    expect(script).toContain('bom-ref')
+    expect(script).toContain('purl')
+    expect(script).toContain('unknown')
+    expect(script).toContain('pyinstaller-artifact-inventory.json')
+    expect(script).toContain('pyinstaller-approved-distributions.json')
+    expect(script).toContain('netconsole.pyinstaller-artifact-inventory.v1')
+    expect(script).toContain('netconsole.pyinstaller-approved-distributions.v1')
+    expect(script).toContain('pyinstaller_copying.txt')
+    expect(script).toContain('pyinstaller_hooks_contrib_license.txt')
+    expect(script).toContain('netconsolebackend.exe')
+  })
+
+  it('pins the approved iPerf3 3.21 dynamic-auth asset and licenses', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
+
+    expect(script).toContain('iperf-3.21-win64-dynamic-auth.zip')
+    expect(script).toContain('0d3ac723df5cc7b2ab1851fe9441c14291c6583b6acf8ef81dabee73c145c2eb')
+    for (const name of ['iperf3.exe', 'cygwin1.dll', 'cygcrypto-3.dll', 'cygz.dll']) {
+      expect(script).toContain(name)
+    }
+    for (const name of ['ar51an_apache-2.0.txt', 'iperf3_license.txt', 'gpl-3.0.txt', 'cygwin_lgpl-3.0.txt', 'openssl_apache-2.0.txt', 'zlib_license.txt']) {
+      expect(script).toContain(name)
+    }
+    expect(script).toContain('cygwin-3.6.7-1-src.tar.xz')
+    expect(script).toContain('corresponding_source.md')
+  })
+
+  it('pins the actual patched fping build and Cygwin corresponding source', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
+
+    expect(script).toContain('v5.5-dirty')
+    expect(script).toContain('cygwin_icmp_compat.patch')
+    expect(script).toContain('build_recipe.md')
+    expect(script).toContain('cygwin-3.6.9-1-src.tar.xz')
+    expect(script).toContain('gpl-3.0.txt')
+  })
+
+  it('rejects duplicate, incomplete, tampered, or missing local tool provenance', () => {
+    const script = resolve(appRoot, 'scripts', 'package-smoke.mjs')
+    const source = resolve(appRoot, '..', '..', 'resources', 'tools', 'windows-x64')
+    const mutations: Array<(root: string) => void> = [
+      (root) => rewriteProvenance(root, 'iperf3', (payload) => {
+        payload.files.unshift({ ...payload.files[0] })
+      }),
+      (root) => rewriteProvenance(root, 'iperf3', (payload) => {
+        payload.files[0].version = '999'
+      }),
+      (root) => rewriteProvenance(root, 'iperf3', (payload) => {
+        payload.unapproved = true
+      }),
+      (root) => rewriteProvenance(root, 'iperf3', (payload) => {
+        payload.upstream_sources[2] = { name: 'OpenSSL Cygwin Runtime' }
+      }),
+      (root) => unlinkSync(resolve(root, 'fping', 'README.txt')),
+    ]
+
+    for (const mutate of mutations) {
+      const temporary = mkdtempSync(join(tmpdir(), 'netconsole-electron-tool-guard-'))
+      const toolRoot = resolve(temporary, 'windows-x64')
+      try {
+        cpSync(source, toolRoot, { recursive: true })
+        mutate(toolRoot)
+        const result = spawnSync(
+          process.execPath,
+          [script, '--validate-tool-root', toolRoot],
+          { cwd: appRoot, encoding: 'utf8' },
+        )
+        expect(result.status, result.stdout + result.stderr).not.toBe(0)
+      } finally {
+        rmSync(temporary, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('validates the packaged device inventory command profile', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('device_command_profiles.json')
+    expect(script).toContain('2026.07.device-command-profiles.v1')
+    expect(script).toContain('device.inventory.collect')
+    for (const command of [
+      'screen-length disable',
+      'display current-configuration | include sysname',
+      'display version',
+      'display device',
+      'display device manuinfo',
+      'display boot-loader',
+      'display interface',
+      'display transceiver interface',
+      'display transceiver manuinfo interface',
+      'display transceiver diagnosis interface',
+      'display lldp neighbor-information list',
+      'display lldp neighbor-information verbose',
+    ]) {
+      expect(script).toContain(command)
+    }
+  })
 })
+
+function rewriteProvenance(
+  root: string,
+  tool: 'iperf3' | 'fping',
+  mutate: (payload: any) => void,
+) {
+  const path = resolve(root, tool, 'SOURCE_PROVENANCE.json')
+  const payload = JSON.parse(readFileSync(path, 'utf8'))
+  mutate(payload)
+  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+}

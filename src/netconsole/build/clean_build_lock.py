@@ -36,6 +36,8 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/open_source_notices.json",
     "src/netconsole/assets/third_party_components.md",
     "src/netconsole/assets/ipop_v4.1_notice.md",
+    "src/netconsole/assets/licenses/pyinstaller_copying.txt",
+    "src/netconsole/assets/licenses/pyinstaller_hooks_contrib_license.txt",
     "apps/web/dist",
     "resources/device_command_profiles.json",
     "resources/tools",
@@ -43,6 +45,7 @@ ALLOWED_RUNTIME = (
     "resources/tools/windows-x64/fping",
     "resources/tools/windows-x64/iperf3",
     "netconsole",
+    "netconsole/assets/licenses",
     "tools",
     "tools/windows-x64",
     "tools/windows-x64/fping",
@@ -93,7 +96,9 @@ def validate_datas(datas: Iterable[Sequence[object]]) -> None:
             raise CleanBuildLockError("Illegal datasource detected: empty entry")
         source = _normalize_data_part(data[0])
         if _is_forbidden_source(source):
-            raise CleanBuildLockError(f"Illegal datasource detected: {source or '<empty>'}")
+            raise CleanBuildLockError(
+                f"Illegal datasource detected: {source or '<empty>'}"
+            )
 
 
 def validate_allowed_runtime(datas: Iterable[Sequence[object]]) -> None:
@@ -113,7 +118,9 @@ def validate_pyinstaller_command(args: Sequence[str]) -> None:
         if item not in normalized:
             raise CleanBuildLockError(f"Missing required PyInstaller option: {item}")
     _require_option_value(normalized, "--name", APP_NAME)
-    _require_path_option(normalized, "--icon", ICON_SOURCE, "resources/branding/netconsole.ico")
+    _require_path_option(
+        normalized, "--icon", ICON_SOURCE, "resources/branding/netconsole.ico"
+    )
     _require_option_value(normalized, "--distpath", str(DIST_ROOT).replace("\\", "/"))
     _require_option_value(normalized, "--workpath", str(BUILD_ROOT).replace("\\", "/"))
 
@@ -128,33 +135,48 @@ def validate_dist_output(app_dist: Path | None = None) -> None:
     root_items = {path.name for path in app_dist.iterdir()}
     unexpected = sorted(root_items - set(ALLOWED_DIST_ROOT))
     if unexpected:
-        raise CleanBuildLockError(f"CleanBuildLock violation: unexpected dist root items: {unexpected}")
+        raise CleanBuildLockError(
+            f"CleanBuildLock violation: unexpected dist root items: {unexpected}"
+        )
 
     for required in (EXE_NAME, INTERNAL_DIR):
         if not (app_dist / required).exists():
-            raise CleanBuildLockError(f"CleanBuildLock violation: missing required dist item: {required}")
+            raise CleanBuildLockError(
+                f"CleanBuildLock violation: missing required dist item: {required}"
+            )
     if (app_dist / "netconsole").exists():
-        raise CleanBuildLockError("CleanBuildLock violation: netconsole must not exist outside _internal")
+        raise CleanBuildLockError(
+            "CleanBuildLock violation: netconsole must not exist outside _internal"
+        )
     if not (app_dist / INTERNAL_DIR / "netconsole").exists():
-        raise CleanBuildLockError("CleanBuildLock violation: netconsole must exist inside _internal")
+        raise CleanBuildLockError(
+            "CleanBuildLock violation: netconsole must exist inside _internal"
+        )
 
     forbidden_ipop = [
         path
         for path in app_dist.rglob("*")
-        if path.name.casefold() == "ipop.exe" or "ipop" in {part.casefold() for part in path.parts}
+        if path.name.casefold() == "ipop.exe"
+        or "ipop" in {part.casefold() for part in path.parts}
     ]
     if forbidden_ipop:
-        raise CleanBuildLockError("检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。")
+        raise CleanBuildLockError(
+            "检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。"
+        )
 
     for forbidden in FORBIDDEN_DIST_DIRS:
         if (app_dist / forbidden).exists():
-            raise CleanBuildLockError(f"CleanBuildLock violation: forbidden folder exists: {forbidden}")
+            raise CleanBuildLockError(
+                f"CleanBuildLock violation: forbidden folder exists: {forbidden}"
+            )
 
     for path in app_dist.rglob("*"):
         relative_parts = path.relative_to(app_dist).parts
         if _is_forbidden_dist_path(relative_parts):
             relative = path.relative_to(app_dist).as_posix()
-            raise CleanBuildLockError(f"CleanBuildLock violation: forbidden runtime item exists: {relative}")
+            raise CleanBuildLockError(
+                f"CleanBuildLock violation: forbidden runtime item exists: {relative}"
+            )
 
 
 def clean_failed_outputs() -> None:
@@ -177,7 +199,9 @@ def _validate_spec_text(spec_text: str) -> None:
     )
     for fragment in forbidden_fragments:
         if fragment in spec_text:
-            raise CleanBuildLockError(f"Illegal PyInstaller spec datasource detected: {fragment}")
+            raise CleanBuildLockError(
+                f"Illegal PyInstaller spec datasource detected: {fragment}"
+            )
 
 
 def _is_forbidden_dist_path(parts: tuple[str, ...]) -> bool:
@@ -188,7 +212,9 @@ def _is_forbidden_dist_path(parts: tuple[str, ...]) -> bool:
         return True
     if len(lowered) >= 2 and lowered[:2] == (INTERNAL_DIR, "assets"):
         return True
-    if any(part in {"tests", "project", "build", "spec", "__pycache__"} for part in lowered):
+    if any(
+        part in {"tests", "project", "build", "spec", "__pycache__"} for part in lowered
+    ):
         return True
     if "docs" in lowered:
         return True
@@ -218,7 +244,9 @@ def _require_option_value(args: Sequence[str], option: str, expected: str) -> No
         raise CleanBuildLockError(f"Invalid PyInstaller {option}: {actual}")
 
 
-def _require_path_option(args: Sequence[str], option: str, expected_path: Path, expected_relative: str) -> None:
+def _require_path_option(
+    args: Sequence[str], option: str, expected_path: Path, expected_relative: str
+) -> None:
     if option not in args:
         raise CleanBuildLockError(f"Missing required PyInstaller option: {option}")
     index = args.index(option)

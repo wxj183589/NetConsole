@@ -11,7 +11,14 @@ from pathlib import Path
 
 from scripts.build import clean_build_spec
 from scripts.build.build_config import BuildConfig, load_config
-from netconsole.core.feature_flags import FeatureGate, engineer_package_enabled, install_runtime_feature_files, load_profile, profiles_dir
+from scripts.build.check_runtime_deps import check_locked_environment
+from netconsole.core.feature_flags import (
+    FeatureGate,
+    engineer_package_enabled,
+    install_runtime_feature_files,
+    load_profile,
+    profiles_dir,
+)
 from netconsole.core.feature_registry import list_features
 from netconsole.core.version import GIT_COMMIT
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
@@ -34,10 +41,20 @@ class BuildError(RuntimeError):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build NetConsole release artifacts")
     parser.add_argument("--backend", choices=BACKENDS, required=True)
-    parser.add_argument("--skip-install", action="store_true", help="do not install build dependencies")
-    parser.add_argument("--no-smoke-test", action="store_true", help="skip source and packaged smoke tests")
-    parser.add_argument("--no-zip", action="store_true", help="do not create release zip")
-    parser.add_argument("--dry-run", action="store_true", help="print command plan without compiling")
+    parser.add_argument(
+        "--skip-install", action="store_true", help="do not install build dependencies"
+    )
+    parser.add_argument(
+        "--no-smoke-test",
+        action="store_true",
+        help="skip source and packaged smoke tests",
+    )
+    parser.add_argument(
+        "--no-zip", action="store_true", help="do not create release zip"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print command plan without compiling"
+    )
     args = parser.parse_args()
 
     try:
@@ -82,9 +99,13 @@ def validate_config(config: BuildConfig, *, editions: tuple[str, ...] = ()) -> N
         if not path.exists()
     ]
     if missing:
-        raise BuildError("Missing required build input:\n" + "\n".join(str(path) for path in missing))
+        raise BuildError(
+            "Missing required build input:\n" + "\n".join(str(path) for path in missing)
+        )
     if not config.app_version.startswith("v"):
-        raise BuildError(f"APP_VERSION must keep the existing v prefix: {config.app_version}")
+        raise BuildError(
+            f"APP_VERSION must keep the existing v prefix: {config.app_version}"
+        )
 
 
 def install_dependencies(backend: str) -> None:
@@ -99,26 +120,43 @@ def install_dependencies(backend: str) -> None:
             "--disable-pip-version-check",
             "-r",
             "requirements.txt",
+            "-c",
+            "constraints.txt",
         ]
     )
 
 
 def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
+    locked_environment = check_locked_environment(
+        config.root / "requirements-build.txt",
+        config.root / "constraints.txt",
+    )
+    for message in locked_environment.messages:
+        print(message)
+    if not locked_environment.ok:
+        raise BuildError("构建环境与 constraints.txt 不一致")
     clean_build_spec.validate_tool_sources()
     build_web_frontend(config)
     if smoke_test:
         print("[check] source external tools")
         for result in run_tool_smoke_tests():
-            first_line = next((line.strip() for line in result.output.splitlines() if line.strip()), "OK")
+            first_line = next(
+                (line.strip() for line in result.output.splitlines() if line.strip()),
+                "OK",
+            )
             print(f"[OK] {result.name}: {first_line}")
 
 
 def build_web_frontend(config: BuildConfig) -> None:
     pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
     if pnpm is None:
-        raise BuildError("未找到 pnpm，无法构建桌面版 Web 页面；请先安装 Node.js/pnpm 并执行 pnpm install。")
+        raise BuildError(
+            "未找到 pnpm，无法构建桌面版 Web 页面；请先安装 Node.js/pnpm 并执行 pnpm install。"
+        )
     if not (config.web_dir / "node_modules").is_dir():
-        raise BuildError("apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。")
+        raise BuildError(
+            "apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。"
+        )
     env = os.environ.copy()
     env["NETCONSOLE_FRONTEND_GIT_COMMIT"] = GIT_COMMIT
     run([pnpm, "build"], cwd=config.web_dir, env=env)
@@ -173,20 +211,32 @@ def create_edition_releases(
     admin_unlock_password: str | None = None,
 ) -> None:
     for edition in selected_editions(build_editions):
-        profile = feature_profile or ("full" if edition in {"internal", "engineer"} else "customer")
+        profile = feature_profile or (
+            "full" if edition in {"internal", "engineer"} else "customer"
+        )
         destination = config.release_version_dir / edition
         remove_tree(destination)
         copy_tree(payload, destination)
         remove_copied_zip_files(destination)
         unlock_password = admin_unlock_password if edition == "customer" else None
-        install_runtime_feature_files(destination, edition=edition, profile=profile, admin_unlock_password=unlock_password)
+        install_runtime_feature_files(
+            destination,
+            edition=edition,
+            profile=profile,
+            admin_unlock_password=unlock_password,
+        )
         validate_embedded_feature_gate(destination, edition=edition, profile=profile)
         validate_release_app_dir(destination, EDITION_STAGING_ALLOWED_ITEMS)
         validate_release_fping(destination)
         validate_no_ipop_artifacts(destination)
-        run_packaged_release_contract(destination / "NetConsoleBackend.exe", destination)
+        run_packaged_release_contract(
+            destination / "NetConsoleBackend.exe", destination
+        )
         if make_zip:
-            zip_path = config.release_version_dir / f"{config.app_name}_{config.app_version}_{edition}.zip"
+            zip_path = (
+                config.release_version_dir
+                / f"{config.app_name}_{config.app_version}_{edition}.zip"
+            )
             zip_directory(
                 destination,
                 zip_path,
@@ -214,10 +264,17 @@ def remove_copied_zip_files(destination: Path) -> None:
         zip_path.unlink()
 
 
-def validate_embedded_feature_gate(destination: Path, *, edition: str, profile: str) -> None:
+def validate_embedded_feature_gate(
+    destination: Path, *, edition: str, profile: str
+) -> None:
     gate = FeatureGate(destination)
-    if gate.build_info.get("edition") != edition or gate.build_info.get("feature_profile") != profile:
-        raise BuildError(f"FeatureGate build info mismatch for {destination}: {gate.build_info}")
+    if (
+        gate.build_info.get("edition") != edition
+        or gate.build_info.get("feature_profile") != profile
+    ):
+        raise BuildError(
+            f"FeatureGate build info mismatch for {destination}: {gate.build_info}"
+        )
     runtime = destination / "runtime"
     hidden_runtime = destination / ".runtime_feature_gate_validation"
     if hidden_runtime.exists():
@@ -226,8 +283,13 @@ def validate_embedded_feature_gate(destination: Path, *, edition: str, profile: 
         runtime.rename(hidden_runtime)
     try:
         embedded_gate = FeatureGate(destination)
-        if embedded_gate.build_info.get("edition") != edition or embedded_gate.build_info.get("feature_profile") != profile:
-            raise BuildError(f"Embedded FeatureGate fallback mismatch for {destination}: {embedded_gate.build_info}")
+        if (
+            embedded_gate.build_info.get("edition") != edition
+            or embedded_gate.build_info.get("feature_profile") != profile
+        ):
+            raise BuildError(
+                f"Embedded FeatureGate fallback mismatch for {destination}: {embedded_gate.build_info}"
+            )
         if profile == "customer":
             validate_customer_feature_gate(embedded_gate)
     finally:
@@ -248,8 +310,12 @@ def validate_customer_feature_gate(gate: FeatureGate) -> None:
         if not state.get("enabled", True) and gate.is_enabled(feature_id):
             raise BuildError(f"Customer build enables disabled feature: {feature_id}")
     for item in list_features():
-        if item.internal_only and (gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id)):
-            raise BuildError(f"Customer build exposes internal-only feature: {item.feature_id}")
+        if item.internal_only and (
+            gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id)
+        ):
+            raise BuildError(
+                f"Customer build exposes internal-only feature: {item.feature_id}"
+            )
 
 
 def pyinstaller_command(config: BuildConfig) -> list[str]:
@@ -263,7 +329,9 @@ def pyinstaller_command(config: BuildConfig) -> list[str]:
         str(config.backend_build_dir("pyinstaller") / "dist"),
         "--workpath",
         str(config.backend_build_dir("pyinstaller") / "build"),
-        str(config.backend_build_dir("pyinstaller") / "spec" / "NetConsoleBackend.spec"),
+        str(
+            config.backend_build_dir("pyinstaller") / "spec" / "NetConsoleBackend.spec"
+        ),
     ]
 
 
@@ -321,7 +389,9 @@ def validate_no_ipop_artifacts(root: Path) -> None:
                 forbidden.append(path)
     if forbidden:
         detail = "\n".join(str(path) for path in forbidden[:20])
-        raise BuildError(f"检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。\n{detail}")
+        raise BuildError(
+            f"检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。\n{detail}"
+        )
 
 
 def validate_release_fping(release_root: Path) -> None:
@@ -348,9 +418,13 @@ def run_packaged_smoke(exe: Path, cwd: Path) -> None:
         run_packaged_release_contract(exe, cwd, data_root=Path(data_root))
 
 
-def run_packaged_release_contract(exe: Path, cwd: Path, *, data_root: Path | None = None) -> None:
+def run_packaged_release_contract(
+    exe: Path, cwd: Path, *, data_root: Path | None = None
+) -> None:
     if data_root is None:
-        with tempfile.TemporaryDirectory(prefix="netconsole-backend-contract-") as temporary_data_root:
+        with tempfile.TemporaryDirectory(
+            prefix="netconsole-backend-contract-"
+        ) as temporary_data_root:
             run_packaged_release_contract(exe, cwd, data_root=Path(temporary_data_root))
         return
     env = os.environ.copy()
@@ -366,11 +440,15 @@ def validate_payload_source(source: Path, allowed_items: frozenset[str]) -> None
     resolved = source.resolve()
     forbidden_sources = {config.root.resolve(), (config.root / "project").resolve()}
     if resolved in forbidden_sources:
-        raise BuildError(f"Refusing to package source tree as release payload: {source}")
+        raise BuildError(
+            f"Refusing to package source tree as release payload: {source}"
+        )
     validate_release_app_dir(source, allowed_items)
 
 
-def zip_directory(source: Path, destination: Path, base_dir: Path, allowed_items: frozenset[str]) -> None:
+def zip_directory(
+    source: Path, destination: Path, base_dir: Path, allowed_items: frozenset[str]
+) -> None:
     if destination.exists():
         destination.unlink()
     validate_payload_source(source, allowed_items)
@@ -385,7 +463,9 @@ def zip_directory(source: Path, destination: Path, base_dir: Path, allowed_items
                 archive.write(path, arcname)
 
 
-def iter_allowed_payload_paths(source: Path, allowed_items: frozenset[str]) -> list[Path]:
+def iter_allowed_payload_paths(
+    source: Path, allowed_items: frozenset[str]
+) -> list[Path]:
     paths: list[Path] = []
     for name in sorted(allowed_items):
         path = source / name
@@ -408,13 +488,20 @@ def iter_payload_path(path: Path) -> list[Path]:
 def validate_release_app_dir(app_dir: Path, allowed_items: frozenset[str]) -> None:
     if not app_dir.exists():
         raise BuildError(f"Release app directory does not exist: {app_dir}")
-    unexpected = sorted(path.name for path in app_dir.iterdir() if path.name not in allowed_items and not path.name.endswith(".zip"))
+    unexpected = sorted(
+        path.name
+        for path in app_dir.iterdir()
+        if path.name not in allowed_items and not path.name.endswith(".zip")
+    )
     if unexpected:
         raise BuildError(f"Unexpected release items in {app_dir}: {unexpected}")
     validate_no_ipop_artifacts(app_dir)
     forbidden = find_forbidden_release_dirs(app_dir)
     if forbidden:
-        raise BuildError("Forbidden release directories found:\n" + "\n".join(str(path) for path in forbidden))
+        raise BuildError(
+            "Forbidden release directories found:\n"
+            + "\n".join(str(path) for path in forbidden)
+        )
 
 
 def validate_release_version_tree(version_dir: Path) -> None:
@@ -423,7 +510,10 @@ def validate_release_version_tree(version_dir: Path) -> None:
     validate_no_ipop_artifacts(version_dir)
     forbidden = find_forbidden_release_dirs(version_dir)
     if forbidden:
-        raise BuildError("Forbidden release directories found under release version directory:\n" + "\n".join(str(path) for path in forbidden))
+        raise BuildError(
+            "Forbidden release directories found under release version directory:\n"
+            + "\n".join(str(path) for path in forbidden)
+        )
 
 
 def find_forbidden_release_dirs(root: Path) -> list[Path]:
@@ -432,7 +522,9 @@ def find_forbidden_release_dirs(root: Path) -> list[Path]:
         if path.name not in FORBIDDEN_RELEASE_DIR_NAMES:
             continue
         relative = path.relative_to(root).parts
-        if path.name == "netconsole" and _is_internal_netconsole_dir(tuple(part.lower() for part in relative)):
+        if path.name == "netconsole" and _is_internal_netconsole_dir(
+            tuple(part.lower() for part in relative)
+        ):
             continue
         forbidden.append(path)
     return forbidden
@@ -457,23 +549,34 @@ def validate_zip_file(zip_path: Path) -> None:
             parts = tuple(part for part in Path(name).parts if part not in {"", "."})
             lowered = tuple(part.lower() for part in parts)
             if "ipop" in lowered or (lowered and lowered[-1] == "ipop.exe"):
-                raise BuildError("检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。")
+                raise BuildError(
+                    "检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。"
+                )
             effective = _strip_zip_app_root(lowered)
             if any(part in FORBIDDEN_RELEASE_DIR_NAMES for part in effective):
-                if _is_under_internal_netconsole(effective) and not any(part in {"docs", "tests", "project"} for part in effective):
+                if _is_under_internal_netconsole(effective) and not any(
+                    part in {"docs", "tests", "project"} for part in effective
+                ):
                     continue
                 forbidden.append(name)
         if forbidden:
-            raise BuildError("Forbidden release zip entries found:\n" + "\n".join(forbidden))
+            raise BuildError(
+                "Forbidden release zip entries found:\n" + "\n".join(forbidden)
+            )
 
 
 def _strip_zip_app_root(parts: tuple[str, ...]) -> tuple[str, ...]:
-    if len(parts) >= 2 and parts[0] in {"netconsole", "netconsolebackend"} and parts[1] in {
-        "netconsolebackend.exe",
-        "_internal",
-        "runtime",
-        "tools",
-    }:
+    if (
+        len(parts) >= 2
+        and parts[0] in {"netconsole", "netconsolebackend"}
+        and parts[1]
+        in {
+            "netconsolebackend.exe",
+            "_internal",
+            "runtime",
+            "tools",
+        }
+    ):
         return parts[1:]
     return parts
 
@@ -483,22 +586,49 @@ def _is_internal_netconsole_dir(parts: tuple[str, ...]) -> bool:
 
 
 def _is_under_internal_netconsole(parts: tuple[str, ...]) -> bool:
-    return any(parts[index : index + 2] == ("_internal", "netconsole") for index in range(max(0, len(parts) - 1)))
+    return any(
+        parts[index : index + 2] == ("_internal", "netconsole")
+        for index in range(max(0, len(parts) - 1))
+    )
 
 
 def assert_root_clean(root: Path) -> None:
-    forbidden = [root / "build", root / "release", *root.glob("*.spec"), *root.glob("*.exe"), *root.glob("*.zip"), root / "build_meta.env"]
+    forbidden = [
+        root / "build",
+        root / "release",
+        *root.glob("*.spec"),
+        *root.glob("*.exe"),
+        *root.glob("*.zip"),
+        root / "build_meta.env",
+    ]
     dirty = [path for path in forbidden if path.exists()]
     if dirty:
-        raise BuildError("Forbidden build artifact exists in project root:\n" + "\n".join(str(path) for path in dirty))
+        raise BuildError(
+            "Forbidden build artifact exists in project root:\n"
+            + "\n".join(str(path) for path in dirty)
+        )
 
 
-def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None, timeout: int | None = None) -> None:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int | None = None,
+) -> None:
     print(subprocess.list2cmdline(cmd))
     try:
-        subprocess.run(cmd, cwd=cwd or Path(__file__).resolve().parents[2], env=env, check=True, timeout=timeout)
+        subprocess.run(
+            cmd,
+            cwd=cwd or Path(__file__).resolve().parents[2],
+            env=env,
+            check=True,
+            timeout=timeout,
+        )
     except subprocess.CalledProcessError as exc:
-        raise BuildError(f"Command failed with exit code {exc.returncode}: {subprocess.list2cmdline(cmd)}") from exc
+        raise BuildError(
+            f"Command failed with exit code {exc.returncode}: {subprocess.list2cmdline(cmd)}"
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise BuildError(f"Command timed out: {subprocess.list2cmdline(cmd)}") from exc
 

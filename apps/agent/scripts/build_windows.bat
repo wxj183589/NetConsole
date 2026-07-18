@@ -20,6 +20,14 @@ exit /b 1
 :go_found
 set "VERSION=0.2.0-win-agent"
 set "TOOL_SOURCE=%REPO_ROOT%\resources\tools\windows-x64"
+set "TOOL_GUARD=%REPO_ROOT%\scripts\build\validate_runtime_tools.ps1"
+if not exist "%TOOL_GUARD%" (
+  echo [ERROR] Runtime tool validation script is missing: %TOOL_GUARD%
+  exit /b 1
+)
+echo [PRECHECK] Validating versioned runtime tools from local resources...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TOOL_GUARD%" -ToolRoot "%TOOL_SOURCE%"
+if errorlevel 1 exit /b 1
 if exist "%DELIVERY%" rmdir /s /q "%DELIVERY%"
 if exist "%BUILD_ROOT%" rmdir /s /q "%BUILD_ROOT%"
 mkdir "%BUILD_ROOT%" || exit /b 1
@@ -28,19 +36,25 @@ set "CGO_ENABLED=0"
 set "GOOS=windows"
 set "GOARCH=amd64"
 
-echo [1/7] Building Python MR Collector if possible...
-if exist "%ROOT%\mr_collector_py\build_windows.bat" (
-  set "NETCONSOLE_AGENT_BUILD_ROOT=%BUILD_ROOT%\mr_collector"
-  pushd "%ROOT%\mr_collector_py"
-  call "build_windows.bat"
-  if errorlevel 1 (
-    popd
-    cd /d "%ROOT%"
-    echo [WARN] MR Collector build failed; put netconsole-mr-collector.exe manually.
-  ) else (
-    popd
-    cd /d "%ROOT%"
-  )
+echo [1/7] Building Python MR Collector...
+if not exist "%ROOT%\mr_collector_py\build_windows.bat" (
+  echo [ERROR] MR Collector build script is missing.
+  exit /b 1
+)
+set "NETCONSOLE_AGENT_BUILD_ROOT=%BUILD_ROOT%\mr_collector"
+pushd "%ROOT%\mr_collector_py"
+call "build_windows.bat"
+if errorlevel 1 (
+  popd
+  cd /d "%ROOT%"
+  echo [ERROR] MR Collector build failed; Agent delivery cannot be completed.
+  exit /b 1
+)
+popd
+cd /d "%ROOT%"
+if not exist "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" (
+  echo [ERROR] MR Collector output is missing after a successful build.
+  exit /b 1
 )
 
 echo [2/7] Running go mod tidy...
@@ -66,10 +80,11 @@ for %%T in (iperf3 fping) do (
   )
   xcopy /e /i /y "%TOOL_SOURCE%\%%T" "%DELIVERY%\tools\windows-x64\%%T\" >nul || exit /b 1
 )
-if exist "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" (
-  mkdir "%DELIVERY%\tools\windows-x64\mr_collector" 2>nul
-  copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%\tools\windows-x64\mr_collector\netconsole-mr-collector.exe" >nul || exit /b 1
-)
+echo [VERIFY] Validating copied runtime tools in delivery...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TOOL_GUARD%" -ToolRoot "%DELIVERY%\tools\windows-x64"
+if errorlevel 1 exit /b 1
+mkdir "%DELIVERY%\tools\windows-x64\mr_collector" 2>nul
+copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%\tools\windows-x64\mr_collector\netconsole-mr-collector.exe" >nul || exit /b 1
 
 > "%DELIVERY%\init_agent_config.bat" (
   echo @echo off

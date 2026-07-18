@@ -1,189 +1,79 @@
 # 构建与发布
 
-当前仓库核对环境为 Python 3.13.9。迁移期 `requirements.txt` 仍包含 PySide6/QFluentWidgets，供尚未回收的 Qt 事实源和历史成果复现；它们不得进入未来 Electron-only Backend bundle。依赖约束以项目锁定文件为准，不应把本机已安装版本写成最低支持版本。
+NetConsole v1.3.9 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-## 当前构建入口
+## 依赖安装
 
-构建脚本位于 `scripts/build/`：
-
-```powershell
-.\scripts\build\build_release.bat
-.\scripts\build\build_nuitka_release.bat
-```
-
-核心脚本：
-
-```text
-scripts/build/build_release.py
-scripts/build/build_nuitka_release.py
-scripts/build/build_config.py
-scripts/build/release.py
-```
-
-当前支持后端：
-
-- PyInstaller
-- Nuitka
-
-上述 PyInstaller/Nuitka 脚本仅暂留作已交付 Qt 成果的迁移证据，不再保证能构建当前可运行桌面，也不作为 v1.3.9 及后续版本的发布门；它们将在 Qt 依赖回收阶段删除。`apps/desktop_electron/` 已提供源码开发与生产资源模式，但 Electron 安装包、冻结 Python backend bundle、签名和升级尚未进入正式发布链；`pnpm start` 只能验证生产静态资源和真实 FastAPI 生命周期，不能冒充安装包交付。
-
-Electron 基础验证：
+目标环境是 Windows 11、CPython 3.13。依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：
 
 ```powershell
-.\.venv\Scripts\python.exe main.py
+python -m pip install -r requirements-runtime.txt -c constraints.txt
+python -m pip install -r requirements-test.txt -c constraints.txt
+python -m pip install -r requirements-build.txt -c constraints.txt
+python -m pip install -r requirements-dev.txt -c constraints.txt
+python -m pip check
+```
+
+产品运行环境只执行第一条和 `python -m pip install . -c constraints.txt`；不得安装 `requirements-test.txt`、`requirements-build.txt` 或 `requirements-dev.txt`。可用 `python -m scripts.build.check_runtime_deps --python-environment` 验证当前环境没有 Qt 包元数据或可导入 Qt 模块。干净环境的反向探针必须满足 `import PySide6` 抛出 `ModuleNotFoundError`。
+
+## Backend 构建
+
+先在仓库根目录执行：
+
+```powershell
+python -m scripts.build.build_release --backend pyinstaller
+```
+
+该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将输出写入 `dist/v1.3.9/pyinstaller/NetConsoleBackend/`。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+
+默认安装会同时传入 `-c constraints.txt`。无论是否使用 `--skip-install`，构建 preflight 都会从 `requirements-build.txt` 遍历已安装 distribution 的完整依赖闭包，并逐项核对 constraints 的精确版本；缺包、版本漂移、传递依赖未锁定或无效 metadata 均直接失败。Electron `package.mjs` 在调用 `--skip-install` 前还会单独执行同一 Guard，不能把开发机 `.venv` 的偶然可用状态当成发布环境。
+
+构建阶段的硬门包括：
+
+- `scripts/build/check_runtime_deps.py`：Backend EXE、Python DLL、VC runtime、fping/iPerf 文件、可写目录、完整 Qt marker 和发布合规文件；
+- `scripts/build/clean_build_spec.py`：项目/数据白名单、Web metadata、工具版本、运行时 Python 环境和干净 spec；
+- `scripts/build/generate_sbom.py`：从锁定的已安装运行时闭包生成 CycloneDX 1.5 `sbom.cdx.json`，校验器再次要求所有直接与传递 Python 组件及精确版本，并严格校验唯一 `bom-ref`、PURL 生态、许可证和事实文件哈希；
+- `src/netconsole/assets/open_source_notices.json` 与 `THIRD_PARTY_COMPONENTS.md`：随 Backend 进入 `netconsole/assets/`；
+- 任一未知许可证、`status: blocked`、缺少 Electron/Chromium Notice/SBOM 或 Qt 残留都会停止构建。
+
+构建依赖中的 `pip-licenses` 用于许可证解析；`generate_sbom.py` 还会真实执行 `python -m cyclonedx_py requirements - --sv 1.5 --output-reproducible --validate`，用独立生成的 CycloneDX 组件名/版本集合交叉检查锁定运行闭包。两项工具都不会被列入运行时 Notice，也不会复制进 Backend。Python distribution 使用 `pkg:pypi`，Electron 使用 `pkg:npm`；Python 解释器、Chromium、Node.js、fping、Cygwin 等非 Python distribution 使用 `pkg:generic`，不得伪装成 PyPI 包。
+
+## Electron 安装包
+
+```powershell
 cd apps/desktop_electron
 pnpm install --frozen-lockfile
 pnpm test
-pnpm build
-pnpm smoke:dev
+pnpm run typecheck
+pnpm run build
+pnpm run package:dir
+node scripts/package-smoke.mjs
 ```
 
-无参数 `main.py` 是 PyCharm/源码态 Electron 开发入口，复用 `scripts/dev.mjs`，不属于安装包入口，也不改变 Electron Main 对 Backend 的所有权。`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。未来打包态 Main 固定启动 `resources/backend/NetConsoleBackend.exe --electron-backend`，该内部参数只分派受管 Electron Runtime，不是用户启动模式。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
+`package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 
-`BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
+`build.electronDist` 固定为 `apps/desktop_electron/node_modules/electron/dist`。完成锁定依赖安装后，`electron-builder` 必须复用本机已安装的 Electron 43.1.1 分发目录，不再访问 GitHub 获取 Electron ZIP 或 `SHASUMS256.txt`；日志应出现 `using custom unpacked Electron distribution`。这项约束只消除重复下载，不绕过 `pnpm install --frozen-lockfile` 的依赖完整性，也不得通过关闭 `signAndEditExecutable` 丢弃 EXE 资源元数据。
 
-历史 Qt 桌面发布包曾包含完整 Vue Web 控制台。暂留构建脚本仍保留在 Python 打包前执行 `apps/web` 的 `pnpm build` 并嵌入资源的历史逻辑，但不再构成当前受支持发布流程。
+安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 当前受控命令序列。
 
-```powershell
-cd apps/web
-pnpm install --frozen-lockfile
-cd ../..
-```
+正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；单元测试或源码 smoke 不能替代这些验收。`nsis.deleteAppDataOnUninstall=false` 是当前数据保护约束。
 
-构建机缺少 pnpm、`apps/web/node_modules`，或构建后缺少 `dist/index.html`/`dist/web-build-meta.json` 时会明确失败，避免发布只能显示占位页的桌面包。`apps/web/dist` 和 `node_modules` 仍不得提交仓库。
+## 外部工具与许可证阻塞
 
-两个发布入口都必须在打包前重新执行 Vue build，不能因为已有 `dist/index.html` 而接受旧产物。构建脚本向 Vite 传入 `src/netconsole/core/version.py` 的发布提交身份，并校验 metadata 中的 `app_version`、`git_commit`、`build_id`、`build_time` 和 `navigation_schema_version`；任一字段缺失、损坏或与后端身份不一致均停止打包。源码开发者直接执行 `pnpm build` 时，metadata 使用当前 Git checkout，并在存在未提交修改时添加 `-dirty`。
+`resources/tools/windows-x64/fping/` 的版本化材料包含实际 Cygwin ICMP 兼容补丁、构建配方、GPLv3/LGPLv3/链接例外、精确对应源码说明和来源清单。fping 与其 Cygwin 3.6.9 runtime 在 Notice/SBOM 中作为独立组件登记，并以版本化二进制、补丁、配方和许可证文件哈希作为事实校验。iPerf3 固定为用户提供并经哈希核验的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`：构建会核对发行 ZIP 身份、四个文件 SHA-256、Cygwin 3.6.7-1 精确对应源码说明及完整 GPLv3/LGPLv3/链接例外，并分别登记 iPerf3、Cygwin、OpenSSL、zlib 与内嵌 cJSON。发行 ZIP 不进入构建输入，桌面端和 Agent 打包只从仓库内 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制本地文件；不得在发布过程中联网下载或自动替换业务工具。任何同名替换、额外文件或材料缺失均停止发布。
+
+IPOP v4.1 没有可核验的再分发许可，仅允许用户通过配置选择本机程序；任何 `IPOP.EXE` 或 `tools/windows-x64/ipop` 进入 Backend/Electron 输出都必须失败。
 
 ## Windows Go Agent
 
-独立 Agent 不进入上述 PyInstaller/Nuitka 发布链，使用 Go 1.26.5 单独构建：
+独立 Agent 不进入 Python Backend 或 Electron 安装包，仍使用自己的 Windows 构建入口：
 
-```bat
+```powershell
 apps\agent\scripts\build_windows.bat
 ```
 
-输出为 `dist/agent/windows-x64/`，临时构建目录为 `dist/agent/.build-windows-x64/`。脚本先尝试构建 Python Netmiko MR Collector，再执行 `go mod tidy` 和 `go test ./...`，最后以 `CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64` 构建 console 版和 GUI 托盘版，并从 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制工具到交付包内的 `tools/windows-x64/`。交付包的 `start_agent.bat` 与 `start_console.bat` 会在首次运行时，从包内示例仅初始化缺失的 `%LOCALAPPDATA%\NetConsole\Agent\config.json`、`targets.json`，不会覆盖真实配置。Agent 的示例配置位于 `apps/agent/resources/config/`，真实配置放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent`；运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，Agent 不携带或检测 IPOP。
+该脚本要求 Windows x64 与 Go 1.26.5，复制前先通过本地 PowerShell Guard 校验 `resources/tools/windows-x64/{fping,iperf3}`，再构建可用的 Python MR sidecar、执行 `go mod tidy`、`go test ./...` 并生成 console/托盘版本；复制后对交付目录再次执行同一 Guard。输出位于 `dist/agent/windows-x64/`，临时目录位于 `dist/agent/.build-windows-x64/`；两者都不得提交。Agent 构建、配置和运行细节见 [Agent README](../apps/agent/README.md) 与 [独立 Agent](AGENT.md)。正式工具打包全程只使用仓库本地文件，不下载业务工具。
 
-当前 Python 发布白名单不包含 Agent。正式联合发布前需要另行确定 Agent 版本注入、代码签名、Windows 服务形态和第三方工具许可证，不得把开发态 Agent 运行数据打入发布包。
+## 不得进入仓库的产物
 
-正式对外分发前，release checklist 必须人工确认 fping/iPerf3 的来源、版本、许可证、NOTICE 和 Cygwin 运行依赖。当前构建脚本只做文件存在性和 IPOP 排除，不等同于法律授权确认；iPerf3/Cygwin 材料未齐全前不得新增或替换来源不明二进制。
-
-## 外部工具要求
-
-构建前会检查工具源文件。当前 `scripts/build/build_config.py` 要求：
-
-```text
-resources/tools/windows-x64/fping/fping.exe
-resources/tools/windows-x64/fping/cygwin1.dll
-resources/tools/windows-x64/iperf3/iperf3.exe
-docs/IPOP_v4.1_notice.md
-```
-
-运行时工具路径由统一解析器处理，不依赖当前工作目录。IPOP 是用户自行提供的可选外部工具，配置保存在现有 `settings.json` 的 `external_tools/ipop_path` 键；有效配置优先，未配置时可检查 `<应用目录>/tools/windows-x64/ipop/IPOP.EXE`。启动使用 Qt `QProcess.startDetached`，不拼接 shell 命令，也不等待该外部程序退出。
-
-仓库没有可核验的 IPOP 再分发许可。PyInstaller、Nuitka、内部版、客户版和工程师版均不得包含 `IPOP.EXE` 或 `tools/windows-x64/ipop` 目录。发布脚本只从 `resources/tools/windows-x64/fping` 和 `resources/tools/windows-x64/iperf3` 白名单复制到包内 `tools/windows-x64/`；最终目录或 ZIP 检测到 IPOP 时以“检测到未经确认可再分发的第三方工具 IPOP.EXE，已停止构建发布包。”中止，不删除开发机上的本地文件。详见 [IPOP_v4.1_notice.md](IPOP_v4.1_notice.md)。
-
-## 历史 Qt 发布目录约束
-
-构建输出必须进入 `dist/` 下的版本目录，不污染项目根目录。
-
-历史发布白名单：
-
-```text
-NetConsole.exe
-_internal
-data
-runtime
-tools
-```
-
-禁入目录：
-
-```text
-docs
-tests
-project
-netconsole
-```
-
-说明：
-
-- `docs/`、`tests/`、`scripts/` 不应进入用户发布包。
-- `src/netconsole/` 源码目录不应以源码形式进入发布包。
-- 发布 zip 使用白名单枚举。
-- 打包后有发布目录和 zip 校验，防止开发目录进入包。
-
-## 历史 PyInstaller 与 Nuitka
-
-PyInstaller：
-
-- 生成 onedir 应用目录。
-- 需要完整保留应用目录结构。
-- 复制工具、创建 `data/`、`runtime/logs/`。
-
-Nuitka：
-
-- 当前主线支持 onefile 输出。
-- 最终目录也会准备 `data/`、`runtime/`、`tools/`。
-- 发布目录和 zip 均需通过白名单校验。
-
-## 历史 QFluentWidgets 打包要求
-
-- 只打包 `PySide6-Fluent-Widgets==1.11.2` 对应的 `qfluentwidgets`，不要混入 PyQt / PyQt6 / PySide2 版本。
-- 保留 `qfluentwidgets` 包内资源、图标和样式文件。
-- Mica / Acrylic / 毛玻璃效果默认关闭；打包后即使特效不可用，也必须降级为普通背景并正常启动。
-
-## 历史 Qt 内部版和客户版
-
-发布脚本支持：
-
-```text
---build-editions internal
---build-editions customer
---build-editions engineer
---build-editions both
---build-editions all
-```
-
-功能 profile：
-
-- internal 默认 full。
-- customer 默认 customer。
-- engineer 默认 full；客户 profile 中“工程师打包”开启时，`both` 构建会额外生成 engineer 包，但工程师包同样不携带 IPOP。
-- 客户版可嵌入功能隐藏配置。
-- 客户版内部调试解锁口令只作为构建期 PBKDF2 哈希写入，不写明文密码。
-- 功能开关配置页只允许源码开发态显示，任何冻结/安装包运行态（包括 internal/engineer）都不注册该入口。
-
-## 进程退出约定
-
-- 主程序明确退出时，应等待或回收内置子任务/进程。
-- 内置 fping / iperf 等工具需要随主程序明确收尾。
-- 外部 WinSCP 属于用户启动的外部进程，主程序退出时不强制处理。
-- 外部 IPOP 同样属于用户明确启动的独立程序，主程序退出时不强制结束。
-
-## 验证
-
-长期正式桌面产品和所有新业务验收只面向 Electron；Qt 只保留为迁移事实源和历史成果复现，不再构建新发布包或进入新版本回归门。源码态 `--mode web|server` 仅保留开发诊断、API 联调和无 Shell Core 探针，不是独立产品、客户入口或功能验收对象；发布检查不得把“浏览器可打开”当成 Electron 验收。`web/server` 的兼容导入链仍应在未导入 PySide6 的条件下完成分派，`server` 不得主动打开浏览器且只允许回环地址。真实 Electron 图形能力仍需在 Windows 图形环境单独验证，不能用单元测试或源码 smoke 代替人工桌面与真实设备验收。
-
-常用验证：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_release_system.py tests\test_nuitka_release_script.py
-```
-
-实际发布前还应执行脚本自带 smoke test；非交互构建可按脚本参数显式跳过，但需要说明原因。
-
-复现历史 Qt 发布包时还需确认 `_internal/netconsole/assets/web/` 中同时存在 `index.html` 和 `web-build-meta.json`，并通过启动日志核对 `frontend_source_type=packaged` 及前后端 build id 一致。未来 Electron-only 包仍必须校验相同的前后端资源身份，但其资源布局由后续安装包任务确定，不预先沿用 `_internal` 目录。
-
-还需验证冻结态内部入口：普通任务使用 `--background-worker --job`，导出使用 `--export-worker --job`；源码态分别使用 `python -m netconsole.background_worker` 和 `python -m netconsole.export_worker`。
-
-Windows Server 支持必须按 [Windows Server 测试清单](07-windows-server-test-checklist.md) 实机或虚机验证；构建成功本身不代表已覆盖所有 Server 版本、权限和图形环境。
-
-Electron-only 发布在无 Qt 构建和非 Qt 全量验证之后，还必须通过[架构一致性审计与遗留业务逻辑回收](ARCHITECTURE_COMPLIANCE.md)。Qt 历史迁移映射缺失、P0/P1 分层问题、Router 直接 SQL/设备操作、生产命令绕过 Command Profile、已删除功能活动入口或无到期时间的架构例外均阻塞发布。
-
-## 禁止事项
-
-- 禁止把项目根目录整体复制进 release。
-- 禁止把 docs/tests/project 误打进用户包。
-- 禁止构建后在项目根生成运行时数据目录。
-- 禁止在文档中写真实解锁口令、账号或密码。
+`dist/`、PyInstaller build/spec 临时目录、Electron unpacked/安装包、`apps/*/node_modules`、虚拟环境、SBOM 临时输出、日志、SQLite 和用户数据均不得提交。开发态运行数据使用 `.local/`；发布态数据由系统应用数据目录管理。

@@ -1,68 +1,27 @@
 [
-  {
-    "name": "Python",
-    "purpose": "应用运行时",
-    "license": "PSF License",
-    "homepage": "https://www.python.org/"
-  },
-  {
-    "name": "matplotlib",
-    "purpose": "分析图表绘制",
-    "license": "PSF-based",
-    "homepage": "https://matplotlib.org/"
-  },
-  {
-    "name": "numpy",
-    "purpose": "数值计算和图表数据处理",
-    "license": "BSD-3-Clause",
-    "homepage": "https://numpy.org/"
-  },
-  {
-    "name": "openpyxl",
-    "purpose": "Excel 文件导入导出",
-    "license": "MIT",
-    "homepage": "https://openpyxl.readthedocs.io/"
-  },
-  {
-    "name": "XlsxWriter",
-    "purpose": "大数据量 Excel 文件流式导出",
-    "license": "BSD-2-Clause",
-    "homepage": "https://xlsxwriter.readthedocs.io/"
-  },
-  {
-    "name": "netmiko",
-    "purpose": "网络设备 SSH/Telnet 连接与命令采集",
-    "license": "MIT",
-    "homepage": "https://github.com/ktbyers/netmiko"
-  },
-  {
-    "name": "paramiko",
-    "purpose": "SSH 连接底层能力",
-    "license": "LGPL-2.1",
-    "homepage": "https://www.paramiko.org/"
-  },
-  {
-    "name": "cryptography",
-    "purpose": "SSH 与安全通信相关加密能力",
-    "license": "Apache-2.0 OR BSD-3-Clause",
-    "homepage": "https://cryptography.io/"
-  },
-  {
-    "name": "requests",
-    "purpose": "HTTP 请求能力预留",
-    "license": "Apache-2.0",
-    "homepage": "https://requests.readthedocs.io/"
-  },
-  {
-    "name": "pytest",
-    "purpose": "自动化测试",
-    "license": "MIT",
-    "homepage": "https://docs.pytest.org/"
-  },
-  {
-    "name": "PyInstaller",
-    "purpose": "Windows 发布包构建",
-    "license": "GPL-2.0-or-later with bootloader exception",
-    "homepage": "https://pyinstaller.org/"
-  }
+  {"name": "Python", "version": "3.13.9", "scope": "runtime", "purpose": "Python Backend 运行时", "license": "PSF License", "homepage": "https://www.python.org/", "purl": "pkg:generic/python@3.13.9"},
+  {"name": "fastapi", "version": "0.139.2", "scope": "runtime", "purpose": "FastAPI Backend HTTP API", "license": "MIT", "homepage": "https://fastapi.tiangolo.com/", "purl": "pkg:pypi/fastapi@0.139.2"},
+  {"name": "python-multipart", "version": "0.0.32", "scope": "runtime", "purpose": "multipart 表单解析", "license": "Apache-2.0", "homepage": "https://github.com/Kludex/python-multipart", "purl": "pkg:pypi/python-multipart@0.0.32"},
+  {"name": "pydantic", "version": "2.13.4", "scope": "runtime", "purpose": "DTO 与配置校验", "license": "MIT", "homepage": "https://docs.pydantic.dev/", "purl": "pkg:pypi/pydantic@2.13.4"},
+  {"name": "uvicorn", "version": "0.51.0", "scope": "runtime", "purpose": "ASGI Backend 服务器", "license": "BSD-3-Clause", "homepage": "https://www.uvicorn.org/", "purl": "pkg:pypi/uvicorn@0.51.0"},
+  {"name": "websockets", "version": "16.0", "scope": "runtime", "purpose": "ASGI WebSocket 协议实现", "license": "BSD-3-Clause", "homepage": "https://github.com/python-websockets/websockets", "purl": "pkg:pypi/websockets@16.0"},
+  {"name": "httpx", "version": "0.28.1", "scope": "runtime", "purpose": "Backend HTTP 客户端", "license": "BSD-3-Clause", "homepage": "https://www.python-httpx.org/", "purl": "pkg:pypi/httpx@0.28.1"},
+  {"name": "netmiko", "version": "4.7.0", "scope": "runtime", "purpose": "网络设备 SSH/Telnet 连接与命令采集", "license": "MIT", "homepage": "https://github.com/ktbyers/netmiko", "purl": "pkg:pypi/netmiko@4.7.0"},
+  {"name": "paramiko", "version": "4.0.0", "scope": "runtime", "purpose": "SFTP、SSH Tunnel 与 SSH 错误映射", "license": "LGPL-2.1", "homepage": "https://www.paramiko.org/", "purl": "pkg:pypi/paramiko@4.0.0"},
+  {"name": "openpyxl", "version": "3.1.5", "scope": "runtime", "purpose": "Excel 文件导入与导出", "license": "MIT", "homepage": "https://openpyxl.readthedocs.io/", "purl": "pkg:pypi/openpyxl@3.1.5"},
+  {"name": "XlsxWriter", "version": "3.2.9", "scope": "runtime", "purpose": "大数据量 Excel 流式导出", "license": "BSD-2-Clause", "homepage": "https://xlsxwriter.readthedocs.io/", "purl": "pkg:pypi/xlsxwriter@3.2.9"},
+  {"name": "matplotlib", "version": "3.11.0", "scope": "runtime", "purpose": "分析图表绘制", "license": "Matplotlib-1.3-license AND bundled third-party notices", "homepage": "https://matplotlib.org/", "purl": "pkg:pypi/matplotlib@3.11.0"},
+  {"name": "numpy", "version": "2.5.1", "scope": "runtime", "purpose": "数值计算和图表数据处理", "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0", "homepage": "https://numpy.org/", "purl": "pkg:pypi/numpy@2.5.1"},
+  {"name": "PyInstaller", "version": "6.21.0", "scope": "packaged-build-runtime", "purpose": "冻结 Backend 的 bootloader 与运行时 hooks", "license": "(GPL-2.0-or-later WITH Bootloader-exception) AND Apache-2.0", "homepage": "https://pyinstaller.org/", "purl": "pkg:pypi/pyinstaller@6.21.0", "license_files": ["licenses/PYINSTALLER_COPYING.txt"]},
+  {"name": "pyinstaller-hooks-contrib", "version": "2026.6", "scope": "packaged-build-runtime", "purpose": "随 Backend 归档的第三方运行时 hooks", "license": "Apache-2.0", "homepage": "https://github.com/pyinstaller/pyinstaller-hooks-contrib", "purl": "pkg:pypi/pyinstaller-hooks-contrib@2026.6", "license_files": ["licenses/PYINSTALLER_HOOKS_CONTRIB_LICENSE.txt"]},
+  {"name": "Electron", "version": "43.1.1", "scope": "electron", "purpose": "Windows 桌面外壳", "license": "MIT", "homepage": "https://www.electronjs.org/", "purl": "pkg:npm/electron@43.1.1"},
+  {"name": "Chromium", "version": "150.0.7871.114", "scope": "electron", "purpose": "Electron 内嵌浏览器运行时", "license": "BSD-3-Clause", "homepage": "https://www.chromium.org/", "purl": "pkg:generic/chromium@150.0.7871.114"},
+  {"name": "Node.js", "version": "24.18.0", "scope": "electron", "purpose": "Electron Main/Preload JavaScript 运行时", "license": "MIT", "homepage": "https://nodejs.org/", "purl": "pkg:generic/node.js@24.18.0"},
+  {"name": "fping", "version": "5.5", "scope": "runtime-tool", "purpose": "Windows x64 Cygwin 高频 Ping 工具", "license": "BSD-like; bundled COPYING", "homepage": "https://github.com/schweikert/fping", "purl": "pkg:generic/fping@5.5", "license_files": ["tools/windows-x64/fping/COPYING"], "artifact_path": "tools/windows-x64/fping/fping.exe", "sha256": "9c9ab2f26d3d32818b53ed7b664ec53546fc5cd59f4d953e06f9d3e28673f9d9"},
+  {"name": "Cygwin Runtime (fping bundle)", "version": "3.6.9", "scope": "runtime-tool", "purpose": "fping.exe 的 Windows POSIX 运行时", "license": "LGPL-3.0-or-later WITH Cygwin-exception-3.0", "homepage": "https://cygwin.com/licensing.html", "purl": "pkg:generic/cygwin@3.6.9", "license_files": ["tools/windows-x64/fping/GPL-3.0.txt", "tools/windows-x64/fping/COPYING.LIB", "tools/windows-x64/fping/CYGWIN_LICENSE", "tools/windows-x64/fping/CORRESPONDING_SOURCE.md"], "artifact_path": "tools/windows-x64/fping/cygwin1.dll", "sha256": "d5562774ec1475bd1dab84c5249b273e60cc53e6aa968981414a4d6a3f8e2bfd"},
+  {"name": "iPerf3 Windows x64 Cygwin dynamic-auth", "version": "3.21", "scope": "runtime-tool", "purpose": "Windows x64 TCP/UDP 流量测试与可选 authentication；ar51an Apache-2.0 适用于构建分发仓库", "license": "BSD-3-Clause and bundled permissive notices", "homepage": "https://github.com/ar51an/iperf3-win-builds/releases/tag/3.21", "purl": "pkg:generic/iperf3@3.21", "license_files": ["tools/windows-x64/iperf3/licenses/AR51AN_APACHE-2.0.txt", "tools/windows-x64/iperf3/licenses/IPERF3_LICENSE.txt"], "artifact_path": "tools/windows-x64/iperf3/iperf3.exe", "sha256": "4aae5eee2b90c716d93bdc54c530a854596c92ff996859973b9f44e73799294e"},
+  {"name": "cJSON (embedded in iPerf3)", "version": "1.7.15", "scope": "runtime-tool", "purpose": "iPerf3 JSON 输出", "license": "MIT", "homepage": "https://github.com/DaveGamble/cJSON", "purl": "pkg:generic/cjson@1.7.15", "license_files": ["tools/windows-x64/iperf3/licenses/IPERF3_LICENSE.txt"]},
+  {"name": "Cygwin Runtime (iPerf3 bundle)", "version": "3.6.7", "scope": "runtime-tool", "purpose": "iPerf3 Windows bundle 的 POSIX 运行时", "license": "LGPL-3.0-or-later WITH Cygwin-exception-3.0", "homepage": "https://cygwin.com/licensing.html", "purl": "pkg:generic/cygwin@3.6.7", "license_files": ["tools/windows-x64/iperf3/licenses/GPL-3.0.txt", "tools/windows-x64/iperf3/licenses/CYGWIN_LGPL-3.0.txt", "tools/windows-x64/iperf3/licenses/CYGWIN_LINKING_EXCEPTION.txt", "tools/windows-x64/iperf3/CORRESPONDING_SOURCE.md"], "artifact_path": "tools/windows-x64/iperf3/cygwin1.dll", "sha256": "0ab76b4724499df54b75b7fa701788f1e77425ce65c8bca0a9f2120598bb8a70"},
+  {"name": "OpenSSL Runtime (iPerf3 bundle)", "version": "3.0.19", "scope": "runtime-tool", "purpose": "iPerf3 authentication 加密运行时", "license": "Apache-2.0", "homepage": "https://openssl-library.org/", "purl": "pkg:generic/openssl@3.0.19", "license_files": ["tools/windows-x64/iperf3/licenses/OPENSSL_APACHE-2.0.txt"], "artifact_path": "tools/windows-x64/iperf3/cygcrypto-3.dll", "sha256": "3cfcab214b827485265c21f5c365af5055ee47ca507cc56a1422661288d51ea6"},
+  {"name": "zlib Runtime (iPerf3 bundle)", "version": "1.3.2", "scope": "runtime-tool", "purpose": "OpenSSL/iPerf3 压缩运行时", "license": "Zlib", "homepage": "https://www.zlib.net/", "purl": "pkg:generic/zlib@1.3.2", "license_files": ["tools/windows-x64/iperf3/licenses/ZLIB_LICENSE.txt"], "artifact_path": "tools/windows-x64/iperf3/cygz.dll", "sha256": "827576482185c48ed3698454594260ee27ba32180127b8ba28c5ca68a867ce38"}
 ]

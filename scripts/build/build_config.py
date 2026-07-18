@@ -35,7 +35,10 @@ class BuildConfig:
         return self.release_dir / "_build" / backend
 
     def zip_path(self, backend: str) -> Path:
-        return self.backend_release_dir(backend) / f"{self.app_name}_{self.app_version}_{backend}.zip"
+        return (
+            self.backend_release_dir(backend)
+            / f"{self.app_name}_{self.app_version}_{backend}.zip"
+        )
 
     @property
     def required_tool_files(self) -> tuple[Path, ...]:
@@ -43,6 +46,10 @@ class BuildConfig:
             self.tools_dir / "windows-x64" / "fping" / "fping.exe",
             self.tools_dir / "windows-x64" / "fping" / "cygwin1.dll",
             self.tools_dir / "windows-x64" / "iperf3" / "iperf3.exe",
+            self.tools_dir / "windows-x64" / "iperf3" / "cygwin1.dll",
+            self.tools_dir / "windows-x64" / "iperf3" / "cygcrypto-3.dll",
+            self.tools_dir / "windows-x64" / "iperf3" / "cygz.dll",
+            self.tools_dir / "windows-x64" / "iperf3" / "SOURCE_PROVENANCE.json",
             self.ipop_notice,
         )
 

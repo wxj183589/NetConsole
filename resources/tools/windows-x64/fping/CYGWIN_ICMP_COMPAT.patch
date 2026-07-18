@@ -1,0 +1,100 @@
+diff --git a/src/fping.c b/src/fping.c
+index ecba673..6bedcf0 100644
+--- a/src/fping.c
++++ b/src/fping.c
+@@ -77,6 +77,7 @@ extern "C" {
+ 
+ #include <netinet/ip.h>
+ #include <netinet/ip_icmp.h>
++#include "cygwin_icmp_compat.h"
+ 
+ #include <arpa/inet.h>
+ #include <ctype.h>
+diff --git a/src/socket4.c b/src/socket4.c
+index c408c6d..8b9a6f0 100644
+--- a/src/socket4.c
++++ b/src/socket4.c
+@@ -39,6 +39,7 @@
+ #include <netinet/in_systm.h>
+ #include <netinet/ip.h>
+ #include <netinet/ip_icmp.h>
++#include "cygwin_icmp_compat.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/src/cygwin_icmp_compat.h b/src/cygwin_icmp_compat.h
+new file mode 100644
+index 0000000..0172212
+--- /dev/null
++++ b/src/cygwin_icmp_compat.h
+@@ -0,0 +1,70 @@
++#ifndef FPING_CYGWIN_ICMP_COMPAT_H
++#define FPING_CYGWIN_ICMP_COMPAT_H
++
++#ifdef __CYGWIN__
++
++#include <stdint.h>
++
++#ifndef ICMP_MINLEN
++#define ICMP_MINLEN 8
++#endif
++
++#ifndef ICMP_ECHOREPLY
++#define ICMP_ECHOREPLY 0
++#endif
++#ifndef ICMP_UNREACH
++#define ICMP_UNREACH 3
++#endif
++#ifndef ICMP_SOURCEQUENCH
++#define ICMP_SOURCEQUENCH 4
++#endif
++#ifndef ICMP_REDIRECT
++#define ICMP_REDIRECT 5
++#endif
++#ifndef ICMP_ECHO
++#define ICMP_ECHO 8
++#endif
++#ifndef ICMP_TIMXCEED
++#define ICMP_TIMXCEED 11
++#endif
++#ifndef ICMP_PARAMPROB
++#define ICMP_PARAMPROB 12
++#endif
++#ifndef ICMP_TSTAMP
++#define ICMP_TSTAMP 13
++#endif
++#ifndef ICMP_TSTAMPREPLY
++#define ICMP_TSTAMPREPLY 14
++#endif
++
++struct icmp {
++    uint8_t icmp_type;
++    uint8_t icmp_code;
++    uint16_t icmp_cksum;
++    union {
++        struct {
++            uint16_t icd_id;
++            uint16_t icd_seq;
++        } ih_idseq;
++        uint32_t ih_void;
++    } icmp_hun;
++    union {
++        struct {
++            uint32_t its_otime;
++            uint32_t its_rtime;
++            uint32_t its_ttime;
++        } id_ts;
++        unsigned char id_data[1];
++    } icmp_dun;
++};
++
++#define icmp_id icmp_hun.ih_idseq.icd_id
++#define icmp_seq icmp_hun.ih_idseq.icd_seq
++#define icmp_data icmp_dun.id_data
++#define icmp_otime icmp_dun.id_ts.its_otime
++#define icmp_rtime icmp_dun.id_ts.its_rtime
++#define icmp_ttime icmp_dun.id_ts.its_ttime
++
++#endif
++
++#endif

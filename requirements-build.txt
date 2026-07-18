@@ -1,0 +1,6 @@
+# Windows Backend/Electron 发布依赖；不进入产品运行时。
+-r requirements-runtime.txt
+PyInstaller>=6.21.0
+pip-licenses>=5.5.5
+cyclonedx-bom>=7.3.0
+license-expression>=30.4.4

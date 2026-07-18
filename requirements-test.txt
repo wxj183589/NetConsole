@@ -1,0 +1,3 @@
+# 测试依赖；不属于产品运行时。
+-r requirements-runtime.txt
+pytest>=9.1.1

@@ -21,7 +21,7 @@ cd apps\agent
 scripts\build_windows.bat
 ```
 
-输出：`dist/agent/windows-x64/`，同时生成 console 版和 Windows 托盘版。构建脚本会先尝试构建 MR Collector，再执行 `go mod tidy`、`go test ./...`；fping/iPerf 只从仓库根 `resources/tools/windows-x64/` 白名单复制，不从 Agent 子目录或根 `tools/` 复制。临时构建目录也位于 `dist/agent/.build-windows-x64/`，不会写回 `apps/agent/`。
+输出：`dist/agent/windows-x64/`，同时生成 console 版和 Windows 托盘版。构建脚本会先对仓库根 `resources/tools/windows-x64/` 执行离线哈希/来源/许可证 Guard，再尝试构建 MR Collector、执行 `go mod tidy` 和 `go test ./...`；fping/iPerf 只从该本地白名单复制，复制后的交付目录还会复验一次，不从 Agent 子目录或根 `tools/` 复制，也不在构建中下载业务工具。临时构建目录位于 `dist/agent/.build-windows-x64/`，不会写回 `apps/agent/`。
 
 构建脚本优先使用 PATH 中的 `go.exe`；若未加入 PATH，会回退到 `D:\Program Files\Go\bin\go.exe`。Go 的模块缓存和编译缓存默认位于用户目录并由不同项目共享，不应复制到 `apps/agent/` 或提交仓库。
 
@@ -119,6 +119,8 @@ tools/windows-x64/
 
 不再支持 `apps/agent/tools/iperf/` 等旧目录，也不做 legacy fallback。使用 Cygwin 版工具时，exe 和对应 DLL 必须位于同一个工具目录；Agent 启动子进程时会把工作目录设置为 exe 所在目录。缺少 exe 或 DLL 时不会创建伪运行任务，API 和 Web 会给出当前配置路径及放置提示。
 
+仓库内置 iPerf3 固定为用户提供并经哈希核验的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`。fping 固定为本地构建的 v5.5 加已归档 Cygwin ICMP 兼容补丁，运行时为 Cygwin 3.6.9-1。两套工具的 `SOURCE_PROVENANCE.json`、固定文件哈希、GPLv3/LGPLv3/链接例外与对应源码说明必须随工具目录一起进入 Agent 包；fping 还必须携带补丁和构建配方。不能用同名未知二进制替换、混入额外文件或在构建时联网补齐。
+
 默认工具路径先检查 Agent 可执行文件同级的 `tools/windows-x64/`，因此真实配置位于 `%LOCALAPPDATA%` 时不会错误查找 `%LOCALAPPDATA%\NetConsole\Agent\tools`；开发态其次检查 `$NETCONSOLE_AGENT_PROJECT_ROOT/resources/tools/windows-x64/`，再从活动配置目录向上查找仓库 `resources/tools/windows-x64/`，最后才回退到配置目录相对路径。用户显式配置的绝对路径直接使用，相对路径仍以 `config.json` 所在目录解析。MR sidecar 使用同一交付包优先规则。`apps/agent/resources/` 只保存 Agent 示例配置；运行时工具不在此目录复制第二份，避免与根 `resources/tools/` 产生双来源。`apps/agent/tools/` 永久禁止使用。
 
 真实 fping 使用独立 `fping` 任务类型，固定调用随 Agent 部署的 fping 5.5 参数，不接受任意命令、工具路径或输出路径。`ping_probe` 继续使用并发 TCP Connect，事件保持 `mode=tcp`，不等同于 ICMP Ping。
@@ -182,12 +184,11 @@ Agent 收到 Ctrl+C 或终止信号时会先停止 HTTP 接入，再取消运行
 构建 MR Collector：
 
 ```bat
-cd apps\agent\mr_collector_py
-pip install pyinstaller netmiko paramiko cryptography
-build_windows.bat
+\.venv\Scripts\python.exe -m pip install -r requirements-build.txt -c constraints.txt
+apps\agent\scripts\build_windows.bat
 ```
 
-普通 Agent 运行包不依赖开发机 Python；只有重新构建或替换 sidecar 时才需要 Python。Go Agent 启动 sidecar 时会注入 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`。
+构建脚本优先使用仓库 `.venv` 中的 PyInstaller，只有项目虚拟环境不可用时才回退到 `PATH`；sidecar 构建失败或产物缺失会终止整个 Agent 构建，不允许生成缺组件的“成功”交付目录。普通 Agent 运行包不依赖开发机 Python。Go Agent 启动 sidecar 时会注入 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`。
 
 ## 当前限制
 

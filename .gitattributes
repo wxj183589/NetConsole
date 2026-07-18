@@ -1,0 +1,15 @@
+# 版本化运行工具的来源、许可证和合规材料参与发布哈希，必须跨平台保持字节稳定。
+resources/tools/**/*.md text eol=lf
+resources/tools/**/*.txt text eol=lf
+resources/tools/**/*.txt whitespace=-blank-at-eol,-blank-at-eof
+resources/tools/**/*.json text eol=lf
+resources/tools/**/*.patch text eol=lf
+resources/tools/**/*.patch whitespace=-blank-at-eol,-blank-at-eof
+resources/tools/**/COPYING text eol=lf
+resources/tools/**/COPYING.LIB text eol=lf
+resources/tools/**/COPYING.LIB whitespace=-blank-at-eol,-blank-at-eof
+resources/tools/**/CYGWIN_LICENSE text eol=lf
+resources/tools/**/*.exe binary
+resources/tools/**/*.dll binary
+src/netconsole/assets/licenses/*.txt text eol=lf
+src/netconsole/assets/licenses/*.txt whitespace=-blank-at-eol,-blank-at-eof

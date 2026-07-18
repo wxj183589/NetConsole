@@ -22,6 +22,20 @@ execFileSync(
   python,
   [
     '-m',
+    'scripts.build.check_runtime_deps',
+    '--locked-environment',
+    '--requirements',
+    'requirements-build.txt',
+    '--constraints',
+    'constraints.txt',
+  ],
+  { cwd: projectRoot, env, stdio: 'inherit' },
+)
+
+execFileSync(
+  python,
+  [
+    '-m',
     'scripts.build.build_release',
     '--backend',
     'pyinstaller',

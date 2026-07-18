@@ -1,0 +1,14 @@
+# Electron Backend 运行时直接依赖。
+# 可复现安装必须同时使用：python -m pip install -r requirements-runtime.txt -c constraints.txt
+fastapi>=0.139.2
+python-multipart>=0.0.32
+pydantic>=2.13.4
+uvicorn>=0.51.0
+websockets>=16.0,<17
+httpx>=0.28.1,<1
+netmiko>=4.7.0,<5
+paramiko>=4.0.0,<5
+openpyxl>=3.1.5
+XlsxWriter>=3.2.9
+matplotlib>=3.11.0
+numpy>=2.5.1

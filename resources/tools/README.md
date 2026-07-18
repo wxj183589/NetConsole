@@ -16,7 +16,7 @@ Agent 的 Python MR sidecar 是 `apps/agent/mr_collector_py/` 的自建构建产
 
 ## 来源与许可证
 
-- `fping`：`VERSION.txt` 记录为 schweikert/fping v5.5；目录内保留 `COPYING`、`CYGWIN_LICENSE` 和说明文件。
-- `iperf3`：当前仓库保留 Windows x64 Cygwin 版 3.20 运行文件及其 DLL；本目录目前没有随包携带的上游许可证文件，补齐来源和许可证/NOTICE 前不得新增或替换来源不明的二进制。
+- `fping`：固定为 schweikert/fping v5.5 加 `CYGWIN_ICMP_COMPAT.patch` 的本地 Cygwin 3.6.9-1 构建；`BUILD_RECIPE.md`、`CORRESPONDING_SOURCE.md` 和 `SOURCE_PROVENANCE.json` 固定实际补丁、参数、源码归档和二进制哈希，GNU GPLv3、LGPLv3 与 Cygwin Linking Exception 正文随目录保留。
+- `iperf3`：固定为用户提供的 `ar51an/iperf3-win-builds` 3.21 `iperf-3.21-win64-dynamic-auth.zip`；目录内 `SOURCE_PROVENANCE.json` 记录发行资产和四个文件哈希，`CORRESPONDING_SOURCE.md` 固定 Cygwin 3.6.7-1 源码归档与发布责任，`licenses/` 保留 GPLv3、LGPLv3、iPerf3、Cygwin、OpenSSL、zlib 与构建仓库许可证。发行 ZIP 只作为离线来源核验证据，正式构建不下载或解压远程工具，只复制本目录已版本化并通过哈希校验的本地文件。
 
-新增平台或工具前，必须记录来源、版本、许可证和同目录运行依赖，并同步构建白名单与测试。正式对外发布前，release checklist 必须人工确认 fping/iPerf3 的许可证和 NOTICE 材料；构建脚本当前只做文件存在性和 IPOP 排除，不等同于法律授权确认。缺失工具必须在构建或启动时明确报错，不能静默回退到旧目录。
+新增平台或工具前，必须记录来源、版本、许可证和同目录运行依赖，并同步构建白名单与测试。桌面端和 Agent 构建都会校验 fping/iPerf3 的来源、二进制与许可证哈希，并拒绝工具目录中的额外文件；缺失或漂移必须明确失败，不能联网补齐或静默回退到旧目录。

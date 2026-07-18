@@ -27,7 +27,7 @@ tmp/
 release/
 
 # Build output
-build/
+/build/
 dist/
 *.spec
 *.spec.bak

@@ -1,6 +1,8 @@
 from pathlib import Path
+import inspect
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -8,7 +10,7 @@ from scripts.build import clean_build_spec
 import pytest
 from scripts.build import release
 from scripts.build import build_release
-from scripts.build.check_runtime_deps import check_runtime_deps
+from scripts.build.check_runtime_deps import REQUIRED_TOOLS, check_runtime_deps
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
     validate_allowed_runtime,
@@ -19,6 +21,13 @@ from netconsole.build.clean_build_lock import (
 )
 from netconsole.core.resources import get_changelog_path
 from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
+
+
+def _write_clean_build_tool_files(app_dist: Path) -> None:
+    for relative in clean_build_spec.REQUIRED_TOOL_FILES:
+        path = app_dist / relative.relative_to("resources")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
 
 
 def test_version_file_exposes_release_metadata():
@@ -80,7 +89,9 @@ def test_release_push_failures_do_not_interrupt_release(monkeypatch):
     monkeypatch.setattr(
         release,
         "run_git",
-        lambda args, check=True: "abc1234" if args[:2] == ["rev-parse", "--short"] else "",
+        lambda args, check=True: (
+            "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
+        ),
     )
 
     def fake_run(cmd, **kwargs):
@@ -99,7 +110,12 @@ def test_release_push_failures_do_not_interrupt_release(monkeypatch):
     assert not result.push_nas_success
     assert not result.push_github_success
     assert result.final_status == release.OFFLINE_RELEASE
-    assert any(cmd[:4] == ["git", "tag", "-a", "v1.0.9"] and cmd[4] == "-m" and cmd[5].endswith("v1.0.9") for cmd in commands)
+    assert any(
+        cmd[:4] == ["git", "tag", "-a", "v1.0.9"]
+        and cmd[4] == "-m"
+        and cmd[5].endswith("v1.0.9")
+        for cmd in commands
+    )
     assert ["git", "push", "github", "HEAD"] in commands
     assert ["git", "push", "nas", "HEAD"] in commands
     assert ["git", "push", "github", "v1.0.9"] in commands
@@ -115,7 +131,9 @@ def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
     monkeypatch.setattr(
         release,
         "run_git",
-        lambda args, check=True: "abc1234" if args[:2] == ["rev-parse", "--short"] else "",
+        lambda args, check=True: (
+            "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
+        ),
     )
 
     def fake_run(cmd, **kwargs):
@@ -136,9 +154,12 @@ def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
     assert ["git", "push", "github", "HEAD"] in commands
     assert ["git", "push", "nas", "HEAD"] in commands
 
+
 def test_build_release_script_uses_project_output_and_release_zip():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "scripts" / "build" / "build_release.bat").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "build_release.bat").read_text(
+        encoding="utf-8"
+    )
 
     assert "scripts.build.build_release" in text
     assert "--backend pyinstaller %*" in text
@@ -152,7 +173,9 @@ def test_build_release_script_uses_project_output_and_release_zip():
 
 def test_changelog_source_is_chinese_for_zh_ui():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "src" / "netconsole" / "docs" / "changelog.md").read_text(encoding="utf-8")
+    text = (root / "src" / "netconsole" / "docs" / "changelog.md").read_text(
+        encoding="utf-8"
+    )
     forbidden_fragments = [
         "Onboard MR Online Collection",
         "Packaging",
@@ -163,6 +186,7 @@ def test_changelog_source_is_chinese_for_zh_ui():
 
     assert all(fragment not in text for fragment in forbidden_fragments)
 
+
 def test_release_script_uses_chinese_auto_commit_message():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
@@ -170,6 +194,7 @@ def test_release_script_uses_chinese_auto_commit_message():
     assert "auto release build" not in text
     assert 'git", "commit", "--allow-empty", "-m"' in text
     assert 'git", "tag", "-a", selected_version' in text
+
 
 def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert clean_build_spec.CLEAN_BUILD is True
@@ -179,22 +204,51 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("src/netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
-    assert ("resources/tools/windows-x64/fping", "tools/windows-x64/fping") not in clean_build_spec.ALLOWED_DATA
-    assert ("resources/tools/windows-x64/iperf3", "tools/windows-x64/iperf3") not in clean_build_spec.ALLOWED_DATA
-    assert not any(source.casefold().startswith("tools/windows-x64/ipop") for source, _destination in clean_build_spec.ALLOWED_DATA)
+    assert (
+        "resources/tools/windows-x64/fping",
+        "tools/windows-x64/fping",
+    ) not in clean_build_spec.ALLOWED_DATA
+    assert (
+        "resources/tools/windows-x64/iperf3",
+        "tools/windows-x64/iperf3",
+    ) not in clean_build_spec.ALLOWED_DATA
+    assert not any(
+        source.casefold().startswith("tools/windows-x64/ipop")
+        for source, _destination in clean_build_spec.ALLOWED_DATA
+    )
     assert ("tools", "tools") not in clean_build_spec.ALLOWED_DATA
-    assert all("/ui/" not in source.replace("\\", "/") for source, _destination in clean_build_spec.ALLOWED_DATA)
+    assert all(
+        "/ui/" not in source.replace("\\", "/")
+        for source, _destination in clean_build_spec.ALLOWED_DATA
+    )
     assert ("apps/web/dist", "netconsole/assets/web") in clean_build_spec.ALLOWED_DATA
     assert (
         "resources/device_command_profiles.json",
         "netconsole/assets",
     ) in clean_build_spec.ALLOWED_DATA
-    assert ("src/netconsole/docs", "netconsole/docs") not in clean_build_spec.ALLOWED_DATA
-    assert ("src/netconsole/docs/changelog.md", "netconsole/docs/changelog.md") not in clean_build_spec.ALLOWED_DATA
+    assert (
+        "src/netconsole/docs",
+        "netconsole/docs",
+    ) not in clean_build_spec.ALLOWED_DATA
+    assert (
+        "src/netconsole/docs/changelog.md",
+        "netconsole/docs/changelog.md",
+    ) not in clean_build_spec.ALLOWED_DATA
     assert "tests" in clean_build_spec.EXCLUDE_DIRS
     assert "docs" in clean_build_spec.EXCLUDE_DIRS
     assert "project" in clean_build_spec.EXCLUDE_DIRS
     assert "__pycache__" in clean_build_spec.EXCLUDE_DIRS
+
+
+def test_release_tools_are_copied_only_from_versioned_local_resources():
+    source = inspect.getsource(build_release.copy_release_tools)
+
+    assert "config.tools_dir" in source
+    assert 'for tool_name in ("fping", "iperf3")' in source
+    assert "http://" not in source
+    assert "https://" not in source
+    assert "urlopen" not in source
+    assert "download" not in source.casefold()
 
 
 def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkeypatch):
@@ -266,14 +320,38 @@ def test_clean_build_spec_scans_runtime_import_graph():
         "netconsole.launcher.runtime_supervisor",
         "netconsole.launcher.web_server",
     } <= set(imports)
-    assert not any(item == "netconsole.ui" or item.startswith("netconsole.ui.") for item in imports)
+    assert not any(
+        item == "netconsole.ui" or item.startswith("netconsole.ui.") for item in imports
+    )
     assert all(not item.startswith("tests") for item in imports)
     assert all(not item.startswith("project") for item in imports)
 
 
+def test_clean_build_spec_keeps_direct_runtime_distributions_reachable():
+    imports = set(clean_build_spec.build_direct_runtime_hidden_imports())
+
+    assert {
+        "fastapi",
+        "httpx",
+        "matplotlib",
+        "netmiko",
+        "numpy",
+        "openpyxl",
+        "paramiko",
+        "pydantic",
+        "python_multipart",
+        "uvicorn",
+        "websockets",
+        "xlsxwriter",
+    } <= imports
+    assert "__pycache__" not in imports
+
+
 def test_clean_build_import_graph_is_entry_file_driven():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "pending_sources = [ENTRY_FILE]" in text
     assert ".rglob(" not in text
@@ -281,9 +359,13 @@ def test_clean_build_import_graph_is_entry_file_driven():
     assert "(ROOT / 'netconsole').rglob" not in text
 
 
-def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_path, monkeypatch):
+def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
+    tmp_path, monkeypatch
+):
     runtime_files = clean_build_spec.build_runtime_subset_from_import_graph()
-    staged_relative = {path.relative_to(clean_build_spec.ROOT) for path in runtime_files}
+    staged_relative = {
+        path.relative_to(clean_build_spec.ROOT) for path in runtime_files
+    }
     expected_relative = {
         path.relative_to(clean_build_spec.ROOT)
         for path in clean_build_spec.build_runtime_module_map().values()
@@ -295,19 +377,56 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(tmp_
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert all(not destination.startswith("tools/") for _source, destination in datas)
-    assert any(destination == "netconsole/assets/web" and Path(source).name == "dist" for source, destination in datas)
+    assert any(
+        destination == "netconsole/assets/web" and Path(source).name == "dist"
+        for source, destination in datas
+    )
     assert any(
         destination == "netconsole/assets"
         and Path(source).name == "device_command_profiles.json"
         for source, destination in datas
     )
-    assert not any(destination == "tools" and Path(source).name == "tools" for source, destination in datas)
+    assert {
+        "PYINSTALLER_COPYING.txt",
+        "PYINSTALLER_HOOKS_CONTRIB_LICENSE.txt",
+    } <= {
+        Path(source).name
+        for source, destination in datas
+        if destination == "netconsole/assets/licenses"
+    }
+    assert not any(
+        destination == "tools" and Path(source).name == "tools"
+        for source, destination in datas
+    )
     assert all(destination != "data" for _source, destination in datas)
+
+
+def test_clean_build_excludes_only_ambient_non_runtime_modules(monkeypatch):
+    monkeypatch.setattr(
+        clean_build_spec,
+        "runtime_dependency_versions",
+        lambda _root: {"fastapi": "1", "shared-runtime": "1"},
+    )
+    monkeypatch.setattr(
+        clean_build_spec.metadata,
+        "packages_distributions",
+        lambda: {
+            "fastapi": ["fastapi"],
+            "pytest": ["pytest"],
+            "shared": ["shared-runtime", "build-helper"],
+            "netconsole": ["netconsole-backend"],
+        },
+    )
+    monkeypatch.setattr(clean_build_spec.metadata, "distributions", lambda: ())
+
+    assert clean_build_spec.build_non_runtime_module_excludes() == ["pytest"]
 
 
 def test_clean_build_spec_does_not_use_directory_copy_or_full_scan():
     root = Path(__file__).resolve().parents[1]
-    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(encoding="utf-8")
+    text = (root / "scripts" / "build" / "clean_build_spec.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "copytree" not in text
     assert "_copy_runtime_package" not in text
@@ -325,13 +444,18 @@ def test_clean_build_spec_generated_spec_is_clean(tmp_path, monkeypatch):
     assert "CLEAN_BUILD = True" in text
     assert "RUNTIME_IMPORTS =" in text
     assert "RUNTIME_DATAS =" in text
+    assert "RUNTIME_EXCLUDES =" in text
     assert "VC_RUNTIME_BINARIES =" in text
     assert "datas=RUNTIME_DATAS" in text
     assert "binaries=VC_RUNTIME_BINARIES" in text
+    assert (
+        str(clean_build_spec.DIST_ROOT / "NetConsoleBackend" / "_internal") not in text
+    )
     assert "hiddenimports=RUNTIME_IMPORTS" in text
+    assert "hooksconfig={'matplotlib': {'backends': 'Agg'}}" in text
     assert "PySide" not in text
     assert "qfluent" not in text.casefold()
-    assert "excludes=['tests', 'docs', 'project', '__pycache__']" in text
+    assert "*RUNTIME_EXCLUDES" in text
     assert "contents_directory='_internal'" in text
     assert "console=True" in text
     assert "name='NetConsoleBackend'" in text
@@ -368,8 +492,12 @@ def test_clean_build_lock_rejects_netconsole_docs_runtime_path():
 
 
 def test_clean_build_lock_rejects_illegal_spec_datas():
-    with pytest.raises(CleanBuildLockError, match="Illegal PyInstaller spec datasource"):
-        validate_project_safety(spec_text="a = Analysis(['main.py'], datas=[('.', '.')])")
+    with pytest.raises(
+        CleanBuildLockError, match="Illegal PyInstaller spec datasource"
+    ):
+        validate_project_safety(
+            spec_text="a = Analysis(['main.py'], datas=[('.', '.')])"
+        )
 
 
 def test_clean_build_lock_validates_required_pyinstaller_options():
@@ -389,7 +517,9 @@ def test_clean_build_lock_validates_required_pyinstaller_options():
 
     validate_pyinstaller_command(args)
 
-    with pytest.raises(CleanBuildLockError, match="Missing required PyInstaller option: --console"):
+    with pytest.raises(
+        CleanBuildLockError, match="Missing required PyInstaller option: --console"
+    ):
         validate_pyinstaller_command([arg for arg in args if arg != "--console"])
 
 
@@ -424,31 +554,35 @@ def test_clean_build_success_shape_allows_independent_exe_layout(tmp_path):
 
 def test_clean_build_packaged_tools_validation(tmp_path):
     app_dist = tmp_path / "NetConsoleBackend"
-    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
-    for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
+    _write_clean_build_tool_files(app_dist)
 
     clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
 
 
-def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(monkeypatch):
+def test_engineer_edition_is_selected_by_explicit_request_or_customer_option(
+    monkeypatch,
+):
     monkeypatch.setattr(build_release, "engineer_package_enabled", lambda: False)
     assert build_release.selected_editions("engineer") == ("engineer",)
     assert build_release.selected_editions("both") == ("internal", "customer")
 
     monkeypatch.setattr(build_release, "engineer_package_enabled", lambda: True)
-    assert build_release.selected_editions("both") == ("internal", "customer", "engineer")
+    assert build_release.selected_editions("both") == (
+        "internal",
+        "customer",
+        "engineer",
+    )
 
 
 def test_clean_build_packaged_tools_validation_rejects_missing_tool(tmp_path):
     app_dist = tmp_path / "NetConsoleBackend"
     (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
+    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text(
+        "", encoding="utf-8"
+    )
+    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text(
+        "", encoding="utf-8"
+    )
 
     with pytest.raises(CleanBuildLockError, match="packaged runtime tool is missing"):
         clean_build_spec.check_packaged_tools(app_dist, run_version_check=False)
@@ -465,15 +599,28 @@ def test_clean_build_lock_rejects_ipop_in_final_dist(tmp_path):
         validate_dist_output(app_dist)
 
 
+def _write_test_pe(
+    path: Path, machine: int = clean_build_spec.IMAGE_FILE_MACHINE_AMD64
+) -> None:
+    payload = bytearray(0x88)
+    payload[0:2] = b"MZ"
+    payload[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    payload[0x80:0x84] = b"PE\x00\x00"
+    payload[0x84:0x86] = machine.to_bytes(2, "little")
+    path.write_bytes(payload)
+
+
 def test_collect_vc_runtime_dlls_finds_required_files(tmp_path):
     dll_dir = tmp_path / "runtime"
     dll_dir.mkdir()
     for dll_name in clean_build_spec.REQUIRED_VC_RUNTIME_DLLS:
-        (dll_dir / dll_name).write_text("", encoding="utf-8")
+        _write_test_pe(dll_dir / dll_name)
 
     result = clean_build_spec.collect_vc_runtime_dlls([dll_dir])
 
-    assert {Path(source).name for source, _target in result} == set(clean_build_spec.REQUIRED_VC_RUNTIME_DLLS)
+    assert {Path(source).name for source, _target in result} == set(
+        clean_build_spec.REQUIRED_VC_RUNTIME_DLLS
+    )
     assert all(target == "." for _source, target in result)
 
 
@@ -482,25 +629,60 @@ def test_collect_vc_runtime_dlls_rejects_missing_required_file(tmp_path):
     dll_dir.mkdir()
     for dll_name in clean_build_spec.REQUIRED_VC_RUNTIME_DLLS:
         if dll_name != "VCRUNTIME140_1.dll":
-            (dll_dir / dll_name).write_text("", encoding="utf-8")
+            _write_test_pe(dll_dir / dll_name)
 
     with pytest.raises(CleanBuildLockError, match="VCRUNTIME140_1.dll"):
         clean_build_spec.collect_vc_runtime_dlls([dll_dir])
+
+
+def test_collect_vc_runtime_dlls_rejects_x86_runtime(tmp_path):
+    dll_dir = tmp_path / "runtime"
+    dll_dir.mkdir()
+    for dll_name in clean_build_spec.REQUIRED_VC_RUNTIME_DLLS:
+        machine = (
+            0x014C
+            if dll_name == "MSVCP140.dll"
+            else clean_build_spec.IMAGE_FILE_MACHINE_AMD64
+        )
+        _write_test_pe(dll_dir / dll_name, machine)
+
+    with pytest.raises(CleanBuildLockError, match="MSVCP140.dll"):
+        clean_build_spec.collect_vc_runtime_dlls([dll_dir])
+
+
+def test_default_vc_runtime_roots_never_include_syswow64(monkeypatch, tmp_path):
+    system32 = tmp_path / "System32"
+    syswow64 = tmp_path / "SysWOW64"
+    system32.mkdir()
+    syswow64.mkdir()
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
+    roots = clean_build_spec._default_vc_runtime_search_roots()
+
+    assert system32.resolve() in roots
+    assert syswow64.resolve() not in roots
 
 
 def _make_packaged_runtime(tmp_path: Path) -> Path:
     app_dist = tmp_path / "NetConsoleBackend"
     internal = app_dist / "_internal"
     (internal / "netconsole").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
     (app_dist / "NetConsoleBackend.exe").write_text("", encoding="utf-8")
     (internal / "python310.dll").write_text("", encoding="utf-8")
-    for name in ("VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "MSVCP140.dll", "CONCRT140.dll", "msvcp140_1.dll", "msvcp140_2.dll"):
+    for name in (
+        "VCRUNTIME140.dll",
+        "VCRUNTIME140_1.dll",
+        "MSVCP140.dll",
+        "CONCRT140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+    ):
         (internal / name).write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
+    for relative in REQUIRED_TOOLS:
+        path = app_dist / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
     return app_dist
 
 
@@ -524,7 +706,10 @@ def test_runtime_deps_rejects_qt_residue(tmp_path):
     result = check_runtime_deps(app_dist)
 
     assert not result.ok
-    assert any("Qt runtime residue found" in message and "Qt6Gui.dll" in message for message in result.messages)
+    assert any(
+        "Qt runtime residue found" in message and "Qt6Gui.dll" in message
+        for message in result.messages
+    )
 
 
 def test_runtime_deps_rejects_writable_data_inside_bundle(tmp_path):
@@ -534,7 +719,9 @@ def test_runtime_deps_rejects_writable_data_inside_bundle(tmp_path):
     result = check_runtime_deps(app_dist)
 
     assert not result.ok
-    assert any("must not contain writable data" in message for message in result.messages)
+    assert any(
+        "must not contain writable data" in message for message in result.messages
+    )
 
 
 def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
@@ -549,7 +736,9 @@ def test_runtime_deps_accepts_complete_packaged_runtime(tmp_path):
     assert "[OK] CONCRT140.dll found" in result.messages
     assert "[OK] tools/windows-x64/fping/fping.exe found" in result.messages
     assert "[OK] tools/windows-x64/iperf3/iperf3.exe found" in result.messages
-    assert "[OK] no writable data/runtime directory in backend bundle" in result.messages
+    assert (
+        "[OK] no writable data/runtime directory in backend bundle" in result.messages
+    )
 
 
 def test_check_packaged_runtime_script_runs_from_repo_root(tmp_path):
@@ -577,24 +766,91 @@ def test_readme_documents_electron_runtime():
     assert "Electron" in text
     assert "runtime" in text.lower()
 
-def test_clean_build_packaged_tools_version_checks_accept_expected_markers(tmp_path, monkeypatch):
+
+def test_clean_build_packaged_tools_version_checks_accept_expected_markers(
+    tmp_path, monkeypatch
+):
     app_dist = tmp_path / "NetConsoleBackend"
-    (app_dist / "tools" / "windows-x64" / "fping").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "iperf3").mkdir(parents=True)
-    (app_dist / "tools" / "windows-x64" / "fping" / "fping.exe").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "fping" / "cygwin1.dll").write_text("", encoding="utf-8")
-    (app_dist / "tools" / "windows-x64" / "iperf3" / "iperf3.exe").write_text("", encoding="utf-8")
-    for dll_name in ("cygcrypto-3.dll", "cygwin1.dll", "cygz.dll"):
-        (app_dist / "tools" / "windows-x64" / "iperf3" / dll_name).write_text("", encoding="utf-8")
+    _write_clean_build_tool_files(app_dist)
 
     def fake_run(args, **kwargs):
         if str(args[0]).endswith("fping.exe"):
-            return subprocess.CompletedProcess(args, 2, stdout="Version 5.5\nHost not found: -v error", stderr="")
-        return subprocess.CompletedProcess(args, 0, stdout="iperf 3.20 (cJSON 1.7.15)", stderr="")
+            return subprocess.CompletedProcess(
+                args, 2, stdout="Version 5.5\nHost not found: -v error", stderr=""
+            )
+        return subprocess.CompletedProcess(
+            args, 0, stdout="iperf 3.21 (cJSON 1.7.15)", stderr=""
+        )
 
     monkeypatch.setattr(clean_build_spec.subprocess, "run", fake_run)
 
     clean_build_spec.check_packaged_tools(app_dist)
+
+
+def test_clean_build_pins_approved_iperf_3_21_dynamic_auth_asset():
+    clean_build_spec.validate_tool_sources()
+
+    assert clean_build_spec.IPERF_RELEASE_ASSET == {
+        "name": "iperf-3.21-win64-dynamic-auth.zip",
+        "sha256": "0d3ac723df5cc7b2ab1851fe9441c14291c6583b6acf8ef81dabee73c145c2eb",
+    }
+    assert set(path.name for path in clean_build_spec.IPERF_RELEASE_SHA256) == {
+        "iperf3.exe",
+        "cygwin1.dll",
+        "cygcrypto-3.dll",
+        "cygz.dll",
+    }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate_file",
+        "wrong_file_version",
+        "extra_root_property",
+        "incomplete_upstream_source",
+        "boolean_as_number",
+        "missing_allowed_file",
+    ],
+)
+def test_clean_build_rejects_inexact_runtime_tool_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+):
+    source = Path(__file__).resolve().parents[1] / "resources" / "tools" / "windows-x64"
+    target = tmp_path / "resources" / "tools" / "windows-x64"
+    shutil.copytree(source, target)
+    provenance = target / "iperf3" / "SOURCE_PROVENANCE.json"
+    payload = json.loads(provenance.read_text(encoding="utf-8"))
+
+    if change == "duplicate_file":
+        payload["files"].insert(0, dict(payload["files"][0]))
+    elif change == "wrong_file_version":
+        payload["files"][0]["version"] = "999"
+    elif change == "extra_root_property":
+        payload["unapproved"] = True
+    elif change == "incomplete_upstream_source":
+        payload["upstream_sources"][2] = {"name": "OpenSSL Cygwin Runtime"}
+    elif change == "boolean_as_number":
+        fping = target / "fping" / "SOURCE_PROVENANCE.json"
+        fping_payload = json.loads(fping.read_text(encoding="utf-8"))
+        fping_payload["build"]["network_required_during_product_packaging"] = 0
+        fping.write_text(
+            json.dumps(fping_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        (target / "fping" / "README.txt").unlink()
+
+    provenance.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(clean_build_spec, "ROOT", tmp_path)
+
+    with pytest.raises(CleanBuildLockError):
+        clean_build_spec.validate_tool_sources()
 
 
 def test_changelog_path_prefers_packaged_assets_and_keeps_source_fallback(tmp_path):
@@ -626,10 +882,18 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
     app_dist = dist_root / "NetConsoleBackend"
     build_env = os.environ.copy()
     existing_pythonpath = build_env.get("PYTHONPATH", "")
-    build_env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(root / "src"), existing_pythonpath)))
+    build_env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(root / "src"), existing_pythonpath))
+    )
 
     subprocess.run(
-        [sys.executable, "-m", "scripts.build.clean_build_spec", "--prepare", "--write-spec"],
+        [
+            sys.executable,
+            "-m",
+            "scripts.build.clean_build_spec",
+            "--prepare",
+            "--write-spec",
+        ],
         cwd=root,
         env=build_env,
         check=True,
@@ -674,4 +938,10 @@ def test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs():
 
     env = os.environ.copy()
     env["NETCONSOLE_SMOKE_TEST"] = "1"
-    subprocess.run([str(app_dist / "NetConsoleBackend.exe")], cwd=app_dist, env=env, check=True, timeout=20)
+    subprocess.run(
+        [str(app_dist / "NetConsoleBackend.exe")],
+        cwd=app_dist,
+        env=env,
+        check=True,
+        timeout=20,
+    )

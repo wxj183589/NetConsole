@@ -1,0 +1,120 @@
+{
+  "schema_version": "netconsole.tool-provenance.v1",
+  "component": "iperf3-win64-dynamic-auth",
+  "version": "3.21",
+  "platform": "windows-x64-cygwin",
+  "verified_at": "2026-07-18",
+  "distribution": {
+    "repository": "https://github.com/ar51an/iperf3-win-builds",
+    "tag": "3.21",
+    "tag_commit": "7a24a0a352b6e177993e3b6375e7d38bc8f913e8",
+    "release_id": 307349802,
+    "release_url": "https://github.com/ar51an/iperf3-win-builds/releases/tag/3.21",
+    "asset_name": "iperf-3.21-win64-dynamic-auth.zip",
+    "asset_id": 392879715,
+    "asset_url": "https://github.com/ar51an/iperf3-win-builds/releases/download/3.21/iperf-3.21-win64-dynamic-auth.zip",
+    "published_at": "2026-04-10T01:44:57Z",
+    "sha256": "0d3ac723df5cc7b2ab1851fe9441c14291c6583b6acf8ef81dabee73c145c2eb"
+  },
+  "files": [
+    {
+      "name": "iperf3.exe",
+      "version": "3.21",
+      "sha256": "4aae5eee2b90c716d93bdc54c530a854596c92ff996859973b9f44e73799294e"
+    },
+    {
+      "name": "cygwin1.dll",
+      "version": "3.6.7-1",
+      "sha256": "0ab76b4724499df54b75b7fa701788f1e77425ce65c8bca0a9f2120598bb8a70"
+    },
+    {
+      "name": "cygcrypto-3.dll",
+      "version": "3.0.19",
+      "sha256": "3cfcab214b827485265c21f5c365af5055ee47ca507cc56a1422661288d51ea6"
+    },
+    {
+      "name": "cygz.dll",
+      "version": "1.3.2",
+      "sha256": "827576482185c48ed3698454594260ee27ba32180127b8ba28c5ca68a867ce38"
+    }
+  ],
+  "license_files": [
+    {
+      "name": "AR51AN_APACHE-2.0.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "name": "CYGWIN_LGPL-3.0.txt",
+      "sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118"
+    },
+    {
+      "name": "GPL-3.0.txt",
+      "sha256": "0ae0485a5bd37a63e63603596417e4eb0e653334fa6c7f932ca3a0e85d4af227"
+    },
+    {
+      "name": "CYGWIN_LINKING_EXCEPTION.txt",
+      "sha256": "794433752103cf4bbb4a84a1bdb8fbc150abb1762704bb35fecc9f7f820be984"
+    },
+    {
+      "name": "IPERF3_LICENSE.txt",
+      "sha256": "6c6e9abd761ff429c11189cd93bdee5bff7e3591253bd614b253a5f4fd30cbe5"
+    },
+    {
+      "name": "OPENSSL_APACHE-2.0.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "name": "ZLIB_LICENSE.txt",
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+    }
+  ],
+  "upstream_sources": [
+    {
+      "name": "iperf3",
+      "version": "3.21",
+      "repository": "https://github.com/esnet/iperf",
+      "tag": "3.21",
+      "tag_object": "ec66336d2c152bf964f671e9e20a11de05edb239",
+      "tag_commit": "d39cf41526626b4e5a130f115d931cd6cbdffc19",
+      "license_file": "licenses/IPERF3_LICENSE.txt"
+    },
+    {
+      "name": "Cygwin Runtime",
+      "version": "3.6.7-1",
+      "source_package": "cygwin-3.6.7-1-src",
+      "source_index": "https://cygwin.com/packages/summary/cygwin-src.html",
+      "source_contents": "https://cygwin.com/packages/src/cygwin-src/cygwin-3.6.7-1-src",
+      "source_archive_path": "src/release/cygwin/cygwin-3.6.7-1-src.tar.xz",
+      "source_archive_size": 9309160,
+      "source_archive_sha512": "82a190c3516511af7d1305e1bcd4aa0177c1fb584b6468a887a9119565bccd88630b2a3b826d902983a83adefb11545346dcf27616186304d6c66879e1647335",
+      "license_file": "licenses/CYGWIN_LGPL-3.0.txt",
+      "gpl_file": "licenses/GPL-3.0.txt",
+      "exception_file": "licenses/CYGWIN_LINKING_EXCEPTION.txt"
+    },
+    {
+      "name": "OpenSSL Cygwin Runtime",
+      "version": "3.0.19-1",
+      "source_index": "https://cygwin.com/packages/summary/openssl-src.html",
+      "license_file": "licenses/OPENSSL_APACHE-2.0.txt"
+    },
+    {
+      "name": "zlib Cygwin Runtime",
+      "version": "1.3.2-1",
+      "source_index": "https://cygwin.com/packages/summary/zlib-src.html",
+      "license_file": "licenses/ZLIB_LICENSE.txt"
+    }
+  ],
+  "compliance_files": [
+    {
+      "name": "CORRESPONDING_SOURCE.md",
+      "sha256": "faea146cd105ffb781c188e6b9576691cf7f4a37ba033226007b37410669e468"
+    },
+    {
+      "name": "licenses/README.md",
+      "sha256": "31d120a478c8d5f245b31fba5e74f9cc5960dc801907b9dee370da4157820909"
+    }
+  ],
+  "corresponding_source_notice": "CORRESPONDING_SOURCE.md",
+  "external_distribution_source_policy": "publish the exact corresponding source archive beside the binary release or provide a valid written offer",
+  "distributor_license_file": "licenses/AR51AN_APACHE-2.0.txt"
+}

@@ -1,0 +1,5 @@
+# 完整开发环境：运行时 + 测试 + 构建 + 静态检查。
+-r requirements-test.txt
+-r requirements-build.txt
+ruff>=0.15.16
+mypy>=2.1.0
