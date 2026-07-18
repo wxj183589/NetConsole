@@ -20,6 +20,8 @@ import {
   startAcLocalRebuild,
 } from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { AcActionAudit, AcActionPlan, AcExtension, AcExtensionPreview, AcTracksidePlan, AcWebTask } from '../../types/acWebParity'
 
 const taskStorageKey = 'netconsole.ac-web.last-task'
@@ -39,6 +41,24 @@ const loading = ref(false)
 const taskBusy = ref(false)
 const router = useRouter()
 let pollTimer: number | undefined
+
+const extensionColumns: NcTableColumn<AcExtension>[] = [
+  { key: 'ap_name', label: 'AP', valueType: 'name' },
+  { key: 'ap_mac_display', label: 'MAC', valueType: 'mac' },
+  { key: 'station_name', label: '站点', valueType: 'text' },
+  { key: 'section_name', label: '区间', valueType: 'text' },
+  { key: 'match_status', label: '匹配', valueType: 'status' },
+]
+
+const planColumns: NcTableColumn<AcTracksidePlan>[] = [
+  { key: 'station_name', label: '站点', valueType: 'text' },
+  { key: 'ap_count', label: 'AP 数', valueType: 'number' },
+  { key: 'ap_start_address', label: '起始地址', valueType: 'ip' },
+  { key: 'mask_length', label: '掩码', valueType: 'number' },
+  { key: 'ap_gateway', label: '网关', valueType: 'ip' },
+  { key: 'ap_management_vlans', label: '管理 VLAN', valueType: 'text' },
+  { key: 'remark', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'description' },
+]
 
 function message(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
@@ -249,8 +269,11 @@ onBeforeUnmount(stopPolling)
     ><el-button link type="primary" @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>AC 动作计划 {{ actionPlan.plan_id }} · {{ actionPlan.status }}</template><p>审计摘要：{{ actionPlan.plan_digest }}</p><pre>{{ actionPlan.command_summary.join('\n') }}</pre></el-card>
     <el-card v-if="actionAudit" shadow="never" class="plan"><template #header>AC 动作审计 · {{ actionAudit.status }}</template><el-descriptions :column="3" border><el-descriptions-item label="目标">{{ actionAudit.target_id }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionAudit.action_id }}</el-descriptions-item><el-descriptions-item label="任务状态">{{ actionAudit.task_status || '—' }}</el-descriptions-item><el-descriptions-item label="执行器">{{ actionAudit.executor }}</el-descriptions-item><el-descriptions-item label="Task">{{ actionAudit.task_id || '—' }}</el-descriptions-item><el-descriptions-item label="摘要">{{ actionAudit.plan_digest }}</el-descriptions-item></el-descriptions></el-card>
-    <div class="grid"><el-card shadow="never"><template #header>AP 扩展导入预览 / 回滚</template><input type="file" accept=".csv,.xlsx" :disabled="!isFeatureEnabled('web.ac_extensions_preview')" @change="chooseFile"><el-alert v-if="extensionPreview" class="preview" type="info" :title="`${extensionPreview.file_name} · ${extensionPreview.row_count} 行 · 摘要 ${extensionPreview.preview_digest}`" :closable="false" /><div class="actions"><el-button type="primary" :loading="taskBusy" :disabled="!extensionPreview || !isFeatureEnabled('web.ac_extensions_apply')" @click="applyExtension">确认写入</el-button><el-button :loading="taskBusy" :disabled="!lastAuditId || !isFeatureEnabled('web.ac_extensions_rollback')" @click="rollbackExtension">回滚最近导入</el-button></div></el-card><el-card shadow="never"><template #header>AP 扩展信息（{{ extensions.length }}）</template><el-table :data="extensions" height="320" empty-text="暂无 AP 扩展信息"><el-table-column prop="ap_name" label="AP" /><el-table-column prop="ap_mac_display" label="MAC" /><el-table-column prop="station_name" label="站点" /><el-table-column prop="section_name" label="区间" /><el-table-column prop="match_status" label="匹配" /></el-table></el-card></div>
-    <el-card v-if="isFeatureEnabled('web.ac_trackside_ap_plan')" shadow="never"><template #header>轨旁 AP 规划（{{ tracksidePlan.length }}）</template><el-table :data="tracksidePlan" height="320" empty-text="暂无轨旁 AP 规划"><el-table-column prop="station_name" label="站点" /><el-table-column prop="ap_count" label="AP 数" width="90" /><el-table-column prop="ap_start_address" label="起始地址" /><el-table-column prop="mask_length" label="掩码" width="80" /><el-table-column prop="ap_gateway" label="网关" /><el-table-column prop="ap_management_vlans" label="管理 VLAN" /><el-table-column prop="remark" label="备注" /></el-table></el-card>
+    <div class="grid">
+      <el-card shadow="never"><template #header>AP 扩展导入预览 / 回滚</template><input type="file" accept=".csv,.xlsx" :disabled="!isFeatureEnabled('web.ac_extensions_preview')" @change="chooseFile"><el-alert v-if="extensionPreview" class="preview" type="info" :title="`${extensionPreview.file_name} · ${extensionPreview.row_count} 行 · 摘要 ${extensionPreview.preview_digest}`" :closable="false" /><div class="actions"><el-button type="primary" :loading="taskBusy" :disabled="!extensionPreview || !isFeatureEnabled('web.ac_extensions_apply')" @click="applyExtension">确认写入</el-button><el-button :loading="taskBusy" :disabled="!lastAuditId || !isFeatureEnabled('web.ac_extensions_rollback')" @click="rollbackExtension">回滚最近导入</el-button></div></el-card>
+      <el-card shadow="never"><template #header>AP 扩展信息（{{ extensions.length }}）</template><NcDataTable table-id="ac-extension-records" route-key="/ac-management/parity" :data="extensions" :columns="extensionColumns" :height="320" empty-text="暂无 AP 扩展信息" /></el-card>
+    </div>
+    <el-card v-if="isFeatureEnabled('web.ac_trackside_ap_plan')" shadow="never"><template #header>轨旁 AP 规划（{{ tracksidePlan.length }}）</template><NcDataTable table-id="ac-trackside-plan" route-key="/ac-management/parity" :data="tracksidePlan" :columns="planColumns" :height="320" empty-text="暂无轨旁 AP 规划" /></el-card>
   </section>
 </template>
 

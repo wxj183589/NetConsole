@@ -41,16 +41,25 @@ describe('AC Management resource view', () => {
 
   it('places rail metadata after AP-side receive optical attenuation', () => {
     const orderedColumns = [
-      "key: 'optical_rx_power', label: 'AP侧收光光衰'",
-      "key: 'station', label: '归属站点'",
-      "key: 'section', label: '归属区间'",
-      "key: 'mileage', label: '里程'",
-      "key: 'direction', label: '线路方向'",
+      "acColumn('optical_rx_power', 'AP侧收光光衰'",
+      "acColumn('station', '归属站点'",
+      "acColumn('section', '归属区间'",
+      "acColumn('mileage', '里程'",
+      "acColumn('direction', '线路方向'",
     ]
 
     const positions = orderedColumns.map((column) => source.indexOf(column))
     expect(positions.every((position) => position >= 0)).toBe(true)
     expect(positions).toEqual([...positions].sort((left, right) => left - right))
+  })
+
+  it('uses the shared table component instead of private column sizing and visibility state', () => {
+    expect(source).toContain('table-id="ac-fit-ap-resources"')
+    expect(source).toContain('table-id="ac-config-snapshots"')
+    expect(source).toContain('table-id="ac-fit-ap-radios"')
+    expect(source).toContain('table-id="ac-fit-ap-history"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('columnVisibility')
   })
 
   it('uses topology ordering, short interface display, and keeps LLDP station inference advisory', () => {

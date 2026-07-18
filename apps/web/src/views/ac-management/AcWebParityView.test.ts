@@ -43,4 +43,10 @@ describe('AC Web parity controlled view', () => {
     expect(source).not.toContain('cancelAcWebTask')
     expect(source).not.toContain('downloadBackendResource')
   })
+
+  it('uses the shared table contract for extension data and trackside planning', () => {
+    expect(source).toContain('table-id="ac-extension-records"')
+    expect(source).toContain('table-id="ac-trackside-plan"')
+    expect(source).not.toContain('<el-table')
+  })
 })

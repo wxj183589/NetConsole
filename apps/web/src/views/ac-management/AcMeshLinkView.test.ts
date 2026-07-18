@@ -32,10 +32,8 @@ describe('AC Mesh-Link read-only view', () => {
   })
 
   it('shows both trackside AP receive-power facts without redundant status columns', () => {
-    expect(source.match(/label="轨旁 AP 室外侧收光"/g)).toHaveLength(2)
-    expect(source.match(/label="轨旁 AP 室内侧收光"/g)).toHaveLength(2)
-    expect(source).toContain('display(row.ap_rx_power)')
-    expect(source).toContain('display(row.switch_rx_power)')
+    expect(source.match(/meshColumn\('ap_rx_power', '轨旁 AP 室外侧收光'/g)).toHaveLength(2)
+    expect(source.match(/meshColumn\('switch_rx_power', '轨旁 AP 室内侧收光'/g)).toHaveLength(2)
     expect(source).not.toContain('label="链路状态"')
     expect(source).not.toContain('label="轨旁 AP 状态"')
     expect(source).not.toContain('label="光衰状态"')
@@ -44,5 +42,12 @@ describe('AC Mesh-Link read-only view', () => {
     expect(source).not.toContain('row.link_status')
     expect(source).not.toContain('row.ap_online_status')
     expect(source).not.toContain('row.optical_status')
+  })
+
+  it('uses one shared table contract for monitoring, snapshots and detail history', () => {
+    for (const tableId of ['ac-mesh-mrs', 'ac-mesh-current-links', 'ac-mesh-snapshots', 'ac-mesh-detail-links', 'ac-mesh-detail-events']) {
+      expect(source).toContain(`table-id="${tableId}"`)
+    }
+    expect(source).not.toContain('<el-table')
   })
 })

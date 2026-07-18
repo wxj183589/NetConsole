@@ -7,6 +7,17 @@
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1021` | `device-detail-capabilities` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1052` | `device-detail-sections` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1081` | `device-detail-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:445` | `ac-fit-ap-resources` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:484` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:542` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:575` | `ac-fit-ap-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:195` | `ac-mesh-mrs` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:208` | `ac-mesh-current-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:215` | `ac-mesh-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:246` | `ac-mesh-detail-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:248` | `ac-mesh-detail-events` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:274` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:276` | `ac-trackside-plan` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1249` | `device-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1410` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:323` | `legacy:components:network-tools:NetworkToolboxPanel:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
@@ -16,17 +27,6 @@
 | `embedded:WirelessScanPanel` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:385` | `legacy:components:network-tools:WirelessScanPanel:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:WirelessScanPanel` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:394` | `legacy:components:network-tools:WirelessScanPanel:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:TrafficRunHistory` | `apps/web/src/components/traffic/TrafficRunHistory.vue:45` | `legacy:components:traffic:TrafficRunHistory:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcManagementView.vue:424` | `legacy:views:ac-management:AcManagementView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcManagementView.vue:481` | `legacy:views:ac-management:AcManagementView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcManagementView.vue:550` | `legacy:views:ac-management:AcManagementView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcManagementView.vue:594` | `legacy:views:ac-management:AcManagementView:4` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:137` | `legacy:views:ac-management:AcMeshLinkView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:165` | `legacy:views:ac-management:AcMeshLinkView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:183` | `legacy:views:ac-management:AcMeshLinkView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:221` | `legacy:views:ac-management:AcMeshLinkView:4` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:229` | `legacy:views:ac-management:AcMeshLinkView:5` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcWebParityView.vue:252` | `legacy:views:ac-management:AcWebParityView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/ac` | `apps/web/src/views/ac-management/AcWebParityView.vue:253` | `legacy:views:ac-management:AcWebParityView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/agents` | `apps/web/src/views/agents/AgentListView.vue:311` | `legacy:views:agents:AgentListView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/agents` | `apps/web/src/views/agents/AgentListView.vue:385` | `legacy:views:agents:AgentListView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/agents` | `apps/web/src/views/agents/AgentListView.vue:400` | `legacy:views:agents:AgentListView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
@@ -92,4 +92,4 @@
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:339` | `legacy:views:system:SystemMaintenanceView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:349` | `legacy:views:system:SystemMaintenanceView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
 
-总计：5 张已迁移，82 张待迁移。
+总计：16 张已迁移，71 张待迁移。

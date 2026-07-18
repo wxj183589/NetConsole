@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Refresh, Setting, View } from '@element-plus/icons-vue'
+import { Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -9,7 +9,9 @@ import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
 import { useTaskStore } from '../../stores/tasks'
-import type { AcAp, AcApHistoryPage, AcConfigSnapshot } from '../../types/acManagement'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
+import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcRadio } from '../../types/acManagement'
 import { displayInterfaceName } from '../../utils/interfaceName'
 
 const store = useAcManagementStore()
@@ -33,36 +35,58 @@ const historyPage = ref<AcApHistoryPage | null>(null)
 const historyKind = ref<'radio' | 'lldp' | 'optical'>('radio')
 const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
-interface TableColumn { key: string; label: string; width: number; sortable?: boolean }
+function acColumn<Row extends object>(
+  key: string,
+  label: string,
+  valueType: NcColumnValueType = 'text',
+  options: Partial<NcTableColumn<Row>> = {},
+): NcTableColumn<Row> {
+  return { key, label, valueType, ...options }
+}
 
-const columns: TableColumn[] = [
-  { key: 'name', label: 'AP 名称', width: 190, sortable: true },
-  { key: 'ip', label: 'AP IP', width: 130, sortable: true },
-  { key: 'mac', label: 'AP MAC', width: 150 },
-  { key: 'status', label: '状态', width: 105, sortable: true },
-  { key: 'model', label: '型号', width: 120 },
-  { key: 'radio1_status', label: 'Mesh Radio 1 状态', width: 145 },
-  { key: 'radio2_status', label: 'Mesh Radio 2 状态', width: 145 },
-  { key: 'radio1_channel', label: 'Mesh Radio 1 信道', width: 140 },
-  { key: 'radio2_channel', label: 'Mesh Radio 2 信道', width: 140 },
-  { key: 'radio1_power', label: 'Mesh Radio 1 功率', width: 140 },
-  { key: 'radio2_power', label: 'Mesh Radio 2 功率', width: 140 },
-  { key: 'switch_name', label: '连接交换机', width: 150 },
-  { key: 'switch_interface', label: '连接端口', width: 150 },
-  { key: 'lldp_status', label: 'LLDP 状态', width: 120 },
-  { key: 'optical_status', label: '光衰状态', width: 125, sortable: true },
-  { key: 'optical_rx_power', label: 'AP侧收光光衰', width: 145, sortable: true },
-  { key: 'station', label: '归属站点', width: 140, sortable: true },
-  { key: 'section', label: '归属区间', width: 170, sortable: true },
-  { key: 'mileage', label: '里程', width: 110, sortable: true },
-  { key: 'direction', label: '线路方向', width: 110 },
-  { key: 'updated_at', label: '最近更新时间', width: 180, sortable: true },
+const columns: NcTableColumn<AcAp>[] = [
+  acColumn('selection', '', 'selection', { fixed: 'left', hideable: false }),
+  acColumn('name', 'AP 名称', 'name', { sortable: 'custom', fixed: 'left' }),
+  acColumn('ip', 'AP IP', 'ip', { sortable: 'custom' }),
+  acColumn('mac', 'AP MAC', 'mac'),
+  acColumn('status', '状态', 'status', { sortable: 'custom', cellKind: 'tag' }),
+  acColumn('model', '型号', 'name'),
+  acColumn('radio1_status', 'Mesh Radio 1 状态', 'status'),
+  acColumn('radio2_status', 'Mesh Radio 2 状态', 'status'),
+  acColumn('radio1_channel', 'Mesh Radio 1 信道', 'number'),
+  acColumn('radio2_channel', 'Mesh Radio 2 信道', 'number'),
+  acColumn('radio1_power', 'Mesh Radio 1 功率', 'number'),
+  acColumn('radio2_power', 'Mesh Radio 2 功率', 'number'),
+  acColumn('switch_name', '连接交换机', 'name'),
+  acColumn('switch_interface', '连接端口', 'port', { displayValue: (row) => displayColumnValue('switch_interface', row.switch_interface) }),
+  acColumn('lldp_status', 'LLDP 状态', 'status'),
+  acColumn('optical_status', '光衰状态', 'status', { sortable: 'custom', cellKind: 'tag' }),
+  acColumn('optical_rx_power', 'AP侧收光光衰', 'number', { sortable: 'custom' }),
+  acColumn('station', '归属站点', 'text', { sortable: 'custom' }),
+  acColumn('section', '归属区间', 'text', { sortable: 'custom' }),
+  acColumn('mileage', '里程', 'mileage', { sortable: 'custom' }),
+  acColumn('direction', '线路方向'),
+  acColumn('updated_at', '最近更新时间', 'datetime', { sortable: 'custom' }),
+  acColumn('actions', '操作', 'actions', { cellKind: 'actions', actionLabels: ['详情'] }),
 ]
 
-const columnVisibility = reactive<Record<string, boolean>>(
-  Object.fromEntries(columns.map((column) => [column.key, true])),
-)
-const visibleColumns = computed(() => columns.filter((column) => columnVisibility[column.key]))
+const snapshotColumns: NcTableColumn<AcConfigSnapshot>[] = [
+  acColumn('timestamp', '采集时间', 'datetime', { displayValue: (row) => formatTime(row.timestamp) }),
+  acColumn('ac_name', 'AC 名称', 'name'),
+  acColumn('type', '配置类型'),
+  acColumn('status', '状态', 'status', { cellKind: 'tag' }),
+  acColumn('size_bytes', '文件大小', 'number', { displayValue: (row) => formatBytes(row.size_bytes) }),
+  acColumn('path_id', '路径标识'),
+  acColumn('error_summary', '错误摘要', 'error', { align: 'left', alignmentReason: 'long-text' }),
+  acColumn('actions', '只读操作', 'actions', { cellKind: 'actions', actionLabels: ['查看', '对比'] }),
+]
+
+const radioColumns: NcTableColumn<AcRadio>[] = [
+  acColumn('radio_id', 'Mesh Radio ID', 'number'), acColumn('status', '状态', 'status'),
+  acColumn('mode', '模式'), acColumn('band', '频段'), acColumn('channel', '信道', 'number'),
+  acColumn('bandwidth', '带宽', 'rate'), acColumn('usage', '利用率 (%)', 'percentage'),
+  acColumn('tx_power', '功率', 'number'), acColumn('clients', '客户端', 'number'), acColumn('bssid', 'BSSID', 'mac'),
+]
 const detailRadios = computed(() => (store.selected?.radios || []).filter((radio) => radio.radio_id <= 2))
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
@@ -71,7 +95,7 @@ const publicAcTasks = computed(() => taskStore.tasks.filter((task) => task.modul
 const activeAcTaskCount = computed(() => publicAcTasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'].includes(task.status)).length)
 const failedAcTaskCount = computed(() => publicAcTasks.value.filter((task) => task.status === 'FAILED').length)
 const latestAcTask = computed(() => publicAcTasks.value.find((task) => task.id === store.refreshTask?.task_id) || publicAcTasks.value[0] || null)
-const historyColumns = computed(() => ({
+const historyColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => ({
   radio: [
     ['collected_at', '采集时间'], ['ap_name', 'AP 名称'], ['rid', 'Radio ID'], ['status', '状态'], ['mode', '模式'], ['band', '频段'],
     ['channel', '信道'], ['bandwidth', '带宽'], ['usage', '利用率'], ['tx_power', '功率'], ['clients', '客户端'], ['bbssid', 'BSSID'],
@@ -89,7 +113,10 @@ const historyColumns = computed(() => ({
     ['module_model', '模块型号'], ['module_vendor', '厂商'],
     ['wavelength', '波长'], ['transmission_distance', '传输距离'], ['connector_type', '连接器'], ['status', '状态'], ['error_message', '错误'],
   ],
-}[historyKind.value] as string[][]))
+}[historyKind.value] as string[][]).map(([key, label]) => acColumn(key, label, key === 'collected_at' ? 'datetime' : key.includes('interface') ? 'port' : key.includes('mac') || key === 'bbssid' ? 'mac' : key.includes('error') ? 'error' : 'text', {
+  displayValue: (row) => displayColumnValue(key, row[key]),
+  ...(key.includes('error') ? { align: 'left' as const, alignmentReason: 'long-text' } : {}),
+})))
 const matchingLines = computed(() => {
   const needle = configSearch.value.trim().toLowerCase()
   if (!needle) return []
@@ -413,47 +440,23 @@ function diffLineClass(line: string): string {
               :disabled="!selectedApIds.size || taskActive"
               @click="deleteSelectedAps"
             >批量删除（{{ selectedApIds.size }}）</el-button>
-            <el-popover placement="bottom-end" :width="260" trigger="click">
-              <template #reference><el-button :icon="Setting">列显隐</el-button></template>
-              <div class="column-picker">
-                <el-checkbox v-for="column in columns" :key="column.key" v-model="columnVisibility[column.key]">{{ column.label }}</el-checkbox>
-              </div>
-            </el-popover>
           </div>
 
-          <el-table
+          <NcDataTable
             v-loading="store.loading"
+            table-id="ac-fit-ap-resources"
+            route-key="/ac-management"
             :data="store.aps"
-            stripe
+            :columns="columns"
             height="calc(100vh - 455px)"
             empty-text="暂无 FIT-AP 资源数据"
             @sort-change="handleSort"
           >
-            <el-table-column label="选择" width="62" fixed="left">
-              <template #default="{ row }">
-                <el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" />
-              </template>
-            </el-table-column>
-            <el-table-column
-              v-for="column in visibleColumns"
-              :key="column.key"
-              :prop="column.key"
-              :label="column.label"
-              :min-width="column.width"
-              :sortable="column.sortable ? 'custom' : false"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row }">
-                <el-tag v-if="column.key === 'status'" :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag>
-                <el-tag v-else-if="column.key === 'optical_status'" :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status) }}</el-tag>
-                <span v-else>{{ displayColumnValue(column.key, row[column.key]) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="82" fixed="right">
-              <template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
-            </el-table-column>
-          </el-table>
+            <template #cell-selection="{ row }"><el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" /></template>
+            <template #cell-status="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template>
+            <template #cell-optical_status="{ row }"><el-tag :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status) }}</el-tag></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
+          </NcDataTable>
           <div class="pagination-row">
             <span>共 {{ store.total }} 条</span>
             <el-pagination
@@ -478,21 +481,10 @@ function diffLineClass(line: string): string {
               <el-button :icon="Refresh" @click="store.refreshSnapshots">刷新历史</el-button>
             </div>
           </div>
-          <el-table :data="store.snapshots" stripe empty-text="暂无 AC 配置快照" height="calc(100vh - 405px)">
-            <el-table-column label="采集时间" width="180"><template #default="{ row }">{{ formatTime(row.timestamp) }}</template></el-table-column>
-            <el-table-column prop="ac_name" label="AC 名称" min-width="180" />
-            <el-table-column prop="type" label="配置类型" width="110" />
-            <el-table-column label="状态" width="105"><template #default="{ row }"><el-tag :type="row.status === 'AVAILABLE' ? 'success' : row.status === 'FAILED' ? 'danger' : 'info'">{{ row.status }}</el-tag></template></el-table-column>
-            <el-table-column label="文件大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column>
-            <el-table-column prop="path_id" label="路径标识" min-width="140" />
-            <el-table-column prop="error_summary" label="错误摘要" min-width="220" show-overflow-tooltip />
-            <el-table-column label="只读操作" width="160" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="openConfig(row)">查看</el-button>
-                <el-button link type="primary" @click="openDiff(row)">对比</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
+          <NcDataTable table-id="ac-config-snapshots" route-key="/ac-management" :data="store.snapshots" :columns="snapshotColumns" empty-text="暂无 AC 配置快照" height="calc(100vh - 405px)">
+            <template #cell-status="{ row }"><el-tag :type="row.status === 'AVAILABLE' ? 'success' : row.status === 'FAILED' ? 'danger' : 'info'">{{ row.status }}</el-tag></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" @click="openConfig(row)">查看</el-button><el-button link type="primary" @click="openDiff(row)">对比</el-button></template>
+          </NcDataTable>
           <div class="pagination-row">
             <span>共 {{ store.snapshotTotal }} 条</span>
             <el-pagination :current-page="store.snapshotPage" :page-size="store.snapshotPageSize" layout="prev, pager, next" :total="store.snapshotTotal" @current-change="store.setSnapshotPage" />
@@ -547,18 +539,7 @@ function diffLineClass(line: string): string {
           </el-descriptions>
 
           <div class="section-heading"><h3>Mesh Radio 1 / 2</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('radio')">查看历史</el-button></div>
-          <el-table :data="detailRadios" border>
-            <el-table-column prop="radio_id" label="Mesh Radio ID" width="125" />
-            <el-table-column prop="status" label="状态" min-width="90"><template #default="{ row }">{{ display(row.status) }}</template></el-table-column>
-            <el-table-column prop="mode" label="模式" min-width="90"><template #default="{ row }">{{ display(row.mode) }}</template></el-table-column>
-            <el-table-column prop="band" label="频段" min-width="90"><template #default="{ row }">{{ display(row.band) }}</template></el-table-column>
-            <el-table-column prop="channel" label="信道" min-width="90" />
-            <el-table-column prop="bandwidth" label="带宽" min-width="90" />
-            <el-table-column prop="usage" label="利用率 (%)" min-width="100" />
-            <el-table-column prop="tx_power" label="功率" min-width="90" />
-            <el-table-column prop="clients" label="客户端" min-width="90" />
-            <el-table-column prop="bssid" label="BSSID" min-width="145" />
-          </el-table>
+          <NcDataTable table-id="ac-fit-ap-radios" route-key="/ac-management" :data="detailRadios" :columns="radioColumns" :show-column-settings="false" border />
 
           <div class="section-heading"><h3>LLDP / 端口</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('lldp')">查看历史</el-button></div>
           <el-descriptions :column="2" border>
@@ -591,11 +572,7 @@ function diffLineClass(line: string): string {
     <el-drawer v-model="historyVisible" :title="historyTitle" size="min(1100px, 96vw)">
       <div v-loading="historyLoading">
         <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" show-icon />
-        <el-table :data="historyPage?.items || []" stripe empty-text="暂无历史记录" height="calc(100vh - 190px)">
-          <el-table-column v-for="column in historyColumns" :key="column[0]" :prop="column[0]" :label="column[1]" min-width="130">
-            <template #default="{ row }">{{ displayColumnValue(column[0], row[column[0]]) }}</template>
-          </el-table-column>
-        </el-table>
+        <NcDataTable table-id="ac-fit-ap-history" route-key="/ac-management" :preference-scope="historyKind" :data="historyPage?.items || []" :columns="historyColumns" empty-text="暂无历史记录" height="calc(100vh - 190px)" />
         <div class="pagination-row">
           <span>共 {{ historyPage?.total || 0 }} 条</span>
           <el-pagination :current-page="historyPage?.page || 1" :page-size="historyPage?.page_size || 100" layout="prev, pager, next" :total="historyPage?.total || 0" @current-change="openHistory(historyKind, $event)" />
@@ -652,7 +629,6 @@ function diffLineClass(line: string): string {
 .content-card { overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
 .ac-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 18px; }
 .filter-bar { display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(6, minmax(115px, 1fr)) auto auto auto; gap: 8px; padding: 14px; border-bottom: 1px solid var(--nc-divider); }
-.column-picker { display: grid; grid-template-columns: 1fr 1fr; max-height: 360px; overflow: auto; }
 .column-picker :deep(.el-checkbox) { margin-right: 8px; }
 .pagination-row { padding: 12px 16px; color: var(--nc-text-secondary); font-size: 12px; }
 .config-toolbar { padding: 15px 18px; border-bottom: 1px solid var(--nc-divider); }

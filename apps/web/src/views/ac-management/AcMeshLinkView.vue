@@ -4,12 +4,70 @@ import { Refresh, View } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 import { useAcMeshLinkStore } from '../../stores/acMeshLink'
-import type { AcMeshMrStatus } from '../../types/acMeshLink'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
+import type {
+  AcMeshLinkRecord,
+  AcMeshMrEvent,
+  AcMeshMrStatus,
+  AcMeshSnapshot,
+} from '../../types/acMeshLink'
 
 const store = useAcMeshLinkStore()
 const router = useRouter()
 const activeTab = ref('mrs')
 const detailVisible = ref(false)
+
+function meshColumn<Row extends object>(
+  key: string,
+  label: string,
+  valueType: NcColumnValueType = 'text',
+  options: Partial<NcTableColumn<Row>> = {},
+): NcTableColumn<Row> {
+  return { key, label, valueType, ...options }
+}
+
+const mrColumns: NcTableColumn<AcMeshMrStatus>[] = [
+  meshColumn('train_display_name', '列车', 'name', { fixed: 'left' }),
+  meshColumn('mr_name', 'MR 名称', 'name', { fixed: 'left' }), meshColumn('car_end', '端别'),
+  meshColumn('online_status', '在线状态', 'status', { cellKind: 'tag' }),
+  meshColumn('peer_ap_name', '当前轨旁 AP', 'name'), meshColumn('peer_ap_mac', '轨旁 AP MAC', 'mac'),
+  meshColumn('mesh_radio', 'Mesh Radio', 'port'), meshColumn('rssi', 'RSSI', 'number'),
+  meshColumn('station', '站点'), meshColumn('section', '区间'), meshColumn('mileage', '里程', 'mileage'),
+  meshColumn('line_side', '线路方向'), meshColumn('ap_rx_power', '轨旁 AP 室外侧收光', 'number'),
+  meshColumn('switch_rx_power', '轨旁 AP 室内侧收光', 'number'),
+  meshColumn('last_seen_at', '最近更新', 'datetime', { displayValue: (row) => formatTime(row.last_seen_at) }),
+  meshColumn('match_method', '匹配方式', 'status', { displayValue: (row) => matchLabel(row.match_method) }),
+  meshColumn('actions', '操作', 'actions', { cellKind: 'actions', actionLabels: ['详情'] }),
+]
+
+const linkColumns: NcTableColumn<AcMeshLinkRecord>[] = [
+  meshColumn('mr_name', 'MR 名称', 'name', { fixed: 'left' }), meshColumn('mr_mac', 'MR MAC', 'mac'),
+  meshColumn('peer_ap_name', '轨旁 AP', 'name'), meshColumn('peer_ap_mac', '轨旁 AP MAC', 'mac'),
+  meshColumn('peer_radio', 'Mesh Radio', 'port'), meshColumn('rssi', 'RSSI', 'number'),
+  meshColumn('station', '站点'), meshColumn('section', '区间'), meshColumn('mileage', '里程', 'mileage'),
+  meshColumn('ap_rx_power', '轨旁 AP 室外侧收光', 'number'), meshColumn('switch_rx_power', '轨旁 AP 室内侧收光', 'number'),
+  meshColumn('data_status', '数据状态', 'status', { cellKind: 'tag' }),
+]
+
+const snapshotColumns: NcTableColumn<AcMeshSnapshot>[] = [
+  meshColumn('id', '快照 ID', 'number'), meshColumn('controller_name', 'AC', 'name'),
+  meshColumn('collected_at', '采集时间', 'datetime', { displayValue: (row) => formatTime(row.collected_at) }),
+  meshColumn('link_count', '链路数', 'number'), meshColumn('parse_status', '解析状态', 'status'),
+  meshColumn('data_status', '数据状态', 'status', { cellKind: 'tag' }),
+  meshColumn('source_reference', '来源标识', 'description', { align: 'left', alignmentReason: 'description' }),
+  meshColumn('error_summary', '错误摘要', 'error', { align: 'left', alignmentReason: 'long-text' }),
+]
+
+const currentLinkColumns: NcTableColumn<AcMeshLinkRecord>[] = [
+  meshColumn('peer_ap_name', '轨旁 AP', 'name'), meshColumn('peer_radio', 'Mesh Radio', 'port'),
+  meshColumn('rssi', 'RSSI', 'number'), meshColumn('station', '站点'), meshColumn('section', '区间'),
+]
+
+const eventColumns: NcTableColumn<AcMeshMrEvent>[] = [
+  meshColumn('event_time', '时间', 'datetime'), meshColumn('event_type', '事件', 'status'),
+  meshColumn('ap_name', '轨旁 AP', 'name'), meshColumn('station', '站点'), meshColumn('rssi', 'RSSI', 'number'),
+]
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -134,25 +192,10 @@ function matchLabel(method: string): string {
             <el-checkbox v-model="store.filters.unmatched_only">只看未匹配</el-checkbox>
             <el-button type="primary" @click="store.applyFilters">应用</el-button>
           </div>
-          <el-table v-loading="store.loading" :data="store.mrs" stripe height="calc(100vh - 535px)" empty-text="暂无车载 MR 数据">
-            <el-table-column prop="train_display_name" label="列车" width="90" fixed="left" />
-            <el-table-column prop="mr_name" label="MR 名称" min-width="175" fixed="left" />
-            <el-table-column prop="car_end" label="端别" width="75" />
-            <el-table-column label="在线状态" width="105"><template #default="{ row }"><el-tag :type="statusType(row.online_status)">{{ mrStatusLabel(row.online_status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="peer_ap_name" label="当前轨旁 AP" min-width="165"><template #default="{ row }">{{ display(row.peer_ap_name) }}</template></el-table-column>
-            <el-table-column prop="peer_ap_mac" label="轨旁 AP MAC" min-width="145"><template #default="{ row }">{{ display(row.peer_ap_mac) }}</template></el-table-column>
-            <el-table-column prop="mesh_radio" label="Mesh Radio" width="120"><template #default="{ row }">{{ display(row.mesh_radio) }}</template></el-table-column>
-            <el-table-column prop="rssi" label="RSSI" width="75"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column>
-            <el-table-column prop="station" label="站点" min-width="125"><template #default="{ row }">{{ display(row.station) }}</template></el-table-column>
-            <el-table-column prop="section" label="区间" min-width="145"><template #default="{ row }">{{ display(row.section) }}</template></el-table-column>
-            <el-table-column prop="mileage" label="里程" width="105"><template #default="{ row }">{{ display(row.mileage) }}</template></el-table-column>
-            <el-table-column prop="line_side" label="线路方向" width="105"><template #default="{ row }">{{ display(row.line_side) }}</template></el-table-column>
-            <el-table-column prop="ap_rx_power" label="轨旁 AP 室外侧收光" width="165"><template #default="{ row }">{{ display(row.ap_rx_power) }}</template></el-table-column>
-            <el-table-column prop="switch_rx_power" label="轨旁 AP 室内侧收光" width="165"><template #default="{ row }">{{ display(row.switch_rx_power) }}</template></el-table-column>
-            <el-table-column label="最近更新" width="170"><template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template></el-table-column>
-            <el-table-column label="匹配方式" width="115"><template #default="{ row }">{{ matchLabel(row.match_method) }}</template></el-table-column>
-            <el-table-column label="操作" width="82" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click="openMr(row)">详情</el-button></template></el-table-column>
-          </el-table>
+          <NcDataTable v-loading="store.loading" table-id="ac-mesh-mrs" route-key="/ac-management/mesh-links" :data="store.mrs" :columns="mrColumns" height="calc(100vh - 535px)" empty-text="暂无车载 MR 数据">
+            <template #cell-online_status="{ row }"><el-tag :type="statusType(row.online_status)">{{ mrStatusLabel(row.online_status) }}</el-tag></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openMr(row)">详情</el-button></template>
+          </NcDataTable>
           <div class="pagination"><span>共 {{ store.mrTotal }} 条</span><el-pagination :current-page="store.filters.page" :page-size="store.filters.page_size" layout="prev, pager, next" :total="store.mrTotal" @current-change="store.setMrPage" /></div>
         </el-tab-pane>
 
@@ -162,34 +205,16 @@ function matchLabel(method: string): string {
             <el-select v-model="store.linkFilters.match_status" clearable placeholder="匹配状态"><el-option label="已匹配" value="matched" /><el-option label="未匹配" value="unmatched" /></el-select>
             <el-button type="primary" @click="store.applyFilters">应用</el-button>
           </div>
-          <el-table :data="store.links" stripe height="calc(100vh - 520px)" empty-text="暂无当前 Mesh-Link">
-            <el-table-column prop="mr_name" label="MR 名称" min-width="175" fixed="left" />
-            <el-table-column prop="mr_mac" label="MR MAC" min-width="145" />
-            <el-table-column prop="peer_ap_name" label="轨旁 AP" min-width="160" />
-            <el-table-column prop="peer_ap_mac" label="轨旁 AP MAC" min-width="145"><template #default="{ row }">{{ display(row.peer_ap_mac) }}</template></el-table-column>
-            <el-table-column prop="peer_radio" label="Mesh Radio" width="120"><template #default="{ row }">{{ display(row.peer_radio) }}</template></el-table-column>
-            <el-table-column prop="rssi" label="RSSI" width="75"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column>
-            <el-table-column prop="station" label="站点" min-width="125" />
-            <el-table-column prop="section" label="区间" min-width="145"><template #default="{ row }">{{ display(row.section) }}</template></el-table-column>
-            <el-table-column prop="mileage" label="里程" width="105"><template #default="{ row }">{{ display(row.mileage) }}</template></el-table-column>
-            <el-table-column prop="ap_rx_power" label="轨旁 AP 室外侧收光" width="165"><template #default="{ row }">{{ display(row.ap_rx_power) }}</template></el-table-column>
-            <el-table-column prop="switch_rx_power" label="轨旁 AP 室内侧收光" width="165"><template #default="{ row }">{{ display(row.switch_rx_power) }}</template></el-table-column>
-            <el-table-column label="数据状态" width="95"><template #default="{ row }"><el-tag :type="statusType(row.data_status)">{{ dataStatusLabel(row.data_status) }}</el-tag></template></el-table-column>
-          </el-table>
+          <NcDataTable table-id="ac-mesh-current-links" route-key="/ac-management/mesh-links" :data="store.links" :columns="linkColumns" height="calc(100vh - 520px)" empty-text="暂无当前 Mesh-Link">
+            <template #cell-data_status="{ row }"><el-tag :type="statusType(row.data_status)">{{ dataStatusLabel(row.data_status) }}</el-tag></template>
+          </NcDataTable>
           <div class="pagination"><span>共 {{ store.linkTotal }} 条</span><el-pagination :current-page="store.linkFilters.page" :page-size="store.linkFilters.page_size" layout="prev, pager, next" :total="store.linkTotal" @current-change="store.setLinkPage" /></div>
         </el-tab-pane>
 
         <el-tab-pane label="最近快照" name="snapshots">
-          <el-table :data="store.snapshots" stripe height="calc(100vh - 425px)" empty-text="暂无 Mesh-Link 快照">
-            <el-table-column prop="id" label="快照 ID" width="90" />
-            <el-table-column prop="controller_name" label="AC" min-width="160" />
-            <el-table-column label="采集时间" width="180"><template #default="{ row }">{{ formatTime(row.collected_at) }}</template></el-table-column>
-            <el-table-column prop="link_count" label="链路数" width="85" />
-            <el-table-column prop="parse_status" label="解析状态" width="105" />
-            <el-table-column label="数据状态" width="105"><template #default="{ row }"><el-tag :type="statusType(row.data_status)">{{ dataStatusLabel(row.data_status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="source_reference" label="来源标识" min-width="220" />
-            <el-table-column prop="error_summary" label="错误摘要" min-width="200" />
-          </el-table>
+          <NcDataTable table-id="ac-mesh-snapshots" route-key="/ac-management/mesh-links" :data="store.snapshots" :columns="snapshotColumns" height="calc(100vh - 425px)" empty-text="暂无 Mesh-Link 快照">
+            <template #cell-data_status="{ row }"><el-tag :type="statusType(row.data_status)">{{ dataStatusLabel(row.data_status) }}</el-tag></template>
+          </NcDataTable>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -218,21 +243,9 @@ function matchLabel(method: string): string {
             <el-button v-if="store.selected.mr.mr_device_id" @click="router.push({ path: '/rail-transit/online-mr', query: { device_id: store.selected?.mr.mr_device_id } })">查看 Online MR</el-button>
           </div>
           <h3>当前快照链路</h3>
-          <el-table :data="store.selected.current_links" border empty-text="当前快照无链路">
-            <el-table-column prop="peer_ap_name" label="轨旁 AP" min-width="155" />
-            <el-table-column prop="peer_radio" label="Mesh Radio" width="120" />
-            <el-table-column prop="rssi" label="RSSI" width="75" />
-            <el-table-column prop="station" label="站点" min-width="120" />
-            <el-table-column prop="section" label="区间" min-width="140" />
-          </el-table>
+          <NcDataTable table-id="ac-mesh-detail-links" route-key="/ac-management/mesh-links" :data="store.selected.current_links" :columns="currentLinkColumns" :show-column-settings="false" border empty-text="当前快照无链路" />
           <h3>最近上线、离线和位置变化</h3>
-          <el-table :data="store.selected.recent_events" border empty-text="暂无历史事件">
-            <el-table-column prop="event_time" label="时间" width="175" />
-            <el-table-column prop="event_type" label="事件" width="115" />
-            <el-table-column prop="ap_name" label="轨旁 AP" min-width="150" />
-            <el-table-column prop="station" label="站点" min-width="120" />
-            <el-table-column prop="rssi" label="RSSI" width="75" />
-          </el-table>
+          <NcDataTable table-id="ac-mesh-detail-events" route-key="/ac-management/mesh-links" :data="store.selected.recent_events" :columns="eventColumns" :show-column-settings="false" border empty-text="暂无历史事件" />
         </template>
       </div>
     </el-drawer>
