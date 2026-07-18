@@ -8,6 +8,8 @@
   --nc-warning: #faad14;
   --nc-danger: #ff4d4f;
   --nc-info: #909399;
+  --nc-brand-gradient: linear-gradient(145deg, #0f8fc4, #1f4c8a);
+  --nc-brand-shadow: 0 18px 38px rgb(31 76 138 / 20%);
 
   /* Typography. */
   --nc-font-family: "Microsoft YaHei UI", "Noto Sans CJK SC", "Segoe UI", sans-serif;
@@ -36,8 +38,9 @@
   --nc-shell-sidebar-width: 220px;
   --nc-shell-sidebar-collapsed-width: 64px;
 
-  /* Elevation and motion. */
+  /* Theme files own semantic color and elevation values. */
   --nc-shadow-card: 0 5px 20px rgb(16 33 59 / 7%);
   --nc-shadow-floating: 0 14px 38px rgb(7 16 31 / 24%);
+  --nc-shadow-sidebar: 3px 0 14px rgb(16 24 40 / 6%);
   --nc-transition-fast: 160ms ease;
 }

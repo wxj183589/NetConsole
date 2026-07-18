@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { initializeSystemAppearance } from './appearance'
@@ -35,6 +38,16 @@ afterEach(() => {
 })
 
 describe('system appearance bootstrap', () => {
+  it('applies the safe default and saved appearance before Vue mounts', () => {
+    const mainSource = readFileSync(resolve(process.cwd(), 'src', 'main.ts'), 'utf8')
+    expect(mainSource.indexOf('applySafeSystemAppearance()')).toBeLessThan(
+      mainSource.indexOf('await initializePlatformRuntime()'),
+    )
+    expect(mainSource.indexOf('await initializeSystemAppearance()')).toBeLessThan(
+      mainSource.indexOf('createApp(App)'),
+    )
+  })
+
   it('applies the shared settings source for Browser and Electron renderers', async () => {
     const load = vi.fn().mockResolvedValue(snapshot())
 
@@ -46,6 +59,12 @@ describe('system appearance bootstrap', () => {
   })
 
   it('keeps the safe default appearance when settings are unavailable', async () => {
+    document.documentElement.dataset.theme = 'dark'
+    document.documentElement.style.setProperty('--nc-primary', '#16A34A')
+
     await expect(initializeSystemAppearance(() => Promise.reject(new Error('offline')))).resolves.toBe(false)
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(document.documentElement.lang).toBe('zh-CN')
+    expect(document.documentElement.style.getPropertyValue('--nc-primary')).toBe('#0078D4')
   })
 })

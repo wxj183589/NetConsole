@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererReadyReport } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
-import { isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
+import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import {
@@ -191,7 +191,7 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
     minWidth: 1024,
     minHeight: 680,
     show: false,
-    backgroundColor: '#0b1220',
+    backgroundColor: DESKTOP_SAFE_BACKGROUND_COLOR,
     autoHideMenuBar: !developmentMenu,
     webPreferences: secureWebPreferences(
       resolve(__dirname, '..', 'preload', 'index.cjs'),
@@ -250,7 +250,7 @@ async function loadStatusPage(
   const retry = retryUrl
     ? `<a href="${escapeHtml(retryUrl)}">重试</a>`
     : ''
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:#0b1220;color:#e2e8f0;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid #26344d;border-radius:14px;background:#111b2e;text-align:center}h1{font-size:22px;margin:0 0 12px}p{color:#94a3b8;line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#1787c9;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${DESKTOP_SAFE_BACKGROUND_COLOR};color:#182230;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid #e4e7ec;border-radius:14px;background:#fff;text-align:center;box-shadow:0 14px 38px rgb(7 16 31 / 12%)}h1{font-size:22px;margin:0 0 12px}p{color:#667085;line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
 }
 

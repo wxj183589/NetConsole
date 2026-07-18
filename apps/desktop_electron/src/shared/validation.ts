@@ -1,6 +1,7 @@
 import type {
   BackendDownloadRequest,
   ChooseSavePathOptions,
+  RendererHostReport,
   FileFilter,
   RendererReadyReport,
   SelectFileOptions,
@@ -205,8 +206,15 @@ export function validateExternalUrl(value: unknown): string {
   return parsed.href
 }
 
-export function validateRendererReadyReport(value: unknown): RendererReadyReport {
+export function validateRendererReadyReport(value: unknown): RendererHostReport {
   const record = asRecord(value, 'renderer ready report')
+  if ('resolvedTheme' in record) {
+    rejectUnknownKeys(record, ['resolvedTheme'])
+    if (record.resolvedTheme !== 'light' && record.resolvedTheme !== 'dark') {
+      throw new TypeError('resolved theme is invalid')
+    }
+    return { resolvedTheme: record.resolvedTheme }
+  }
   rejectUnknownKeys(record, ['healthOk', 'phase'])
   if (typeof record.healthOk !== 'boolean') throw new TypeError('healthOk must be a boolean')
   if (!['mounted', 'interactive', 'failed'].includes(String(record.phase))) {

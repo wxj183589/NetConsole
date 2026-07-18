@@ -16,11 +16,16 @@ html:root {
   --el-bg-color: var(--nc-bg-card);
   --el-bg-color-page: var(--nc-bg-page);
   --el-bg-color-overlay: var(--nc-bg-elevated);
+  --el-mask-color: var(--nc-overlay);
+  --el-mask-color-extra-light: color-mix(in srgb, var(--nc-overlay), transparent 35%);
   --el-fill-color-blank: var(--nc-bg-card);
   --el-fill-color-light: var(--nc-bg-muted);
   --el-fill-color-lighter: color-mix(in srgb, var(--nc-bg-muted), var(--nc-bg-card) 35%);
   --el-fill-color-extra-light: color-mix(in srgb, var(--nc-bg-muted), var(--nc-bg-card) 60%);
   --el-fill-color-dark: color-mix(in srgb, var(--nc-bg-muted), #000000 8%);
+  --el-fill-color-darker: var(--nc-bg-hover);
+  --el-fill-color: var(--nc-bg-hover);
+  --el-fill-color-disabled: var(--nc-bg-muted);
   --el-text-color-primary: var(--nc-text-primary);
   --el-text-color-regular: var(--nc-text-secondary);
   --el-text-color-secondary: var(--nc-text-tertiary);
@@ -34,6 +39,10 @@ html:root {
   --el-border-radius-base: var(--nc-radius-sm);
   --el-box-shadow-light: var(--nc-shadow-card);
   --el-box-shadow: var(--nc-shadow-floating);
+  --el-box-shadow-dark: var(--nc-shadow-floating);
+  --el-disabled-bg-color: var(--nc-bg-muted);
+  --el-disabled-border-color: var(--nc-border-light);
+  --el-disabled-text-color: var(--nc-text-disabled);
 }
 
 html[data-theme="dark"] {
@@ -43,4 +52,76 @@ html[data-theme="dark"] {
   --el-color-primary-light-8: color-mix(in srgb, var(--nc-primary), #000000 60%);
   --el-color-primary-light-9: color-mix(in srgb, var(--nc-primary), #000000 68%);
   --el-color-primary-dark-2: color-mix(in srgb, var(--nc-primary), #ffffff 20%);
+}
+
+.el-drawer,
+.el-dialog,
+.el-dropdown__popper,
+.el-message-box,
+.el-notification,
+.el-picker__popper,
+.el-popover.el-popper,
+.el-select__popper,
+.el-tooltip__popper.el-popper {
+  color: var(--nc-text-primary);
+  background: var(--nc-bg-elevated);
+  border-color: var(--nc-border);
+  box-shadow: var(--nc-shadow-floating);
+}
+
+.el-table {
+  --el-table-bg-color: var(--nc-bg-panel);
+  --el-table-tr-bg-color: var(--nc-bg-panel);
+  --el-table-header-bg-color: var(--nc-table-header-bg);
+  --el-table-row-hover-bg-color: var(--nc-table-hover-bg);
+  --el-table-current-row-bg-color: var(--nc-table-selected-bg);
+  --el-table-border-color: var(--nc-divider);
+  --el-table-text-color: var(--nc-text-primary);
+  --el-table-header-text-color: var(--nc-text-secondary);
+}
+
+.el-input,
+.el-select,
+.el-textarea {
+  --el-input-bg-color: var(--nc-bg-panel);
+  --el-input-border-color: var(--nc-border);
+  --el-input-hover-border-color: var(--nc-border-strong);
+  --el-input-text-color: var(--nc-text-primary);
+  --el-input-placeholder-color: var(--nc-text-disabled);
+}
+
+.el-tabs {
+  --el-border-color-light: var(--nc-divider);
+  --el-text-color-primary: var(--nc-text-primary);
+  --el-text-color-regular: var(--nc-text-secondary);
+}
+
+.el-dropdown-menu,
+.el-select-dropdown,
+.el-message,
+.el-notification,
+.el-popover.el-popper {
+  color: var(--nc-text-primary);
+  background: var(--nc-bg-elevated);
+  border-color: var(--nc-border);
+}
+
+.el-dropdown-menu__item:not(.is-disabled):focus,
+.el-dropdown-menu__item:not(.is-disabled):hover,
+.el-select-dropdown__item.is-hovering {
+  color: var(--nc-text-active);
+  background: var(--nc-bg-hover);
+}
+
+.el-popper.is-dark,
+.el-popper.is-light {
+  color: var(--nc-text-primary);
+  background: var(--nc-bg-elevated);
+  border-color: var(--nc-border);
+}
+
+.el-popper.is-dark .el-popper__arrow::before,
+.el-popper.is-light .el-popper__arrow::before {
+  background: var(--nc-bg-elevated);
+  border-color: var(--nc-border);
 }

@@ -1,6 +1,6 @@
 import { basename, isAbsolute } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopRuntimeConfig, RendererReadyReport, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererReadyReport, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
@@ -14,11 +14,16 @@ import {
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
 import type { DesktopLogger } from './logger'
+import { resolveDesktopBackgroundColor } from './config'
 import { GrantedPathRegistry } from './path-access'
 
 interface IpcEventLike {
   sender: unknown
   senderFrame?: { url: string } | null
+}
+
+interface ThemeWindowLike {
+  setBackgroundColor(color: string): void
 }
 
 interface IpcMainLike {
@@ -263,12 +268,27 @@ export function registerDesktopIpc(
     if (!dependencies.isTrustedSender(event)) return
     try {
       const report = validateRendererReadyReport(value)
-      dependencies.onRendererReady?.(report)
+      if ('resolvedTheme' in report) {
+        updateWindowTheme(dependencies.windowForEvent?.(event) ?? dependencies.window, report.resolvedTheme)
+      } else {
+        dependencies.onRendererReady?.(report)
+      }
     } catch {
       dependencies.logger?.('ELECTRON_RENDERER_READY_REJECTED')
     }
   })
   return { shutdown: () => downloadManager.shutdown() }
+}
+
+function updateWindowTheme(window: unknown, theme: DesktopResolvedTheme): void {
+  if (!hasThemeBackground(window)) throw new TypeError('managed window is unavailable')
+  window.setBackgroundColor(resolveDesktopBackgroundColor(theme))
+}
+
+function hasThemeBackground(value: unknown): value is ThemeWindowLike {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as { setBackgroundColor?: unknown }).setBackgroundColor === 'function'
 }
 
 const SETTINGS_TOOL_NAMES = {

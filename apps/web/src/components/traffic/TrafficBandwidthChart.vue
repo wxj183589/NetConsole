@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
+import {
+  createNetConsoleAxisStyle,
+  createNetConsoleLegendStyle,
+  createNetConsoleTooltipStyle,
+  readNetConsoleChartTokens,
+  subscribeNetConsoleChartTheme,
+} from '../../theme/echarts'
 import type { TrafficEvent } from '../../types/traffic'
 
 const props = defineProps<{ events: TrafficEvent[] }>()
@@ -43,12 +49,7 @@ function resize(): void {
 function render(): void {
   if (!chart) return
   const theme = readNetConsoleChartTokens()
-  const axisStyle = {
-    axisLabel: { color: theme.textSecondary },
-    axisLine: { lineStyle: { color: theme.border } },
-    axisTick: { lineStyle: { color: theme.border } },
-    splitLine: { lineStyle: { color: theme.splitLine } },
-  }
+  const axisStyle = createNetConsoleAxisStyle(theme)
   const groups = new Map<string, [string, number][]>()
   for (const event of props.events) {
     if (event.type !== 'sample' || event.payload.metric !== 'iperf_interval') continue
@@ -65,11 +66,9 @@ function render(): void {
     textStyle: { color: theme.text },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: theme.background,
-      borderColor: theme.border,
-      textStyle: { color: theme.text },
+      ...createNetConsoleTooltipStyle(theme),
     },
-    legend: { top: 0, type: 'scroll', textStyle: { color: theme.textSecondary } },
+    legend: { top: 0, type: 'scroll', ...createNetConsoleLegendStyle(theme) },
     grid: { left: 56, right: 24, top: 44, bottom: 36 },
     xAxis: { type: 'time', ...axisStyle },
     yAxis: { type: 'value', name: 'Mbps', nameTextStyle: { color: theme.textSecondary }, min: 0, ...axisStyle },

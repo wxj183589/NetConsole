@@ -1,8 +1,24 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 
-import { isDevelopmentMenuEnabled, loadDesktopConfig } from '../src/main/config'
+import {
+  DESKTOP_SAFE_BACKGROUND_COLOR,
+  isDevelopmentMenuEnabled,
+  loadDesktopConfig,
+  resolveDesktopBackgroundColor,
+} from '../src/main/config'
 
 describe('desktop config', () => {
+  it('uses a safe light initial background and fixed resolved-theme colors', () => {
+    expect(DESKTOP_SAFE_BACKGROUND_COLOR).toBe('#f4f6f8')
+    expect(resolveDesktopBackgroundColor('light')).toBe('#f4f6f8')
+    expect(resolveDesktopBackgroundColor('dark')).toBe('#0f141c')
+    const mainSource = readFileSync(fileURLToPath(new URL('../src/main/index.ts', import.meta.url)), 'utf8')
+    expect(mainSource).toContain('backgroundColor: DESKTOP_SAFE_BACKGROUND_COLOR')
+  })
+
   it('uses only an exact loopback Vite origin and an absolute developer Python', () => {
     const config = loadDesktopConfig({
       isPackaged: false,

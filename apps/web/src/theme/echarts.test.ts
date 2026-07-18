@@ -3,7 +3,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { applyNetConsoleTheme } from './theme'
-import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from './echarts'
+import {
+  createNetConsoleAxisStyle,
+  createNetConsoleDataZoomStyle,
+  createNetConsoleTooltipStyle,
+  readNetConsoleChartTokens,
+  subscribeNetConsoleChartTheme,
+} from './echarts'
 
 afterEach(() => {
   document.documentElement.removeAttribute('style')
@@ -19,12 +25,21 @@ describe('NetConsole ECharts theme bridge', () => {
     root.style.setProperty('--nc-success', '#16a34a')
     root.style.setProperty('--nc-text-primary', '#f8fafc')
     root.style.setProperty('--nc-border-light', '#334155')
+    root.style.setProperty('--nc-bg-muted', '#202b39')
+    root.style.setProperty('--nc-bg-active', '#1d4f7a')
 
     const tokens = readNetConsoleChartTokens()
 
     expect(tokens.series.slice(0, 2)).toEqual(['#2563eb', '#16a34a'])
     expect(tokens.text).toBe('#f8fafc')
     expect(tokens.splitLine).toBe('#334155')
+    expect(createNetConsoleAxisStyle(tokens).axisLabel.color).toBe(tokens.textSecondary)
+    expect(createNetConsoleTooltipStyle(tokens).backgroundColor).toBe(tokens.background)
+    expect(createNetConsoleDataZoomStyle(tokens)).toMatchObject({
+      backgroundColor: '#202b39',
+      fillerColor: '#1d4f7a',
+      borderColor: tokens.border,
+    })
   })
 
   it('notifies mounted charts when appearance changes after bootstrap', () => {

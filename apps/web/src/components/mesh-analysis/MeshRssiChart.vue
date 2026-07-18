@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
+import {
+  createNetConsoleAxisStyle,
+  createNetConsoleDataZoomStyle,
+  createNetConsoleTooltipStyle,
+  readNetConsoleChartTokens,
+  subscribeNetConsoleChartTheme,
+} from '../../theme/echarts'
 import type { MeshRssiPoint } from '../../types/meshAnalysis'
 
 const props = defineProps<{ points: MeshRssiPoint[] }>()
@@ -40,21 +46,14 @@ function resize(): void {
 function render(): void {
   if (!chart) return
   const theme = readNetConsoleChartTokens()
-  const axisStyle = {
-    axisLabel: { color: theme.textSecondary },
-    axisLine: { lineStyle: { color: theme.border } },
-    axisTick: { lineStyle: { color: theme.border } },
-    splitLine: { lineStyle: { color: theme.splitLine } },
-  }
+  const axisStyle = createNetConsoleAxisStyle(theme)
   chart.setOption({
     animation: false,
     color: [theme.primary],
     textStyle: { color: theme.text },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: theme.background,
-      borderColor: theme.border,
-      textStyle: { color: theme.text },
+      ...createNetConsoleTooltipStyle(theme),
     },
     grid: { left: 54, right: 22, top: 24, bottom: 50 },
     xAxis: { type: 'time', ...axisStyle },
@@ -70,10 +69,7 @@ function render(): void {
       {
         type: 'slider',
         height: 18,
-        textStyle: { color: theme.textSecondary },
-        borderColor: theme.border,
-        dataBackground: { lineStyle: { color: theme.info } },
-        selectedDataBackground: { lineStyle: { color: theme.primary } },
+        ...createNetConsoleDataZoomStyle(theme),
       },
     ],
     series: [

@@ -14,9 +14,10 @@ import './theme/light.css'
 import './theme/dark.css'
 import './theme/element-plus.css'
 import './styles/main.css'
-import { initializeSystemAppearance } from './settings/appearance'
+import { applySafeSystemAppearance, initializeSystemAppearance } from './settings/appearance'
 
 async function bootstrap(): Promise<void> {
+  applySafeSystemAppearance()
   try {
     await initializePlatformRuntime()
   } catch (cause) {
@@ -25,8 +26,8 @@ async function bootstrap(): Promise<void> {
     if (root) root.textContent = cause instanceof Error ? cause.message : '桌面运行时初始化失败'
     return
   }
+  await initializeSystemAppearance()
   createApp(App).use(createPinia()).use(router).mount('#app')
-  void initializeSystemAppearance()
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
     runtime.reportRendererReady(true, 'mounted')

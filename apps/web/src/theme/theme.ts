@@ -25,6 +25,7 @@ export function applyNetConsoleTheme(theme: SystemTheme, color: SystemThemeColor
   root.style.setProperty('--nc-accent', color)
   bindSystemPreference(theme === 'auto')
   notifyThemeChange(resolved, color)
+  syncDesktopBackground(resolved)
   return resolved
 }
 
@@ -50,6 +51,7 @@ function bindSystemPreference(enabled: boolean): void {
     document.documentElement.dataset.theme = resolved
     document.documentElement.classList.toggle('dark', resolved === 'dark')
     notifyThemeChange(resolved, document.documentElement.style.getPropertyValue('--nc-primary'))
+    syncDesktopBackground(resolved)
   }
   systemQuery.addEventListener('change', systemListener)
 }
@@ -59,4 +61,9 @@ function notifyThemeChange(theme: ResolvedTheme, color: string): void {
   window.dispatchEvent(
     new CustomEvent(NETCONSOLE_THEME_CHANGE_EVENT, { detail: { theme, color } }),
   )
+}
+
+function syncDesktopBackground(theme: ResolvedTheme): void {
+  if (typeof window === 'undefined') return
+  window.netconsoleDesktop?.reportRendererReady({ resolvedTheme: theme })
 }

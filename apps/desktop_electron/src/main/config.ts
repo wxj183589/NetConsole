@@ -1,6 +1,19 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 
+import type { DesktopResolvedTheme } from '../shared/bridge'
+
+export const DESKTOP_SAFE_BACKGROUND_COLOR = '#f4f6f8'
+
+const DESKTOP_THEME_BACKGROUND = Object.freeze({
+  light: DESKTOP_SAFE_BACKGROUND_COLOR,
+  dark: '#0f141c',
+} satisfies Record<DesktopResolvedTheme, string>)
+
+export function resolveDesktopBackgroundColor(theme: DesktopResolvedTheme): string {
+  return DESKTOP_THEME_BACKGROUND[theme]
+}
+
 export interface DesktopConfig {
   projectRoot: string
   dataRoot: string

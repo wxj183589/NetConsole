@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
+import {
+  createNetConsoleAxisStyle,
+  createNetConsoleLegendStyle,
+  createNetConsoleTooltipStyle,
+  readNetConsoleChartTokens,
+  subscribeNetConsoleChartTheme,
+} from '../../theme/echarts'
 import type { TrafficPingSample } from '../../types/traffic'
 
 const props = defineProps<{ samples: TrafficPingSample[] }>()
@@ -43,12 +49,7 @@ function resize(): void {
 function render(): void {
   if (!chart) return
   const theme = readNetConsoleChartTokens()
-  const axisStyle = {
-    axisLabel: { color: theme.textSecondary },
-    axisLine: { lineStyle: { color: theme.border } },
-    axisTick: { lineStyle: { color: theme.border } },
-    splitLine: { lineStyle: { color: theme.splitLine } },
-  }
+  const axisStyle = createNetConsoleAxisStyle(theme)
   const groups = new Map<string, [string, number][]>()
   for (const sample of props.samples) {
     if (!sample.ok || sample.rtt_ms === null) continue
@@ -62,11 +63,9 @@ function render(): void {
     textStyle: { color: theme.text },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: theme.background,
-      borderColor: theme.border,
-      textStyle: { color: theme.text },
+      ...createNetConsoleTooltipStyle(theme),
     },
-    legend: { top: 0, type: 'scroll', textStyle: { color: theme.textSecondary } },
+    legend: { top: 0, type: 'scroll', ...createNetConsoleLegendStyle(theme) },
     grid: { left: 48, right: 24, top: 44, bottom: 36 },
     xAxis: { type: 'time', ...axisStyle },
     yAxis: { type: 'value', name: 'RTT ms', nameTextStyle: { color: theme.textSecondary }, min: 0, ...axisStyle },

@@ -5,8 +5,10 @@ export interface NetConsoleChartTokens {
   text: string
   textSecondary: string
   background: string
+  backgroundMuted: string
   border: string
   splitLine: string
+  active: string
   primary: string
   warning: string
   danger: string
@@ -22,8 +24,10 @@ const FALLBACKS = {
   text: '#1f2329',
   textSecondary: '#606266',
   background: '#ffffff',
+  backgroundMuted: '#f2f4f7',
   border: '#dcdfe6',
   splitLine: '#ebeef5',
+  active: '#e8f1ff',
 } as const
 
 export function readNetConsoleChartTokens(): NetConsoleChartTokens {
@@ -39,12 +43,49 @@ export function readNetConsoleChartTokens(): NetConsoleChartTokens {
     text: read('--nc-text-primary', FALLBACKS.text),
     textSecondary: read('--nc-text-secondary', FALLBACKS.textSecondary),
     background: read('--nc-bg-elevated', FALLBACKS.background),
+    backgroundMuted: read('--nc-bg-muted', FALLBACKS.backgroundMuted),
     border: read('--nc-border', FALLBACKS.border),
     splitLine: read('--nc-border-light', FALLBACKS.splitLine),
+    active: read('--nc-bg-active', FALLBACKS.active),
     primary,
     warning,
     danger,
     info,
+  }
+}
+
+export function createNetConsoleAxisStyle(theme: NetConsoleChartTokens) {
+  return {
+    axisLabel: { color: theme.textSecondary },
+    axisLine: { lineStyle: { color: theme.border } },
+    axisTick: { lineStyle: { color: theme.border } },
+    splitLine: { lineStyle: { color: theme.splitLine } },
+  }
+}
+
+export function createNetConsoleTooltipStyle(theme: NetConsoleChartTokens) {
+  return {
+    backgroundColor: theme.background,
+    borderColor: theme.border,
+    textStyle: { color: theme.text },
+  }
+}
+
+export function createNetConsoleLegendStyle(theme: NetConsoleChartTokens) {
+  return { textStyle: { color: theme.textSecondary } }
+}
+
+export function createNetConsoleDataZoomStyle(theme: NetConsoleChartTokens) {
+  return {
+    backgroundColor: theme.backgroundMuted,
+    fillerColor: theme.active,
+    borderColor: theme.border,
+    textStyle: { color: theme.textSecondary },
+    dataBackground: { lineStyle: { color: theme.info }, areaStyle: { color: theme.backgroundMuted } },
+    selectedDataBackground: { lineStyle: { color: theme.primary }, areaStyle: { color: theme.active } },
+    handleStyle: { color: theme.background, borderColor: theme.primary },
+    moveHandleStyle: { color: theme.primary },
+    emphasis: { handleStyle: { color: theme.primary, borderColor: theme.primary } },
   }
 }
 

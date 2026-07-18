@@ -40,8 +40,18 @@ describe('App layout foundation', () => {
 
   it('keeps the root menu on the sidebar palette after lazy Element Plus styles load', () => {
     expect(styles).toContain('--el-menu-bg-color: transparent')
-    expect(styles).toContain('--el-menu-text-color: color-mix(in srgb, var(--nc-text-inverse), transparent 38%)')
-    expect(styles).toContain('--el-menu-hover-bg-color: var(--nc-bg-sidebar-hover)')
-    expect(styles).toContain('--el-menu-active-color: var(--nc-primary-hover)')
+    expect(styles).toContain('--el-menu-text-color: var(--nc-text-secondary)')
+    expect(styles).toContain('--el-menu-hover-bg-color: var(--nc-bg-hover)')
+    expect(styles).toContain('--el-menu-active-color: var(--nc-text-active)')
+    expect(styles).toContain('.el-menu--popup')
+  })
+
+  it('themes shell states and scrollbars entirely through semantic tokens', () => {
+    expect(styles).toContain('background: var(--nc-bg-sidebar)')
+    expect(styles).toContain('background: var(--nc-bg-header)')
+    expect(styles).toContain('background: var(--nc-bg-active)')
+    expect(styles).toContain('color: var(--nc-text-disabled)')
+    expect(styles).toContain('scrollbar-color: var(--nc-scrollbar-thumb) transparent')
+    expect(styles).toContain('background-color: var(--nc-scrollbar-thumb-hover)')
   })
 })

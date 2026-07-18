@@ -78,6 +78,14 @@ export interface RendererReadyReport {
   phase: 'mounted' | 'interactive' | 'failed'
 }
 
+export type DesktopResolvedTheme = 'light' | 'dark'
+
+export interface RendererThemeReport {
+  resolvedTheme: DesktopResolvedTheme
+}
+
+export type RendererHostReport = RendererReadyReport | RendererThemeReport
+
 export interface TaskWindowContext {
   taskId?: string
   module?: 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'command-reference' | 'logs'
@@ -102,7 +110,8 @@ export interface NetConsoleDesktopBridge {
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
-  reportRendererReady(report: RendererReadyReport): void
+  /** One-way, strictly validated renderer lifecycle or resolved-theme report. */
+  reportRendererReady(report: RendererHostReport): void
 }
 
 export const DESKTOP_IPC = Object.freeze({

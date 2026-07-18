@@ -225,4 +225,25 @@ describe('desktop IPC', () => {
     expect(onRendererReady).not.toHaveBeenCalled()
     expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_READY_REJECTED')
   })
+
+  it('updates only the calling managed window for whitelisted resolved themes', () => {
+    const setBackgroundColor = vi.fn()
+    const logger = vi.fn()
+    const managedWindow = { setBackgroundColor }
+    const { ipcMain, sender } = createHarness({ logger, windowForEvent: () => managedWindow })
+    const listener = ipcMain.listeners.get(DESKTOP_IPC.rendererReady)!
+
+    listener({ sender }, { resolvedTheme: 'dark' })
+    listener({ sender }, { resolvedTheme: 'light' })
+    expect(setBackgroundColor).toHaveBeenNthCalledWith(1, '#0f141c')
+    expect(setBackgroundColor).toHaveBeenNthCalledWith(2, '#f4f6f8')
+
+    listener({ sender }, { resolvedTheme: 'auto' })
+    listener({ sender }, { resolvedTheme: 'dark', arbitraryWindowOption: true })
+    expect(setBackgroundColor).toHaveBeenCalledTimes(2)
+    expect(logger).toHaveBeenCalledTimes(2)
+
+    listener({ sender: {} }, { resolvedTheme: 'dark' })
+    expect(setBackgroundColor).toHaveBeenCalledTimes(2)
+  })
 })

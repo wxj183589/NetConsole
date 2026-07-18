@@ -47,6 +47,11 @@ describe('preload bridge', () => {
       DESKTOP_IPC.selectFile,
       { filters: [{ name: '日志', extensions: ['log'] }] },
     ])
+    bridge.reportRendererReady({ resolvedTheme: 'dark' })
+    expect(ipcRenderer.send).toHaveBeenCalledWith(
+      DESKTOP_IPC.rendererReady,
+      { resolvedTheme: 'dark' },
+    )
   })
 
   it('validates arguments before sending IPC', async () => {
