@@ -147,6 +147,9 @@ def create_app(
     online_mr_agent_web_control_service: OnlineMrAgentWebControlService | None = None,
     online_mr_agent_executor_enabled: bool | None = None,
     api_documentation_enabled: bool | None = None,
+    development_api_enabled: bool = False,
+    development_runtime_label: str = "development",
+    development_frontend_mode: str = "dist",
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
@@ -357,6 +360,9 @@ def create_app(
     )
     app.state.runtime_mode = runtime_mode
     app.state.api_documentation_enabled = bool(api_documentation_enabled)
+    app.state.development_api_enabled = bool(development_api_enabled)
+    app.state.development_runtime_label = str(development_runtime_label)
+    app.state.development_frontend_mode = str(development_frontend_mode)
     app.state.desktop_session_protected = bool(desktop_session_token)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
@@ -538,6 +544,12 @@ def create_app(
 
     app.include_router(api_router)
     app.include_router(ws_router)
+    if development_api_enabled:
+        if runtime_mode is not RuntimeMode.DESKTOP or not desktop_session_token:
+            raise RuntimeError("development API requires protected desktop runtime")
+        from netconsole.backend.api.development_router import router as development_router
+
+        app.include_router(development_router, prefix="/api")
 
     dist = frontend_dist or _frontend_dist(paths)
     app.state.frontend_root = dist

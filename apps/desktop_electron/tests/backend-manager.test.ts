@@ -62,12 +62,19 @@ function createManager(options: {
   fetchImpl?: typeof fetch
   logger?: (event: string, detail?: string) => void
   awaitProcessExit?: boolean
+  environment?: NodeJS.ProcessEnv
+  runtimeMode?: 'desktop-development' | 'desktop-packaged'
+  announcedPort?: number
 } = {}) {
   const child = options.child ?? new FakeChild()
   const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
   const spawnProcess: SpawnProcess = (command, args, spawnOptions) => {
     spawnCalls.push({ command, args, options: spawnOptions as Record<string, unknown> })
-    queueMicrotask(() => child.announce())
+    const developmentPort = options.runtimeMode !== 'desktop-packaged'
+      && options.environment?.NETCONSOLE_DEV_MODE === '1'
+      ? Number(options.environment.NETCONSOLE_DEV_BACKEND_PORT || 0)
+      : 0
+    queueMicrotask(() => child.announce((options.announcedPort ?? developmentPort) || 43123))
     return child
   }
   const manager = new PythonBackendManager({
@@ -75,7 +82,7 @@ function createManager(options: {
     argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
     projectRoot: 'C:\\NetConsole',
     dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
-    runtimeMode: 'desktop-development',
+    runtimeMode: options.runtimeMode ?? 'desktop-development',
     pythonPath: 'C:\\NetConsole\\src',
     startupTimeoutMs: 50,
     stopTimeoutMs: 5,
@@ -92,6 +99,7 @@ function createManager(options: {
     }) as typeof fetch,
     logger: options.logger,
     awaitProcessExit: options.awaitProcessExit,
+    environment: options.environment,
   })
   return { manager, child, spawnCalls }
 }
@@ -124,6 +132,76 @@ describe('PythonBackendManager', () => {
 
     expect(child.signals).toEqual([])
     expect(manager.getStatus()).toEqual({ state: 'stopped' })
+  })
+
+  it('enables the fixed loopback development API only with an explicit development environment', async () => {
+    const developmentToken = 'codex-development-token-abcdefghijklmnopqrstuvwxyz'
+    const { manager, child, spawnCalls } = createManager({
+      fetchImpl: vi.fn(async (_url, request) => {
+        expect(new Headers(request?.headers).get(DESKTOP_SESSION_HEADER)).toBe(developmentToken)
+        return new Response(JSON.stringify({ status: 'ok' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }) as typeof fetch,
+      environment: {
+        NETCONSOLE_DEV_MODE: '1',
+        NETCONSOLE_DEV_BACKEND_PORT: '8000',
+        NETCONSOLE_DEV_SESSION_TOKEN: developmentToken,
+      },
+    })
+    let handshake = ''
+    child.stdin.on('data', (chunk) => { handshake += chunk.toString('utf8') })
+
+    await manager.start()
+
+    expect(spawnCalls[0].args).toContain('--dev-mode')
+    expect(spawnCalls[0].args).toContain('8000')
+    expect(spawnCalls[0].args).not.toContain(developmentToken)
+    expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_DEV_SESSION_TOKEN).toBeUndefined()
+    expect(JSON.parse(handshake).session_token).toBe(developmentToken)
+    await manager.stop()
+  })
+
+  it('never enables development endpoints for the packaged runtime', async () => {
+    const { manager, spawnCalls } = createManager({
+      runtimeMode: 'desktop-packaged',
+      environment: {
+        NETCONSOLE_DEV_MODE: '1',
+        NETCONSOLE_DEV_BACKEND_PORT: '8000',
+        NETCONSOLE_DEV_SESSION_TOKEN: 'codex-development-token-abcdefghijklmnopqrstuvwxyz',
+      },
+    })
+
+    await manager.start()
+
+    expect(spawnCalls[0].args).not.toContain('--dev-mode')
+    expect(spawnCalls[0].args).toContain('0')
+    await manager.stop()
+  })
+
+  it('rejects an invalid fixed development backend port before spawning', async () => {
+    const { manager, spawnCalls } = createManager({
+      environment: {
+        NETCONSOLE_DEV_MODE: '1',
+        NETCONSOLE_DEV_BACKEND_PORT: '70000',
+      },
+    })
+
+    await expect(manager.start()).rejects.toThrow('between 1 and 65535')
+    expect(spawnCalls).toHaveLength(0)
+  })
+
+  it('rejects a backend announcement that differs from the fixed development port', async () => {
+    const { manager } = createManager({
+      announcedPort: 43123,
+      environment: {
+        NETCONSOLE_DEV_MODE: '1',
+        NETCONSOLE_DEV_BACKEND_PORT: '8000',
+      },
+    })
+
+    await expect(manager.start()).rejects.toThrow('unexpected fixed development port')
   })
 
   it('reports an unexpected exit after readiness', async () => {

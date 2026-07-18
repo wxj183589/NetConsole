@@ -211,6 +211,9 @@ apps/web/src/views/network-tools/TrafficTestView.vue
 # 正式桌面开发入口
 cd apps/desktop_electron
 pnpm dev
+
+# Codex/浏览器自动化：受管 Backend + Vite + Electron，均只绑定回环
+pnpm dev:codex
 cd ../..
 
 # 显式本机开发诊断
@@ -229,6 +232,8 @@ cd ..
 ```
 
 本机模式固定绑定 `127.0.0.1`；Server 模式默认同样只绑定回环地址。`apps/web/dist` 是忽略提交的构建产物；源码模式缺失时后端显示资源不可用页。源码模式只使用当前 `apps/web/dist`，冻结模式只使用包内 `netconsole/assets/web`；发布脚本每次重新构建并校验 `web-build-meta.json` 后才打包。生命周期、build id 和 fallback 见 [Desktop WebHost](WEB_HOST.md)。
+
+`dev:codex` 不建立第二个后端或免认证接口：Electron Main 仍持有唯一 Python 生命周期，每次启动生成短期 Session，经 stdin 交给 Backend；浏览器 Vue 只在 Vite 开发编译中建立一次受保护 Cookie。`/api/dev/runtime-status`、OpenAPI 与 Vite 只存在于显式开发运行时，生产 Electron 继续使用动态回环端口、构建后的 Vue、关闭的 DevTools 和不可用的开发路由。
 
 ## 9. 下一阶段
 

@@ -38,7 +38,38 @@ def test_electron_runtime_accepts_only_loopback_configuration() -> None:
         host="127.0.0.1",
         port=0,
         renderer_origin="http://127.0.0.1:5173",
+        development=False,
     )
+
+
+def test_electron_runtime_accepts_explicit_loopback_development_mode() -> None:
+    options = parse_options(
+        [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8000",
+            "--renderer-origin",
+            "http://127.0.0.1:5173",
+            "--dev-mode",
+        ]
+    )
+
+    assert options == ElectronRuntimeOptions(
+        host="127.0.0.1",
+        port=8000,
+        renderer_origin="http://127.0.0.1:5173",
+        development=True,
+    )
+
+
+def test_packaged_electron_runtime_rejects_development_mode(monkeypatch) -> None:
+    from netconsole.backend import electron_runtime
+
+    monkeypatch.setattr(electron_runtime, "is_packaged_runtime", lambda: True)
+
+    with pytest.raises(SystemExit):
+        parse_options(["--host", "127.0.0.1", "--port", "8000", "--dev-mode"])
 
 
 @pytest.mark.parametrize(
@@ -151,8 +182,92 @@ def test_electron_runtime_does_not_publish_api_documentation(tmp_path, monkeypat
         for path in ("/docs", "/redoc", "/openapi.json"):
             response = client.get(path, headers={DESKTOP_SESSION_HEADER: TOKEN})
             assert response.status_code == 404
+        assert client.get(
+            "/api/dev/runtime-status",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        ).status_code == 404
 
     assert app.state.api_documentation_enabled is False
+
+
+def test_electron_development_runtime_is_authenticated_and_redacted(tmp_path, monkeypatch) -> None:
+    from netconsole.backend import electron_runtime
+
+    original_create_app = electron_runtime.create_app
+
+    def isolated_create_app(*args, **kwargs):
+        from netconsole.core.paths import PathResolver
+
+        kwargs["paths"] = PathResolver(tmp_path)
+        kwargs["frontend_dist"] = tmp_path / "missing-web-dist"
+        return original_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(electron_runtime, "create_app", isolated_create_app)
+    app = build_app(
+        ElectronRuntimeOptions(
+            "127.0.0.1",
+            8000,
+            "http://127.0.0.1:5173",
+            development=True,
+        ),
+        TOKEN,
+    )
+
+    with TestClient(app, client=("127.0.0.1", 50123)) as client:
+        assert client.get("/api/dev/runtime-status").status_code == 401
+        response = client.get(
+            "/api/dev/runtime-status",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        )
+        session = client.post(
+            "/api/dev/session",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        )
+        cookie_status = client.get("/api/dev/runtime-status")
+        docs = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime_mode"] == "electron-development"
+    assert body["frontend_mode"] == "vite"
+    assert body["data_root"] == "<redacted>"
+    assert str(tmp_path) not in response.text
+    assert TOKEN not in response.text
+    assert session.status_code == 204
+    set_cookie = session.headers["set-cookie"].lower()
+    assert "httponly" in set_cookie
+    assert "samesite=strict" in set_cookie
+    assert "path=/" in set_cookie
+    assert cookie_status.status_code == 200
+    assert docs.status_code == 200
+    assert app.state.api_documentation_enabled is True
+
+
+def test_electron_development_api_rejects_non_loopback_client(tmp_path, monkeypatch) -> None:
+    from netconsole.backend import electron_runtime
+
+    original_create_app = electron_runtime.create_app
+
+    def isolated_create_app(*args, **kwargs):
+        from netconsole.core.paths import PathResolver
+
+        kwargs["paths"] = PathResolver(tmp_path)
+        kwargs["frontend_dist"] = tmp_path / "missing-web-dist"
+        return original_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(electron_runtime, "create_app", isolated_create_app)
+    app = build_app(
+        ElectronRuntimeOptions("127.0.0.1", 8000, development=True),
+        TOKEN,
+    )
+
+    with TestClient(app, client=("192.0.2.10", 50123)) as client:
+        response = client.get(
+            "/api/dev/runtime-status",
+            headers={DESKTOP_SESSION_HEADER: TOKEN},
+        )
+
+    assert response.status_code == 403
 
 
 def test_electron_runtime_cors_is_limited_to_declared_vite_origin(tmp_path, monkeypatch) -> None:

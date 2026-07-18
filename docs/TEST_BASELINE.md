@@ -14,11 +14,13 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 每个模块至少运行：
 
 1. 新增或修改的后端 Service、Repository、Router 测试。
-2. 直接受影响的既有 Qt 或 Application Service 测试。
+2. 直接受影响的 Application Service、永久 Adapter 或历史行为契约测试；不得重新引入 Qt 测试运行时。
 3. 对应 Vue 组件、API client 或 Store 的 Vitest。
-4. 前端 `npm run build`，以及适用的 Ruff、Go 或文档链接检查。
+4. 前端 `pnpm build`，以及适用的 Ruff、Go 或文档链接检查。
 
 Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run typecheck` 和 `pnpm run build:main`；触及启动链、preload 或 Vue runtime adapter 时运行 `pnpm smoke:dev`。该冒烟覆盖源码图形环境，不替代 Windows 安装包、签名、升级或目标系统实机验收。
+
+触及本机 Codex/浏览器调试链时，额外运行 `pnpm exec node scripts/dev.mjs --codex --smoke`，并确认 `127.0.0.1:5173`、`127.0.0.1:8000` 和受管子进程均已回收。开发状态接口必须覆盖：显式开关、回环来源、Session 鉴权、路径/令牌脱敏，以及生产运行时路由不存在。Playwright 浏览器/Electron E2E 只有在对应脚本和断言实际落地后才能计入门禁；普通 Vitest、API TestClient 和启动 smoke 不等同于 E2E。
 
 测试断言应验证必要能力和业务契约，不硬编码会随正常扩展变化的全局任务总数或路由总数。
 

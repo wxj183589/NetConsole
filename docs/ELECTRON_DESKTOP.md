@@ -75,6 +75,17 @@ pnpm dev
 
 无参数 `main.py` 与 `pnpm dev` 最终进入同一 `scripts/dev.mjs`。Python 入口优先使用项目锁定的本地 Electron 作为 Node 运行时，因此 PyCharm 不依赖全局 `pnpm`；Electron Main 仍是受管 Python Backend 的唯一生命周期所有者。开发脚本先检查并打包 Electron main/preload，再确认固定回环端口 `5173` 未被占用、启动 Vite dev server，最后启动 Electron；端口冲突时直接失败，不能误连其他 worktree 的 Vite。Electron 自己选择 Python 动态端口，因此 Vite 的 `5173` 与 FastAPI 端口没有绑定关系。Vite 中固定的 `/api`、`/ws` 代理只服务普通 Browser 开发；Electron 的 REST、WebSocket 和下载全部从 Runtime Config 读取受管动态 Origin，不经过固定 `127.0.0.1:8000`。独立 Git worktree 可通过开发机环境变量 `NETCONSOLE_PYTHON` 指向同一项目虚拟环境；该路径不会进入 Renderer、日志或版本化配置。
 
+需要让 Codex、浏览器自动化和 API 诊断访问同一受管运行时时，使用专用入口：
+
+```powershell
+cd apps/desktop_electron
+pnpm dev:codex
+```
+
+该入口为本次进程生成随机开发 Session，创建系统临时数据根，并固定使用 `127.0.0.1:5173` 与 `127.0.0.1:8000`。Vue 仅在 Vite 开发编译中取得内存令牌，先通过受保护的 `/api/dev/session` 建立 HttpOnly、SameSite Strict Cookie，再复用正式 REST、WebSocket 和下载契约；令牌不写仓库、URL、日志、SQLite 或持久浏览器存储。只读 `/api/dev/runtime-status` 仅在显式开发模式、回环请求和有效 Session 下注册，并对数据根脱敏。退出时编排器回收 Electron、Vite、Python、两个端口和严格校验过的临时数据目录。
+
+普通 `pnpm dev` 继续使用动态 Backend 端口并只服务 Electron；`dev:codex` 的固定端口只用于本机自动化。两者都拒绝 `0.0.0.0` 和非回环 Origin。生产打包不接受 `--dev-mode`，不注册开发状态接口和 OpenAPI，也不读取开发固定端口或开发 Session 环境变量。
+
 Electron/Vue 的产品标题统一为 `NetConsole`，侧栏使用“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
 
 自动开发冒烟：
@@ -85,6 +96,8 @@ pnpm smoke:dev
 ```
 
 冒烟只有在 Electron、Python、Vue runtime adapter 和真实 `/api/health` 全部成功后才以 0 退出，并检查退出链能够回收 Vite、Electron 和 Python。
+
+Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
 启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前实测基线与优化证据见 [E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md)。
 

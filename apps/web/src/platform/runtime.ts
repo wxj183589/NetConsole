@@ -7,8 +7,11 @@ import type {
 } from '../../../desktop_electron/src/shared/bridge'
 
 const browserApiBase = import.meta.env.VITE_API_BASE || ''
+const browserDevelopmentToken = import.meta.env.DEV
+  ? import.meta.env.VITE_DEV_SESSION_TOKEN || ''
+  : ''
 
-let adapter: PlatformAdapter = createBrowserAdapter(browserApiBase)
+let adapter: PlatformAdapter = createBrowserAdapter(browserApiBase, browserDevelopmentToken)
 let config: ActiveRuntimeConfig = {
   hostType: 'browser',
   apiBaseUrl: browserApiBase.trim().replace(/\/+$/, ''),
@@ -21,7 +24,7 @@ export async function initializePlatformRuntime(): Promise<ActiveRuntimeConfig> 
   try {
     adapter = window.netconsoleDesktop
       ? createElectronAdapter(window.netconsoleDesktop)
-      : createBrowserAdapter(browserApiBase)
+      : createBrowserAdapter(browserApiBase, browserDevelopmentToken)
     const runtime = await adapter.getRuntimeConfig()
     config = {
       ...runtime,

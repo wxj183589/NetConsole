@@ -147,17 +147,28 @@ export class PythonBackendManager {
     this.startupFailure = undefined
     this.error = undefined
     this.transition('starting')
-    const apiToken = this.options.createToken()
+    const developmentMode = this.options.runtimeMode === 'desktop-development'
+      && (this.options.environment?.NETCONSOLE_DEV_MODE ?? process.env.NETCONSOLE_DEV_MODE) === '1'
+    const configuredToken = developmentMode
+      ? (this.options.environment?.NETCONSOLE_DEV_SESSION_TOKEN ?? process.env.NETCONSOLE_DEV_SESSION_TOKEN)
+      : undefined
+    const apiToken = configuredToken || this.options.createToken()
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(apiToken)) {
       throw new Error('Python backend token generator returned an invalid token')
     }
+    const requestedPort = developmentMode
+      ? parseDevelopmentPort(
+        this.options.environment?.NETCONSOLE_DEV_BACKEND_PORT ?? process.env.NETCONSOLE_DEV_BACKEND_PORT,
+      )
+      : 0
     const args = [
       ...this.options.argumentsPrefix,
       '--host',
       '127.0.0.1',
       '--port',
-      '0',
+      String(requestedPort),
       ...(this.options.rendererOrigin ? ['--renderer-origin', this.options.rendererOrigin] : []),
+      ...(developmentMode ? ['--dev-mode'] : []),
     ]
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
@@ -174,6 +185,7 @@ export class PythonBackendManager {
     } else {
       delete environment.PYTHONPATH
     }
+    delete environment.NETCONSOLE_DEV_SESSION_TOKEN
 
     let child: ManagedChildProcess | undefined
     try {
@@ -187,7 +199,7 @@ export class PythonBackendManager {
       this.options.onStartupMilestone?.('backend.spawn_started')
       this.child = child
       this.attachProcessHandlers(child, apiToken)
-      const runtimeAnnouncement = this.waitForRuntimeAnnouncement(child, apiToken)
+      const runtimeAnnouncement = this.waitForRuntimeAnnouncement(child, apiToken, requestedPort)
       child.stdin.write(`${JSON.stringify({ session_token: apiToken })}\n`, 'utf8')
       const runtime = await runtimeAnnouncement
       this.options.onStartupMilestone?.('backend.handshake_received')
@@ -223,6 +235,7 @@ export class PythonBackendManager {
   private waitForRuntimeAnnouncement(
     child: ManagedChildProcess,
     apiToken: string,
+    requestedPort: number,
   ): Promise<BackendRuntimeInfo> {
     return new Promise((resolvePromise, reject) => {
       let settled = false
@@ -258,6 +271,10 @@ export class PythonBackendManager {
         }
         if (settled) return
         if (!isRuntimeAnnouncement(payload)) return
+        if (requestedPort && payload.port !== requestedPort) {
+          finish(new Error('Python backend announced an unexpected fixed development port'))
+          return
+        }
         finish(undefined, {
           baseUrl: `http://127.0.0.1:${payload.port}`,
           apiToken,
@@ -437,6 +454,15 @@ export class PythonBackendManager {
     const message = cause instanceof Error ? cause.message : String(cause)
     return redactSensitiveText(message, [apiToken]) || 'Python backend failed'
   }
+}
+
+function parseDevelopmentPort(value: string | undefined): number {
+  if (!value) return 0
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('NETCONSOLE_DEV_BACKEND_PORT must be between 1 and 65535')
+  }
+  return port
 }
 
 function defaultSpawn(

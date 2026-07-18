@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
+from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
 
 
@@ -26,6 +27,7 @@ class ElectronRuntimeOptions:
     host: str
     port: int
     renderer_origin: str | None = None
+    development: bool = False
 
 
 def parse_options(argv: list[str] | None = None) -> ElectronRuntimeOptions:
@@ -33,8 +35,11 @@ def parse_options(argv: list[str] | None = None) -> ElectronRuntimeOptions:
     parser.add_argument("--host", choices=("127.0.0.1",), default="127.0.0.1")
     parser.add_argument("--port", type=_valid_port, required=True)
     parser.add_argument("--renderer-origin", type=_loopback_http_origin)
+    parser.add_argument("--dev-mode", action="store_true")
     values = parser.parse_args(argv)
-    return ElectronRuntimeOptions(values.host, values.port, values.renderer_origin)
+    if values.dev_mode and is_packaged_runtime():
+        parser.error("development mode is unavailable in packaged runtime")
+    return ElectronRuntimeOptions(values.host, values.port, values.renderer_origin, values.dev_mode)
 
 
 def read_session_token(stream: TextIO) -> str:
@@ -58,7 +63,10 @@ def build_app(options: ElectronRuntimeOptions, session_token: str) -> FastAPI:
         RuntimeMode.DESKTOP,
         desktop_session_token=session_token,
         online_mr_web_control_enabled=True,
-        api_documentation_enabled=False,
+        api_documentation_enabled=options.development,
+        development_api_enabled=options.development,
+        development_runtime_label="electron-development" if options.development else "electron-production",
+        development_frontend_mode="vite" if options.renderer_origin else "dist",
     )
     if options.renderer_origin:
         app.add_middleware(

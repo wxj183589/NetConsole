@@ -6,6 +6,10 @@ import { PythonBackendManager } from './backend-manager'
 import { isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
+import {
+  cleanupCodexTemporaryDataRoot,
+  resolveCodexTemporaryDataRoot,
+} from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { StartupTimeline } from './startup-timeline'
 import {
@@ -40,6 +44,7 @@ let logger: DesktopLogger = () => undefined
 let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
+let codexTemporaryDataRoot: string | undefined
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
@@ -65,6 +70,7 @@ if (hasSingleInstanceLock) {
 }
 
 async function startDesktop(): Promise<void> {
+  codexTemporaryDataRoot = resolveCodexTemporaryDataRoot()
   const config = loadDesktopConfig({
     isPackaged: app.isPackaged,
     appPath: app.getAppPath(),
@@ -337,6 +343,19 @@ async function shutdown(): Promise<void> {
     requestedExitCode = Math.max(requestedExitCode, 1)
   } finally {
     pathRegistry.clear()
+    if (codexTemporaryDataRoot) {
+      try {
+        cleanupCodexTemporaryDataRoot(codexTemporaryDataRoot)
+        logger('ELECTRON_CODEX_DATA_ROOT_CLEANED')
+      } catch (cause) {
+        const code = cause instanceof Error
+          ? (cause as NodeJS.ErrnoException).code || cause.name
+          : 'unknown'
+        logger('ELECTRON_CODEX_DATA_ROOT_CLEANUP_FAILED', `code=${code}`)
+      } finally {
+        codexTemporaryDataRoot = undefined
+      }
+    }
   }
 }
 
