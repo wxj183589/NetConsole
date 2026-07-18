@@ -1,12 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererReadyReport } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
 import { isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import { GrantedPathRegistry } from './path-access'
+import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
   safeDiagnosticUrl,
@@ -35,6 +36,8 @@ const pathRegistry = new GrantedPathRegistry()
 let rendererUrl = ''
 let logger: DesktopLogger = () => undefined
 let desktopIpc: DesktopIpcRegistration | undefined
+const startupStartedAt = process.hrtime.bigint()
+let startupTimeline: StartupTimeline | undefined
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
@@ -67,6 +70,8 @@ async function startDesktop(): Promise<void> {
     userDataPath: app.getPath('userData'),
   })
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
+  startupTimeline = new StartupTimeline(logger, startupStartedAt)
+  startupTimeline.mark('electron.app_ready')
   backend = new PythonBackendManager({
     executable: config.backendExecutable,
     argumentsPrefix: config.backendArgumentsPrefix,
@@ -77,10 +82,12 @@ async function startDesktop(): Promise<void> {
     rendererOrigin: config.rendererOrigin,
     startupTimeoutMs: config.startupTimeoutMs,
     logger,
+    onStartupMilestone: (event) => startupTimeline?.mark(event),
   })
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
   mainWindow = createMainWindow(Boolean(config.devServerUrl), developmentMenu)
+  startupTimeline.mark('electron.window_created')
   mainWindow.on('closed', () => {
     mainWindow = undefined
     if (!allowQuit) requestExit(0)
@@ -123,6 +130,7 @@ async function startDesktop(): Promise<void> {
   })
 
   await loadStatusPage(mainWindow, '正在启动 NetConsole', '正在启动本地 Python Core，请稍候。')
+  startupTimeline.mark('electron.loading_view_shown')
   mainWindow.show()
 
   try {
@@ -144,6 +152,8 @@ async function startDesktop(): Promise<void> {
       path: cookiePath,
     })
     startSmokeWatchdog()
+    startupTimeline.mark('renderer.navigation_started')
+    mainWindow.webContents.once('dom-ready', () => startupTimeline?.mark('renderer.dom_ready'))
     void mainWindow.loadURL(rendererUrl).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause)
       if (/ERR_ABORTED/.test(message)) {
@@ -242,11 +252,13 @@ async function loadStatusPage(
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
 }
 
-function handleRendererReady(healthOk: boolean): void {
-  if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1') return
-  logger('ELECTRON_SMOKE_RENDERER_READY', `health_ok=${healthOk}`)
+function handleRendererReady(report: RendererReadyReport): void {
+  if (report.phase === 'mounted') startupTimeline?.mark('renderer.mounted')
+  if (report.phase === 'interactive' && report.healthOk) startupTimeline?.mark('desktop.interactive')
+  if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
+  logger('ELECTRON_SMOKE_RENDERER_READY', `phase=${report.phase} health_ok=${report.healthOk}`)
   if (smokeStableTimer) clearTimeout(smokeStableTimer)
-  if (!healthOk) {
+  if (!report.healthOk || report.phase === 'failed') {
     smokeStableTimer = undefined
     requestExit(2)
     return

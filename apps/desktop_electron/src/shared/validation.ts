@@ -207,9 +207,12 @@ export function validateExternalUrl(value: unknown): string {
 
 export function validateRendererReadyReport(value: unknown): RendererReadyReport {
   const record = asRecord(value, 'renderer ready report')
-  rejectUnknownKeys(record, ['healthOk'])
+  rejectUnknownKeys(record, ['healthOk', 'phase'])
   if (typeof record.healthOk !== 'boolean') throw new TypeError('healthOk must be a boolean')
-  return { healthOk: record.healthOk }
+  if (!['mounted', 'interactive', 'failed'].includes(String(record.phase))) {
+    throw new TypeError('renderer phase is invalid')
+  }
+  return { healthOk: record.healthOk, phase: record.phase as RendererReadyReport['phase'] }
 }
 
 function validateFilters(value: unknown): FileFilter[] {

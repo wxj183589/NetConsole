@@ -12,6 +12,7 @@ import type {
   SelectFileResult,
   SettingsActionId, SettingsColorResult, SettingsDirectoryId, SettingsPathResult, SettingsToolId,
   TaskWindowContext,
+  RendererReadyReport,
 } from '../../../desktop_electron/src/shared/bridge'
 
 export type HostType = 'browser' | 'electron'
@@ -34,7 +35,7 @@ export interface PlatformAdapter {
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
-  reportRendererReady(healthOk: boolean): void
+  reportRendererReady(healthOk: boolean, phase?: RendererReadyReport['phase']): void
 }
 
 export interface ActiveRuntimeConfig extends DesktopRuntimeConfig {

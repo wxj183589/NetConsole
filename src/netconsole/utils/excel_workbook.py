@@ -4,7 +4,11 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
+
+def load_workbook(path: str | Path, **kwargs: Any):
+    from openpyxl import load_workbook as openpyxl_load_workbook
+
+    return openpyxl_load_workbook(path, **kwargs)
 
 
 def load_workbook_without_unsupported_image_warning(path: str | Path, **kwargs: Any):

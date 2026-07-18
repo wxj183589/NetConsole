@@ -7,23 +7,21 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
-from netconsole.services.ac import (
-    AcApIdentityAdapter,
-    AcApIdentityShadowReport,
-    AcCommandCancelled,
+from netconsole.services.ac.ac_command_service import AcCommandCancelled, AcCommandService
+from netconsole.services.ac.ac_identity_adapter import AcApIdentityAdapter
+from netconsole.services.ac.ac_identity_models import AcApIdentityShadowReport
+from netconsole.services.ac.ac_models import (
     AcCommandRequest,
-    AcCommandService,
     AcFitApDetailRefreshRequest,
-    AcOpticalRefreshCancelled,
-    AcOpticalIdentityAdapter,
-    AcOpticalIdentityShadowReport,
     AcOpticalRefreshRequest,
-    AcOpticalService,
     AcResourceRefreshRequest,
-    AcResourceService,
-    AcService,
 )
+from netconsole.services.ac.ac_optical_identity_adapter import AcOpticalIdentityAdapter
+from netconsole.services.ac.ac_identity_models import AcOpticalIdentityShadowReport
+from netconsole.services.ac.ac_optical_service import AcOpticalRefreshCancelled, AcOpticalService
 from netconsole.services.ac.ac_resource_service import AcResourceRefreshCancelled
+from netconsole.services.ac.ac_resource_service import AcResourceService
+from netconsole.services.ac.ac_service import AcService
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext

@@ -39,7 +39,7 @@ describe('Electron platform adapter', () => {
       apiToken: 'electron-test-token-abcdefghijklmnopqrstuvwxyz',
     })
     adapter.reportRendererReady(true)
-    expect(nativeBridge.reportRendererReady).toHaveBeenCalledWith({ healthOk: true })
+    expect(nativeBridge.reportRendererReady).toHaveBeenCalledWith({ healthOk: true, phase: 'interactive' })
     await adapter.downloadBackendResource({
       apiPath: '/api/file-management/downloads/task-1/file',
       suggestedName: 'report.zip',

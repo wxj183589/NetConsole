@@ -50,6 +50,7 @@ class TrafficTestApplicationService:
         agent_adapter: Any | None = None,
         supervisor: Any | None = None,
         agent_controller: Any | None = None,
+        reconcile_on_start: bool = True,
     ) -> None:
         self.paths = paths or PathResolver()
         self.site_name = str(site_name or "demo")
@@ -89,6 +90,10 @@ class TrafficTestApplicationService:
         self.local_adapter = local_adapter
         self.agent_adapter = agent_adapter
         self.supervisor = supervisor
+        if reconcile_on_start:
+            self.reconcile_local_runs()
+
+    def reconcile_local_runs(self) -> None:
         self._reconcile_local_runs()
 
     async def start(self) -> None:

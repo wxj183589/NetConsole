@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { registerDesktopIpc } from '../src/main/ipc'
 import { GrantedPathRegistry } from '../src/main/path-access'
+import type { RendererReadyReport } from '../src/shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../src/shared/bridge'
 
 class FakeIpcMain {
@@ -25,7 +26,7 @@ class FakeIpcMain {
 
 function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
-  onRendererReady?: (healthOk: boolean) => void
+  onRendererReady?: (report: RendererReadyReport) => void
   openTaskWindow?: (value: unknown) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch

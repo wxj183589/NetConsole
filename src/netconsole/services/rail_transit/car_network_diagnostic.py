@@ -43,10 +43,11 @@ from netconsole.services.vehicle_mr_online import (
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.utils.natural_sort import train_natural_sort_key
 
-try:
-    from netmiko import ConnectHandler
-except ImportError:  # pragma: no cover
-    ConnectHandler = None  # type: ignore[assignment]
+
+def ConnectHandler(**kwargs: object):  # noqa: N802 - 保持既有测试与调用入口兼容
+    from netconsole.services.netmiko_connection import ConnectHandler as connect_handler
+
+    return connect_handler(**kwargs)
 
 
 NODE_ORDER = ("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV")
@@ -1477,8 +1478,6 @@ class CarNetworkDiagnosticService:
     def _send_core_ping(self, device: Device, ip: str) -> str:
         if self.core_command_func is not None:
             return self.core_command_func(device, ip)
-        if ConnectHandler is None:
-            raise RuntimeError("netmiko is not installed")
         targets = connection_targets(device)
         if targets:
             target = build_netmiko_params(targets[0])
@@ -1614,8 +1613,6 @@ class CarNetworkDiagnosticService:
     def _send_ssh_command(self, host: str, command: str, target: ConnectionTarget, node: CarNetworkNode, read_timeout: int = 30) -> str:
         if self.ssh_command_func is not None:
             return self.ssh_command_func(host, command)
-        if ConnectHandler is None:
-            raise RuntimeError("netmiko is not installed")
         target = replace(target, host=host)
         params = build_netmiko_params(target)
         conn = ConnectHandler(**params)
@@ -1696,10 +1693,6 @@ def evaluate_diagnostic(
     mr_nodes = [node for node in nodes if node.is_mr]
     remote_ping_values = [ping for ssh in ssh_results.values() for ping in (ssh.task_results or ssh.command_results).values()]
     core_ping_values = list(core_results.values())
-    probe_values = remote_ping_values + core_ping_values + list(ping_results.values())
-    all_ping_failed = not probe_values or all(not ping.ok for ping in probe_values)
-    all_ssh_failed = not ssh_results or (bool(ssh_attempted) and ssh_ok_count == 0)
-    no_ac_mr_online = not ac_status.online
     vehicle_loss = any(_vehicle_loss(ping) for ping in remote_ping_values) or any(_vehicle_loss(ping) for ping in ping_results.values())
     wired_bad = any(value in {"fail", "unstable"} for key, value in node_states.items() if not key.endswith("-MR"))
     mr_online_evidence = ac_status.online or ssh_ok_count > 0
@@ -2784,8 +2777,6 @@ def parse_ping_output(ip: str, output: str) -> PingResult:
 
 
 def run_ac_commands(ac: Device, commands: Iterable[str]) -> dict[str, str]:
-    if ConnectHandler is None:
-        raise RuntimeError("netmiko is not installed")
     targets = connection_targets(ac)
     if targets:
         target = build_netmiko_params(targets[0])

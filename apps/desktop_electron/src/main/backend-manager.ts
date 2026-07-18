@@ -10,6 +10,7 @@ import {
   type BackendStatus,
 } from '../shared/bridge'
 import { redactSensitiveText, type DesktopLogger } from './logger'
+import type { StartupMilestone } from './startup-timeline'
 
 export interface BackendRuntimeInfo {
   baseUrl: string
@@ -49,6 +50,7 @@ export interface PythonBackendManagerOptions {
   delay?: (milliseconds: number) => Promise<void>
   awaitProcessExit?: boolean
   logger?: DesktopLogger
+  onStartupMilestone?: (event: Extract<StartupMilestone, `backend.${string}`>) => void
 }
 
 export class PythonBackendManager {
@@ -182,13 +184,16 @@ export class PythonBackendManager {
         windowsHide: true,
         stdio: 'pipe',
       })
+      this.options.onStartupMilestone?.('backend.spawn_started')
       this.child = child
       this.attachProcessHandlers(child, apiToken)
       const runtimeAnnouncement = this.waitForRuntimeAnnouncement(child, apiToken)
       child.stdin.write(`${JSON.stringify({ session_token: apiToken })}\n`, 'utf8')
       const runtime = await runtimeAnnouncement
+      this.options.onStartupMilestone?.('backend.handshake_received')
       this.runtime = runtime
       await this.pollUntilReady(child, runtime)
+      this.options.onStartupMilestone?.('backend.health_ready')
       if (this.stopRequested) throw new Error('Python backend startup was cancelled')
       this.error = undefined
       this.transition('ready')

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import os
@@ -23,8 +22,32 @@ from netconsole.models.device import Device
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import command_guard, netmiko_connection
+from netconsole.services.config_text import (
+    ConfigDiffResult,
+    SideBySideDiffRow,
+    build_side_by_side_rows,
+    clean_config_for_diff,
+    clean_h3c_device_text,
+    compare_config_text,
+    compare_named_config_text,
+    extract_h3c_configuration_body,
+    has_complete_config_body,
+    structure_diff,
+)
 from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
-from netconsole.utils.text_encoding import clean_h3c_device_text
+
+
+__all__ = [
+    "ConfigDiffResult",
+    "ConfigLifecycleService",
+    "SideBySideDiffRow",
+    "build_side_by_side_rows",
+    "clean_config_for_diff",
+    "compare_config_text",
+    "compare_named_config_text",
+    "extract_h3c_configuration_body",
+    "structure_diff",
+]
 
 
 CONFIG_CONTEXT = "config_lifecycle"
@@ -32,29 +55,6 @@ RUNNING_COMMAND = "display current-configuration"
 SAVED_COMMAND = "display saved-configuration"
 SAVE_FORCE_COMMAND = "save force"
 SCREEN_LENGTH_COMMAND = "screen-length disable"
-CONFIG_BODY_START_PATTERN = re.compile(r"^(#|version\b|sysname\b|vlan\b|interface\b)", re.IGNORECASE)
-PROMPT_PATTERN = re.compile(r"^\s*(<[^<>]+>|\[[^\[\]]+\])\s*$")
-CONFIG_COMMAND_ECHOES = {
-    RUNNING_COMMAND.casefold(),
-    SAVED_COMMAND.casefold(),
-}
-
-
-@dataclass(frozen=True)
-class SideBySideDiffRow:
-    left_line: int | None
-    left_text: str
-    status: str
-    right_line: int | None
-    right_text: str
-
-
-@dataclass(frozen=True)
-class ConfigDiffResult:
-    added: list[str]
-    removed: list[str]
-    modified: list[dict[str, str]]
-    raw_diff: str
 
 
 @dataclass(frozen=True)
@@ -166,7 +166,7 @@ class ConfigLifecycleService:
             saved_snapshot = self._write_snapshot(device, "saved", timestamp, clean_saved, raw_log_path=relative_raw_log_path)
             diff = compare_config_text(clean_running, clean_saved)
             diff_snapshot = self._write_snapshot(device, "diff", timestamp, diff.raw_diff, raw_log_path=relative_raw_log_path)
-            warning_message = "配置正文裁剪失败，已保留原始输出用于排查" if not (_has_complete_config_body(running_output) and _has_complete_config_body(saved_output)) else None
+            warning_message = "配置正文裁剪失败，已保留原始输出用于排查" if not (has_complete_config_body(running_output) and has_complete_config_body(saved_output)) else None
             app_logger.log_info("CONFIG_FETCH_SUCCESS", self._detail(device, raw_log_path=raw_log_file))
             return ConfigOperationResult(True, str(device.device_uuid), timestamp, [running_snapshot, saved_snapshot, diff_snapshot], diff, str(raw_log_file), warning_message=warning_message)
         except Exception as exc:
@@ -343,7 +343,7 @@ class ConfigLifecycleService:
 
     def _snapshot_body_text(self, device: Device, snapshot_type: str, text: str) -> str:
         body = extract_h3c_configuration_body(text)
-        if snapshot_type in {"running", "saved"} and not _has_complete_config_body(text):
+        if snapshot_type in {"running", "saved"} and not has_complete_config_body(text):
             app_logger.log_warning("CONFIG_BODY_EXTRACT_FALLBACK", self._detail(device, error="配置正文裁剪失败，已保留原始输出用于排查"))
         return body
 
@@ -463,81 +463,6 @@ class ConfigLifecycleService:
         return ", ".join(parts)
 
 
-def compare_config_text(running_config_text: str, saved_config_text: str) -> ConfigDiffResult:
-    return compare_named_config_text(saved_config_text, running_config_text, "saved", "running")
-
-
-def compare_named_config_text(from_config_text: str, to_config_text: str, from_name: str, to_name: str) -> ConfigDiffResult:
-    from_lines = clean_config_for_diff(from_config_text).splitlines()
-    to_lines = clean_config_for_diff(to_config_text).splitlines()
-    diff_lines = list(
-        difflib.unified_diff(
-            from_lines,
-            to_lines,
-            fromfile=from_name,
-            tofile=to_name,
-            lineterm="",
-        )
-    )
-    added = [line[1:] for line in diff_lines if line.startswith("+") and not line.startswith("+++")]
-    removed = [line[1:] for line in diff_lines if line.startswith("-") and not line.startswith("---")]
-    rows, _added_count, _removed_count, _modified_count = build_side_by_side_rows(from_lines, to_lines)
-    modified = [
-        {"from": row.left_text, "to": row.right_text}
-        for row in rows
-        if row.status == "~"
-    ]
-    return ConfigDiffResult(added=added, removed=removed, modified=modified, raw_diff="\n".join(diff_lines))
-
-
-def build_side_by_side_rows(
-    left_lines: list[str],
-    right_lines: list[str],
-) -> tuple[list[SideBySideDiffRow], int, int, int]:
-    rows: list[SideBySideDiffRow] = []
-    added = 0
-    removed = 0
-    modified_blocks = 0
-    matcher = difflib.SequenceMatcher(a=left_lines, b=right_lines)
-    for tag, left_start, left_end, right_start, right_end in matcher.get_opcodes():
-        left_block = left_lines[left_start:left_end]
-        right_block = right_lines[right_start:right_end]
-        if tag == "equal":
-            for offset, (left, right) in enumerate(zip(left_block, right_block)):
-                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "=", right_start + offset + 1, right))
-        elif tag == "delete":
-            removed += len(left_block)
-            for offset, left in enumerate(left_block):
-                rows.append(SideBySideDiffRow(left_start + offset + 1, left, "-", None, ""))
-        elif tag == "insert":
-            added += len(right_block)
-            for offset, right in enumerate(right_block):
-                rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right))
-        elif tag == "replace":
-            modified_blocks += 1
-            max_len = max(len(left_block), len(right_block))
-            for offset in range(max_len):
-                left_exists = offset < len(left_block)
-                right_exists = offset < len(right_block)
-                if left_exists and right_exists:
-                    rows.append(
-                        SideBySideDiffRow(
-                            left_start + offset + 1,
-                            left_block[offset],
-                            "~",
-                            right_start + offset + 1,
-                            right_block[offset],
-                        )
-                    )
-                elif left_exists:
-                    removed += 1
-                    rows.append(SideBySideDiffRow(left_start + offset + 1, left_block[offset], "-", None, ""))
-                else:
-                    added += 1
-                    rows.append(SideBySideDiffRow(None, "", "+", right_start + offset + 1, right_block[offset]))
-    return rows, added, removed, modified_blocks
-
-
 def snapshot_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -556,84 +481,6 @@ def unique_snapshot_path(path: Path) -> Path:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def extract_h3c_configuration_body(raw_text: str) -> str:
-    lines = clean_h3c_device_text(raw_text).splitlines()
-    start_index: int | None = None
-    end_index: int | None = None
-    for index, line in enumerate(lines):
-        if line.strip() == "#":
-            start_index = index
-            break
-    if start_index is not None:
-        for index in range(len(lines) - 1, start_index - 1, -1):
-            if lines[index].strip().casefold() == "return":
-                end_index = index
-                break
-    if start_index is not None and end_index is not None:
-        return "\n".join(line.rstrip() for line in lines[start_index : end_index + 1])
-    return _fallback_clean_config_output(lines)
-
-
-def clean_config_for_diff(text: str) -> str:
-    return extract_h3c_configuration_body(text)
-
-
-def _has_complete_config_body(raw_text: str) -> bool:
-    lines = clean_h3c_device_text(raw_text).splitlines()
-    has_start = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "#":
-            has_start = True
-        if has_start and stripped.casefold() == "return":
-            return True
-    return False
-
-
-def _fallback_clean_config_output(lines: list[str]) -> str:
-    body_lines: list[str] = []
-    fallback_lines: list[str] = []
-    in_body = False
-    for line in lines:
-        stripped = line.strip()
-        normalized = stripped.casefold()
-        if not stripped or normalized in CONFIG_COMMAND_ECHOES:
-            continue
-        if PROMPT_PATTERN.match(stripped):
-            if in_body:
-                break
-            continue
-        fallback_lines.append(line.rstrip())
-        if not in_body:
-            if not CONFIG_BODY_START_PATTERN.match(stripped):
-                continue
-            in_body = True
-        body_lines.append(line.rstrip())
-        if stripped.casefold() == "return":
-            break
-    return "\n".join(body_lines or fallback_lines)
-
-
-def structure_diff(config_a: str, config_b: str) -> dict[str, list[str]]:
-    sections_a = set(config_structure_keys(config_a))
-    sections_b = set(config_structure_keys(config_b))
-    return {
-        "only_in_a": sorted(sections_a - sections_b),
-        "only_in_b": sorted(sections_b - sections_a),
-    }
-
-
-def config_structure_keys(text: str) -> list[str]:
-    keys: list[str] = []
-    for line in clean_config_for_diff(text).splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not line.startswith(" ") and not line.startswith("\t"):
-            keys.append(stripped)
-    return keys
 
 
 def device_config_dir_name(device: Device) -> str:

@@ -75,6 +75,7 @@ export interface BackendDownloadResult {
 
 export interface RendererReadyReport {
   healthOk: boolean
+  phase: 'mounted' | 'interactive' | 'failed'
 }
 
 export interface TaskWindowContext {

@@ -8,8 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from openpyxl import Workbook
-
 from netconsole.models.mesh_log_models import (
     EVENT_ACTIVE_SWITCH,
     EVENT_COUNTER_RESET,
@@ -499,6 +497,8 @@ def export_issues(path: Path, issues: list[ParseIssue]) -> None:
 def write_rows(path: Path, columns: list[str], rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".xlsx":
+        from openpyxl import Workbook
+
         wb = Workbook()
         ws = wb.active
         ws.append(columns)

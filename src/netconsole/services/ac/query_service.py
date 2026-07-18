@@ -30,7 +30,7 @@ from netconsole.models.api.ac_management import (
 )
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.config_lifecycle_service import compare_config_text, extract_h3c_configuration_body
+from netconsole.services.config_text import compare_config_text, extract_h3c_configuration_body
 from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.fit_ap_link_info import lldp_display_status
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline

@@ -16,27 +16,23 @@ async function bootstrap(): Promise<void> {
   try {
     await initializePlatformRuntime()
   } catch (cause) {
-    getPlatformAdapter().reportRendererReady(false)
+    getPlatformAdapter().reportRendererReady(false, 'failed')
     const root = document.querySelector('#app')
     if (root) root.textContent = cause instanceof Error ? cause.message : '桌面运行时初始化失败'
     return
   }
-  if (getPlatformAdapter().hostType === 'electron') {
-    try {
-      applySystemAppearance((await getSystemSettings()).values)
-    } catch {
-      // 设置页会显示受控错误；启动仍保留默认外观。
-    }
-  }
-
   createApp(App).use(createPinia()).use(router).mount('#app')
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
+    runtime.reportRendererReady(true, 'mounted')
+    void getSystemSettings().then((settings) => applySystemAppearance(settings.values)).catch(() => {
+      // 设置页会显示受控错误；启动仍保留默认外观。
+    })
     try {
       const health = await getHealth()
-      runtime.reportRendererReady(health.status === 'ok')
+      runtime.reportRendererReady(health.status === 'ok', 'interactive')
     } catch {
-      runtime.reportRendererReady(false)
+      runtime.reportRendererReady(false, 'failed')
     }
   }
 }

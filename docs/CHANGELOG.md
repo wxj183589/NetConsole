@@ -14,6 +14,7 @@
 
 ### 桌面与发布
 
+- Electron 启动链新增单调时钟时间线，区分状态页、Backend handshake/health、Vue mounted 和真实 interactive；Desktop 历史任务及 Agent/Traffic/File 恢复移出首屏关键路径，Netmiko/OpenPyXL 改为首次真实使用时加载。连续两次源码冒烟的可交互时间为 1991.2 ms 和 2068.2 ms，相对同口径 2926.8 ms 基线中位改善 30.6%。
 - 源码开发数据根迁至 `%LOCALAPPDATA%\NetConsole\Development`，打包态使用 `%LOCALAPPDATA%\NetConsole`；Electron 明确向 Backend 传递运行模式和数据根，拒绝仓库/安装目录内写入。历史 `.local/data`、`.local/runtime` 与根 `data` 已通过无覆盖、哈希和 SQLite Backup API 迁移，冲突保留，明确测试残留按白名单清理。
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。

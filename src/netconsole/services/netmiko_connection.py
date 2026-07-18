@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 import logging
 import re
 import socket
@@ -13,22 +14,6 @@ from netconsole.models.device import Device
 from netconsole.services.connection_manager import ConnectionManager
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.utils.text_encoding import clean_h3c_device_text, safe_decode
-
-try:
-    from netmiko import ConnectHandler
-except ImportError:  # pragma: no cover - exercised only when dependency is missing.
-    ConnectHandler = None  # type: ignore[assignment]
-
-try:  # pragma: no cover - exception imports depend on installed Netmiko/Paramiko versions.
-    from netmiko.exceptions import NetmikoAuthenticationException, NetmikoBaseException, NetmikoTimeoutException, ReadTimeout
-except Exception:  # pragma: no cover
-    NetmikoAuthenticationException = NetmikoBaseException = NetmikoTimeoutException = ReadTimeout = ()  # type: ignore[assignment]
-
-try:  # pragma: no cover
-    from paramiko.ssh_exception import AuthenticationException as ParamikoAuthenticationException
-    from paramiko.ssh_exception import NoValidConnectionsError, SSHException
-except Exception:  # pragma: no cover
-    ParamikoAuthenticationException = NoValidConnectionsError = SSHException = ()  # type: ignore[assignment]
 
 
 logging.getLogger("paramiko").setLevel(logging.WARNING)
@@ -61,6 +46,50 @@ VENDOR_ENCODING_POLICY = {
 }
 
 T = TypeVar("T")
+
+
+def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公共入口兼容
+    try:
+        from netmiko import ConnectHandler as connect_handler
+    except ImportError as exc:  # pragma: no cover - exercised only when dependency is missing.
+        raise RuntimeError("netmiko is not installed") from exc
+    return connect_handler(**kwargs)
+
+
+@lru_cache(maxsize=1)
+def _authentication_exception_types() -> tuple[type[BaseException], ...]:
+    classes: list[type[BaseException]] = []
+    try:  # pragma: no cover - concrete classes depend on installed dependency versions.
+        from netmiko.exceptions import NetmikoAuthenticationException
+
+        classes.append(NetmikoAuthenticationException)
+    except Exception:
+        pass
+    try:  # pragma: no cover
+        from paramiko.ssh_exception import AuthenticationException
+
+        classes.append(AuthenticationException)
+    except Exception:
+        pass
+    return tuple(classes)
+
+
+@lru_cache(maxsize=1)
+def _timeout_exception_types() -> tuple[type[BaseException], ...]:
+    try:  # pragma: no cover
+        from netmiko.exceptions import NetmikoTimeoutException, ReadTimeout
+    except Exception:
+        return ()
+    return NetmikoTimeoutException, ReadTimeout
+
+
+@lru_cache(maxsize=1)
+def _tcp_exception_types() -> tuple[type[BaseException], ...]:
+    try:  # pragma: no cover
+        from paramiko.ssh_exception import NoValidConnectionsError
+    except Exception:
+        return ()
+    return (NoValidConnectionsError,)
 
 
 @dataclass(frozen=True)
@@ -136,8 +165,6 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
         app_logger.log_info("TEST_CONNECTION_STARTED", _detail(device, target.protocol, target.port, method=target.method))
         connection: Any | None = None
         try:
-            if ConnectHandler is None:
-                raise RuntimeError("netmiko is not installed")
             with prepared_connection_target(target) as prepared:
                 connection = ConnectHandler(**_netmiko_params(prepared))
                 prompt = _safe_find_prompt(connection)
@@ -212,8 +239,6 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
     for target in targets:
         connection: Any | None = None
         try:
-            if ConnectHandler is None:
-                raise RuntimeError("netmiko is not installed")
             with prepared_connection_target(target) as prepared:
                 connection = ConnectHandler(**_netmiko_params(prepared))
                 result = operation(connection, prepared)
@@ -240,8 +265,6 @@ def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
     for target in targets:
         connection: Any | None = None
         try:
-            if ConnectHandler is None:
-                raise RuntimeError("netmiko is not installed")
             with prepared_connection_target(target) as prepared:
                 connection = ConnectHandler(**_netmiko_params(prepared))
                 _safe_find_prompt(connection)
@@ -488,17 +511,17 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
 
 
 def _is_auth_exception(exc: BaseException) -> bool:
-    classes = tuple(cls for cls in (NetmikoAuthenticationException, ParamikoAuthenticationException) if isinstance(cls, type))
+    classes = _authentication_exception_types()
     return bool(classes and isinstance(exc, classes))
 
 
 def _is_timeout_exception(exc: BaseException) -> bool:
-    classes = tuple(cls for cls in (NetmikoTimeoutException, ReadTimeout) if isinstance(cls, type))
+    classes = _timeout_exception_types()
     return bool(classes and isinstance(exc, classes)) or isinstance(exc, (TimeoutError, socket.timeout))
 
 
 def _is_tcp_exception(exc: BaseException) -> bool:
-    classes = tuple(cls for cls in (NoValidConnectionsError,) if isinstance(cls, type))
+    classes = _tcp_exception_types()
     return bool(classes and isinstance(exc, classes)) or isinstance(exc, OSError)
 
 

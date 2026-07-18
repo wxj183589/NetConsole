@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import os
 import re
 import secrets
@@ -78,6 +79,7 @@ _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\
 _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
+_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
 
 
 class DesktopSessionMiddleware:
@@ -147,6 +149,7 @@ def create_app(
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
+    defer_runtime_start = bool(runtime_mode is RuntimeMode.DESKTOP and desktop_session_token)
     if online_mr_web_control_enabled is None:
         online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
     online_mr_web_control_enabled = bool(
@@ -164,7 +167,11 @@ def create_app(
         and desktop_session_token
     )
     if task_service is None:
-        task_service = TaskApplicationService(paths=paths, site_name=site_name)
+        task_service = TaskApplicationService(
+            paths=paths,
+            site_name=site_name,
+            reconcile_on_start=not defer_runtime_start,
+        )
     if agent_service is None:
         agent_service = AgentControllerService(paths=paths, site_name=site_name)
     if traffic_service is None:
@@ -173,6 +180,7 @@ def create_app(
             site_name=site_name,
             task_service=task_service,
             agent_controller=agent_service,
+            reconcile_on_start=not defer_runtime_start,
         )
     if ac_mesh_link_refresh_service is None:
         ac_mesh_link_refresh_service = AcMeshLinkRefreshApplicationService(paths, task_service)
@@ -240,6 +248,27 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        async def start_deferred_runtime_services() -> None:
+            try:
+                # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
+                await asyncio.sleep(_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS)
+                reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
+                if callable(reconcile_tasks):
+                    await asyncio.to_thread(reconcile_tasks)
+                await agent_service.start()
+                reconcile_traffic = getattr(traffic_service, "reconcile_local_runs", None)
+                if callable(reconcile_traffic):
+                    await asyncio.to_thread(reconcile_traffic)
+                await traffic_service.start()
+                await asyncio.to_thread(file_management_service.start)
+                app.state.runtime_services_ready = True
+            except Exception as exc:
+                app.state.runtime_services_error = exc.__class__.__name__
+                app_logger.log_error(
+                    "WEB_LIFESPAN_START_FAILED",
+                    f"component=deferred_runtime error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                )
+
         async def schedule_auto_cleanup() -> None:
             await asyncio.sleep(8)
             try:
@@ -257,12 +286,19 @@ def create_app(
             if runtime_mode is RuntimeMode.DESKTOP and desktop_session_token
             else None
         )
+        deferred_start_task: asyncio.Task[None] | None = None
         try:
-            await agent_service.start()
-            await traffic_service.start()
-            file_management_service.start()
+            if defer_runtime_start:
+                deferred_start_task = asyncio.create_task(start_deferred_runtime_services())
+            else:
+                await agent_service.start()
+                await traffic_service.start()
+                file_management_service.start()
+                app.state.runtime_services_ready = True
             yield
         finally:
+            if deferred_start_task is not None:
+                await asyncio.gather(deferred_start_task, return_exceptions=True)
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
@@ -313,6 +349,8 @@ def create_app(
     app.state.desktop_session_protected = bool(desktop_session_token)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
+    app.state.runtime_services_ready = False
+    app.state.runtime_services_error = ""
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
@@ -532,8 +570,11 @@ def create_app(
 
 def _current_site_name(paths: PathResolver) -> str:
     try:
-        return str(SiteManager(paths).get_current_site() or "demo")
-    except (OSError, ValueError, KeyError):
+        payload = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
+        candidate = payload.get("current_site") if isinstance(payload, dict) else None
+        selected = SiteManager(paths).validate_site_name(str(candidate or "demo"))
+        return selected if paths.site_dir(selected).is_dir() else "demo"
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return "demo"
 
 

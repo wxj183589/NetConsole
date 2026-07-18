@@ -42,7 +42,6 @@ from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
-from netconsole.services.vehicle_mr_online import parse_train_identity_from_device
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -90,6 +89,12 @@ _DEVICE_FIELDS = (
     "created_at",
     "updated_at",
 )
+
+
+def _parse_train_identity_from_device(device: Device):
+    from netconsole.services.vehicle_mr_online import parse_train_identity_from_device
+
+    return parse_train_identity_from_device(device)
 
 
 class RailTransitBaseDataQueryService:
@@ -525,7 +530,7 @@ class RailTransitBaseDataQueryService:
         for row in rows:
             group_name = groups.get(int(row.get("group_id") or 0), "")
             device = Device.from_mapping(row)
-            identity = parse_train_identity_from_device(device)
+            identity = _parse_train_identity_from_device(device)
             if identity is None:
                 continue
             if has_mr_group and "车载-MR" not in group_name:
@@ -621,7 +626,7 @@ class RailTransitBaseDataQueryService:
         for row in rows:
             if "车载-MR" not in groups.get(int(row.get("group_id") or 0), ""):
                 continue
-            if parse_train_identity_from_device(Device.from_mapping(row)) is not None:
+            if _parse_train_identity_from_device(Device.from_mapping(row)) is not None:
                 continue
             entity_id = str(row.get("device_uuid") or f"device:{row.get('id')}")
             result.append(

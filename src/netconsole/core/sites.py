@@ -4,11 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
-from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.demo_data import insert_demo_devices
 
 
 DEFAULT_SITE = "demo"
@@ -55,7 +51,7 @@ class SiteManager:
         site_name = self.validate_site_name(site_name)
         if site_name in self.list_sites():
             raise ValueError(f"Site already exists: {site_name}")
-        site = self.init_site_database(site_name, with_demo_data=False)
+        self.init_site_database(site_name, with_demo_data=False)
         self.save_site_metadata(
             site_name,
             {
@@ -119,6 +115,11 @@ class SiteManager:
         return self.paths.ensure_site_dirs(self.validate_site_name(site_name))
 
     def init_site_database(self, site_name: str, with_demo_data: bool = False) -> Site:
+        from netconsole.core.database import Database
+        from netconsole.repositories.device_group_repository import DeviceGroupRepository
+        from netconsole.repositories.device_repository import DeviceRepository
+        from netconsole.services.demo_data import insert_demo_devices
+
         site_name = self.validate_site_name(site_name)
         root_path = self.ensure_site_dirs(site_name)
         database = Database(self.paths.site_db_path(site_name))

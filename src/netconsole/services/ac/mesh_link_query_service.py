@@ -26,11 +26,28 @@ from netconsole.models.api.ac_mesh_link import (
     AcMeshSnapshotPageDTO,
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
-from netconsole.services.vehicle_mr_online import ONLINE_LINK_STATUSES, normalize_mac, parse_train_identity
 
 
 _FRESH_SECONDS = 30
 _STALE_SECONDS = 300
+
+
+def _normalize_vehicle_mac(value: object) -> str:
+    from netconsole.services.vehicle_mr_online import normalize_mac
+
+    return normalize_mac(value)
+
+
+def _parse_train_identity(value: str):
+    from netconsole.services.vehicle_mr_online import parse_train_identity
+
+    return parse_train_identity(value)
+
+
+def _online_link_statuses() -> set[str]:
+    from netconsole.services.vehicle_mr_online import ONLINE_LINK_STATUSES
+
+    return ONLINE_LINK_STATUSES
 
 
 @dataclass(frozen=True)
@@ -433,12 +450,12 @@ class AcMeshLinkQueryService:
         result: list[AcMeshLinkRecordDTO] = []
         for row in rows:
             raw = dict(row)
-            identity = parse_train_identity(str(raw.get("peer_name") or ""))
+            identity = _parse_train_identity(str(raw.get("peer_name") or ""))
             device = self._match_mr_device(raw, devices, identity)
             candidate, method, warning = self._match_ap(raw, ap_indexes)
             radio = candidate.radio if candidate else None
             ap = candidate.detail.ap if candidate else None
-            mr_id = device.uuid if device else normalize_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
+            mr_id = device.uuid if device else _normalize_vehicle_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
             link_status = str(raw.get("status") or "")
             result.append(
                 AcMeshLinkRecordDTO(
@@ -450,7 +467,7 @@ class AcMeshLinkQueryService:
                     train_no=device.train_no if device else (identity.train_no if identity else str(raw.get("train_no") or "")),
                     car_end=device.car_end if device else (identity.car_end if identity else str(raw.get("car_end") or "")),
                     mr_name=device.name if device else str(raw.get("peer_name") or ""),
-                    mr_mac=normalize_mac(raw.get("peer_mac")),
+                    mr_mac=_normalize_vehicle_mac(raw.get("peer_mac")),
                     mr_device_id=device.uuid if device else "",
                     mr_management_ip=device.management_ip if device else "",
                     mr_online_status=("online" if self._is_active(link_status) else "offline") if snapshot.data_status == "fresh" else "stale",
@@ -490,9 +507,9 @@ class AcMeshLinkQueryService:
                 candidate = _ApCandidate(detail)
                 self._append_index(by_name, detail.ap.name.strip().casefold(), candidate)
                 self._append_index(by_normalized_name, self._normalize_name(detail.ap.name), candidate)
-                self._append_index(by_mac, normalize_mac(detail.ap.mac), candidate)
+                self._append_index(by_mac, _normalize_vehicle_mac(detail.ap.mac), candidate)
                 for radio in detail.radios:
-                    self._append_index(by_mac, normalize_mac(radio.bssid), _ApCandidate(detail, radio))
+                    self._append_index(by_mac, _normalize_vehicle_mac(radio.bssid), _ApCandidate(detail, radio))
             indexes = {"mac": by_mac, "name": by_name, "normalized_name": by_normalized_name}
             self._ap_cache[site_id] = (signature, indexes)
             return indexes
@@ -515,7 +532,7 @@ class AcMeshLinkQueryService:
         row: dict[str, object],
         indexes: dict[str, dict[str, list[_ApCandidate]]],
     ) -> tuple[_ApCandidate | None, str, str]:
-        mac = normalize_mac(row.get("local_mac"))
+        mac = _normalize_vehicle_mac(row.get("local_mac"))
         if mac:
             candidate, warning = self._unique(indexes["mac"].get(mac, []), "Mesh Radio/BSSID MAC")
             if candidate or warning:
@@ -611,7 +628,7 @@ class AcMeshLinkQueryService:
         for row in self._device_rows(site_id):
             name = str(row.get("name") or "")
             system_name = str(row.get("system_name") or "")
-            identity = parse_train_identity(name) or parse_train_identity(system_name)
+            identity = _parse_train_identity(name) or _parse_train_identity(system_name)
             if identity is None:
                 continue
             result.append(
@@ -620,7 +637,7 @@ class AcMeshLinkQueryService:
                     uuid=str(row.get("device_uuid") or ""),
                     name=name or system_name,
                     system_name=system_name,
-                    mac_address=normalize_mac(row.get("mac_address")),
+                    mac_address=_normalize_vehicle_mac(row.get("mac_address")),
                     management_ip=str(row.get("primary_address") or ""),
                     train_no=identity.train_no,
                     car_end=identity.car_end,
@@ -654,7 +671,7 @@ class AcMeshLinkQueryService:
             by_end = [item for item in devices if item.train_no == identity.train_no and item.car_end == identity.car_end]
             if len(by_end) == 1:
                 return by_end[0]
-        peer_mac = normalize_mac(row.get("peer_mac"))
+        peer_mac = _normalize_vehicle_mac(row.get("peer_mac"))
         by_mac = [item for item in devices if peer_mac and item.mac_address == peer_mac]
         if len(by_mac) == 1:
             return by_mac[0]
@@ -726,7 +743,7 @@ class AcMeshLinkQueryService:
 
     @staticmethod
     def _is_active(status: str) -> bool:
-        return str(status or "").strip().casefold() in ONLINE_LINK_STATUSES
+        return str(status or "").strip().casefold() in _online_link_statuses()
 
     @staticmethod
     def _append_index(index: dict[str, list[_ApCandidate]], key: str, candidate: _ApCandidate) -> None:
