@@ -14,6 +14,7 @@
 
 ### 桌面与发布
 
+- 源码开发数据根迁至 `%LOCALAPPDATA%\NetConsole\Development`，打包态使用 `%LOCALAPPDATA%\NetConsole`；Electron 明确向 Backend 传递运行模式和数据根，拒绝仓库/安装目录内写入。历史 `.local/data`、`.local/runtime` 与根 `data` 已通过无覆盖、哈希和 SQLite Backup API 迁移，冲突保留，明确测试残留按白名单清理。
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
 - 无线勘测热力图后台 Job 与 Export Process 已从 `QImage/QPixmap/QGuiApplication` 迁到 Pillow 中立图像对象；活动永久 Python 层不再直接导入 PySide6，Qt 页面仅保留迁移期颜色适配，等待 E1 页面整体回收。

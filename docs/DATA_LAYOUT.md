@@ -2,13 +2,16 @@
 
 ## 1. 路径原则
 
-`src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。开发态默认 `PathResolver.data_root` 为仓库 `.local/`，持久业务目录为 `.local/data/`，临时运行目录为 `.local/runtime/`；打包态优先使用 `%LOCALAPPDATA%\NetConsole\`。测试、工具或嵌入场景可通过显式构造参数覆盖。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
+`src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development\`，打包态为 `%LOCALAPPDATA%\NetConsole\`；两者都不得写入仓库或安装目录。测试、工具或嵌入场景可通过显式构造参数覆盖，但 Electron Main 会拒绝位于项目/安装目录内的 `NETCONSOLE_DATA_ROOT`。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
+
+仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。
 
 运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C/MIB/历史日志读取时允许按明确顺序回退编码。
 
 ## 2. 顶层目录
 
 ```text
+%LOCALAPPDATA%/NetConsole/Development/   # 源码开发态
 <data_root>/
 ├─ data/                         # 持久业务数据
 │  ├─ global/                    # 跨局点资源
@@ -32,7 +35,7 @@
       └─ snmp_collection_results/
 ```
 
-注意 `.local/data/runtime/` 与 `.local/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
+注意 `<data_root>/data/runtime/` 与 `<data_root>/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
 
 ## 3. 全局资源
 

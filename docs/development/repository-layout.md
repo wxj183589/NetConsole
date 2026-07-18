@@ -28,7 +28,7 @@ NetConsole/
 │  └─ maintenance/          # 仓库维护、离线迁移和审计脚本
 ├─ tests/                   # 自动化测试和脱敏 fixtures
 ├─ tools/                   # 独立开发、诊断、维护和协议分析工具
-├─ main.py                  # 轻量兼容入口
+├─ main.py                  # PyCharm/源码 Electron 开发入口与 Backend 诊断分派
 ├─ pyproject.toml           # src 包发现和 editable 安装配置
 ├─ pytest.ini               # pytest 入口配置
 ├─ requirements.txt         # Python 运行依赖
@@ -53,10 +53,10 @@ NetConsole/
 ## 4. 应用边界
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
-- Qt 历史 Web Shell 已从 `apps/desktop/` 回收；剩余 Qt 事实源统一位于 `src/netconsole/ui/`，不提供活动产品入口，也不新增 Qt 业务页面。
+- Qt 桌面源码与历史 Web Shell 已回收，`apps/desktop/` 和 `src/netconsole/ui/` 不得重新创建；历史事实通过 Git 与迁移归档查询。
 - `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试和应用级开发脚本；不得复制 Python Core、业务 Service 或 Vue 页面。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
-- `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser、UI 和包内静态资源；包名仍为 `netconsole`。
+- `src/netconsole` 放共享 Python 业务代码、模型、Repository、Service、Parser 和包内静态资源；包名仍为 `netconsole`，不得重新引入 Qt UI。
 - 任何应用不得把数据库、日志、抓包、采集结果、缓存或正式报告写入源码目录。
 
 目标架构中的 Domain、Application 和 Infrastructure 当前是逻辑分层，不要求立即建立同名空目录。未经独立迁移和引用审计，不机械移动 `src/netconsole/services`、`repositories`、`parsers`、`adapters` 或 `core`，也不在 `apps/desktop_electron` 内新建第二套 Renderer、Node 业务后端或 Python Core。
@@ -91,15 +91,15 @@ apps/agent/
 
 ## 6. 运行数据规则
 
-开发态默认数据根为 `.local/`，通过 `PathResolver` 生成实际子目录：
+Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development\`，通过 `PathResolver` 生成实际子目录：
 
-- `.local/data`：SQLite、局点数据、原始采集、解析库和正式业务文件；
-- `.local/runtime/logs`：应用日志；
-- `.local/runtime/cache`：Job、Export 和查询缓存；
-- `.local/tmp`：手工临时样本和一次性导出；
+- `<data_root>/data`：SQLite、局点数据、原始采集、解析库和正式业务文件；
+- `<data_root>/runtime/logs`：应用日志；
+- `<data_root>/runtime/cache`：Job、Export 和查询缓存；
+- `<data_root>/tmp`：手工临时样本和一次性导出；
 - 打包态优先使用 `%LOCALAPPDATA%\NetConsole\`，不依赖安装目录或当前工作目录。
 
-正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。现有根目录 `data`、`runtime`、`tmp`、`release` 内容本次只移动到 `.local`/`dist`，未删除。
+正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 只作为历史迁移源保留；活动进程不得读写。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
 ## 7. 测试目录规则
 
@@ -160,7 +160,7 @@ apps/agent/
 | `project/release.py` | `scripts/build/release.py` | 发布辅助脚本 |
 | 根 `build_*.bat` | `scripts/build/` | Windows 构建入口 |
 | 根 `clean_build_spec.py` | `scripts/build/clean_build_spec.py` | PyInstaller 构建检查 |
-| 根 `data/` | `.local/data/` | 本机数据，保留内容不提交 |
-| 根 `runtime/` | `.local/runtime/` | 本机运行状态，保留内容不提交 |
-| 根 `tmp/` | `.local/tmp/` | 本机临时数据，保留内容不提交 |
+| 历史根 `data/` | `%LOCALAPPDATA%/NetConsole/Development/data/` | 无覆盖迁移；冲突保留并审计 |
+| 历史 `.local/data/` | `%LOCALAPPDATA%/NetConsole/Development/data/` | 开发业务数据优先迁移源 |
+| 历史 `.local/runtime/` | `%LOCALAPPDATA%/NetConsole/Development/runtime/` | 运行日志/缓存迁移源 |
 | 根 `release/` | `dist/` | 构建产物，忽略且不提交 |
