@@ -13,7 +13,9 @@ from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.mesh_import_service import MeshImportResult
 from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
-from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrParseSummary
+from netconsole.services.rail_transit.online_mr_diagnosis_parser import (
+    OnlineMrParseSummary,
+)
 from netconsole.services.vehicle_mr_online import VehicleMrTrainMapping
 
 
@@ -47,7 +49,9 @@ def test_candidate_snapshot_is_read_only_deduplicated_and_accepts_h3c_mac() -> N
     extension_rows = [{"ap_name": "AP-02", "ap_mac_display": "0066-7788-99aa"}]
     before = deepcopy((fit_rows, entity_rows, extension_rows))
 
-    candidates = MrMeshIdentityShadowService().build_candidates(fit_rows, entity_rows, extension_rows)
+    candidates = MrMeshIdentityShadowService().build_candidates(
+        fit_rows, entity_rows, extension_rows
+    )
 
     assert (fit_rows, entity_rows, extension_rows) == before
     assert len(candidates) == 2
@@ -59,7 +63,9 @@ def test_candidate_snapshot_is_read_only_deduplicated_and_accepts_h3c_mac() -> N
 
 def test_peer_mac_is_observation_and_does_not_default_to_ap_mac() -> None:
     service = MrMeshIdentityShadowService()
-    candidates = service.build_candidates([_resource("ap-1", "AP-01", "0011-2233-4455")])
+    candidates = service.build_candidates(
+        [_resource("ap-1", "AP-01", "0011-2233-4455")]
+    )
     result = {"parsed_record_count": 1}
     before = deepcopy(result)
 
@@ -96,7 +102,9 @@ def test_explicit_radio_mapping_matches_and_duplicate_peer_fields_only_warn() ->
 
 def test_radio_or_bssid_without_explicit_candidate_mapping_is_unresolved() -> None:
     service = MrMeshIdentityShadowService()
-    candidates = service.build_candidates([_resource("ap-1", "AP-01", "0011-2233-4455")])
+    candidates = service.build_candidates(
+        [_resource("ap-1", "AP-01", "0011-2233-4455")]
+    )
 
     report = service.shadow_online_mr_parse_result(
         {},
@@ -187,9 +195,10 @@ def test_online_section_is_evidence_only_and_does_not_disambiguate_names() -> No
     assert report.missing_ac_scope == 1
 
 
-def test_online_observation_ignores_old_resolved_name_and_other_derived_fields() -> None:
+def test_online_observation_ignores_old_resolved_name_and_other_derived_fields() -> (
+    None
+):
     service = MrMeshIdentityShadowService()
-    candidates = service.build_candidates([_resource("ap-1", "AP-01", "0011-2233-4455")])
 
     observation = service.build_observation_from_online_mr_summary(
         {
@@ -227,9 +236,13 @@ def test_online_duplicate_ap_and_radio_mac_fields_are_diagnostic_only() -> None:
 
 def test_vehicle_mapping_is_preserved_and_name_only_is_counted() -> None:
     service = MrMeshIdentityShadowService()
-    candidates = service.build_candidates([_resource("ap-1", "TRAIN-01-CT", "0011-2233-4455")])
+    candidates = service.build_candidates(
+        [_resource("ap-1", "TRAIN-01-CT", "0011-2233-4455")]
+    )
     old_result = {
-        "mappings": [{"train_id": "01", "tc1_peer_name": "TRAIN-01-CT", "tc2_peer_name": ""}],
+        "mappings": [
+            {"train_id": "01", "tc1_peer_name": "TRAIN-01-CT", "tc2_peer_name": ""}
+        ],
         "count": 1,
     }
     before = deepcopy(old_result)
@@ -259,7 +272,21 @@ def test_online_shadow_rows_open_parsed_database_read_only(tmp_path: Path) -> No
         )
         conn.execute(
             "INSERT INTO main_link_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("session-1", 1, "AP-01", "0011-2233-4455", "001122334455", "AP-01", "", "WLAN-MESH1", "A站", "", "station", "fit_ap", "raw/mesh.log"),
+            (
+                "session-1",
+                1,
+                "AP-01",
+                "0011-2233-4455",
+                "001122334455",
+                "AP-01",
+                "",
+                "WLAN-MESH1",
+                "A站",
+                "",
+                "station",
+                "fit_ap",
+                "raw/mesh.log",
+            ),
         )
     before = db_path.read_bytes()
 
@@ -276,7 +303,9 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
     tmp_path: Path,
 ) -> None:
     candidates = _candidates(_resource("ap-1", "AP-01", "0011-2233-4455"))
-    monkeypatch.setattr(legacy_tasks, "_mr_mesh_shadow_candidates", lambda *_args: candidates)
+    monkeypatch.setattr(
+        legacy_tasks, "_mr_mesh_shadow_candidates", lambda *_args: candidates
+    )
     monkeypatch.setattr(
         legacy_tasks,
         "_offline_mesh_shadow_rows",
@@ -295,7 +324,9 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
     monkeypatch.setattr(
         mesh_import_service.MeshImportService,
         "import_files",
-        lambda *_args, **_kwargs: MeshImportResult(files=[object()], imported_count=1, parsed_record_count=1),
+        lambda *_args, **_kwargs: MeshImportResult(
+            files=[object()], imported_count=1, parsed_record_count=1
+        ),
     )
 
     class FakeParser:
@@ -307,7 +338,9 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
         def parse(self, **_kwargs) -> OnlineMrParseSummary:
             return OnlineMrParseSummary(mesh_samples=1, active_segments=1)
 
-    monkeypatch.setattr(online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser)
+    monkeypatch.setattr(
+        online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser
+    )
     monkeypatch.setattr(
         vehicle_mr_online.VehicleMrOnlineStore,
         "list_mappings",
@@ -336,7 +369,10 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
         BackgroundJob(
             job_id="online-shadow",
             task_type="online_mr_parse",
-            params={"session_dir": str(tmp_path / "session"), "data_root": str(tmp_path)},
+            params={
+                "session_dir": str(tmp_path / "session"),
+                "data_root": str(tmp_path),
+            },
         )
     )
     vehicle = run_job(
@@ -348,7 +384,16 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
     )
 
     assert mesh.ok is True
-    assert {key: mesh.result[key] for key in ("imported_count", "duplicate_count", "parsed_record_count", "issue_count", "file_count")} == {
+    assert {
+        key: mesh.result[key]
+        for key in (
+            "imported_count",
+            "duplicate_count",
+            "parsed_record_count",
+            "issue_count",
+            "file_count",
+        )
+    } == {
         "imported_count": 1,
         "duplicate_count": 0,
         "parsed_record_count": 1,
@@ -371,9 +416,19 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
     tmp_path: Path,
 ) -> None:
     candidates = _candidates(_resource("ap-1", "AP-01", "0011-2233-4455"))
-    monkeypatch.setattr(legacy_tasks, "_mr_mesh_shadow_candidates", lambda *_args: candidates)
-    monkeypatch.setattr(legacy_tasks, "_offline_mesh_shadow_rows", lambda *_args: [{"peer_mac": "0011-2233-4455"}])
-    monkeypatch.setattr(legacy_tasks, "_online_mr_shadow_rows", lambda *_args: [{"peer_mac": "0011-2233-4455"}])
+    monkeypatch.setattr(
+        legacy_tasks, "_mr_mesh_shadow_candidates", lambda *_args: candidates
+    )
+    monkeypatch.setattr(
+        legacy_tasks,
+        "_offline_mesh_shadow_rows",
+        lambda *_args: [{"peer_mac": "0011-2233-4455"}],
+    )
+    monkeypatch.setattr(
+        legacy_tasks,
+        "_online_mr_shadow_rows",
+        lambda *_args: [{"peer_mac": "0011-2233-4455"}],
+    )
 
     from netconsole.services import mesh_import_service
     from netconsole.services import vehicle_mr_online
@@ -383,7 +438,9 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
     monkeypatch.setattr(
         mesh_import_service.MeshImportService,
         "import_files",
-        lambda *_args, **_kwargs: MeshImportResult(imported_count=1, parsed_record_count=2),
+        lambda *_args, **_kwargs: MeshImportResult(
+            imported_count=1, parsed_record_count=2
+        ),
     )
     monkeypatch.setattr(
         vehicle_mr_online.VehicleMrOnlineStore,
@@ -399,14 +456,20 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
         def parse(self, **_kwargs) -> OnlineMrParseSummary:
             return OnlineMrParseSummary(mesh_samples=3)
 
-    monkeypatch.setattr(online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser)
+    monkeypatch.setattr(
+        online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser
+    )
 
     def fail(*_args, **_kwargs):
         raise RuntimeError("shadow 诊断失败")
 
     monkeypatch.setattr(MrMeshIdentityShadowService, "shadow_mesh_import_result", fail)
-    monkeypatch.setattr(MrMeshIdentityShadowService, "shadow_online_mr_parse_result", fail)
-    monkeypatch.setattr(MrMeshIdentityShadowService, "shadow_vehicle_mr_mapping_result", fail)
+    monkeypatch.setattr(
+        MrMeshIdentityShadowService, "shadow_online_mr_parse_result", fail
+    )
+    monkeypatch.setattr(
+        MrMeshIdentityShadowService, "shadow_vehicle_mr_mapping_result", fail
+    )
 
     jobs = [
         BackgroundJob(
@@ -415,14 +478,21 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
             params={
                 "site_name": "demo",
                 "data_root": str(tmp_path),
-                "profile": {"mr_id": "mr-1", "display_name": "MR-1", "safe_folder_name": "mr-1"},
+                "profile": {
+                    "mr_id": "mr-1",
+                    "display_name": "MR-1",
+                    "safe_folder_name": "mr-1",
+                },
                 "files": [],
             },
         ),
         BackgroundJob(
             job_id="online-shadow-failed",
             task_type="online_mr_parse",
-            params={"session_dir": str(tmp_path / "session"), "data_root": str(tmp_path)},
+            params={
+                "session_dir": str(tmp_path / "session"),
+                "data_root": str(tmp_path),
+            },
         ),
         BackgroundJob(
             job_id="vehicle-shadow-failed",
@@ -434,25 +504,50 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
     results = [run_job(job) for job in jobs]
 
     assert all(result.ok is True for result in results)
-    assert [result.result["identity_shadow"]["available"] for result in results] == [False, False, False]
-    assert all("shadow 诊断失败" in result.result["identity_shadow"]["warnings"][0] for result in results)
+    assert [result.result["identity_shadow"]["available"] for result in results] == [
+        False,
+        False,
+        False,
+    ]
+    assert all(
+        "shadow 诊断失败" in result.result["identity_shadow"]["warnings"][0]
+        for result in results
+    )
     assert results[0].result["parsed_record_count"] == 2
     assert results[1].result["mesh_samples"] == 3
     assert results[2].result["mappings"][0]["tc1_peer_name"] == "AP-01"
 
 
 def test_shadow_static_boundaries_and_production_consumers_remain_unaware() -> None:
-    shadow_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "mr_mesh_identity_shadow.py").read_text(encoding="utf-8")
+    shadow_source = (
+        PROJECT_ROOT / "src" / "netconsole" / "services" / "mr_mesh_identity_shadow.py"
+    ).read_text(encoding="utf-8")
     forbidden_consumers = (
         PROJECT_ROOT / "src" / "netconsole" / "parsers" / "mesh_log_parser.py",
-        PROJECT_ROOT / "src" / "netconsole" / "services" / "rail_transit" / "online_mr_diagnosis_parser.py",
-        PROJECT_ROOT / "src" / "netconsole" / "services" / "mesh_peer_mapping_service.py",
+        PROJECT_ROOT
+        / "src"
+        / "netconsole"
+        / "services"
+        / "rail_transit"
+        / "online_mr_diagnosis_parser.py",
+        PROJECT_ROOT
+        / "src"
+        / "netconsole"
+        / "services"
+        / "mesh_peer_mapping_service.py",
         PROJECT_ROOT / "src" / "netconsole" / "services" / "mesh_link_detail_export.py",
-        PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "mesh_log_analysis_page.py",
-        PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "online_mr_collection_page.py",
     )
 
-    for forbidden in ("PySide6", "netconsole.ui", "repositories", "Database", "sqlite3", "subprocess", "netmiko", "socket"):
+    for forbidden in (
+        "PySide6",
+        "netconsole.ui",
+        "repositories",
+        "Database",
+        "sqlite3",
+        "subprocess",
+        "netmiko",
+        "socket",
+    ):
         assert forbidden not in shadow_source
     for path in forbidden_consumers:
         assert "mr_mesh_identity_shadow" not in path.read_text(encoding="utf-8")

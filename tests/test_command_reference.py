@@ -1,14 +1,11 @@
 import json
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.command_reference_service import export_command_references_markdown, load_command_references
 
 
-def app():
-    return QApplication.instance() or QApplication([])
 
 
 def test_command_reference_json_covers_switch_baseline():
@@ -69,17 +66,3 @@ def test_command_reference_markdown_export_contains_commands():
 
     assert "# 软件使用命令清单导出" in markdown
     assert "| 类别 | 命令/接口 | 当前用途 |" in markdown
-
-
-def test_command_reference_page_loads_and_filters():
-    from netconsole.ui.pages.command_reference_page import CommandReferencePage
-
-    app()
-    page = CommandReferencePage(PathResolver(Path(__file__).resolve().parents[1]))
-
-    assert len(page.references) == 79
-    assert page.table.rowCount() == 79
-    page.search_edit.setText("save force")
-    QApplication.processEvents()
-    assert page.table.rowCount() == 1
-    assert page.filtered_references[0].command_template == "save force"

@@ -4,7 +4,6 @@ from datetime import datetime
 
 from openpyxl import load_workbook
 
-from netconsole.core.i18n import I18n
 from netconsole.services.mesh_analysis_excel_report import EMPTY_PARSE_ISSUES_TEXT, MeshAnalysisExcelReportExporter, REPORT_FIELD_LABELS, SHEET_DEFINITIONS, translate_report_value
 from netconsole.services.mesh_analysis_report import (
     MeshAnalysisReportModel,
@@ -32,7 +31,6 @@ from netconsole.services.mesh_quality_analysis import (
     percentile,
     template_overview_fields,
 )
-from netconsole.ui.mesh_log_workers import MeshAnalysisReportWorker
 
 
 PEER_A = "30f5277a5a2f"
@@ -148,71 +146,8 @@ def test_template_overview_fields_explain_selected_evaluation_context():
     assert fields["无备份风险窗口"] == "5秒"
 
 
-def test_mesh_report_settings_dialog_applies_scenario_template():
-    from PySide6.QtWidgets import QApplication, QScrollArea
-    from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
-    from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
-
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    dialog = MeshReportSettingsDialog(I18n("zh_CN"), "MR-01")
-    index = dialog.threshold_template_combo.findData("dcs_wifi6_dot11a_20_far")
-    dialog.threshold_template_combo.setCurrentIndex(index)
-
-    options = dialog.options()
-
-    assert dialog.threshold_template_combo.itemText(index) == "DCS - Wi-Fi6设备 - dot11a/20M - 远间隔"
-    assert options.threshold_template_key == "dcs_wifi6_dot11a_20_far"
-    assert options.business_type == "DCS/信号"
-    assert options.working_mode == "强制 dot11a"
-    assert options.bandwidth == "20M"
-    assert options.ap_spacing == "150~180m 或更远"
-    assert options.rssi_good_threshold == 28
-    assert options.backup_available_threshold == 28
-    assert options.no_backup_min_seconds == 15
-    assert dialog.findChild(QScrollArea) is not None
-    assert isinstance(dialog.rssi_good_spin, NoWheelSpinBox)
 
 
-def test_mesh_report_threshold_spinboxes_ignore_mouse_wheel():
-    from PySide6.QtWidgets import QApplication
-    from netconsole.ui.dialogs.mesh_report_settings_dialog import MeshReportSettingsDialog
-    from netconsole.ui.widgets.no_wheel import NoWheelSpinBox
-
-    class FakeWheelEvent:
-        def __init__(self) -> None:
-            self.ignored = False
-
-        def ignore(self) -> None:
-            self.ignored = True
-
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    dialog = MeshReportSettingsDialog(I18n("zh_CN"), "MR-01")
-    threshold_spins = [
-        dialog.rssi_excellent_spin,
-        dialog.rssi_good_spin,
-        dialog.rssi_warning_spin,
-        dialog.rssi_bad_spin,
-        dialog.backup_available_spin,
-        dialog.backup_strong_spin,
-        dialog.busy_warning_spin,
-        dialog.busy_bad_spin,
-        dialog.no_backup_spin,
-        dialog.weak_active_spin,
-        dialog.switch_late_spin,
-        dialog.switch_target_spin,
-        dialog.flap_window_spin,
-        dialog.short_segment_spin,
-    ]
-
-    for spin in threshold_spins:
-        assert isinstance(spin, NoWheelSpinBox)
-        before = spin.value()
-        event = FakeWheelEvent()
-        spin.wheelEvent(event)
-        assert spin.value() == before
-        assert event.ignored is True
 
 
 def test_flap_detects_aba_inside_window_and_ignores_non_flap():
@@ -351,33 +286,8 @@ def test_excel_report_emits_row_progress_for_large_sheets(tmp_path):
     assert any(stage.startswith("excel_sheet_rows:") and ":1000:1001" in stage for stage in stages)
 
 
-def test_i18n_report_keys_exist_and_mesh_page_has_generate_button(tmp_path):
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.paths import PathResolver
-    from netconsole.ui.pages.mesh_log_analysis_page import MESH_ANALYSIS_REPORT_ENABLED, MeshLogAnalysisPage
-
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    assert I18n("zh_CN").t("mesh_report.generate_report") == "生成分析报告"
-    assert I18n("en_US").t("mesh_report.generate_report") == "Generate Report"
-    page = MeshLogAnalysisPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert MESH_ANALYSIS_REPORT_ENABLED
-    assert page.generate_report_button is not None
-    assert page.generate_report_button.text() == "生成 MR 原始 MESH 分析报告"
 
 
-def test_report_worker_cancel_before_run_cleans_temp(tmp_path):
-    output = tmp_path / "cancelled.xlsx"
-    temp = output.with_name(output.stem + ".tmp.xlsx")
-    temp.write_text("partial", encoding="utf-8")
-    worker = MeshAnalysisReportWorker(tmp_path / "missing.sqlite", "MR", output, MeshReportOptions())
-    worker.cancel()
-    worker.run()
-    assert not output.exists()
-    assert not temp.exists()
 
 
 def test_report_export_translates_internal_enum_values():

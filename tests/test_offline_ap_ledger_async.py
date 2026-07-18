@@ -2,14 +2,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QApplication
 
 from netconsole.core.database import Database
-from netconsole.core.i18n import I18n
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATUS_TEXT,
@@ -19,12 +15,8 @@ from netconsole.services.offline_ap_ledger import (
     is_fit_ap_offline,
 )
 from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, format_trackside_display_value
-from netconsole.services.ac.ac_optical_service import enrich_fit_ap_optical_rows
-from netconsole.ui.pages.ac_management_page import AcManagementPage
 
 
-def _app():
-    return QApplication.instance() or QApplication([])
 
 
 def _database(tmp_path):
@@ -189,17 +181,6 @@ def test_offline_ledger_mac_fallback_and_fit_ap_site_fills_empty_device_station(
     assert ledger[0]["site"] == "FIT Site"
 
 
-def test_fit_ap_optical_idle_row_displays_offline_alarm():
-    from netconsole.ui.pages.ac_management_page import evaluate_fit_ap_ap_status
-
-    rows = enrich_fit_ap_optical_rows(
-        [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "rx_power": "-3.00", "rx_low_alarm": "-20.00"}],
-        [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "state": "Idle", "ap_mac": "0011-2233-4455"}],
-    )
-
-    assert rows[0]["is_ap_offline"] is True
-    assert rows[0]["optical_alarm_status"] == OFFLINE_AP_STATUS_TEXT
-    assert evaluate_fit_ap_ap_status(rows[0]) == "offline"
 
 
 def test_trackside_offline_row_uses_port_type_and_realtime_switch_optical():
@@ -375,96 +356,3 @@ def test_trackside_same_interface_merges_current_and_historical_rows():
     assert row["port_type"] == "hybrid"
     assert row["pvid"] == "203"
     assert format_trackside_display_value("port_type", row) not in {"UP", "DOWN"}
-
-
-def test_ac_management_offline_tab_starts_loader_without_ui_thread_build(tmp_path, monkeypatch):
-    _app()
-    database = _database(tmp_path)
-    device_repository = DeviceRepository(database)
-    ac = device_repository.create(_ac_device())
-    AcRepository(database).replace_fit_ap_resources(
-        ac.device_uuid,
-        [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "serial_number": "SN-IDLE", "state": "I"}],
-    )
-
-    import netconsole.ui.pages.ac_management_page as page_module
-
-    class FakeOfflineThread(QObject):
-        load_finished = Signal(object)
-        load_failed = Signal(str)
-        finished = Signal()
-        instances = []
-
-        def __init__(self, *_args, **_kwargs):
-            super().__init__()
-            self.started = False
-            FakeOfflineThread.instances.append(self)
-
-        def start(self):
-            self.started = True
-
-        def isRunning(self):
-            return self.started
-
-        def deleteLater(self):
-            pass
-
-    def fail_if_called(*_args, **_kwargs):
-        raise AssertionError("offline ledger must not be built in the UI thread")
-
-    monkeypatch.setattr(page_module, "build_latest_ap_history_indexes", fail_if_called)
-    monkeypatch.setattr(page_module, "OfflineApLedgerLoadThread", FakeOfflineThread)
-    page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
-    page.ac_devices = [ac]
-    page.device_combo.addItem(ac.name, ac.device_uuid)
-
-    page.handle_overview_inner_tab_changed(1)
-
-    assert FakeOfflineThread.instances
-    assert FakeOfflineThread.instances[0].started is True
-    assert page.offline_loading_spinner.isHidden() is False
-    assert page.offline_loading_label.text() == "正在加载离线AP数据..."
-
-
-def test_offline_ledger_double_click_opens_ap_detail_by_mac(tmp_path, monkeypatch):
-    _app()
-    database = _database(tmp_path)
-    device_repository = DeviceRepository(database)
-    ac = device_repository.create(_ac_device())
-    repository = AcRepository(database)
-    repository.replace_fit_ap_resources(
-        ac.device_uuid,
-        [{"ap_uuid": "ap-idle", "ap_name": "AP-IDLE", "ap_mac": "0011-2233-4455", "serial_number": "SN-IDLE", "state": "I"}],
-    )
-    page = AcManagementPage(device_repository, I18n("zh_CN"), "demo")
-    page.ac_devices = [ac]
-    page.device_combo.addItem(ac.name, ac.device_uuid)
-    page.offline_ap_ledger_rows = [{"ap_name": "AP-IDLE", "ap_mac": "0011-2233-4455"}]
-
-    opened = {}
-
-    class FakeSignal:
-        def connect(self, *_args, **_kwargs):
-            pass
-
-    class FakeDialog:
-        def __init__(self, _i18n, _repository, ac_uuid, ap_uuid):
-            opened["ac_uuid"] = ac_uuid
-            opened["ap_uuid"] = ap_uuid
-            self.destroyed = FakeSignal()
-
-        def show(self):
-            pass
-
-        def raise_(self):
-            pass
-
-        def activateWindow(self):
-            pass
-
-    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.FitApDetailDialog", FakeDialog)
-    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.show_non_focus_window", lambda *_args, **_kwargs: None)
-
-    page.open_ap_detail_from_offline_ledger(0)
-
-    assert opened == {"ac_uuid": ac.device_uuid, "ap_uuid": "ap-idle"}

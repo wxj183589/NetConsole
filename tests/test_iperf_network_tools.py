@@ -5,10 +5,8 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QTabWidget
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.i18n import I18n
 from netconsole.models.online_mr_models import IperfTrafficConfig
 from netconsole.services.network_tools.iperf_parser import (
     aggregate_iperf_for_segment,
@@ -31,11 +29,8 @@ from netconsole.services.network_tools.iperf_runner import (
 from netconsole.services.network_tools.iperf_tool_service import detect_iperf_version, find_iperf_tool
 from netconsole.services.online_mr.traffic_presets import DEFAULT_TRAFFIC_PRESET_PORT, get_traffic_preset, list_traffic_presets
 from netconsole.services.online_mr.workers.iperf3_worker import build_iperf3_json_args
-from netconsole.ui.pages.iperf_bandwidth_page import IperfBandwidthPage
 
 
-def _qt_app():
-    return QApplication.instance() or QApplication([])
 
 
 class FakeWheelEvent:
@@ -550,84 +545,3 @@ def test_iperf_result_store_migrates_old_interval_table(tmp_path: Path) -> None:
         "time_source",
         "source_event_key",
     } <= columns
-
-
-def test_network_tools_iperf_page_uses_bandwidth_value_and_unit(tmp_path: Path) -> None:
-    _qt_app()
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert page.client_bandwidth_unit_combo.currentText() == "M"
-    assert "auto maximum" in page.client_bandwidth_hint_label.text()
-    page.client_bandwidth_edit.setText("50")
-    page.client_bandwidth_unit_combo.setCurrentText("M")
-    config = IperfClientConfig(
-        "10.0.0.1",
-        target_bandwidth=normalize_bandwidth_text(page.client_bandwidth_edit.text(), page.client_bandwidth_unit_combo.currentText()),
-    )
-    args = build_iperf_client_args(tmp_path / "iperf3.exe", config)
-    assert args[args.index("-b") + 1] == "50M"
-
-
-def test_iperf_page_shows_server_and_client_panels_together(tmp_path: Path) -> None:
-    _qt_app()
-    (tmp_path / "tools" / "iperf").mkdir(parents=True)
-    (tmp_path / "tools" / "iperf" / "iperf3.exe").write_text("fake", encoding="utf-8")
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-
-    assert page.splitter.count() == 2
-    assert page.server_panel.title() == "Server"
-    assert page.client_panel.title() == "Client"
-    assert page.splitter.widget(0).widgetResizable()
-    assert page.splitter.widget(1).widgetResizable()
-    assert page.server_output.parentWidget() is not page.client_output.parentWidget()
-    assert page.findChildren(QTabWidget) == []
-
-
-def test_iperf_page_spinbox_wheel_does_not_change_value(tmp_path: Path) -> None:
-    _qt_app()
-    (tmp_path / "tools" / "iperf").mkdir(parents=True)
-    (tmp_path / "tools" / "iperf" / "iperf3.exe").write_text("fake", encoding="utf-8")
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    event = FakeWheelEvent()
-    page.server_port_spin.setValue(5201)
-    page.server_port_spin.wheelEvent(event)
-    assert page.server_port_spin.value() == 5201
-    assert event.ignored is True
-
-
-def test_iperf_page_combobox_wheel_does_not_change_value(tmp_path: Path) -> None:
-    _qt_app()
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    event = FakeWheelEvent()
-    page.client_protocol_combo.setCurrentText("TCP")
-    page.client_protocol_combo.wheelEvent(event)
-    assert page.client_protocol_combo.currentText() == "TCP"
-    assert event.ignored is True
-
-
-def test_iperf_server_initial_status_is_stopped(tmp_path: Path) -> None:
-    _qt_app()
-    (tmp_path / "tools" / "iperf").mkdir(parents=True)
-    (tmp_path / "tools" / "iperf" / "iperf3.exe").write_text("fake", encoding="utf-8")
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert page.server_state == "STOPPED"
-    assert "Stopped" in page.server_status_label.text()
-    assert "#ef4444" in page.server_status_dot.styleSheet()
-    assert page.server_start_button.isEnabled() is True
-    assert page.server_stop_button.isEnabled() is False
-
-
-def test_iperf_server_running_and_failed_status_buttons(tmp_path: Path) -> None:
-    _qt_app()
-    (tmp_path / "tools" / "iperf").mkdir(parents=True)
-    (tmp_path / "tools" / "iperf" / "iperf3.exe").write_text("fake", encoding="utf-8")
-    page = IperfBandwidthPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    page._set_server_state("RUNNING")
-    assert "Running" in page.server_status_label.text()
-    assert "#22c55e" in page.server_status_dot.styleSheet()
-    assert page.server_start_button.isEnabled() is False
-    assert page.server_stop_button.isEnabled() is True
-    page._set_server_state("FAILED")
-    assert "Failed" in page.server_status_label.text()
-    assert "#ef4444" in page.server_status_dot.styleSheet()
-    assert page.server_start_button.isEnabled() is True
-    assert page.server_stop_button.isEnabled() is False

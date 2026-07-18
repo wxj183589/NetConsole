@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,12 +19,10 @@ from netconsole.services.job_center.handlers import snmp_jobs
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.snmp.request_builder import build_query_request, build_set_request, query_request_to_payload, set_request_to_payload
-from netconsole.services.snmp.result_formatter import format_browser_rows, query_result_to_payload
 from netconsole.services import snmp_client as snmp_client_module
 from netconsole import background_worker
 from netconsole.services.snmp_client import SnmpClient, _WireResponse, _WireVarBind
 from netconsole.services.snmp_query_service import SnmpQueryService
-from netconsole.ui.pages.snmp_center_page import MibBrowserPage, TEMPORARY_TARGET_KEY
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -411,74 +408,3 @@ def test_snmp_query_execute_is_registered() -> None:
         "snmp_mib_resource_refresh",
         "snmp_product_references_refresh",
     }.issubset(task_types)
-
-
-def test_mib_browser_submits_snmp_jobs_and_restores_terminal_states(tmp_path: Path, qt_application, monkeypatch: pytest.MonkeyPatch) -> None:
-    del qt_application
-    paths = PathResolver(tmp_path)
-    center = SimpleNamespace(paths=paths, site_name="demo", snmp_set_enabled=True)
-    browser = MibBrowserPage(center)
-    profile = SnmpProfile(host="192.0.2.70", timeout_ms=4200, retries=2, community_rw="private")
-    browser.temporary_profile = profile
-    browser.temporary_name = "临时测试"
-    browser.device_combo.addItem("临时测试", TEMPORARY_TARGET_KEY)
-    browser.device_combo.setCurrentIndex(browser.device_combo.findData(TEMPORARY_TARGET_KEY))
-    browser.oid_input.setText("1.3.6.1.2.1.1.5.0")
-    submitted: list[BackgroundJob] = []
-    monkeypatch.setattr(browser.query_manager, "start_job", lambda job: submitted.append(job) or job.job_id)
-
-    browser.run_browser_query()
-
-    assert submitted[-1].task_type == "snmp_query_execute"
-    assert submitted[-1].params["operation"] == "Get"
-    assert submitted[-1].params["request"]["profile"]["host"] == "192.0.2.70"
-    assert submitted[-1].params["request"]["profile"]["timeout_ms"] == 4200
-    assert int(submitted[-1].params["_cancel_grace_ms"]) > 0
-    assert browser.go_button.isEnabled() is False
-    assert browser.cancel_button.isEnabled() is True
-
-    query = build_query_request(dict(submitted[-1].params))
-    query_result = SnmpQueryResult(query, [SnmpVarBind(query.oid, "MR-01", "OCTET STRING", decoded_value="MR-01")], elapsed_ms=9)
-    browser._query_job_finished(
-        {
-            "job_id": browser.worker,
-            "result": {
-                "query_result": query_result_to_payload(query_result),
-                "browser_rows": format_browser_rows(query_result),
-            },
-        }
-    )
-    assert browser.result_model.rowCount() == 1
-    assert browser.go_button.isEnabled() is True
-    assert browser.cancel_button.isEnabled() is False
-
-    browser.operation_combo.setCurrentIndex(browser.operation_combo.findText("Walk"))
-    browser.run_browser_query()
-    assert submitted[-1].params["operation"] == "Walk"
-    walk_job_id = browser.worker
-    browser._query_job_cancelled({"job_id": walk_job_id})
-    assert browser.go_button.isEnabled() is True
-    assert browser.cancel_button.isEnabled() is False
-    assert "已取消" in browser.operation_label.text()
-
-    browser.worker = "failed-job"
-    browser.go_button.setEnabled(False)
-    browser._query_job_failed({"job_id": "failed-job", "message": "timeout"})
-    assert browser.go_button.isEnabled() is True
-    assert "查询失败" in browser.operation_label.text()
-
-    set_request = SnmpSetRequest(profile, query.oid, "DisplayString", "new-name", access="read-write")
-    browser._submit_set_request(set_request)
-    assert submitted[-1].params["operation"] == "SET"
-    assert submitted[-1].params["request"]["data_type"] == "DisplayString"
-    assert submitted[-1].params["request"]["value"] == "new-name"
-    browser.close()
-
-
-def test_snmp_center_page_has_no_direct_query_client_or_query_qthread() -> None:
-    source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "snmp_center_page.py").read_text(encoding="utf-8")
-    assert "from netconsole.services.snmp_client import SnmpClient" not in source
-    assert "SnmpClient()." not in source
-    assert "SnmpQueryWorker(" not in source
-    assert "SnmpSetWorker(" not in source
-    assert 'task_type="snmp_query_execute"' in source

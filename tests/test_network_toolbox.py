@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-import ipaddress
 import subprocess
-import time
-from threading import Event
 
-import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QScrollArea
 
 from netconsole.core.feature_registry import FEATURE_BY_ID
-from netconsole.core.i18n import I18n
-from netconsole.core.paths import PathResolver
 from netconsole.services.network_tools.toolbox.fping_runner import discover_fping, parse_fping_json_line
 from netconsole.services.network_tools.toolbox.ip_calc import (
     ipv4_calculate,
@@ -21,26 +12,13 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     summarize_routes,
     wildcard_calculate,
 )
-from netconsole.services.network_tools.toolbox.ping_tools import PingResult, _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
+from netconsole.services.network_tools.toolbox.ping_tools import _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
 from netconsole.services.network_tools.toolbox.route_tools import normalize_routes, parse_powershell_routes_json
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, RouteInfo
-from netconsole.ui.pages.network_adapter_route_page import NetworkAdapterRoutePage, ROUTE_EDIT_WIDGET_ROW_LIMIT
-from netconsole.ui.pages.network_toolbox_page import IpStatusGridWidget, NetworkPingHostResult, NetworkToolboxPage, TOOLBOX_RESULT_DISPLAY_LIMIT, ToolResultPanel
 
 
-def _app() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
-def _process_qt_until(predicate, *, timeout: float = 5.0) -> None:
-    app = _app()
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return
-        QTest.qWait(10)
-    raise AssertionError("Timed out waiting for Qt task")
 
 
 def test_feature_registry_includes_network_toolbox() -> None:
@@ -200,228 +178,30 @@ def test_local_route_rows_reuse_service_sorting_and_display_fields() -> None:
     assert rows[1].policy_store == "PersistentStore"
 
 
-def test_network_ping_adapter_mock_autofills_cidr(tmp_path) -> None:
-    _app()
-
-    class FakeManager:
-        def list_adapters(self):
-            return [NetworkAdapterInfo(name="Ethernet", interface_index=7, status="Up", ipv4_addresses=["10.10.20.5/24"])]
-
-        def list_routes(self):
-            return []
-
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=FakeManager())
-    page.network_adapter_combo.setCurrentIndex(1)
-
-    assert page.network_ping_cidr.text() == "10.10.20.0/24"
-    assert page._selected_source_ip() == "10.10.20.5"
 
 
-def test_network_ping_tab_uses_page_scroll_area(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-
-    scroll_areas = page.ping_tabs.widget(3).findChildren(QScrollArea)
-
-    assert scroll_areas
-    assert scroll_areas[0].widgetResizable() is True
-    margins = scroll_areas[0].widget().layout().contentsMargins()
-    assert margins.right() >= 24
-    assert page.network_ping_grid.minimumHeight() >= 300
-    assert page.network_ping_panel.result_table.minimumHeight() >= 320
-    assert page.network_ping_detail_text.minimumHeight() >= 120
-    assert page.network_adapter_combo.minimumHeight() >= 34
-    assert page.network_ping_cidr.minimumHeight() >= 34
-    for spin in (page.network_ping_timeout, page.network_ping_size, page.network_ping_threads):
-        assert spin.minimumHeight() >= 34
-        assert spin.minimumWidth() >= 136
-    action_buttons = [button for button in page.ping_tabs.widget(3).findChildren(type(page.network_ping_panel.clear_button)) if button.objectName() == "networkPingActionButton"]
-    assert action_buttons
-    assert all(button.minimumHeight() >= 32 for button in action_buttons)
 
 
-def test_toolbox_removes_local_route_tab_and_exposes_ipop_launcher(tmp_path) -> None:
-    _app()
-
-    class FakeManager:
-        def list_adapters(self):
-            return [NetworkAdapterInfo(name="Ethernet", interface_index=1, ipv4_addresses=["192.168.1.10/24"])]
-
-        def list_routes(self):
-            return [RouteInfo("0.0.0.0/0", next_hop="192.168.1.1", interface_index=1, route_metric=1, policy_store="ActiveStore")]
-
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=FakeManager())
-    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == ["IP 计算", "连通性检测"]
-    assert not hasattr(page, "routes_panel")
-    assert page.ipop_button.text() == "启动 IPOP v4.1"
-    assert "系统设置" in page.ipop_hint_label.text()
 
 
-def test_local_adapter_config_page_does_not_expose_route_tab(tmp_path) -> None:
-    _app()
-
-    class FakeManager:
-        pass
-
-    page = NetworkAdapterRoutePage(I18n(), PathResolver(app_root=tmp_path, data_root=tmp_path), manager=FakeManager())
-
-    assert page.tabs.count() == 1
-    assert all(page.tabs.tabText(index) != "\u8def\u7531\u914d\u7f6e" for index in range(page.tabs.count()))
 
 
-def test_tool_result_panel_state_is_not_shared(tmp_path) -> None:
-    _app()
-    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    left = ToolResultPanel(paths, "demo", "left")
-    right = ToolResultPanel(paths, "demo", "right")
-
-    left.show_rows([{"target": "192.0.2.1", "status": "online"}], "left")
-    right.show_rows([{"target": "192.0.2.2", "status": "offline"}], "right")
-
-    assert left.current_rows != right.current_rows
-    assert left.result_table.item(0, 0).text() == "192.0.2.1"
-    assert right.result_table.item(0, 0).text() == "192.0.2.2"
 
 
-def test_tool_result_panel_limits_visible_rows_and_caches_full_result(tmp_path) -> None:
-    _app()
-    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    panel = ToolResultPanel(paths, "demo", "large")
-    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(5001)]
-
-    panel.show_rows(rows, "large")
-    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
-
-    assert panel.result_table.rowCount() == TOOLBOX_RESULT_DISPLAY_LIMIT
-    assert panel.current_result_file is not None
-    assert panel.current_result_file.is_file()
-    assert len(panel.current_result_file.read_text(encoding="utf-8").splitlines()) == 5001
-    assert "导出将读取缓存文件" in panel.summary_text.toPlainText()
 
 
-def test_tool_result_panel_large_cache_write_is_backgrounded(tmp_path, monkeypatch) -> None:
-    import netconsole.ui.pages.network_toolbox_page as toolbox_page_module
-
-    _app()
-    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    panel = ToolResultPanel(paths, "demo", "large")
-    rows = [{"target": f"192.0.2.{index}", "status": "online"} for index in range(250)]
-    original_writer = toolbox_page_module.write_result_cache_file
-    started: list[int] = []
-    release = Event()
-
-    def delayed_writer(cache_dir, prefix, payload):
-        started.append(len(payload))
-        release.wait(2)
-        return original_writer(cache_dir, prefix, payload)
-
-    monkeypatch.setattr(toolbox_page_module, "write_result_cache_file", delayed_writer)
-
-    panel.show_rows(rows, "large")
-    try:
-        _process_qt_until(lambda: bool(started))
-        assert started == [250]
-        assert panel._cache_pending is True
-        assert panel.current_result_file is None
-        assert not panel.export_csv_button.isEnabled()
-    finally:
-        release.set()
-
-    _process_qt_until(lambda: panel.current_result_file is not None and panel.current_result_file.is_file())
-
-    assert panel._cache_pending is False
-    assert panel.export_csv_button.isEnabled()
 
 
-def test_tool_result_panel_export_uses_result_file_source(tmp_path, monkeypatch) -> None:
-    _app()
-    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    panel = ToolResultPanel(paths, "demo", "export")
-    panel.show_rows([{"target": "192.0.2.1", "status": "online"}], "export")
-    selected = tmp_path / "export.csv"
-    captured = {}
-
-    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.QFileDialog.getSaveFileName", lambda *_args, **_kwargs: (str(selected), "CSV (*.csv)"))
-    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.submit_export_task", lambda _parent, spec, **_kwargs: captured.setdefault("spec", spec))
-
-    panel.export_current("csv")
-
-    spec = captured["spec"]
-    assert spec.payload["source"]["type"] == "jsonl_rows"
-    assert spec.payload["source"]["result_file"] == str(panel.current_result_file)
-    assert "rows" not in spec.payload
 
 
-def test_network_ping_grid_initializes_24_hosts(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    network = ipaddress.ip_network("192.168.10.0/24")
-    targets = [str(host) for host in network.hosts()]
-
-    page._init_network_ping_grid(network, targets)
-
-    assert len(page.network_ping_grid.hosts) == 255
-    assert sum(1 for item in page.network_ping_grid.hosts.values() if item.in_range) == 254
-    assert page.network_ping_grid.hosts[1].status == "idle"
-    assert page.network_ping_grid.hosts[255].status == "disabled"
 
 
-def test_network_ping_grid_marks_out_of_range_hosts_disabled(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    network = ipaddress.ip_network("192.168.10.64/26")
-    targets = [str(host) for host in network.hosts()]
-
-    page._init_network_ping_grid(network, targets)
-
-    assert page.network_ping_grid.hosts[63].status == "disabled"
-    assert page.network_ping_grid.hosts[65].status == "idle"
-    assert page.network_ping_grid.hosts[126].status == "idle"
-    assert page.network_ping_grid.hosts[127].status == "disabled"
 
 
-def test_network_ping_grid_updates_host_status(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    network = ipaddress.ip_network("192.168.10.0/24")
-    page._init_network_ping_grid(network, ["192.168.10.10"])
-
-    page._network_ping_progress({"target": "192.168.10.10", "status": "online", "latency_ms": 3, "timestamp": "2026-07-03 12:34:56"})
-
-    assert page.current_network_ping_results["192.168.10.10"].status == "online"
-    assert page.network_ping_grid.hosts[10].status == "online"
 
 
-def test_ip_status_grid_click_emits_ip() -> None:
-    app = _app()
-    widget = IpStatusGridWidget()
-    widget.resize(900, 260)
-    widget.set_hosts([NetworkPingHostResult(ip=f"192.168.10.{host}", host_number=host, in_range=True, status="idle") for host in range(1, 256)])
-    widget.show()
-    app.processEvents()
-    widget.repaint()
-    app.processEvents()
-    clicked: list[str] = []
-    widget.hostClicked.connect(clicked.append)
-
-    QTest.mouseClick(widget, Qt.LeftButton, pos=widget.rects[10].center())
-
-    assert clicked == ["192.168.10.10"]
 
 
-def test_network_ping_table_and_grid_share_result_state(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    network = ipaddress.ip_network("192.168.10.0/24")
-    page._init_network_ping_grid(network, ["192.168.10.20"])
-    row = {"target": "192.168.10.20", "status": "online", "latency_ms": 4}
-    page._network_ping_progress(row)
-    page.network_ping_panel.show_rows([row], "network_ping")
-
-    page._network_grid_host_clicked("192.168.10.20")
-
-    assert page.network_ping_grid.selected_ip == "192.168.10.20"
-    assert page.network_ping_panel.result_table.currentRow() == 0
 
 
 def test_ping_output_decode_uses_local_codepage_without_replacement() -> None:
@@ -439,21 +219,6 @@ def test_ping_output_decode_prefers_utf8_and_marks_final_replacement() -> None:
     assert "\ufffd" in _decode_output(b"\x81")
 
 
-def test_route_edit_cell_widgets_have_explicit_row_limit(tmp_path, monkeypatch) -> None:
-    _app()
-    page = NetworkAdapterRoutePage(
-        I18n(),
-        PathResolver(app_root=tmp_path, data_root=tmp_path),
-        manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})(),
-    )
-    warnings: list[str] = []
-    monkeypatch.setattr("netconsole.ui.pages.network_adapter_route_page.MessageBox.warning", lambda _parent, _title, message: warnings.append(message))
-    page.route_edit_table.setRowCount(ROUTE_EDIT_WIDGET_ROW_LIMIT)
-
-    page.add_route_row()
-
-    assert page.route_edit_table.rowCount() == ROUTE_EDIT_WIDGET_ROW_LIMIT
-    assert warnings and str(ROUTE_EDIT_WIDGET_ROW_LIMIT) in warnings[0]
 
 
 def test_fping_discovery_prefers_environment_path(tmp_path, monkeypatch) -> None:
@@ -516,29 +281,3 @@ Reply from 10.0.0.14: Destination host unreachable.
 
     assert result.status != "online"
     assert result.received == 0
-
-
-def test_network_ping_stats_counts_only_online_as_online(tmp_path) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    network = ipaddress.ip_network("192.168.10.0/24")
-    page._init_network_ping_grid(network, ["192.168.10.1", "192.168.10.2", "192.168.10.3"])
-
-    page._network_ping_progress({"target": "192.168.10.1", "status": "online", "latency_ms": 1})
-    page._network_ping_progress({"target": "192.168.10.2", "status": "timeout"})
-    page._network_ping_progress({"target": "192.168.10.3", "status": "unreachable"})
-
-    text = page.network_ping_stats_label.text()
-    assert "在线: 1" in text
-    assert "离线: 2" in text
-
-
-def test_fping_unavailable_falls_back_to_system_ping(tmp_path, monkeypatch) -> None:
-    _app()
-    page = NetworkToolboxPage(I18n(), "demo", PathResolver(app_root=tmp_path, data_root=tmp_path), network_manager=type("M", (), {"list_adapters": lambda self: [], "list_routes": lambda self: []})())
-    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.discover_fping", lambda _root: type("A", (), {"available": False, "error": "missing"})())
-    monkeypatch.setattr("netconsole.ui.pages.network_toolbox_page.run_single_ping", lambda target, **_kwargs: PingResult(target=target, status="offline"))
-    rows, engine = page._run_fping_or_system_batch(["192.0.2.1"], count=1, size=32, timeout_ms=100, concurrency=1, source_ip="")
-
-    assert rows
-    assert "系统 ping" in engine

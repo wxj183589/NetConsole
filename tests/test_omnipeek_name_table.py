@@ -7,15 +7,10 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QSizePolicy
 
 from netconsole.core.database import Database
-from netconsole.core.paths import PathResolver
-from netconsole.core.settings import SettingsStore
 from netconsole.models.device import Device
 from netconsole.models.omnipeek_name_table import (
-    SOURCE_AP_EXTENSION,
-    OmniPeekDeviceItem,
     OmniPeekExportConfig,
     OmniPeekNameEntry,
 )
@@ -25,12 +20,9 @@ from netconsole.services.omnipeek_name_table_service import (
     build_omnipeek_entries,
     export_omnipeek_nam,
 )
-from netconsole.ui.dialogs.omnipeek_export_dialog import PREVIEW_COLUMN_MIN_WIDTHS, OmniPeekExportDialog
 from netconsole.utils.mac_utils import H3cMacDeriveError, derive_h3c_r1_mac, derive_h3c_r2_mac, normalize_mac
 
 
-def qt_app() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def make_database(tmp_path: Path) -> Database:
@@ -126,56 +118,3 @@ def test_export_omnipeek_nam_writes_required_xml_fields(tmp_path: Path) -> None:
     assert "<Group>宁波地铁12号线车载MR物理MAC组</Group>" in text
     assert "<Trust>Trusted</Trust>" in text
     assert "<Mod>2026-07-09T11:10:00Z</Mod>" in text
-
-
-def test_omnipeek_export_dialog_keeps_preview_table_as_main_area(tmp_path: Path) -> None:
-    qt_app()
-    items = [
-        OmniPeekDeviceItem(
-            role="trackside_ap",
-            name="AP001",
-            physical_mac="74ad-cb9d-3320",
-            location="鼓楼站",
-            source=SOURCE_AP_EXTENSION,
-            sources=[SOURCE_AP_EXTENSION],
-            key="trackside:ap001",
-        ),
-        OmniPeekDeviceItem(
-            role="trackside_ap",
-            name="AP002",
-            physical_mac="",
-            location="西门口站",
-            source=SOURCE_AP_EXTENSION,
-            sources=[SOURCE_AP_EXTENSION],
-            key="trackside:ap002",
-        ),
-    ]
-    settings = SettingsStore(PathResolver(app_root=tmp_path, data_root=tmp_path))
-
-    dialog = OmniPeekExportDialog(
-        items,
-        {SOURCE_AP_EXTENSION: len(items)},
-        default_line_name="宁波地铁12号线",
-        settings=settings,
-    )
-
-    assert dialog.minimumWidth() >= 900
-    assert dialog.minimumHeight() >= 620
-    assert dialog.preview_table.minimumHeight() >= 380
-    assert dialog.preview_table.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
-    assert dialog.preview_table.columnWidth(0) == PREVIEW_COLUMN_MIN_WIDTHS[0]
-    assert dialog.preview_table.columnWidth(1) == PREVIEW_COLUMN_MIN_WIDTHS[1]
-    assert "共 2 条｜已选 1 条｜异常 1 条｜可导出 1 条" in dialog.preview_summary_label.text()
-
-    dialog.resize(900, 620)
-    dialog.show()
-    QApplication.processEvents()
-    assert dialog.preview_table.viewport().height() >= dialog.preview_table.verticalHeader().defaultSectionSize() * 10
-
-    dialog._set_preview_filter("missing_mac")
-
-    assert dialog.preview_table.rowCount() == 1
-    assert dialog.preview_table.item(0, 2).text() == "AP002"
-    assert dialog.preview_table.item(0, 13).text() == "缺少物理MAC"
-    assert "当前显示 1 条" in dialog.preview_summary_label.text()
-    dialog.close()

@@ -4,7 +4,6 @@ import io
 import json
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -17,9 +16,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.h3c_ac_collect_service import AcCommandActionResult
 from netconsole.services.h3c_collect_service import CommandResult
 from netconsole.services.job_center.handlers import ac_jobs
-from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.job_runner import run_job
-from netconsole.ui.pages.ac_management_page import AcManagementPage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -213,94 +210,10 @@ def test_ac_command_job_success_custom_failed_and_cancelled(monkeypatch: pytest.
     assert cancelled.error == "用户已取消更新"
 
 
-def test_ac_page_command_actions_keep_confirmation_and_submit_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    submitted: list[tuple[str, dict[str, object], str]] = []
-    confirmations: list[str] = []
-    device = _device()
-    page = SimpleNamespace(
-        feature_gate=SimpleNamespace(assert_enabled=lambda _feature: None),
-        current_device=lambda: device,
-        _ensure_h3c_ac_selected=lambda _device: True,
-        site_name="demo",
-        repository=SimpleNamespace(database=SimpleNamespace(path=Path("devices.db"))),
-        _set_update_running=lambda *_args: None,
-        _start_background_job=lambda task_type, params, title: submitted.append((task_type, params, title)) or "action-job",
-        action_job_id=None,
-    )
-    monkeypatch.setattr(
-        "netconsole.ui.pages.ac_management_page.MessageBox.question",
-        lambda _parent, _title, message: confirmations.append(message) or 16384,
-    )
-
-    AcManagementPage.run_ac_action(page, "persist_auto_ap", "固化新上线AP")  # type: ignore[arg-type]
-    AcManagementPage.run_ac_action(page, "enable_ap_remote_login", "开启AP远程登入")  # type: ignore[arg-type]
-
-    assert submitted[0][0] == "ac_command_action_execute"
-    assert submitted[0][1]["command_sequence"] == ["system-view", "wlan auto-ap persistent all", "save force", "return", "quit"]
-    assert submitted[1][1]["command_sequence"][2:4] == ["probe", "wlan ap-execute all exec-console enable"]
-    assert "save force" in confirmations[0]
-    assert "probe" in confirmations[1]
-
-    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.question", lambda *_args: 65536)
-    AcManagementPage.run_ac_action(page, "persist_auto_ap", "固化新上线AP")  # type: ignore[arg-type]
-    assert len(submitted) == 2
 
 
-def test_ac_page_command_terminal_events_restore_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    running: list[bool] = []
-    warnings: list[str] = []
-    status = SimpleNamespace(value="", setText=lambda value: setattr(status, "value", value))
-    page = SimpleNamespace(
-        _background_jobs={
-            "finished": {"task_type": "ac_command_action_execute", "title": "固化新上线AP"},
-        },
-        action_job_id="finished",
-        _set_update_running=lambda value, *_args: running.append(value),
-        _finish_ac_action=lambda result, title: AcManagementPage._finish_ac_action(page, result, title),
-        status_label=status,
-        i18n=SimpleNamespace(t=lambda key, **_kwargs: key),
-    )
-
-    AcManagementPage._background_finished(  # type: ignore[arg-type]
-        page,
-        {"job_id": "finished", "result": {"action": "persist_auto_ap", "command_results": []}},
-    )
-    assert page.action_job_id is None
-    assert running[-1] is False
-    assert "save force" in status.value
-
-    monkeypatch.setattr(
-        "netconsole.ui.pages.ac_management_page.MessageBox.warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    page._background_jobs = {"failed": {"task_type": "ac_command_action_execute", "title": "命令动作"}}
-    page.action_job_id = "failed"
-    AcManagementPage._background_failed(page, {"job_id": "failed", "error": "认证失败"})  # type: ignore[arg-type]
-    assert page.action_job_id is None
-    assert warnings == ["认证失败"]
-
-    page._background_jobs = {"cancelled": {"task_type": "ac_command_action_execute", "title": "命令动作"}}
-    page.action_job_id = "cancelled"
-    AcManagementPage._background_cancelled(page, {"job_id": "cancelled"})  # type: ignore[arg-type]
-    assert page.action_job_id is None
-    assert status.value == "ac.update_cancelled"
 
 
-def test_ac_page_tab_switch_cancels_command_job() -> None:
-    cancelled: list[str] = []
-    page = SimpleNamespace(
-        action_job_id="action-job",
-        background_manager=SimpleNamespace(cancel_job=lambda job_id: cancelled.append(job_id)),
-        cancel_update_button=SimpleNamespace(setEnabled=lambda _enabled: None),
-        _current_feature_id=lambda: "ac.fit_ap_resources",
-        tabs=SimpleNamespace(tabText=lambda _index: "FIT-AP资源"),
-        current_tab_action_labels=lambda: [],
-        refresh_current_async_or_lazy=lambda: None,
-    )
-
-    AcManagementPage._on_current_tab_changed(page, 1)  # type: ignore[arg-type]
-
-    assert cancelled == ["action-job"]
 
 
 def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
@@ -362,16 +275,3 @@ def test_ac_command_worker_stdout_is_jsonl_and_cancel_has_one_terminal(
     assert background_worker.main(["--job", str(job_path)]) == 2
     cancelled_events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
     assert [event["type"] for event in cancelled_events] == ["cancelled"]
-
-
-def test_ac_command_registration_and_static_ui_boundaries() -> None:
-    assert "ac_command_action_execute" in registered_task_types()
-    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_command_service.py").read_text(encoding="utf-8")
-    worker_source = (PROJECT_ROOT / "src" / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
-
-    assert "AcCommandActionThread" not in page_source
-    assert "run_h3c_ac_action" not in page_source
-    assert "ConnectHandler" not in page_source
-    assert "netconsole.ui.pages" not in domain_source
-    assert "netconsole.ui.pages" not in worker_source

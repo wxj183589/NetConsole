@@ -4,21 +4,16 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject
-from PySide6.QtWidgets import QApplication
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.ui.job_process_manager import BackgroundProcessManager
 from netconsole.services.background_tasks import BackgroundTaskCancelled, run_background_task
 from netconsole.services.export.export_job import ExportJob
-from netconsole.ui.export_process_manager import ExportProcessManager
 from netconsole.services.export.export_progress import error_event as export_error_event
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_events import (
@@ -35,13 +30,6 @@ from netconsole.services.job_center.worker_protocol import encode_event, feed_js
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _wait_for(predicate, timeout: float = 8.0) -> None:
-    application = QApplication.instance() or QApplication([])
-    deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
-        application.processEvents()
-        time.sleep(0.01)
-    assert predicate()
 
 
 def _jsonl_events(result: subprocess.CompletedProcess[str]) -> list[dict[str, object]]:
@@ -69,8 +57,6 @@ def test_registry_contains_all_existing_task_types() -> None:
     } <= tasks
 
 
-def test_qt_process_manager_exposes_job_center_adapter() -> None:
-    assert hasattr(BackgroundProcessManager, "is_running")
 
 
 def test_legacy_run_background_task_dispatches_registry(tmp_path: Path) -> None:
@@ -90,135 +76,14 @@ def test_legacy_run_background_task_dispatches_registry(tmp_path: Path) -> None:
     assert result == {"changed_count": 0}
 
 
-def test_legacy_process_manager_runs_worker_and_cleans_files(tmp_path: Path) -> None:
-    application = QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    manager = BackgroundProcessManager(paths=paths)
-    finished: list[dict[str, object]] = []
-    failed: list[dict[str, object]] = []
-    manager.finished.connect(finished.append)
-    manager.failed.connect(failed.append)
-    job_id = "compat-manager-job"
-
-    assert manager.start_job(
-        BackgroundJob(
-            job_id=job_id,
-            task_type="online_mr_mark_stale_sessions",
-            params={
-                "site_name": "demo",
-                "app_root": str(paths.app_root),
-                "data_root": str(paths.data_root),
-            },
-        )
-    ) == job_id
-    assert manager.is_running(job_id)
-
-    _wait_for(lambda: bool(finished or failed))
-
-    assert not failed
-    assert finished[0]["result"] == {"changed_count": 0}
-    assert not manager.is_running(job_id)
-    job_dir = paths.runtime_cache_dir / "background_jobs"
-    assert not (job_dir / f"{job_id}.json").exists()
-    assert not (job_dir / f"{job_id}.cancel").exists()
-    application.processEvents()
 
 
-def test_background_process_manager_emits_single_cancelled_event(tmp_path: Path) -> None:
-    application = QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    manager = BackgroundProcessManager(paths=paths)
-    cancelled: list[dict[str, object]] = []
-    failed: list[dict[str, object]] = []
-    manager.cancelled.connect(cancelled.append)
-    manager.failed.connect(failed.append)
-    job_id = "cancel-manager-job"
-
-    manager.start_job(BackgroundJob(job_id=job_id, task_type="unsupported_cancel_task"))
-    manager.cancel_job(job_id)
-    _wait_for(lambda: bool(cancelled or failed))
-
-    assert len(cancelled) == 1
-    assert not failed
-    assert cancelled[0]["type"] == "cancelled"
-    assert cancelled[0]["cancelled"] is True
-    job_dir = paths.runtime_cache_dir / "background_jobs"
-    assert not (job_dir / f"{job_id}.json").exists()
-    assert not (job_dir / f"{job_id}.cancel").exists()
-    application.processEvents()
 
 
-def test_export_process_manager_emits_single_cancelled_event_and_cleans_files(tmp_path: Path) -> None:
-    application = QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    manager = ExportProcessManager(paths=paths)
-    cancelled: list[dict[str, object]] = []
-    failed: list[dict[str, object]] = []
-    manager.cancelled.connect(cancelled.append)
-    manager.failed.connect(failed.append)
-    job_id = "cancel-export-job"
-    output_path = tmp_path / "cancelled.txt"
-    tmp_output = tmp_path / "cancelled.txt.tmp"
-    tmp_output.write_text("partial", encoding="utf-8")
-
-    manager.start_export(
-        ExportJob(
-            job_id=job_id,
-            job_type="unsupported_cancel_export",
-            output_path=str(output_path),
-            tmp_path=str(tmp_output),
-        )
-    )
-    manager.cancel_export(job_id)
-    _wait_for(lambda: bool(cancelled or failed))
-
-    assert len(cancelled) == 1
-    assert not failed
-    assert cancelled[0]["type"] == "cancelled"
-    assert not tmp_output.exists()
-    job_dir = paths.runtime_cache_dir / "export_jobs"
-    assert not (job_dir / f"{job_id}.json").exists()
-    assert not (job_dir / f"{job_id}.cancel").exists()
-    application.processEvents()
 
 
-def test_background_process_manager_stops_worker_when_parent_is_destroyed(tmp_path: Path) -> None:
-    application = QApplication.instance() or QApplication([])
-    parent = QObject()
-    manager = BackgroundProcessManager(parent, paths=PathResolver(tmp_path))
-    manager._worker_command = lambda _job_path: (sys.executable, ["-c", "import time; time.sleep(30)"])
-    job_id = manager.start_job(BackgroundJob(task_type="parent_destroy_test"))
-    process = manager._jobs[job_id].process
-    assert process.waitForStarted(3000)
-    cleaned: list[bool] = []
-    parent.destroyed.connect(lambda: cleaned.append(not manager._jobs))
-
-    parent.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-
-    assert cleaned == [True]
-    assert not (tmp_path / "runtime" / "cache" / "background_jobs" / f"{job_id}.json").exists()
-    application.processEvents()
 
 
-def test_export_process_manager_stops_worker_when_parent_is_destroyed(tmp_path: Path) -> None:
-    application = QApplication.instance() or QApplication([])
-    parent = QObject()
-    manager = ExportProcessManager(parent, paths=PathResolver(tmp_path))
-    manager._export_worker_command = lambda _job_path: (sys.executable, ["-c", "import time; time.sleep(30)"])
-    output_path = tmp_path / "parent-destroy.txt"
-    job_id = manager.start_export(ExportJob(job_id="parent-destroy-export", job_type="parent_destroy_test", output_path=str(output_path)))
-    process = manager._jobs[job_id].process
-    assert process.waitForStarted(3000)
-    cleaned: list[bool] = []
-    parent.destroyed.connect(lambda: cleaned.append(not manager._jobs))
-
-    parent.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-
-    assert cleaned == [True]
-    assert not (tmp_path / "runtime" / "cache" / "export_jobs" / f"{job_id}.json").exists()
-    application.processEvents()
 
 
 def test_job_events_use_complete_common_fields() -> None:
@@ -437,14 +302,3 @@ def test_export_worker_error_event_cleans_tmp_file(tmp_path: Path) -> None:
     assert events[-1]["type"] == "error"
     assert events[-1]["job_id"] == "failed-export-job"
     assert not tmp_output.exists()
-
-
-def test_frozen_worker_commands_do_not_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    job_path = tmp_path / "job.json"
-
-    background_command = BackgroundProcessManager(paths=PathResolver(tmp_path))._worker_command(job_path)
-    export_command = ExportProcessManager(paths=PathResolver(tmp_path))._export_worker_command(job_path)
-
-    assert background_command == (sys.executable, ["--background-worker", "--job", str(job_path)])
-    assert export_command == (sys.executable, ["--export-worker", "--job", str(job_path)])

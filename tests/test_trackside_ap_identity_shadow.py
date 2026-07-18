@@ -10,8 +10,12 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_runner import run_job
-from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
-from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
+from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
+    TracksideApIdentityShadowService,
+)
+from netconsole.services.trackside_ap_export_service import (
+    load_trackside_ap_business_snapshot,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -108,8 +112,12 @@ def test_interface_location_radio_and_lldp_are_evidence_not_ap_identity() -> Non
     assert report.interface_only_records == 1
     assert report.lldp_only_records == 1
     assert "topology identity 不参与 AP 匹配" in " ".join(report.items[0].warnings)
-    assert "LLDP neighbor MAC 仅作为 observation evidence" in " ".join(report.items[1].warnings)
-    assert "Radio MAC/BSSID 不作为轨旁 AP MAC 匹配输入" in " ".join(report.items[3].warnings)
+    assert "LLDP neighbor MAC 仅作为 observation evidence" in " ".join(
+        report.items[1].warnings
+    )
+    assert "Radio MAC/BSSID 不作为轨旁 AP MAC 匹配输入" in " ".join(
+        report.items[3].warnings
+    )
 
 
 def test_optical_fallback_is_counted_without_changing_match_result() -> None:
@@ -150,7 +158,9 @@ def test_detail_shadow_preserves_old_matches_and_reports_different_candidate() -
     assert report.items[0].new_candidate_key == "uuid:ap-2"
 
 
-def test_detail_job_preserves_uuid_mac_and_name_fallback_matches(tmp_path: Path) -> None:
+def test_detail_job_preserves_uuid_mac_and_name_fallback_matches(
+    tmp_path: Path,
+) -> None:
     database = _database(tmp_path)
     repository = AcRepository(database)
     repository.replace_fit_ap_resources(
@@ -166,7 +176,12 @@ def test_detail_job_preserves_uuid_mac_and_name_fallback_matches(tmp_path: Path)
         BackgroundJob(
             job_id="trackside-detail-uuid",
             task_type="trackside_fit_ap_detail_resolve",
-            params={**base, "ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_name": "AP-01"},
+            params={
+                **base,
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-01",
+            },
         )
     )
     by_mac = run_job(
@@ -185,7 +200,9 @@ def test_detail_job_preserves_uuid_mac_and_name_fallback_matches(tmp_path: Path)
     )
 
     assert direct.ok is True
-    assert direct.result["matches"] == [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_name": "AP-01"}]
+    assert direct.result["matches"] == [
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_name": "AP-01"}
+    ]
     assert direct.result["detail_identity_shadow"]["identity_unchanged"] == 1
     assert by_mac.ok is True
     assert by_mac.result["matches"][0]["ap_uuid"] == "ap-2"
@@ -224,12 +241,16 @@ def test_detail_shadow_failure_does_not_change_matches_or_finished(
     )
 
     assert result.ok is True
-    assert result.result["matches"] == [{"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_name": "AP-01"}]
+    assert result.result["matches"] == [
+        {"ac_device_uuid": "ac-1", "ap_uuid": "ap-1", "ap_name": "AP-01"}
+    ]
     assert result.result["detail_identity_shadow"]["available"] is False
     assert "诊断失败" in result.result["detail_identity_shadow"]["warnings"][0]
 
 
-def test_snapshot_and_compatibility_job_append_shadow_after_old_rows(tmp_path: Path) -> None:
+def test_snapshot_and_compatibility_job_append_shadow_after_old_rows(
+    tmp_path: Path,
+) -> None:
     database = _database(tmp_path)
     repository = DeviceRepository(database)
 
@@ -238,7 +259,11 @@ def test_snapshot_and_compatibility_job_append_shadow_after_old_rows(tmp_path: P
         BackgroundJob(
             job_id="trackside-business-shadow",
             task_type="ac_trackside_business_refresh",
-            params={"db_path": str(database.path), "site_name": "demo", "data_root": str(tmp_path)},
+            params={
+                "db_path": str(database.path),
+                "site_name": "demo",
+                "data_root": str(tmp_path),
+            },
         )
     )
 
@@ -260,12 +285,18 @@ def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
         raise RuntimeError("聚合诊断失败")
 
     monkeypatch.setattr(TracksideApIdentityShadowService, "shadow_rows", fail)
-    snapshot = load_trackside_ap_business_snapshot(DeviceRepository(database), "demo", 1)
+    snapshot = load_trackside_ap_business_snapshot(
+        DeviceRepository(database), "demo", 1
+    )
     job = run_job(
         BackgroundJob(
             job_id="trackside-business-shadow-failed",
             task_type="ac_trackside_business_refresh",
-            params={"db_path": str(database.path), "site_name": "demo", "data_root": str(tmp_path)},
+            params={
+                "db_path": str(database.path),
+                "site_name": "demo",
+                "data_root": str(tmp_path),
+            },
         )
     )
 
@@ -276,10 +307,23 @@ def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
     assert job.result["identity_shadow"]["available"] is False
 
 
-def test_trackside_shadow_static_boundaries_and_ui_remains_unaware() -> None:
-    source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "rail_transit" / "trackside_ap_identity_shadow.py").read_text(encoding="utf-8")
-    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "trackside_ap_service_page.py").read_text(encoding="utf-8")
+def test_trackside_shadow_static_boundaries_remain_pure() -> None:
+    source = (
+        PROJECT_ROOT
+        / "src"
+        / "netconsole"
+        / "services"
+        / "rail_transit"
+        / "trackside_ap_identity_shadow.py"
+    ).read_text(encoding="utf-8")
 
-    for forbidden in ("PySide6", "netconsole.ui", "repositories", "Database", "subprocess", "netmiko", "socket"):
+    for forbidden in (
+        "PySide6",
+        "netconsole.ui",
+        "repositories",
+        "Database",
+        "subprocess",
+        "netmiko",
+        "socket",
+    ):
         assert forbidden not in source
-    assert "identity_shadow" not in page_source

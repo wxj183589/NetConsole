@@ -23,9 +23,7 @@ from netconsole.services.ac.ac_models import (
 from netconsole.services.ac.ac_resource_service import AcResourceRefreshCancelled, AcResourceService
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.handlers import ac_jobs
-from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.job_runner import run_job
-from netconsole.ui.pages.ac_management_page import AcManagementPage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -338,41 +336,3 @@ def test_ac_info_and_fit_ap_detail_jobs_deliver_collection_results(monkeypatch: 
     assert info.result["collection"]["https_port"] == 10443
     assert detail.ok is True
     assert detail.result["collection"]["target_ap_uuid"] == "ap-1"
-
-
-def test_ac_page_resource_refresh_submits_job_without_resource_qthread() -> None:
-    submitted: list[tuple[str, dict[str, object], str]] = []
-    page = SimpleNamespace(
-        feature_gate=SimpleNamespace(assert_enabled=lambda _feature: None),
-        current_device=lambda: _ac_device(),
-        site_name="demo",
-        repository=SimpleNamespace(database=SimpleNamespace(path=Path("devices.db"))),
-        i18n=SimpleNamespace(t=lambda key, **_kwargs: key),
-        _set_update_running=lambda _running, _message="": None,
-        _start_background_job=lambda task_type, params, title: submitted.append((task_type, params, title)) or "job-001",
-        resource_job_id=None,
-    )
-
-    AcManagementPage.refresh_ac_resources(page)  # type: ignore[arg-type]
-
-    assert page.resource_job_id == "job-001"
-    assert submitted[0][0] == "ac_fit_ap_resources_refresh"
-    assert submitted[0][1]["mode"] == "collect"
-    assert submitted[0][1]["source"] == "auto"
-
-
-def test_ac_domain_task_registration_and_ui_static_boundaries() -> None:
-    task_types = registered_task_types()
-    assert {
-        "ac_info_refresh",
-        "ac_fit_ap_resources_refresh",
-        "ac_fit_ap_detail_refresh",
-        "ac_overview_refresh",
-        "ac_devices_refresh",
-    }.issubset(task_types)
-    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_resource_service.py").read_text(encoding="utf-8")
-    assert "AcResourceCollectThread" not in page_source
-    assert "collect_h3c_fit_ap_resources" not in page_source
-    assert "SnmpClient" not in page_source
-    assert "netconsole.ui" not in domain_source

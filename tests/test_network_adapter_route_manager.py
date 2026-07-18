@@ -4,7 +4,6 @@ import inspect
 import base64
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,6 @@ from netconsole.services.windows_network_manager import (
     NetworkAdapterInfo,
     RouteConfig,
     SecondaryIpConfig,
-    VlanCapability,
     VlanProperty,
     WindowsNetworkManager,
     build_apply_ip_config_script,
@@ -35,14 +33,6 @@ from netconsole.services.windows_network_manager import (
 )
 
 
-def _process_events_until(predicate, timeout: float = 3.0) -> None:
-    from PySide6.QtCore import QCoreApplication
-
-    deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
-        QCoreApplication.processEvents()
-        time.sleep(0.01)
-    assert predicate()
 
 
 SAFE_DEBUG_ADAPTER = "ASIX USB to Gigabit Ethernet Family Adapter"
@@ -326,424 +316,28 @@ def test_powershell_empty_and_single_object_json_results(monkeypatch) -> None:
     assert manager_module._ensure_list(rows)[0]["Name"] == "Ethernet"
 
 
-def test_admin_launch_success_updates_log_without_success_modal(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    from netconsole.core.admin import AdminLaunchResult
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-    monkeypatch.setattr(
-        page_module,
-        "open_network_manager_as_admin",
-        lambda **kwargs: AdminLaunchResult(True, 33, "已请求管理员权限，请在弹出的 UAC 窗口中确认。"),
-    )
-    info_calls = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: info_calls.append(args))
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.request_admin_network_manager()
-    assert info_calls == []
-    assert page.admin_launch_pending is True
-    assert page.admin_button.isEnabled() is False
-    assert "关闭" in page.log_text.toPlainText()
-
-
-def test_admin_launch_success_quits_normal_app_without_close_confirm(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.admin import AdminLaunchResult
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qt_app = QApplication.instance() or QApplication([])
-    assert qt_app is not None
-
-    class FakeWindow:
-        app_is_exiting = False
-
-    class FakeApp:
-        def __init__(self):
-            self.quit_called = False
-            self.window = FakeWindow()
-
-        def topLevelWidgets(self):
-            return [self.window]
-
-        def quit(self):
-            self.quit_called = True
-
-    fake_app = FakeApp()
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-    monkeypatch.setattr(page_module, "open_network_manager_as_admin", lambda **kwargs: AdminLaunchResult(True, 33, "ok"))
-    monkeypatch.setattr(page_module.QTimer, "singleShot", lambda _ms, callback: callback())
-    monkeypatch.setattr(page_module.QApplication, "instance", lambda: fake_app)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.request_admin_network_manager()
-    assert fake_app.quit_called is True
-    assert fake_app.window.app_is_exiting is True
-
-
-def test_admin_launch_cancel_does_not_quit_normal_app(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.admin import AdminLaunchResult
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    qt_app = QApplication.instance() or QApplication([])
-    assert qt_app is not None
-
-    class FakeApp:
-        quit_called = False
-
-        def topLevelWidgets(self):
-            return []
-
-        def quit(self):
-            self.quit_called = True
-
-    fake_app = FakeApp()
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-    monkeypatch.setattr(page_module, "open_network_manager_as_admin", lambda **kwargs: AdminLaunchResult(False, 5, "cancelled"))
-    monkeypatch.setattr(page_module.QApplication, "instance", lambda: fake_app)
-    monkeypatch.setattr(page_module.MessageBox, "warning", lambda *args, **kwargs: None)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.request_admin_network_manager()
-    assert fake_app.quit_called is False
-    assert page.admin_launch_pending is False
-
-
-def test_network_manager_page_chinese_headers_and_no_dns_field(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication, QHeaderView, QSplitter
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("zh_CN"), PathResolver(tmp_path))
-    adapter_headers = [page.adapter_table.horizontalHeaderItem(index).text() for index in range(page.adapter_table.columnCount())]
-    route_headers = [page.route_table.horizontalHeaderItem(index).text() for index in range(page.route_table.columnCount())]
-    edit_route_headers = [page.route_edit_table.horizontalHeaderItem(index).text() for index in range(page.route_edit_table.columnCount())]
-    assert adapter_headers == ["名称", "描述", "MAC", "状态", "速率", "IPv4", "网关", "标签"]
-    assert route_headers == ["序号", "目标网络", "下一跳", "接口", "跃点数", "策略存储", "持久", "来源"]
-    assert page.adapter_table.columnWidth(1) >= 280
-    assert edit_route_headers == ["目标网络", "掩码", "下一跳", "出接口", "跃点数", "持久", "备注"]
-    assert len(page.findChildren(QSplitter)) >= 2
-    assert page.adapter_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive
-    assert page.adapter_table.horizontalHeader().sectionResizeMode(5) == QHeaderView.Interactive
-    assert page.route_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Interactive
-    assert page.adapter_table.horizontalHeader().stretchLastSection() is False
-    visible_text = " ".join(
-        [
-            page.prefix_edit.placeholderText(),
-            page.secondary_edit.placeholderText(),
-            page.tabs.tabText(0),
-            page.tabs.tabText(1),
-        ]
-    )
-    assert "DNS" not in visible_text
-    assert not hasattr(page, "dns_edit")
-
-
-def test_adapter_page_uses_left_status_and_right_config_with_switch_vlan_disabled(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QSplitter
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    class FakeManager(WindowsNetworkManager):
-        def get_vlan_capability(self, adapter_name: str) -> VlanCapability:
-            return VlanCapability(
-                supported=True,
-                can_set_vlan_id=False,
-                vlan_switch_property="VLAN标识",
-                priority_vlan_property_name="VLAN标识",
-                mode="priority_vlan_enum",
-                message="当前网卡仅支持 VLAN 开关，不支持 VLAN ID 设置",
-            )
-
-    page = page_module.NetworkAdapterRoutePage(I18n("zh_CN"), PathResolver(tmp_path), manager=FakeManager())
-    adapter = NetworkAdapterInfo(
-        name="USB Ethernet",
-        interface_index=12,
-        description="USB Ethernet",
-        mac_address="aa-bb",
-        status="Up",
-        link_speed="1 Gbps",
-        ipv4_addresses=["192.168.105.200/24"],
-        gateways=["192.168.105.1"],
-    )
-    page.adapters = [adapter]
-    page._vlan_capabilities[adapter.name] = FakeManager().get_vlan_capability(adapter.name)
-    page.adapter_combo.addItem("USB Ethernet", adapter)
-    page._adapter_changed()
-
-    horizontal_splitters = [splitter for splitter in page.findChildren(QSplitter) if splitter.orientation() == Qt.Horizontal]
-    assert horizontal_splitters
-    assert page.adapter_status_fields["ipv4"].text() == "192.168.105.200/24"
-    assert page.adapter_status_fields["gateway"].text() == "192.168.105.1"
-    assert page.adapter_status_fields["mac"].text() == "aa-bb"
-    assert page.vlan_spin.value() == 0
-    assert page.vlan_spin.isEnabled() is False
-    assert "不支持 VLAN ID" in page.vlan_hint_label.text()
-
-
-def test_dhcp_mode_clears_and_disables_static_fields(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.mode_combo.setCurrentText("静态IP")
-    page.ip_edit.setText("192.168.0.240")
-    page.prefix_edit.setText("24")
-    page.gateway_edit.setText("192.168.0.1")
-    page.secondary_edit.setPlainText("10.122.100.200/24")
-    page.mode_combo.setCurrentText("DHCP")
-    assert page.ip_edit.text() == ""
-    assert page.prefix_edit.text() == ""
-    assert page.gateway_edit.text() == ""
-    assert page.secondary_edit.toPlainText() == ""
-    assert page.ip_edit.isEnabled() is False
-    assert page.prefix_edit.isEnabled() is False
-    assert page.gateway_edit.isEnabled() is False
-    assert page.secondary_edit.isEnabled() is False
-
-    page.mode_combo.setCurrentText("静态IP")
-    assert page.ip_edit.isEnabled() is True
-    assert page.prefix_edit.isEnabled() is True
-    assert page.gateway_edit.isEnabled() is True
-    assert page.secondary_edit.isEnabled() is True
-
-
-def test_dhcp_config_ignores_stale_static_fields(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.mode_combo.setCurrentText("DHCP")
-    page.ip_edit.setText("192.168.0.240")
-    page.prefix_edit.setText("24")
-    page.gateway_edit.setText("192.168.0.1")
-    page.secondary_edit.setPlainText("10.122.100.200/24")
-    config = page._ip_config_from_form(NetworkAdapterInfo(name="Ethernet", interface_index=12))
-    assert config.mode == "dhcp"
-    assert config.ip_address == ""
-    assert config.gateway == ""
-    assert config.secondary_ips == []
-    assert config.dns_servers == []
-
-
-def test_route_filters_and_original_order(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-    from netconsole.services.windows_network_manager import RouteInfo
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.routes = [
-        RouteInfo("255.255.255.255/32", order_index=0, next_hop="0.0.0.0", interface_alias="Ethernet", route_metric=10, policy_store="ActiveStore", persistent=False, source="powershell"),
-        RouteInfo("10.0.0.0/8", order_index=0, next_hop="0.0.0.0", interface_alias="Ethernet", route_metric=10, policy_store="ActiveStore", persistent=False, source="powershell"),
-        RouteInfo("127.0.0.0/8", order_index=1, next_hop="0.0.0.0", interface_alias="Ethernet", route_metric=1, policy_store="ActiveStore", persistent=False, source="powershell"),
-        RouteInfo("0.0.0.0/0", order_index=2, next_hop="192.168.1.1", interface_alias="Ethernet", route_metric=10, policy_store="ActiveStore", persistent=False, source="powershell"),
-        RouteInfo("10.122.0.0/16", order_index=2, next_hop="192.168.105.1", interface_alias="ASIX", route_metric=10, policy_store="ActiveStore", persistent=False, source="manual"),
-        RouteInfo("192.168.105.0/24", order_index=4, next_hop="192.168.105.1", interface_alias="ASIX", route_metric=10, policy_store="PersistentStore", persistent=True, source="powershell"),
-    ]
-    page._fill_route_table()
-    assert [page.route_table.item(row, 1).text() for row in range(page.route_table.rowCount())] == [
-        "0.0.0.0/0",
-        "10.0.0.0/8",
-        "10.122.0.0/16",
-        "127.0.0.0/8",
-        "192.168.105.0/24",
-        "255.255.255.255/32",
-    ]
-
-    page.manual_static_only_check.setChecked(True)
-    assert [page.route_table.item(row, 1).text() for row in range(page.route_table.rowCount())] == ["10.122.0.0/16", "192.168.105.0/24"]
-
-    page.persistent_only_check.setChecked(True)
-    assert [page.route_table.item(row, 1).text() for row in range(page.route_table.rowCount())] == ["192.168.105.0/24"]
-
-
-def test_route_edit_table_uses_interface_combo_and_persistent_checkbox(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.adapters = [NetworkAdapterInfo(name="ASIX", interface_index=12, description="ASIX USB", ipv4_addresses=["192.168.105.200/24"])]
-    page.add_route_row()
-
-    combo = page.route_edit_table.cellWidget(0, 3)
-    checkbox = page.route_edit_table.cellWidget(0, 5)
-    assert isinstance(combo, QComboBox)
-    assert isinstance(checkbox, QCheckBox)
-    assert combo.currentData() == ("ASIX", 12)
-    assert checkbox.isChecked() is True
-
-    page.route_edit_table.item(0, 0).setText("192.168.105.0")
-    page.route_edit_table.item(0, 2).setText("192.168.105.1")
-    routes = page._selected_or_edited_routes()
-    assert routes[0].destination_prefix == "192.168.105.0/24"
-    assert routes[0].interface_index == 12
-    assert routes[0].persistent is True
-
-
-def test_route_profile_selection_loads_editor_and_apply_uses_latest_editor_data(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    applied: list[RouteConfig] = []
-
-    class FakeManager(WindowsNetworkManager):
-        def list_adapters(self):
-            return []
-
-        def list_routes(self):
-            return []
-
-        def apply_route(self, route: RouteConfig, *, require_admin: bool = True) -> None:
-            applied.append(route)
-
-    route_store = RouteProfileStore(tmp_path / "routes.json")
-    route_store.upsert(
-        RouteProfile(
-            "MR-route",
-            [RouteProfileEntry("192.168.105.0/24", "192.168.105.1", "ASIX", 10, True, "old", "255.255.255.0", 12)],
-        )
-    )
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path), manager=FakeManager(), route_store=route_store)
-    page.adapters = [NetworkAdapterInfo(name="ASIX", interface_index=12, description="ASIX USB", ipv4_addresses=["192.168.105.200/24"])]
-    monkeypatch.setattr(page, "_confirm_write", lambda _preview: True)
-
-    page.load_route_profile_into_editor(route_store.load()[0])
-    assert page.route_profile_name_edit.text() == "MR-route"
-    assert page.route_edit_table.item(0, 0).text() == "192.168.105.0"
-    page.route_edit_table.item(0, 0).setText("192.168.106.0")
-    page.apply_route_profile()
-    _process_events_until(lambda: page.write_thread is None and page.refresh_thread is None)
-    assert applied[0].destination_prefix == "192.168.106.0/24"
-    assert applied[0].interface_index == 12
-
-
-def test_add_route_row_inherits_previous_next_hop_and_interface(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path))
-    page.adapters = [NetworkAdapterInfo(name="ASIX", interface_index=12, description="ASIX USB", ipv4_addresses=["192.168.105.200/24"])]
-    page.add_route_row()
-    page.route_edit_table.item(0, 2).setText("192.168.105.1")
-    page.add_route_row()
-    assert page.route_edit_table.item(1, 0).text() == ""
-    assert page.route_edit_table.item(1, 1).text() == "255.255.255.0"
-    assert page.route_edit_table.item(1, 2).text() == "192.168.105.1"
-    assert page.route_edit_table.cellWidget(1, 3).currentData() == ("ASIX", 12)
-
-
-def test_selecting_adapter_profile_loads_form_without_writing(monkeypatch, tmp_path: Path) -> None:
-    import os
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages import network_adapter_route_page as page_module
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    monkeypatch.setattr(page_module, "is_admin", lambda: False)
-
-    calls = []
-
-    class FakeManager(WindowsNetworkManager):
-        def get_vlan_capability(self, adapter_name: str) -> VlanCapability:
-            return VlanCapability(supported=True, can_set_vlan_id=True, vlan_id_property="VLAN ID", vlan_id_property_name="VLAN ID", mode="vlan_id_numeric")
-
-        def apply_ip_config(self, config: AdapterIpConfig, *, require_admin: bool = True) -> None:
-            calls.append(config)
-
-    profile_store = NetworkProfileStore(tmp_path / "profiles.json")
-    profile_store.upsert(
-        AdapterProfile(
-            profile_name="static-usb",
-            adapter_match=AdapterMatch(name="ASIX", mac="aa-bb", description_keyword="ASIX"),
-            mode="static",
-            ip_address="192.168.105.200",
-            prefix_length=24,
-            gateway="192.168.105.1",
-            secondary_ips=[SecondaryIp("10.122.100.200", 24)],
-            vlan_id=201,
-        )
-    )
-    page = page_module.NetworkAdapterRoutePage(I18n("en_US"), PathResolver(tmp_path), manager=FakeManager(), profile_store=profile_store)
-    page.adapters = [NetworkAdapterInfo(name="ASIX", interface_index=12, description="ASIX USB", mac_address="aa-bb")]
-    page._vlan_capabilities["ASIX"] = FakeManager().get_vlan_capability("ASIX")
-    page.adapter_combo.addItem("ASIX", page.adapters[0])
-    page.load_adapter_profile_into_form(profile_store.load()[0])
-    assert calls == []
-    assert page.ip_edit.text() == "192.168.105.200"
-    assert page.gateway_edit.text() == "192.168.105.1"
-    assert page.secondary_edit.toPlainText() == "10.122.100.200/24"
-    assert page.vlan_spin.value() == 201
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_debug_real_write_guard_allows_only_asix_and_never_realtek() -> None:

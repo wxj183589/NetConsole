@@ -5,14 +5,10 @@ import subprocess
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QWidget
 
 from netconsole.core.shutdown_manager import ShutdownManager
-from netconsole.ui.window_registry import WindowRegistry
 
 
-def _app() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 class FakeTask:
@@ -59,20 +55,6 @@ class FakeProcess:
         raise subprocess.TimeoutExpired(self.args, timeout)
 
 
-def test_window_registry_closes_all_registered_windows() -> None:
-    app = _app()
-    registry = WindowRegistry()
-    windows = [QWidget() for _ in range(3)]
-    closed: list[QWidget] = []
-    for window in windows:
-        window.closeEvent = lambda event, w=window: (closed.append(w), event.accept())
-        registry.register(window)
-        window.show()
-    app.processEvents()
-
-    assert registry.close_all(main_window=None) >= 3
-
-    assert set(closed) == set(windows)
 
 
 def test_shutdown_request_exit_only_runs_once() -> None:

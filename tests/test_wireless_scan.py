@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import os
 import subprocess
 
 from openpyxl import load_workbook
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.wireless_scan_models import TracksideBssidMatch, WirelessNetwork, WirelessScanResult
+from netconsole.models.wireless_scan_models import (
+    TracksideBssidMatch,
+    WirelessAdapter,
+    WirelessNetwork,
+    WirelessScanResult,
+)
 from netconsole.repositories.wireless_scan_repository import WirelessScanRepository
 from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner, parse_netsh_networks
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
@@ -14,7 +18,7 @@ from netconsole.services.network_tools.hybrid_wireless_scanner import HybridWire
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, rssi_level
 from netconsole.services.network_tools.wireless_ie_parser import WirelessInformationElementParser
 from netconsole.services.network_tools.wireless_mimo_parser import parse_channel_width_from_ie_blob, parse_mimo_from_ie_blob
-from netconsole.services.network_tools.wireless_scan_service import WIRELESS_SCAN_EXPORT_COLUMNS, WIRELESS_SCAN_DISPLAY_COLUMNS, WirelessScanService, export_wireless_scan_xlsx, result_to_row, wireless_scanner_external_path
+from netconsole.services.network_tools.wireless_scan_service import WIRELESS_SCAN_EXPORT_COLUMNS, WIRELESS_SCAN_DISPLAY_COLUMNS, WirelessScanService, export_wireless_scan_xlsx, result_to_row
 
 
 EXPECTED_DISPLAY_KEYS = [
@@ -521,190 +525,3 @@ def test_wireless_scan_export_contains_trackside_columns(tmp_path):
 def test_wireless_display_columns_have_required_order():
     assert [key for key, _field in WIRELESS_SCAN_DISPLAY_COLUMNS] == EXPECTED_DISPLAY_KEYS
     assert WIRELESS_SCAN_EXPORT_COLUMNS == WIRELESS_SCAN_DISPLAY_COLUMNS
-
-
-def test_wireless_external_tool_path_and_network_tools_tab(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    tool = tmp_path / "tools" / "wifi_scanner" / "WiFiScannerPortable.exe"
-    tool.parent.mkdir(parents=True)
-    tool.write_text("", encoding="utf-8")
-    assert wireless_scanner_external_path(PathResolver(tmp_path)) == tool
-
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
-    from netconsole.ui.pages.network_tools_page import NetworkToolsPage
-
-    monkeypatch.setattr(WirelessScanPage, "load_adapters", lambda self: None)
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    page = NetworkToolsPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert page.tabs.count() == 3
-    assert page.tabs.tabText(2) == "Toolbox"
-    assert page.tabs.tabText(1) == "Wireless Scan"
-    assert all(page.tabs.tabText(index) != "Local Adapter Config" for index in range(page.tabs.count()))
-
-
-def test_wireless_scan_page_headers_hidden_fields_search_sort_and_width(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
-
-    monkeypatch.setattr(WirelessScanPage, "load_adapters", lambda self: None)
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    page = WirelessScanPage(I18n("zh_CN"), "demo", PathResolver(tmp_path))
-    tab_titles = [page.tabs.tabText(index) for index in range(page.tabs.count())]
-    assert page.tabs.count() == 3
-    assert tab_titles == ["扫描结果", "扫描历史", "原始输出"]
-    assert "2.4G信道图" not in tab_titles
-    assert "5G信道图" not in tab_titles
-    assert page.tabs.currentIndex() == 0
-    headers = [page.result_table.horizontalHeaderItem(index).text() for index in range(page.result_table.columnCount())]
-    assert headers == ["SSID", "MAC地址", "AP_MAC", "AP名称", "射频口", "归属站点", "归属区间", "归属类型", "归属来源", "位置/里程", "RSSI", "信号质量", "信道", "频率", "频段", "频宽", "MIMO", "加密方式", "加密", "认证方式"]
-    for hidden in {"匹配状态", "匹配规则", "是否隐藏SSID", "最后扫描时间", "安全类型", "PHY模式", "厂商"}:
-        assert hidden not in headers
-    assert page.result_table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-    assert page.result_table.wordWrap() is False
-    assert page.result_table.columnWidth(1) >= 130
-    assert page.result_table.columnWidth(2) >= 130
-    assert page.result_table.columnWidth(3) >= 140
-    assert page.scan_source_combo.currentData() == "auto"
-
-    matched_weak = result_to_row(
-        WirelessScanResult(
-            network=WirelessNetwork(ssid="mesh-a", bssid="30:f5:27:7a:5a:2d", is_hidden=False, rssi_dbm=-97, quality=20, channel=48, frequency_mhz=5240, band="5G", encryption="CCMP", auth="WPA2-Personal"),
-            match=TracksideBssidMatch(matched=True, match_status="matched", ap_name="AP-B", ap_mac="30f5-277a-5a2f", station="S2", location="K2", radio_id=3),
-        )
-    )
-    matched_strong = result_to_row(
-        WirelessScanResult(
-            network=WirelessNetwork(ssid="", bssid="30:f5:27:7a:5a:1f", is_hidden=True, rssi_dbm=-50, quality=100, channel=157, frequency_mhz=5785, band="5G", encryption="CCMP", auth="WPA3-Personal"),
-            match=TracksideBssidMatch(matched=True, match_status="matched", ap_name="AP-A", ap_mac="30f5-277a-5a2f", station="S1", mileage="K1", radio_id=2),
-        )
-    )
-    unmatched = result_to_row(
-        WirelessScanResult(
-            network=WirelessNetwork(ssid="guest", bssid="40:f5:27:7a:5a:2f", is_hidden=False, rssi_dbm=-40, quality=100, channel=6, frequency_mhz=2437, band="2.4G", encryption="Open", auth="Open"),
-            match=TracksideBssidMatch(matched=False, match_status="unmatched"),
-        )
-    )
-    page.current_rows = [unmatched, matched_weak, matched_strong]
-    page.apply_filters()
-    assert page.result_table.item(0, 3).text() == "AP-A"
-    assert page.result_table.item(1, 3).text() == "AP-B"
-    assert page.result_table.item(2, 3).text() == "-"
-    assert page.result_table.item(0, 0).text() == "隐藏"
-    assert page.result_table.item(2, 2).text() == "-"
-
-    netsh_row = result_to_row(
-        WirelessScanResult(
-            network=WirelessNetwork(ssid="netsh-only", bssid="50:f5:27:7a:5a:2f", is_hidden=False, rssi_dbm=-70, channel=44, frequency_mhz=5220, band="5G", scan_source="netsh"),
-            match=TracksideBssidMatch(matched=False, match_status="unmatched"),
-        )
-    )
-    page.current_rows = [netsh_row]
-    page.apply_filters()
-    assert page.result_table.item(0, 15).text() == "-"
-
-    page.current_rows = [unmatched, matched_weak, matched_strong]
-    page.apply_filters()
-    page.search_edit.setText("K2")
-    assert page.result_table.rowCount() == 1
-    assert page.result_table.item(0, 3).text() == "AP-B"
-    page.search_edit.setText("40f5")
-    assert page.result_table.rowCount() == 1
-    assert page.result_table.item(0, 0).text() == "guest"
-
-    page.search_edit.clear()
-    page.sort_column = [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_rssi")
-    page.sort_order = Qt.AscendingOrder
-    page.apply_filters()
-    assert [page.result_table.item(index, 10).text() for index in range(page.result_table.rowCount())] == ["-97", "-50", "-40"]
-    page.sort_order = Qt.DescendingOrder
-    page.apply_filters()
-    assert [page.result_table.item(index, 10).text() for index in range(page.result_table.rowCount())] == ["-40", "-50", "-97"]
-
-    page.current_rows = [
-        {**matched_strong, "display_mimo": "-"},
-        {**matched_strong, "display_mimo": "4x4", "bssid": "a"},
-        {**matched_strong, "display_mimo": "2x2", "bssid": "b"},
-        {**matched_strong, "display_mimo": "1x1", "bssid": "c"},
-    ]
-    page.sort_column = [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_mimo")
-    page.sort_order = Qt.AscendingOrder
-    page.apply_filters()
-    assert [page.result_table.item(index, 16).text() for index in range(page.result_table.rowCount())] == ["1x1", "2x2", "4x4", "-"]
-
-    page.result_table.setColumnWidth(3, 260)
-    page.column_state.save_now()
-    page.current_rows = [matched_strong]
-    page.apply_filters()
-    page.column_state.restore()
-    assert page.result_table.columnWidth(3) == 260
-
-
-def test_wireless_scan_page_restores_page_settings_and_field_widths(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.models.wireless_scan_models import WirelessAdapter
-    from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
-
-    monkeypatch.setattr(WirelessScanPage, "load_adapters", lambda self: None)
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-
-    page = WirelessScanPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    page.adapter_combo.addItem("Adapter A", WirelessAdapter(name="Adapter A", guid="guid-a"))
-    page.scan_source_combo.setCurrentIndex(page.scan_source_combo.findData("hybrid"))
-    page.auto_refresh_check.setChecked(True)
-    page.interval_spin.setValue(9)
-    page.only_trackside_check.setChecked(True)
-    page.band_filter.setCurrentIndex(page.band_filter.findData("5G"))
-    page.radio_filter.setCurrentIndex(page.radio_filter.findData(2))
-    page.tabs.setCurrentIndex(2)
-    page.sort_column = [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_signal_quality")
-    page.sort_order = Qt.DescendingOrder
-    page.result_table.setColumnWidth(3, 260)
-    page.column_state.save_now()
-    page.save_settings()
-
-    restored = WirelessScanPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-    assert restored.auto_refresh_check.isChecked()
-    assert restored.scan_source_combo.currentData() == "hybrid"
-    assert restored.interval_spin.value() == 9
-    assert restored.only_trackside_check.isChecked()
-    assert restored.band_filter.currentData() == "5G"
-    assert restored.radio_filter.currentData() == 2
-    assert restored.tabs.currentIndex() == 2
-    assert restored.sort_column == [field for _key, field in WIRELESS_SCAN_DISPLAY_COLUMNS].index("display_signal_quality")
-    assert restored.sort_order == Qt.DescendingOrder
-    assert restored.result_table.columnWidth(3) == 260
-
-    restored._adapters_loaded([WirelessAdapter(name="Adapter A", guid="guid-a"), WirelessAdapter(name="Adapter B", guid="guid-b")])
-    assert restored.adapter_combo.currentData().guid == "guid-a"
-
-
-def test_wireless_scan_page_ignores_removed_channel_tab_cache(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    from netconsole.core.i18n import I18n
-    from netconsole.core.settings import SettingsStore
-    from netconsole.ui.pages.wireless_scan_page import WirelessScanPage
-
-    monkeypatch.setattr(WirelessScanPage, "load_adapters", lambda self: None)
-    settings = SettingsStore(PathResolver(tmp_path))
-    settings.values["network_tools/wireless_scan/current_tab"] = 2
-    settings.save()
-
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    page = WirelessScanPage(I18n("en_US"), "demo", PathResolver(tmp_path))
-
-    assert page.tabs.count() == 3
-    assert page.tabs.currentIndex() == 0
-    assert [page.tabs.tabText(index) for index in range(page.tabs.count())] == ["Scan Results", "Scan History", "Raw Output"]

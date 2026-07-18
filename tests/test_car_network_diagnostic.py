@@ -1,24 +1,17 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
 
 from netconsole.core.database import Database
-from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_tasks import run_background_task
 from netconsole.services.rail_transit import car_network_diagnostic as car_diag
 from netconsole.services.rail_transit.car_network_diagnostic import (
     AcApStatus,
     CarNetworkDiagnosticService,
-    CarNetworkGlobalConfigStore,
     CarNetworkNode,
     CarNetworkPointTableStore,
     CarNetworkTrain,
@@ -48,10 +41,6 @@ from netconsole.services.vehicle_mr_online import (
     build_train_states,
     parse_train_identity,
 )
-from netconsole.ui.pages.rail_transit_page import RailTransitPage
-from netconsole.ui.pages.car_network_diagnostic_page import PointTableDialog
-from netconsole.ui.pages import car_network_diagnostic_page as car_page
-from netconsole.ui.theme.qt_theme_engine import apply_theme, current_theme_tokens
 
 
 REAL_MESH_OUTPUT = """AP name: 30f5-2787-8080
@@ -66,13 +55,6 @@ NBL12-LC06-MR-CT       74ad-cb9d-3321 bc5a-3457-8ccf Forwarding 40   0/25
 """
 
 
-def _process_events_until(predicate, timeout: float = 8.0) -> None:
-    app = QApplication.instance() or QApplication([])
-    deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.01)
-    assert predicate()
 
 
 def _ok_ping(nodes: list[CarNetworkNode]) -> dict[str, PingResult]:
@@ -102,19 +84,6 @@ def _cross_ok() -> dict[str, SshResult]:
     }
 
 
-def _apply_car_network_refresh(page: car_page.CarNetworkDiagnosticPage, paths: PathResolver, database: Database) -> None:
-    result = run_background_task(
-        BackgroundJob(
-            task_type="car_network_refresh_all",
-            params={
-                "db_path": str(database.path),
-                "site_name": "demo",
-                "app_root": str(paths.app_root),
-                "data_root": str(paths.data_root),
-            },
-        )
-    )
-    page._apply_background_point_table(result)
 
 
 def _point_table_with_prefix(train_id: str = "LC06", train_no: str = "06", prefix: str = "10.122.6") -> list[CarNetworkNode]:
@@ -414,12 +383,6 @@ def test_cross_tc_ping_skipped_when_no_mr_login() -> None:
     assert result.to_json_dict()["cross_tc_ping"]["status"] == "skipped"
 
 
-def test_cross_tc_ping_ui_status_color_mapping() -> None:
-    assert "#22C55E" in car_page._cross_tc_ping_style("ok")
-    assert "#FACC15" in car_page._cross_tc_ping_style("loss")
-    assert "#EF4444" in car_page._cross_tc_ping_style("fail")
-    assert "#6b7280" in car_page._cross_tc_ping_style("skipped")
-    assert car_page._cross_tc_ping_label({"status": "loss", "loss_percent": 2.0}) == "跨TC通信：丢包 2.0%"
 
 
 def test_cross_tc_ping_prefers_direction_with_peer_mr_reachable() -> None:
@@ -1076,28 +1039,6 @@ def test_generation_normalizes_legacy_remarks(tmp_path: Path) -> None:
     assert next(node for node in nodes if node.node_name == "TC1-MR").remark == "CT MR"
 
 
-def test_point_table_dialog_uses_chinese_headers_and_keeps_internal_mapping_values(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    store = CarNetworkPointTableStore(paths, "demo")
-    store.save([CarNetworkNode("LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT", primary_address_role="vehicle_ip")])
-
-    dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
-    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
-    header_labels = [dialog.table.horizontalHeaderItem(column).text() for column in range(dialog.table.columnCount())]
-    role_column = header_labels.index("主用地址映射")
-    role_item = dialog.table.item(0, role_column)
-
-    assert "station" not in header_labels
-    assert "primary_address" not in header_labels
-    assert "归属站点" in header_labels
-    assert dialog.table.cellWidget(0, role_column) is None
-    assert role_item.text() == "车内IP"
-    assert role_item.data(Qt.UserRole) == "vehicle_ip"
-    assert dialog._rows_to_nodes()[0].primary_address_role == "vehicle_ip"
 
 
 def test_car_network_table_shows_ssh_banner_failure_detail() -> None:
@@ -1120,190 +1061,3 @@ def test_car_network_table_shows_ssh_banner_failure_detail() -> None:
     ssh_row = next(row for row in rows["TC1"] if row["layer"] == "SSH地址 / MR管理")
     assert ssh_row["status"] == "SSH握手失败"
     assert "未收到SSH banner" in ssh_row["note"]
-
-
-def test_point_table_role_combo_supports_all_internal_value(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    store = CarNetworkPointTableStore(paths, "demo")
-    store.save([
-        CarNetworkNode(
-            "LC06",
-            "TC1-MR",
-            "MR",
-            train_no="06",
-            tc="TC1",
-            end="CT",
-            primary_address="10.122.6.249",
-            primary_address_role="all",
-            address_mapping_mode="custom",
-        )
-    ])
-
-    dialog = PointTableDialog(repository, "demo", store, CarNetworkGlobalConfigStore(paths, "demo"))
-    _process_events_until(lambda: not dialog._background_job_context and dialog.table.rowCount() >= 1)
-    role_column = car_diag.POINT_TABLE_FIELDS.index("primary_address_role")
-    role_item = dialog.table.item(0, role_column)
-
-    assert dialog.table.cellWidget(0, role_column) is None
-    assert role_item.text() == "全部"
-    assert role_item.data(Qt.UserRole) == "all"
-    assert dialog._rows_to_nodes()[0].primary_address_role == "all"
-
-
-def test_point_table_lock_persists_and_blocks_edit_actions(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    store = CarNetworkPointTableStore(paths, "demo")
-    config_store = CarNetworkGlobalConfigStore(paths, "demo")
-    config_store.save({"point_table_locked": True})
-
-    dialog = PointTableDialog(repository, "demo", store, config_store)
-    _process_events_until(lambda: not dialog._background_job_context)
-
-    assert dialog.locked is True
-    assert dialog.add_button.isEnabled() is False
-    assert dialog.save_button.isEnabled() is False
-    assert dialog.export_button.isEnabled() is True
-    assert config_store.load()["point_table_locked"] is True
-
-
-def test_rail_transit_contains_car_network_tab_and_train_from_devices(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    group = DeviceGroupRepository(database, "demo").create("车载-MR")
-    repository.create(Device(name="列车06-MR-CT", group_id=group.id, device_type="FAT-AP", primary_address="10.122.89.106"))
-
-    page = RailTransitPage(repository, I18n("zh_CN"), "demo", paths)
-    assert page.car_network_page is None
-    page._ensure_feature_page("rail.car_network_diagnostic")
-
-    assert page.tabs.tabText(1) == "车内通信检测"
-    _apply_car_network_refresh(page.car_network_page, paths, database)
-    assert page.car_network_page.train_table.item(0, 0).text() == "06车"
-    assert page.car_network_page.train_table.item(0, 1).text() == "未检测"
-    assert not hasattr(page.car_network_page, "generate_button")
-
-
-def test_car_network_fixed_topology_uses_scrollable_canvas(tmp_path: Path) -> None:
-    from PySide6.QtWidgets import QScrollArea, QSplitter
-
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    page = car_page.CarNetworkDiagnosticPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-
-    page_scroll = page.findChild(QScrollArea, "carNetworkPageScroll")
-    topology_scroll = page.findChild(QScrollArea, "carNetworkTopologyScroll")
-
-    assert page_scroll is not None
-    assert page_scroll.widgetResizable() is True
-    assert page_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-    assert topology_scroll is not None
-    assert topology_scroll.widgetResizable() is True
-    assert topology_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-    assert topology_scroll.widget() is page.topology_wrapper
-    assert page.topology_wrapper.minimumWidth() >= 1050
-    assert page.topology_canvas.minimumHeight() >= 620
-    assert isinstance(page.results_container, QSplitter)
-    assert page.results_container.count() == 2
-    assert page.log_output.minimumHeight() >= 100
-    assert page.json_output.minimumHeight() >= 100
-    assert page.left_panel.minimumWidth() >= (34 if page.left_collapsed else 180)
-    assert page.left_panel.maximumWidth() > 10000
-    assert page.node_buttons["TC1-MR"].minimumWidth() >= 128
-    assert page.node_buttons["TC2-MR"].minimumHeight() >= 58
-
-
-def test_car_network_train_table_sorts_fallback_trains_by_train_no(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    store = CarNetworkPointTableStore(paths, "demo")
-    store.save(
-        [
-            CarNetworkNode(f"LC{train_no}", "TC1-MR", "MR", train_no=train_no, tc="TC1", end="CT")
-            for train_no in [f"{index:02d}" for index in range(1, 6)]
-        ]
-        + [
-            CarNetworkNode(f"LC{train_no}", "TC1-MR", "MR", train_no=train_no, tc="TC1", end="CT")
-            for train_no in [f"{index:02d}" for index in range(7, 19)]
-        ]
-        + [CarNetworkNode("ZZZ-LC06", "TC1-MR", "MR", train_no="06", tc="TC1", end="CT")]
-    )
-
-    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
-    _apply_car_network_refresh(page, paths, database)
-
-    assert [train.train_no for train in page.trains] == [f"{index:02d}" for index in range(1, 19)]
-    assert [page.train_table.item(row, 0).data(Qt.UserRole) for row in range(page.train_table.rowCount())][5] == "ZZZ-LC06"
-
-
-def test_car_network_page_styles_follow_global_theme(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-
-    apply_theme("light")
-    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
-    light_tokens = current_theme_tokens()
-
-    assert light_tokens["background"] in page.styleSheet()
-    assert light_tokens["surface"] in page.styleSheet()
-    assert light_tokens["log_background"] in page.log_output.styleSheet()
-    assert light_tokens["surface"] in page.tc1_table.styleSheet()
-    assert "#0F172A" not in page.styleSheet()
-    assert "#020617" not in page.log_output.styleSheet()
-
-    apply_theme("dark")
-    page.apply_theme()
-    dark_tokens = current_theme_tokens()
-
-    assert dark_tokens["background"] in page.styleSheet()
-    assert dark_tokens["surface"] in page.tc1_table.styleSheet()
-    assert dark_tokens["log_background"] in page.log_output.styleSheet()
-    assert dark_tokens["surface_alt"] in page.node_buttons["TC1-MR"].styleSheet()
-
-
-def test_car_network_theme_apply_does_not_use_change_event_or_reload_data(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    store = CarNetworkPointTableStore(paths, "demo")
-    store.save([CarNetworkNode("LC01", "TC1-MR", "MR", train_no="01", tc="TC1", end="CT")])
-
-    apply_theme("light")
-    page = car_page.CarNetworkDiagnosticPage(repository, I18n("zh_CN"), "demo", paths)
-    page.log_lines = ["keep-log"]
-    page.log_output.setPlainText("keep-log")
-    page.train_table.selectRow(0)
-    row_count = page.train_table.rowCount()
-    current_train_id = page.current_train_id
-    style_sheet = page.styleSheet()
-
-    assert "changeEvent" not in car_page.CarNetworkDiagnosticPage.__dict__
-
-    page.apply_theme()
-    page.apply_theme()
-
-    assert page.train_table.rowCount() == row_count
-    assert page.current_train_id == current_train_id
-    assert page.log_lines == ["keep-log"]
-    assert page.log_output.toPlainText() == "keep-log"
-    assert page.styleSheet() == style_sheet

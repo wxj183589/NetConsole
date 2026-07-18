@@ -10,8 +10,19 @@ from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
-from netconsole.models.api import AgentStatusDTO, ApiResponse, ErrorDetail, ErrorResponse, TaskDTO, TaskEventDTO
+from netconsole.core.version import APP_VERSION
+from netconsole.infrastructure.desktop import (
+    LocalDesktopAdapter,
+    UnavailableDesktopAdapter,
+)
+from netconsole.models.api import (
+    AgentStatusDTO,
+    ApiResponse,
+    ErrorDetail,
+    ErrorResponse,
+    TaskDTO,
+    TaskEventDTO,
+)
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
 from netconsole.services.job_center.runtime import TaskApplicationService, TaskState
@@ -40,7 +51,12 @@ def test_runtime_mode_and_api_dtos_are_stable() -> None:
     assert event.payload["state"] == "STARTING"
     assert ApiResponse(data={"ok": True}).ok is True
     assert ErrorResponse(error=ErrorDetail(message="失败")).ok is False
-    assert AgentStatusDTO(agent_id="agent-1", name="测试 Agent", status="online").current_tasks == 0
+    assert (
+        AgentStatusDTO(
+            agent_id="agent-1", name="测试 Agent", status="online"
+        ).current_tasks
+        == 0
+    )
 
 
 def test_fastapi_app_exposes_registered_web_modules() -> None:
@@ -56,10 +72,11 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         if original_router is not None:
             pending.extend(original_router.routes)
 
-    assert health_response("v1.3.8+test").model_dump() == {
+    build_id = f"{APP_VERSION}+test"
+    assert health_response(build_id).model_dump() == {
         "status": "ok",
-        "version": "1.3.8",
-        "build_id": "v1.3.8+test",
+        "version": APP_VERSION.removeprefix("v"),
+        "build_id": build_id,
     }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {
@@ -87,7 +104,9 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
 
 
 @pytest.mark.parametrize("runtime_mode", [RuntimeMode.DESKTOP, RuntimeMode.SERVER])
-def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, tmp_path: Path) -> None:
+def test_api_runtime_composes_single_shared_services(
+    runtime_mode: RuntimeMode, tmp_path: Path
+) -> None:
     paths = PathResolver(tmp_path / runtime_mode.value)
     app = create_app(runtime_mode, paths=paths, frontend_dist=tmp_path / "missing")
 
@@ -100,11 +119,13 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
         is app.state.desktop_action_service
     )
     expected_desktop_adapter = (
-            LocalDesktopAdapter
+        LocalDesktopAdapter
         if runtime_mode is RuntimeMode.DESKTOP
         else UnavailableDesktopAdapter
     )
-    assert isinstance(app.state.desktop_action_service.adapter, expected_desktop_adapter)
+    assert isinstance(
+        app.state.desktop_action_service.adapter, expected_desktop_adapter
+    )
     default_terminal = app.state.desktop_action_service.launch_registered_terminal(
         "terminal.securecrt", "device-1"
     )
@@ -114,39 +135,97 @@ def test_api_runtime_composes_single_shared_services(runtime_mode: RuntimeMode, 
         if runtime_mode is RuntimeMode.DESKTOP
         else "server_mode_forbidden"
     )
-    assert app.state.config_collection_service.process_adapter is app.state.device_management_service.process_adapter
-    assert app.state.file_management_service.process_adapter is app.state.device_management_service.process_adapter
-    assert app.state.ac_web_application_service.process_adapter is app.state.device_management_service.process_adapter
-    assert app.state.rail_transit_web_application_service.process_adapter is app.state.device_management_service.process_adapter
-    assert app.state.ac_web_application_service.export_adapter is app.state.rail_transit_web_application_service.export_adapter
-    assert app.state.ac_web_application_service.artifact_store is app.state.rail_transit_web_application_service.artifact_store
-    assert app.state.config_collection_service.desktop_action_service is app.state.desktop_action_service
+    assert (
+        app.state.config_collection_service.process_adapter
+        is app.state.device_management_service.process_adapter
+    )
+    assert (
+        app.state.file_management_service.process_adapter
+        is app.state.device_management_service.process_adapter
+    )
+    assert (
+        app.state.ac_web_application_service.process_adapter
+        is app.state.device_management_service.process_adapter
+    )
+    assert (
+        app.state.rail_transit_web_application_service.process_adapter
+        is app.state.device_management_service.process_adapter
+    )
+    assert (
+        app.state.ac_web_application_service.export_adapter
+        is app.state.rail_transit_web_application_service.export_adapter
+    )
+    assert (
+        app.state.ac_web_application_service.artifact_store
+        is app.state.rail_transit_web_application_service.artifact_store
+    )
+    assert (
+        app.state.config_collection_service.desktop_action_service
+        is app.state.desktop_action_service
+    )
     assert app.state.network_tools_service.traffic_service is app.state.traffic_service
-    assert app.state.traffic_web_application_service.traffic_service is app.state.traffic_service
-    assert app.state.traffic_web_application_service.agent_service is app.state.agent_service
-    assert app.state.online_mr_api_facade.query_service is app.state.online_mr_query_service
-    assert app.state.online_mr_api_facade.local_control is app.state.online_mr_web_control_service
-    assert app.state.online_mr_api_facade.agent_control is app.state.online_mr_agent_web_control_service
+    assert (
+        app.state.traffic_web_application_service.traffic_service
+        is app.state.traffic_service
+    )
+    assert (
+        app.state.traffic_web_application_service.agent_service
+        is app.state.agent_service
+    )
+    assert (
+        app.state.online_mr_api_facade.query_service
+        is app.state.online_mr_query_service
+    )
+    assert (
+        app.state.online_mr_api_facade.local_control
+        is app.state.online_mr_web_control_service
+    )
+    assert (
+        app.state.online_mr_api_facade.agent_control
+        is app.state.online_mr_agent_web_control_service
+    )
     assert (
         app.state.rail_transit_import_preview_service.import_service
         is app.state.rail_transit_base_data_import_service
     )
 
 
-def test_disabled_web_features_hide_state_and_block_backend_routes(tmp_path: Path) -> None:
-    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=tmp_path / "missing")
-    app.state.feature_gate.features["web.device_management"] = {"visible": False, "enabled": False}
-    app.state.feature_gate.features["web.config_collection"] = {"visible": False, "enabled": False}
-    app.state.feature_gate.features["web.network_tools_toolbox"] = {"visible": False, "enabled": False}
+def test_disabled_web_features_hide_state_and_block_backend_routes(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
+    app.state.feature_gate.features["web.device_management"] = {
+        "visible": False,
+        "enabled": False,
+    }
+    app.state.feature_gate.features["web.config_collection"] = {
+        "visible": False,
+        "enabled": False,
+    }
+    app.state.feature_gate.features["web.network_tools_toolbox"] = {
+        "visible": False,
+        "enabled": False,
+    }
 
     with TestClient(app) as client:
         features = client.get("/api/features")
         devices = client.get("/api/device-management/devices")
         config = client.get("/api/config-collection/devices")
-        network = client.post("/api/network-tools/tcp-port-test", json={"target": "127.0.0.1", "port": 443})
+        network = client.post(
+            "/api/network-tools/tcp-port-test",
+            json={"target": "127.0.0.1", "port": 443},
+        )
 
     assert features.status_code == 200
-    state = next(item for item in features.json()["items"] if item["feature_id"] == "web.device_management")
+    state = next(
+        item
+        for item in features.json()["items"]
+        if item["feature_id"] == "web.device_management"
+    )
     assert state["visible"] is False
     assert state["enabled"] is False
     assert devices.status_code == 404
@@ -154,7 +233,9 @@ def test_disabled_web_features_hide_state_and_block_backend_routes(tmp_path: Pat
     assert network.status_code == 404
 
 
-def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypatch) -> None:
+def test_web_lifespan_stops_local_adapters_in_parallel(
+    tmp_path: Path, monkeypatch
+) -> None:
     traffic_stop_entered = Event()
     adapter_stop_entered = Event()
 
@@ -179,7 +260,9 @@ def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypat
 
     paths = PathResolver(tmp_path)
     tasks = TaskApplicationService(paths=paths)
-    monkeypatch.setattr("netconsole.backend.api.main.LocalProcessAdapter", BlockingAdapter)
+    monkeypatch.setattr(
+        "netconsole.backend.api.main.LocalProcessAdapter", BlockingAdapter
+    )
     app = create_app(
         RuntimeMode.SERVER,
         paths=paths,
@@ -197,7 +280,9 @@ def test_web_lifespan_stops_local_adapters_in_parallel(tmp_path: Path, monkeypat
     assert traffic_stop_entered.is_set()
 
 
-def test_web_lifespan_stops_file_queue_before_shared_process_adapter(tmp_path: Path, monkeypatch) -> None:
+def test_web_lifespan_stops_file_queue_before_shared_process_adapter(
+    tmp_path: Path, monkeypatch
+) -> None:
     file_closed = Event()
     adapter_entered = Event()
     premature_adapter_shutdown = Event()
@@ -219,7 +304,9 @@ def test_web_lifespan_stops_file_queue_before_shared_process_adapter(tmp_path: P
             pass
 
     paths = PathResolver(tmp_path)
-    monkeypatch.setattr("netconsole.backend.api.main.LocalProcessAdapter", OrderedAdapter)
+    monkeypatch.setattr(
+        "netconsole.backend.api.main.LocalProcessAdapter", OrderedAdapter
+    )
     app = create_app(
         RuntimeMode.SERVER,
         paths=paths,
@@ -325,12 +412,24 @@ def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -
     assert launch.job_path.exists()
     assert service.is_running("runtime-job")
     service.mark_running("runtime-job")
-    service.feed_stdout("runtime-job", encode_event(progress_event("runtime-job", "work", 1, 2, "处理中")).encode("utf-8"))
-    service.feed_stdout("runtime-job", encode_event(finished_event("runtime-job", {"count": 1})).encode("utf-8"))
+    service.feed_stdout(
+        "runtime-job",
+        encode_event(progress_event("runtime-job", "work", 1, 2, "处理中")).encode(
+            "utf-8"
+        ),
+    )
+    service.feed_stdout(
+        "runtime-job",
+        encode_event(finished_event("runtime-job", {"count": 1})).encode("utf-8"),
+    )
     result = service.complete("runtime-job", 0)
 
     assert result is not None and result["type"] == "finished"
-    assert [dict(event.get("payload") or {}).get("state") for event in events if event.get("type") == "state"] == [
+    assert [
+        dict(event.get("payload") or {}).get("state")
+        for event in events
+        if event.get("type") == "state"
+    ] == [
         "PENDING",
         "STARTING",
         "RUNNING",
@@ -343,8 +442,17 @@ def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -
 
 
 def test_task_runtime_package_has_no_qt_dependency() -> None:
-    runtime_root = Path(__file__).resolve().parents[1] / "src" / "netconsole" / "services" / "job_center" / "runtime"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_root.glob("*.py"))
+    runtime_root = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "netconsole"
+        / "services"
+        / "job_center"
+        / "runtime"
+    )
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in runtime_root.glob("*.py")
+    )
 
     assert "PySide6" not in source
     assert "QProcess" not in source
@@ -359,7 +467,9 @@ def test_task_event_bus_isolates_host_consumer_failures(tmp_path: Path) -> None:
         raise RuntimeError("宿主消费失败")
 
     service.events.subscribe(broken_consumer)
-    service.events.subscribe(lambda event: received.append(str(event.get("type") or "")))
+    service.events.subscribe(
+        lambda event: received.append(str(event.get("type") or ""))
+    )
     service.prepare(BackgroundJob(job_id="isolated-job", task_type="demo_task"))
     service.abandon("isolated-job")
 

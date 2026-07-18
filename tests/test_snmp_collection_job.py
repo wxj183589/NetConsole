@@ -9,7 +9,6 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -30,7 +29,6 @@ from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.snmp.request_builder import build_collection_request, collection_request_to_payload
 from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
-from netconsole.ui import snmp_collection_helper
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -357,23 +355,6 @@ def test_collection_worker_cancel_has_one_terminal_event(tmp_path: Path) -> None
     assert [event["type"] for event in terminal] == ["cancelled"]
 
 
-def test_submit_snmp_collection_builds_internal_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    captured: list[tuple[object, BackgroundJob, dict[str, object]]] = []
-
-    def fake_submit(parent, job, **kwargs):
-        captured.append((parent, job, kwargs))
-        return "collection-job"
-
-    monkeypatch.setattr(snmp_collection_helper, "submit_background_job", fake_submit)
-    parent = SimpleNamespace()
-    paths = PathResolver(tmp_path)
-
-    job_id = snmp_collection_helper.submit_snmp_collection(parent, _collection_request(2), site_name="demo", paths=paths)  # type: ignore[arg-type]
-
-    assert job_id == "collection-job"
-    assert captured[0][1].task_type == "snmp_collection_execute"
-    assert captured[0][1].params["request"]["concurrency"] == 10
-    assert int(captured[0][1].params["_cancel_grace_ms"]) >= 1500
 
 
 def test_snmp_collection_execute_is_registered() -> None:

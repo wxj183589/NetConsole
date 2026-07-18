@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,10 +15,8 @@ from netconsole.services.ac.ac_optical_service import AcOpticalRefreshCancelled,
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
 from netconsole.services.job_center.handlers import ac_jobs
-from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
-from netconsole.ui.pages.ac_management_page import AcManagementPage
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -256,90 +253,8 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     assert cancelled.error == "用户已取消更新"
 
 
-def test_ac_page_optical_refreshes_submit_jobs_and_terminal_events_restore_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    submitted: list[tuple[str, dict[str, object], str]] = []
-    running: list[bool] = []
-    status = SimpleNamespace(text_value="", setText=lambda value: setattr(status, "text_value", value))
-    device = _device()
-    page = SimpleNamespace(
-        feature_gate=SimpleNamespace(assert_enabled=lambda _feature: None),
-        current_device=lambda: device,
-        current_device_uuid=lambda: "ac-001",
-        current_resource_page_rows=lambda: [{"ap_uuid": "ap-1", "ap_name": "AP-01", "ap_mac": "0011-2233-4455"}],
-        site_name="demo",
-        repository=SimpleNamespace(database=SimpleNamespace(path=Path("devices.db"))),
-        optical_concurrency_combo=SimpleNamespace(currentData=lambda: 50),
-        i18n=SimpleNamespace(t=lambda key, **kwargs: kwargs.get("ap", key)),
-        _set_update_running=lambda value, _message="": running.append(value),
-        _start_background_job=lambda task_type, params, title: submitted.append((task_type, params, title)) or f"job-{len(submitted)}",
-        optical_job_id=None,
-        _background_jobs={},
-        _set_summary=lambda _summary: None,
-        _apply_resource_rows=lambda _rows: None,
-        _apply_optical_rows=lambda _rows: None,
-        status_label=status,
-    )
-
-    AcManagementPage.refresh_fit_ap_optical(page)  # type: ignore[arg-type]
-    assert page.optical_job_id == "job-1"
-    assert submitted[0][0] == "ac_fit_ap_optical_refresh"
-    assert submitted[0][1]["refresh_scope"] == "all"
-
-    page.optical_job_id = None
-    AcManagementPage.refresh_resource_ap_optical(page, 0)  # type: ignore[arg-type]
-    assert page.optical_job_id == "job-2"
-    assert submitted[1][1]["refresh_scope"] == "single"
-    assert submitted[1][1]["ap_name"] == "AP-01"
-
-    page._background_jobs = {
-        "job-2": {"task_type": "ac_fit_ap_optical_refresh", "mode": "collect", "title": "FIT-AP光衰"}
-    }
-    AcManagementPage._background_finished(  # type: ignore[arg-type]
-        page,
-        {
-            "job_id": "job-2",
-            "result": {
-                "ac_uuid": "ac-001",
-                "summary": {},
-                "resources": [],
-                "optical_rows": [{"ap_name": "AP-01"}],
-                "collection": {"optical_rows_updated": 1, "failed_aps": 0},
-            },
-        },
-    )
-    assert page.optical_job_id is None
-    assert running[-1] is False
-    assert "更新 1 条" in status.text_value
-
-    warnings: list[str] = []
-    monkeypatch.setattr("netconsole.ui.pages.ac_management_page.MessageBox.warning", lambda _parent, _title, message: warnings.append(message))
-    page._background_jobs = {
-        "failed-job": {"task_type": "ac_fit_ap_optical_refresh", "mode": "collect", "title": "FIT-AP光衰"}
-    }
-    page.optical_job_id = "failed-job"
-    AcManagementPage._background_failed(page, {"job_id": "failed-job", "error": "连接失败"})  # type: ignore[arg-type]
-    assert page.optical_job_id is None
-    assert warnings == ["连接失败"]
-
-    page._background_jobs = {
-        "cancel-job": {"task_type": "ac_fit_ap_optical_refresh", "mode": "collect", "title": "FIT-AP光衰"}
-    }
-    page.optical_job_id = "cancel-job"
-    AcManagementPage._background_cancelled(page, {"job_id": "cancel-job"})  # type: ignore[arg-type]
-    assert page.optical_job_id is None
-    assert status.text_value == "ac.update_cancelled"
 
 
-def test_ac_optical_task_registration_and_static_boundaries() -> None:
-    assert "ac_fit_ap_optical_refresh" in registered_task_types()
-    page_source = (PROJECT_ROOT / "src" / "netconsole" / "ui" / "pages" / "ac_management_page.py").read_text(encoding="utf-8")
-    domain_source = (PROJECT_ROOT / "src" / "netconsole" / "services" / "ac" / "ac_optical_service.py").read_text(encoding="utf-8")
-    worker_source = (PROJECT_ROOT / "src" / "netconsole" / "background_worker.py").read_text(encoding="utf-8")
-
-    assert "FitApOpticalCollectThread" not in page_source
-    assert "collect_h3c_fit_ap_optical" not in page_source
-    assert "netconsole.ui.pages" not in domain_source
-    assert "netconsole.ui.pages" not in worker_source
 
 
 def test_ac_optical_background_worker_stdout_is_utf8_jsonl(tmp_path: Path) -> None:

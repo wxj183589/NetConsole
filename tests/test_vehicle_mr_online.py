@@ -1,21 +1,16 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from pathlib import Path
 
-import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication
 
 from netconsole.core.database import Database
-from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.export.export_handlers import run_generic_export_handler
-from netconsole.services.export.export_task_builders import table_xlsx_spec, vehicle_mr_history_xlsx_spec
+from netconsole.services.export.export_task_builders import vehicle_mr_history_xlsx_spec
 from netconsole.services.export_task_models import ExportJob
 from netconsole.services.vehicle_mr_online import (
     H3CComwareV9VehicleMrMeshLinkParser,
@@ -28,7 +23,6 @@ from netconsole.services.vehicle_mr_online import (
     VehicleMrMeshParseResult,
     VehicleMrEndState,
     VehicleMrOnlineStore,
-    VehicleMrTrainMapping,
     VehicleMrTrainState,
     backfill_fit_ap_resource_station_from_optical,
     build_mapping_lookup,
@@ -46,26 +40,10 @@ from netconsole.services.vehicle_mr_online import (
     parse_train_identity,
     resolve_ap_station,
 )
-from netconsole.ui.pages.rail_transit_page import RailTransitPage
-from netconsole.ui.pages.vehicle_mr_online_page import (
-    VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
-    VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
-    VehicleMrHistoryQueryDialog,
-    VehicleMrMappingDialog,
-    _vehicle_ap_lookup_from_payload,
-)
 
 
-pytestmark = pytest.mark.usefixtures("qt_page_lifecycle")
 
 
-def _process_events_until(predicate, timeout: float = 8.0) -> None:
-    app = QApplication.instance() or QApplication([])
-    deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.01)
-    assert predicate()
 
 
 SAMPLE = """<NBDT12HX-WX3540X-AC1>display clock
@@ -314,26 +292,6 @@ def test_mapping_edit_replaces_old_peer(tmp_path: Path) -> None:
     assert "0101" not in lookup
 
 
-def test_mapping_template_export_contains_required_headers(tmp_path: Path) -> None:
-    path = tmp_path / "template.xlsx"
-
-    spec = table_xlsx_spec(
-        path,
-        columns=[{"key": key, "title": title} for key, title in VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS],
-        rows=VEHICLE_MR_MAPPING_TEMPLATE_ROWS,
-        sheet_name="车载MR映射表",
-        title="导出映射模板",
-        allow_inline_rows=True,
-        inline_reason="车载 MR 映射模板固定小样例",
-    )
-    job = spec.to_job("vehicle-mr-template-test")
-    job = ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "template.xlsx.tmp")})
-    run_generic_export_handler(job)
-
-    from openpyxl import load_workbook
-
-    sheet = load_workbook(path).active
-    assert [sheet.cell(2, index).value for index in range(1, 6)] == ["车次", "TC1", "TC2", "在线策略", "备注"]
 
 
 def test_online_policy_dual_active_marks_missing_end_abnormal() -> None:
@@ -563,45 +521,6 @@ def test_h3c_radio_mac_tolerant_match_returns_station() -> None:
     assert matched.match_score == 80
 
 
-def test_vehicle_ap_lookup_from_background_payload_restores_matched_ap() -> None:
-    payload = {
-        "__resources__": [
-            {
-                "ap_name": "Y01-02",
-                "station": "鼓楼站",
-                "match_method": "resource",
-                "match_score": 0,
-                "ap_mac": "bc5a3457a740",
-                "station_source": "optical",
-            }
-        ],
-        "name:y01-02": {
-            "ap_name": "Y01-02",
-            "station": "鼓楼站",
-            "match_method": "ap_name_exact",
-            "match_score": 100,
-            "ap_mac": "bc5a3457a740",
-            "station_source": "optical",
-        },
-        "mac:bc5a3457a740": {
-            "ap_name": "Y01-02",
-            "station": "鼓楼站",
-            "match_method": "mac_exact",
-            "match_score": 95,
-            "ap_mac": "bc5a3457a740",
-            "station_source": "optical",
-        },
-        "compat": "keep",
-    }
-
-    lookup = _vehicle_ap_lookup_from_payload(payload)
-
-    assert isinstance(lookup["__resources__"][0], MatchedAp)
-    assert isinstance(lookup["name:y01-02"], MatchedAp)
-    assert isinstance(lookup["mac:bc5a3457a740"], MatchedAp)
-    assert lookup["name:y01-02"].match_score == 100
-    assert lookup["mac:bc5a3457a740"].station == "鼓楼站"
-    assert lookup["compat"] == "keep"
 
 
 def test_pass_events_are_persisted_for_online_ap_station_and_offline_changes(tmp_path: Path) -> None:
@@ -623,135 +542,14 @@ def test_pass_events_are_persisted_for_online_ap_station_and_offline_changes(tmp
     assert event_types == ["online", "ap_changed", "station_changed", "offline"]
 
 
-def test_rail_transit_first_tab_is_vehicle_mr_online(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-    assert page.vehicle_mr_online_page is None
-    page.on_enter()
-
-    assert page.tabs.tabText(0) == "列车在线情况"
-    assert page.tabs.currentIndex() == 0
-    assert page.vehicle_mr_online_page is not None
-    assert page.vehicle_mr_online_page.title_label.text() == "列车在线情况"
-    assert page.vehicle_mr_online_page.interval_spin.value() == 10
-    assert page.vehicle_mr_online_page.interval_spin.minimum() == 3
-    assert page.vehicle_mr_online_page.interval_spin.maximum() == 300
-    assert page.vehicle_mr_online_page.interval_unit_label.text() == "秒"
-    assert "当前局点暂无列车在线数据" in page.vehicle_mr_online_page.train_table.item(0, 0).text()
 
 
-def test_vehicle_mr_page_status_items_have_readable_roles_and_interval_validation(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    rail_page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-    rail_page._ensure_feature_page("rail.train_online")
-    page = rail_page.vehicle_mr_online_page
-    page.current_trains = {
-        "列车06": VehicleMrTrainState("列车06", "06", True, status="离线"),
-        "列车19": VehicleMrTrainState("列车19", "19", False, status="单端在线"),
-    }
-
-    page._fill_train_table(list(page.current_trains.values()))
-
-    offline_item = page.train_table.item(0, 1)
-    partial_item = page.train_table.item(1, 1)
-    assert offline_item.text() == "离线"
-    assert offline_item.data(Qt.UserRole) == "status-offline"
-    assert offline_item.data(Qt.UserRole + 1)
-    assert offline_item.data(Qt.UserRole + 2)
-    assert partial_item.data(Qt.UserRole) == "status-partial"
-
-    page.interval_spin.setValue(3)
-    assert page._interval_seconds() == 3
-    page.interval_spin.setValue(300)
-    assert page._interval_seconds() == 300
 
 
-def test_vehicle_mr_event_table_keeps_user_widths_and_centers_cells(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    paths = PathResolver(tmp_path)
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    rail_page = RailTransitPage(DeviceRepository(database), I18n("zh_CN"), "demo", paths)
-    rail_page._ensure_feature_page("rail.train_online")
-    page = rail_page.vehicle_mr_online_page
-    store = page.store
-    train_id = "列车06"
-    state = VehicleMrTrainState(
-        train_id,
-        "06",
-        True,
-        status="单端在线",
-        current_station="鼓楼站",
-        last_ac_time="2026-06-26 09:00:00",
-        tc1=VehicleMrEndState(True, "鼓楼站", "AP-A", 46, "2026-06-26 09:00:00"),
-    )
-    store.persist_snapshot("s1", 1, VehicleMrMeshParseResult(state.last_ac_time, []), [state], {}, 10)
-    page.event_table.setColumnWidth(0, 222)
-    page.selected_train_id = train_id
-
-    page._fill_events(train_id)
-    _process_events_until(lambda: page._event_job_id is None)
-
-    assert page.event_table.columnWidth(0) == 222
-    assert page.event_table.item(0, 0).textAlignment() == Qt.AlignCenter
-    assert page.event_table.item(0, 2).textAlignment() == Qt.AlignCenter
 
 
-def test_vehicle_mr_history_dialog_scrolls_in_small_windows(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    store = VehicleMrOnlineStore(PathResolver(tmp_path), "demo")
-    dialog = VehicleMrHistoryQueryDialog(store, VehicleMrTrainState("列车06", "06", True))
-
-    try:
-        assert dialog.minimumWidth() >= 820
-        assert dialog.minimumHeight() >= 520
-        assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.scroll_area.widget().minimumWidth() >= 900
-        assert dialog.table.minimumHeight() >= 300
-        assert dialog.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
-    finally:
-        dialog.close()
 
 
-def test_vehicle_mr_mapping_dialog_scrolls_buttons_and_table(tmp_path: Path) -> None:
-    QApplication.instance() or QApplication([])
-    store = VehicleMrOnlineStore(PathResolver(tmp_path), "demo")
-    dialog = VehicleMrMappingDialog(store)
-
-    try:
-        _process_events_until(lambda: dialog._mapping_job_id is None)
-        assert dialog.minimumWidth() >= 820
-        assert dialog.minimumHeight() >= 500
-        assert dialog.scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.scroll_area.widget().minimumWidth() >= 900
-        assert dialog.table.minimumHeight() >= 320
-        assert dialog.table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-        assert dialog.table.horizontalScrollMode() == QAbstractItemView.ScrollPerPixel
-        for button in (
-            dialog.add_button,
-            dialog.delete_button,
-            dialog.save_button,
-            dialog.import_button,
-            dialog.export_button,
-            dialog.refresh_button,
-        ):
-            assert button.minimumWidth() >= 86
-        dialog._append_mapping(VehicleMrTrainMapping(train_display_name="06车", tc1_peer_name="0601", tc2_peer_name="0606", online_policy=ONLINE_POLICY_DUAL_ACTIVE))
-        policy_item = dialog.table.item(0, 4)
-        assert dialog.table.cellWidget(0, 4) is None
-        assert policy_item.data(Qt.UserRole) == ONLINE_POLICY_DUAL_ACTIVE
-        assert dialog._read_table()[0].online_policy == ONLINE_POLICY_DUAL_ACTIVE
-    finally:
-        dialog.close()
 
 
 def test_vehicle_mr_store_query_events_filters_by_time_end_status_station_and_ap(tmp_path: Path) -> None:

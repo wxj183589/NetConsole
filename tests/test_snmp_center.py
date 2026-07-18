@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -9,16 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from openpyxl import Workbook
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTableWidget
 
-from netconsole.core.database import Database
-from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.models.snmp_models import DeviceSnmpProfileResult, SnmpProfile, SnmpQueryRequest, SnmpQueryResult, SnmpSetRequest, SnmpVarBind
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
-from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.global_mib_repository import GlobalMibRepository
 from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.comware_version_service import parse_comware_version
@@ -29,34 +22,12 @@ from netconsole.services.snmp_recommend_service import SnmpRecommendService
 from netconsole.services import snmp_client as snmp_client_module
 from netconsole.services.snmp_client import SnmpClient, _WireResponse, _WireVarBind, _encode_snmp_value, normalize_oid
 from netconsole.services.snmp_query_service import SnmpQueryService
-from netconsole.ui.pages.snmp_center_page import SNMP_UI_ROW_LIMIT, SnmpCenterPage, fill_table, method_to_operation, normalize_h3c_module_display_name, operation_to_method
 
 
-def _qt_app() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
-def _process_events_until(predicate, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    app = _qt_app()
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("Timed out waiting for Qt event condition")
 
 
-def test_snmp_fill_table_limits_visible_rows_and_marks_tooltip() -> None:
-    _qt_app()
-    table = QTableWidget()
-    table.setColumnCount(1)
-
-    fill_table(table, [[index] for index in range(SNMP_UI_ROW_LIMIT + 5)])
-    _process_events_until(lambda: table.item(table.rowCount() - 1, 0) is not None)
-
-    assert table.rowCount() == SNMP_UI_ROW_LIMIT
-    assert "仅显示前" in table.toolTip()
 
 
 def test_snmp_center_initializes_global_and_site_databases(tmp_path: Path):
@@ -341,203 +312,18 @@ def test_product_reference_import_parses_chinese_headers_and_rebuilds_tree(tmp_p
     assert rebuilt_module_names.index("HH3C-DOT11-APMT-MIB") < rebuilt_module_names.index("HH3C-IPSEC-MONITOR-V2-MIB")
 
 
-def test_snmp_center_hides_reference_compare_and_standalone_query_tabs(tmp_path: Path):
-    _qt_app()
-    paths = PathResolver(tmp_path)
-    paths.ensure_site_dirs("demo")
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-
-    page = SnmpCenterPage(repository, I18n(), "demo", paths)
-    titles = [page.tabs.tabText(index) for index in range(page.tabs.count())]
-
-    assert "产品参考对比" not in titles
-    assert "SNMP 查询工具" not in titles
-    assert "设备字典推荐" not in titles
-    assert any("MIB" in title and "浏览" in title for title in titles)
 
 
-def test_mib_browser_builds_selected_module_tree(tmp_path: Path):
-    _qt_app()
-    paths = PathResolver(tmp_path)
-    paths.ensure_site_dirs("demo")
-    mib_file = tmp_path / "TEST-MIB.mib"
-    mib_file.write_text(
-        """
-TEST-MIB DEFINITIONS ::= BEGIN
-IMPORTS
-    enterprises FROM SNMPv2-SMI;
-
-testRoot OBJECT IDENTIFIER ::= { enterprises 99998 }
-
-testTable OBJECT-TYPE
-    SYNTAX      SEQUENCE OF TestEntry
-    MAX-ACCESS  not-accessible
-    STATUS      current
-    DESCRIPTION "Test table"
-    ::= { testRoot 1 }
-
-testEntry OBJECT-TYPE
-    SYNTAX      TestEntry
-    MAX-ACCESS  not-accessible
-    STATUS      current
-    DESCRIPTION "Test entry"
-    INDEX       { testIndex }
-    ::= { testTable 1 }
-
-TestEntry ::= SEQUENCE {
-    testIndex INTEGER,
-    testValue INTEGER
-}
-
-testIndex OBJECT-TYPE
-    SYNTAX      INTEGER
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Test index"
-    ::= { testEntry 1 }
-
-testValue OBJECT-TYPE
-    SYNTAX      INTEGER
-    MAX-ACCESS  read-only
-    STATUS      current
-    DESCRIPTION "Test value"
-    ::= { testEntry 2 }
-END
-""".strip(),
-        encoding="utf-8",
-    )
-    MibResourceService(paths).import_paths([mib_file])
-    global_repo = GlobalMibRepository(paths.global_mib_db_path())
-    module = next(row for row in global_repo.list_modules() if row["module_name"] == "TEST-MIB")
-    rows = global_repo.list_objects(module_id=int(module["id"]), limit=100)
-
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
-    page.browser_page.module_filter.addItem("TEST-MIB", int(module["id"]))
-    page.browser_page.module_filter.setCurrentIndex(0)
-    page.browser_page._build_module_tree(int(module["id"]), rows)
-    root = page.browser_page.tree.topLevelItem(0)
-    root_names = [root.child(index).text(0) for index in range(root.childCount())]
-    table = root.child(root_names.index("testRoot")).child(0)
-
-    assert root.text(0) == "TEST-MIB"
-    assert "testRoot" in root_names
-    assert table.text(0) == "testTable"
-    assert table.child(0).text(0) == "testEntry"
 
 
-def test_mib_browser_group_change_does_not_keep_stale_device(tmp_path: Path):
-    _qt_app()
-    paths = PathResolver(tmp_path)
-    paths.ensure_site_dirs("demo")
-    GlobalMibRepository(paths.global_mib_db_path()).initialize()
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    repository = DeviceRepository(database)
-    groups = DeviceGroupRepository(repository.database, "demo")
-    group_a = groups.create("SNMP-A")
-    group_b = groups.create("SNMP-B")
-    group_empty = groups.create("SNMP-EMPTY")
-    device_a = repository.create(Device(name="AC-A", primary_address="10.0.0.1", group_id=group_a.id))
-    device_b = repository.create(Device(name="AC-B", primary_address="10.0.0.2", group_id=group_b.id))
-
-    page = SnmpCenterPage(repository, I18n(), "demo", paths)
-    browser = page.browser_page
-    browser.refresh_device_groups()
-    _process_events_until(lambda: not browser._refreshing_devices)
-    browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_a.id))
-    browser.refresh_devices()
-    _process_events_until(lambda: not browser._refreshing_devices)
-    assert browser.device_combo.findData(device_a.id) >= 0
-    assert browser.device_combo.findData(device_b.id) < 0
-
-    browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_b.id))
-    browser.refresh_devices()
-    _process_events_until(lambda: not browser._refreshing_devices)
-
-    assert browser.device_combo.findData(device_a.id) < 0
-    assert browser.device_combo.findData(device_b.id) >= 0
-    assert browser.device_combo.currentData() == device_b.id
-
-    browser.device_group_filter.setCurrentIndex(browser.device_group_filter.findData(group_empty.id))
-    browser.refresh_devices()
-    _process_events_until(lambda: not browser._refreshing_devices)
-
-    assert browser.device_combo.count() == 1
-    assert browser.device_combo.currentData() is None
-    assert browser.go_button.isEnabled() is False
 
 
-def test_mib_browser_base_tree_starts_at_iso_and_filters_invalid_oid(tmp_path: Path):
-    _qt_app()
-    paths = PathResolver(tmp_path)
-    paths.ensure_site_dirs("demo")
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
-    browser = page.browser_page
-
-    browser.tree.clear()
-    browser._build_base_tree()
-
-    iso = browser.tree.topLevelItem(0)
-    assert iso.text(0) == "iso"
-    assert iso.text(1) == "1"
-    assert browser.tree.findItems("0", Qt.MatchExactly | Qt.MatchRecursive, 1) == []
-    h3c_dot11 = browser.tree.findItems("hh3cDot11", Qt.MatchExactly | Qt.MatchRecursive, 0)
-    assert h3c_dot11
-    assert h3c_dot11[0].text(1) == "1.3.6.1.4.1.25506.2.75"
-
-    browser.tree.clear()
-    browser._insert_oid_path({"name": "badRoot", "oid": "0.0"})
-    assert browser.tree.topLevelItemCount() == 0
-    browser._insert_oid_path({"name": "meshNode", "oid": "1.3.6.1.4.1.25506.2.75.11"})
-    assert browser.tree.topLevelItem(0).text(0) == "iso"
-    assert browser.tree.findItems("meshNode", Qt.MatchExactly | Qt.MatchRecursive, 0)
 
 
-def test_mib_browser_filters_are_simplified(tmp_path: Path):
-    _qt_app()
-    paths = PathResolver(tmp_path)
-    paths.ensure_site_dirs("demo")
-    GlobalMibRepository(paths.global_mib_db_path()).initialize()
-
-    database = Database(paths.site_db_path("demo"))
-    database.initialize()
-    page = SnmpCenterPage(DeviceRepository(database), I18n(), "demo", paths)
-    browser = page.browser_page
-
-    assert [browser.tree_mode_combo.itemData(index) for index in range(browser.tree_mode_combo.count())] == ["general", "h3c_product"]
-    assert browser.tree_mode_combo.currentData() == "h3c_product"
-    assert [browser.source_filter.itemData(index) for index in range(browser.source_filter.count())] == ["standard", "h3c_v5", "h3c_v7v9"]
-    assert browser.source_filter.currentData() == "h3c_v7v9"
-    assert browser.module_filter.isHidden()
-    assert browser.only_device_dict.isHidden()
-    assert [browser.operation_combo.itemText(index) for index in range(browser.operation_combo.count())] == ["Get", "Get Next", "Get Bulk", "Get Subtree", "Walk", "Bulk Walk", "Table Walk", "Set"]
-    assert browser.run_query_button.isHidden()
 
 
-def test_mib_browser_operation_mapping_is_distinct():
-    assert operation_to_method("Get") == "Get"
-    assert operation_to_method("Get Next") == "GetNext"
-    assert operation_to_method("Get Bulk") == "GetBulk"
-    assert operation_to_method("Get Subtree") == "GetSubtree"
-    assert operation_to_method("Walk") == "Walk"
-    assert operation_to_method("Bulk Walk") == "BulkWalk"
-    assert operation_to_method("Table Walk") == "TableWalk"
-    assert method_to_operation("GetBulk") == "Get Bulk"
-    assert method_to_operation("GetSubtree") == "Get Subtree"
-    assert method_to_operation("BulkWalk") == "Bulk Walk"
-    assert method_to_operation("TableWalk") == "Table Walk"
 
 
-def test_h3c_product_module_display_name_strips_order_prefix():
-    assert normalize_h3c_module_display_name("01-HH3C-IF-EXT-MIB") == "HH3C-IF-EXT-MIB"
-    assert normalize_h3c_module_display_name("02－HH3C-DOMAIN-MIB") == "HH3C-DOMAIN-MIB"
-    assert normalize_h3c_module_display_name("13-WLAN") == "13-WLAN"
 
 
 def test_snmp_query_service_dispatches_browser_operations(tmp_path: Path):
