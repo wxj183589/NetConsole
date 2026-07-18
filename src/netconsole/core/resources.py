@@ -40,10 +40,6 @@ def package_resource_path(*parts: str) -> Path:
     return candidates[0] if candidates else Path(*parts)
 
 
-def icon_path(name: str = "love.png") -> Path:
-    return package_resource_path("ui", "icons", name)
-
-
 def changelog_path() -> Path:
     return get_changelog_path(runtime_base_dir())
 

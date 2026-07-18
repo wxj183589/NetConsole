@@ -15,7 +15,7 @@ class BuildConfig:
     app_author: str
     root: Path = ROOT
     entry_file: Path = ROOT / "main.py"
-    icon_file: Path = ROOT / "src" / "netconsole" / "ui" / "icons" / "love.ico"
+    icon_file: Path = ROOT / "resources" / "branding" / "netconsole.ico"
     changelog_file: Path = ROOT / "src" / "netconsole" / "docs" / "changelog.md"
     tools_dir: Path = ROOT / "resources" / "tools"
     release_dir: Path = ROOT / "dist"
