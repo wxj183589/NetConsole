@@ -12,6 +12,7 @@
 
 - `device.py`、`device_credentials.py`：设备与凭据安全模型。
 - `mesh_log_models.py`、`mesh_analysis_params.py`：MESH 分析模型与参数。
+- `mesh_series.py`：MESH 指标 ID、单位语义、数值类型与业务状态编码。
 - `online_mr_*.py`、`traffic_test.py`：Online MR 与流量测试模型。
 - `diagnostics_summary.py`：安全聚合诊断摘要模型。
 

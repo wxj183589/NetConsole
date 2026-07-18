@@ -13,7 +13,7 @@
 - `job_center/`、`export/`：任务和导出执行契约。
 - `agent/`、`traffic/`、`online_mr/`：Agent、流量测试和 Online MR。
 - `ac/`、`rail_transit/`、`network_tools/`：AC、轨交和网络工具业务。
-- `device_form_rules.py`、`device_batch_operations.py`、`mesh_chart_payload.py`、`mesh_series_metadata.py`：从 Qt UI 抽离的纯规则和批量策略。
+- `device_form_rules.py`、`device_batch_operations.py`、`mesh_chart_payload.py`：从历史桌面 UI 抽离的纯规则和批量策略。
 - `site_database_recovery.py`：局点数据库结构异常时的受控备份与重建文件流程。
 
 ## 依赖关系
