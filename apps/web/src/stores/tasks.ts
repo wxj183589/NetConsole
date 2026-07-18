@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
+import { resolveWebSocketUrl } from '../platform/runtime'
 import type { TaskItem, TaskLogLine } from '../types/task'
 import { activeTaskStatuses } from '../utils/taskStatus'
 
@@ -23,6 +24,9 @@ export const useTaskStore = defineStore('tasks', () => {
   let listTimer: number | null = null
   let detailTimer: number | null = null
   let logTimer: number | null = null
+  let socket: WebSocket | null = null
+  let socketReconnectTimer: number | null = null
+  let socketReconnectEnabled = false
 
   const runningCount = computed(() => tasks.value.filter((task) => activeTaskStatuses.includes(task.status)).length)
   const failedCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED').length)
@@ -121,6 +125,7 @@ export const useTaskStore = defineStore('tasks', () => {
     if (!key || pollingConsumers.has(key)) return
     pollingConsumers.add(key)
     if (pollingConsumers.size !== 1) return
+    connectSocket()
     void refresh().finally(scheduleListRefresh)
     detailTimer = window.setInterval(() => void refreshSelected(), 2000)
     if (logsExpanded.value) setLogsExpanded(true)
@@ -136,6 +141,47 @@ export const useTaskStore = defineStore('tasks', () => {
       }
     }
     listTimer = detailTimer = logTimer = null
+    disconnectSocket()
+  }
+
+  function connectSocket(): void {
+    if (typeof WebSocket === 'undefined' || !window.location) return
+    if (socket && socket.readyState <= WebSocket.OPEN) return
+    socketReconnectEnabled = true
+    socket = new WebSocket(resolveWebSocketUrl('/ws/tasks'))
+    socket.onopen = () => { void refresh() }
+    socket.onmessage = (message) => {
+      try {
+        const event = JSON.parse(String(message.data)) as {
+          type?: string
+          payload?: { tasks?: TaskItem[] }
+        }
+        if (event.type === 'snapshot' && Array.isArray(event.payload?.tasks)) {
+          tasks.value = event.payload.tasks
+          failures.value = 0
+          error.value = ''
+          return
+        }
+        if (event.type !== 'heartbeat') void refresh()
+      } catch {
+        // REST 仍是事实来源；损坏事件由下一个正常事件或轮询恢复。
+      }
+    }
+    socket.onclose = () => {
+      socket = null
+      if (socketReconnectEnabled && pollingConsumers.size) {
+        socketReconnectTimer = window.setTimeout(connectSocket, 2000)
+      }
+    }
+    socket.onerror = () => socket?.close()
+  }
+
+  function disconnectSocket(): void {
+    socketReconnectEnabled = false
+    if (socketReconnectTimer !== null) window.clearTimeout(socketReconnectTimer)
+    socketReconnectTimer = null
+    socket?.close()
+    socket = null
   }
 
   function scheduleListRefresh(): void {

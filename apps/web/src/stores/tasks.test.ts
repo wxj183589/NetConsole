@@ -5,6 +5,28 @@ import { useTaskStore } from './tasks'
 import { cancelTask, getTask, getTaskLogs, listTasks } from '../api/tasks'
 import type { TaskItem } from '../types/task'
 
+class FakeWebSocket {
+  static readonly OPEN = 1
+  static instances: FakeWebSocket[] = []
+  readyState = FakeWebSocket.OPEN
+  onopen: (() => void) | null = null
+  onmessage: ((message: { data: string }) => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+
+  constructor(public readonly url: string) {
+    FakeWebSocket.instances.push(this)
+  }
+
+  open(): void { this.onopen?.() }
+  receive(payload: object): void { this.onmessage?.({ data: JSON.stringify(payload) }) }
+  close(): void {
+    if (this.readyState !== FakeWebSocket.OPEN) return
+    this.readyState = 3
+    this.onclose?.()
+  }
+}
+
 vi.mock('../api/tasks', () => ({
   listTasks: vi.fn(),
   getTask: vi.fn(),
@@ -33,6 +55,34 @@ describe('Job Center polling store', () => {
     })
     vi.mocked(cancelTask).mockReset().mockResolvedValue({ ...task, status: 'STOPPING' })
     vi.stubGlobal('window', { setTimeout, clearTimeout, setInterval, clearInterval })
+    vi.stubGlobal('WebSocket', undefined)
+    FakeWebSocket.instances = []
+  })
+
+  it('applies task snapshots from WebSocket and releases the connection', async () => {
+    vi.stubGlobal('window', {
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const store = useTaskStore()
+
+    store.acquirePolling('device-detail-panel')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].url).toBe('ws://127.0.0.1:5173/ws/tasks')
+
+    const completed = { ...task, status: 'COMPLETED' as const, progress: 100 }
+    FakeWebSocket.instances[0].receive({
+      type: 'snapshot',
+      payload: { tasks: [completed] },
+    })
+    expect(store.tasks).toEqual([completed])
+
+    store.releasePolling('device-detail-panel')
+    expect(FakeWebSocket.instances[0].readyState).toBe(3)
   })
 
   it('keeps logs hidden by default and stops detail/log polling on final cleanup', async () => {
