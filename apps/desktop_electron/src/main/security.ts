@@ -1,4 +1,19 @@
-import type { BrowserWindow, Session } from 'electron'
+import type { BrowserWindow, Session, WebPreferences } from 'electron'
+
+export function secureWebPreferences(preload: string, development: boolean): WebPreferences {
+  return {
+    preload,
+    devTools: development,
+    nodeIntegration: false,
+    contextIsolation: true,
+    sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    webviewTag: false,
+    navigateOnDragDrop: false,
+    partition: 'netconsole-desktop-ephemeral',
+  }
+}
 
 export function contentSecurityPolicy(
   development: boolean,

@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-唯一 FastAPI Core Runtime 由 Electron Main 启动的受管 Backend 创建，并交给 Electron 的唯一 Vue Renderer。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口。Qt Shell、`netconsole.app`、Qt probe 和旧 `--web-shell` 启动路径已删除；尚存 `src/netconsole/ui/web_host/` 仅供删除 Qt 页面前追踪历史行为，不再有活动产品入口。
+唯一 FastAPI Core Runtime 由 Electron Main 启动的受管 Backend 创建，并交给 Electron 的唯一 Vue Renderer。源码态本机浏览器和无 Shell Server 只保留开发诊断/API 联调用途，不是独立产品入口。Qt Shell、`src/netconsole/ui/` 与 `apps/desktop/` 下的受跟踪源码、Qt probe 和旧 `--web-shell` 启动路径均已删除，历史行为只通过 Git 与 Electron-only 迁移归档追踪。
 
 ## 运行结构
 

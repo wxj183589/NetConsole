@@ -12,18 +12,17 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 ## 当前状态
 
-Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。当前正式处于 **Electron 功能对等迁移阶段**：Electron 是唯一正式桌面产品方向，Qt 只保留为迁移事实源，不再发布或发展新功能；这不是 Electron 安装包发布完成，也不表示尚待人工或真实设备验收的模块已经达到删除 Qt 源码的门槛。
+Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。Electron 是唯一正式桌面产品；Qt 源码、运行时与入口已经退出活动仓库。部分业务仍处于自动实现完成但真实设备待验收状态，不能把“零 Qt”误写成全部业务已经现场验收完成。
 
 当前并存关系：
 
 ```text
-src/netconsole/ui/         Qt 页面与迁移事实源；历史 `apps/desktop` WebShell 已回收
 apps/desktop_electron/     Electron main/preload/shared，目标桌面外壳基础
 apps/web/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
 src/netconsole/            唯一 Python Core/FastAPI/Application Service
 ```
 
-Qt 目录本阶段不移动、不改名、不删除。Electron 没有复制 Vue 页面、Python Service、Repository、Parser、Agent、Online MR 或报告逻辑。
+已删除 Qt 文件的业务去向继续由 Electron-only 迁移矩阵和 E10 Git 历史审计追踪。Electron 没有复制 Vue 页面、Python Service、Repository、Parser、Agent、Online MR 或报告逻辑。
 
 ## 运行架构
 
@@ -141,6 +140,7 @@ contextIsolation: true
 sandbox: true
 webSecurity: true
 webviewTag: false
+devTools: false（生产；Vite 开发态为 true）
 partition: non-persistent in-memory session
 ```
 
@@ -157,6 +157,7 @@ partition: non-persistent in-memory session
 - Electron 内存 Session 一律拦截 Chromium `will-download`；合法文件只能走 `downloadBackendResource` 的原生保存确认与 main 流式链，不能用 `<a download>`、Blob 或页面导航绕过。
 - `did-start-loading`、`did-finish-load`、`did-fail-load`、`preload-error`、`render-process-gone`、`unresponsive/responsive`、`child-process-gone` 和后端状态变化均写入脱敏诊断；主框架失败显示可重试状态页，不保留永久黑屏。
 - 默认移除 Electron 应用菜单；仅开发服务器存在且显式设置 `NETCONSOLE_ELECTRON_DEV_MENU=1` 时显示开发菜单。
+- 生产 BrowserWindow 显式设置 `devTools: false`；只有已校验的本机 Vite 开发模式允许 DevTools。
 
 ## preload / IPC 白名单
 
@@ -189,35 +190,13 @@ Renderer 当前只能调用：
 - Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 Uvicorn 退出后的 `shutdown_ack`，再发送 `exit`；全部受管清理结束后才退出 Electron。
 - 后续 `openArtifact` 必须使用受控 `artifact_id` 解析，不得把当前临时路径授权扩大为任意业务路径接口。
 
-## Qt Legacy 策略
+## Qt 历史回收策略
 
-当前 Qt 主程序只保留为迁移事实源，不再作为正式发布或回退入口。迁移期间仅允许：
+Qt/PySide6/QFluentWidgets 源码、运行时和桌面入口已经删除，不再允许通过兼容导入、回退壳或开发依赖重新进入活动架构。旧页面只作为 Git 历史事实源参与 E10 审计；每个删除文件必须归类为 `PURE_UI`、`BUSINESS_MOVED`、`ADAPTER_REPLACED`、`DEAD_CODE` 或 `FEATURE_REMOVED`，并关联新位置与测试。
 
-- P1/P2 缺陷修复；
-- 数据安全与必要兼容修复；
-- 尚未完成 Web 纵向闭环的业务回退。
+Electron 后续业务实现继续以已交付 Qt 行为和真实业务契约为对照，补齐 Vue → FastAPI → Application Service 纵向闭环；缺失能力必须在 Electron 中明确隐藏或标记待验收，不能恢复 Qt 入口规避迁移。
 
-禁止：
-
-- 新增大型 Qt 页面；
-- 新增 Qt 专属业务规则；
-- 新增只能由 Qt 调用的 Application Service；
-- 在 Qt 页面内新增采集、解析、数据库或导出逻辑。
-
-## 固定后续迁移顺序
-
-1. Online MR 完整操作闭环
-2. 任务中心
-3. Agent 管理
-4. fping / iPerf 网络工具
-5. 离线 MR/MESH 分析
-6. 报告和 Artifact 管理
-7. AC 管理
-8. 配置采集与文件管理
-9. SNMP 等剩余模块
-10. 删除 Qt Desktop
-
-SNMP Center、通用 MIB/OID 平台与无线勘测已经批准删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
+SNMP Center、通用 MIB/OID 平台与无线勘测已经正式删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
 
 Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按对等矩阵继续验收，Qt 只承担未完成能力的源码事实对照。
 

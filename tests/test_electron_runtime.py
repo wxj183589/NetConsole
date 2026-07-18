@@ -132,6 +132,29 @@ def test_electron_runtime_authenticates_http_with_ephemeral_header(tmp_path, mon
     assert response.json()["status"] == "ok"
 
 
+def test_electron_runtime_does_not_publish_api_documentation(tmp_path, monkeypatch) -> None:
+    from netconsole.backend import electron_runtime
+
+    original_create_app = electron_runtime.create_app
+
+    def isolated_create_app(*args, **kwargs):
+        from netconsole.core.paths import PathResolver
+
+        kwargs["paths"] = PathResolver(tmp_path)
+        kwargs["frontend_dist"] = tmp_path / "missing-web-dist"
+        return original_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(electron_runtime, "create_app", isolated_create_app)
+    app = build_app(ElectronRuntimeOptions("127.0.0.1", 43123), TOKEN)
+
+    with TestClient(app) as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            response = client.get(path, headers={DESKTOP_SESSION_HEADER: TOKEN})
+            assert response.status_code == 404
+
+    assert app.state.api_documentation_enabled is False
+
+
 def test_electron_runtime_cors_is_limited_to_declared_vite_origin(tmp_path, monkeypatch) -> None:
     from netconsole.backend import electron_runtime
 

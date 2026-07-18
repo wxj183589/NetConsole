@@ -63,7 +63,7 @@ Electron Desktop 自己持有退出屏障：先拒绝新下载并取消、等待
 
 - API DTO 位于 `src/netconsole/models/api/`，使用 Pydantic，禁止在路由中散落无约束 dict。
 - FastAPI 路由位于 `src/netconsole/backend/api/`，只编排应用服务，不复制 Repository 或业务算法。
-- 当前提供 `GET /api/health`（含后端 build id）、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及设备管理、网络工具、配置采集、文件管理的模块化 API 和自动 OpenAPI `/docs`。
+- 当前提供 `GET /api/health`（含后端 build id）、任务查询/详情/事件/取消、`/ws/tasks`、Agent 管理 API/`/ws/agents`、Traffic REST API 和 `/ws/traffic/{traffic_run_id}`，以及设备管理、网络工具、配置采集、文件管理的模块化 API。OpenAPI `/docs`、`/redoc` 和 `/openapi.json` 只在显式开发诊断 Server 中注册，生产 Electron Backend 不发布这些路由。
 - 版本来自 `src/netconsole/core/version.py`，API 不维护第二份版本号。
 - 后续前端使用统一生成或封装的 API Client；页面不得各自散写请求和错误协议。
 

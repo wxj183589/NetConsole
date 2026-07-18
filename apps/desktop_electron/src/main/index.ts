@@ -16,6 +16,7 @@ import {
   desktopSessionCookiePath,
   installWindowSecurity,
   isTrustedRendererSender,
+  secureWebPreferences,
 } from './security'
 
 app.enableSandbox()
@@ -34,6 +35,7 @@ const rendererOrigins = new Set<string>()
 const connectionOrigins = new Set<string>()
 const pathRegistry = new GrantedPathRegistry()
 let rendererUrl = ''
+let rendererDevelopment = false
 let logger: DesktopLogger = () => undefined
 let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
@@ -86,7 +88,8 @@ async function startDesktop(): Promise<void> {
   })
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
-  mainWindow = createMainWindow(Boolean(config.devServerUrl), developmentMenu)
+  rendererDevelopment = Boolean(config.devServerUrl)
+  mainWindow = createMainWindow(rendererDevelopment, developmentMenu)
   startupTimeline.mark('electron.window_created')
   mainWindow.on('closed', () => {
     mainWindow = undefined
@@ -184,17 +187,10 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
     show: false,
     backgroundColor: '#0b1220',
     autoHideMenuBar: !developmentMenu,
-    webPreferences: {
-      preload: resolve(__dirname, '..', 'preload', 'index.cjs'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      webviewTag: false,
-      navigateOnDragDrop: false,
-      partition: 'netconsole-desktop-ephemeral',
-    },
+    webPreferences: secureWebPreferences(
+      resolve(__dirname, '..', 'preload', 'index.cjs'),
+      development,
+    ),
   })
   installWindowSecurity(
     window,
@@ -219,7 +215,7 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
 async function openTaskWindow(context: { taskId?: string; module?: string; status?: string }): Promise<void> {
   if (!mainWindow || !rendererUrl) throw new Error('任务窗口尚未就绪')
   if (!taskWindow || taskWindow.isDestroyed()) {
-    taskWindow = createMainWindow(Boolean(process.env.NETCONSOLE_WEB_DEV_SERVER_URL))
+    taskWindow = createMainWindow(rendererDevelopment)
     installManagedWindowDiagnostics(taskWindow)
     taskWindow.setTitle('NetConsole 任务中心')
     taskWindow.on('close', (event) => {

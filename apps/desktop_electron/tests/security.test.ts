@@ -7,6 +7,7 @@ import {
   installWindowSecurity,
   isAllowedNavigation,
   isTrustedRendererSender,
+  secureWebPreferences,
 } from '../src/main/security'
 import {
   validateArtifactFileName,
@@ -14,6 +15,21 @@ import {
 } from '../src/shared/validation'
 
 describe('Electron security policy', () => {
+  it('disables DevTools in production while preserving the development workflow', () => {
+    const production = secureWebPreferences('preload.cjs', false)
+    const development = secureWebPreferences('preload.cjs', true)
+
+    expect(production.devTools).toBe(false)
+    expect(development.devTools).toBe(true)
+    expect(production).toMatchObject({
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+    })
+  })
+
   it('keeps the exact normalized Artifact extension for save-type matching', () => {
     expect(validateArtifactFileName('固件.bin')).toBe('.bin')
     expect(validateArtifactFileName('startup.conf')).toBe('.conf')

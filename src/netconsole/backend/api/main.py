@@ -146,6 +146,7 @@ def create_app(
     online_mr_web_control_enabled: bool | None = None,
     online_mr_agent_web_control_service: OnlineMrAgentWebControlService | None = None,
     online_mr_agent_executor_enabled: bool | None = None,
+    api_documentation_enabled: bool | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     site_name = _current_site_name(paths)
@@ -344,8 +345,18 @@ def create_app(
                         f"component=online_mr error={exc.__class__.__name__}: {exc}",
                     )
 
-    app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION.removeprefix("v"), lifespan=lifespan)
+    if api_documentation_enabled is None:
+        api_documentation_enabled = runtime_mode is RuntimeMode.SERVER
+    app = FastAPI(
+        title=f"{APP_NAME} API",
+        version=APP_VERSION.removeprefix("v"),
+        lifespan=lifespan,
+        openapi_url="/openapi.json" if api_documentation_enabled else None,
+        docs_url="/docs" if api_documentation_enabled else None,
+        redoc_url="/redoc" if api_documentation_enabled else None,
+    )
     app.state.runtime_mode = runtime_mode
+    app.state.api_documentation_enabled = bool(api_documentation_enabled)
     app.state.desktop_session_protected = bool(desktop_session_token)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
