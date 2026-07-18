@@ -1,8 +1,3 @@
 NetConsole is distributed as a non-commercial GPLv3 project.
 
-This project uses QFluentWidgets through PySide6-Fluent-Widgets, which is
-licensed under GPLv3 for non-commercial use. Redistribution of NetConsole must
-comply with GPLv3. Commercial use of QFluentWidgets requires a commercial
-license from the QFluentWidgets author.
-
 GPLv3 text: https://www.gnu.org/licenses/gpl-3.0.txt

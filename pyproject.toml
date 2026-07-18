@@ -19,4 +19,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-netconsole = ["assets/*", "docs/*", "resources/*", "ui/icons/*"]
+netconsole = ["assets/*", "docs/*", "resources/*"]

@@ -6,19 +6,6 @@
     "homepage": "https://www.python.org/"
   },
   {
-    "name": "PySide6",
-    "purpose": "Qt6 Python 绑定，用于桌面 UI",
-    "license": "LGPL-3.0 / GPL-3.0 / commercial",
-    "homepage": "https://doc.qt.io/qtforpython-6/"
-  },
-  {
-    "name": "PySide6-Fluent-Widgets",
-    "purpose": "Fluent 风格 Qt 控件库",
-    "license": "GPL-3.0",
-    "homepage": "https://github.com/zhiyiYo/PyQt-Fluent-Widgets",
-    "note": "项目使用 PySide6-Fluent-Widgets 免费版，不使用 Pro 组件。"
-  },
-  {
     "name": "matplotlib",
     "purpose": "分析图表绘制",
     "license": "PSF-based",

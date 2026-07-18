@@ -22,10 +22,6 @@
 
 | Skill | 职责 | 常见触发 | 不应触发 |
 | --- | --- | --- | --- |
-| `qt6-polished-ui-skill` | 新建/系统性优化 Qt6 页面、布局与视觉层级 | “优化页面布局”“新建 Fluent 页面” | 单点遮挡、纯后端 |
-| `qt6-ui-fix-skill` | 修复现有页面/弹窗遮挡、滚动、主题、表格和卡顿 | “1080p 被遮挡”“弹窗不能滚动” | 全新页面、纯 Excel |
-| `qfluentwidgets-netconsole-ui-skill` | QFluentWidgets Shell、主题、CommandBar、图标和 fallback | “主题切换异常”“修复 AppFluentWindow” | 普通 Qt 布局、业务逻辑 |
-| `netconsole-qt6-ui-taste-skill` | 工业桌面 UI 的按钮归属、状态完整性和 anti-slop 审查 | “按 Taste 审查 UI”“检查无效按钮” | 默认不实施修改、纯后端评审 |
 | `h3c-snmp-mib-skill` | H3C/HH3C MIB、OID、模块依赖、字典和参考表 | “导入 H3C V9 MIB”“OID 不显示” | SNMP 请求调度、CLI parser |
 | `snmp-collector-design-skill` | SNMP 请求/采集、并发、取消、缓存和持久化 | “增加 GETBULK”“WALK 无法取消” | MIB 文件、纯 UI |
 | `network-command-parser-skill` | H3C/Comware 命令回显、提示符和字段 parser | “解析 display wlan ap all” | MIB、Excel、UI |
@@ -45,10 +41,6 @@
 
 | 主任务 | 主 Skill | 按需组合 |
 | --- | --- | --- |
-| 新建 Qt 页面 | `qt6-polished-ui-skill` | `qfluentwidgets-netconsole-ui-skill`、`netconsole-job-center-skill` |
-| 修复页面/弹窗遮挡 | `qt6-ui-fix-skill` | `netconsole-change-review-skill` |
-| Fluent Shell/主题 | `qfluentwidgets-netconsole-ui-skill` | `qt6-polished-ui-skill` |
-| UI 质量审查 | `netconsole-qt6-ui-taste-skill` | `netconsole-change-review-skill` |
 | 新增普通后台采集 | `netconsole-job-center-skill` | `network-command-parser-skill` |
 | 新增本地报告 | `netconsole-export-report-skill` | `netconsole-data-safety-skill` |
 | 在线 MR 修改 | `netconsole-online-mr-skill` | `traffic-test-skill`、`network-command-parser-skill` |
@@ -69,8 +61,6 @@
 在提示开头写 `$skill-name`，后面给出具体目标、范围和验证要求：
 
 ```text
-$qt6-ui-fix-skill 修复在线 MR 页面在 1280 宽度下参数区和按钮被遮挡的问题，弹窗也必须可横纵滚动。
-
 $netconsole-online-mr-skill 修复单设备选择时 Ping 2 被错误自动填充的问题，不修改 collection_commands.py 中的命令顺序。
 
 $netconsole-job-center-skill 把指定大日志解析迁到 Job Center，保留进度、取消和唯一终态。
@@ -82,7 +72,7 @@ $h3c-snmp-mib-skill 修复 HH3C 模块导入后 OID 树不显示，并说明旧 
 $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞、SQLite、设备命令和原始日志回归。
 ```
 
-自然语言中明确出现 Qt6、MIB、GETBULK、Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。
+自然语言中明确出现 MIB、GETBULK、Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。
 
 ## 6. 如何升级 Skill
 

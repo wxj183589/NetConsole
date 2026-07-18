@@ -20,8 +20,6 @@ class OpenSourceComponent:
 
 
 DEPENDENCY_NAME_MAP = {
-    "pyside6-fluent-widgets": "PySide6-Fluent-Widgets",
-    "pyside6": "PySide6",
     "netmiko": "netmiko",
     "openpyxl": "openpyxl",
     "matplotlib": "matplotlib",
