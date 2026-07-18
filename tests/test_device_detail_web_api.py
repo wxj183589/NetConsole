@@ -168,7 +168,8 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     assert transceivers.status_code == 200
     assert "status" not in transceivers.json()["items"][0]
     assert "threshold_source" not in transceivers.json()["items"][0]
-    assert transceivers.json()["items"][0]["severity"] == "no_light"
+    assert transceivers.json()["items"][0]["severity"] == "no_module"
+    assert transceivers.json()["items"][0]["severity_reason"] == "未检测到光模块"
     assert lldp.status_code == 200
     assert "capabilities" not in lldp.json()["items"][0]
     assert "model" not in lldp.json()["items"][0]
