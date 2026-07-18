@@ -475,7 +475,11 @@ def test_optical_mapping_honors_collector_status_and_all_tx_thresholds(
     DeviceFactRepository(Database(paths.site_db_path("demo"))).replace_optical_modules(
         str(h3c.device_uuid),
         [
-            {"interface_name": "GE1/0/1", "status": "no_light"},
+            {
+                "interface_name": "GE1/0/1",
+                "status": "no_light",
+                "module_model": "SFP-GE-LX",
+            },
             {"interface_name": "GE1/0/2", "status": "no_module"},
             {
                 "interface_name": "GE1/0/3",
@@ -506,6 +510,62 @@ def test_optical_mapping_honors_collector_status_and_all_tx_thresholds(
         {"status", "threshold_source"}.isdisjoint(item.model_dump())
         for item in page.items
     )
+
+
+def test_optical_mapping_distinguishes_missing_module_from_missing_rx(
+    tmp_path: Path,
+) -> None:
+    query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
+    paths = PathResolver(
+        app_root=Path(__file__).parents[1], data_root=tmp_path / "runtime"
+    )
+    DeviceFactRepository(Database(paths.site_db_path("demo"))).replace_optical_modules(
+        str(h3c.device_uuid),
+        [
+            {"interface_name": "GE1/0/1"},
+            {"interface_name": "GE1/0/2", "module_model": "SFP-GE-LX"},
+            {"interface_name": "GE1/0/3", "tx_power": "-6.1"},
+            {"interface_name": "GE1/0/4", "rx_low_alarm": "-19.0"},
+            {
+                "interface_name": "GE1/0/5",
+                "status": "no_light",
+            },
+            {
+                "interface_name": "GE1/0/6",
+                "status": "no_module",
+                "module_model": "stale-model",
+                "module_serial_number": "stale-serial",
+                "module_vendor": "stale-vendor",
+                "wavelength": "1310 nm",
+                "transmission_distance": "10 km",
+                "connector_type": "LC",
+                "rx_power": "-8.0",
+            },
+            {
+                "interface_name": "GE1/0/7",
+                "status": "no_light",
+                "module_model": "SFP-GE-LX",
+            },
+        ],
+    )
+
+    page = query.transceivers(str(h3c.device_uuid), page=1, page_size=10)
+    by_name = {item.interface_name: item for item in page.items}
+
+    assert by_name["GE1/0/1"].severity == "no_module"
+    assert by_name["GE1/0/1"].severity_reason == "未检测到光模块"
+    assert by_name["GE1/0/2"].severity == "no_light"
+    assert by_name["GE1/0/3"].severity == "no_light"
+    assert by_name["GE1/0/4"].severity == "no_light"
+    assert by_name["GE1/0/5"].severity == "no_module"
+    assert by_name["GE1/0/6"].severity == "no_module"
+    assert by_name["GE1/0/6"].module_model is None
+    assert by_name["GE1/0/6"].module_serial_number is None
+    assert by_name["GE1/0/6"].module_vendor is None
+    assert by_name["GE1/0/6"].wavelength is None
+    assert by_name["GE1/0/6"].transmission_distance is None
+    assert by_name["GE1/0/6"].connector_type is None
+    assert by_name["GE1/0/7"].severity == "no_light"
 
 
 def test_optical_public_reason_uses_exact_chinese_mapping(

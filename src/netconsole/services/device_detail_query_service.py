@@ -888,6 +888,7 @@ class DeviceDetailQueryService:
     def _transceiver(row: dict[str, object | None]) -> DeviceTransceiverDTO:
         severity, severity_reason, _threshold_source = _optical_severity(row)
         interface_name = str(row.get("interface_name") or "")
+        module_missing = severity == "no_module"
         public_reason = (
             None
             if severity == "normal"
@@ -901,12 +902,18 @@ class DeviceDetailQueryService:
             temperature=_number(row.get("temperature")),
             voltage=_number(row.get("voltage")),
             bias_current=_number(row.get("bias_current")),
-            module_model=_text(row.get("module_model")),
-            module_serial_number=_text(row.get("module_serial_number")),
-            module_vendor=_text(row.get("module_vendor")),
-            wavelength=_text(row.get("wavelength")),
-            transmission_distance=_text(row.get("transmission_distance")),
-            connector_type=_text(row.get("connector_type")),
+            module_model=None if module_missing else _text(row.get("module_model")),
+            module_serial_number=(
+                None if module_missing else _text(row.get("module_serial_number"))
+            ),
+            module_vendor=None if module_missing else _text(row.get("module_vendor")),
+            wavelength=None if module_missing else _text(row.get("wavelength")),
+            transmission_distance=(
+                None if module_missing else _text(row.get("transmission_distance"))
+            ),
+            connector_type=(
+                None if module_missing else _text(row.get("connector_type"))
+            ),
             rx_low_alarm=_number(row.get("rx_low_alarm")),
             rx_high_alarm=_number(row.get("rx_high_alarm")),
             rx_low_warning=_number(row.get("rx_low_warning")),
@@ -1203,6 +1210,31 @@ _OPTICAL_REASON_TRANSLATIONS = {
     "RX power below alarm low threshold": "接收光功率低于告警低阈值",
 }
 
+_OPTICAL_MODULE_IDENTITY_FIELDS = (
+    "module_model",
+    "module_serial_number",
+    "module_vendor",
+    "wavelength",
+    "transmission_distance",
+    "connector_type",
+)
+_OPTICAL_MODULE_NUMERIC_FIELDS = (
+    "rx_power",
+    "tx_power",
+    "temperature",
+    "voltage",
+    "bias_current",
+    "rx_low_alarm",
+    "rx_high_alarm",
+    "rx_low_warning",
+    "rx_high_warning",
+    "tx_low_alarm",
+    "tx_high_alarm",
+    "tx_low_warning",
+    "tx_high_warning",
+)
+_MISSING_OPTICAL_FACT_VALUES = {"", "-", "--", "—", "n/a", "na", "none", "null", "missing", "unknown"}
+
 
 def _pagination(page: int, page_size: int) -> tuple[int, int, int]:
     current = max(1, int(page))
@@ -1235,13 +1267,28 @@ def _number(value: object) -> float | None:
         return None
 
 
+def _has_optical_module_evidence(row: dict[str, object | None]) -> bool:
+    for field in _OPTICAL_MODULE_IDENTITY_FIELDS:
+        value = str(row.get(field) or "").strip().casefold()
+        if value not in _MISSING_OPTICAL_FACT_VALUES:
+            return True
+    return any(_number(row.get(field)) is not None for field in _OPTICAL_MODULE_NUMERIC_FIELDS)
+
+
 def _optical_severity(
     row: dict[str, object | None],
 ) -> tuple[str, str | None, str]:
     status = str(row.get("status") or "").strip().casefold()
+    if status == "no_module":
+        return status, "Optical module is not present", "collector_status"
+
+    module_present = _has_optical_module_evidence(row)
+    if not module_present:
+        result = compute_optical_severity({"module_present": False})
+        return result.severity, result.reason, result.warning_source
+
     if status in {
         "no_light",
-        "no_module",
         "link_abnormal",
         "link_down",
         "offline",
@@ -1252,6 +1299,7 @@ def _optical_severity(
 
     rx = compute_optical_severity(
         {
+            "module_present": module_present,
             "rx_power": row.get("rx_power"),
             "rx_low_alarm": row.get("rx_low_alarm"),
             "rx_high_alarm": row.get("rx_high_alarm"),
