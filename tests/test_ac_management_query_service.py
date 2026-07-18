@@ -7,6 +7,7 @@ import pytest
 
 from ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
+from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.config_lifecycle_service import extract_h3c_configuration_body
@@ -36,14 +37,78 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert online.total == 1
     assert offline.total == 1
     assert unauthenticated.total == 1
+    assert unauthenticated.items[0].station == "车站A"
+    assert unauthenticated.items[0].station_source == "resource"
     assert section.items[0].id == "ap-online"
     assert detail is not None
     assert [radio.radio_id for radio in detail.radios] == [1, 2]
     assert all(radio.radio_id != 3 for radio in detail.radios)
     assert [radio.clients for radio in detail.radios] == [3, 1]
+    assert detail.ap.station == "车站B"
+    assert detail.ap.station_source == "metadata"
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
     assert _fingerprint(db_path) == before
+
+
+def test_ac_query_service_suggests_station_from_unique_lldp_switch_without_writes(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    database = Database(db_path)
+    with database.connect() as conn:
+        conn.execute("UPDATE devices SET station = '车辆段A' WHERE device_uuid = 'switch-1'")
+        conn.execute(
+            "UPDATE ac_fit_ap_resources SET site = NULL, lldp_neighbor_name = 'SW-TEST' WHERE ap_uuid = 'ap-unauth'"
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = _fingerprint(db_path)
+
+    detail = AcManagementQueryService(paths).get_ap_detail("demo", "ap-unauth")
+
+    assert detail is not None
+    assert detail.ap.station == "车辆段A"
+    assert detail.ap.station_source == "lldp_switch_suggestion"
+    assert detail.lldp.switch_device_uuid == "switch-1"
+    assert _fingerprint(db_path) == before
+
+
+def test_ac_query_service_does_not_suggest_station_when_switch_station_is_empty(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE ac_fit_ap_resources SET site = NULL WHERE ap_uuid = 'ap-unauth'")
+        conn.commit()
+
+    detail = AcManagementQueryService(paths).get_ap_detail("demo", "ap-unauth")
+
+    assert detail is not None
+    assert detail.ap.station == ""
+    assert detail.ap.station_source == "empty"
+
+
+def test_ac_query_service_does_not_guess_station_for_ambiguous_switch_name(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE devices SET station = '车辆段A' WHERE device_uuid = 'switch-1'")
+        conn.execute("UPDATE ac_fit_ap_resources SET site = NULL WHERE ap_uuid = 'ap-unauth'")
+        conn.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, system_name, station, device_vendor, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES (
+                'switch-2', '接入交换机', 'SW-OTHER', '车辆段B', 'H3C', 'SW',
+                '10.0.0.3', '2026-07-14T12:00:00', '2026-07-14T12:00:00'
+            )
+            """
+        )
+        conn.commit()
+
+    detail = AcManagementQueryService(paths).get_ap_detail("demo", "ap-unauth")
+
+    assert detail is not None
+    assert detail.ap.station == ""
+    assert detail.ap.station_source == "empty"
+    assert detail.lldp.switch_device_uuid == ""
 
 
 def test_ac_query_service_returns_allowlisted_radio_history_without_raw_paths(tmp_path: Path) -> None:
@@ -81,6 +146,70 @@ def test_ac_optical_anomaly_requires_ap_offline_relation(tmp_path: Path) -> None
     assert offline.optical_status == "critical"
     assert offline.ap_offline_related is True
     assert [item.id for item in anomalies.items] == ["ap-offline"]
+
+
+def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_optical(
+    tmp_path: Path,
+) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service = AcManagementQueryService(paths)
+    items = [
+        AcApDTO(
+            id="ap-missing-switch",
+            ac_id="ac-1",
+            name="AP-00",
+            switch_interface="GE2/0/1",
+            optical_status="warning",
+        ),
+        AcApDTO(
+            id="ap-port-10",
+            ac_id="ac-1",
+            name="AP-10",
+            switch_name="交换机2",
+            switch_interface="GE2/0/10",
+            optical_status="critical",
+        ),
+        AcApDTO(
+            id="ap-switch-10",
+            ac_id="ac-1",
+            name="AP-01",
+            switch_name="交换机10",
+            switch_interface="GE1/0/1",
+            optical_status="warning",
+        ),
+        AcApDTO(
+            id="ap-missing-port",
+            ac_id="ac-1",
+            name="AP-20",
+            switch_name="交换机2",
+            optical_status="critical",
+        ),
+        AcApDTO(
+            id="ap-port-9",
+            ac_id="ac-1",
+            name="AP-50",
+            switch_name="交换机2",
+            switch_interface="GigabitEthernet2/0/9",
+            optical_status="warning",
+        ),
+    ]
+    service._ap_records = lambda _site_id, **_kwargs: [
+        (item, {}, AcOpticalDTO(), AcLldpDTO()) for item in items
+    ]
+
+    resources = service.list_aps("demo", page_size=20)
+    optical = service.list_optical_anomalies("demo", page_size=20)
+
+    expected = ["ap-port-9", "ap-port-10", "ap-missing-port", "ap-switch-10", "ap-missing-switch"]
+    assert [item.id for item in resources.items] == expected
+    assert [item.id for item in optical.items] == expected
+    assert [item.id for item in service.list_aps("demo", page_size=20, sort_by="name").items] == [
+        "ap-missing-switch",
+        "ap-switch-10",
+        "ap-port-10",
+        "ap-missing-port",
+        "ap-port-9",
+    ]
 
 
 def test_ac_config_snapshot_content_diff_and_path_isolation(tmp_path: Path) -> None:

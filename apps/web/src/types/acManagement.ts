@@ -50,6 +50,7 @@ export interface AcAp {
   radio1_power: string
   radio2_power: string
   station: string
+  station_source: string
   section: string
   mileage: string
   direction: string

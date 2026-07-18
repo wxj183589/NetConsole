@@ -51,7 +51,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     model: '',
     switch: '',
     optical_status: '',
-    sort_by: 'name',
+    sort_by: 'topology',
     sort_order: 'asc' as 'asc' | 'desc',
   })
   const snapshotPage = ref(1)

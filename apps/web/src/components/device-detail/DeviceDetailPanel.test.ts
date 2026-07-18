@@ -62,6 +62,7 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain('formatEnumeratedValue(column.key, row[column.key], row)')
     expect(source).toContain('formatEnumeratedValue(column[1], row[column[1]], row)')
     expect(source).toContain('formatDetailValue(field.key, field.value, field.context)')
+    expect(source).toContain('displayInterfaceName')
     expect(source).toContain("key === 'severity_reason' && isNormalSeverity(context?.severity)")
     expect(source).toContain("normalizedValue === 'normal' || normalizedValue === '正常'")
     expect(source).toContain("['alarm', 'critical', 'no_light', 'no_module', 'link_abnormal', 'link_down', 'offline'].includes(severity)")

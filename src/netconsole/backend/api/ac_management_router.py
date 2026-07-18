@@ -84,7 +84,7 @@ def list_aps(
     model: str = Query(default="", max_length=100),
     switch: str = Query(default="", max_length=100),
     optical_status: str = Query(default="", max_length=30),
-    sort_by: str = Query(default="name", max_length=30),
+    sort_by: str = Query(default="topology", max_length=30),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> AcApPageDTO:
     return _query(

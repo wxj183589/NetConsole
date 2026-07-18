@@ -36,6 +36,7 @@ from netconsole.services.fit_ap_link_info import lldp_display_status
 from netconsole.services.offline_ap_ledger import is_fit_ap_offline
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.mileage import format_track_mileage, parse_mileage_to_meters
+from netconsole.utils.natural_sort import natural_text_key
 
 
 _ABNORMAL_OPTICAL = {"notice", "warning", "alarm", "link_abnormal", "link_down", "no_light"}
@@ -196,7 +197,7 @@ class AcManagementQueryService:
         model: str = "",
         switch: str = "",
         optical_status: str = "",
-        sort_by: str = "name",
+        sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> AcApPageDTO:
         items = self._filtered_aps(
@@ -228,8 +229,8 @@ class AcManagementQueryService:
             ac_id=ac_id,
             query=query,
             optical_statuses={"warning", "critical"},
-            sort_by="optical_status",
-            sort_order="desc",
+            sort_by="topology",
+            sort_order="asc",
         )
         return self._page(items, page, page_size)
 
@@ -412,7 +413,7 @@ class AcManagementQueryService:
         model: str = "",
         switch: str = "",
         optical_statuses: set[str] | None = None,
-        sort_by: str = "name",
+        sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> list[AcApDTO]:
         records = self._ap_records(site_id, ac_id=ac_id)
@@ -463,7 +464,7 @@ class AcManagementQueryService:
         for row in resources:
             optical = self._optical_for(row, optical_by_ap, context)
             lldp = self._lldp_for(row, optical_by_ap, context)
-            records.append((self._ap_dto(row, optical, lldp, ac_names), row, optical, lldp))
+            records.append((self._ap_dto(row, optical, lldp, ac_names, context), row, optical, lldp))
         return records
 
     def _find_ap(
@@ -479,11 +480,13 @@ class AcManagementQueryService:
         optical: AcOpticalDTO,
         lldp: AcLldpDTO,
         ac_names: dict[str, str],
+        context: dict[str, Any],
     ) -> AcApDTO:
         ac_id = str(row.get("ac_device_uuid") or "")
         unauthenticated = bool(row.get("is_new_online_ap") or row.get("_web_unauthenticated"))
         status = "unauthenticated" if unauthenticated else "offline" if is_fit_ap_offline(row) else self._online_status(row)
         mileage = format_track_mileage(row.get("mileage"), direction=str(row.get("direction") or ""))
+        station, station_source = self._station(row, lldp, context)
         return AcApDTO(
             id=str(row.get("ap_uuid") or f"unauth-{row.get('id') or row.get('ap_name') or 'unknown'}"),
             ac_id=ac_id,
@@ -502,7 +505,8 @@ class AcManagementQueryService:
             radio2_channel=str(row.get("rid2_channel") or ""),
             radio1_power=str(row.get("rid1_tx_power") or ""),
             radio2_power=str(row.get("rid2_tx_power") or ""),
-            station=str(row.get("site") or row.get("site_name") or row.get("extension_station_name") or ""),
+            station=station,
+            station_source=station_source,
             section=str(row.get("section_name") or row.get("metadata_belong_section") or ""),
             mileage=mileage if mileage != "-" else "",
             direction=str(row.get("direction") or row.get("extension_line_side") or ""),
@@ -555,7 +559,7 @@ class AcManagementQueryService:
             return AcOpticalDTO(anomaly_reason="未采集光衰数据")
         switch_name = str(row.get("neighbor_device_name") or row.get("lldp_neighbor_name") or resource.get("lldp_neighbor_name") or "")
         interface = str(row.get("neighbor_interface") or row.get("lldp_neighbor_interface") or resource.get("lldp_neighbor_interface") or "")
-        switch_uuid = context["device_uuid_by_name"].get(switch_name.casefold(), "")
+        switch_uuid = self._switch_uuid(resource, row, switch_name, context)
         interface_key = normalize_interface_name(interface).casefold()
         module = context["optical_by_interface"].get((switch_uuid, interface_key), {})
         port = context["port_by_interface"].get((switch_uuid, interface_key), {})
@@ -626,7 +630,7 @@ class AcManagementQueryService:
         row = self._indexed_row(resource, optical_by_ap) or {}
         switch_name = str(row.get("neighbor_device_name") or row.get("lldp_neighbor_name") or resource.get("lldp_neighbor_name") or resource.get("lldp_neighbor") or "")
         interface = str(row.get("neighbor_interface") or row.get("lldp_neighbor_interface") or resource.get("lldp_neighbor_interface") or "")
-        switch_uuid = context["device_uuid_by_name"].get(switch_name.casefold(), "")
+        switch_uuid = self._switch_uuid(resource, row, switch_name, context)
         key = (switch_uuid, normalize_interface_name(interface).casefold())
         port = context["port_by_interface"].get(key, {})
         module = context["optical_by_interface"].get(key, {})
@@ -643,6 +647,7 @@ class AcManagementQueryService:
             )
         match_status = str(row.get("lldp_match_status") or row.get("link_match_status") or resource.get("lldp_match_status") or "")
         return AcLldpDTO(
+            switch_device_uuid=switch_uuid,
             switch_name=switch_name,
             switch_ip=str(context["device_ip_by_uuid"].get(switch_uuid, "")),
             interface_name=interface,
@@ -650,6 +655,7 @@ class AcManagementQueryService:
             port_status=str(port.get("port_status") or port.get("link_status") or ""),
             vlan=str(port.get("vlan") or port.get("pvid") or ""),
             optical_module_status=module_status,
+            raw_match_status=match_status.casefold(),
             match_status=lldp_display_status(match_status) if match_status else "",
             source=str(row.get("lldp_source") or resource.get("lldp_source") or ""),
             updated_at=self._latest_text(row.get("lldp_collected_at"), resource.get("lldp_collected_at"), port.get("updated_at")),
@@ -657,15 +663,27 @@ class AcManagementQueryService:
 
     def _switch_context(self, conn: sqlite3.Connection) -> dict[str, Any]:
         devices = self._safe_devices(conn)
-        uuid_by_name: dict[str, str] = {}
+        uuids_by_name: dict[str, set[str]] = {}
         ip_by_uuid: dict[str, str] = {}
+        switch_uuids: set[str] = set()
+        switch_station_by_uuid: dict[str, str] = {}
         for row in devices:
             device_uuid = str(row["device_uuid"])
             ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
+            if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
+                switch_uuids.add(device_uuid)
+                station = self._clean_text(row["station"])
+                if station:
+                    switch_station_by_uuid[device_uuid] = station
             for value in (row["name"], row["system_name"]):
                 name = str(value or "").strip().casefold()
                 if name:
-                    uuid_by_name[name] = device_uuid
+                    uuids_by_name.setdefault(name, set()).add(device_uuid)
+        uuid_by_name = {
+            name: next(iter(device_uuids))
+            for name, device_uuids in uuids_by_name.items()
+            if len(device_uuids) == 1
+        }
         port_by_interface: dict[tuple[str, str], dict[str, object]] = {}
         if self._table_exists(conn, "device_interfaces"):
             for row in conn.execute("SELECT * FROM device_interfaces"):
@@ -679,9 +697,51 @@ class AcManagementQueryService:
         return {
             "device_uuid_by_name": uuid_by_name,
             "device_ip_by_uuid": ip_by_uuid,
+            "switch_device_uuids": switch_uuids,
+            "switch_station_by_uuid": switch_station_by_uuid,
             "port_by_interface": port_by_interface,
             "optical_by_interface": optical_by_interface,
         }
+
+    @classmethod
+    def _switch_uuid(
+        cls,
+        resource: dict[str, object | None],
+        lldp_row: dict[str, object | None],
+        switch_name: str,
+        context: dict[str, Any],
+    ) -> str:
+        for field in ("switch_device_uuid", "neighbor_device_uuid", "lldp_neighbor_device_uuid"):
+            explicit_uuid = cls._clean_text(lldp_row.get(field) or resource.get(field))
+            if explicit_uuid:
+                return explicit_uuid if explicit_uuid in context["switch_device_uuids"] else ""
+        return str(context["device_uuid_by_name"].get(switch_name.strip().casefold(), ""))
+
+    @classmethod
+    def _station(
+        cls,
+        row: dict[str, object | None],
+        lldp: AcLldpDTO,
+        context: dict[str, Any],
+    ) -> tuple[str, str]:
+        metadata_station = cls._clean_text(row.get("site_name"))
+        resource_station = cls._clean_text(row.get("site"))
+        extension_station = cls._clean_text(row.get("extension_station_name"))
+        if metadata_station:
+            return metadata_station, "metadata"
+        if resource_station:
+            return resource_station, "resource"
+        if extension_station:
+            return extension_station, "metadata"
+        if lldp.raw_match_status not in {"matched", "partial"}:
+            return "", "empty"
+        station = str(context["switch_station_by_uuid"].get(lldp.switch_device_uuid, ""))
+        return (station, "lldp_switch_suggestion") if station else ("", "empty")
+
+    @staticmethod
+    def _clean_text(value: object) -> str:
+        text = str(value or "").strip()
+        return "" if text.casefold() in {"", "-", "--", "n/a", "na", "none", "null", "unknown"} else text
 
     def _ac_rows(self, conn: sqlite3.Connection) -> list[dict[str, object]]:
         summaries = {
@@ -710,7 +770,7 @@ class AcManagementQueryService:
     @staticmethod
     def _safe_devices(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         return conn.execute(
-            "SELECT device_uuid, name, system_name, primary_address, https_port, device_type FROM devices ORDER BY name"
+            "SELECT device_uuid, name, system_name, station, primary_address, https_port, device_type FROM devices ORDER BY name"
         ).fetchall()
 
     @staticmethod
@@ -891,6 +951,17 @@ class AcManagementQueryService:
 
     @staticmethod
     def _ap_sort_key(item: AcApDTO, sort_by: str) -> object:
+        if sort_by == "topology":
+            switch_name = str(item.switch_name or "").strip()
+            interface_name = normalize_interface_name(item.switch_interface)
+            return (
+                0 if switch_name else 1,
+                natural_text_key(switch_name),
+                0 if interface_name else 1,
+                natural_text_key(interface_name),
+                natural_text_key(item.name),
+                natural_text_key(item.id),
+            )
         if sort_by == "ip":
             try:
                 return (0, int(ipaddress.ip_address(item.ip)))

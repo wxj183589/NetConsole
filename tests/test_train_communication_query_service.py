@@ -43,8 +43,8 @@ class _MeshQuery:
     def __init__(self) -> None:
         common = dict(train_no="01", train_display_name="01车", station="车站A", section="A-B区间", mileage="K1+100", line_side="左线")
         self.mrs = [
-            AcMeshMrStatusDTO(mr_id="01-ct", mr_name="列车01-MR-CT", mr_device_id="mr-ct", online_status="online", peer_ap_name="AP-01", peer_ap_mac="0000-0000-0001", mesh_radio="Radio 1", rssi=-55, link_status="Forwarding", ap_online_status="online", optical_status="normal", last_seen_at="2026-07-14T12:00:00+00:00", data_status="fresh", **common),
-            AcMeshMrStatusDTO(mr_id="01-tc", mr_name="列车01-MR-TC", mr_device_id="mr-tc", online_status="offline", peer_ap_name="AP-02", mesh_radio="Radio 2", rssi=-82, link_status="Down", ap_online_status="online", optical_status="normal", last_seen_at="2026-07-14T11:50:00+00:00", data_status="stale", **common),
+            AcMeshMrStatusDTO(mr_id="01-ct", mr_name="列车01-MR-CT", mr_device_id="mr-ct", online_status="online", peer_ap_name="AP-01", peer_ap_mac="0000-0000-0001", mesh_radio="Radio 1", rssi=-55, last_seen_at="2026-07-14T12:00:00+00:00", data_status="fresh", **common),
+            AcMeshMrStatusDTO(mr_id="01-tc", mr_name="列车01-MR-TC", mr_device_id="mr-tc", online_status="offline", peer_ap_name="AP-02", mesh_radio="Radio 2", rssi=-82, last_seen_at="2026-07-14T11:50:00+00:00", data_status="stale", **common),
         ]
 
     def list_mrs(self, *_args, **_kwargs) -> AcMeshMrPageDTO:

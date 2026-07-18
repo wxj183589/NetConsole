@@ -50,6 +50,13 @@ describe('AC Management polling store', () => {
     vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
 
+  it('uses switch and logical interface topology as the default AP order', () => {
+    const store = useAcManagementStore()
+
+    expect(store.filters.sort_by).toBe('topology')
+    expect(store.filters.sort_order).toBe('asc')
+  })
+
   it('does not overlap AP requests and reports after three failures', async () => {
     let rejectRequest: ((reason?: unknown) => void) | undefined
     vi.mocked(listAcAps).mockImplementation(() => new Promise((_, reject) => { rejectRequest = reject }))

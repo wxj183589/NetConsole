@@ -33,16 +33,26 @@ def test_mesh_link_query_reads_latest_snapshot_and_enriches_exact_matches(tmp_pa
     assert by_mr["列车01-MR-CT"].peer_ap_name == "AP-Online"
     assert by_mr["列车01-MR-CT"].peer_radio == "Mesh Radio 1"
     assert by_mr["列车01-MR-CT"].match_method == "peer_mac"
+    assert by_mr["列车01-MR-CT"].ap_rx_power == "-10 dBm"
+    assert by_mr["列车01-MR-CT"].switch_rx_power == "-40 dBm"
     assert by_mr["列车02-MR-CT"].peer_ap_name == "AP-Offline"
     assert by_mr["列车02-MR-CT"].match_method == "peer_name"
-    assert by_mr["列车02-MR-CT"].ap_online_status == "offline"
-    assert by_mr["列车02-MR-CT"].optical_status == "critical"
     assert by_mr["列车99-MR-CT"].match_method == "unmatched"
     assert by_mr["列车99-MR-CT"].peer_ap_name == "AP-Unknown"
+    assert by_mr["列车99-MR-CT"].ap_rx_power == ""
+    assert by_mr["列车99-MR-CT"].switch_rx_power == ""
     by_device = {item.mr_device_id: item for item in mrs.items if item.mr_device_id}
     assert by_device["mr-01-ct"].online_status == "online"
+    assert by_device["mr-01-ct"].ap_rx_power == "-10 dBm"
+    assert by_device["mr-01-ct"].switch_rx_power == "-40 dBm"
     assert by_device["mr-02-ct"].online_status == "offline"
     assert by_device["mr-03-ct"].online_status == "offline"
+    assert {"link_status", "channel", "bandwidth", "ap_online_status", "optical_status"}.isdisjoint(
+        by_mr["列车01-MR-CT"].model_dump()
+    )
+    assert {"link_status", "ap_online_status", "optical_status"}.isdisjoint(
+        by_device["mr-01-ct"].model_dump()
+    )
     assert mr_detail is not None
     assert mr_detail.recent_events[0].ap_name == "AP-Online"
     assert raw_tail.available is False

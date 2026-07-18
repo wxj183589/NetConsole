@@ -332,10 +332,6 @@ class TrainCommunicationQueryService:
             warnings.append(self._warning("base_data_issue", f"基础资料存在 {base.issue_count} 项待核验问题", "base_data"))
         if mesh and mesh.online_status == "offline":
             warnings.append(self._warning("mr_offline", "当前 Mesh-Link 快照显示 MR 离线", "ac_mesh_link"))
-        if mesh and mesh.ap_online_status == "offline":
-            warnings.append(self._warning("peer_ap_offline", "当前关联轨旁 AP 离线", "ac_mesh_link", "critical"))
-        if mesh and mesh.optical_status in {"warning", "critical"}:
-            warnings.append(self._warning("optical_anomaly", "当前关联轨旁 AP 存在光衰异常", "ac_mesh_link", mesh.optical_status))
         if mesh and mesh.data_status == "stale":
             warnings.append(self._warning("stale_mesh_snapshot", "Mesh-Link 数据已过期", "ac_mesh_link"))
         if session and str(session.status).upper() == "FAILED":
@@ -358,7 +354,7 @@ class TrainCommunicationQueryService:
             data_sources.append(CommunicationDataSourceDTO(source="job_center", status="active" if self._is_active(task.status) else "recent", updated_at=task.updated_time or None, reference=task.id))
         if preview and preview.available:
             data_sources.append(CommunicationDataSourceDTO(source="online_mr_preview", status="fresh", updated_at=preview.updated_at, age_seconds=self._age_seconds(preview.updated_at), reference=preview.session_id))
-        mesh_link_status = str(mesh.link_status if mesh and mesh.link_status else mesh.online_status if mesh else self._text(link, "status", "link_status") or "unknown")
+        mesh_link_status = str(mesh.online_status if mesh else self._text(link, "status", "link_status") or "unknown")
         status = self._mr_communication_status(mesh, session, warnings)
         collected_at = self._latest_text(
             mesh.last_seen_at if mesh else None,
@@ -389,8 +385,8 @@ class TrainCommunicationQueryService:
             section=(mesh.section if mesh else "") or self._text(preview.display_context if preview else {}, "section"),
             mileage=(mesh.mileage if mesh else "") or self._text(preview.display_context if preview else {}, "mileage"),
             line_side=(mesh.line_side if mesh else "") or self._text(preview.display_context if preview else {}, "line_side"),
-            ap_online_status=mesh.ap_online_status if mesh else "unknown",
-            optical_status=mesh.optical_status if mesh else "no_data",
+            ap_online_status="unknown",
+            optical_status="no_data",
             fping_status=fping.status,
             fping_latest_rtt_ms=fping.latest_value,
             fping_avg_rtt_ms=fping.average_value,

@@ -55,14 +55,11 @@ export const useAcMeshLinkStore = defineStore('ac-mesh-link', () => {
     section: '',
     line_side: '',
     unmatched_only: false,
-    offline_ap_only: false,
-    optical_anomaly_only: false,
     page: 1,
     page_size: 50,
   })
   const linkFilters = reactive({
     query: '',
-    link_status: '',
     match_status: '',
     page: 1,
     page_size: 50,

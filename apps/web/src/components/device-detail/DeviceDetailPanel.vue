@@ -29,6 +29,7 @@ import type {
   DeviceTaskReference,
 } from '../../types/deviceManagement'
 import type { ConfigTaskReference } from '../../types/configCollection'
+import { displayInterfaceName } from '../../utils/interfaceName'
 
 type DetailMode = 'drawer' | 'page'
 
@@ -667,6 +668,9 @@ const selectedDetailFields = computed<DetailField[]>(() => {
 function formatDetailValue(key: string, value: unknown, context: DeviceDetailRecord): string {
   if (Array.isArray(value)) return value.length ? value.map((item) => formatEnumeratedValue(key, item, context)).join(', ') : '—'
   if (value && typeof value === 'object') return '—'
+  if (selectedRecordSection.value === 'interfaces' && ['name', 'normalized_name'].includes(key)) {
+    return formatValue(displayInterfaceName(value))
+  }
   return formatEnumeratedValue(key, value, context)
 }
 
@@ -794,6 +798,9 @@ const exactDisplayValueLabels: Record<string, Record<string, string>> = {
 function formatEnumeratedValue(key: string, value: unknown, context?: DeviceDetailRecord): string {
   if (key === 'severity_reason' && isNormalSeverity(context?.severity)) return '—'
   if (typeof value !== 'string') return formatValue(value)
+  if (['interface_name', 'local_interface', 'neighbor_interface', 'switch_interface'].includes(key)) {
+    return formatValue(displayInterfaceName(value))
+  }
   const normalizedValue = value.trim().toLowerCase()
   const exactLabel = exactDisplayValueLabels[key]?.[normalizedValue]
   if (exactLabel) return exactLabel

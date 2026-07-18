@@ -26,6 +26,7 @@ describe('Web route ownership', () => {
 
   it('keeps legacy AC and toolbox redirects', () => {
     expect(routes.find((route) => route.path === 'ac-management')?.redirect).toEqual({ name: 'ac-fit-aps' })
+    expect(routes.find((route) => route.path === 'ac-management/optical')?.redirect).toEqual({ name: 'ac-fit-aps' })
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
   })
 

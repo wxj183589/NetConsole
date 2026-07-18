@@ -79,6 +79,7 @@ class AcConnectionRecordDTO(ApiModel):
 
 
 class AcLldpDTO(ApiModel):
+    switch_device_uuid: str = ""
     switch_name: str = ""
     switch_ip: str = ""
     interface_name: str = ""
@@ -86,6 +87,7 @@ class AcLldpDTO(ApiModel):
     port_status: str = ""
     vlan: str = ""
     optical_module_status: str = ""
+    raw_match_status: str = ""
     match_status: str = ""
     source: str = ""
     updated_at: str = ""
@@ -110,6 +112,7 @@ class AcApDTO(ApiModel):
     radio1_power: str = ""
     radio2_power: str = ""
     station: str = ""
+    station_source: str = "empty"
     section: str = ""
     mileage: str = ""
     direction: str = ""

@@ -48,16 +48,13 @@ export interface AcMeshLinkRecord {
   peer_ap_mac: string
   peer_radio: string
   mesh_interface: string
-  link_status: string
   rssi: number | null
-  channel: string
-  bandwidth: string
   station: string
   section: string
   mileage: string
   line_side: string
-  ap_online_status: string
-  optical_status: string
+  ap_rx_power: string
+  switch_rx_power: string
   last_seen_at: string
   match_method: string
   match_warning: string
@@ -86,13 +83,12 @@ export interface AcMeshMrStatus {
   peer_ap_mac: string
   mesh_radio: string
   rssi: number | null
-  link_status: string
   station: string
   section: string
   mileage: string
   line_side: string
-  ap_online_status: string
-  optical_status: string
+  ap_rx_power: string
+  switch_rx_power: string
   last_seen_at: string
   match_method: string
   match_warning: string
@@ -166,8 +162,6 @@ export interface AcMeshMrQuery {
   line_side?: string
   peer_ap_name?: string
   unmatched_only?: boolean
-  offline_ap_only?: boolean
-  optical_anomaly_only?: boolean
   query?: string
   page: number
   page_size: number
@@ -184,8 +178,6 @@ export interface AcMeshLinkQuery {
   station?: string
   section?: string
   line_side?: string
-  link_status?: string
-  ap_online_status?: string
   match_status?: string
   query?: string
   page: number

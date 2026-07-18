@@ -72,7 +72,7 @@ _ApIndexes = dict[str, dict[str, list[_ApCandidate]]]
 
 
 class AcMeshLinkQueryService:
-    """读取 Qt AC Mesh-Link 监控已落盘快照，不执行采集或写入。"""
+    """读取 AC Mesh-Link 已落盘快照，不执行采集或写入。"""
 
     def __init__(
         self,
@@ -102,8 +102,9 @@ class AcMeshLinkQueryService:
                 site_id=site_id,
                 registered_mrs=len(mrs),
                 unknown_mrs=len(mrs),
-                message="暂无 AC Mesh-Link 快照，请先在 Qt 列车在线页面完成采集。",
+                message="暂无 AC Mesh-Link 快照，请先执行 Mesh-Link 刷新。",
             )
+        offline_ap_ids = self._offline_ap_ids(site_id)
         return AcMeshLinkSummaryDTO(
             site_id=site_id,
             controller_id=snapshot.controller_id,
@@ -113,10 +114,10 @@ class AcMeshLinkQueryService:
             offline_mrs=sum(item.online_status == "offline" for item in mrs),
             stale_mrs=sum(item.online_status == "stale" for item in mrs),
             unknown_mrs=sum(item.online_status == "unknown" for item in mrs),
-            active_links=sum(item.data_status == "fresh" and self._is_active(item.link_status) for item in links),
+            active_links=sum(item.data_status == "fresh" and item.mr_online_status == "online" for item in links),
             link_total=len(links),
             unmatched_links=sum(item.match_method == "unmatched" for item in links),
-            offline_ap_links=sum(item.ap_online_status == "offline" for item in links),
+            offline_ap_links=sum(item.peer_ap_id in offline_ap_ids for item in links),
             updated_at=snapshot.collected_at,
             age_seconds=snapshot.age_seconds,
             data_status=snapshot.data_status,
@@ -137,8 +138,6 @@ class AcMeshLinkQueryService:
         station: str = "",
         section: str = "",
         line_side: str = "",
-        link_status: str = "",
-        ap_online_status: str = "",
         match_status: str = "",
         query: str = "",
         page: int = 1,
@@ -156,8 +155,6 @@ class AcMeshLinkQueryService:
             "station": station,
             "section": section,
             "line_side": line_side,
-            "link_status": link_status,
-            "ap_online_status": ap_online_status,
         }
         for field, value in filters.items():
             if value:
@@ -195,8 +192,6 @@ class AcMeshLinkQueryService:
         line_side: str = "",
         peer_ap_name: str = "",
         unmatched_only: bool = False,
-        offline_ap_only: bool = False,
-        optical_anomaly_only: bool = False,
         query: str = "",
         page: int = 1,
         page_size: int = 50,
@@ -219,10 +214,6 @@ class AcMeshLinkQueryService:
                 items = [item for item in items if needle in str(getattr(item, field)).casefold()]
         if unmatched_only:
             items = [item for item in items if item.match_method == "unmatched"]
-        if offline_ap_only:
-            items = [item for item in items if item.ap_online_status == "offline"]
-        if optical_anomaly_only:
-            items = [item for item in items if item.optical_status in {"warning", "critical"}]
         if query:
             needle = query.casefold()
             items = [
@@ -368,13 +359,12 @@ class AcMeshLinkQueryService:
                 peer_ap_mac=link.peer_ap_mac,
                 mesh_radio=link.peer_radio,
                 rssi=link.rssi,
-                link_status=link.link_status,
                 station=link.station,
                 section=link.section,
                 mileage=link.mileage,
                 line_side=link.line_side,
-                ap_online_status=link.ap_online_status,
-                optical_status=link.optical_status,
+                ap_rx_power=link.ap_rx_power,
+                switch_rx_power=link.switch_rx_power,
                 last_seen_at=link.last_seen_at,
                 match_method=link.match_method,
                 match_warning=link.match_warning,
@@ -413,13 +403,12 @@ class AcMeshLinkQueryService:
             peer_ap_mac=link.peer_ap_mac,
             mesh_radio=link.peer_radio,
             rssi=link.rssi,
-            link_status=link.link_status,
             station=link.station,
             section=link.section,
             mileage=link.mileage,
             line_side=link.line_side,
-            ap_online_status=link.ap_online_status,
-            optical_status=link.optical_status,
+            ap_rx_power=link.ap_rx_power,
+            switch_rx_power=link.switch_rx_power,
             last_seen_at=link.last_seen_at,
             match_method=link.match_method,
             match_warning=link.match_warning or "MR 未匹配设备管理记录。",
@@ -455,6 +444,7 @@ class AcMeshLinkQueryService:
             candidate, method, warning = self._match_ap(raw, ap_indexes)
             radio = candidate.radio if candidate else None
             ap = candidate.detail.ap if candidate else None
+            optical = candidate.detail.optical if candidate else None
             mr_id = device.uuid if device else _normalize_vehicle_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
             link_status = str(raw.get("status") or "")
             result.append(
@@ -476,16 +466,13 @@ class AcMeshLinkQueryService:
                     peer_ap_mac=ap.mac if ap else "",
                     peer_radio=f"Mesh Radio {radio.radio_id}" if radio else "",
                     mesh_interface=f"Mesh Radio {radio.radio_id}" if radio else "",
-                    link_status=link_status,
                     rssi=self._optional_int(raw.get("rssi")),
-                    channel=radio.channel if radio else "",
-                    bandwidth=radio.bandwidth if radio else "",
                     station=ap.station if ap else str(raw.get("matched_station") or ""),
                     section=ap.section if ap else "",
                     mileage=ap.mileage if ap else "",
                     line_side=ap.direction if ap else "",
-                    ap_online_status=ap.status if ap else "unknown",
-                    optical_status=ap.optical_status if ap else "no_data",
+                    ap_rx_power=optical.rx_power if optical else "",
+                    switch_rx_power=optical.switch_rx_power if optical else "",
                     last_seen_at=str(raw.get("ac_time") or raw.get("created_at") or snapshot.collected_at),
                     match_method=method,
                     match_warning=warning,
@@ -513,6 +500,14 @@ class AcMeshLinkQueryService:
             indexes = {"mac": by_mac, "name": by_name, "normalized_name": by_normalized_name}
             self._ap_cache[site_id] = (signature, indexes)
             return indexes
+
+    def _offline_ap_ids(self, site_id: str) -> set[str]:
+        return {
+            candidate.detail.ap.id
+            for candidates in self._ap_indexes(site_id)["name"].values()
+            for candidate in candidates
+            if candidate.detail.ap.status == "offline"
+        }
 
     @staticmethod
     def _path_signature(path: Path) -> tuple[int, int, int, int]:
@@ -738,7 +733,7 @@ class AcMeshLinkQueryService:
         if snapshot is None or snapshot.data_status in {"error", "unknown", "no_data"}:
             return "unknown"
         if snapshot.data_status == "fresh":
-            return "online" if link and self._is_active(link.link_status) else "offline"
+            return "online" if link and link.mr_online_status == "online" else "offline"
         return "stale" if link or has_history else "unknown"
 
     @staticmethod
@@ -796,7 +791,7 @@ class AcMeshLinkQueryService:
             return item.rssi if item.rssi is not None else -999
         if field == "updated_at":
             return item.last_seen_at
-        if field in {"peer_ap_name", "station", "section", "link_status", "ap_online_status"}:
+        if field in {"peer_ap_name", "station", "section"}:
             return str(getattr(item, field)).casefold()
         return (item.train_no, item.car_end, item.mr_name.casefold())
 

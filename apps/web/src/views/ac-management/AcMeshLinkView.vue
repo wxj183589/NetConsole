@@ -59,10 +59,6 @@ function dataStatusLabel(status: string): string {
   return { fresh: '实时', recent: '准实时', stale: '已过期', error: '解析失败', unknown: '未知', no_data: '无数据' }[status] || status
 }
 
-function apStatusLabel(status: string): string {
-  return { online: '在线', offline: '离线', unauthenticated: '未认证', unknown: '未知' }[status] || status || '未知'
-}
-
 function matchLabel(method: string): string {
   return { peer_mac: 'MAC 精确', peer_name: '名称精确', normalized_peer_name: '规范化名称', unmatched: '未匹配' }[method] || method
 }
@@ -136,8 +132,6 @@ function matchLabel(method: string): string {
             <el-input v-model="store.filters.station" clearable placeholder="站点" />
             <el-input v-model="store.filters.section" clearable placeholder="区间" />
             <el-checkbox v-model="store.filters.unmatched_only">只看未匹配</el-checkbox>
-            <el-checkbox v-model="store.filters.offline_ap_only">关联离线 AP</el-checkbox>
-            <el-checkbox v-model="store.filters.optical_anomaly_only">光衰异常</el-checkbox>
             <el-button type="primary" @click="store.applyFilters">应用</el-button>
           </div>
           <el-table v-loading="store.loading" :data="store.mrs" stripe height="calc(100vh - 535px)" empty-text="暂无车载 MR 数据">
@@ -149,13 +143,12 @@ function matchLabel(method: string): string {
             <el-table-column prop="peer_ap_mac" label="轨旁 AP MAC" min-width="145"><template #default="{ row }">{{ display(row.peer_ap_mac) }}</template></el-table-column>
             <el-table-column prop="mesh_radio" label="Mesh Radio" width="120"><template #default="{ row }">{{ display(row.mesh_radio) }}</template></el-table-column>
             <el-table-column prop="rssi" label="RSSI" width="75"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column>
-            <el-table-column prop="link_status" label="链路状态" width="110"><template #default="{ row }">{{ display(row.link_status) }}</template></el-table-column>
             <el-table-column prop="station" label="站点" min-width="125"><template #default="{ row }">{{ display(row.station) }}</template></el-table-column>
             <el-table-column prop="section" label="区间" min-width="145"><template #default="{ row }">{{ display(row.section) }}</template></el-table-column>
             <el-table-column prop="mileage" label="里程" width="105"><template #default="{ row }">{{ display(row.mileage) }}</template></el-table-column>
             <el-table-column prop="line_side" label="线路方向" width="105"><template #default="{ row }">{{ display(row.line_side) }}</template></el-table-column>
-            <el-table-column label="轨旁 AP 状态" width="120"><template #default="{ row }"><el-tag :type="statusType(row.ap_online_status)">{{ apStatusLabel(row.ap_online_status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="optical_status" label="光衰状态" width="105" />
+            <el-table-column prop="ap_rx_power" label="轨旁 AP 室外侧收光" width="165"><template #default="{ row }">{{ display(row.ap_rx_power) }}</template></el-table-column>
+            <el-table-column prop="switch_rx_power" label="轨旁 AP 室内侧收光" width="165"><template #default="{ row }">{{ display(row.switch_rx_power) }}</template></el-table-column>
             <el-table-column label="最近更新" width="170"><template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template></el-table-column>
             <el-table-column label="匹配方式" width="115"><template #default="{ row }">{{ matchLabel(row.match_method) }}</template></el-table-column>
             <el-table-column label="操作" width="82" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click="openMr(row)">详情</el-button></template></el-table-column>
@@ -176,14 +169,11 @@ function matchLabel(method: string): string {
             <el-table-column prop="peer_ap_mac" label="轨旁 AP MAC" min-width="145"><template #default="{ row }">{{ display(row.peer_ap_mac) }}</template></el-table-column>
             <el-table-column prop="peer_radio" label="Mesh Radio" width="120"><template #default="{ row }">{{ display(row.peer_radio) }}</template></el-table-column>
             <el-table-column prop="rssi" label="RSSI" width="75"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column>
-            <el-table-column prop="link_status" label="链路状态" width="110" />
-            <el-table-column prop="channel" label="信道" width="75"><template #default="{ row }">{{ display(row.channel) }}</template></el-table-column>
-            <el-table-column prop="bandwidth" label="带宽" width="80"><template #default="{ row }">{{ display(row.bandwidth) }}</template></el-table-column>
             <el-table-column prop="station" label="站点" min-width="125" />
             <el-table-column prop="section" label="区间" min-width="145"><template #default="{ row }">{{ display(row.section) }}</template></el-table-column>
             <el-table-column prop="mileage" label="里程" width="105"><template #default="{ row }">{{ display(row.mileage) }}</template></el-table-column>
-            <el-table-column prop="ap_online_status" label="轨旁 AP 状态" width="120" />
-            <el-table-column prop="optical_status" label="光衰" width="90" />
+            <el-table-column prop="ap_rx_power" label="轨旁 AP 室外侧收光" width="165"><template #default="{ row }">{{ display(row.ap_rx_power) }}</template></el-table-column>
+            <el-table-column prop="switch_rx_power" label="轨旁 AP 室内侧收光" width="165"><template #default="{ row }">{{ display(row.switch_rx_power) }}</template></el-table-column>
             <el-table-column label="数据状态" width="95"><template #default="{ row }"><el-tag :type="statusType(row.data_status)">{{ dataStatusLabel(row.data_status) }}</el-tag></template></el-table-column>
           </el-table>
           <div class="pagination"><span>共 {{ store.linkTotal }} 条</span><el-pagination :current-page="store.linkFilters.page" :page-size="store.linkFilters.page_size" layout="prev, pager, next" :total="store.linkTotal" @current-change="store.setLinkPage" /></div>
@@ -232,7 +222,6 @@ function matchLabel(method: string): string {
             <el-table-column prop="peer_ap_name" label="轨旁 AP" min-width="155" />
             <el-table-column prop="peer_radio" label="Mesh Radio" width="120" />
             <el-table-column prop="rssi" label="RSSI" width="75" />
-            <el-table-column prop="link_status" label="状态" width="110" />
             <el-table-column prop="station" label="站点" min-width="120" />
             <el-table-column prop="section" label="区间" min-width="140" />
           </el-table>

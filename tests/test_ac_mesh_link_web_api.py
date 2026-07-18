@@ -52,6 +52,9 @@ def test_mesh_link_get_api_is_read_only_and_raw_unavailable_is_not_an_error(tmp_
     assert snapshots.status_code == 200
     assert raw_tail.status_code == 200
     assert raw_tail.json()["available"] is False
+    removed_fields = {"link_status", "channel", "bandwidth", "ap_online_status", "optical_status"}
+    assert removed_fields.isdisjoint(links.json()["items"][0])
+    assert {"link_status", "ap_online_status", "optical_status"}.isdisjoint(mrs.json()["items"][0])
     assert "client" not in "".join((summary.text, links.text, mrs.text, detail.text)).casefold()
     assert after == before
 
@@ -78,3 +81,11 @@ def test_mesh_link_router_exposes_one_controlled_post_operation(tmp_path: Path) 
     assert {path for path, method in routes if method == "POST"} == {"/api/ac-management/mesh-links/refresh"}
     assert "client_count" not in str(app.openapi()).casefold()
     assert all(not path.endswith(("/collect", "/command", "/start", "/stop")) for path, _method in routes)
+    parameters = {
+        parameter["name"]
+        for path, operations in app.openapi()["paths"].items()
+        if path in {"/api/ac-management/mesh-links/current", "/api/ac-management/mesh-links/mrs"}
+        for operation in operations.values()
+        for parameter in operation.get("parameters", [])
+    }
+    assert {"link_status", "ap_online_status", "offline_ap_only", "optical_anomaly_only"}.isdisjoint(parameters)

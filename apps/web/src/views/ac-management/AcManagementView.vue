@@ -10,12 +10,13 @@ import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
 import { useTaskStore } from '../../stores/tasks'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot } from '../../types/acManagement'
+import { displayInterfaceName } from '../../utils/interfaceName'
 
 const store = useAcManagementStore()
 const taskStore = useTaskStore()
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.name === 'ac-optical' ? 'optical' : 'aps')
+const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
 const configSearch = ref('')
@@ -46,15 +47,15 @@ const columns: TableColumn[] = [
   { key: 'radio2_channel', label: 'Mesh Radio 2 信道', width: 140 },
   { key: 'radio1_power', label: 'Mesh Radio 1 功率', width: 140 },
   { key: 'radio2_power', label: 'Mesh Radio 2 功率', width: 140 },
-  { key: 'station', label: '归属站点', width: 140, sortable: true },
-  { key: 'section', label: '归属区间', width: 170, sortable: true },
-  { key: 'mileage', label: '里程', width: 110, sortable: true },
-  { key: 'direction', label: '线路方向', width: 110 },
   { key: 'switch_name', label: '连接交换机', width: 150 },
   { key: 'switch_interface', label: '连接端口', width: 150 },
   { key: 'lldp_status', label: 'LLDP 状态', width: 120 },
   { key: 'optical_status', label: '光衰状态', width: 125, sortable: true },
-  { key: 'optical_rx_power', label: '光衰值', width: 110, sortable: true },
+  { key: 'optical_rx_power', label: 'AP侧收光光衰', width: 145, sortable: true },
+  { key: 'station', label: '归属站点', width: 140, sortable: true },
+  { key: 'section', label: '归属区间', width: 170, sortable: true },
+  { key: 'mileage', label: '里程', width: 110, sortable: true },
+  { key: 'direction', label: '线路方向', width: 110 },
   { key: 'updated_at', label: '最近更新时间', width: 180, sortable: true },
 ]
 
@@ -137,7 +138,7 @@ function clearFilters(): void {
     model: '',
     switch: '',
     optical_status: '',
-    sort_by: 'name',
+    sort_by: 'topology',
     sort_order: 'asc',
   })
   store.applyFilters()
@@ -226,7 +227,7 @@ function handleSort(event: { prop: string; order: 'ascending' | 'descending' | n
     optical_rx_power: 'optical_value',
     updated_at: 'updated_at',
   }
-  store.filters.sort_by = sortMap[event.prop] || 'name'
+  store.filters.sort_by = event.order ? (sortMap[event.prop] || 'topology') : 'topology'
   store.filters.sort_order = event.order === 'descending' ? 'desc' : 'asc'
   store.applyFilters()
 }
@@ -270,6 +271,12 @@ async function nextConfigMatch(): Promise<void> {
 
 function display(value: unknown): string {
   return value === null || value === undefined || value === '' ? '--' : String(value)
+}
+
+const interfaceValueKeys = new Set(['switch_interface', 'interface_name', 'local_interface', 'neighbor_interface'])
+
+function displayColumnValue(key: string, value: unknown): string {
+  return interfaceValueKeys.has(key) ? display(displayInterfaceName(value)) : display(value)
 }
 
 function statusLabel(value: string): string {
@@ -440,7 +447,7 @@ function diffLineClass(line: string): string {
               <template #default="{ row }">
                 <el-tag v-if="column.key === 'status'" :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag>
                 <el-tag v-else-if="column.key === 'optical_status'" :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status) }}</el-tag>
-                <span v-else>{{ display(row[column.key]) }}</span>
+                <span v-else>{{ displayColumnValue(column.key, row[column.key]) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="82" fixed="right">
@@ -492,28 +499,6 @@ function diffLineClass(line: string): string {
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="FIT-AP 光衰" name="optical">
-          <div class="config-toolbar">
-            <div><h3>FIT-AP 光衰</h3><p>显示 AC 关联的 AP 侧光模块结果；刷新通过持久化后台任务执行。</p></div>
-            <div class="toolbar-actions">
-              <el-select v-model="store.filters.optical_status" clearable placeholder="光衰状态" style="width: 155px" @change="store.applyFilters">
-                <el-option label="正常" value="normal" /><el-option label="告警" value="warning" /><el-option label="严重" value="critical" />
-                <el-option label="无数据" value="no_data" /><el-option label="未关联 AP 离线" value="unrelated" />
-              </el-select>
-              <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
-            </div>
-          </div>
-          <el-table :data="store.aps" stripe height="calc(100vh - 405px)" empty-text="暂无 FIT-AP 光衰数据">
-            <el-table-column prop="name" label="AP 名称" min-width="190" />
-            <el-table-column prop="status" label="AP 状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="switch_name" label="关联交换机" min-width="160" />
-            <el-table-column prop="switch_interface" label="关联端口" min-width="170" />
-            <el-table-column prop="optical_rx_power" label="Rx Power" width="120"><template #default="{ row }">{{ display(row.optical_rx_power) }}</template></el-table-column>
-            <el-table-column prop="optical_status" label="光衰状态" width="130"><template #default="{ row }"><el-tag :type="statusType(row.optical_status)">{{ opticalLabel(row.optical_status) }}</el-tag></template></el-table-column>
-            <el-table-column prop="updated_at" label="更新时间" min-width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
-            <el-table-column label="操作" width="82" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template></el-table-column>
-          </el-table>
-        </el-tab-pane>
       </el-tabs>
     </div>
 
@@ -540,7 +525,12 @@ function diffLineClass(line: string): string {
             <div class="section-heading"><h3>AP 扩展元数据</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_metadata_write')" type="primary" :loading="store.refreshStarting" :disabled="taskActive" @click="saveMetadata">保存元数据</el-button></div>
             <el-form :model="metadataForm" label-width="88px" :disabled="!isFeatureEnabled('web.ac_fit_ap_metadata_write')">
               <div class="metadata-grid">
-                <el-form-item label="归属站点"><el-input v-model="metadataForm.site_name" maxlength="100" /></el-form-item>
+                <el-form-item label="归属站点">
+                  <div class="metadata-field">
+                    <el-input v-model="metadataForm.site_name" maxlength="100" />
+                    <small v-if="store.selected.ap.station_source === 'lldp_switch_suggestion'">根据 LLDP 邻居交换机站点建议，保存后才写入</small>
+                  </div>
+                </el-form-item>
                 <el-form-item label="里程"><el-input v-model="metadataForm.mileage" maxlength="100" placeholder="例如 ZDK1+200" /></el-form-item>
                 <el-form-item label="线路方向"><el-select v-model="metadataForm.direction" clearable><el-option label="上行" value="上行" /><el-option label="下行" value="下行" /><el-option v-if="metadataForm.direction && !['上行', '下行'].includes(metadataForm.direction)" :label="metadataForm.direction" :value="metadataForm.direction" /></el-select></el-form-item>
                 <el-form-item label="点位说明"><el-input v-model="metadataForm.location_note" maxlength="500" /></el-form-item>
@@ -574,7 +564,7 @@ function diffLineClass(line: string): string {
           <el-descriptions :column="2" border>
             <el-descriptions-item label="交换机">{{ display(store.selected.lldp.switch_name) }}</el-descriptions-item>
             <el-descriptions-item label="交换机 IP">{{ display(store.selected.lldp.switch_ip) }}</el-descriptions-item>
-            <el-descriptions-item label="接口">{{ display(store.selected.lldp.interface_name) }}</el-descriptions-item>
+            <el-descriptions-item label="接口">{{ displayColumnValue('interface_name', store.selected.lldp.interface_name) }}</el-descriptions-item>
             <el-descriptions-item label="LLDP 邻居">{{ display(store.selected.lldp.lldp_neighbor) }}</el-descriptions-item>
             <el-descriptions-item label="端口状态">{{ display(store.selected.lldp.port_status) }}</el-descriptions-item>
             <el-descriptions-item label="VLAN">{{ display(store.selected.lldp.vlan) }}</el-descriptions-item>
@@ -603,7 +593,7 @@ function diffLineClass(line: string): string {
         <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" show-icon />
         <el-table :data="historyPage?.items || []" stripe empty-text="暂无历史记录" height="calc(100vh - 190px)">
           <el-table-column v-for="column in historyColumns" :key="column[0]" :prop="column[0]" :label="column[1]" min-width="130">
-            <template #default="{ row }">{{ display(row[column[0]]) }}</template>
+            <template #default="{ row }">{{ displayColumnValue(column[0], row[column[0]]) }}</template>
           </el-table-column>
         </el-table>
         <div class="pagination-row">
@@ -669,6 +659,8 @@ function diffLineClass(line: string): string {
 .detail-section-title { margin: 23px 0 10px; }
 .metadata-editor { margin-top: 18px; padding: 14px 16px 2px; border: 1px solid var(--nc-border); border-radius: 8px; }
 .metadata-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.metadata-field { width: 100%; }
+.metadata-field small { display: block; margin-top: 4px; color: var(--el-color-info); line-height: 1.4; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin: 23px 0 10px; }
 .section-heading h3, .metadata-editor .section-heading { margin: 0; }
 .optical-detail { margin-top: 12px; }
