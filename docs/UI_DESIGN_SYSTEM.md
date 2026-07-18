@@ -6,7 +6,7 @@
 
 ## 1. 当前实现状态
 
-基础层已建立：
+全局主题基础已经接入唯一 Renderer：
 
 - `apps/web/src/theme/tokens.css`：品牌、状态、字体、间距、圆角、密度和 Shell 尺寸；
 - `apps/web/src/theme/light.css` 与 `dark.css`：浅色/深色语义色；
@@ -15,8 +15,9 @@
 - `apps/web/src/theme/echarts.ts`：从当前 CSS Token 读取图表色并通知已挂载图表重绘；
 - `NcCard`、`NcStatusTag`、`NcTable` 和 `NcLayout`：首批公共基础件；
 - `AppLayout`：继续作为唯一应用 Shell，并开始消费统一尺寸和颜色 Token。
+- Electron Main：窗口初始背景使用预定义浅/深安全色，运行期只接受受信 Renderer 报告的 `{ resolvedTheme: 'light' | 'dark' }`，不接受任意颜色或窗口参数。
 
-业务页面尚未批量迁移到公共组件。后续遵循“触碰即收敛”，逐页替换重复样式；不得因为基础件存在就将未迁移页面标记为设计对齐完成。
+应用 Shell、侧栏、顶部栏、页面、Element Plus 浮层和现有 Traffic/Mesh 图表已进入同一主题链，不再把固定深色侧栏作为默认行为。历史页面状态色已收敛到语义 Token，E10B 的 `WEB_STATUS_COLOR_TOKEN` 例外为 0；Guard 已收窄 `--nc-text-primary` 等普通文本 Token 的误报规则并有单元测试。业务页面尚未全部迁移到公共组件，最终 Electron 多尺寸、多缩放和 Windows 跟随系统视觉验收仍为 `PENDING`，不得因为自动 Guard 通过就标记视觉完成。
 
 ## 2. 分层与唯一职责
 
@@ -65,8 +66,11 @@ NetConsole Design Token
 3. 根元素同步 `data-theme="light|dark"` 与 Element Plus 兼容的 `dark` class；
 4. `auto` 模式监听操作系统颜色变化；
 5. 用户选择的主题色覆盖 `--nc-primary`，Element Plus 派生色由统一映射生成。
+6. Renderer 将解析后的 `light|dark` 通过严格单向 IPC 报告给 Electron Main；Main 只映射到预定义窗口背景色。
 
 不得为主题另建 localStorage、Pinia 持久化或 Electron 配置文件，否则会形成第二事实源。设置页的实时预览、取消恢复和正式保存继续复用现有链路。
+
+主题设置加载失败时，Browser 和 Electron 都回落到完整安全浅色，而不是只切换内容区。`auto` 模式通过 `prefers-color-scheme` 监听 Windows 主题变化，不重载路由和业务页面。
 
 ## 5. 公共组件契约
 
@@ -107,6 +111,8 @@ ECharts Canvas 不能直接解析 CSS `var()`。图表初始化或主题变化�
 
 现有 Traffic RTT、Traffic 带宽和 Mesh RSSI 图表已订阅统一主题事件；异步加载系统设置、切换主色或 `auto` 跟随系统变化后会重新读取 Token 并更新文字、坐标轴、网格、Tooltip、缩放条和数据色。本阶段不新增 `NcChart`，避免在现有图表生命周期尚未统一前制造空抽象。
 
+Electron IPC 不属于图表或主题的第二事实源。它只接收最终解析结果以消除窗口装载期白闪/黑闪；Renderer 主题仍以系统设置和 CSS Token 为准。
+
 ## 7. 页面接入示例
 
 ```vue
@@ -136,3 +142,5 @@ ECharts Canvas 不能直接解析 CSS `var()`。图表初始化或主题变化�
 5. 浅色、深色、跟随系统三种模式均验证文字、边框、表格、弹窗和状态色，而不是只检查页面背景。
 
 任何设计增强都必须建立在页面功能可用和 Qt 历史事实已完成 1:1 迁移的前提上，不能用视觉完成替代业务验收。
+
+当前自动测试只证明主题解析、Token、Element Plus/ECharts 事件和 Electron IPC 契约。最终仍需在 Electron 中人工覆盖浅色、深色、跟随系统，1280×720/1920×1080/2560×1440，以及 100%/125%/150% 缩放；在该清单实际完成前，视觉状态保持 `PENDING`。

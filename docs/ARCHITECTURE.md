@@ -44,6 +44,24 @@ flowchart LR
 
 页面关闭不等于停止任务。任务取消、重试、Artifact 下载和打开能力必须由任务 owner 明确授权，不能由前端伪造状态。
 
+## 全局主题运行链
+
+```mermaid
+flowchart LR
+    SS["系统设置 API\ntheme / theme_color"] --> AP["applySystemAppearance"]
+    AP --> TOK["NetConsole Design Token\nlight / dark / auto"]
+    TOK --> SHELL["App Shell / 侧栏 / 页面"]
+    TOK --> EL["Element Plus 变量映射"]
+    TOK --> EC["ECharts Token + 重绘事件"]
+    TOK --> IPC["严格单向 IPC\nresolvedTheme: light | dark"]
+    IPC --> BG["Electron BrowserWindow 背景"]
+```
+
+- 系统设置仍是主题与强调色的唯一持久化事实源，不新增 localStorage、Pinia 或 Electron 配置副本。
+- `light`、`dark`、`auto` 统一作用于侧栏、顶部栏、内容区、Element Plus 浮层和图表；当前不提供隐式“深色侧栏 + 浅色内容”模式。
+- Renderer 只向受信 Main 报告解析后的 `light|dark`，不能传任意颜色或窗口参数；Main 只映射到预定义安全背景色。
+- 自动测试已经覆盖 Token、主题事件和严格 IPC 契约，但 Electron 多尺寸、多缩放和 Windows 跟随系统的最终视觉验收仍为 `PENDING`，不能由单元测试替代。
+
 ## 数据与资源
 
 - 版本唯一来源：`src/netconsole/core/version.py`。
@@ -61,4 +79,4 @@ SNMP Center、通用 MIB/OID 平台和无线勘测属于批准删除项。设备
 
 ## 架构门
 
-新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。架构边界、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)及[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)。
+新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。当前九个架构门已由 `scripts/architecture/run_all.py` 建立；精确分类、限时例外、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)、[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。

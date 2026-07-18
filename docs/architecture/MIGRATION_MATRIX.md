@@ -35,6 +35,7 @@
 | --- | --- | --- | --- | --- |
 | Electron 桌面宿主 | `MIGRATED` | `COMPLETE`（架构） | Electron Main/Preload、受管 Backend、唯一 Vue | 托盘/签名/升级是后续产品能力，不恢复 Qt |
 | 设备管理 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/network/devices`、Device Service/API/Vue | Electron 人工、真实设备连接和导入导出验收 |
+| 设备详情（快速抽屉 + 完整页） | `MIGRATED` | `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING` | 设备列表快速抽屉与 `/devices/:deviceId` 共用 Device Detail Application/Query Service、DTO/API/Vue | 定向 Python/Vue/架构验证已通过；Electron 视觉/交互及真实设备采集仍待验收；全量门禁因用户 CPU 限制延后 |
 | AC 管理 / FIT-AP | `HIDDEN_PENDING_MIGRATION` | `PARTIAL / REAL_DEVICE_PENDING` | `/ac-management/*`、AC Service/API/Vue | 隐藏缺口、真实 AC、危险动作与导出验收 |
 | 轨道交通/Online MR/MESH | `HIDDEN_PENDING_MIGRATION` | `PARTIAL` | `/rail-transit/*`、Rail/Online MR/MESH 永久层 | 真实列车、MR、Agent、停止恢复、报告与异常链验收 |
 | 配置采集中心 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/config-center`、Config Service/API/Vue | 真实设备保存、双栏比较、Artifact 人工验收 |
@@ -49,6 +50,12 @@
 ## 使用规则
 
 - “迁移处置完成”不等于“真实功能验收完成”。
+- 历史 Qt 页面已经删除只说明旧宿主退出；正在工作树实现、尚未提交或尚未人工/真实设备验收的能力不能因此提升为 `COMPLETE`。
 - `HIDDEN_PENDING_MIGRATION` 的入口必须保持不可见/不可用，不能以只读占位页冒充迁移。
 - 现场条件缺失时保持 `REAL_DEVICE_PENDING`；Fake 只验证协议，不替代真实设备。
-- Navigation Registry 中保留的 `qt_page_id/qt_feature_id` 仅是历史追踪元数据，不代表 Qt 运行时存在。
+- 设备详情打开时先读取最近数据库快照，各页签首次激活再分页加载；“刷新全部”必须通过现有 Task Center 的 `device.inventory.collect`，不能在 Router 或 Renderer 直连设备。
+- 当前通用刷新只允许 H3C/Comware 交换机且命中可执行版本化 Profile；H3C AC/MR 只读复用各自业务 Query Service，Huawei/ZTE 和未知或未验证厂商、角色、平台、Profile 均失败关闭。
+- 未知事实由 API 返回 `null` 并在页面显示“—”，不能伪造数值 `0`；设备详情 DTO 不得包含凭据或服务端绝对路径。
+- 设备详情 LLDP 公开契约不包含邻居能力或型号；底层历史 DB/Repository 兼容字段继续保留，不执行破坏性 schema 或历史数据清理。
+- 光模块正常状态不返回公开严重性原因，注意、告警、无光等异常原因继续保留；关联业务公开 DTO 不携带重复的 AC/AP、交换机、光模块严重性和 MR 会话细节，内部历史数据不因此删除。
+- Navigation Registry 当前注册项使用中立的 `legacy_page_id/legacy_feature_id`；`qt_page_id/qt_feature_id` 只在 schema v1 读取兼容与负向测试中保留，规范化后不会出现在活动导航项，也不代表 Qt 运行时存在。

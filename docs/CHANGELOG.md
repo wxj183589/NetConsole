@@ -6,6 +6,7 @@
 
 - 统一任务窗口完成取消竞态、终态收敛、日志脱敏、Artifact 授权、受管下载、打开文件与定位目录闭环；任务子窗口保持单实例并可在加载失败或崩溃后安全重建，关闭窗口不停止后台任务。
 - 设备管理完成真实 CRUD、凭据保持/替换/清除三态、导入预览、诊断与设备导出 Artifact、统一任务摘要以及 SecureCRT/Xshell/PuTTY 严格白名单桌面契约；真实设备连接和外部终端点击仍待现场验收。
+- 新增设备快速详情抽屉与 `/devices/:deviceId` 完整详情页，共用 Device Detail Application/Query Service、分页 DTO/API 和 Vue presentation；开页只读最近快照、页签懒加载，刷新通过 Task Center 的 `device.inventory.collect`。当前命令执行只允许可执行 Profile 匹配的 H3C/Comware 交换机，H3C AC/MR 仅关联现有业务查询，Huawei/ZTE 与未知或未验证平台失败关闭。设备详情不提供独立 Health 契约；LLDP 公开 DTO/页面移除邻居能力和型号；接口移除入/出速率、错误统计及最后变化；光模块移除采集状态和阈值来源，正常状态不展示原因，异常原因继续中文显示并按后端严重性使用语义告警色；关联业务公开契约移除重复的 AC/AP、交换机、光模块严重性及 MR 会话字段。完整页按剩余视口高度伸展，抽屉继续限制独立滚动高度。底层 DB/Repository 兼容字段保留且不破坏旧数据。定向自动测试已通过，Electron 视觉交互和真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
 - AC/FIT-AP 完成 AC 信息、资源、Radio、光衰、写操作、单 AP 深度更新、元数据导入/保存、历史查询和 AC Web 入口；普通更新与 verbose 深度更新保持分离，真实 AC/AP 验收仍待现场执行。
 - 轨道交通按历史有效业务契约拆分车内点表、轨旁 AP 规划与业务、在线列车 CT/TC、连续采集、Online MR 实时/分析、强停恢复、离线 MESH 导入分析与报告，不再以只读聚合页代替业务闭环。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。
@@ -14,7 +15,7 @@
 
 ### 桌面与发布
 
-- 建立 Vue 3 + Element Plus + ECharts 的 NetConsole Design Token 基础：浅色/深色主题、Element Plus 变量映射、统一 `NcLayout/NcCard/NcTable/NcStatusTag` 组件和响应式页面骨架均由同一套 Token 驱动；Traffic RTT/带宽与 Mesh RSSI 图表会在异步设置加载、主题/主色切换和 `auto` 系统变化后重新读取 Token 并更新；Browser 与 Electron 使用相同启动初始化，系统设置仍是主题唯一持久化来源，不新增第二套皮肤状态。
+- 统一 Vue/Electron 全局主题：浅色、深色和跟随系统现在同时驱动侧栏、顶部栏、内容区、Element Plus 浮层与 ECharts，不再默认固定深色侧栏；系统设置仍是唯一持久化来源。Renderer 只通过严格单向 IPC 报告解析后的 `light|dark`，Electron Main 只映射预定义窗口背景，不能接收任意颜色或窗口参数。历史页面状态色已收口到语义 Token；Guard 已收窄 `--nc-text-primary` 被误判为状态色的规则并增加单元测试。Electron 多尺寸/多缩放人工视觉验收仍为 `PENDING`，自动测试不代表视觉通过。
 - 将 Windows x64 iPerf3 运行包升级并固定为用户提供的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`，补齐发行来源、四文件 SHA-256、GPLv3/LGPLv3/链接例外及 Cygwin 3.6.7-1 对应源码方案；fping 5.5/Cygwin 3.6.9-1 同步归档实际 ICMP 兼容补丁、构建配方、完整许可证与精确对应源码。Electron 与 Agent 打包复制前后只校验并复制仓库本地白名单工具，拒绝联网补齐、同名替换、来源篡改和额外文件；旧 3.20 来源不匹配文件不再保留。
 - 新增 `pnpm dev:codex` 本机受控调试链：Electron Main 继续持有唯一 FastAPI 生命周期，Vite/FastAPI 固定绑定 `127.0.0.1:5173/8000`，每次启动生成短期 Session 与系统临时数据根；浏览器 Vue 可复用正式 REST、WebSocket 和下载契约。新增鉴权、回环限定且路径脱敏的 `/api/dev/runtime-status`；生产 Electron 不注册该接口、不接受固定开发端口，也不暴露令牌、OpenAPI 或 DevTools。
 - 建立首个版本化网络设备命令 Profile：`device.inventory.collect` 以稳定 Operation/step/parser/DTO contract 接管 H3C/Comware 交换机详情采集，保持原命令原文、顺序与失败继续语义；Huawei/ZTE 和未知角色/平台失败关闭，真实设备仍待验收。
@@ -26,7 +27,7 @@
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
 - SNMP Center、通用 MIB/OID 字典、版本化 MIB 归档、Trap/Poll/拓扑、通用查询与批量采集，以及无线勘测/热力图链已从活动产品、源码资源、Job/Export、依赖和发布内容中删除；Pillow 与 pysnmp 不再作为产品依赖。设备管理只保留 SNMP v1/v2c 只读连接测试和基础识别，网络工具无线扫描独立保留。
 - E1 回收无调用的 `apps/desktop` Qt WebShell、包标记、`src/netconsole/ui` 与 Qt-only 运行测试；历史行为统一由 Git 和最终迁移矩阵追溯。
-- 完成 E10 首轮遗留收口：删除旧 Qt 字节码缓存、18 个已删除 MIB/OID 实现的孤立字节码和 7 处 offscreen 测试环境，修正失效命令路径，将过时双轨/对等文档降为历史兼容指针，更新 8 个项目 Skill 的活动路径，并形成最终迁移矩阵与架构一致性报告。完整 Vue/Router/SQL/命令/孤儿模块 Guard 仍是发布前门禁，不能因文档收口而宣称业务已完成现场验收。
+- E10B 建立九个公开架构门和统一入口，覆盖分层、禁用依赖、Direct SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块与迁移映射。Direct SQL 已对 61 个文件精确分类且 `VIOLATION=0`；限时例外已由 42 条收敛为 38 条（Python 分层 14、孤儿候选 24、状态色 0），`check_ui_business_logic.py` 当前为 0 finding / 0 waived；目录门建立时 139 个维护目录 README 0 缺失。命令 Profile 当前仍只接管 `device.inventory.collect`，E11 命令平台、E12 API v1 以及 Electron/真实设备验收均不因本项提前完成。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
 - Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品。Qt 源码、运行时、入口、测试环境和发布链已经删除，历史行为仅通过 Git 与最终迁移矩阵追溯，不得恢复为回退入口。
 - 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](development/electron-parity-wave2.md)。
@@ -38,6 +39,7 @@
 
 ### 验证
 
+- 以下全量计数是 2026-07-18 已完成的组合基线，不包含随后收口的设备详情；本次设备详情字段与布局收口在最终设备 diff 上完成 Python 定向测试 15 项、Vue 单 Worker 定向测试 12 项、类型检查和受影响的 UI 架构门。E10B 九门基线此前已通过，当前低 CPU 模式不重复运行其余八门、最终全量测试或生产构建。Electron 多尺寸/多缩放人工视觉验收仍待执行。
 - Python 全量测试：2052 项通过、1 项按既有环境条件跳过；依赖 `pip check` 通过。
 - Vue：62 个测试文件、191 项测试通过，TypeScript 检查和生产构建通过；Electron：13 个测试文件、89 项测试通过，typecheck、main/preload 构建与最终 Package Smoke 通过。
 - 改动范围 Ruff check/format 和文档/迁移 Guard 通过；全仓 Ruff 的 37 项既有问题未在本次发布中扩大修复范围。

@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文定义 Electron-only 重构最终阶段 `E10` 的永久规则。当前五项遗留清理、最终迁移矩阵和阶段报告已经形成；实际结果、未解决 P1/P2 与发布门见[架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)，不得因报告存在就误称全量 Guard、制品和真实设备验收已完成。
+本文定义 Electron-only 重构最终阶段 `E10` 的永久规则。当前九个公开架构门、精确分类配置、最终迁移矩阵和阶段报告已经形成；实际结果、限时例外、未解决 P1/P2 与发布门见[架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 整改归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。Guard 通过不等于 Electron 视觉、真实设备、最终制品或业务验收完成。
 
 目标是验证实际代码符合 `Electron Main + Preload + Vue + FastAPI + Python Core` 分层，并追踪原 Qt 页面、Worker、Signal 和 Timer 回调中的有效业务逻辑去向。仅通过 Qt 关键字扫描或应用启动冒烟不能满足本阶段要求。
 
@@ -59,7 +59,7 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 
 ## 自动化 Guard
 
-`E10` 实施时在 `scripts/architecture/` 建立稳定、单一实现的 Guard，至少覆盖：
+`E10B` 已在 `scripts/architecture/` 建立稳定、单一实现的 Guard，覆盖：
 
 - Python 与 TypeScript 依赖边界；
 - 直接 SQL 调用位置；
@@ -69,7 +69,7 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 - 运行路径、孤儿模块和 Qt 迁移映射；
 - 项目目录 README、仓库根运行数据和无 Qt 依赖/安装包残留。
 
-预期入口为：
+九个公开入口为：
 
 ```text
 scripts/architecture/check_architecture_boundaries.py
@@ -86,6 +86,18 @@ scripts/architecture/check_migration_map.py
 如多个检查可以由一个稳定的 AST 引擎承担，可共享实现，但上述发布门必须保留可单独定位的规则 ID 和失败输出。Python 边界检查应验证 Domain、Service、Repository、Application 与 Router 的依赖方向；TypeScript 边界检查应阻止 Vue 导入 Electron Main、Main 导入 Vue Store，以及 Preload 导入业务 Service。Repository、migration、明确的数据维护脚本和测试 fixture 之外的 `sqlite3.connect`/`aiosqlite.connect` 必须失败。生产设备命令只允许出现在版本化 Command Profile；命令 fixture、Parser 样本、文档和历史 Changelog 必须通过精确路径分类，不允许放行整个 `services/`。
 
 UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_ONLY`、`BUSINESS_LOGIC` 或 `FALSE_POSITIVE`，不得自动删除。SQL 和命令文本扫描也只是初筛，需结合 AST、调用图和测试样本判断；不能放行整个 `services/` 或 `apps/web/`。
+
+### 当前 E10B 基线
+
+截至 2026-07-18 当前工作树，统一入口 `scripts/architecture/run_all.py` 已建立并完成九门基线检查。可核实配置事实为：
+
+- Direct SQL：61 个精确文件分类，包含 `REPOSITORY_REQUIRED` 12、`READ_ONLY_DATA_GATEWAY` 12、`ANALYSIS_DB_OWNER` 6、`MIGRATION_TOOL` 2、`TEST_ONLY` 29，`VIOLATION=0`；
+- UI AST：32 个精确符号分类，其中 `DISPLAY_ONLY` 15、`FALSE_POSITIVE` 17，没有以函数名直接推断业务违规；
+- 限时例外：38 条，全部精确到 `rule_id + path`，包括 Python 分层 14、孤儿候选 24；状态色例外已归零；
+- 目录职责：建立检查时扫描 139 个维护目录，README 缺失为 0；新增目录仍必须重新运行门禁；
+- Command Profile：目前只有 `device.inventory.collect` 进入版本化平台。AC、MR、配置、文件等生产命令迁移属于后续 `E11`，正式 API v1 契约治理属于后续 `E12`，均不能因九门建立而写成完成。
+
+历史状态色字面量已收敛到语义 Token，对应 `WEB_STATUS_COLOR_TOKEN` 例外已删除；`check_ui_business_logic.py` 当前为 0 finding / 0 waived。Guard 已收窄规则，避免把 `--nc-text-primary` 等普通文本 Token 误判为状态色，并由单元测试固定。全局浅色/深色/跟随系统、Element Plus、ECharts 和 Electron 背景严格 IPC 已接入；最终 Electron 多尺寸、多缩放和 Windows 跟随系统视觉验收仍为 `PENDING`，自动测试不能替代视觉通过。
 
 ## 有限期例外
 

@@ -26,6 +26,8 @@ NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重
 
 Electron + Vue + FastAPI/Python Core 是当前正式桌面架构。Qt/PySide6/QFluentWidgets 源码、运行时、入口和发布链已经删除，不得重新引入。
 
+全局外观由系统设置中的 `theme / theme_color` 驱动，`applySystemAppearance -> NetConsole Design Token -> App Shell / Element Plus / ECharts` 是唯一 Renderer 主题链；解析后的 `light|dark` 再通过严格白名单单向 IPC 同步 Electron 窗口背景。浅色、深色和跟随系统统一作用于侧栏与内容区，不维护固定深色侧栏或第二套主题持久化。当前自动契约已建立，Electron 多尺寸、多缩放和 Windows 跟随系统的视觉验收仍待人工完成。
+
 ## 当前入口
 
 - 正式桌面入口：`apps/desktop_electron/`
@@ -70,6 +72,7 @@ Electron + Vue + FastAPI/Python Core 是当前正式桌面架构。Qt/PySide6/QF
 - SQLite 访问通过 repository 层，不在 UI 里散写 SQL。
 - 路径必须通过 `PathResolver` 或现有路径服务，不散落字符串拼接。
 - 功能开关集中在 `FeatureGate` 和注册表中，不在页面内散落一次性开关判断。
+- 主题基础色、状态色和图表色统一来自 NetConsole Design Token；页面不得重新定义全局 Element Plus 色板或把任意颜色通过 IPC 传给 Electron。
 
 ## 当前实现与待统一事项
 

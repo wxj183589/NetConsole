@@ -20,6 +20,7 @@
 | [Qt/Electron 对等矩阵（历史兼容）](development/qt-electron-parity-matrix.md) | 旧详细矩阵兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [轨道交通逐操作矩阵（历史兼容）](development/parity/rail-transit.md) | 已冻结的逐操作迁移规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [设备管理对等规格（历史兼容）](development/parity/device-management.md) | 已冻结的逐字段/逐操作规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
+| [设备管理与设备详情](../apps/web/src/views/devices/README.md) | 设备列表、快速详情抽屉、完整详情页、数据来源、Command Profile 与验收边界 | Device/Application/API/Vue 开发 | Device Detail Application/Query Service、DTO/API、版本化 Profile 和 Vue | 设备字段、能力、刷新任务、页签或验收状态变化 |
 | [文件管理对等规格（历史兼容）](development/parity/file-management.md) | 已冻结的双栏/SFTP/下载队列规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
@@ -40,12 +41,12 @@
 | [Electron-only E4 数据目录迁移归档](archive/migrations/electron-only/E4-2026-07-18.md) | 用户应用数据根、历史数据迁移、冲突和测试残留清理记录 | Electron-only 迁移指挥与存储维护 | `PathResolver`、Electron Main、迁移 manifest、定向测试 | 数据根、迁移规则、清理白名单或回退状态变化 |
 | [Electron-only E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md) | Electron/Python/Vue 单调时间线、首屏关键路径和实测对比 | Electron-only 迁移与性能维护 | Electron Main、Backend lifespan、延迟依赖和真实 smoke 日志 | 启动阶段、依赖加载时机或性能基线变化 |
 | [Electron-only E6 数据库调优归档](archive/migrations/electron-only/E6-2026-07-18.md) | SQLite 查询计划、历史索引、旧库兼容和回滚证据 | Repository/数据库与 Electron-only 迁移维护 | `Database` schema、Repository SQL、真实库 Backup 副本和测试 | 主库 schema、索引、迁移或性能证据变化 |
+| [Electron-only E10B 架构 Guard 与整改归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md) | 九个架构门、精确分类、限时例外、整改与回滚证据 | 架构、迁移与发布负责人 | `scripts/architecture`、`config/architecture`、迁移矩阵与定向测试 | Guard、分类、例外或发布阻塞状态变化 |
 | [配置采集对等矩阵（历史兼容）](development/parity/config-collection.md) | 已冻结的采集、保存、比较和导出规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Traffic Web 应用边界](development/api-boundary-wave-1/traffic-web-boundary.md) | Traffic 执行端、查询分页、取消/重试和 Router 展示映射边界 | Traffic Web/API 开发 | `TrafficWebApplicationService`、Traffic Router、组合根 | Traffic Web 用例或 REST/WebSocket 契约变化 |
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
 | [表格与 UI 规范](ui_table_guidelines.md) | Vue/Element Plus 表格、列宽、滚动、密度和状态 | Vue UI 开发 | `NcTable`、Element Plus、相关测试 | 公共组件、页面布局或表格规则变化 |
-| [NetConsole UI Design System](UI_DESIGN_SYSTEM.md) | Design Token、深浅主题、基础组件与 ECharts 规则 | Vue/Electron UI 开发 | `apps/web/src/theme`、`Nc*` 基础组件 | Token、主题、公共组件或图表语义变化 |
-| [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/web/src/styles`、Element Plus、ECharts | Token、主题、组件或图表规范变化 |
+| [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/web/src/theme`、`apps/web/src/styles`、Electron 主题 IPC | Token、主题、组件、窗口背景或图表规范变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |
 | [独立 Agent](AGENT.md) | Windows Go Agent 的边界、能力和集成状态 | 现场采集/远程执行开发 | `apps/agent/`、Agent API/测试 | Agent 能力、协议、命令或发布方式变化 |
 | [Agent Controller](AGENT_CONTROLLER.md) | 多 Agent 配置、健康检查、认证、REST/WebSocket 与 Web 管理边界 | Agent 控制面开发 | `services/agent`、`repositories/agent_repository.py`、Agent Router | Controller 模型、探测协议、凭据或调度变化 |
