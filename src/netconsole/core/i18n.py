@@ -86,7 +86,6 @@ TRANSLATIONS = {
         "nav.rail_transit": "轨道交通",
         "nav.network_tools": "网络工具",
         "nav.command_reference": "命令说明",
-        "nav.snmp_center": "SNMP中心",
         "network_tools.title": "网络工具",
         "network_tools.iperf": "IPERF带宽测试",
         "network_tools.traffic": "流量测试",
@@ -1014,7 +1013,6 @@ TRANSLATIONS = {
         "batch_collect.stage.failed": "采集失败",
         "batch_test.title": "批量测试连接",
         "field.device_name": "设备名称",
-        "field.ip_address": "IP",
         "field.protocol": "协议",
         "field.connection_method": "连接方式",
         "dialog.close": "关闭",
@@ -1219,7 +1217,6 @@ TRANSLATIONS = {
         "connection.failed_title": "连接失败",
         "connection.success_detail": "连接成功\n协议：{protocol}\n地址：{host}\nPrompt：{prompt}\n耗时：{elapsed} ms",
         "connection.failed_detail": "连接失败\n原因：{reason}",
-        "field.name": "设备名称",
         "field.system_name": "系统名称",
         "field.device_mac": "MAC",
         "field.tooltip.station": "归属站点：来自设备管理的站点归属字段，用于设备和AP归属匹配。",
@@ -1251,15 +1248,8 @@ TRANSLATIONS = {
         "field.remark": "备注",
         "field.snmp_v1_enabled": "SNMPv1",
         "field.snmp_v2c_enabled": "SNMPv2c",
-        "field.snmp_v3_enabled": "SNMPv3",
         "field.snmp_port": "SNMP 端口",
         "field.snmp_ro_community": "SNMP 只读团体字",
-        "field.snmp_rw_community": "SNMP 读写团体字",
-        "field.snmpv3_security_level": "SNMPv3 安全级别",
-        "field.snmpv3_auth_protocol": "SNMPv3 认证协议",
-        "field.snmpv3_auth_password": "SNMPv3 认证密码",
-        "field.snmpv3_priv_protocol": "SNMPv3 加密协议",
-        "field.snmpv3_priv_password": "SNMPv3 加密密码",
         "field.updated_at": "更新时间",
         "field.index": "序号",
         "field.all": "全部",
@@ -2334,7 +2324,6 @@ TRANSLATIONS = {
         "batch_collect.stage.failed": "Collection failed",
         "batch_test.title": "Batch Test Connection",
         "field.device_name": "Device Name",
-        "field.ip_address": "IP",
         "field.protocol": "Protocol",
         "field.connection_method": "Connection Method",
         "dialog.close": "Close",
@@ -2622,7 +2611,6 @@ TRANSLATIONS = {
         "connection.failed_title": "Connection Failed",
         "connection.success_detail": "Connection succeeded\nProtocol: {protocol}\nAddress: {host}\nPrompt: {prompt}\nElapsed: {elapsed} ms",
         "connection.failed_detail": "Connection failed\nReason: {reason}",
-        "field.name": "Device Name",
         "field.system_name": "System Name",
         "field.device_mac": "MAC",
         "field.tooltip.station": "Station: ownership field from Device Management, used for device and AP ownership matching.",
@@ -2654,15 +2642,8 @@ TRANSLATIONS = {
         "field.remark": "Remark",
         "field.snmp_v1_enabled": "SNMPv1",
         "field.snmp_v2c_enabled": "SNMPv2c",
-        "field.snmp_v3_enabled": "SNMPv3",
         "field.snmp_port": "SNMP Port",
         "field.snmp_ro_community": "SNMP RO Community",
-        "field.snmp_rw_community": "SNMP RW Community",
-        "field.snmpv3_security_level": "SNMPv3 Security Level",
-        "field.snmpv3_auth_protocol": "SNMPv3 Auth Protocol",
-        "field.snmpv3_auth_password": "SNMPv3 Auth Password",
-        "field.snmpv3_priv_protocol": "SNMPv3 Priv Protocol",
-        "field.snmpv3_priv_password": "SNMPv3 Privacy Password",
         "field.updated_at": "Updated At",
         "field.index": "No.",
         "field.all": "All",
@@ -2901,18 +2882,6 @@ TRANSLATIONS["en_US"].update(
         "startup.opening_main_window": "Opening main window...",
         "startup.showing_main_window": "Showing main window...",
         "startup.module_load_failed": "Module failed to load. Click to retry.",
-    }
-)
-
-TRANSLATIONS["zh_CN"].update(
-    {
-        "nav.wifi_survey": "\u65e0\u7ebf\u6d4b\u8bd5",
-    }
-)
-
-TRANSLATIONS["en_US"].update(
-    {
-        "nav.wifi_survey": "WiFi Survey",
     }
 )
 
@@ -3234,8 +3203,6 @@ TRANSLATIONS["zh_CN"].update(
         "field.snmp_enabled": "启用 SNMP",
         "field.snmp_timeout_ms": "SNMP超时(ms)",
         "field.snmp_retries": "SNMP重试",
-        "field.snmpv3_username": "SNMPv3用户名",
-        "field.snmp_context_name": "SNMP上下文",
         "validation.host_required": "主用地址必填。",
         "data_disk.button": "磁盘管理",
         "data_disk.title": "数据磁盘管理",
@@ -3292,8 +3259,6 @@ TRANSLATIONS["en_US"].update(
         "field.snmp_enabled": "SNMP Enabled",
         "field.snmp_timeout_ms": "SNMP Timeout (ms)",
         "field.snmp_retries": "SNMP Retries",
-        "field.snmpv3_username": "SNMPv3 Username",
-        "field.snmp_context_name": "SNMP Context",
         "validation.host_required": "Primary address is required.",
         "data_disk.button": "Disk Manager",
         "data_disk.title": "Data Disk Manager",
@@ -3369,7 +3334,6 @@ TRANSLATIONS["en_US"].update(
 TRANSLATIONS["zh_CN"].update(
     {
         "nav.system_settings": "系统设置",
-        "nav.snmp_center": "SNMP中心",
         "nav.command_reference": "命令说明",
         "system.feature_flags": "功能开关配置",
         "system.disk_cleanup": "磁盘清理",
@@ -3416,7 +3380,6 @@ TRANSLATIONS["zh_CN"].update(
 TRANSLATIONS["en_US"].update(
     {
         "nav.system_settings": "System",
-        "nav.snmp_center": "SNMP Center",
         "nav.command_reference": "Command Reference",
         "system.feature_flags": "Feature Flags",
         "system.disk_cleanup": "Disk Cleanup",

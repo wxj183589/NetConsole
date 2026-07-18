@@ -47,13 +47,13 @@ def test_registry_contains_all_existing_task_types() -> None:
         "device_connection_test",
         "file_management_download",
         "mesh_mr_profiles_refresh",
-        "snmp_center_data_action",
         "traffic_local_iperf_server",
         "traffic_local_iperf_client",
         "traffic_local_fping",
         "online_mr_agent_packages_sync",
         "online_mr_agent_package_import",
-        "wifi_survey_heatmap_render",
+        "wireless_scan_history_refresh",
+        "wireless_scan_result_load",
     } <= tasks
 
 

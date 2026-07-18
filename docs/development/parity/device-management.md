@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 主页面 | `DeviceManagementPage`，`src/netconsole/ui/pages/device_management_page.py` | 筛选、动作条、表格、分页、CRUD、分组、连接测试、采集、导入导出、终端。 |
 | 表格 | `DeviceTable`，`src/netconsole/ui/widgets/device_table.py` | 当前页勾选、表头全选、反选、双击详情、右键菜单和复制动作。 |
-| 新增/编辑 | `DeviceDialog`，`src/netconsole/ui/dialogs/device_dialog.py` | 基础、SSH/Telnet、双跳板、SNMP v2c/v3 等完整字段。 |
+| 新增/编辑 | `DeviceDialog`，`src/netconsole/ui/dialogs/device_dialog.py` | 基础、SSH/Telnet、双跳板，以及设备 SNMP v1/v2c 只读字段。 |
 | 详情 | `DeviceDetailDialog`，`src/netconsole/ui/dialogs/device_detail_dialog.py` | 概览、接口、光模块、LLDP、轨旁 AP 业务、详情刷新、光模块刷新和历史。 |
 | 分组 | `DeviceGroupDialog` | 新建、重命名、删除、批量设置分组。 |
 | 终端 | `ExternalTerminalSettingsDialog`、`services/external_terminal.py` | SecureCRT/Xshell/PuTTY 配置、单台/批量启动、可选传递密码。 |
@@ -86,11 +86,11 @@ Qt 的窗口置顶、窗口几何和 Qt 专属子窗口生命周期属于外壳�
 
 ## 字段和凭据规则
 
-新增/编辑覆盖 Qt `DeviceDialog` 的有效字段：名称、系统名、站点、厂商、类型、分组、主/备地址、备注；SSH/Telnet 开关、端口、用户名、密码；两级跳板机的主机、端口、用户名、密码；SNMP 开关、端口、v2c 读写团体字、v3 用户名/安全级别/认证与加密协议及密码、Context、超时和重试。MAC、位置和 HTTPS 端口只按现有数据库/详情事实显示，不冒充 Qt 编辑字段。
+新增/编辑覆盖当前有效字段：名称、系统名、站点、厂商、类型、分组、主/备地址、备注；SSH/Telnet 开关、端口、用户名、密码；两级跳板机的主机、端口、用户名、密码；设备 SNMP 开关、v1/v2c、端口、只读团体字、超时和重试。SNMPv3、读写团体字和 SET 不属于产品范围。MAC、位置和 HTTPS 端口只按现有数据库/详情事实显示，不冒充编辑字段。
 
 安全边界：
 
-- 详情 DTO 不返回密码、团体字和 SNMPv3 密钥，只返回 `*_secret_configured` 布尔状态。
+- 详情 DTO 不返回密码或只读团体字，只返回必要的 `*_secret_configured` 布尔状态。
 - 编辑时空 secret 表示保留旧值；输入新值表示替换；只有 `clear_secret_fields` 白名单可显式清除，替换与清除同一字段会被拒绝。
 - API、任务消息、审计和终端返回不记录凭据或完整命令参数。
 - 普通 CSV 默认不含凭据；只有明确选择“含凭据”并二次确认时才导出。

@@ -8,13 +8,6 @@ class AcResourceRefreshRequest:
     device_uuid: str
     site_name: str
     source: str = "auto"
-    snmp_oids: list[str] = field(default_factory=list)
-    snmp_operation: str = "WALK"
-    snmp_concurrency: int = 10
-    snmp_timeout_ms: int = 2000
-    snmp_retries: int = 1
-    snmp_max_repetitions: int = 10
-    snmp_max_rows: int = 500
 
 
 @dataclass(frozen=True)

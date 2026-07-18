@@ -31,9 +31,10 @@
 | 轨道交通无线综合看板 | Web 聚合基础资料、FIT-AP/光衰、Mesh-Link、列车通信、Online MR、任务、Agent 缓存和 Mesh 分析 | `WirelessDashboardQueryService` + GET-only API + Vue | 5C-9 已增加只读总览、既有告警映射、数据时效和分层刷新 | 是，只读 | 详情和所有控制继续由原页面承担 | 保持无设备连接、无新阈值、无写入边界 |
 | 配置采集 | Qt 与 Electron 提交 snapshot/compare/collect/save/delete Job | `config_jobs.py` + `ConfigLifecycleService` + `ConfigCollectionApplicationService` | 配置 handler 已迁出 legacy；Electron 纵向链、跨设备左右篮和 mount 自动化已实现 | 是，状态仍为 `IMPLEMENTED_UNVERIFIED` | `legacy_tasks.py` 中旧配置函数仅保留兼容/回退，生产 Registry 不再委托 | 等 task 分支集成共享取消 capability；完成人工与 H3C 现场验收后再清理旧函数 |
 | 文件管理 | 页面后台导航/动作 | file domain handlers | 部分迁移 | 部分 | 导航与动作 legacy 适配 | 收敛路径与取消契约 |
-| SNMP 查询/采集 | `snmp_query_execute` / `snmp_collection_execute` | snmp domain 正式 handler | 已完成 | 是 | 兼容 service/export 方法 | 保持请求/缓存契约，验证 frozen |
-| SNMP MIB/产品数据 | 中心后台刷新/动作 | snmp domain handlers | 部分迁移 | 部分 | MIB/resource/product/data legacy | 分离资源库与请求采集后迁移 |
-| 无线扫描/勘测 | 页面提交 wifi survey Job | wifi domain handlers | 部分迁移 | 部分 | 扫描/勘测动作 legacy | 核对设备/平台边界后拆分 |
+| 设备管理 SNMP | 设备连接测试与基础识别 | `DeviceSnmpClient` + Device Application Service | v1/v2c 只读保留 | 是 | 旧库 v3/RW 列仅兼容保留 | 禁止 v3、RW、SET、任意 OID 和通用平台 |
+| SNMP Center / MIB/OID 平台 | 已删除 | 无 | `REMOVED` | 不适用 | 旧用户数据不自动清理 | 不恢复代码、资源、依赖或入口 |
+| 网络工具无线扫描 | 网络工具页面提交兼容无线扫描 Job | network handler + wireless scan legacy handler | 保留并独立验收 | 部分 | Windows 网卡/扫描适配待实机 | 与已删除无线勘测严格区分 |
+| 无线勘测 | 已删除 | 无 | `REMOVED` | 不适用 | 旧用户数据不自动清理 | 不恢复勘测、热力图或导出平台 |
 | MR 原始日志分析 | Qt import/rebuild/profile Job；Web 只读查看既有结果 | mesh domain + parser/repository + GET-only Query API + Vue | 5C-8 已增加来源、主备链路、时间线、切换、RSSI、空口、异常、AP 统计和 artifact 受控访问 | Qt 分析部分；Web 查询是 | domain handler 仍有 legacy；Web 不重解析、不生成报告 | 保留单文件 parsed DB 和既有规则，控制面继续 Qt/Job |
 | Online MR 实时采集 | Legacy Qt 与 Desktop WebHost 调用同一 Application Service；LOCAL/AGENT 分派到隔离 executor | collection Application Service + LOCAL/AGENT Executor + 两个 Web Control Service + 单例 API Facade + Qt Adapter + Query API | 5B-13B 已增加独立 AGENT 页签和回环 Fake 闭环；Phase 0.5 已收口三个 Router 的无副作用当前局点边界 | LOCAL 生命周期、Agent Service 与 Web Agent 代码闭环是 | 无 Agent 强停、多 Agent、自动解析/报告；真实验收冻结 | 列车上电后执行 5C-10A-B 与 5B-13A-A，不用 Fake 代替 |
 | Online MR 离线解析 | `online_mr_parse` Job | online_mr domain handler/service | 已迁移但保留兼容层 | 是 | 映射/历史相关 legacy | 收口兼容入口，锁定 raw/parsed 契约 |
@@ -43,7 +44,7 @@
 | Launcher / FastAPI / Desktop Shell | Electron Main/Preload + `netconsole.backend.electron_runtime`；`main.py --mode web|server` 仅开发诊断 | Electron 动态端口/临时令牌、唯一 Vue Renderer、显式冻结 Backend 分派 | E1 已删除 `netconsole.app`、Qt probe、`auto/qt`、旧 Qt WebShell、`apps/desktop` 孤儿包与无调用 Qt Native Adapter；Electron 安全窗口和受管 Backend 已验证 | 启动与控制握手是；安装包/升级/托盘否 | Qt 页面、Qt WebHost 兼容层和 Qt-only 测试仍待逐项回收；无 Qt Backend 安装包尚未建立 | 继续 E1 清理 UI/测试/依赖，再建设 Electron-only 打包链 |
 | Export Center | ExportJob + manager + worker | 27 通用 + 2 专用类型 | 已完成主路径 | 是 | 兼容直接导出入口 | 继续保证 tmp/原子替换/占用提示 |
 | AP Identity | Job/Export finished metadata | canonical resolver + adapters + ViewModel | 影子验证 | 禁止接管 | 旧 matcher/lookup/写入仍生产使用 | 真实局点观测与单宿主批准前 hold |
-| Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | SNMP/无线勘测保持 DISABLED；新增能力默认登记 |
+| Feature Gate | 主窗口/页面 `FeatureGate` | `FeatureStatus + feature_registry.py` | 已完成 | 是 | 个别旧代码需持续搜索 | 删除能力进入 `REMOVED_FEATURE_IDS`；新增能力默认登记 |
 | 日志分页 | 日志页面/Repository 查询 | 现有分页入口 | 已完成当前需求 | 是 | 大日志策略需随数据量复核 | 保持查询分页，不回 UI 全量加载 |
 | 自动清理 | 延时 `AppCleanupService` | 白名单日志/缓存/临时目录 | 已完成受控范围 | 是 | 手工磁盘清理是另一入口 | 不扩大到业务数据和数据库 |
 | Go/CentOS/远程 Agent | Windows Go Agent + Python Agent Controller + Vue 控制中心 | 配置、健康、能力、Typed Client、远端状态/工具/任务/日志/采集包查询、Traffic Adapter/Supervisor、Online MR Agent Executor/Web Adapter | 阶段 5B-13B 回环 Fake Agent 正式 HTTP/下载/导入闭环已通过 | Agent 资源、iPerf/fping 与单 Agent MR 代码闭环 | CentOS、主动注册、持久凭据、独立服务、多 Agent MR | 5B-13A-A 真实验收冻结；Fake 不替代现场验收 |

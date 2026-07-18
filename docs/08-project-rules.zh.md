@@ -1,5 +1,7 @@
 # NetConsole 项目规则
 
+> 已被仓库根 `AGENTS.md`、`docs/DEVELOPMENT_RULES.md` 和当前架构文档取代。本文件只保留历史阶段规则，不作为当前产品状态事实源。
+
 本文档用于沉淀 NetConsole 的长期项目约定。新增功能、优化现有功能、修复问题或编写自动化任务时，应优先参考本文件，避免每次依赖临时口头提示。
 
 ## 适用范围
@@ -244,7 +246,7 @@ NetConsole Web 演进采用渐进式接入，不重建第二套 Python Core，�
 - 统一 Traffic 业务只能通过 `TrafficTestApplicationService` 启动、停止和恢复；本地/Agent 执行差异留在 Adapter 层。
 - Traffic Run、Agent mapping 和独立 Ping 样本写入 `traffic_runs.sqlite`；iPerf interval 继续以既有 `iperf_results.sqlite` 为事实源，不复制到 Traffic 库。
 - 阶段 4C 只能在现有应用服务上增加受控 Traffic REST API、独立 WebSocket 和 Vue 页面；不得新增任意 Shell/命令执行接口，不得把高频样本塞入全局 `/ws/tasks`。
-- SNMP Center、无线勘测、Online MR、原 Qt iPerf/Ping 页面、设备、AC、FIT-AP、MESH 等未迁移域不得顺带迁入 Web/Traffic。
+- SNMP Center、通用 MIB/OID 平台和无线勘测已在后续阶段删除；设备管理 SNMP v1/v2c 与网络工具无线扫描是独立保留能力。
 
 验证时应覆盖 Token 不落库、Agent/Controller Task ID 独立、远端同步状态不伪造 Task 终态、阶段限制与 docs 状态一致。
 

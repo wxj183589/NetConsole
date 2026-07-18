@@ -1,6 +1,6 @@
 ---
 name: network-command-parser-skill
-description: "H3C/Comware display 命令、SSH/Telnet/Netmiko 回显、提示符、分页符、配置采集、FIT-AP、AC、Mesh 或在线 MR CLI parser 任务时使用。SNMP MIB/OID、纯 UI 布局或 Excel 样式任务不使用本 Skill。"
+description: "H3C/Comware display 命令、SSH/Telnet/Netmiko 回显、提示符、分页符、配置采集、FIT-AP、AC、Mesh 或在线 MR CLI parser 任务时使用。设备管理 SNMP、纯 UI 布局或 Excel 样式任务不使用本 Skill。"
 ---
 
 # 目标
@@ -17,7 +17,7 @@ description: "H3C/Comware display 命令、SSH/Telnet/Netmiko 回显、提示符
 
 不应触发：
 
-- “导入 H3C MIB 或实现 SNMP WALK。”
+- “修改设备管理 SNMP v1/v2c 连接测试。”
 - “修复 Qt 页面遮挡或 Excel 列宽。”
 
 # 输入与输出
@@ -60,4 +60,3 @@ description: "H3C/Comware display 命令、SSH/Telnet/Netmiko 回显、提示符
 
 - 在线 MR 命令链：`netconsole-online-mr-skill`。
 - 编码边界：`windows-encoding-skill`。
-- MIB/OID：`h3c-snmp-mib-skill`。

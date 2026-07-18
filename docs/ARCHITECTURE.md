@@ -90,7 +90,7 @@ sequenceDiagram
 - worker 的 stdout 只允许输出 JSONL 协议；普通诊断输出重定向到 stderr。
 - 取消先写 `.cancel`，handler 通过 `JobContext.check_cancelled()` 协作退出；超时后进程管理器 terminate，再在 3 秒后 kill。
 - Job 文件位于 `.local/runtime/cache/background_jobs/`，终态后清理。
-- Job Registry 按 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、SNMP、无线勘测、Traffic 等领域模块组织；测试校验必需能力集合，不再绑定易漂移的任务总数。
+- Job Registry 按 AC、配置、设备、文件、Mesh、网络、Online MR、轨道交通、Traffic 等活动领域模块组织；网络工具无线扫描的既有任务由独立兼容 handler 承接。测试校验必需能力集合，不再绑定易漂移的任务总数。
 - 领域目录已形成，但大量 handler 仍只是到 `legacy_tasks.py` 的薄适配；不能将“完成注册”写成“完成业务迁移”。
 - `services/job_center/runtime/` 负责纯 Python 状态、事件、Job/取消文件、JSONL 解析和终态清理；迁移期 Qt/QProcess Adapter 已归位到 `src/netconsole/ui/job_process_manager.py`，正式 Electron/FastAPI 路径不依赖它。FastAPI 已提供任务路由与 `/ws/tasks`。
 - `TaskApplicationService -> TaskRepository -> tasks.db` 保存任务快照与事件；FastAPI 提供任务 REST/WebSocket，Qt signals 继续消费同一 Event Hub 的兼容 payload。
@@ -127,11 +127,10 @@ sequenceDiagram
 flowchart TD
     ROOT["应用根目录"] --> DATA["data/ 持久业务数据"]
     ROOT --> RUN["runtime/ 临时协议、缓存、应用日志"]
-    DATA --> GLOBAL["global/ 全局 MIB 等"]
+    DATA --> GLOBAL["global/ 历史全局数据（如存在则保留）"]
     DATA --> SITES["sites/<site>/ 局点数据"]
-    SITES --> DB["db/ devices.db / tasks.db / agents.db / snmp.db"]
+    SITES --> DB["db/ devices.db / tasks.db / agents.db"]
     SITES --> RAIL["rail_transit/ 原始、解析、输出"]
-    SITES --> SNMP["snmp/ 原始、导出、Trap"]
 ```
 
 - 通用 SQLite 连接默认 timeout 30 秒、`busy_timeout` 10 秒；需要 WAL 的 repository 显式调用 WAL 初始化，并采用 `synchronous=NORMAL`。
@@ -145,7 +144,7 @@ flowchart TD
 ## 6. Feature 与 UI
 
 - 一级模块和子能力以 `core/feature_registry.py` 为唯一注册表。
-- `FeatureStatus.DISABLED` 是 Registry 级硬禁用，profile、开发覆盖和直接页面入口均不能重新开启；当前用于 SNMP Center 与无线勘测。
+- 经批准删除的 Feature ID 进入 `REMOVED_FEATURE_IDS` 防御集合，profile、开发覆盖和直接页面入口都不能重新开启。SNMP Center 与无线勘测已从活动 Registry、代码、资源和发布依赖中删除。
 - 新页面、Tab、动作或按钮必须登记 Feature key，通过 `FeatureGate` 统一控制可见性和可用性。
 - 表格必须使用 item/delegate，不为每个单元格创建 QWidget；首屏可自动列宽，之后尊重用户拖动并持久化。
 - 对话框和复杂页面要覆盖 1920×1080，工具栏可滚动或换行，内容使用 splitter/scroll area，深浅主题同时保证文本和状态颜色可辨认。
@@ -155,7 +154,7 @@ flowchart TD
 ## 7. 关键业务边界
 
 - Online MR：原始日志是事实来源；实时解析用于视图，正式离线解析由 `online_mr_parse` Job 完成，报告由 Export Process 输出。
-- SNMP：单次查询与批量采集有正式 Job handler；MIB 资源、产品参考等部分中心动作仍经过 legacy 薄适配。
+- 设备 SNMP：只允许 v1/v2c 的只读连接测试和基础识别，复用设备管理 Application Service；不提供 v3、RW community、SET、通用查询、批量采集、MIB/OID 字典、Trap、Poll 或拓扑平台。
 - AP Identity：只读 shadow/diagnostics，不改旧 resolver、数据库 schema、workbook 字段或业务统计；阶段 8.3 可见 UI 继续暂缓。
 - MR/Mesh：目录数据库可仅作索引，源文件明细应解析到 `source_files.parsed_db_path` 指向的数据库；大样本图表按可见窗口或保留关键点的下采样结果绘制。
 

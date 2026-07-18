@@ -87,54 +87,6 @@ class PathResolver:
     def site_agents_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "agents.db"
 
-    def global_mib_root(self) -> Path:
-        return self.data_dir / "global" / "mibs"
-
-    def global_mib_raw_archives_dir(self) -> Path:
-        return self.global_mib_root() / "raw_archives"
-
-    def global_mib_raw_files_dir(self) -> Path:
-        return self.global_mib_root() / "raw_files"
-
-    def global_mib_references_dir(self) -> Path:
-        return self.global_mib_root() / "references"
-
-    def global_mib_compiled_dir(self) -> Path:
-        return self.global_mib_root() / "compiled"
-
-    def global_mib_index_dir(self) -> Path:
-        return self.global_mib_root() / "index"
-
-    def global_mib_reports_dir(self) -> Path:
-        return self.global_mib_root() / "reports"
-
-    def global_mib_db_path(self) -> Path:
-        return self.global_mib_root() / "global_mib.db"
-
-    def site_snmp_db_path(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "db" / "snmp.db"
-
-    def site_snmp_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "snmp"
-
-    def site_snmp_raw_dir(self, site_name: str = "demo") -> Path:
-        return self.site_snmp_root(site_name) / "raw"
-
-    def site_snmp_exports_dir(self, site_name: str = "demo") -> Path:
-        return self.site_snmp_root(site_name) / "exports"
-
-    def site_snmp_traps_dir(self, site_name: str = "demo") -> Path:
-        return self.site_snmp_root(site_name) / "traps"
-
-    def site_topology_root(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "topology"
-
-    def site_topology_snapshots_dir(self, site_name: str = "demo") -> Path:
-        return self.site_topology_root(site_name) / "snapshots"
-
-    def site_topology_exports_dir(self, site_name: str = "demo") -> Path:
-        return self.site_topology_root(site_name) / "exports"
-
     def site_files_dir(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "files"
 
@@ -388,30 +340,6 @@ class PathResolver:
             self.logs_dir,
         )
         for path in runtime_paths:
-            ensure_runtime_dir(path)
-
-    def ensure_global_mib_dirs(self) -> Path:
-        root = self.global_mib_root()
-        for path in (
-            root,
-            self.global_mib_raw_archives_dir(),
-            self.global_mib_raw_files_dir(),
-            self.global_mib_references_dir(),
-            self.global_mib_compiled_dir(),
-            self.global_mib_index_dir(),
-            self.global_mib_reports_dir(),
-        ):
-            ensure_runtime_dir(path)
-        return root
-
-    def ensure_site_snmp_dirs(self, site_name: str = "demo") -> None:
-        for path in (
-            self.site_snmp_raw_dir(site_name),
-            self.site_snmp_exports_dir(site_name),
-            self.site_snmp_traps_dir(site_name),
-            self.site_topology_snapshots_dir(site_name),
-            self.site_topology_exports_dir(site_name),
-        ):
             ensure_runtime_dir(path)
 
     def validate_runtime_write_path(self, path: Path) -> Path:

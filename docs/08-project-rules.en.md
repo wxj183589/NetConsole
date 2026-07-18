@@ -1,5 +1,7 @@
 # NetConsole Project Rules
 
+> Superseded by the repository-root `AGENTS.md`, `docs/DEVELOPMENT_RULES.md`, and current architecture documents. This file is retained as a historical phase record and is not a source of truth for current product status.
+
 This document captures durable NetConsole project conventions. Read it before adding features, optimizing existing behavior, fixing issues, or creating automation so the same rules do not need to be repeated in every conversation.
 
 ## Scope
@@ -244,7 +246,7 @@ Requirements:
 - Unified Traffic work must start, stop, and recover through `TrafficTestApplicationService`; local-vs-Agent execution differences stay in adapter layers.
 - Traffic Runs, Agent mappings, and independent Ping samples are stored in `traffic_runs.sqlite`; iPerf intervals continue to use the existing `iperf_results.sqlite` as the fact source and must not be copied into the Traffic database.
 - Phase 4C may only add controlled Traffic REST APIs, a dedicated WebSocket, and a Vue page on top of the existing application service. Do not add arbitrary shell/command execution interfaces, and do not push high-frequency samples into global `/ws/tasks`.
-- SNMP Center, wireless survey, Online MR, legacy Qt iPerf/Ping pages, devices, AC, FIT-AP, MESH, and other unmigrated domains must not be migrated into Web/Traffic opportunistically.
+- SNMP Center, the general MIB/OID platform, and wireless survey were removed in a later phase; Device Management SNMP v1/v2c and Network Tools wireless scan remain separate retained capabilities.
 
 Validation should cover tokens not being persisted, Agent/Controller Task IDs remaining independent, remote sync state not fabricating Task terminal states, and phase limits matching the current docs.
 

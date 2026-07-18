@@ -13,11 +13,7 @@ from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
 from netconsole.services.file_contract import ImportValidationError, read_validated_csv_rows, validate_csv_import
 
 
-SNMPV3_SECURITY_LEVELS = ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
-SNMPV3_AUTH_PROTOCOLS = ("MD5", "SHA")
-SNMPV3_PRIV_PROTOCOLS = ("DES56", "3DES", "AES128", "AES192", "AES256")
-
-TEMPLATE_FIELDS = [
+LEGACY_TEMPLATE_FIELDS = [
     "设备名称",
     "主用地址",
     "备用地址",
@@ -41,9 +37,21 @@ TEMPLATE_FIELDS = [
     "备注",
 ]
 
+TEMPLATE_FIELDS = [
+    *LEGACY_TEMPLATE_FIELDS[:-1],
+    "SNMP启用",
+    "SNMPv1",
+    "SNMPv2c",
+    "SNMP端口",
+    "SNMP只读团体字",
+    "SNMP超时毫秒",
+    "SNMP重试",
+    LEGACY_TEMPLATE_FIELDS[-1],
+]
+
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "SSH设备示例"],
-    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "主备地址+隧道示例"],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例"],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例"],
 ]
 
 TEMPLATE_FIELD_MAP = {
@@ -75,6 +83,13 @@ TEMPLATE_FIELD_MAP = {
     "隧道主机2端口": "tunnel2_port",
     "隧道主机2用户名": "tunnel2_username",
     "隧道主机2密码": "tunnel2_password",
+    "SNMP启用": "snmp_enabled",
+    "SNMPv1": "snmp_v1_enabled",
+    "SNMPv2c": "snmp_v2c_enabled",
+    "SNMP端口": "snmp_port",
+    "SNMP只读团体字": "snmp_ro_community",
+    "SNMP超时毫秒": "snmp_timeout_ms",
+    "SNMP重试": "snmp_retries",
     "备注": "remark",
 }
 
@@ -85,6 +100,7 @@ SENSITIVE_EXPORT_FIELDS = {
     "telnet_password",
     "tunnel1_password",
     "tunnel2_password",
+    "snmp_ro_community",
 }
 
 CSV_IMPORT_ENCODINGS = TEXT_ENCODINGS
@@ -116,7 +132,7 @@ class DeviceImportExportService:
             validate_csv_import(
                 path,
                 expected_module="devices",
-                required_headers=TEMPLATE_FIELDS,
+                required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
             )
         except ImportValidationError as exc:
@@ -152,7 +168,7 @@ class DeviceImportExportService:
             validate_csv_import(
                 path,
                 expected_module="devices",
-                required_headers=TEMPLATE_FIELDS,
+                required_headers=LEGACY_TEMPLATE_FIELDS,
                 allow_legacy=True,
             )
         except ImportValidationError as exc:
@@ -308,7 +324,12 @@ class DeviceImportExportService:
         mapped = TEMPLATE_FIELD_MAP[field]
         if mapped == "group_name":
             return group_names.get(int(device.group_id or 0), "")
-        if mapped == "tunnel_enabled":
+        if mapped in {
+            "tunnel_enabled",
+            "snmp_enabled",
+            "snmp_v1_enabled",
+            "snmp_v2c_enabled",
+        }:
             return "是" if getattr(device, mapped) else "否"
         return getattr(device, mapped) or ""
 
@@ -360,10 +381,12 @@ class DeviceImportExportService:
         payload.setdefault("ssh_port", 22)
         payload.setdefault("telnet_enabled", 0)
         payload.setdefault("telnet_port", 23)
+        payload.setdefault("snmp_enabled", 1)
         payload.setdefault("snmp_v1_enabled", 0)
         payload.setdefault("snmp_v2c_enabled", 1)
-        payload.setdefault("snmp_v3_enabled", 0)
         payload.setdefault("snmp_port", 161)
+        payload.setdefault("snmp_timeout_ms", 2000)
+        payload.setdefault("snmp_retries", 1)
         protocol_value = payload.get("protocol")
         if protocol_value:
             protocol = str(protocol_value).casefold()
@@ -395,51 +418,23 @@ class DeviceImportExportService:
             raise ValueError(f"Invalid device_vendor: {payload['device_vendor']}")
         if payload["device_type"] not in DEVICE_TYPES:
             raise ValueError(f"Invalid device_type: {payload['device_type']}")
-        for field in ("ssh_enabled", "telnet_enabled", "snmp_v1_enabled", "snmp_v2c_enabled", "snmp_v3_enabled", "tunnel_enabled", "tunnel1_enabled", "tunnel2_enabled"):
+        for field in ("ssh_enabled", "telnet_enabled", "snmp_enabled", "snmp_v1_enabled", "snmp_v2c_enabled", "tunnel_enabled", "tunnel1_enabled", "tunnel2_enabled"):
             if field not in payload:
                 continue
             payload[field] = self._parse_bool(payload[field])
-        self._normalize_snmpv3_fields(payload)
         if not payload["ssh_enabled"] and not payload["telnet_enabled"]:
             raise ValueError("At least one of SSH or Telnet must be enabled")
-        for field in ("port", "ssh_port", "telnet_port", "snmp_port", "https_port", "tunnel1_port", "tunnel2_port"):
+        for field in ("port", "ssh_port", "telnet_port", "snmp_port", "snmp_timeout_ms", "snmp_retries", "https_port", "tunnel1_port", "tunnel2_port"):
             if payload.get(field) is not None:
                 payload[field] = int(payload[field])
                 if field == "https_port" and not 1 <= int(payload[field]) <= 65535:
                     raise ValueError(f"Invalid https_port: {payload[field]}")
-
-    @staticmethod
-    def _normalize_snmpv3_fields(payload: dict[str, object]) -> None:
-        if not payload["snmp_v3_enabled"]:
-            return
-
-        security_level = str(payload.get("snmpv3_security_level") or "")
-        if not security_level:
-            payload["snmpv3_security_level"] = "noAuthNoPriv"
-            security_level = "noAuthNoPriv"
-        if security_level not in SNMPV3_SECURITY_LEVELS:
-            raise ValueError(f"Invalid snmpv3_security_level: {security_level}")
-
-        auth_protocol = str(payload.get("snmpv3_auth_protocol") or "")
-        priv_protocol = str(payload.get("snmpv3_priv_protocol") or "")
-        if priv_protocol == "DES":
-            payload["snmpv3_priv_protocol"] = "DES56"
-            priv_protocol = "DES56"
-        elif priv_protocol == "AES":
-            payload["snmpv3_priv_protocol"] = "AES128"
-            priv_protocol = "AES128"
-
-        if not auth_protocol:
-            payload["snmpv3_auth_protocol"] = "SHA"
-            auth_protocol = "SHA"
-        if not priv_protocol:
-            payload["snmpv3_priv_protocol"] = "AES128"
-            priv_protocol = "AES128"
-
-        if auth_protocol and auth_protocol not in SNMPV3_AUTH_PROTOCOLS:
-            raise ValueError(f"Invalid snmpv3_auth_protocol: {auth_protocol}")
-        if priv_protocol and priv_protocol not in SNMPV3_PRIV_PROTOCOLS:
-            raise ValueError(f"Invalid snmpv3_priv_protocol: {priv_protocol}")
+        if not 1 <= int(payload["snmp_port"]) <= 65535:
+            raise ValueError(f"Invalid snmp_port: {payload['snmp_port']}")
+        if not 100 <= int(payload["snmp_timeout_ms"]) <= 60000:
+            raise ValueError(f"Invalid snmp_timeout_ms: {payload['snmp_timeout_ms']}")
+        if not 0 <= int(payload["snmp_retries"]) <= 10:
+            raise ValueError(f"Invalid snmp_retries: {payload['snmp_retries']}")
 
     @staticmethod
     def _parse_bool(value: object) -> int:
@@ -458,6 +453,8 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers == TEMPLATE_FIELDS:
             return "template"
+        if headers == LEGACY_TEMPLATE_FIELDS:
+            return "legacy_template"
         raise ValueError("当前版本使用全新设备模板，请下载最新模板后重新填写。")
 
     @staticmethod

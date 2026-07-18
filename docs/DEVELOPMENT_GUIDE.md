@@ -82,7 +82,7 @@ Electron 安全基础已位于 `apps/desktop_electron/`，只允许：
 - 新页面、Tab、动作和按钮默认注册 Feature Registry；
 - Web 导航只展示已开放能力，不以路由存在替代 Feature Gate；
 - Qt 与 Web 并行期，功能状态和默认开关必须有唯一来源；
-- SNMP 中心和无线勘测保持禁用，不新增 Web 导航；
+- SNMP 中心、通用 MIB/OID 平台和无线勘测已删除，不得恢复 Web 导航、API、资源或依赖；
 - 网络工具中的无线扫描是独立功能，不能误用无线勘测的排除结论。
 
 ## 测试与合并

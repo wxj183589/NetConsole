@@ -396,76 +396,6 @@ def securecrt_sessions_spec(
     )
 
 
-def wifi_survey_csv_spec(
-    output_path: str | Path,
-    *,
-    db_path: str | Path,
-    session_id: int,
-    session_name: str,
-    fields: Iterable[str],
-    title: str = "",
-    open_dir_on_success: bool = True,
-) -> ExportTaskSpec:
-    return ExportTaskSpec(
-        task_type="wifi_survey_csv",
-        output_path=str(output_path),
-        title=title,
-        open_dir_on_success=open_dir_on_success,
-        payload={
-            "db_path": str(db_path),
-            "session_id": int(session_id),
-            "session_name": session_name,
-            "fields": [str(field) for field in fields],
-        },
-    )
-
-
-def snmp_query_result_spec(
-    output_path: str | Path,
-    *,
-    result: Mapping[str, Any] | None = None,
-    result_file: str | Path | None = None,
-    title: str = "",
-    open_dir_on_success: bool = True,
-) -> ExportTaskSpec:
-    payload: dict[str, Any] = {}
-    if result_file is not None:
-        payload["result_file"] = str(result_file)
-    elif result is not None:
-        payload["result"] = dict(result)
-    else:
-        raise ValueError("SNMP 查询结果导出缺少 result_file")
-    return ExportTaskSpec(
-        task_type="snmp_query_result",
-        output_path=str(output_path),
-        title=title,
-        open_dir_on_success=open_dir_on_success,
-        payload=payload,
-    )
-
-
-def mib_product_compare_spec(
-    output_path: str | Path,
-    *,
-    db_path: str | Path,
-    left_reference_id: int,
-    right_reference_id: int,
-    title: str = "",
-    open_dir_on_success: bool = True,
-) -> ExportTaskSpec:
-    return ExportTaskSpec(
-        task_type="mib_product_compare",
-        output_path=str(output_path),
-        title=title,
-        open_dir_on_success=open_dir_on_success,
-        payload={
-            "db_path": str(db_path),
-            "left_reference_id": int(left_reference_id),
-            "right_reference_id": int(right_reference_id),
-        },
-    )
-
-
 def fit_ap_csv_spec(
     output_path: str | Path,
     *,
@@ -630,34 +560,6 @@ def omnipeek_name_table_spec(
             "selected_item_keys": [str(value) for value in selected_item_keys or [] if str(value)],
             "excluded_item_keys": [str(value) for value in excluded_item_keys or [] if str(value)],
             "force_export_keys": [str(value) for value in force_export_keys or [] if str(value)],
-        },
-    )
-
-
-def wifi_survey_heatmap_png_spec(
-    output_path: str | Path,
-    *,
-    db_path: str | Path,
-    floor_plan_id: int,
-    session_id: int,
-    mode: str = "strongest",
-    selected_ssids: Iterable[str] | None = None,
-    selected_bssids: Iterable[str] | None = None,
-    title: str = "",
-    open_dir_on_success: bool = True,
-) -> ExportTaskSpec:
-    return ExportTaskSpec(
-        task_type="wifi_survey_heatmap_png",
-        output_path=str(output_path),
-        title=title,
-        open_dir_on_success=open_dir_on_success,
-        payload={
-            "db_path": str(db_path),
-            "floor_plan_id": int(floor_plan_id),
-            "session_id": int(session_id),
-            "mode": str(mode or "strongest"),
-            "selected_ssids": [str(value) for value in selected_ssids or []],
-            "selected_bssids": [str(value) for value in selected_bssids or []],
         },
     )
 

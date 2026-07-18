@@ -59,8 +59,8 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 应用日志与安全维护（日志中心） | 日志；设置 → 磁盘清理/更新日志/开源许可/关于 | `AppLogPage`、`DiskCleanupDialog`、`ChangelogDialog`、`OpenSourceNoticeDialog`、`AboutDialog` | `/logs` / `SystemMaintenanceView.vue` | 日志搜索、级别、分页、刷新、复制、清空和导出；白名单扫描/清理；更新日志；依赖扫描、复制、外链和 TXT/XLSX 导出；关于信息 | `SystemMaintenanceApplicationService`；System Maintenance Router；现有 Job/Export Process | 真实查询、清空、1～365 天白名单扫描/选择/确认清理、部分进度、取消/恢复和语义化本机请求已接入；CSV/TXT/XLSX 使用公共 Artifact 契约和安全显示名 | `IMPLEMENTED_UNVERIFIED` |
 | 系统设置 | 设置 | `SettingsPage` | `/settings` / `SystemSettingsView.vue`，仅 Electron Desktop 正式可达 | 当前已接线的主题、语言、主题色；iperf/fping/IPOP；三类终端路径、会话根、端口/编码；保存/重载/默认恢复；局点与维护入口 | `SettingsApplicationService` / Settings Router / 严格 Native Bridge | 设置文件读写、冲突/损坏/失败回滚、外观预览与离页恢复已闭环；全局 i18n 和桌面人工仍未完成 | `PARTIAL` |
 | 功能开关 | 功能开关配置 | `FeatureFlagsPage` | 集成在 `/settings`；仅源码开发态显示 | 四个布尔状态完整读写、影响预览、确认、恢复 | 中央 Feature Registry / Gate / customer profile | 自动化闭环；打包态强制隐藏并拒绝 API | `IMPLEMENTED_UNVERIFIED` |
-| SNMP Center | SNMP 中心 | `SnmpCenterPage` 及 SNMP 子页 | 无 Electron 正式入口 | 旧 SNMP 中心能力 | 保留历史代码 | 当前不迁移；如重启需独立立项 | `BLOCKED` |
-| 无线勘测 | 无线勘测 | `WifiSurveyPage` | 无 Electron 正式入口 | 旧勘测能力 | 保留历史代码 | 当前不迁移；如重启需独立立项，与无线扫描不同 | `BLOCKED` |
+| SNMP Center | SNMP 中心 | 旧 Qt 能力已批准删除 | 无 Electron 正式入口 | 无 | 活动代码、资源和依赖已删除 | 不迁移、不重建；设备 SNMP v1/v2c 单独保留 | `REMOVED` |
+| 无线勘测 | 无线勘测 | 旧 Qt 能力已批准删除 | 无 Electron 正式入口 | 无 | 活动代码已删除 | 不迁移、不重建；网络工具无线扫描单独保留 | `REMOVED` |
 
 ## 验收矩阵
 
@@ -77,7 +77,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 系统设置、功能开关 | 设置表单与内部开关页已实现；不迁移 Qt 明示未实现控件 | 真实 `settings.json`、中央 Feature profile 与严格 DTO；外观有预览/确认/失败及离页恢复 | 不适用 | 不适用 | SettingsStore/API、Vue mount、Electron IPC 定向测试 | `MANUAL_DESKTOP_PENDING` | 外部工具为 `REAL_DEVICE_PENDING` | `PARTIAL`；全局业务模块语言消费为 `BLOCKED_ON_GLOBAL_I18N` |
 | 命令说明 | 页面和正式导航已实现 | 250ms 实时搜索、竞态保护、筛选、Qt 事实详情、复制与刷新已实现 | Markdown ExportJob 与公共 Artifact 已实现；公开名不含 UUID/内部路径 | 严格命名 localStorage 恢复当前任务 ID；模块串行轮询 `/exports/{task_id}`，取消后继续收敛到服务端终态，临时失败按固定延迟重试，仅终态、404 或卸载时释放；Electron PlatformAdapter、TaskWindow validator、模块筛选和真实 owner 取消已接通 | `tests/test_command_reference_web_api.py`、`tests/test_command_reference.py`、真实挂载 `CommandReferenceView.test.ts`、公共 Job Center Artifact 测试 | `MANUAL_DESKTOP_PENDING` | 不适用 | `IMPLEMENTED_UNVERIFIED`；共享动态 locale 已接，仍需 Electron 人工搜索、复制、导出、取消和 Artifact 保存验收 |
 | 应用日志与安全维护 | 是（待人工对照） | 真实服务 | 公共 Export Process + Artifact 已实现 CSV/TXT/XLSX | 真实任务、唯一取消终态、部分进度与重启恢复 | `test_system_maintenance_web.py`、`test_app_auto_cleanup.py`、`SystemMaintenanceView.test.ts`、API 测试、typecheck/build | `MANUAL_DESKTOP_PENDING` | 不适用 | 自动化完成；仍需 Electron 人工复制、扫描选择、确认/取消、Artifact 保存、错误和重启恢复验收 |
-| SNMP Center、无线勘测 | 不迁移 | 不迁移 | 不迁移 | 不迁移 | 不纳入 | 不纳入 | 不纳入 | `BLOCKED` |
+| SNMP Center、无线勘测 | 已删除 | 已删除 | 已删除 | 已删除 | 不纳入 | 不纳入 | 不纳入 | `REMOVED` |
 
 ## 系统设置 Qt 事实矩阵
 
@@ -100,7 +100,7 @@ Electron Desktop → Vue → FastAPI → Application Service → Domain / Infras
 | 更新日志、开源许可 | 归 Shell 关于入口 | 未与设置入口统一集成，系统设置保持 `PARTIAL` |
 | 功能开关查看、修改、预览、恢复 | 设置页内部区块复用中央 Registry/Gate/customer profile；写入、预览、恢复均确认 | 源码开发态自动化通过；打包态隐藏并拒绝 API |
 
-系统设置整体不能标记为 `IMPLEMENTED_UNVERIFIED` 或 `COMPLETE`：全局语言、Shell/日志维护归属集成与真实桌面动作仍未清零。SNMP Center 与无线勘测继续排除，不借系统设置入口恢复。
+系统设置整体不能标记为 `IMPLEMENTED_UNVERIFIED` 或 `COMPLETE`：全局语言、Shell/日志维护归属集成与真实桌面动作仍未清零。SNMP Center 与无线勘测已删除，不得借系统设置或历史 profile 恢复。
 
 ## 当前推进规则
 

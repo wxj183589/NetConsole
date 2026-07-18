@@ -10,7 +10,7 @@
 Electron → Vue → FastAPI Router → Application Service → Repository / 既有业务服务
 ```
 
-Vue 不计算轨交业务规则，Router 不直接访问设备、数据库或文件。无线综合看板只是辅助聚合入口，不替代下列 Qt 独立业务。无线勘测和 SNMP Center 为 `EXCLUDED`，不迁移、不新增入口。
+Vue 不计算轨交业务规则，Router 不直接访问设备、数据库或文件。无线综合看板只是辅助聚合入口，不替代下列 Qt 独立业务。无线勘测、SNMP Center 和通用 MIB/OID 平台已删除，不迁移、不新增入口。
 
 ## Qt 事实源与 Electron 页面边界
 

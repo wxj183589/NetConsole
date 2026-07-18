@@ -20,12 +20,6 @@
       "client_package": true,
       "internal_only": false
     },
-    "module.wifi_survey": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
-      "internal_only": false
-    },
     "module.config_collection": {
       "visible": true,
       "enabled": true,
@@ -36,12 +30,6 @@
       "visible": true,
       "enabled": true,
       "client_package": true,
-      "internal_only": false
-    },
-    "module.snmp_center": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
       "internal_only": false
     },
     "module.network_tools": {

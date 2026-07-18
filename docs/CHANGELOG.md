@@ -18,7 +18,7 @@
 - 源码开发数据根迁至 `%LOCALAPPDATA%\NetConsole\Development`，打包态使用 `%LOCALAPPDATA%\NetConsole`；Electron 明确向 Backend 传递运行模式和数据根，拒绝仓库/安装目录内写入。历史 `.local/data`、`.local/runtime` 与根 `data` 已通过无覆盖、哈希和 SQLite Backup API 迁移，冲突保留，明确测试残留按白名单清理。
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
-- 无线勘测热力图后台 Job 与 Export Process 已从 `QImage/QPixmap/QGuiApplication` 迁到 Pillow 中立图像对象；活动永久 Python 层不再直接导入 PySide6，Qt 页面仅保留迁移期颜色适配，等待 E1 页面整体回收。
+- SNMP Center、通用 MIB/OID 字典、版本化 MIB 归档、Trap/Poll/拓扑、通用查询与批量采集，以及无线勘测/热力图链已从活动产品、源码资源、Job/Export、依赖和发布内容中删除；Pillow 与 pysnmp 不再作为产品依赖。设备管理只保留 SNMP v1/v2c 只读连接测试和基础识别，网络工具无线扫描独立保留。
 - E1 回收无调用的 `apps/desktop` Qt WebShell、包标记和 Qt-only 运行测试；仍被 Qt 页面引用的 `src/netconsole/ui/web_host` 兼容层暂不删除，等待对应业务迁移矩阵收口。
 - 固化 Electron-only 最终 E10 架构一致性门：逐项追踪已删除 Qt 文件中的业务逻辑，检查 UI/Router/Service/Repository/Command Profile、数据库事实源、孤儿模块和移除功能残留，并要求有限期例外、迁移矩阵、自动 Guard 与最终合规报告；当前只完成规范，不表示全仓审计已经通过。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
@@ -28,6 +28,7 @@
 ### 数据库
 
 - 基于真实 `devices.db` 的 SQLite Backup 副本和 `EXPLAIN QUERY PLAN`，为设备接口/光模块/LLDP 历史及 FIT-AP 资源/Radio/LLDP/光衰历史增加 7 个幂等复合索引；典型 100 行查询由全表扫描和临时排序降至索引搜索。旧库副本迁移保持行数、通过 `quick_check`，未删除表、字段或业务数据；Task、Agent、Traffic、iPerf、Online MR 与 MESH 未发现需要强制 schema 修改的证据。
+- 新建 `devices.db` 只创建设备 SNMP v1/v2c、端口、RO community、超时和重试字段；旧库中 v3/RW/Context 等历史列不删除、不改写，活动模型、API 与导入导出忽略这些字段。
 
 ### 验证
 

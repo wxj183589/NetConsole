@@ -42,12 +42,6 @@
     "homepage": "https://www.paramiko.org/"
   },
   {
-    "name": "pysnmp",
-    "purpose": "SNMP 查询和 MIB 能力预留",
-    "license": "BSD-2-Clause",
-    "homepage": "https://github.com/etingof/pysnmp"
-  },
-  {
     "name": "cryptography",
     "purpose": "SSH 与安全通信相关加密能力",
     "license": "Apache-2.0 OR BSD-3-Clause",

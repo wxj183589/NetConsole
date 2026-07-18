@@ -6,6 +6,7 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
 
 
 def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_path):
@@ -126,9 +127,10 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "telnet_password",
         "snmp_v1_enabled",
         "snmp_v2c_enabled",
-        "snmp_v3_enabled",
-        "snmpv3_auth_password",
-        "snmpv3_priv_password",
+        "snmp_port",
+        "snmp_ro_community",
+        "snmp_timeout_ms",
+        "snmp_retries",
         "group_id",
         "https_port",
         "system_name",
@@ -139,7 +141,6 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "port",
         "username",
         "password",
-        "snmp_version",
         "tunnel_enabled",
         "tunnel1_host",
         "tunnel2_host",
@@ -158,6 +159,16 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
         "ip_address",
         "sysname",
         "tags",
+        "snmp_version",
+        "snmp_v3_enabled",
+        "snmp_rw_community",
+        "snmpv3_username",
+        "snmpv3_security_level",
+        "snmpv3_auth_protocol",
+        "snmpv3_auth_password",
+        "snmpv3_priv_protocol",
+        "snmpv3_priv_password",
+        "snmp_context_name",
     ):
         assert removed_column not in columns
     assert schema_version == CURRENT_SCHEMA_VERSION
@@ -194,6 +205,68 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
     assert "ap_extension_points" in table_names
     assert "ap_extension_import_batches" in table_names
     assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
+
+
+def test_legacy_snmpv3_columns_are_ignored_and_preserved(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        for column, column_type in (
+            ("snmp_v3_enabled", "INTEGER DEFAULT 0"),
+            ("snmp_rw_community", "TEXT"),
+            ("snmpv3_auth_password", "TEXT"),
+            ("snmpv3_priv_password", "TEXT"),
+        ):
+            conn.execute(f"ALTER TABLE devices ADD COLUMN {column} {column_type}")
+        conn.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, primary_address, snmp_v2c_enabled,
+                snmp_ro_community, snmp_v3_enabled, snmp_rw_community,
+                snmpv3_auth_password, snmpv3_priv_password, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-snmp-device",
+                "旧 SNMP 设备",
+                "192.0.2.20",
+                1,
+                "readonly",
+                1,
+                "legacy-write",
+                "legacy-auth",
+                "legacy-priv",
+                "2026-07-18T00:00:00",
+                "2026-07-18T00:00:00",
+            ),
+        )
+        conn.commit()
+
+    repository = DeviceRepository(db)
+    device = repository.get_by_uuid("legacy-snmp-device")
+    assert device is not None
+    assert device.snmp_v2c_enabled == 1
+    assert device.snmp_ro_community == "readonly"
+    assert not hasattr(device, "snmp_v3_enabled")
+
+    device.name = "旧 SNMP 设备（已更新）"
+    repository.update(device)
+    with db.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT snmp_v3_enabled, snmp_rw_community,
+                   snmpv3_auth_password, snmpv3_priv_password
+            FROM devices WHERE device_uuid = ?
+            """,
+            ("legacy-snmp-device",),
+        ).fetchone()
+
+    assert dict(row) == {
+        "snmp_v3_enabled": 1,
+        "snmp_rw_community": "legacy-write",
+        "snmpv3_auth_password": "legacy-auth",
+        "snmpv3_priv_password": "legacy-priv",
+    }
 
 
 def test_database_initialize_rejects_schema_without_metadata(tmp_path):
@@ -283,15 +356,7 @@ def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(t
     assert any(device.telnet_enabled and not device.ssh_enabled and not device.telnet_username and device.telnet_password for device in devices)
     assert any(device.ssh_enabled and device.telnet_enabled and device.ssh_username == device.telnet_username and device.ssh_password == device.telnet_password for device in devices)
     assert any(device.ssh_enabled and device.telnet_enabled and device.ssh_username != device.telnet_username for device in devices)
-    assert any(
-        device.snmp_v3_enabled
-        and device.snmpv3_security_level == "AuthPriv"
-        and device.snmpv3_auth_protocol == "SHA"
-        and device.snmpv3_auth_password == "auth123456"
-        and device.snmpv3_priv_protocol == "AES128"
-        and device.snmpv3_priv_password == "priv123456"
-        for device in devices
-    )
+    assert any(device.snmp_v2c_enabled and device.snmp_ro_community for device in devices)
     simulators = {device.name: device for device in devices if device.name in {"AC", "SW01", "SW02"}}
     assert set(simulators) == {"AC", "SW01", "SW02"}
     assert simulators["AC"].ip_address == "10.0.0.51"

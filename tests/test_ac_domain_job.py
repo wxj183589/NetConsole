@@ -7,13 +7,6 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import (
-    SnmpCollectionDeviceResult,
-    SnmpCollectionItemResult,
-    SnmpCollectionRequest,
-    SnmpCollectionResult,
-    SnmpVarBind,
-)
 from netconsole.services.ac.ac_models import (
     AcFitApDetailRefreshRequest,
     AcResourceRefreshRequest,
@@ -112,74 +105,19 @@ def test_ac_resource_service_auto_uses_existing_cli_collector_and_snapshot(tmp_p
     assert any("解析FIT-AP资源" in message for message in progress)
 
 
-def test_ac_resource_service_calls_snmp_collection_only_with_explicit_mapper(tmp_path: Path) -> None:
-    device = _ac_device()
-    repository = _FakeAcRepository()
-    captured: list[SnmpCollectionRequest] = []
-
-    class FakeSnmpCollectionService:
-        def execute(self, request, *, progress_callback=None, should_cancel=None):
-            del progress_callback, should_cancel
-            captured.append(request)
-            item = SnmpCollectionItemResult(
-                device_id="ac-001",
-                device_name="测试 AC",
-                host="192.0.2.10",
-                oid=request.oids[0],
-                operation="WALK",
-                rows=[SnmpVarBind(f"{request.oids[0]}.1", "AP-02")],
-            )
-            device_result = SnmpCollectionDeviceResult("ac-001", "测试 AC", "192.0.2.10", [item])
-            return SnmpCollectionResult(
-                request=request,
-                device_results=[device_result],
-                total_devices=1,
-                success_devices=1,
-            )
-
-    def mapper(_result: SnmpCollectionResult):
-        return (
-            {"total_aps": 1, "online_aps": 1, "offline_aps": 0},
-            [{"ap_name": "AP-02", "state": "Run"}],
-        )
-
-    service = AcResourceService(
-        _FakeDeviceRepository(device),  # type: ignore[arg-type]
-        repository,  # type: ignore[arg-type]
-        PathResolver(tmp_path),
-        snmp_collection_service=FakeSnmpCollectionService(),  # type: ignore[arg-type]
-        snmp_resource_mapper=mapper,
-    )
-    result = service.refresh(
-        AcResourceRefreshRequest(
-            device_uuid="ac-001",
-            site_name="demo",
-            source="snmp",
-            snmp_oids=["1.3.6.1.4.1.25506.2.75.2"],
-        )
-    )
-
-    assert result.success is True
-    assert result.source == "snmp"
-    assert captured[0].devices[0].device_id == "ac-001"
-    assert captured[0].oids == ["1.3.6.1.4.1.25506.2.75.2"]
-    assert repository.resources[0]["ap_name"] == "AP-02"
-
-
-def test_ac_resource_service_rejects_unmapped_snmp_and_supports_cancel(tmp_path: Path) -> None:
+def test_ac_resource_service_rejects_removed_snmp_source_and_supports_cancel(tmp_path: Path) -> None:
     service = AcResourceService(
         _FakeDeviceRepository(_ac_device()),  # type: ignore[arg-type]
         _FakeAcRepository(),  # type: ignore[arg-type]
         PathResolver(tmp_path),
     )
 
-    with pytest.raises(ValueError, match="未配置已验证的 SNMP"):
+    with pytest.raises(ValueError, match="不支持的 AC 资源采集来源"):
         service.refresh(
             AcResourceRefreshRequest(
                 device_uuid="ac-001",
                 site_name="demo",
                 source="snmp",
-                snmp_oids=["1.3.6.1.4.1.25506.2.75.2"],
             )
         )
     with pytest.raises(AcResourceRefreshCancelled):

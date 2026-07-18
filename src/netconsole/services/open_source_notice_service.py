@@ -27,7 +27,6 @@ DEPENDENCY_NAME_MAP = {
     "pyinstaller": "PyInstaller",
     "pandas": "pandas",
     "paramiko": "paramiko",
-    "pysnmp": "pysnmp",
     "cryptography": "cryptography",
     "requests": "requests",
 }

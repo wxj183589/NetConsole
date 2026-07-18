@@ -42,7 +42,7 @@ from netconsole.models.api.device_management import (
     DeviceTaskReferenceDTO,
 )
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import DeviceSnmpProfileResult
+from netconsole.models.device_snmp import DeviceSnmpProfileResult
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -386,10 +386,23 @@ def test_real_edit_is_validated_and_persisted(
         f"/api/device-management/devices/{mr.device_uuid}",
         json={**payload, "device_vendor": "unsupported"},
     )
+    rejected_v3 = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={**payload, "snmp_v3_enabled": True},
+    )
+    rejected_rw = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={**payload, "snmp_rw_community": "write-secret"},
+    )
+    detail = client.get(f"/api/device-management/devices/{mr.device_uuid}").json()["device"]
 
     assert response.status_code == 200
     assert response.json()["device"]["name"] == "MR-NEW"
     assert rejected.status_code == 422
+    assert rejected_v3.status_code == 422
+    assert rejected_rw.status_code == 422
+    assert "snmp_v3_enabled" not in detail
+    assert "snmp_rw_community" not in detail
     assert devices.get_by_uuid(str(mr.device_uuid)).name == "MR-NEW"
 
 

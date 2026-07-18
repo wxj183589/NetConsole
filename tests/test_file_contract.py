@@ -16,7 +16,6 @@ from netconsole.services.file_contract import (
     attach_export_metadata,
     validate_csv_import,
     validate_excel_import,
-    validate_image_import,
     validate_json_import,
     validate_zip_import,
 )
@@ -164,18 +163,3 @@ def test_zip_contract_checks_manifest_required_files_and_path_traversal(tmp_path
         archive.writestr("../outside.txt", "bad")
     with pytest.raises(ImportValidationError, match="不安全路径"):
         validate_zip_import(unsafe, expected_module="history", allow_external=True, allowed_external_suffixes=[".txt"])
-
-
-def test_image_import_rejects_unrelated_file_with_image_extension(tmp_path: Path) -> None:
-    from PIL import Image
-
-    valid = tmp_path / "floor.png"
-    Image.new("RGB", (16, 12), "white").save(valid, "PNG")
-    result = validate_image_import(valid, expected_module="wifi_survey.floor_plan")
-    assert result.metadata == {"width": 16, "height": 12}
-
-    unrelated = tmp_path / "unrelated.png"
-    unrelated.write_text("not an image", encoding="utf-8")
-
-    with pytest.raises(ImportValidationError, match="文件已损坏或无法读取"):
-        validate_image_import(unrelated, expected_module="wifi_survey.floor_plan")

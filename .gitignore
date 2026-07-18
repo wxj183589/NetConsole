@@ -60,12 +60,11 @@ apps/agent/mr_collector_py/dist/
 apps/agent/tmp/
 apps/agent/tools/
 
-# Generated archives and packages; versioned MIB archives remain allowed.
+# Generated archives and packages.
 *.zip
 *.7z
 *.tar
 *.tar.gz
-!resources/builtin_mibs/**/*.zip
 
 # IPOP v4.1 is a user-supplied, non-redistributable tool.
 tools/windows-x64/ipop/IPOP.EXE

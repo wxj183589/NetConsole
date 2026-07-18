@@ -21,7 +21,7 @@ NetConsole/
 ├─ config/
 │  └─ profiles/             # 版本化 feature profile 和配置模板
 ├─ docs/                    # 项目文档、架构和开发规则
-├─ resources/               # 版本化只读资源、命令参考和 MIB 归档
+├─ resources/               # 版本化只读资源、命令参考和工具依赖
 ├─ scripts/
 │  ├─ build/                # 构建、打包、构建检查和发布脚本
 │  ├─ dev/                  # 本地开发、基准和手工 smoke 脚本
@@ -82,7 +82,7 @@ apps/agent/
 ## 5. 配置和资源规则
 
 - `config` 放可审查、可版本化的配置模板和 feature profiles，不放真实账号、密码、Token、community、私钥或生产局点数据。
-- `resources` 放随代码发布的只读资源、规则、命令参考和明确版本化的 MIB 归档；不得把用户导入的 MIB、编译索引或报告写回此目录。
+- `resources` 放随代码发布的只读资源、规则、命令参考和已审计工具依赖；不得把运行数据或报告写回此目录。
 - 所有文档中的源码文件路径使用 `src/netconsole/...`；Python import、模块或包名仍使用 `netconsole.*`，不得把 import 写成 `src.netconsole.*`。
 - `resources/tools/` 是 fping/iPerf 运行工具的唯一源码来源；`tools/` 只用于开发、诊断、维护和协议分析。`tools/windows-x64/ipop/` 只保存 IPOP 外部工具说明，`IPOP.EXE` 不提交、不打包。
 - `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`。Agent 启动脚本可在首次运行时从模板初始化缺失文件，但不得覆盖已有真实配置。
@@ -118,7 +118,7 @@ Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development
 
 ## 9. 构建产物规则
 
-`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python/Go 缓存和本地 Agent 运行目录均不得提交。`resources/builtin_mibs` 中明确版本化的 MIB ZIP，以及 `resources/tools/windows-x64/{fping,iperf3}` 中已记录来源与许可证的运行依赖是已审计例外；构建后才复制为交付包内的 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 只用于开发、诊断、维护和协议分析，`apps/agent/tools/` 禁止作为运行时工具来源；IPOP 始终不进入发布包。
+`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python/Go 缓存和本地 Agent 运行目录均不得提交。`resources/tools/windows-x64/{fping,iperf3}` 中已记录来源与许可证的运行依赖是已审计例外；构建后才复制为交付包内的 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 只用于开发、诊断、维护和协议分析，`apps/agent/tools/` 禁止作为运行时工具来源；IPOP 始终不进入发布包。
 
 ## 10. 新增文件检查表
 

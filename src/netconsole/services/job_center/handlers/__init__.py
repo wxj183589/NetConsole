@@ -13,10 +13,9 @@ def builtin_handlers() -> dict[str, JobHandler]:
         network_jobs,
         online_mr_jobs,
         rail_transit_jobs,
-        snmp_jobs,
         system_maintenance_jobs,
         traffic_jobs,
-        wifi_survey_jobs,
+        wireless_scan_legacy_jobs,
     )
 
     registry: dict[str, JobHandler] = {}
@@ -29,10 +28,9 @@ def builtin_handlers() -> dict[str, JobHandler]:
         network_jobs.HANDLERS,
         online_mr_jobs.HANDLERS,
         rail_transit_jobs.HANDLERS,
-        snmp_jobs.HANDLERS,
         system_maintenance_jobs.HANDLERS,
         traffic_jobs.HANDLERS,
-        wifi_survey_jobs.HANDLERS,
+        wireless_scan_legacy_jobs.HANDLERS,
     ):
         duplicates = registry.keys() & handlers.keys()
         if duplicates:

@@ -20,7 +20,7 @@
 - Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
 - Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。
 - Electron 安全基础已进入实现期；只允许 `apps/desktop_electron` 中的窗口、Python 生命周期和白名单 Bridge，不得新增第二套 Renderer/业务 Core。路径只能使用当前原生对话框授予的临时能力，禁止任意命令、程序或未授权路径。
-- SNMP Center 与无线勘测仅允许维护历史代码和数据，不新增功能或入口；网络工具无线扫描单独评估。
+- SNMP Center、通用 MIB/OID 平台与无线勘测已删除，不得恢复代码、资源、依赖或入口；网络工具无线扫描是独立保留能力。
 
 详细规则见 [下一代架构](ARCHITECTURE_NEXT.md) 与 [下一阶段开发指南](DEVELOPMENT_GUIDE.md)。
 
@@ -50,7 +50,7 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 
 - Worker 内部协议和 Job JSON 固定 UTF-8。
 - Python 文本读写显式指定 `encoding="utf-8"`。
-- SSH/Telnet/SNMP、H3C 回显、MIB、CSV 和历史日志在 Adapter 边界做编码兜底。
+- SSH/Telnet/SNMP、H3C 回显、CSV 和历史日志在 Adapter 边界做编码兜底。
 - 外部文本按 `utf-8-sig → utf-8 → gb18030 → gbk` 尝试，不能因终端乱码删除中文。
 
 ## 导出统一规则
@@ -92,23 +92,16 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 - 页面切换、主题切换不得清空任务状态和日志。
 - Worker 不访问 QWidget；数据库连接在 Worker 内创建。
 
-## SNMP 查询边界
+## 设备管理 SNMP 边界
 
-本节只约束仍在使用的通用 SNMP 请求/采集能力，以及被冻结 SNMP Center 的缺陷维护；不表示 SNMP Center 恢复迁移或开放入口。
+SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，不是通用查询或采集平台。
 
-- GET、GETNEXT、GETBULK、WALK、SET 从 UI 统一提交 `snmp_query_execute`，页面不得直接创建 `SnmpClient` 或查询 QThread。
-- SNMP profile、operation、OID、超时、重试、bulk 参数和 SET 类型必须通过可序列化请求模型传递，禁止跨进程传 client、repository 或 Qt 对象。
-- MIB 名称/OID 展示上下文可随请求传入，但 MIB 搜索、全局仓库、H3C 映射、Trap 和 Poll 不进入查询 Job。
-- WALK/GETBULK 在批次边界报告进度并检查取消；结果较大时由 Worker 写缓存或分页，页面只绑定结构化行。
-
-## SNMP 批量采集边界
-
-- 多设备采集统一使用 `snmp_collection_execute`，不得为具体设备、OID 或 AC/AP 用例增加零散 task_type。
-- 并发按设备限制为 5～50；每设备独立 Client，单设备内 OID 顺序执行，禁止跨线程共享 Client、repository 或 SQLite connection。
-- 默认失败策略是记录单设备错误并继续；`stop_on_failure` 仅停止投递新设备，不强制中断正在执行的网络调用。
-- 取消必须停止新任务、等待当前请求收敛并只产生 cancelled 终态，不得同时返回 failed/finished。
-- 批量缓存必须去敏并原子写入；认证字段只能存在于临时 Job 参数，不能写入结果缓存或日志。
-- Batch Collection 是一次性任务，不得在该服务中加入 interval、常驻 Poll、Trap 或 AC 业务字段映射。
+- 只支持 SNMP v1 和 v2c；禁止新增 SNMPv3 用户、安全级别、认证/加密协议、Context 或密钥字段。
+- 只允许 RO community；禁止 RW community、SET 和任何配置写入。
+- Application Service 可调用受限的 GET、GETNEXT 和有行数上限的 WALK，用于 `sysName`、`sysDescr`、`sysObjectID`、`sysUpTime` 与接口描述等固定基础 OID。
+- Vue、Router 和设备页面不得接收任意 OID、操作类型、MIB 上下文或设备地址后直接执行请求。
+- community 只能存在于设备凭据边界和短期调用参数，不得进入 API 响应、任务结果、缓存或普通日志。
+- 不得恢复通用查询、批量采集、GETBULK、Trap、Poll、拓扑、MIB/OID 字典或产品参考平台。
 
 ## AC Domain 边界
 

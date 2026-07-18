@@ -27,7 +27,6 @@ DEFAULT_SETTINGS = {
     "network_tools/iperf_path": "",
     "online_mr.fping_path": "",
     "external_tools/ipop_path": "",
-    "mib_dir": "",
     "last_export_path": "",
     "file_transfer_max_concurrency": 1,
     "trackside_ap/max_device_concurrency": 1000,

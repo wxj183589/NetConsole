@@ -11,9 +11,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_import_export import (
     CSV_ENCODING_ERROR,
     EXPORT_FIELDS,
-    SNMPV3_AUTH_PROTOCOLS,
-    SNMPV3_PRIV_PROTOCOLS,
-    SNMPV3_SECURITY_LEVELS,
+    LEGACY_TEMPLATE_FIELDS,
     TEMPLATE_EXAMPLE_ROWS,
     TEMPLATE_FIELDS,
     DeviceImportExportService,
@@ -84,11 +82,11 @@ def test_template_csv_uses_new_device_model_fields_and_imports_examples(tmp_path
 
     assert rows == [TEMPLATE_FIELDS, *TEMPLATE_EXAMPLE_ROWS]
     assert "归属站点" in TEMPLATE_FIELDS
+    assert {"SNMP启用", "SNMPv1", "SNMPv2c", "SNMP端口", "SNMP只读团体字", "SNMP超时毫秒", "SNMP重试"}.issubset(TEMPLATE_FIELDS)
     hidden = {
         "系统名称",
         "站点/位置",
         "SNMP版本",
-        "SNMP端口",
         "只读团体字",
         "读写团体字",
         "隧道主机1本地端口",
@@ -175,6 +173,34 @@ def test_template_import_enables_tunnels_from_host_presence(tmp_path):
     assert imported.tunnel_enabled == 1
     assert imported.tunnel1_enabled == 1
     assert imported.tunnel2_enabled == 0
+
+
+def test_previous_device_template_remains_importable_with_v2c_defaults(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "legacy-template.csv"
+    row = {field: "" for field in LEGACY_TEMPLATE_FIELDS}
+    row.update(
+        {
+            "设备名称": "Previous Export",
+            "主用地址": "192.0.2.60",
+            "协议": "SSH",
+            "端口": "22",
+            "厂商": "H3C",
+            "设备类型": "SW",
+        }
+    )
+    write_rows(csv_path, [LEGACY_TEMPLATE_FIELDS, [row[field] for field in LEGACY_TEMPLATE_FIELDS]])
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.snmp_enabled == 1
+    assert imported.snmp_v1_enabled == 0
+    assert imported.snmp_v2c_enabled == 1
+    assert imported.snmp_port == 161
+    assert imported.snmp_timeout_ms == 2000
+    assert imported.snmp_retries == 1
 
 
 def test_template_import_rejects_old_headers(tmp_path):
@@ -268,7 +294,13 @@ def test_full_export_contains_only_new_template_fields(tmp_path):
             tunnel1_enabled=1,
             tunnel1_host="10.0.0.10",
             tunnel1_local_port=10022,
+            snmp_enabled=1,
+            snmp_v1_enabled=1,
+            snmp_v2c_enabled=0,
             snmp_port=1161,
+            snmp_ro_community="readonly",
+            snmp_timeout_ms=3500,
+            snmp_retries=2,
         )
     )
     export_path = tmp_path / "export.csv"
@@ -284,11 +316,17 @@ def test_full_export_contains_only_new_template_fields(tmp_path):
         "是否启用SSH隧道",
         "隧道主机1地址",
         "分组",
+        "SNMP启用",
+        "SNMPv1",
+        "SNMPv2c",
+        "SNMP端口",
+        "SNMP只读团体字",
+        "SNMP超时毫秒",
+        "SNMP重试",
     ):
         assert field in rows[0]
     for removed in (
         "系统名称",
-        "SNMP端口",
         "只读团体字",
         "读写团体字",
         "隧道主机1本地端口",
@@ -302,6 +340,44 @@ def test_full_export_contains_only_new_template_fields(tmp_path):
     assert rows[1][rows[0].index("设备名称")] == device.name
     assert rows[1][rows[0].index("主用地址")] == "192.168.1.1"
     assert rows[1][rows[0].index("分组")] == "Vehicle"
+    assert rows[1][rows[0].index("SNMPv1")] == "是"
+    assert rows[1][rows[0].index("SNMPv2c")] == "否"
+    assert rows[1][rows[0].index("SNMP端口")] == "1161"
+    assert rows[1][rows[0].index("SNMP只读团体字")] == "readonly"
+    assert rows[1][rows[0].index("SNMP超时毫秒")] == "3500"
+    assert rows[1][rows[0].index("SNMP重试")] == "2"
+
+
+def test_device_snmp_v1_v2c_fields_round_trip_through_csv(tmp_path):
+    source_repository, _groups, source = make_group_service(tmp_path / "source")
+    source_repository.create(
+        Device(
+            name="SNMP Device",
+            primary_address="192.0.2.50",
+            snmp_enabled=1,
+            snmp_v1_enabled=1,
+            snmp_v2c_enabled=0,
+            snmp_port=2161,
+            snmp_ro_community="readonly-only",
+            snmp_timeout_ms=4500,
+            snmp_retries=3,
+        )
+    )
+    csv_path = tmp_path / "device-snmp.csv"
+    source.export_csv(csv_path, include_sensitive=True)
+
+    target_repository, target = make_service(tmp_path / "target")
+    result = target.import_csv(csv_path)
+    imported = target_repository.list()[0]
+
+    assert result.created == 1
+    assert imported.snmp_enabled == 1
+    assert imported.snmp_v1_enabled == 1
+    assert imported.snmp_v2c_enabled == 0
+    assert imported.snmp_port == 2161
+    assert imported.snmp_ro_community == "readonly-only"
+    assert imported.snmp_timeout_ms == 4500
+    assert imported.snmp_retries == 3
 
 
 def test_csv_import_supports_current_template_fields(tmp_path):
@@ -469,18 +545,9 @@ def test_web_device_csv_export_honors_selection_and_omits_credentials(tmp_path):
     assert row_count == 1
     assert len(rows) == 2
     assert rows[1][rows[0].index("设备名称")] == "Selected"
-    assert {"密码", "隧道主机1密码", "隧道主机2密码"}.isdisjoint(rows[0])
+    assert {"密码", "隧道主机1密码", "隧道主机2密码", "SNMP只读团体字"}.isdisjoint(rows[0])
     assert "secret" not in text
     assert "Not Selected" not in text
-
-
-def test_snmpv3_dropdown_options_do_not_include_blank_items():
-    assert SNMPV3_SECURITY_LEVELS == ("noAuthNoPriv", "AuthNoPriv", "AuthPriv")
-    assert SNMPV3_AUTH_PROTOCOLS == ("MD5", "SHA")
-    assert SNMPV3_PRIV_PROTOCOLS == ("DES56", "3DES", "AES128", "AES192", "AES256")
-    assert "" not in SNMPV3_SECURITY_LEVELS
-    assert "" not in SNMPV3_AUTH_PROTOCOLS
-    assert "" not in SNMPV3_PRIV_PROTOCOLS
 
 
 def test_make_device_export_filename_formats_site_name_and_local_time():

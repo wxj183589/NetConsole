@@ -15,7 +15,7 @@ from netconsole.core.feature_flags import (
     load_profile,
     save_profile,
 )
-from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus, list_features
+from netconsole.core.feature_registry import FEATURE_BY_ID, REMOVED_FEATURE_IDS, FeatureStatus, list_features
 from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
@@ -112,7 +112,7 @@ def test_feature_gate_full_profile_defaults_visible(tmp_path: Path) -> None:
     assert not gate.is_visible("module.wifi_survey")
 
 
-def test_disabled_modules_cannot_be_reenabled_by_profile(tmp_path: Path) -> None:
+def test_removed_modules_are_ignored_by_profile(tmp_path: Path) -> None:
     forced_on = {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     write_runtime(
         tmp_path,
@@ -123,14 +123,12 @@ def test_disabled_modules_cannot_be_reenabled_by_profile(tmp_path: Path) -> None
 
     gate = FeatureGate(tmp_path)
 
-    for feature_id in ("module.snmp_center", "module.wifi_survey"):
-        assert gate.status_for(feature_id) is FeatureStatus.DISABLED
-        assert gate.state_for(feature_id) == {
-            "visible": False,
-            "enabled": False,
-            "client_package": False,
-            "internal_only": False,
-        }
+    for feature_id in REMOVED_FEATURE_IDS:
+        assert not gate.is_visible(feature_id)
+        assert not gate.is_enabled(feature_id)
+        assert feature_id not in gate.features
+        with pytest.raises(KeyError):
+            gate.status_for(feature_id)
 
 
 def test_packaged_runtime_never_exposes_feature_switch_page(tmp_path: Path, monkeypatch) -> None:

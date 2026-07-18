@@ -1,7 +1,7 @@
 v1.3.9
 - Electron 第二波 Qt 功能对等整改完成集成：系统设置、中央功能 profile、网络工具、命令说明、应用日志与安全维护统一进入 Vue + FastAPI + Application Service 正式链路。
 - 统一任务窗口、Artifact 和 Desktop Bridge 收口取消、终态、脱敏、下载、打开文件/目录和子窗口恢复；Electron 开发/生产资源启动及无效 Python 失败冒烟通过。
-- Qt 从本版本发布门退出，仅保留为 Electron 1:1 迁移事实源；无线勘测和 SNMP Center 继续排除，真实设备与桌面人工验收项保持待验收状态。
+- Qt 从本版本发布门退出，仅保留为 Electron 1:1 迁移事实源；无线勘测、SNMP Center 和通用 MIB/OID 平台正式删除，设备管理仅保留 SNMP v1/v2c 只读基础识别，真实设备与桌面人工验收项保持待验收状态。
 
 v1.3.8
 - 轨旁 AP 业务：修复详情联表数据含嵌套字典时的文本提取异常，避免归一化展示值触发 `TypeError`。

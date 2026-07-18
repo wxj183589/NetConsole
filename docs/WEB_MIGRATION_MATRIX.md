@@ -22,8 +22,8 @@
 | 全局 Dashboard | 分散展示 | 轨交看板已有，全局首页未完成 | `PARTIAL` | Vue 统一首页 |
 | 系统设置 | 本机设置为主 | 主题/语言/主题色、工具与终端路径、端口/编码、保存/重载/默认恢复、局点事实与内部 Feature 配置已接入；本机动作经语义白名单 Bridge | `PARTIAL` | 全局 i18n 为 `BLOCKED_ON_GLOBAL_I18N`；Electron 人工与真实外部工具为 `MANUAL_DESKTOP_PENDING / REAL_DEVICE_PENDING` |
 | 命令、日志等传统工具 | 生产入口 | 未完整迁移 | `NOT_STARTED` | 先收敛 Application Service，再建设 Web |
-| SNMP 中心 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |
-| 无线勘测 | 历史代码保留，Feature 禁用 | 无导航 | `BLOCKED` | 排除本轮迁移；未来按新架构独立重建 |
+| SNMP 中心 | 已批准删除 | 无导航、无 API、无资源 | `REMOVED` | 不再纳入迁移或重建范围；设备管理仅保留 SNMP v1/v2c 基础识别 |
+| 无线勘测 | 已批准删除 | 无导航、无 API、无业务代码 | `REMOVED` | 不再纳入迁移或重建范围；网络工具无线扫描独立保留 |
 | 网络工具无线扫描 | 现有能力 | 独立正式路由已接入网卡/扫描源、过滤、启停、自动刷新、历史、Raw、详情和导出 | `REAL_DEVICE_PENDING` | 与无线勘测区分；待 Windows 真网卡和 Electron 人工验收 |
 
 ## 共同替换门槛
@@ -44,10 +44,10 @@
 
 ## 明确冻结项
 
-SNMP 中心和无线勘测当前只保留历史代码与数据：
+SNMP 中心、通用 MIB/OID 平台和无线勘测已从活动产品删除：
 
 - 不进入 Web 导航；
-- 不为它们新增 Qt、Vue 或 Electron 功能；
-- Feature Registry 保持禁用；
-- 不在本轮迁移中做兼容层或功能补齐；
-- 未来若重启，应建立新的迁移任务并从 `NOT_STARTED` 重新评估，不复用旧页面作为目标架构。
+- 不保留 Qt、Vue、Electron、API、Application Service、Job、MIB 资源或发布依赖；
+- 已删除 ID 由 `REMOVED_FEATURE_IDS` 拦截，旧 profile 不能恢复入口；
+- 旧数据库列、历史局点数据库和用户文件不做破坏性迁移或自动清理；
+- 设备管理 SNMP v1/v2c 只读基础识别与网络工具无线扫描不属于上述已删除平台。

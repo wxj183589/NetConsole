@@ -23,7 +23,7 @@ flowchart TD
     CORE --> JOB["Job Registry / Worker Process"]
 ```
 
-正式桌面开发从 `apps/desktop_electron` 启动。无参数 `python main.py` 不再启动任何桌面 Shell；`--mode auto/qt`、Qt probe 和旧 `--web-shell` 已删除。只有开发者显式指定 `--mode web|server` 才进入本机兼容诊断，不承担客户发布、Qt 功能对等或人工验收，也不产生第二套 Vue/FastAPI 逻辑。
+正式桌面开发从 `apps/desktop_electron` 启动；无参数 `python main.py` 是 PyCharm/源码态的同一 Electron 编排入口。`--mode auto/qt`、Qt probe 和旧 `--web-shell` 已删除。只有开发者显式指定 `--mode web|server` 才进入本机兼容诊断，不承担客户发布、功能对等或人工验收，也不产生第二套 Vue/FastAPI 逻辑。
 
 ### 2.2 Server Mode
 
@@ -121,7 +121,7 @@ flowchart TD
 - 新增专用 `/ws/traffic/{traffic_run_id}`，高频样本不进入全局 `/ws/tasks`；
 - FastAPI lifespan 绑定 `TrafficTestApplicationService.start/stop`，从而启动和停止 `AgentTrafficSupervisor`；
 - Vue 新增“网络工具 / 流量测试”页面，包含三类表单、执行端选择、实时状态、ECharts RTT 曲线、日志、历史任务、停止和原配置重试；
-- 继续不修改 Online MR、原 Qt iPerf/Ping、Agent 协议、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
+- 当时未修改 Online MR、原 Qt iPerf/Ping、Agent 协议、设备、AC、FIT-AP 或 MESH；SNMP Center 与无线勘测已在后续 Electron-only 收口中删除。
 
 阶段 4D 已完成：
 
@@ -159,7 +159,7 @@ Web parity foundation 已建立：
 
 - `apps/web/src/navigation/registry.ts` 是 Web 菜单顺序、父子归属、Qt/Feature 映射与对等状态的单一导航来源；AppLayout 不再手工维护菜单或 `startsWith` 活动项链；
 - 固定顶级顺序为 Dashboard、设备、AC、轨道交通、配置、文件、网络工具、任务、Agent、命令、日志、设置、功能开关；当前只渲染已有真实路由，未完成页面登记为 `NOT_STARTED` 且不显示占位入口；
-- AC 轨旁 AP 规划和轨交轨旁 AP 业务保持分属两个模块；Online MR 收集/分析保持轨交归属；无线扫描保持网络工具归属；SNMP Center 和无线勘测不注册 Web 导航；
+- AC 轨旁 AP 规划和轨交轨旁 AP 业务保持分属两个模块；Online MR 收集/分析保持轨交归属；无线扫描保持网络工具归属；已删除的 SNMP Center 和无线勘测不得注册 Web 导航；
 - Router 的正式业务路由携带 `navigationId`、`featureId`、`moduleId`、`title` 和 `desktopOnly`，兼容 `/ac-management` 与 `/network-tools/overview` 重定向；已接入页面的 FastAPI Router 同步执行 Feature Gate，不能只靠 Vue 隐藏；
 - 深色子菜单覆盖标题、内嵌菜单、箭头、hover/active/disabled 状态；全局不再强制 `min-width: 960px`，侧栏支持折叠和窄屏抽屉；
 - 真实 Qt/Electron 状态和替换条件以 [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md) 为准，聚合展示不得升级为完整替代。
@@ -176,11 +176,11 @@ Web parity foundation 已建立：
 
 在收到独立任务前，以下模块不参与 Web 迁移或业务重构：
 
-- SNMP Center：Registry 状态为 `DISABLED`，Qt 菜单/页面工厂不注册，不创建 Web 路由；保留现有 MIB、OID、查询、采集、监控、Trap、拓扑、数据库和文件；
-- 无线勘测 `module.wifi_survey`：Registry 状态为 `DISABLED`，Qt 菜单/页面工厂不注册，不创建 Web 路由；保留扫描、勘测、热力图、导出及硬件适配逻辑；
+- SNMP Center、通用 MIB/OID 平台：活动 Registry、菜单、路由、业务代码、资源与依赖均已删除；旧数据库和用户文件仅做非破坏性保留。
+- 无线勘测：活动 Registry、菜单、路由、勘测/热力图/导出业务代码与依赖均已删除；网络工具无线扫描不受影响。
 - `network_tools.wireless_scan` 是不同能力，当前保持可用，但 Web 迁移优先级为 HOLD。
 
-阶段 4B-2 未迁移 Online MR、原 Qt iPerf/Ping 页面、MR 命令、MESH 规则、AP Identity、光衰判断或 Export Process；仅为现有 Online MR fping Worker机械透传既有 `packet_size`，未改变目标、会话或编排契约。Agent 认证、目标和旧专用接口保持兼容。SNMP Center 与无线勘测仍为硬禁用。
+阶段 4B-2 未迁移 Online MR、原 Qt iPerf/Ping 页面、MR 命令、MESH 规则、AP Identity、光衰判断或 Export Process；仅为现有 Online MR fping Worker机械透传既有 `packet_size`，未改变目标、会话或编排契约。Agent 认证、目标和旧专用接口保持兼容。后续已正式删除 SNMP Center、通用 MIB/OID 平台与无线勘测。
 
 ## 7. 目录边界
 
@@ -232,4 +232,4 @@ cd ..
 
 ## 9. 下一阶段
 
-下一阶段继续禁止新增 Qt 业务页面，逐模块把 Qt 页面和 Router 中的业务编排收敛到 Application Service，并补齐权限、审计、状态恢复和真实验收。Electron 基础不得扩展为通用 Native Bridge；只有业务模块完成完整纵向闭环后才可切换默认入口。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center 和无线勘测当前状态为 `BLOCKED` 并排除迁移，网络工具无线扫描保持独立范围。
+下一阶段继续禁止新增 Qt 业务页面，逐模块把遗留页面和 Router 中的业务编排收敛到 Application Service，并补齐权限、审计、状态恢复和真实验收。Electron 基础不得扩展为通用 Native Bridge；只有业务模块完成完整纵向闭环后才可宣称对等。后续 Online MR 改造继续沿既有 Python Core、Job Center、Agent Controller 和 Traffic API 边界渐进迁移，不直接搬运大页面。5C-10A-B Web LOCAL 自动时长与 5B-13A-A Agent 真实 MR 验收在列车下电期间冻结；回环 Fake 结果不替代现场验收。SNMP Center、通用 MIB/OID 平台和无线勘测已删除，网络工具无线扫描保持独立范围。

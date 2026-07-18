@@ -217,7 +217,7 @@ Renderer 当前只能调用：
 9. SNMP 等剩余模块
 10. 删除 Qt Desktop
 
-现有 SNMP Center 与无线勘测在 Feature Registry 中继续保持 `DISABLED`，迁移状态为 `BLOCKED`；第 9 项只能在独立重建设计批准后开始。
+SNMP Center、通用 MIB/OID 平台与无线勘测已经批准删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
 
 Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按对等矩阵继续验收，Qt 只承担未完成能力的源码事实对照。
 

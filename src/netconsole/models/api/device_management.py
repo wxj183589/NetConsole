@@ -15,9 +15,6 @@ DeviceSecretField = Literal[
     "tunnel1_password",
     "tunnel2_password",
     "snmp_ro_community",
-    "snmp_rw_community",
-    "snmpv3_auth_password",
-    "snmpv3_priv_password",
 ]
 
 
@@ -126,12 +123,6 @@ class DeviceDetailItemDTO(DeviceListItemDTO):
     tunnel2_username: str = ""
     snmp_v1_enabled: bool = False
     snmp_v2c_enabled: bool = False
-    snmp_v3_enabled: bool = False
-    snmpv3_username: str = ""
-    snmpv3_security_level: str = "noAuthNoPriv"
-    snmpv3_auth_protocol: str = "SHA"
-    snmpv3_priv_protocol: str = "AES128"
-    snmp_context_name: str = ""
     snmp_timeout_ms: int = 2000
     snmp_retries: int = 1
     ssh_secret_configured: bool = False
@@ -139,9 +130,6 @@ class DeviceDetailItemDTO(DeviceListItemDTO):
     tunnel1_secret_configured: bool = False
     tunnel2_secret_configured: bool = False
     snmp_ro_secret_configured: bool = False
-    snmp_rw_secret_configured: bool = False
-    snmpv3_auth_secret_configured: bool = False
-    snmpv3_priv_secret_configured: bool = False
     remark: str = ""
     created_at: str = ""
 
@@ -178,7 +166,6 @@ class DeviceWriteRequestDTO(ApiModel):
     snmp_enabled: bool = True
     snmp_v1_enabled: bool = False
     snmp_v2c_enabled: bool = True
-    snmp_v3_enabled: bool = False
     snmp_port: int = Field(default=161, ge=1, le=65535)
     https_port: int | None = Field(default=None, ge=1, le=65535)
     remark: str = Field(default="", max_length=1000)
@@ -198,18 +185,10 @@ class DeviceWriteRequestDTO(ApiModel):
     tunnel2_username: str = Field(default="", max_length=255)
     tunnel2_password: SecretStr | None = Field(default=None, repr=False)
     snmp_ro_community: SecretStr | None = Field(default=None, repr=False)
-    snmp_rw_community: SecretStr | None = Field(default=None, repr=False)
-    snmpv3_username: str = Field(default="", max_length=255)
-    snmpv3_security_level: Literal["noAuthNoPriv", "AuthNoPriv", "AuthPriv"] = "noAuthNoPriv"
-    snmpv3_auth_protocol: Literal["MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"] = "SHA"
-    snmpv3_auth_password: SecretStr | None = Field(default=None, repr=False)
-    snmpv3_priv_protocol: Literal["DES", "3DES", "AES128", "AES192", "AES256"] = "AES128"
-    snmpv3_priv_password: SecretStr | None = Field(default=None, repr=False)
-    snmp_context_name: str = Field(default="", max_length=255)
     snmp_timeout_ms: int = Field(default=2000, ge=100, le=60000)
     snmp_retries: int = Field(default=1, ge=0, le=10)
     clear_secret_fields: list[DeviceSecretField] = Field(
-        default_factory=list, max_length=8
+        default_factory=list, max_length=5
     )
 
 

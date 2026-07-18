@@ -9,9 +9,9 @@
 
 ## 语言与编码
 
-- 默认使用中文回复，保留中文 UI、注释、日志和 MIB 描述。
+- 默认使用中文回复，保留中文 UI、注释和日志。
 - 源码、Markdown、JSON、TOML、YAML、CSV 和项目日志默认 UTF-8；Python 文本读写显式指定 `encoding="utf-8"`。
-- 外部 H3C 回显、MIB、历史日志和导出文件按 `utf-8-sig / utf-8` 优先，失败后尝试 `gb18030 / gbk`。
+- 外部 H3C 回显、历史日志和导出文件按 `utf-8-sig / utf-8` 优先，失败后尝试 `gb18030 / gbk`。
 - PowerShell/Codex 终端乱码不等于文件损坏；先检查原始字节和读取编码，不用默认 `echo`、`cat`、`Get-Content` 判断中文内容。
 
 使用 PowerShell 执行 Windows 管理、PyCharm 启动配置或其他明确依赖 PowerShell 的命令，且涉及中文、路径、日志、附件或设备回显时设置：
@@ -65,7 +65,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
 - 移动文件后必须同步检查 Python import、测试、构建参数、批处理、前端工作目录、Agent 入口、文档和资源定位。
 - 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
-- 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/builtin_mibs` 中明确版本化的 MIB 归档和 `resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
+- 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
 - `apps/agent` 二级目录只保留 `cmd`、`internal`、`mr_collector_py`、`web`、`scripts`、`resources/config` 和项目元文件；示例配置命名为 `config.example.json`/`targets.example.json`，真实配置不得回写源码目录。Agent 开发运行数据使用 `.local/agent/`，构建产物使用 `dist/agent/`；禁止保留 `apps/agent/bin`、`data`、`dist`、`logs`、`packages`、`tmp` 和 `apps/agent/tools` 作为运行目录或工具来源。
 - 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/web` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/desktop`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
 - 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/AGENT.md`、`docs/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
@@ -83,9 +83,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线分析、图表和报告 | 在线 SSH 采集 |
 | `netconsole-ap-identity-skill` | AP/Radio/BSSID/Peer 身份与 shadow | 普通 AP 展示 |
-| `h3c-snmp-mib-skill` | H3C MIB、OID、模块、参考表 | SNMP 请求调度、CLI parser |
-| `snmp-collector-design-skill` | SNMP GET/WALK/SET、并发、缓存、取消 | MIB 文件修复 |
-| `network-command-parser-skill` | H3C/Comware 命令回显 parser | SNMP MIB、UI |
+| `network-command-parser-skill` | H3C/Comware 命令回显 parser | 设备管理 SNMP、UI |
 | `traffic-test-skill` | fping、iPerf、TCP/UDP、阈值 | 普通 SSH/路由 |
 | `windows-encoding-skill` | Windows/H3C/文件/子进程编码 | i18n 词条设计 |
 | `netconsole-data-safety-skill` | SQLite、Repository、目录、备份和清理 | 纯 UI/parser |

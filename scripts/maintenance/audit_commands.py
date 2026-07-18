@@ -42,7 +42,6 @@ COMMAND_PATTERNS = (
     r"route\s+print\s+-4",
     r"control\s+ncpa\.cpl",
     r"WinSCP\.exe",
-    r"SNMP\s+(?:Get|GetNext|GetBulk|Walk|BulkWalk|TableWalk|Set)",
     r"RESTful\s+API",
 )
 
@@ -174,8 +173,6 @@ def build_reference_templates(reference: list[dict[str, object]]) -> set[str]:
         template = str(item.get("command_template") or "")
         for part in split_reference_template(template):
             templates.add(normalize(part))
-        if "SNMP Walk / BulkWalk / TableWalk" in template:
-            templates.update({normalize("SNMP BulkWalk"), normalize("SNMP TableWalk")})
     return templates
 
 

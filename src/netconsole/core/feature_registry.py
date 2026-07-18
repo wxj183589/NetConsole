@@ -11,6 +11,9 @@ class FeatureStatus(StrEnum):
     HIDDEN = "HIDDEN"
 
 
+REMOVED_FEATURE_IDS = frozenset({"module.snmp_center", "module.wifi_survey"})
+
+
 @dataclass(frozen=True)
 class FeatureItem:
     feature_id: str
@@ -29,10 +32,8 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.devices", "nav.devices", None, "module"),
     FeatureItem("module.ac", "nav.ac", None, "module"),
     FeatureItem("module.rail_transit", "nav.rail_transit", None, "module"),
-    FeatureItem("module.wifi_survey", "nav.wifi_survey", None, "module", status=FeatureStatus.DISABLED),
     FeatureItem("module.config_collection", "nav.config_collection", None, "module"),
     FeatureItem("module.file_management", "nav.file_management", None, "module"),
-    FeatureItem("module.snmp_center", "nav.snmp_center", None, "module", status=FeatureStatus.DISABLED),
     FeatureItem("module.network_tools", "nav.network_tools", None, "module"),
     FeatureItem("module.command_reference", "nav.command_reference", None, "module"),
     FeatureItem("module.logs", "nav.logs", None, "module"),
@@ -277,10 +278,8 @@ PAGE_FEATURE_BY_PAGE_ID = {
     "devices": "module.devices",
     "ac": "module.ac",
     "rail_transit": "module.rail_transit",
-    "wifi_survey": "module.wifi_survey",
     "config_collection": "module.config_collection",
     "file_management": "module.file_management",
-    "snmp_center": "module.snmp_center",
     "network_tools": "module.network_tools",
     "command_reference": "module.command_reference",
     "logs": "module.logs",
@@ -290,6 +289,8 @@ PAGE_FEATURE_BY_PAGE_ID = {
 
 
 def get_feature(feature_id: str) -> FeatureItem:
+    if feature_id in REMOVED_FEATURE_IDS:
+        raise KeyError(f"Removed feature id: {feature_id}")
     try:
         return FEATURE_BY_ID[feature_id]
     except KeyError as exc:

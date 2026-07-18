@@ -360,7 +360,7 @@ function showDetail(row: Record<string, unknown>): void {
 
 <template>
   <el-card shadow="never">
-    <template #header><div class="header"><div><h2>无线扫描</h2><p>网络工具内的 WLAN 扫描；无线勘测模块仍不在本页范围。</p></div><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
+    <template #header><div class="header"><div><h2>无线扫描</h2><p>扫描本机 WLAN 网络并保存可导出的历史结果。</p></div><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
     <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <div class="toolbar">
       <el-select v-model="form.adapter_guid" clearable placeholder="选择无线网卡"><el-option v-for="adapter in adapters" :key="adapter.guid || adapter.name" :label="adapter.display_name" :value="adapter.guid" /></el-select>

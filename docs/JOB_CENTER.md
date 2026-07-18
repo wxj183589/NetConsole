@@ -22,7 +22,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - `src/netconsole/ui/job_process_manager.py`：迁移期 Qt/QProcess Adapter 和 Qt signals；不属于永久 Job Center Service，Qt 删除时一并删除。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
-- `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、SNMP、无线勘测、Traffic 领域分区。
+- `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
 
 ## Worker Process 约束
 
@@ -191,32 +191,12 @@ submit_export_task(
 - 页面可用 QTimer 轻量跟踪已落盘日志尾部，但不得读取后在 UI 线程做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
 - 当前执行端仍是本地 Worker Process，未实现 Windows/CentOS Agent；命令、配置、路径、会话与打包均已脱离 UI，为后续替换执行端保留边界。
 
-## SNMP 查询 Job
-
-- `snmp_query_execute` 统一承载 GET、GETNEXT、GETBULK、WALK 和 SET；UI 只提交可序列化的 profile、OID、操作参数及 MIB 展示上下文。
-- Worker 内初始化 SNMP Repository、`SnmpQueryService` 和 Client。页面不得直接调用 `SnmpClient`，也不得在 QThread 中执行查询。
-- 查询结果由 Worker 格式化为结构化结果和表格行；需要导出兼容缓存时，由 Worker 原子写入运行时缓存，UI 不直接写结果文件。
-- GETBULK 保留 `non_repeaters` 与 `max_repetitions`，WALK 保留最大行数；SNMP v2c/v3 的现有参数模型保持兼容，本阶段不改变既有协议支持范围或安全策略。
-- 查询在阶段和批次边界检查取消。成功、失败、取消均通过统一 JSONL 终态返回，页面在任一终态恢复按钮和状态。
-- 本阶段不迁移 MIB 浏览/搜索、全局 MIB 仓库、H3C 映射、Trap、Poll 和产品参考库。
-
-## SNMP 批量采集 Job
-
-- `snmp_collection_execute` 承载多设备、多 OID 的 GET、GETNEXT、GETBULK、WALK，只读批量采集不开放批量 SET。
-- `SnmpCollectionService` 在 Worker Process 内使用设备级线程池；并发范围 5～50，默认 10，每台设备创建独立 `SnmpQueryService` 与 Client，不共享连接状态。
-- 线程池只维持当前并发窗口，不预先提交全部设备。取消后停止投递新设备，等待已启动的单次 SNMP 请求在 timeout 窗口内结束，再返回唯一 cancelled 终态。
-- 单设备 timeout、认证或 OID 错误只记录到该设备结果；其他设备继续采集。任务以 finished 返回成功/失败数量，除非用户取消或任务基础参数无效。
-- Collection 层统一执行失败重试，底层单次请求的 profile retries 置为 0，避免两层重试相乘。
-- 完成结果写入 `runtime/cache/snmp_collection_results` 原子 JSON 缓存。缓存包含任务时间、设备/OID/value/status/error 和扁平 records，不保存 community、v3 密钥或其他认证参数。
-- UI 或后续 AC 模块通过 `ui/snmp_collection_helper.py::submit_snmp_collection` 提交任务，不在页面内创建线程池或 SNMP Client。
-- 本能力不等同于 Poll/Monitor：不含周期调度、长期轮询、Trap、MIB 规则或 AC 业务映射。
-
 ## AC 资源刷新 Job
 
 - `ac_fit_ap_resources_refresh` 保持原 task_type；`mode=load` 读取现有资源，`mode=collect` 通过 `AcService / AcResourceService` 执行设备采集，兼容旧调用方。
 - 页面不再创建 `AcResourceCollectThread`。Worker 内加载 AC 设备、创建 repository，并调用已有 `collect_h3c_fit_ap_resources` 完成 AP 列表、状态、地址、Radio、BSSID 和 LLDP 采集解析。
 - `source=auto` 只选择已验证的数据策略。当前 H3C AP 资源由 CLI 信息最完整，因此默认继续使用 CLI；不得因架构迁移强制改成 SNMP。
-- AC Domain 已提供 `SnmpCollectionService` 策略入口，但只有同时存在明确 OID 和经测试的资源映射器时才允许写入 AC repository；未验证映射必须拒绝执行。
+- AC Domain 只接受现有 H3C CLI 采集；`source=snmp` 必须明确拒绝，不能借设备管理 SNMP v1/v2c 基础识别恢复 AC SNMP 采集。
 - CLI 原始回显、命令 JSONL、collect run、parser 和 repository 写入规则保持原状。命令失败转换为 Job error，用户取消转换为唯一 cancelled 终态。
 - AP 统一模型和轨旁业务不属于本阶段，继续使用现有专用服务。
 
@@ -227,7 +207,7 @@ submit_export_task(
 - `AcOpticalService` 继续调用既有 `collect_h3c_fit_ap_optical`；AP 控制台启用、Telnet 命令、解析、重试、历史合并、raw log 和 repository 写入语义均不改变。
 - AP 在线/离线关联和交换机侧光模块状态在 Domain 层合并。交换机侧无光不直接改写在线 AP 的 AP 侧异常；AP 离线仍按现有状态映射为历史光衰展示。
 - 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。
-- 本阶段不修改数据库 schema、AP 统一模型、轨旁 AP 业务、MR/Mesh 或 MIB/SNMP Collection。
+- 本阶段不修改数据库 schema、AP 统一模型、轨旁 AP 业务或 MR/Mesh；旧 MIB/SNMP Collection 已在后续 E6A 阶段删除。
 
 ## AC 命令动作 Job
 
@@ -239,7 +219,7 @@ submit_export_task(
 - `custom_sequence` 只接受与已验证动作完全一致的命令序列，禁止借统一任务开放任意配置命令。
 - 连接、认证、超时、设备命令和保存错误由 Domain 返回结构化错误；handler 转换为标准 error 终态，用户取消转换为唯一 cancelled 终态。
 - Worker stdout 只输出 UTF-8 JSONL。设备普通输出即使被旧执行器 print，也会被 background worker 重定向到诊断通道；结构化 command result 可作为 JSON 字段返回。
-- 本阶段不迁移 AP 统一模型、轨旁业务、光衰规则、MR/Mesh、MIB/SNMP、Online MR 或 Agent。
+- 本阶段不迁移 AP 统一模型、轨旁业务、光衰规则、MR/Mesh、Online MR 或 Agent；旧 MIB/SNMP 平台已在后续 E6A 阶段删除。
 
 ## 避免 UI 卡死
 

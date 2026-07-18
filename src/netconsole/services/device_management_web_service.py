@@ -155,9 +155,6 @@ DEVICE_SECRET_FIELD_NAMES = (
     "tunnel1_password",
     "tunnel2_password",
     "snmp_ro_community",
-    "snmp_rw_community",
-    "snmpv3_auth_password",
-    "snmpv3_priv_password",
 )
 DEVICE_TASK_TYPES = frozenset(
     {
@@ -315,12 +312,6 @@ class DeviceManagementWebService:
                 tunnel2_username=str(device.tunnel2_username or ""),
                 snmp_v1_enabled=bool(device.snmp_v1_enabled),
                 snmp_v2c_enabled=bool(device.snmp_v2c_enabled),
-                snmp_v3_enabled=bool(device.snmp_v3_enabled),
-                snmpv3_username=str(device.snmpv3_username or ""),
-                snmpv3_security_level=str(device.snmpv3_security_level or "noAuthNoPriv"),
-                snmpv3_auth_protocol=str(device.snmpv3_auth_protocol or "SHA"),
-                snmpv3_priv_protocol=str(device.snmpv3_priv_protocol or "AES128"),
-                snmp_context_name=str(device.snmp_context_name or ""),
                 snmp_timeout_ms=int(device.snmp_timeout_ms or 2000),
                 snmp_retries=int(device.snmp_retries) if device.snmp_retries is not None else 1,
                 ssh_secret_configured=bool(device.ssh_password),
@@ -328,9 +319,6 @@ class DeviceManagementWebService:
                 tunnel1_secret_configured=bool(device.tunnel1_password),
                 tunnel2_secret_configured=bool(device.tunnel2_password),
                 snmp_ro_secret_configured=bool(device.snmp_ro_community),
-                snmp_rw_secret_configured=bool(device.snmp_rw_community),
-                snmpv3_auth_secret_configured=bool(device.snmpv3_auth_password),
-                snmpv3_priv_secret_configured=bool(device.snmpv3_priv_password),
                 remark=str(device.remark or ""),
                 created_at=str(device.created_at or ""),
             ),
@@ -1236,9 +1224,6 @@ class DeviceManagementWebService:
             "tunnel1_password",
             "tunnel2_password",
             "snmp_ro_community",
-            "snmp_rw_community",
-            "snmpv3_auth_password",
-            "snmpv3_priv_password",
         )
         for field in secret_fields:
             secret = getattr(payload, field)
@@ -1267,8 +1252,6 @@ class DeviceManagementWebService:
             "tunnel1_username",
             "tunnel2_host",
             "tunnel2_username",
-            "snmpv3_username",
-            "snmp_context_name",
         ):
             values[field] = str(values.get(field) or "").strip()
         if not values["name"] or not values["primary_address"]:
@@ -2525,7 +2508,7 @@ class DeviceManagementWebService:
         enabled = {
             "SSH": bool(device.ssh_enabled),
             "TELNET": bool(device.telnet_enabled),
-            "SNMP": bool(device.snmp_enabled and (device.snmp_v1_enabled or device.snmp_v2c_enabled or device.snmp_v3_enabled)),
+            "SNMP": bool(device.snmp_enabled and (device.snmp_v1_enabled or device.snmp_v2c_enabled)),
         }
         if protocol not in enabled:
             raise ValueError("不支持的连接测试协议")
@@ -2536,7 +2519,7 @@ class DeviceManagementWebService:
     def _capabilities(device: Device) -> DeviceCapabilityDTO:
         versions = [
             version
-            for version, enabled in (("v1", device.snmp_v1_enabled), ("v2c", device.snmp_v2c_enabled), ("v3", device.snmp_v3_enabled))
+            for version, enabled in (("v1", device.snmp_v1_enabled), ("v2c", device.snmp_v2c_enabled))
             if enabled
         ]
         return DeviceCapabilityDTO(
@@ -2856,29 +2839,11 @@ def _form_test_bootstrap(device: Device, protocol: str) -> dict[str, object | No
             snmp_enabled=1,
             snmp_v1_enabled=device.snmp_v1_enabled,
             snmp_v2c_enabled=device.snmp_v2c_enabled,
-            snmp_v3_enabled=device.snmp_v3_enabled,
             snmp_port=device.snmp_port,
-            snmp_context_name=device.snmp_context_name,
             snmp_timeout_ms=device.snmp_timeout_ms,
             snmp_retries=device.snmp_retries,
         )
-        if device.snmp_v1_enabled or device.snmp_v2c_enabled:
-            payload["snmp_ro_community"] = device.snmp_ro_community
-        if device.snmp_v3_enabled:
-            payload.update(
-                snmpv3_username=device.snmpv3_username,
-                snmpv3_security_level=device.snmpv3_security_level,
-            )
-            if device.snmpv3_security_level != "noAuthNoPriv":
-                payload.update(
-                    snmpv3_auth_protocol=device.snmpv3_auth_protocol,
-                    snmpv3_auth_password=device.snmpv3_auth_password,
-                )
-            if device.snmpv3_security_level == "AuthPriv":
-                payload.update(
-                    snmpv3_priv_protocol=device.snmpv3_priv_protocol,
-                    snmpv3_priv_password=device.snmpv3_priv_password,
-                )
+        payload["snmp_ro_community"] = device.snmp_ro_community
     return payload
 
 

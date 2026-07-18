@@ -12,7 +12,6 @@ from netconsole.services.export.common_exporters import (
     export_device_csv,
     export_device_template_csv,
     export_markdown_text,
-    export_mib_product_compare,
     export_omnipeek_name_table_task,
     export_online_mr_report_xlsx,
     export_open_source_notices,
@@ -25,11 +24,8 @@ from netconsole.services.export.common_exporters import (
     export_fit_ap_optical_xlsx_task,
     export_multi_sheet_xlsx,
     export_securecrt_sessions_task,
-    export_snmp_query_result,
     export_table_csv,
     export_table_xlsx,
-    export_wifi_survey_csv,
-    export_wifi_survey_heatmap_png,
     export_vehicle_mr_history_xlsx,
     export_zip_files,
     replace_output,
@@ -56,10 +52,6 @@ GENERIC_EXPORT_TASK_TYPES = {
     "device_template_csv",
     "securecrt_sessions",
     "config_snapshots_zip",
-    "wifi_survey_csv",
-    "wifi_survey_heatmap_png",
-    "snmp_query_result",
-    "mib_product_compare",
     "fit_ap_csv",
     "fit_ap_optical_xlsx",
     "fit_ap_extension_xlsx",
@@ -107,14 +99,6 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = int(result.get("row_count") or 0)
     elif job.job_type == "config_snapshots_zip":
         row_count = export_config_snapshots_zip(tmp_path, payload, progress_callback, should_cancel)
-    elif job.job_type == "wifi_survey_csv":
-        row_count = export_wifi_survey_csv(tmp_path, payload, progress_callback, should_cancel)
-    elif job.job_type == "wifi_survey_heatmap_png":
-        row_count = export_wifi_survey_heatmap_png(tmp_path, payload, progress_callback, should_cancel)
-    elif job.job_type == "snmp_query_result":
-        row_count = export_snmp_query_result(tmp_path, payload, progress_callback, should_cancel)
-    elif job.job_type == "mib_product_compare":
-        row_count = export_mib_product_compare(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_csv":
         row_count = export_fit_ap_csv_task(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "fit_ap_optical_xlsx":

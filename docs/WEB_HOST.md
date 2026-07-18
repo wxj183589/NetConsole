@@ -72,7 +72,7 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - 轨道交通无线综合看板通过既有 Query Service 聚合基础设施、列车通信、任务、Agent 缓存和 Mesh 分析摘要；全部接口为 GET-only，告警不增加业务阈值，页面只跳转到已有详情入口；
 - WebHost 只在独立 AGENT 页签开放已登记 Profile 的远程 MR start/status/normal stop，不开放远端包删除、强停、任意命令、任意 URL 或 Agent 配置修改；Application Service 的单 Agent 执行闭环见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
-- SNMP Center 和无线勘测继续保持 `DISABLED`。
+- SNMP Center、通用 MIB/OID 平台和无线勘测已删除；网络工具无线扫描独立保留。
 - Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见 [Qt/Web 功能对等矩阵](WEB_QT_PARITY_MATRIX.md)。
 - Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知按实际 Feature 状态验收；所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 - Electron 先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 只作为 Git 历史和待删除源码的迁移参考。

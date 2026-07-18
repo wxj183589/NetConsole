@@ -29,7 +29,7 @@ Electron + Vue + FastAPI 是当前正式桌面方向；Qt 只保留为 1:1 迁�
 ## 当前入口
 
 - 正式桌面入口：`apps/desktop_electron/`
-- Python 内部入口：`main.py`（仅受管 Backend、Worker 和开发诊断）
+- PyCharm/源码桌面入口：无参数 `main.py`（启动同一 Electron 开发编排）；带内部参数时承接受管 Backend、Worker 和开发诊断
 - Qt 事实源主窗口：`src/netconsole/ui/main_window.py`（无活动启动入口）
 - 路径管理：`src/netconsole/core/paths.py`
 - 站点管理：`src/netconsole/core/sites.py`

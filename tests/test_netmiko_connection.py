@@ -180,19 +180,17 @@ def test_sanitize_sensitive_text_masks_passwords():
     device = Device(
         ssh_password="sshSecret",
         telnet_password="telnetSecret",
-        snmpv3_auth_password="authSecret",
-        snmpv3_priv_password="privSecret",
+        snmp_ro_community="communitySecret",
     )
 
     safe = sanitize_sensitive_text(
-        "sshSecret telnetSecret authSecret privSecret password=plain ssh_password=named",
+        "sshSecret telnetSecret communitySecret password=plain ssh_password=named",
         device,
     )
 
     assert "sshSecret" not in safe
     assert "telnetSecret" not in safe
-    assert "authSecret" not in safe
-    assert "privSecret" not in safe
+    assert "communitySecret" not in safe
     assert "plain" not in safe
     assert "named" not in safe
     assert "***" in safe

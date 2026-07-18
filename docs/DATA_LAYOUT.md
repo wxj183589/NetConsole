@@ -6,7 +6,7 @@
 
 仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。
 
-运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C/MIB/历史日志读取时允许按明确顺序回退编码。
+运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C 回显和历史日志读取时允许按明确顺序回退编码。
 
 ## 2. 顶层目录
 
@@ -30,14 +30,12 @@
       ├─ chart_cache/
       ├─ preview_cache/
       ├─ tmp/、temp/
-      ├─ export_tmp/、download_tmp/
-      ├─ snmp_query_results/
-      └─ snmp_collection_results/
+      └─ export_tmp/、download_tmp/
 ```
 
 注意 `<data_root>/data/runtime/` 与 `<data_root>/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
 
-## 3. 全局资源
+## 3. 历史全局资源
 
 ```text
 .local/data/global/mibs/
@@ -50,7 +48,7 @@
 └─ reports/
 ```
 
-H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、编译索引和产品比较报告分目录保存，避免把用户资源写回 `resources/`。
+上述目录只描述旧版本可能留下的用户数据。SNMP Center、通用 MIB/OID 平台和版本化 MIB 资源已从活动产品删除；当前版本不创建、不读取、不导入这些目录，也不会在升级或自动清理时破坏性删除它们。需要回收历史数据时必须由用户明确选择并经过独立备份/清理流程。
 
 ## 4. 局点目录
 
@@ -60,7 +58,7 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 │  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
 │  ├─ tasks.db                   # 任务快照、结构化事件与 Online MR Task/Session 映射
 │  ├─ agents.db                  # Agent 配置与运行状态（不保存明文凭据）
-│  └─ snmp.db                    # SNMP Center 局点数据库（功能冻结，数据保留）
+│  └─ snmp.db                    # 旧版本遗留；当前不创建/读取/自动删除
 ├─ files/                        # 文件管理业务文件
 │  └─ imports/online_mr/         # Agent Online MR ZIP 下载与导入 staging
 ├─ cache/                        # 可由手工磁盘清理管理的局点缓存
@@ -73,13 +71,8 @@ H3C 私有 MIB 不随仓库分发。导入归档、原始 MIB、参考资料、�
 │  └─ outputs/
 ├─ file_manager/
 │  └─ downloads/
-├─ snmp/
-│  ├─ raw/
-│  ├─ exports/
-│  └─ traps/
-├─ topology/
-│  ├─ snapshots/
-│  └─ exports/
+├─ snmp/                         # 旧版本遗留；当前不创建/读取/自动删除
+├─ topology/                     # 旧版本遗留；当前不创建/读取/自动删除
 ├─ network_tools/
 │  ├─ toolbox/
 │  ├─ outputs/

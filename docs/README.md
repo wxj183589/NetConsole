@@ -61,7 +61,6 @@
 | [Online MR Agent Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md) | Web Agent 控制与回环 Fake Agent 的全链路验收、冻结项和复现步骤 | Online MR Web/Agent 联调 | Agent Web Router/Service、Fake Agent、正式 Client/Importer 测试 | Web Agent 契约、Fake 状态机或验收边界变化 |
 | [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md) | Desktop WebHost 的 LOCAL 启停、安全开关、请求白名单和幂等 | Online MR Web 控制开发 | `web_control_service.py`、控制 Router/Vue、ApplicationService | Web 控制路由、安全条件、DTO 或状态变化 |
 | [MR/Mesh 日志分析](mr_mesh_log_analysis_rules.md) | 导入、解析、阈值、切换/乒乓、报表 | Mesh 分析开发 | `mesh_*`、规则 JSON、页面/测试 | parser、阈值、图表或报告变化 |
-| [SNMP Center](SNMP_CENTER.md) | MIB/OID、查询、批量采集、Trap 和拓扑 | SNMP/MIB 开发 | SNMP models/services/repositories/UI/测试 | 操作、参数、MIB、缓存或 Tab 变化 |
 | [AP Identity 总览](AP_IDENTITY.md) | Canonical 模型、resolver、只读接入边界 | AP Identity/接入域开发 | `ap_identity*`、domain handlers、测试 | 模型、优先级、接入点或接管结论变化 |
 | [AP Identity 展示评估](AP_IDENTITY_DISPLAY_ASSESSMENT.md) | 允许字段、风险、flag 和不可用状态 | 诊断展示评估 | diagnostics ViewModel、评估测试 | ViewModel、flag、脱敏或展示准入变化 |
 | [AP Identity Job 宿主评估](AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md) | 结果流、宿主缺口和阶段 8.3 决策 | Job/诊断宿主评估 | UI 调用链、结果生命周期、测试 | 新增统一详情/历史宿主或结果保留层 |

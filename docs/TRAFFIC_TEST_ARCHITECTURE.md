@@ -9,7 +9,7 @@
 - fping v5 高频 Ping；
 - TCP 端口测试（本地复用 Qt 工具箱探测函数，Agent 复用既有 `ping_probe`）。
 
-当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center 与无线勘测继续保持 `DISABLED`。
+当前已提供 Traffic REST API、独立 Traffic WebSocket 和 Vue 流量测试页面。原 Qt iPerf/Ping 页面继续可用，Online MR 页面、目标规则、会话和联动编排没有迁入通用 Traffic 服务。SNMP Center、通用 MIB/OID 平台与无线勘测已删除。
 
 ## 2. 组件关系
 
@@ -261,6 +261,6 @@ Traffic 错误使用稳定 `TRAFFIC_*` code。启动失败、工具缺失、连�
 - 只接入现有 Windows Go Agent，CentOS Agent 尚未实现；
 - 本地高频 Ping 暂不支持指定源地址，Agent 支持强类型 `source_address`；
 - 现有 Agent `ping_probe` 不生成结构化 result/sample，远端 TCP 端口测试仅能恢复和展示任务终态；
-- 未迁移 Online MR、原 Qt iPerf/Ping、设备、AC、FIT-AP、MESH、SNMP Center 或无线勘测。
+- 本阶段未迁移 Online MR、原 Qt iPerf/Ping、设备、AC、FIT-AP 或 MESH；SNMP Center 与无线勘测已在后续阶段删除。
 
 后续业务迁移不得把执行、Token、工具路径或任意命令下放到页面和路由。

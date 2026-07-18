@@ -3,17 +3,17 @@ from __future__ import annotations
 import re
 
 from netconsole.models.device import Device
-from netconsole.models.snmp_models import DeviceSnmpProfileResult, SnmpProfile
+from netconsole.models.device_snmp import DeviceSnmpProfile, DeviceSnmpProfileResult
 from netconsole.services.comware_version_service import parse_comware_version
-from netconsole.services.snmp_client import SnmpClient
+from netconsole.services.device_snmp_client import DeviceSnmpClient
 
 
 class DeviceSnmpDetectService:
-    def __init__(self, client: SnmpClient | None = None) -> None:
-        self.client = client or SnmpClient()
+    def __init__(self, client: DeviceSnmpClient | None = None) -> None:
+        self.client = client or DeviceSnmpClient()
 
     def detect(self, device: Device, *, cancel_checker=None) -> DeviceSnmpProfileResult:
-        profile = SnmpProfile.from_device(device)
+        profile = DeviceSnmpProfile.from_device(device)
         result = self.client.test_device(profile, cancel_checker=cancel_checker)
         if result.get("status") != "success":
             return DeviceSnmpProfileResult(

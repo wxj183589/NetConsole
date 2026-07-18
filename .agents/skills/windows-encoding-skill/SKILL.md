@@ -1,6 +1,6 @@
 ---
 name: windows-encoding-skill
-description: "Windows、PowerShell、Codex 终端、中文乱码、H3C 回显、日志、MIB 描述、CSV/XLSX、subprocess、UTF-8、GB18030、GBK、OEM/控制台代码页或 JSONL 编码任务时使用。UI 翻译、i18n 词条设计或纯协议解析错误不使用本 Skill。"
+description: "Windows、PowerShell、Codex 终端、中文乱码、H3C 回显、日志、历史外部 MIB 文件、CSV/XLSX、subprocess、UTF-8、GB18030、GBK、OEM/控制台代码页或 JSONL 编码任务时使用。UI 翻译、i18n 词条设计或纯协议解析错误不使用本 Skill。"
 ---
 
 # 目标
@@ -62,5 +62,5 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 # 相关 Skills
 
 - H3C parser：`network-command-parser-skill`。
-- MIB 资料：`h3c-snmp-mib-skill`。
+- 历史外部 MIB 文件只按普通文本编码排查；NetConsole 不再提供 MIB/OID 产品平台。
 - Worker JSONL：`netconsole-job-center-skill`。

@@ -40,38 +40,30 @@ Devices can support SSH and Telnet at the same time:
 
 At least one of SSH or Telnet must be enabled. SSH is enabled by default on port `22`; Telnet is disabled by default on port `23`.
 
-## SNMP Reserved Fields
+## Device SNMP Fields
 
-SNMP versions are independent flags:
+Device management supports read-only SNMP v1 and v2c only:
 
 - `snmp_v1_enabled`
 - `snmp_v2c_enabled`
-- `snmp_v3_enabled`
+- `snmp_port`
+- `snmp_ro_community`
+- `snmp_timeout_ms`
+- `snmp_retries`
 
-SNMPv2c is enabled by default. SNMPv3 keeps reserved auth/privacy fields, including `snmpv3_auth_password` and `snmpv3_priv_password`. No SNMP collection is implemented in this stage.
+SNMPv2c is enabled by default. The active model, API and import/export contract do not support SNMPv3, read-write community strings or SNMP SET. Device SNMP is limited to connection testing and basic read-only identification.
 
-SNMPv3 auth protocol options are `MD5` and `SHA`. Privacy protocol options are `DES56`, `3DES`, `AES128`, `AES192`, and `AES256`. CSV import maps old `DES` to `DES56` and old `AES` to `AES128`.
+Older databases may still contain retired SNMPv3 and read-write columns. Additive initialization does not drop or rewrite those columns, so existing user data remains intact; current repositories ignore them and never expose them through active DTOs. No destructive migration is performed merely to remove a product capability.
 
 ## CSV
 
-CSV import supports two structures:
-
-- Simplified template CSV: one Chinese header row, one example row, then user-entered device data
-- Complete export CSV: one English header row with all database fields, then device data
-
-The simplified template fields are:
+CSV import and export use one versioned current template with a Chinese header row. Export omits secret columns unless the explicitly authorized caller requests a credential-bearing local export. The current fields are:
 
 ```text
-设备名称, IP地址, 厂商, 站点/位置, 设备类型, SSH启用, SSH端口, Telnet启用, Telnet端口, 用户名, 密码, Enable密码, SNMPv1, SNMPv2c, SNMPv3, SNMP端口, SNMP只读团体字, SNMP读写团体字, 标签, 备注
+设备名称, 主用地址, 备用地址, 协议, 端口, 用户名, 密码, 厂商, 设备类型, 分组, 归属站点, 是否启用SSH隧道, 隧道主机1地址, 隧道主机1端口, 隧道主机1用户名, 隧道主机1密码, 隧道主机2地址, 隧道主机2端口, 隧道主机2用户名, 隧道主机2密码, SNMP启用, SNMPv1, SNMPv2c, SNMP端口, SNMP只读团体字, SNMP超时毫秒, SNMP重试, 备注
 ```
 
-The complete export fields are:
-
-```text
-id, device_uuid, name, sysname, station, device_vendor, device_type, ip_address, ssh_enabled, ssh_port, telnet_enabled, telnet_port, auth_mode, username, password, snmp_v1_enabled, snmp_v2c_enabled, snmp_v3_enabled, snmp_port, snmp_ro_community, snmp_rw_community, snmpv3_security_level, snmpv3_auth_protocol, snmpv3_auth_password, snmpv3_priv_protocol, snmpv3_priv_password, tags, remark, created_at, updated_at
-```
-
-Legacy CSV files with `协议` and `端口` headers are still accepted as import input and mapped to SSH or Telnet fields.
+`协议` 与 `端口` 映射为 SSH 或 Telnet。v1.3.8/早期 v1.3.9 的上一版合法模板仍可导入，缺少的设备 SNMP 字段按 v2c、161、2000 ms、1 次重试默认值补齐；其他未知或错列旧表头不会被猜测兼容。SNMPv3、RW community 和 SET 字段不接受导入，也不进入导出。
 
 ## Metrics
 

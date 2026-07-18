@@ -1,6 +1,6 @@
 # NetConsole
 
-NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通车地无线、SNMP/MIB、网络测试、配置采集、文件管理和日志诊断。
+NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通车地无线、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
 当前版本：`v1.3.9`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
@@ -24,10 +24,8 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、SecureCRT/OmniPeek 导出 |
 | AC 管理 | `module.ac` | FIT AP 资源、扩展、光衰、历史和命令 |
 | 轨道交通 | `module.rail_transit` | 车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、车载网络点表 |
-| 无线勘测 | `module.wifi_survey` | `DISABLED`；代码和数据保留，等待独立重构 |
 | 配置采集 | `module.config_collection` | 配置快照、比较、批量采集 |
 | 文件管理 | `module.file_management` | 局点文件、下载、复制和整理 |
-| SNMP Center | `module.snmp_center` | `DISABLED`；代码、数据库和 MIB 保留，等待独立重构 |
 | 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和用户配置的可选外部 IPOP v4.1 |
 | 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
 | 日志 | `module.logs` | 应用日志查看与导出 |
@@ -42,7 +40,7 @@ apps/       独立应用：Agent、Electron Desktop 和 Web 前端；Qt 事实�
 src/        可安装的 Python 包（src/netconsole）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则
-resources/  版本化静态资源、命令参考、MIB 归档和随包运行工具
+resources/  版本化静态资源、命令参考和随包运行工具
 scripts/    build、dev、maintenance 脚本
 tests/      自动化测试和脱敏 fixtures
 tools/      独立开发、诊断、维护和协议分析工具，不作为运行时工具来源
@@ -134,7 +132,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 - 开发运行数据默认位于 `.local/data/` 和 `.local/runtime/`；打包程序优先使用 `%LOCALAPPDATA%\NetConsole\`，不会依赖当前工作目录。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
-- H3C 私有 MIB 不随仓库分发，需由用户导入合法取得的官方归档或参考资料。
+- SNMP Center、通用 MIB/OID 字典与无线勘测已从活动产品、源码资源和发布依赖中删除；历史用户数据库与文件不做破坏性清理。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描仍是独立能力。
 - `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
 - 历史 Qt 发布包的 `_internal`、`data`、`runtime` 和 PySide6 约束只用于既有成果复现。未来 Electron-only 安装包必须使用无 Qt Backend bundle，并通过依赖、许可证、SBOM 和资源 Guard；该发布链尚未完成。
 - 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
@@ -147,13 +145,12 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - [Agent 流量测试协议](docs/AGENT_TRAFFIC_API.md)
 - [统一流量测试架构](docs/TRAFFIC_TEST_ARCHITECTURE.md)
 - [MR/Mesh 日志分析规则](docs/mr_mesh_log_analysis_rules.md)
-- [SNMP Center](docs/SNMP_CENTER.md)
 - [AP Identity](docs/AP_IDENTITY.md)
 - [表格与 UI 规范](docs/ui_table_guidelines.md)
 - [功能模块与 Feature key](docs/FEATURE_MODULES.md)
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 是历史验收成果，其活动启动入口现已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 事实源以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center 和无线勘测保持 `DISABLED`；AP Identity 继续只读。
+Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 是历史验收成果，其活动启动入口现已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口、Legacy Qt 事实源以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 继续只读。
 
-Electron-only E1 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt WebShell 与无调用 Qt Native Adapter；打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。源码态 `main.py --mode web|server` 只用于本机开发诊断。Qt 页面和 Qt-only 测试仍在本分支持续回收，尚不能把当前阶段描述为全仓或安装包零 Qt；SNMP Center 和无线勘测保持排除并将在独立数据安全门后正式删除。
+Electron-only E1 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt WebShell 与无调用 Qt Native Adapter；打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。无参数 `main.py` 是 PyCharm/源码态 Electron 入口，`main.py --mode web|server` 只用于本机开发诊断。Qt 页面和 Qt-only 测试仍在本分支持续回收，尚不能把当前阶段描述为全仓或安装包零 Qt。

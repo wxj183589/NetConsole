@@ -6,7 +6,6 @@ from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.repositories.site_snmp_repository import SiteSnmpRepository
 from netconsole.services.ac.ac_command_service import AcCommandCancelled, AcCommandService
 from netconsole.services.ac.ac_identity_adapter import AcApIdentityAdapter
 from netconsole.services.ac.ac_identity_models import AcApIdentityShadowReport
@@ -25,8 +24,6 @@ from netconsole.services.ac.ac_service import AcService
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
-from netconsole.services.snmp.snmp_collection_service import SnmpCollectionService
-from netconsole.services.snmp_query_service import SnmpQueryService
 from netconsole.services.fit_ap_import_export import FitApImportExportService
 from netconsole.services.ac.mesh_link_refresh_service import run_ac_mesh_link_refresh
 
@@ -158,16 +155,10 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
     database = Database(database_path)
     ac_repository = AcRepository(database)
     device_repository = DeviceRepository(database)
-    snmp_database_path = context.paths.site_snmp_db_path(site_name)
-
-    def create_snmp_query_service(_target) -> SnmpQueryService:
-        return SnmpQueryService(SiteSnmpRepository(snmp_database_path))
-
     resource_service = AcResourceService(
         device_repository,
         ac_repository,
         context.paths,
-        snmp_collection_service=SnmpCollectionService(create_snmp_query_service),
     )
     ac_service = AcService(resource_service)
     ac_uuid = str(params.get("device_uuid") or params.get("ac_uuid") or params.get("device_id") or params.get("ac_id") or "")
@@ -181,13 +172,6 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
         device_uuid=ac_uuid,
         site_name=site_name,
         source=str(params.get("source") or "auto"),
-        snmp_oids=[str(value) for value in params.get("snmp_oids") or [] if str(value).strip()],
-        snmp_operation=str(params.get("snmp_operation") or "WALK"),
-        snmp_concurrency=int(params.get("snmp_concurrency") or 10),
-        snmp_timeout_ms=int(params.get("snmp_timeout_ms") or 2000),
-        snmp_retries=int(params.get("snmp_retries") or 1),
-        snmp_max_repetitions=int(params.get("snmp_max_repetitions") or 10),
-        snmp_max_rows=int(params.get("snmp_max_rows") or 500),
     )
     try:
         result = ac_service.refresh_ap_resources(

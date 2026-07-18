@@ -481,8 +481,7 @@ def sanitize_sensitive_text(text: str, device: Device | None = None) -> str:
             [
                 device.ssh_password,
                 device.telnet_password,
-                device.snmpv3_auth_password,
-                device.snmpv3_priv_password,
+                device.snmp_ro_community,
                 device.tunnel1_password,
                 device.tunnel2_password,
             ]

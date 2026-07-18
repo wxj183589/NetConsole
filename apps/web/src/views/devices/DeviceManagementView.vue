@@ -154,9 +154,6 @@ const secretClears = reactive<Record<DeviceSecretField, boolean>>({
   tunnel1_password: false,
   tunnel2_password: false,
   snmp_ro_community: false,
-  snmp_rw_community: false,
-  snmpv3_auth_password: false,
-  snmpv3_priv_password: false,
 })
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let omniPeekPollGeneration = 0
@@ -192,7 +189,7 @@ const availableWriteTestProtocols = computed<DeviceConnectionProtocol[]>(() => {
   const protocols: DeviceConnectionProtocol[] = []
   if (writeForm.ssh_enabled) protocols.push('SSH')
   if (writeForm.telnet_enabled) protocols.push('TELNET')
-  if (writeForm.snmp_enabled && (writeForm.snmp_v1_enabled || writeForm.snmp_v2c_enabled || writeForm.snmp_v3_enabled)) protocols.push('SNMP')
+  if (writeForm.snmp_enabled && (writeForm.snmp_v1_enabled || writeForm.snmp_v2c_enabled)) protocols.push('SNMP')
   return protocols
 })
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
@@ -385,17 +382,8 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
     snmp_enabled: device.capabilities.snmp,
     snmp_v1_enabled: device.snmp_v1_enabled,
     snmp_v2c_enabled: device.snmp_v2c_enabled,
-    snmp_v3_enabled: device.snmp_v3_enabled,
     snmp_port: device.capabilities.snmp_port || 161,
     snmp_ro_community: '',
-    snmp_rw_community: '',
-    snmpv3_username: device.snmpv3_username,
-    snmpv3_security_level: device.snmpv3_security_level,
-    snmpv3_auth_protocol: device.snmpv3_auth_protocol,
-    snmpv3_auth_password: '',
-    snmpv3_priv_protocol: device.snmpv3_priv_protocol,
-    snmpv3_priv_password: '',
-    snmp_context_name: device.snmp_context_name,
     snmp_timeout_ms: device.snmp_timeout_ms,
     snmp_retries: device.snmp_retries,
     https_port: device.https_port,
@@ -533,8 +521,7 @@ function openCreate(): void {
     name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
     tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '', tunnel1_password: '', tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '', tunnel2_password: '',
-    snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_v3_enabled: false, snmp_port: 161, snmp_ro_community: '', snmp_rw_community: '',
-    snmpv3_username: '', snmpv3_security_level: 'noAuthNoPriv', snmpv3_auth_protocol: 'SHA', snmpv3_auth_password: '', snmpv3_priv_protocol: 'AES128', snmpv3_priv_password: '', snmp_context_name: '', snmp_timeout_ms: 2000, snmp_retries: 1,
+    snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_ro_community: '', snmp_timeout_ms: 2000, snmp_retries: 1,
     https_port: null, remark: '',
   })
   resetWriteConnectionTest()
@@ -572,9 +559,6 @@ function clearWriteSecrets(): void {
     tunnel1_password: '',
     tunnel2_password: '',
     snmp_ro_community: '',
-    snmp_rw_community: '',
-    snmpv3_auth_password: '',
-    snmpv3_priv_password: '',
   })
   resetSecretClears()
 }
@@ -1364,21 +1348,11 @@ function errorMessage(cause: unknown, fallback: string): string {
 
         <section class="form-section full-width"><h3>SNMP</h3><div class="form-grid two-columns">
           <div>
-            <el-form-item label="启用"><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox><el-checkbox v-model="writeForm.snmp_v1_enabled">v1</el-checkbox><el-checkbox v-model="writeForm.snmp_v2c_enabled">v2c</el-checkbox><el-checkbox v-model="writeForm.snmp_v3_enabled">v3</el-checkbox></el-form-item>
+            <el-form-item label="启用"><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox><el-checkbox v-model="writeForm.snmp_v1_enabled">v1</el-checkbox><el-checkbox v-model="writeForm.snmp_v2c_enabled">v2c</el-checkbox></el-form-item>
             <el-form-item label="端口"><el-input-number v-model="writeForm.snmp_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="超时(ms)"><el-input-number v-model="writeForm.snmp_timeout_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item label="重试"><el-input-number v-model="writeForm.snmp_retries" :min="0" :max="10" /></el-form-item>
             <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
-            <el-form-item label="读写团体字"><el-input v-model="writeForm.snmp_rw_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_rw_community" :placeholder="writeMode === 'edit' && detail?.device.snmp_rw_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmp_rw_secret_configured" :model-value="secretClears.snmp_rw_community" @change="setSecretCleared('snmp_rw_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
-          </div>
-          <div v-if="writeForm.snmp_v3_enabled">
-            <el-form-item label="v3 用户名"><el-input v-model="writeForm.snmpv3_username" /></el-form-item>
-            <el-form-item label="安全级别"><el-select v-model="writeForm.snmpv3_security_level" style="width:100%"><el-option v-for="level in ['noAuthNoPriv', 'AuthNoPriv', 'AuthPriv']" :key="level" :label="level" :value="level" /></el-select></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level !== 'noAuthNoPriv'" label="认证协议"><el-select v-model="writeForm.snmpv3_auth_protocol" style="width:100%"><el-option v-for="protocol in ['MD5', 'SHA', 'SHA224', 'SHA256', 'SHA384', 'SHA512']" :key="protocol" :label="protocol" :value="protocol" /></el-select></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level !== 'noAuthNoPriv'" label="认证密码"><el-input v-model="writeForm.snmpv3_auth_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmpv3_auth_password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_auth_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmpv3_auth_secret_configured" :model-value="secretClears.snmpv3_auth_password" @change="setSecretCleared('snmpv3_auth_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level === 'AuthPriv'" label="加密协议"><el-select v-model="writeForm.snmpv3_priv_protocol" style="width:100%"><el-option v-for="protocol in ['DES', '3DES', 'AES128', 'AES192', 'AES256']" :key="protocol" :label="protocol" :value="protocol" /></el-select></el-form-item>
-            <el-form-item v-if="writeForm.snmpv3_security_level === 'AuthPriv'" label="加密密码"><el-input v-model="writeForm.snmpv3_priv_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmpv3_priv_password" :placeholder="writeMode === 'edit' && detail?.device.snmpv3_priv_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmpv3_priv_secret_configured" :model-value="secretClears.snmpv3_priv_password" @change="setSecretCleared('snmpv3_priv_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
-            <el-form-item label="Context"><el-input v-model="writeForm.snmp_context_name" /></el-form-item>
           </div>
         </div></section>
       </el-form>

@@ -9,8 +9,6 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from PIL import Image, UnidentifiedImageError
-
 from netconsole.core.version import APP_VERSION
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 
@@ -271,29 +269,6 @@ def validate_optional_contract_metadata(path: str | Path, *, expected_module: st
     raise ImportValidationError("文件类型不匹配")
 
 
-def validate_image_import(path: str | Path, *, expected_module: str) -> ImportValidationResult:
-    target = _require_file(path, {".png", ".jpg", ".jpeg"})
-    try:
-        with Image.open(target) as image:
-            detected = str(image.format or "").casefold()
-            width, height = image.size
-            image.verify()
-    except (OSError, UnidentifiedImageError) as exc:
-        raise ImportValidationError("文件已损坏或无法读取：不是受支持的图片") from exc
-    if width <= 0 or height <= 0:
-        raise ImportValidationError("文件已损坏或无法读取：图片尺寸无效")
-    expected = "jpeg" if target.suffix.casefold() in {".jpg", ".jpeg"} else "png"
-    if detected != expected:
-        raise ImportValidationError("文件类型不匹配")
-    return ImportValidationResult(
-        target,
-        detected,
-        expected_module,
-        {"width": width, "height": height},
-        row_count=1,
-    )
-
-
 def validate_zip_import(
     path: str | Path,
     *,
@@ -514,9 +489,6 @@ def _infer_module(export_type: str, payload: Mapping[str, Any]) -> str:
         "online_mr_report_xlsx": "rail.online_mr",
         "vehicle_mr_history_xlsx": "rail.vehicle_mr_history",
         "config_snapshots_zip": "config_collection",
-        "snmp_query_result": "snmp.query",
-        "mib_product_compare": "snmp.mib_product_compare",
-        "wifi_survey_csv": "wifi_survey",
         "app_logs_csv": "logs",
     }
     if export_type in mapping:

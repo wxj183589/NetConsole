@@ -22,9 +22,7 @@
 
 | Skill | 职责 | 常见触发 | 不应触发 |
 | --- | --- | --- | --- |
-| `h3c-snmp-mib-skill` | H3C/HH3C MIB、OID、模块依赖、字典和参考表 | “导入 H3C V9 MIB”“OID 不显示” | SNMP 请求调度、CLI parser |
-| `snmp-collector-design-skill` | SNMP 请求/采集、并发、取消、缓存和持久化 | “增加 GETBULK”“WALK 无法取消” | MIB 文件、纯 UI |
-| `network-command-parser-skill` | H3C/Comware 命令回显、提示符和字段 parser | “解析 display wlan ap all” | MIB、Excel、UI |
+| `network-command-parser-skill` | H3C/Comware 命令回显、提示符和字段 parser | “解析 display wlan ap all” | 设备管理 SNMP、Excel、UI |
 | `traffic-test-skill` | fping/iPerf、TCP/UDP、模板、阈值和生命周期 | “修复 fping 丢包”“增加 PIS UDP 模板” | 普通 SSH/路由 |
 | `windows-encoding-skill` | Windows 控制台、H3C 输出、文件和 JSONL 编码 | “中文乱码”“GBK 日志导入失败” | i18n 设计、纯解析规则 |
 | `netconsole-job-center-skill` | 普通后台 Job、handler、JSONL、进度和取消 | “迁移到 Job Center”“取消后仍运行” | 导出文件、轻量 UI |
@@ -49,8 +47,6 @@
 | Agent Online MR sidecar | `netconsole-agent-skill` | `netconsole-online-mr-skill` |
 | Agent 文档同步 | `netconsole-agent-skill` | `netconsole-project-docs-skill` |
 | 离线 MESH 分析 | `netconsole-mesh-analysis-skill` | `netconsole-ap-identity-skill`、`netconsole-export-report-skill` |
-| H3C MIB/OID | `h3c-snmp-mib-skill` | `snmp-collector-design-skill`、`windows-encoding-skill` |
-| SNMP 后台查询 | `snmp-collector-design-skill` | `netconsole-job-center-skill` |
 | 数据库/目录升级 | `netconsole-data-safety-skill` | `netconsole-change-review-skill` |
 | 完成重要改造 | `netconsole-project-docs-skill` | `netconsole-change-review-skill` |
 
@@ -67,12 +63,10 @@ $netconsole-job-center-skill 把指定大日志解析迁到 Job Center，保留�
 
 $netconsole-export-report-skill 增加后台 XLSX 报告，验证中文列宽、冻结、筛选、文件占用和取消清理。
 
-$h3c-snmp-mib-skill 修复 HH3C 模块导入后 OID 树不显示，并说明旧 MIB 索引兼容性。
-
 $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞、SQLite、设备命令和原始日志回归。
 ```
 
-自然语言中明确出现 MIB、GETBULK、Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。
+自然语言中明确出现 Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。
 
 ## 6. 如何升级 Skill
 
@@ -106,7 +100,6 @@ $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞
 ## 8. 如何避免重复
 
 - UI 设计、UI 缺陷、Fluent 集成和 UI 审查分别由四个边界明确的 Skill 负责。
-- MIB/OID 资源与 SNMP 请求/采集分离。
 - 在线 MR 与离线 MESH 分析分离。
 - 普通 Job 与文件导出分离。
 - CLI Parser 与编码边界分离。

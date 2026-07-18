@@ -13,10 +13,8 @@
 | `module.devices` | 设备管理 | `ENABLED` | 设备、分组、连接、批量任务和相关导出 |
 | `module.ac` | AC 管理 | `ENABLED` | FIT AP 资源、扩展、光衰、历史和命令 |
 | `module.rail_transit` | 轨道交通 | `ENABLED` | MR、Mesh、轨旁 AP、车载网络 |
-| `module.wifi_survey` | 无线勘测 | `DISABLED` | 代码和数据保留；Qt/Electron 入口关闭，等待独立重构 |
 | `module.config_collection` | 配置采集 | `ENABLED` | 快照、比较、批量采集 |
 | `module.file_management` | 文件管理 | `ENABLED` | 局点文件和下载 |
-| `module.snmp_center` | SNMP Center | `DISABLED` | 代码、数据库和 MIB 保留；Qt/Electron 入口关闭，等待独立重构 |
 | `module.network_tools` | 网络工具 | `ENABLED` | Ping/fping、iPerf、无线扫描和工具箱 |
 | `module.command_reference` | 命令参考 | `ENABLED` | 命令、解析器与消费者索引 |
 | `module.logs` | 日志 | `ENABLED` | 应用日志 |
@@ -28,11 +26,11 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 `desktop.native_bridge` 只控制 Vue 中 Electron 本机能力状态区的产品可见性和禁用状态。它不能绕过 Electron main 的发送方校验、参数白名单和同会话路径授权，也不代表 Qt 页面已被替换。
 
-`web.system_settings` 已作为 Electron Desktop 正式设置页启用并进入客户包；Browser 导航隐藏，Server Mode API 拒绝访问。内部 `web.feature_switch` 仅在源码开发态可见、启用且不进入客户包，所有打包态强制关闭。`web.command_reference` 与 `web.logs` 已注册真实页面、Application Service 和 API；日志 CSV 与开源许可 TXT/XLSX 已通过统一 Export Process 和公共 Artifact source whitelist 闭环，安全清理仍需 Electron 人工确认/取消/恢复验收。系统设置当前仍为 `PARTIAL`，本机工具和目录动作仍需桌面人工验收。默认隐藏规划页继续包括 `web.ac_trackside_ap_plan`、`web.ac_online_overview`、`web.ac_optical`、`web.ac_config_snapshots`、`web.rail_train_online`、`web.rail_trackside_ap_business` 和 `web.online_mr_analysis`。`web.ac_extensions`、`web.rail_car_network_diagnostic` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与被排除的无线勘测不是同一模块。完整状态见 [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md)。
+`web.system_settings` 已作为 Electron Desktop 正式设置页启用并进入客户包；Browser 导航隐藏，Server Mode API 拒绝访问。内部 `web.feature_switch` 仅在源码开发态可见、启用且不进入客户包，所有打包态强制关闭。`web.command_reference` 与 `web.logs` 已注册真实页面、Application Service 和 API；日志 CSV 与开源许可 TXT/XLSX 已通过统一 Export Process 和公共 Artifact source whitelist 闭环，安全清理仍需 Electron 人工确认/取消/恢复验收。系统设置当前仍为 `PARTIAL`，本机工具和目录动作仍需桌面人工验收。默认隐藏规划页继续包括 `web.ac_trackside_ap_plan`、`web.ac_online_overview`、`web.ac_optical`、`web.ac_config_snapshots`、`web.rail_train_online`、`web.rail_trackside_ap_business` 和 `web.online_mr_analysis`。`web.ac_extensions`、`web.rail_car_network_diagnostic` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与已删除的无线勘测不是同一模块。完整状态见 [Qt/Electron 功能对等矩阵](development/qt-electron-parity-matrix.md)。
 
 阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口，不代表 iPerf、Ping 或 Online MR 已迁移。
 
-SNMP Center 的 MIB 资源、Browser、OID 模板、监控、Trap/告警和拓扑目前作为 `module.snmp_center` 内部 Tab，尚未分别登记子 Feature key。单次查询和推荐页面是中心内部工作流，不是独立可见 Tab。若未来需要 edition 级单独控制，必须先在 Registry 增加明确 key，不能在页面另造配置。
+`module.snmp_center` 与 `module.wifi_survey` 已从 Registry、profile、入口、业务代码和资源中删除，并进入 `REMOVED_FEATURE_IDS` 防御集合。历史 profile 即使仍携带这两个 key，也必须被忽略且不能重新启用。设备管理 SNMP v1/v2c 和网络工具无线扫描分别属于现有模块，不得借此恢复已删除平台。
 
 状态语义：`ENABLED` 进入正常 Gate/profile 判定；`DISABLED` 强制隐藏、禁用且不进入客户包，任何 profile 不能重开；`DEVELOPMENT` 只允许源码开发环境；`HIDDEN` 保留登记但不提供用户入口。
 

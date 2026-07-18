@@ -1,5 +1,7 @@
 # Electron 对等迁移第二波归档
 
+> 后续状态：SNMP Center、通用 MIB/OID 平台和无线勘测已在 v1.3.9 的 Electron-only 收口阶段正式删除；本文“继续排除”仅是第二波完成时的历史口径。
+
 ## 结论
 
 第二波以 `main@ee88fd01` 为起点，在 `codex/electron-parity-wave2-integration` 集成 21 个中文逻辑提交，并以 fast-forward 方式进入 `main`。本波不建立第二套 Renderer、Task、Artifact、设置或功能开关体系；Electron 继续复用唯一 Vue、FastAPI 组合根、Application Service、Task Center、Export Process 和严格 Native Bridge。

@@ -6,9 +6,6 @@ export type DeviceSecretField =
   | 'tunnel1_password'
   | 'tunnel2_password'
   | 'snmp_ro_community'
-  | 'snmp_rw_community'
-  | 'snmpv3_auth_password'
-  | 'snmpv3_priv_password'
 
 export interface DeviceCapability {
   ssh: boolean
@@ -83,12 +80,6 @@ export interface DeviceDetail extends DeviceListItem {
   tunnel2_username: string
   snmp_v1_enabled: boolean
   snmp_v2c_enabled: boolean
-  snmp_v3_enabled: boolean
-  snmpv3_username: string
-  snmpv3_security_level: 'noAuthNoPriv' | 'AuthNoPriv' | 'AuthPriv'
-  snmpv3_auth_protocol: 'MD5' | 'SHA' | 'SHA224' | 'SHA256' | 'SHA384' | 'SHA512'
-  snmpv3_priv_protocol: 'DES' | '3DES' | 'AES128' | 'AES192' | 'AES256'
-  snmp_context_name: string
   snmp_timeout_ms: number
   snmp_retries: number
   ssh_secret_configured: boolean
@@ -96,9 +87,6 @@ export interface DeviceDetail extends DeviceListItem {
   tunnel1_secret_configured: boolean
   tunnel2_secret_configured: boolean
   snmp_ro_secret_configured: boolean
-  snmp_rw_secret_configured: boolean
-  snmpv3_auth_secret_configured: boolean
-  snmpv3_priv_secret_configured: boolean
   remark: string
   created_at: string
 }
@@ -150,7 +138,6 @@ export interface DeviceWriteRequest {
   snmp_enabled?: boolean
   snmp_v1_enabled?: boolean
   snmp_v2c_enabled?: boolean
-  snmp_v3_enabled?: boolean
   snmp_port?: number
   https_port?: number | null
   remark?: string
@@ -170,14 +157,6 @@ export interface DeviceWriteRequest {
   tunnel2_username?: string
   tunnel2_password?: string
   snmp_ro_community?: string
-  snmp_rw_community?: string
-  snmpv3_username?: string
-  snmpv3_security_level?: 'noAuthNoPriv' | 'AuthNoPriv' | 'AuthPriv'
-  snmpv3_auth_protocol?: 'MD5' | 'SHA' | 'SHA224' | 'SHA256' | 'SHA384' | 'SHA512'
-  snmpv3_auth_password?: string
-  snmpv3_priv_protocol?: 'DES' | '3DES' | 'AES128' | 'AES192' | 'AES256'
-  snmpv3_priv_password?: string
-  snmp_context_name?: string
   snmp_timeout_ms?: number
   snmp_retries?: number
   clear_secret_fields?: DeviceSecretField[]
