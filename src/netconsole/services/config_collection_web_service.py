@@ -166,6 +166,45 @@ class ConfigCollectionApplicationService:
             if self._safe_snapshot_path(site_name, snapshot) is not None
         ]
 
+    def list_snapshots_page(
+        self,
+        site_name: str,
+        device_id: int,
+        snapshot_type: str = "",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ConfigSnapshotDTO], int]:
+        device, repository, _service = self._device_context(site_name, device_id)
+        selected_type = str(snapshot_type or "").strip() or None
+        snapshots = repository.list_for_device_page(
+            str(device.device_uuid or ""),
+            selected_type,
+            limit=limit,
+            offset=offset,
+        )
+        items = [
+            self._snapshot_dto(
+                site_name,
+                device,
+                snapshot,
+                self._safe_snapshot_path(site_name, snapshot),
+            )
+            for snapshot in snapshots
+        ]
+        return items, repository.count_for_device(
+            str(device.device_uuid or ""), selected_type
+        )
+
+    def count_snapshots(
+        self, site_name: str, device_id: int, snapshot_type: str = ""
+    ) -> int:
+        device, repository, _service = self._device_context(site_name, device_id)
+        return repository.count_for_device(
+            str(device.device_uuid or ""),
+            str(snapshot_type or "").strip() or None,
+        )
+
     def submit_collection(self, site_name: str, action: str, device_ids: list[int]) -> list[ConfigTaskReferenceDTO]:
         task_type = CONFIG_COLLECTION_ACTIONS.get(str(action or "").strip().lower())
         if task_type is None:
@@ -812,7 +851,13 @@ class ConfigCollectionApplicationService:
             if group.id is not None
         ]
 
-    def _snapshot_dto(self, site_name: str, device: Device, snapshot: ConfigSnapshot, path: Path) -> ConfigSnapshotDTO:
+    def _snapshot_dto(
+        self,
+        site_name: str,
+        device: Device,
+        snapshot: ConfigSnapshot,
+        path: Path | None,
+    ) -> ConfigSnapshotDTO:
         suffix = ".diff" if snapshot.type == "diff" else ".txt"
         filename = f"{safe_device_name(device.name or device.device_uuid or 'device')}_{snapshot.type}_{snapshot.timestamp}{suffix}"
         return ConfigSnapshotDTO(
@@ -821,7 +866,7 @@ class ConfigCollectionApplicationService:
             device_uuid=snapshot.device_uuid,
             timestamp=snapshot.timestamp,
             type=snapshot.type,
-            size_bytes=path.stat().st_size if path.is_file() else 0,
+            size_bytes=path.stat().st_size if path is not None else None,
             artifact_id=f"snapshot-{int(snapshot.id or 0)}",
             filename=filename,
             hash=snapshot.hash,

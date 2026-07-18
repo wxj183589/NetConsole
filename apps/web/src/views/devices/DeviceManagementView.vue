@@ -7,9 +7,7 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, R
 
 import { isFeatureEnabled } from '../../features'
 import {
-  getDevice,
-  getDeviceConnectionTest,
-  getDeviceHistory,
+  getDeviceEditProfile,
   getExternalTerminalSettings,
   issueExternalTerminalConfirmation,
   getOmniPeekPreview,
@@ -28,10 +26,8 @@ import {
   startBatchRefreshDetails,
   startBatchConnectionTests,
   startDeviceCsvExport,
-  startDeviceConnectionTest,
   startDeviceFormConnectionTest,
   startDeviceDiagnosticDownload,
-  startDeviceOpticalRefresh,
   startDeviceTemplateExport,
   startOmniPeekExport,
   startOmniPeekPreview,
@@ -42,15 +38,15 @@ import {
 } from '../../api/deviceManagement'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
+import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
   DeviceConnectionTest,
-  DeviceDetailResponse,
   DeviceExportRequest,
+  DeviceEditProfileResponse,
   DeviceExternalTerminalSettings,
   DeviceImportPreview,
-  DeviceHistoryPage,
   DeviceListItem,
   DeviceOmniPeekPreview,
   DeviceOmniPeekPreviewItem,
@@ -83,18 +79,13 @@ const loading = ref(false)
 const error = ref('')
 const pageData = ref<DevicePage>(emptyPage())
 const detailVisible = ref(false)
-const detailLoading = ref(false)
-const detailError = ref('')
-const detail = ref<DeviceDetailResponse | null>(null)
-const detailTab = ref('overview')
-const historyVisible = ref(false)
-const historyLoading = ref(false)
-const historyPage = ref<DeviceHistoryPage | null>(null)
-const historyKind = ref<'interface' | 'optical' | 'lldp'>('interface')
-const historyObjectName = ref('')
-const historyPageSize = ref(50)
+const detailDeviceUuid = ref('')
+const detailDrawerWidthPx = ref(0)
+const detailDrawerDragging = ref(false)
+const detail = ref<DeviceEditProfileResponse | null>(null)
+const editingDeviceUuid = ref('')
+const editingProfileLoading = ref(false)
 const connectionTest = ref<DeviceConnectionTest | null>(null)
-const connectionLoading = ref(false)
 const writeVisible = ref(false)
 const writeMode = ref<'create' | 'edit'>('create')
 const writeLoading = ref(false)
@@ -157,8 +148,14 @@ const secretClears = reactive<Record<DeviceSecretField, boolean>>({
 })
 const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: DeviceListItem | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 let omniPeekPollGeneration = 0
+let editLoadGeneration = 0
+let editProfileAbortController: AbortController | null = null
 let componentActive = true
 const pollingConsumer = 'device-management-view'
+let drawerDragStartX = 0
+let drawerDragStartWidth = 0
+
+const detailDrawerWidth = computed(() => `${clampDrawerWidth(detailDrawerWidthPx.value || defaultDrawerWidth())}px`)
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const activeTaskStatuses = new Set<TaskStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'])
@@ -193,19 +190,9 @@ const availableWriteTestProtocols = computed<DeviceConnectionProtocol[]>(() => {
   return protocols
 })
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
-const historyColumns = computed(() => {
-  const kind = historyPage.value?.kind
-  if (kind === 'interface') return [
-    ['采集时间', 'collected_at'], ['接口', 'interface_name'], ['链路', 'link_status'], ['协议', 'protocol_status'], ['速率', 'speed'], ['双工', 'duplex'], ['类型', 'interface_type'], ['端口状态', 'port_status'], ['PVID', 'pvid'], ['描述', 'description'], ['接口 IP', 'ip_address'], ['MAC', 'mac_address'], ['VLAN', 'vlan'],
-  ]
-  if (kind === 'optical') return [
-    ['采集时间', 'collected_at'], ['接口', 'interface_name'], ['接收功率', 'rx_power'], ['发送功率', 'tx_power'], ['温度', 'temperature'], ['电压', 'voltage'], ['偏置电流', 'bias_current'], ['模块型号', 'module_model'], ['序列号', 'module_serial_number'], ['厂商', 'module_vendor'], ['波长', 'wavelength'], ['传输距离', 'transmission_distance'], ['状态', 'status'],
-  ]
-  return [['采集时间', 'collected_at'], ['本地接口', 'local_interface'], ['邻居系统名', 'neighbor_sysname'], ['邻居 MAC', 'neighbor_mac'], ['邻居接口', 'neighbor_interface']]
-})
-
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
+  window.addEventListener('resize', resizeDetailDrawer)
   taskStore.acquirePolling(pollingConsumer)
   await loadDevices()
 })
@@ -213,9 +200,12 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   componentActive = false
   omniPeekPollGeneration += 1
+  clearEditingProfileState()
   savedArtifactCapability.value = ''
   taskStore.releasePolling(pollingConsumer)
   document.removeEventListener('click', closeContextMenu)
+  endDrawerResize()
+  window.removeEventListener('resize', resizeDetailDrawer)
 })
 
 async function loadDevices(resetPage = false): Promise<void> {
@@ -248,48 +238,89 @@ async function loadDevices(resetPage = false): Promise<void> {
   }
 }
 
-async function openDetail(item: DeviceListItem): Promise<void> {
+function openDetail(item: DeviceListItem): void {
+  detailDeviceUuid.value = item.device_uuid
+  if (!detailDrawerWidthPx.value) detailDrawerWidthPx.value = defaultDrawerWidth()
   detailVisible.value = true
-  detailLoading.value = true
-  detailError.value = ''
   detail.value = null
   connectionTest.value = null
-  try {
-    detail.value = await getDevice(item.device_uuid)
-    if (item.last_test_task_id) connectionTest.value = await getDeviceConnectionTest(item.last_test_task_id)
-  } catch (cause) {
-    detailError.value = errorMessage(cause, '设备详情加载失败')
-  } finally {
-    detailLoading.value = false
-  }
 }
 
-async function startTest(protocol: DeviceConnectionProtocol): Promise<void> {
-  if (!detail.value || connectionLoading.value) return
-  connectionLoading.value = true
-  try {
-    connectionTest.value = await startDeviceConnectionTest(detail.value.device.device_uuid, protocol)
-    await presentTasks([{
-      task_id: connectionTest.value.task_id,
-      task_status: connectionTest.value.task_status,
-      action: 'connection_test',
-      artifact_id: '',
-      available: false,
-      sha256: '',
-      size_bytes: 0,
-      message: connectionTest.value.message,
-    }], `${protocol} 连接测试任务已提交`)
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, '连接测试任务提交失败'))
-  } finally {
-    connectionLoading.value = false
-  }
+function clearEditingProfileState(): void {
+  editLoadGeneration += 1
+  editProfileAbortController?.abort()
+  editProfileAbortController = null
+  editingDeviceUuid.value = ''
+  editingProfileLoading.value = false
+  detail.value = null
+}
+
+function defaultDrawerWidth(): number {
+  const viewport = window.innerWidth || 1280
+  return clampDrawerWidth(Math.round(viewport * 0.55))
+}
+
+function clampDrawerWidth(value: number): number {
+  const viewport = window.innerWidth || 1280
+  const minimum = viewport < 900 ? 320 : 820
+  const maximum = Math.max(minimum, Math.min(1280, viewport - 24))
+  return Math.max(minimum, Math.min(maximum, Math.round(value || viewport * 0.55)))
+}
+
+function drawerMinWidth(): number {
+  return (window.innerWidth || 1280) < 900 ? 320 : 820
+}
+
+function drawerMaxWidth(): number {
+  return Math.max(drawerMinWidth(), Math.min(1280, (window.innerWidth || 1280) - 24))
+}
+
+function handleDrawerResizeKeydown(event: KeyboardEvent): void {
+  const current = detailDrawerWidthPx.value || defaultDrawerWidth()
+  if (event.key === 'ArrowLeft') detailDrawerWidthPx.value = clampDrawerWidth(current + 24)
+  else if (event.key === 'ArrowRight') detailDrawerWidthPx.value = clampDrawerWidth(current - 24)
+  else if (event.key === 'Home') detailDrawerWidthPx.value = drawerMinWidth()
+  else if (event.key === 'End') detailDrawerWidthPx.value = drawerMaxWidth()
+  else return
+  event.preventDefault()
+}
+
+function resizeDetailDrawer(): void {
+  detailDrawerWidthPx.value = clampDrawerWidth(detailDrawerWidthPx.value || defaultDrawerWidth())
+}
+
+function beginDrawerResize(event: PointerEvent): void {
+  if ((window.innerWidth || 1280) < 900) return
+  drawerDragStartX = event.clientX
+  drawerDragStartWidth = detailDrawerWidthPx.value || defaultDrawerWidth()
+  detailDrawerDragging.value = true
+  document.addEventListener('pointermove', handleDrawerResize)
+  document.addEventListener('pointerup', endDrawerResize)
+}
+
+function handleDrawerResize(event: PointerEvent): void {
+  if (!detailDrawerDragging.value) return
+  detailDrawerWidthPx.value = clampDrawerWidth(drawerDragStartWidth + drawerDragStartX - event.clientX)
+}
+
+function endDrawerResize(): void {
+  detailDrawerDragging.value = false
+  document.removeEventListener('pointermove', handleDrawerResize)
+  document.removeEventListener('pointerup', endDrawerResize)
+}
+
+function openFullDetail(): void {
+  const uuid = detailDeviceUuid.value
+  if (!uuid) return
+  detailVisible.value = false
+  void router.push({ name: 'device-detail', params: { deviceId: uuid }, query: { from: 'device-management' } })
 }
 
 async function openTaskWindow(
   task: DevicePublicTask | null = latestDeviceTask.value,
   fallbackTaskId = '',
-): Promise<void> {
+  notifyFailure = true,
+): Promise<boolean> {
   const taskId = task?.id || fallbackTaskId
   const context = {
     ...(taskId ? { taskId } : {}),
@@ -299,10 +330,11 @@ async function openTaskWindow(
   const bridge = window.netconsoleDesktop as (typeof window.netconsoleDesktop & Partial<DeviceTaskWindowBridge>) | undefined
   if (bridge?.openTaskWindow) {
     const result = await bridge.openTaskWindow(context)
-    if (!result.success) ElMessage.error(result.error || '统一任务窗口打开失败')
-    return
+    if (!result.success && notifyFailure) ElMessage.error(result.error || '统一任务窗口打开失败')
+    return result.success
   }
   await router.push({ name: 'tasks', query: { module: 'devices', ...(taskId ? { task_id: taskId } : {}) } })
+  return true
 }
 
 async function presentTasks(tasks: DeviceTaskReference[], message: string): Promise<void> {
@@ -310,10 +342,28 @@ async function presentTasks(tasks: DeviceTaskReference[], message: string): Prom
   if (!task) return
   lastSubmittedTask.value = task
   savedArtifactCapability.value = ''
-  await taskStore.refresh()
+  let taskStoreRefreshed = true
+  try {
+    await taskStore.refresh()
+  } catch {
+    taskStoreRefreshed = false
+  }
   const publicTask = publicDeviceTasks.value.find((item) => item.id === task.task_id)
-  await openTaskWindow(publicTask || null, task.task_id)
-  ElMessage.success(message)
+  let taskWindowOpened = true
+  try {
+    taskWindowOpened = await openTaskWindow(publicTask || null, task.task_id, false)
+  } catch {
+    taskWindowOpened = false
+  }
+  if (taskStoreRefreshed && taskWindowOpened) {
+    ElMessage.success(message)
+    return
+  }
+  const failedSteps = [
+    !taskStoreRefreshed ? '任务状态刷新失败' : '',
+    !taskWindowOpened ? '任务窗口打开失败' : '',
+  ].filter(Boolean).join('；')
+  ElMessage.warning(`任务已提交，但${failedSteps}`)
 }
 
 async function downloadLatestArtifact(): Promise<void> {
@@ -349,99 +399,45 @@ async function useSavedArtifact(reveal: boolean): Promise<void> {
 
 function currentDeviceWriteValues(): DeviceWriteRequest | null {
   if (!detail.value) return null
-  const device = detail.value.device
+  const profile = detail.value
   return {
-    name: device.name,
-    system_name: device.system_name,
-    station: device.station,
-    location: device.location,
-    group_id: device.group_id,
-    device_vendor: device.device_vendor,
-    device_type: device.device_type,
-    primary_address: device.primary_address,
-    backup_address: device.backup_address,
-    ssh_enabled: device.capabilities.ssh,
-    ssh_port: device.capabilities.ssh_port || 22,
-    ssh_username: device.ssh_username,
+    name: profile.name,
+    system_name: profile.system_name,
+    station: profile.station,
+    location: profile.location,
+    group_id: profile.group_id,
+    device_vendor: profile.device_vendor,
+    device_type: profile.device_type,
+    primary_address: profile.primary_address,
+    backup_address: profile.backup_address,
+    ssh_enabled: profile.ssh_enabled ?? false,
+    ssh_port: profile.ssh_port ?? 22,
+    ssh_username: profile.ssh_username,
     ssh_password: '',
-    telnet_enabled: device.capabilities.telnet,
-    telnet_port: device.capabilities.telnet_port || 23,
-    telnet_username: device.telnet_username,
+    telnet_enabled: profile.telnet_enabled ?? false,
+    telnet_port: profile.telnet_port ?? 23,
+    telnet_username: profile.telnet_username,
     telnet_password: '',
-    tunnel_enabled: device.tunnel_enabled,
-    tunnel1_enabled: device.tunnel1_enabled,
-    tunnel1_host: device.tunnel1_host,
-    tunnel1_port: device.tunnel1_port || 22,
-    tunnel1_username: device.tunnel1_username,
+    tunnel_enabled: profile.tunnel_enabled,
+    tunnel1_enabled: profile.tunnel1_enabled,
+    tunnel1_host: profile.tunnel1_host,
+    tunnel1_port: profile.tunnel1_port ?? 22,
+    tunnel1_username: profile.tunnel1_username,
     tunnel1_password: '',
-    tunnel2_enabled: device.tunnel2_enabled,
-    tunnel2_host: device.tunnel2_host,
-    tunnel2_port: device.tunnel2_port || 22,
-    tunnel2_username: device.tunnel2_username,
+    tunnel2_enabled: profile.tunnel2_enabled,
+    tunnel2_host: profile.tunnel2_host,
+    tunnel2_port: profile.tunnel2_port ?? 22,
+    tunnel2_username: profile.tunnel2_username,
     tunnel2_password: '',
-    snmp_enabled: device.capabilities.snmp,
-    snmp_v1_enabled: device.snmp_v1_enabled,
-    snmp_v2c_enabled: device.snmp_v2c_enabled,
-    snmp_port: device.capabilities.snmp_port || 161,
+    snmp_enabled: profile.snmp_enabled ?? false,
+    snmp_v1_enabled: profile.snmp_v1_enabled,
+    snmp_v2c_enabled: profile.snmp_v2c_enabled,
+    snmp_port: profile.snmp_port ?? 161,
     snmp_ro_community: '',
-    snmp_timeout_ms: device.snmp_timeout_ms,
-    snmp_retries: device.snmp_retries,
-    https_port: device.https_port,
-    remark: device.remark,
-  }
-}
-
-async function openHistory(kind: 'interface' | 'optical' | 'lldp', objectName: string): Promise<void> {
-  if (!detail.value || !objectName) return
-  historyKind.value = kind
-  historyObjectName.value = objectName
-  historyPage.value = null
-  historyVisible.value = true
-  await loadHistoryPage(1)
-}
-
-async function loadHistoryPage(page = 1): Promise<void> {
-  if (!detail.value || !historyObjectName.value) return
-  historyLoading.value = true
-  try {
-    historyPage.value = await getDeviceHistory(
-      detail.value.device.device_uuid,
-      historyKind.value,
-      historyObjectName.value,
-      page,
-      historyPageSize.value,
-    )
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, '设备历史加载失败'))
-  } finally {
-    historyLoading.value = false
-  }
-}
-
-async function changeHistoryPageSize(pageSize: number): Promise<void> {
-  historyPageSize.value = pageSize
-  await loadHistoryPage(1)
-}
-
-async function refreshDetailData(): Promise<void> {
-  if (!detail.value) return
-  try {
-    const result = await startBatchRefreshDetails([detail.value.device.device_uuid])
-    await presentTasks(result.tasks, '设备详情刷新任务已提交')
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, '设备详情刷新失败'))
-  }
-}
-
-async function refreshOpticalData(): Promise<void> {
-  if (!detail.value) return
-  try {
-    await presentTasks(
-      [await startDeviceOpticalRefresh(detail.value.device.device_uuid)],
-      '设备光模块刷新任务已提交',
-    )
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause, '设备光模块刷新失败'))
+    snmp_timeout_ms: profile.snmp_timeout_ms,
+    snmp_retries: profile.snmp_retries,
+    https_port: profile.https_port,
+    remark: profile.remark,
   }
 }
 
@@ -515,6 +511,7 @@ async function editSelected(): Promise<void> {
 }
 
 function openCreate(): void {
+  clearEditingProfileState()
   writeMode.value = 'create'
   resetSecretClears()
   Object.assign(writeForm, {
@@ -528,7 +525,7 @@ function openCreate(): void {
   writeVisible.value = true
 }
 
-function openEdit(): void {
+function openEditForm(): void {
   const values = currentDeviceWriteValues()
   if (!values) return
   writeMode.value = 'edit'
@@ -536,6 +533,32 @@ function openEdit(): void {
   Object.assign(writeForm, values)
   resetWriteConnectionTest()
   writeVisible.value = true
+}
+
+async function openEdit(deviceUuid = detailDeviceUuid.value): Promise<void> {
+  if (!deviceUuid) return
+  editLoadGeneration += 1
+  const generation = editLoadGeneration
+  editProfileAbortController?.abort()
+  const controller = new AbortController()
+  editProfileAbortController = controller
+  editingDeviceUuid.value = deviceUuid
+  editingProfileLoading.value = true
+  detail.value = null
+  try {
+    const profile = await getDeviceEditProfile(deviceUuid, controller.signal)
+    if (generation !== editLoadGeneration || controller.signal.aborted || editingDeviceUuid.value !== deviceUuid) return
+    detail.value = profile
+    openEditForm()
+  } catch (cause) {
+    if (generation !== editLoadGeneration || controller.signal.aborted) return
+    ElMessage.error(errorMessage(cause, '设备编辑信息加载失败'))
+  } finally {
+    if (generation === editLoadGeneration && editProfileAbortController === controller) {
+      editProfileAbortController = null
+      editingProfileLoading.value = false
+    }
+  }
 }
 
 function resetWriteConnectionTest(): void {
@@ -579,12 +602,21 @@ async function testWriteConnection(): Promise<void> {
     return
   }
   if (!protocols.includes(writeTestProtocol.value)) writeTestProtocol.value = protocols[0]
+  const editTargetUuid = writeMode.value === 'edit' ? editingDeviceUuid.value : ''
+  if (writeMode.value === 'edit' && editingProfileLoading.value) {
+    ElMessage.warning('编辑信息仍在加载，请稍候')
+    return
+  }
+  if (writeMode.value === 'edit' && !editTargetUuid) {
+    ElMessage.error('详情编辑目标已失效，请关闭后重新打开')
+    return
+  }
   writeConnectionLoading.value = true
   try {
     const result = await startDeviceFormConnectionTest({
       ...deviceWritePayload(),
       protocol: writeTestProtocol.value,
-      device_uuid: writeMode.value === 'edit' ? detail.value?.device.device_uuid : undefined,
+      device_uuid: editTargetUuid || undefined,
     })
     writeConnectionTest.value = result
     await presentTasks([{
@@ -612,6 +644,7 @@ async function openWriteConnectionTestTask(): Promise<void> {
 
 function closeWriteDialog(): void {
   clearWriteSecrets()
+  clearEditingProfileState()
 }
 
 function cancelWriteDialog(): void {
@@ -620,16 +653,24 @@ function cancelWriteDialog(): void {
 }
 
 async function saveWrite(): Promise<void> {
+  const editedUuid = writeMode.value === 'edit' ? editingDeviceUuid.value : ''
+  if (writeMode.value === 'edit' && editingProfileLoading.value) {
+    ElMessage.warning('编辑信息仍在加载，请稍候')
+    return
+  }
+  if (writeMode.value === 'edit' && !editedUuid) {
+    ElMessage.error('详情编辑目标已失效，请关闭后重新打开')
+    return
+  }
   writeLoading.value = true
   try {
-    const editedUuid = writeMode.value === 'edit' ? detail.value?.device.device_uuid : undefined
     if (writeMode.value === 'create') await createDevice(deviceWritePayload())
-    else if (editedUuid) await updateDevice(editedUuid, deviceWritePayload())
+    else await updateDevice(editedUuid, deviceWritePayload())
     writeVisible.value = false
     clearWriteSecrets()
     ElMessage.success(writeMode.value === 'create' ? '设备已创建' : '设备已保存')
     await loadDevices(true)
-    if (editedUuid && detailVisible.value) detail.value = await getDevice(editedUuid)
+    if (editedUuid) detail.value = null
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '设备保存失败'))
   } finally {
@@ -638,7 +679,7 @@ async function saveWrite(): Promise<void> {
 }
 
 async function duplicateSelected(): Promise<void> {
-  const uuid = selectedUuids.value[0] || detail.value?.device.device_uuid
+  const uuid = selectedUuids.value[0] || detailDeviceUuid.value
   if (!uuid) {
     ElMessage.warning('请先选择设备')
     return
@@ -686,8 +727,8 @@ async function duplicateByUuid(deviceUuid: string): Promise<void> {
 }
 
 async function editRow(row: DeviceListItem): Promise<void> {
-  await openDetail(row)
-  if (detail.value) openEdit()
+  openDetail(row)
+  await openEdit(row.device_uuid)
 }
 
 async function deleteSelected(): Promise<void> {
@@ -1018,8 +1059,8 @@ async function requestTerminal(deviceUuid?: string): Promise<void> {
     ? [deviceUuid]
     : selectedUuids.value.length
       ? [...selectedUuids.value]
-      : detail.value
-        ? [detail.value.device.device_uuid]
+      : detailDeviceUuid.value
+        ? [detailDeviceUuid.value]
         : []
   if (!targetUuids.length) {
     ElMessage.warning('请先选择设备')
@@ -1093,16 +1134,6 @@ function statusType(status: DeviceConnectionStatus): 'success' | 'warning' | 'da
 
 function statusLabel(status: DeviceConnectionStatus): string {
   return { UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', ERROR: '任务异常' }[status]
-}
-
-async function openDeviceWeb(): Promise<void> {
-  if (!detail.value?.device.web_url || !desktopHost.value) return
-  const result = await getPlatformAdapter().openExternalUrl(detail.value.device.web_url)
-  if (!result.success) ElMessage.error(result.error || '无法打开设备 Web 管理地址')
-}
-
-function recordText(row: Record<string, unknown>, field: string): string {
-  return String(row[field] ?? '')
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -1222,50 +1253,17 @@ function errorMessage(cause: unknown, fallback: string): string {
       <button type="button" class="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([contextMenu.row.device_uuid]); closeContextMenu()">删除</button>
     </div>
 
-    <el-drawer v-model="detailVisible" title="设备详情" size="min(880px, 96vw)">
-      <div v-loading="detailLoading" class="detail-body">
-        <el-alert v-if="detailError" :title="detailError" type="error" show-icon :closable="false" />
-        <template v-else-if="detail">
-          <div class="detail-heading">
-            <div><h2>{{ detail.device.name }}</h2><p>{{ detail.device.device_uuid }}</p></div>
-            <div class="heading-actions"><el-button v-if="detail.device.web_url" :disabled="!desktopHost" @click="openDeviceWeb">打开设备 Web</el-button><el-button :icon="FolderOpened" :disabled="!desktopHost || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal">外部终端</el-button><el-button type="primary" :icon="Edit" :disabled="!isFeatureEnabled('web.device_management_write')" @click="openEdit">编辑</el-button></div>
-          </div>
-          <el-tabs v-model="detailTab" class="device-detail-tabs">
-            <el-tab-pane label="概览" name="overview">
-              <div class="action-row"><el-button :icon="Refresh" :disabled="!isFeatureEnabled('web.device_management_collect')" @click="refreshDetailData">刷新设备详情</el-button></div>
-              <el-descriptions :column="2" border>
-                <el-descriptions-item label="名称">{{ detail.device.name }}</el-descriptions-item>
-                <el-descriptions-item label="系统名">{{ detail.device.system_name || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="主地址">{{ detail.device.primary_address }}</el-descriptions-item>
-                <el-descriptions-item label="备用地址">{{ detail.device.backup_address || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="MAC">{{ detail.device.mac_address || detail.fact?.mac_address || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="分组">{{ detail.device.group_name }}</el-descriptions-item>
-                <el-descriptions-item label="类型">{{ detail.device.device_type }}</el-descriptions-item>
-                <el-descriptions-item label="站点">{{ detail.device.station || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="SSH 端口">{{ detail.device.capabilities.ssh_port || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="登录协议">{{ [detail.device.capabilities.ssh && 'SSH', detail.device.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="型号">{{ detail.fact?.model || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="软件版本">{{ detail.fact?.software_version || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="备注" :span="2">{{ detail.device.remark || '--' }}</el-descriptions-item>
-                <el-descriptions-item label="更新时间" :span="2">{{ detail.device.updated_at || '--' }}</el-descriptions-item>
-              </el-descriptions>
-              <section class="detail-section"><h3>连接测试</h3><div class="action-row">
-                <el-button v-if="detail.device.capabilities.ssh" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('SSH')">测试 SSH</el-button>
-                <el-button v-if="detail.device.capabilities.telnet" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('TELNET')">测试 Telnet</el-button>
-                <el-button v-if="detail.device.capabilities.snmp" :icon="Connection" :loading="connectionLoading" :disabled="testActive || !isFeatureEnabled('web.device_connection_test')" @click="startTest('SNMP')">测试 SNMP</el-button>
-              </div><el-alert v-if="connectionTest" :title="`${connectionTest.protocol || '连接'} · ${connectionTest.task_status} · ${connectionTest.message || '等待结果'}`" :type="connectionTest.success === true ? 'success' : connectionTest.success === false ? 'error' : 'info'" :description="`Task ID: ${connectionTest.task_id}${connectionTest.suggestion ? `；建议：${connectionTest.suggestion}` : ''}`" show-icon :closable="false" /></section>
-              <section v-if="detail.connection_commands.length" class="detail-section"><h3>连接命令（不含凭据）</h3><div v-for="item in detail.connection_commands" :key="item.protocol" class="command-row"><code>{{ item.command }}</code><el-button link :icon="CopyDocument" @click="copyText(item.command)">复制</el-button></div></section>
-              <section class="detail-section"><h3>最近任务</h3><el-table :data="detail.recent_tasks" size="small" empty-text="暂无关联任务"><el-table-column prop="task_name" label="任务" min-width="180" /><el-table-column prop="status" label="状态" width="105" /><el-table-column prop="updated_time" label="更新时间" width="190" /><el-table-column prop="error_summary" label="错误" min-width="180" show-overflow-tooltip /></el-table></section>
-              <section v-if="detail.recent_collection" class="detail-section"><h3>最近采集</h3><el-alert :title="`${detail.recent_collection.collect_type} · ${detail.recent_collection.status}`" :description="detail.recent_collection.error_summary || detail.recent_collection.ended_at" type="info" :closable="false" /></section>
-              <section v-if="detail.recent_errors.length" class="detail-section"><h3>最近错误</h3><el-table :data="detail.recent_errors" size="small"><el-table-column prop="source" label="来源" width="100" /><el-table-column prop="time" label="时间" width="190" /><el-table-column prop="message" label="错误摘要" min-width="260" show-overflow-tooltip /></el-table></section>
-            </el-tab-pane>
-            <el-tab-pane label="接口" name="interfaces"><el-table :data="detail.interfaces" max-height="520" empty-text="暂无接口数据"><el-table-column prop="interface_name" label="接口" min-width="180" fixed /><el-table-column prop="link_status" label="链路" width="90" /><el-table-column prop="protocol_status" label="协议" width="90" /><el-table-column prop="speed" label="速率" width="100" /><el-table-column prop="duplex" label="双工" width="90" /><el-table-column prop="interface_type" label="接口类型" min-width="120" /><el-table-column prop="port_status" label="端口状态" width="100" /><el-table-column prop="pvid" label="PVID" width="80" /><el-table-column prop="description" label="描述" min-width="180" /><el-table-column prop="ip_address" label="接口 IP" min-width="130" /><el-table-column prop="mac_address" label="MAC" min-width="140" /><el-table-column prop="vlan" label="VLAN" min-width="100" /><el-table-column prop="collected_at" label="采集时间" min-width="175" /><el-table-column label="历史" width="80" fixed="right"><template #default="{ row }"><el-button link @click="openHistory('interface', recordText(row, 'interface_name'))">历史</el-button></template></el-table-column></el-table></el-tab-pane>
-            <el-tab-pane label="光模块" name="optical"><div class="action-row"><el-button :icon="Refresh" :disabled="!isFeatureEnabled('web.device_management_collect')" @click="refreshOpticalData">刷新光模块</el-button></div><el-table :data="detail.optical_modules" max-height="520" empty-text="暂无光模块数据"><el-table-column prop="interface_name" label="接口" min-width="180" fixed /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="rx_power" label="接收功率" width="110" /><el-table-column prop="tx_power" label="发送功率" width="110" /><el-table-column prop="temperature" label="温度" width="90" /><el-table-column prop="voltage" label="电压" width="90" /><el-table-column prop="bias_current" label="偏置电流" width="110" /><el-table-column prop="module_model" label="模块型号" min-width="160" /><el-table-column prop="module_serial_number" label="序列号" min-width="160" /><el-table-column prop="module_vendor" label="厂商" min-width="120" /><el-table-column prop="wavelength" label="波长" width="100" /><el-table-column prop="transmission_distance" label="传输距离" width="110" /><el-table-column prop="connector_type" label="接口类型" width="100" /><el-table-column prop="collected_at" label="采集时间" min-width="175" /><el-table-column label="历史" width="80" fixed="right"><template #default="{ row }"><el-button link @click="openHistory('optical', recordText(row, 'interface_name'))">历史</el-button></template></el-table-column></el-table></el-tab-pane>
-            <el-tab-pane label="LLDP" name="lldp"><el-table :data="detail.lldp_neighbors" max-height="520" empty-text="暂无 LLDP 数据"><el-table-column prop="local_interface" label="本地接口" min-width="180" /><el-table-column prop="neighbor_sysname" label="邻居系统名" min-width="160" /><el-table-column prop="neighbor_mac" label="邻居 MAC" min-width="150" /><el-table-column prop="neighbor_interface" label="邻居接口" min-width="180" /><el-table-column prop="collected_at" label="采集时间" min-width="175" /><el-table-column label="历史" width="80" fixed="right"><template #default="{ row }"><el-button link @click="openHistory('lldp', recordText(row, 'local_interface'))">历史</el-button></template></el-table-column></el-table></el-tab-pane>
-            <el-tab-pane label="轨旁 AP 业务" name="trackside"><el-table :data="detail.trackside_ap_business" max-height="520" empty-text="暂无轨旁 AP 业务数据"><el-table-column prop="interface_name" label="接口" min-width="180" /><el-table-column prop="link_status" label="链路" width="90" /><el-table-column prop="port_type" label="端口类型" width="110" /><el-table-column prop="description" label="描述" min-width="180" /><el-table-column prop="pvid" label="PVID" width="80" /><el-table-column prop="vlan" label="VLAN" min-width="100" /><el-table-column prop="switch_rx_power" label="交换机接收功率" min-width="130" /><el-table-column prop="switch_optical_status" label="交换机光衰状态" min-width="130" /><el-table-column prop="ap_mac" label="AP MAC" min-width="140" /><el-table-column prop="ap_name" label="AP 名称" min-width="140" /><el-table-column prop="ap_rx_power" label="AP 接收功率" min-width="120" /><el-table-column prop="ap_optical_status" label="AP 光衰状态" min-width="120" /><el-table-column prop="updated_at" label="更新时间" min-width="175" /></el-table></el-tab-pane>
-          </el-tabs>
-        </template>
-      </div>
+    <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
+      <div class="detail-drawer-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整设备详情宽度" :aria-valuenow="detailDrawerWidthPx || defaultDrawerWidth()" :aria-valuemin="drawerMinWidth()" :aria-valuemax="drawerMaxWidth()" @pointerdown="beginDrawerResize" @keydown="handleDrawerResizeKeydown" />
+      <DeviceDetailPanel
+        v-if="detailDeviceUuid"
+        :device-uuid="detailDeviceUuid"
+        mode="drawer"
+        :connection-test="connectionTest"
+        @full-detail="openFullDetail"
+        @edit="openEdit"
+        @terminal="requestTerminal"
+      />
     </el-drawer>
 
     <el-dialog v-model="terminalLaunchVisible" title="选择外部终端" width="440px">
@@ -1292,25 +1290,6 @@ function errorMessage(cause: unknown, fallback: string): string {
       <template #footer><el-button @click="terminalSettingsVisible = false">取消</el-button><el-button type="primary" :loading="terminalSettingsLoading" @click="saveTerminalSettings">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="historyVisible" :title="`历史数据 · ${historyPage?.object_name || ''}`" width="min(1180px, 96vw)">
-      <div v-loading="historyLoading" class="history-table">
-        <el-table :data="historyPage?.items || []" max-height="620" empty-text="暂无历史数据">
-          <el-table-column v-for="column in historyColumns" :key="column[1]" :label="column[0]" :prop="column[1]" min-width="140" show-overflow-tooltip />
-        </el-table>
-        <el-pagination
-          v-if="historyPage?.total"
-          :current-page="historyPage.page"
-          :page-size="historyPage.page_size"
-          :total="historyPage.total"
-          :page-sizes="[20, 50, 100, 200]"
-          layout="total, sizes, prev, pager, next"
-          @current-change="loadHistoryPage"
-          @size-change="changeHistoryPageSize"
-        />
-      </div>
-      <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>
-    </el-dialog>
-
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="closeWriteDialog">
       <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
       <el-alert v-if="writeConnectionTest" :title="`${writeConnectionTest.protocol || writeTestProtocol} · ${writeConnectionTest.task_status} · ${writeConnectionTest.message || '等待结果'}`" :type="writeConnectionTest.success === true ? 'success' : writeConnectionTest.success === false ? 'error' : 'info'" :description="`Task ID: ${writeConnectionTest.task_id}${writeConnectionTest.suggestion ? `；建议：${writeConnectionTest.suggestion}` : ''}`" show-icon :closable="false" />
@@ -1333,17 +1312,17 @@ function errorMessage(cause: unknown, fallback: string): string {
           </section>
           <section class="form-section"><h3>SSH 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.ssh_username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" data-testid="ssh-password" type="password" show-password autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.device.ssh_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.ssh_secret_configured" data-testid="ssh-clear" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" data-testid="ssh-password" type="password" show-password autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.ssh_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.ssh_secret_configured" data-testid="ssh-clear" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
           <section class="form-section"><h3>Telnet 认证</h3>
             <el-form-item label="用户名"><el-input v-model="writeForm.telnet_username" autocomplete="off" /></el-form-item>
-            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.telnet_password" :placeholder="writeMode === 'edit' && detail?.device.telnet_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.telnet_secret_configured" :model-value="secretClears.telnet_password" @change="setSecretCleared('telnet_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="密码"><el-input v-model="writeForm.telnet_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.telnet_password" :placeholder="writeMode === 'edit' && detail?.telnet_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.telnet_secret_configured" :model-value="secretClears.telnet_password" @change="setSecretCleared('telnet_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
         </div>
 
         <section class="form-section full-width"><h3>SSH 隧道</h3><div class="form-grid two-columns">
-          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.device.tunnel1_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
-          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.device.tunnel2_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
+          <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.tunnel1_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
+          <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" type="password" show-password autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.tunnel2_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
         </div></section>
 
         <section class="form-section full-width"><h3>SNMP</h3><div class="form-grid two-columns">
@@ -1352,11 +1331,11 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="端口"><el-input-number v-model="writeForm.snmp_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="超时(ms)"><el-input-number v-model="writeForm.snmp_timeout_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item label="重试"><el-input-number v-model="writeForm.snmp_retries" :min="0" :max="10" /></el-form-item>
-            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.device.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
+            <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" type="password" show-password autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.snmp_ro_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </div>
         </div></section>
       </el-form>
-      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip content="等待共享 Job Runtime 非序列化 bootstrap 接入" :disabled="isFeatureEnabled('web.device_form_connection_test')"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionLoading" :disabled="!availableWriteTestProtocols.length || writeTestActive || !isFeatureEnabled('web.device_form_connection_test') || !isFeatureEnabled('web.device_management_write')" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><el-button v-if="writeConnectionTest && writeTestActive" data-testid="form-connection-cancel" type="danger" plain @click="openWriteConnectionTestTask">在任务窗口停止</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="!isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
+      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip content="等待共享 Job Runtime 非序列化 bootstrap 接入" :disabled="isFeatureEnabled('web.device_form_connection_test')"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionLoading" :disabled="editingProfileLoading || !availableWriteTestProtocols.length || writeTestActive || !isFeatureEnabled('web.device_form_connection_test') || !isFeatureEnabled('web.device_management_write')" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><el-button v-if="writeConnectionTest && writeTestActive" data-testid="form-connection-cancel" type="danger" plain @click="openWriteConnectionTestTask">在任务窗口停止</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">
@@ -1419,21 +1398,24 @@ function errorMessage(cause: unknown, fallback: string): string {
 .group-list { margin-top: 16px; max-height: 260px; overflow-y: auto; }
 .group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .page-heading h1, .detail-heading h2, .detail-section h3 { margin: 0; }
-.page-heading p, .detail-heading p { margin: 5px 0 0; color: #718096; font-size: 13px; }
+.page-heading p, .detail-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 13px; }
 .filters { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(6, minmax(120px, 1fr)) auto; gap: 10px; padding: 14px; margin-bottom: 14px; }
 .state-alert { margin-bottom: 14px; }
 .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
-.action-bar > span { margin-right: 4px; color: #718096; font-size: 13px; }
+.action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
 .table-card { min-height: 300px; padding: 0 0 12px; }
 .table-card :deep(.el-pagination) { justify-content: flex-end; padding: 14px 16px 0; }
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.table-card small { margin-top: 4px; color: #8491a3; }
+.table-card small { margin-top: 4px; color: var(--nc-text-tertiary); }
 .detail-body { min-height: 240px; }
+.detail-drawer-resizer { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; }
+.detail-drawer-resizer:hover { background: var(--el-color-primary-light-8); }
+.is-detail-drawer-dragging, .is-detail-drawer-dragging * { user-select: none; }
 .detail-section { margin-top: 22px; }
 .detail-section h3 { margin-bottom: 11px; font-size: 15px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 12px; }
-.command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: #f4f7fa; border-radius: 7px; }
+.command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: var(--nc-bg-muted); border-radius: 7px; }
 .command-row + .command-row { margin-top: 8px; }
 .command-row code { overflow-wrap: anywhere; }
 .device-write-form { max-height: 70vh; padding: 18px 4px 0; overflow-y: auto; }

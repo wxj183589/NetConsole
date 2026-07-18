@@ -77,6 +77,45 @@ class ConfigSnapshotRepository:
             ).fetchall()
         return [self._from_row(dict(row)) for row in rows]
 
+    def list_for_device_page(
+        self,
+        device_uuid: str,
+        snapshot_type: str | None = None,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConfigSnapshot]:
+        where, params = self._device_filter(device_uuid, snapshot_type)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM config_snapshots WHERE {where} "
+                "ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, max(1, min(int(limit), 200)), max(0, int(offset))],
+            ).fetchall()
+        return [self._from_row(dict(row)) for row in rows]
+
+    def count_for_device(
+        self, device_uuid: str, snapshot_type: str | None = None
+    ) -> int:
+        where, params = self._device_filter(device_uuid, snapshot_type)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM config_snapshots WHERE {where}",
+                params,
+            ).fetchone()
+        return int(row["total"] if row is not None else 0)
+
+    @staticmethod
+    def _device_filter(
+        device_uuid: str, snapshot_type: str | None
+    ) -> tuple[str, list[object]]:
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        if snapshot_type:
+            clauses.append("type = ?")
+            params.append(snapshot_type)
+        return " AND ".join(clauses), params
+
     def delete(self, snapshot_id: int) -> ConfigSnapshot:
         snapshot = self.get(snapshot_id)
         with self.database.connect() as conn:

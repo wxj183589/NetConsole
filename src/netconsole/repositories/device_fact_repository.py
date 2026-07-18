@@ -184,6 +184,47 @@ class DeviceFactRepository:
         latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
         return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
 
+    def list_device_interfaces_page(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        status: str = "",
+        interface_type: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, object | None]], int]:
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        _append_search_clause(clauses, params, search, _INTERFACE_SEARCH_FIELDS)
+        selected_status = str(status or "").strip().casefold()
+        if selected_status:
+            clauses.append(
+                "(LOWER(TRIM(COALESCE(link_status, ''))) = ? "
+                "OR LOWER(TRIM(COALESCE(protocol_status, ''))) = ? "
+                "OR LOWER(TRIM(COALESCE(port_status, ''))) = ?)"
+            )
+            params.extend([selected_status] * 3)
+        selected_type = str(interface_type or "").strip().casefold()
+        if selected_type:
+            clauses.append("LOWER(TRIM(COALESCE(interface_type, ''))) = ?")
+            params.append(selected_type)
+        return self._current_page(
+            "device_interfaces",
+            "interface_name",
+            clauses,
+            params,
+            limit=limit,
+            offset=offset,
+        )
+
+    def get_device_interface(
+        self, device_uuid: str, interface_name: str
+    ) -> dict[str, object | None] | None:
+        return self._get_current_interface_row(
+            "device_interfaces", "interface_name", device_uuid, interface_name
+        )
+
     def append_interface_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(INTERFACE_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
@@ -211,6 +252,59 @@ class DeviceFactRepository:
             ).fetchall()
         latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
         return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
+
+    def list_optical_modules_page(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, object | None]], int]:
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        _append_search_clause(clauses, params, search, _OPTICAL_SEARCH_FIELDS)
+        return self._current_page(
+            "device_optical_modules",
+            "interface_name",
+            clauses,
+            params,
+            limit=limit,
+            offset=offset,
+        )
+
+    def list_optical_modules_bounded(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        limit: int = 1000,
+    ) -> tuple[list[dict[str, object | None]], int, bool]:
+        scan_limit = max(1, min(int(limit), 1000))
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        _append_search_clause(clauses, params, search, _OPTICAL_SEARCH_FIELDS)
+        where = " AND ".join(clauses)
+        with self.database.connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM device_optical_modules WHERE {where}",
+                params,
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM device_optical_modules WHERE {where} "
+                "ORDER BY interface_name COLLATE NOCASE, id DESC LIMIT ?",
+                [*params, scan_limit],
+            ).fetchall()
+        total = int(total_row["total"] if total_row is not None else 0)
+        mapped = [dict(row) for row in rows]
+        return mapped, total, total > len(mapped)
+
+    def get_optical_module(
+        self, device_uuid: str, interface_name: str
+    ) -> dict[str, object | None] | None:
+        return self._get_current_interface_row(
+            "device_optical_modules", "interface_name", device_uuid, interface_name
+        )
 
     def append_optical_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(OPTICAL_MODULE_HISTORY_FIELDS, data)
@@ -261,6 +355,59 @@ class DeviceFactRepository:
             ).fetchall()
         latest = _latest_rows_by_interface([dict(row) for row in rows], "local_interface")
         return sorted(latest, key=lambda row: (interface_sort_key(row.get("local_interface")), str(row.get("neighbor_sysname") or "")))
+
+    def list_lldp_neighbors_page(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        linked_only: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, object | None]], int]:
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        _append_search_clause(clauses, params, search, _LLDP_SEARCH_FIELDS)
+        if linked_only:
+            clauses.append("TRIM(COALESCE(neighbor_device_uuid, '')) != ''")
+        return self._current_page(
+            "device_lldp_neighbors",
+            "local_interface",
+            clauses,
+            params,
+            limit=limit,
+            offset=offset,
+        )
+
+    def list_lldp_neighbors_for_interface(
+        self,
+        device_uuid: str,
+        local_interface: str,
+        *,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, object | None]], int, bool]:
+        aliases = _interface_name_aliases(local_interface)
+        if not aliases:
+            return [], 0, False
+        placeholders = ", ".join("?" for _ in aliases)
+        params: list[object] = [device_uuid, *aliases]
+        where = (
+            "device_uuid = ? "
+            f"AND LOWER(TRIM(local_interface)) IN ({placeholders})"
+        )
+        size = max(1, min(int(limit), 200))
+        with self.database.connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM device_lldp_neighbors WHERE {where}",
+                params,
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM device_lldp_neighbors WHERE {where} "
+                "ORDER BY neighbor_sysname COLLATE NOCASE, id DESC LIMIT ?",
+                [*params, size],
+            ).fetchall()
+        total = int(total_row["total"] if total_row is not None else 0)
+        return [dict(row) for row in rows], total, total > len(rows)
 
     def append_lldp_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(LLDP_HISTORY_FIELDS, data)
@@ -361,7 +508,12 @@ class DeviceFactRepository:
             rows = conn.execute(
                 f"SELECT * FROM {table} WHERE device_uuid = ? AND {object_field} = ? "
                 "ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
-                (device_uuid, object_name, max(1, int(limit)), max(0, int(offset))),
+                (
+                    device_uuid,
+                    object_name,
+                    max(1, min(int(limit), 200)),
+                    max(0, int(offset)),
+                ),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -373,6 +525,92 @@ class DeviceFactRepository:
                 (device_uuid, object_name),
             ).fetchone()
         return int(row["total"] if row is not None else 0)
+
+    def _current_page(
+        self,
+        table: str,
+        order_field: str,
+        clauses: list[str],
+        params: list[object],
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, object | None]], int]:
+        if table not in {
+            "device_interfaces",
+            "device_optical_modules",
+            "device_lldp_neighbors",
+        }:
+            raise ValueError(f"不支持的设备当前快照表：{table}")
+        if order_field not in {"interface_name", "local_interface"}:
+            raise ValueError(f"不支持的设备快照排序字段：{order_field}")
+        where = " AND ".join(clauses)
+        size = max(1, min(int(limit), 200))
+        start = max(0, int(offset))
+        with self.database.connect() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {where} "
+                f"ORDER BY {order_field} COLLATE NOCASE, id DESC LIMIT ? OFFSET ?",
+                [*params, size, start],
+            ).fetchall()
+        return (
+            [dict(row) for row in rows],
+            int(total_row["total"] if total_row is not None else 0),
+        )
+
+    def _get_current_interface_row(
+        self,
+        table: str,
+        field: str,
+        device_uuid: str,
+        interface_name: str,
+    ) -> dict[str, object | None] | None:
+        if table not in {"device_interfaces", "device_optical_modules"}:
+            raise ValueError(f"不支持的设备接口快照表：{table}")
+        if field != "interface_name":
+            raise ValueError(f"不支持的设备接口字段：{field}")
+        aliases = _interface_name_aliases(interface_name)
+        if not aliases:
+            return None
+        placeholders = ", ".join("?" for _ in aliases)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE device_uuid = ? "
+                f"AND LOWER(TRIM({field})) IN ({placeholders}) "
+                "ORDER BY collected_at DESC, id DESC LIMIT 1",
+                [device_uuid, *aliases],
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def current_snapshot_source(
+        self, device_uuid: str, dataset: str
+    ) -> dict[str, object | None] | None:
+        tables = {
+            "interfaces": "device_interfaces",
+            "transceivers": "device_optical_modules",
+            "lldp": "device_lldp_neighbors",
+        }
+        try:
+            table = tables[str(dataset)]
+        except KeyError as exc:
+            raise ValueError("不支持的设备快照数据集") from exc
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"SELECT collected_at, collect_run_uuid FROM {table} "
+                "WHERE device_uuid = ? "
+                "ORDER BY collected_at DESC, id DESC LIMIT 1",
+                (device_uuid,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "collected_at": row["collected_at"],
+            "collect_run_uuid": row["collect_run_uuid"],
+            "task_id": None,
+        }
 
     def create_collect_run(self, data: dict[str, object | None]) -> dict[str, object | None]:
         payload = self._payload(COLLECT_RUN_FIELDS, data)
@@ -496,3 +734,67 @@ def _int_value(value: object) -> int:
         return int(str(value or "0"))
     except ValueError:
         return 0
+
+
+_INTERFACE_SEARCH_FIELDS = (
+    "interface_name",
+    "description",
+    "ip_address",
+    "mac_address",
+    "vlan",
+    "pvid",
+)
+_OPTICAL_SEARCH_FIELDS = (
+    "interface_name",
+    "module_model",
+    "module_serial_number",
+    "module_vendor",
+)
+_LLDP_SEARCH_FIELDS = (
+    "local_interface",
+    "neighbor_sysname",
+    "neighbor_mac",
+    "neighbor_interface",
+    "neighbor_ip",
+    "neighbor_device_uuid",
+)
+
+
+def _append_search_clause(
+    clauses: list[str],
+    params: list[object],
+    search: str,
+    fields: tuple[str, ...],
+) -> None:
+    query = str(search or "").strip().casefold()
+    if not query:
+        return
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    clauses.append(
+        "("
+        + " OR ".join(
+            f"LOWER(COALESCE({field}, '')) LIKE ? ESCAPE '\\'" for field in fields
+        )
+        + ")"
+    )
+    params.extend([f"%{escaped}%"] * len(fields))
+
+
+def _interface_name_aliases(value: object) -> list[str]:
+    raw = str(value or "").strip().rstrip(":")
+    canonical = normalize_interface_name(raw)
+    if not canonical:
+        return []
+    aliases = {raw.casefold(), canonical.casefold()}
+    reverse_prefixes = (
+        ("Ten-GigabitEthernet", ("XGE", "XGigabitEthernet", "TenGigabitEthernet")),
+        ("GigabitEthernet", ("GE",)),
+        ("Bridge-Aggregation", ("BAGG",)),
+        ("Vlan-interface", ("VLAN",)),
+    )
+    for full, short_names in reverse_prefixes:
+        if canonical.casefold().startswith(full.casefold()):
+            suffix = canonical[len(full) :]
+            aliases.update(f"{short}{suffix}".casefold() for short in short_names)
+            break
+    return sorted(alias for alias in aliases if alias)

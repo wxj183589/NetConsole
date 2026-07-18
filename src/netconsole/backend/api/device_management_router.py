@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
+from netconsole.application.device_detail import DeviceDetailApplicationService
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.device_management import (
@@ -14,6 +15,7 @@ from netconsole.models.api.device_management import (
     DeviceDeleteRequestDTO,
     DeviceDeletionTokenDTO,
     DeviceDetailDTO,
+    DeviceEditProfileDTO,
     DeviceDeletionTokenRequestDTO,
     DeviceExternalTerminalActionDTO,
     DeviceExternalTerminalBatchDTO,
@@ -30,7 +32,6 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
-    DeviceHistoryPageDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
     DeviceOmniPeekExportRequestDTO,
@@ -41,6 +42,19 @@ from netconsole.models.api.device_management import (
     DeviceTaskReferenceDTO,
     DeviceWriteDTO,
     DeviceWriteRequestDTO,
+)
+from netconsole.models.api.device_detail import (
+    DeviceBusinessAssociationPageDTO,
+    DeviceConfigSnapshotPageDTO,
+    DeviceDetailTaskPageDTO,
+    DeviceHistoryPageDTO,
+    DeviceInterfaceDetailDTO,
+    DeviceInterfacePageDTO,
+    DeviceLldpPageDTO,
+    DeviceOverviewDTO,
+    DeviceRefreshRequestDTO,
+    DeviceRefreshTaskDTO,
+    DeviceTransceiverPageDTO,
 )
 from netconsole.services.device_management_web_service import DeviceManagementWebService
 from netconsole.services.file_contract import artifact_media_type
@@ -55,6 +69,17 @@ router = APIRouter(
 
 def _service(request: Request) -> DeviceManagementWebService:
     return request.app.state.device_management_service
+
+
+def _detail_service(request: Request) -> DeviceDetailApplicationService:
+    return request.app.state.device_detail_application_service
+
+
+_DEVICE_DETAIL_ERROR_RESPONSES = {
+    404: {"description": "设备或详情对象不存在"},
+    422: {"description": "筛选参数或受控设备操作无效"},
+    503: {"description": "设备详情数据源暂时不可读"},
+}
 
 
 @router.get("/devices", response_model=DevicePageDTO)
@@ -151,6 +176,215 @@ def batch_connection_tests(request: Request, payload: DeviceBatchConnectionReque
 def refresh_optical(request: Request, device_uuid: str) -> DeviceTaskReferenceDTO:
     return _not_found(
         lambda: _service(request).start_optical_refresh(device_uuid),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/overview",
+    response_model=DeviceOverviewDTO,
+    summary="读取设备快速概览",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_overview(request: Request, device_uuid: str) -> DeviceOverviewDTO:
+    return _not_found(
+        lambda: _detail_service(request).overview(device_uuid), "设备不存在"
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/interfaces",
+    response_model=DeviceInterfacePageDTO,
+    summary="分页读取设备接口快照",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_interfaces(
+    request: Request,
+    device_uuid: str,
+    search: str = Query(default="", max_length=200),
+    status_filter: str = Query(default="", alias="status", max_length=40),
+    interface_type: str = Query(default="", max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceInterfacePageDTO:
+    return _not_found(
+        lambda: _detail_service(request).interfaces(
+            device_uuid,
+            search=search,
+            status=status_filter,
+            interface_type=interface_type,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/interfaces/{interface_name:path}",
+    response_model=DeviceInterfaceDetailDTO,
+    summary="读取单个设备接口详情",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_interface_detail(
+    request: Request,
+    device_uuid: str,
+    interface_name: str = Path(min_length=1, max_length=255),
+) -> DeviceInterfaceDetailDTO:
+    return _not_found(
+        lambda: _detail_service(request).interface_detail(
+            device_uuid, interface_name
+        ),
+        "设备或接口不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/transceivers",
+    response_model=DeviceTransceiverPageDTO,
+    summary="分页读取设备光模块快照",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_transceivers(
+    request: Request,
+    device_uuid: str,
+    search: str = Query(default="", max_length=200),
+    severity: str = Query(
+        default="",
+        pattern="^(|normal|notice|warning|alarm|link_abnormal|no_light|no_module|unknown)$",
+    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceTransceiverPageDTO:
+    return _not_found(
+        lambda: _detail_service(request).transceivers(
+            device_uuid,
+            search=search,
+            severity=severity,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/lldp",
+    response_model=DeviceLldpPageDTO,
+    summary="分页读取设备 LLDP 邻居",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_lldp(
+    request: Request,
+    device_uuid: str,
+    search: str = Query(default="", max_length=200),
+    linked_only: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceLldpPageDTO:
+    return _not_found(
+        lambda: _detail_service(request).lldp(
+            device_uuid,
+            search=search,
+            linked_only=linked_only,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/config-snapshots",
+    response_model=DeviceConfigSnapshotPageDTO,
+    summary="分页读取设备配置快照",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_config_snapshots(
+    request: Request,
+    device_uuid: str,
+    snapshot_type: str = Query(default="", pattern="^(|running|saved|diff)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceConfigSnapshotPageDTO:
+    return _not_found(
+        lambda: _detail_service(request).config_snapshots(
+            device_uuid,
+            snapshot_type=snapshot_type,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/tasks",
+    response_model=DeviceDetailTaskPageDTO,
+    summary="分页读取设备任务记录",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_detail_tasks(
+    request: Request,
+    device_uuid: str,
+    task_status: str = Query(
+        default="",
+        alias="status",
+        pattern="^(|PENDING|STARTING|RUNNING|STOPPING|COMPLETED|FAILED|CANCELLED)$",
+    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceDetailTaskPageDTO:
+    return _not_found(
+        lambda: _detail_service(request).tasks(
+            device_uuid,
+            status=task_status,
+            page=page,
+            page_size=page_size,
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/business-associations",
+    response_model=DeviceBusinessAssociationPageDTO,
+    summary="分页读取设备关联业务",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_business_associations(
+    request: Request,
+    device_uuid: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> DeviceBusinessAssociationPageDTO:
+    return _not_found(
+        lambda: _detail_service(request).business_associations(
+            device_uuid, page=page, page_size=page_size
+        ),
+        "设备不存在",
+    )
+
+
+@router.post(
+    "/devices/{device_uuid}/refresh",
+    response_model=DeviceRefreshTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="提交受控设备详情刷新",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+    dependencies=[Depends(require_feature("web.device_management_collect"))],
+)
+def refresh_device_detail(
+    request: Request,
+    device_uuid: str,
+    payload: DeviceRefreshRequestDTO,
+) -> DeviceRefreshTaskDTO:
+    return _not_found(
+        lambda: _detail_service(request).refresh(
+            device_uuid,
+            payload.operation_id,
+            idempotency_key=payload.idempotency_key,
+        ),
         "设备不存在",
     )
 
@@ -276,12 +510,37 @@ def external_terminal(request: Request, device_uuid: str, payload: DeviceExterna
     return _not_found(lambda: _service(request).external_terminal_action(device_uuid, payload), "设备不存在")
 
 
-@router.get("/devices/{device_uuid}", response_model=DeviceDetailDTO)
+@router.get(
+    "/devices/{device_uuid}/edit-profile",
+    response_model=DeviceEditProfileDTO,
+    summary="读取设备编辑资料",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_edit_profile(
+    request: Request, device_uuid: str
+) -> DeviceEditProfileDTO:
+    return _not_found(
+        lambda: _service(request).get_device_edit_profile(device_uuid),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}",
+    response_model=DeviceDetailDTO,
+    deprecated=True,
+    summary="旧设备全量详情兼容接口（请勿用于新详情或编辑）",
+)
 def device_detail(request: Request, device_uuid: str) -> DeviceDetailDTO:
     return _not_found(lambda: _service(request).get_device_detail(device_uuid), "设备不存在")
 
 
-@router.get("/devices/{device_uuid}/history", response_model=DeviceHistoryPageDTO)
+@router.get(
+    "/devices/{device_uuid}/history",
+    response_model=DeviceHistoryPageDTO,
+    summary="分页读取设备详情历史",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
 def device_history(
     request: Request,
     device_uuid: str,
@@ -403,7 +662,9 @@ def _query(callback):
         try:
             return callback()
         except FileNotFoundError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc) or "资源不存在") from exc
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="资源不存在"
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

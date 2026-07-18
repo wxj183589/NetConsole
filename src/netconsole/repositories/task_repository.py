@@ -192,9 +192,65 @@ class TaskRepository:
         site_name: str | None = None,
         task_types: Collection[str] | None = None,
         device: str | None = None,
+        device_aliases: Collection[str] | None = None,
         limit: int = 200,
         offset: int = 0,
     ) -> list[TaskSnapshot]:
+        where, params = self._snapshot_filter(
+            statuses=statuses,
+            owner=owner,
+            source=source,
+            site_name=site_name,
+            task_types=task_types,
+            device=device,
+            device_aliases=device_aliases,
+        )
+        params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM task_snapshots {where} "
+                "ORDER BY updated_time DESC, created_time DESC, task_id DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        return [self._snapshot_from_row(dict(row)) for row in rows]
+
+    def count_filtered(
+        self,
+        *,
+        statuses: Collection[TaskState] | None = None,
+        owner: str | None = None,
+        source: str | None = None,
+        site_name: str | None = None,
+        task_types: Collection[str] | None = None,
+        device: str | None = None,
+        device_aliases: Collection[str] | None = None,
+    ) -> int:
+        where, params = self._snapshot_filter(
+            statuses=statuses,
+            owner=owner,
+            source=source,
+            site_name=site_name,
+            task_types=task_types,
+            device=device,
+            device_aliases=device_aliases,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM task_snapshots {where}", params
+            ).fetchone()
+        return int(row["total"] if row is not None else 0)
+
+    @staticmethod
+    def _snapshot_filter(
+        *,
+        statuses: Collection[TaskState] | None,
+        owner: str | None,
+        source: str | None,
+        site_name: str | None,
+        task_types: Collection[str] | None,
+        device: str | None,
+        device_aliases: Collection[str] | None,
+    ) -> tuple[str, list[object]]:
         params: list[object] = []
         clauses: list[str] = []
         if statuses:
@@ -214,18 +270,20 @@ class TaskRepository:
             values = sorted(str(task_type) for task_type in task_types)
             clauses.append(f"task_type IN ({','.join('?' for _ in values)})")
             params.extend(values)
+        if device is not None and device_aliases:
+            raise ValueError("device 与 device_aliases 不得同时提供")
         if device is not None:
             clauses.append("device = ?")
             params.append(str(device))
+        if device_aliases:
+            values = sorted(
+                {str(value).strip() for value in device_aliases if str(value).strip()}
+            )
+            if values:
+                clauses.append(f"device IN ({','.join('?' for _ in values)})")
+                params.extend(values)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM task_snapshots {where} "
-                "ORDER BY updated_time DESC, created_time DESC, task_id DESC LIMIT ? OFFSET ?",
-                params,
-            ).fetchall()
-        return [self._snapshot_from_row(dict(row)) for row in rows]
+        return where, params
 
     def list_events(self, task_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
         with self._connect() as conn:

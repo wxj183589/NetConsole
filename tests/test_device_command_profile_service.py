@@ -9,6 +9,7 @@ import pytest
 from netconsole.services import device_command_profile_service
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.models.device_detail import identify_device_platform
 from netconsole.services.device_command_profile_service import (
     DEVICE_INVENTORY_OPERATION_ID,
     DeviceCommandProfileError,
@@ -18,6 +19,7 @@ from netconsole.services.device_command_profile_service import (
     load_device_command_profiles,
     resolve_device_command_profile,
     resolve_device_inventory_profile,
+    resolve_device_operation_profile,
 )
 from scripts.maintenance.audit_commands import (
     load_device_profile_commands,
@@ -126,6 +128,15 @@ def test_device_resolution_only_accepts_h3c_switch() -> None:
         resolve_device_inventory_profile(
             Device(name="AC", device_vendor="H3C", device_type="AC")
         )
+    conflicting_facts = identify_device_platform(
+        vendor="H3C",
+        device_type="SW",
+        software_version="Huawei Versatile Routing Platform VRP V8",
+    )
+    with pytest.raises(DeviceCommandProfileNotFound, match="Comware"):
+        resolve_device_inventory_profile(
+            h3c_switch, platform_facts=conflicting_facts
+        )
 
 
 def test_device_remark_cannot_select_an_exact_software_profile(tmp_path: Path) -> None:
@@ -159,6 +170,47 @@ def test_device_remark_cannot_select_an_exact_software_profile(tmp_path: Path) -
 
     assert generic.selector.software_version == "*"
     assert exact_match.selector.software_version == "V9"
+
+
+def test_medium_comware_inference_only_enables_generic_read_only_profile(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(RESOURCE_PATH.read_text(encoding="utf-8"))
+    exact = deepcopy(payload["profiles"][0])
+    exact["profile_id"] = "h3c.comware.switch.v9.device-inventory.v1"
+    exact["selector"]["software_version"] = "V9"
+    exact["compatibility"] = "fixture_verified"
+    exact["verification"]["fixture_versions"] = ["9.1.001"]
+    payload["profiles"].append(exact)
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "device_command_profiles.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
+    device = Device(name="SW", device_vendor="H3C", device_type="SW")
+    platform = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+    )
+
+    profile = resolve_device_operation_profile(
+        device,
+        DEVICE_INVENTORY_OPERATION_ID,
+        software_version=platform.software_version,
+        paths=paths,
+    )
+
+    assert platform.platform == "comware"
+    assert platform.confidence == "medium"
+    assert platform.software_version is None
+    assert profile.selector.software_version == "*"
+    assert profile.compatibility == "generic_read_only"
+    assert profile.risk == "read_only"
+    assert all(step.risk == "read_only" for step in profile.steps)
+    with pytest.raises(DeviceCommandProfileNotFound, match="未注册稳定命令 Profile"):
+        resolve_device_operation_profile(device, "device.config.write", paths=paths)
 
 
 @pytest.mark.parametrize(

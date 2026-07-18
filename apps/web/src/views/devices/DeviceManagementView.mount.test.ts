@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   listDevices: vi.fn(),
-  getDevice: vi.fn(),
+  getDeviceEditProfile: vi.fn(),
   updateDevice: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
   downloadBackendResource: vi.fn(),
@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/deviceManagement')>(),
   listDevices: mocks.listDevices,
-  getDevice: mocks.getDevice,
+  getDeviceEditProfile: mocks.getDeviceEditProfile,
   updateDevice: mocks.updateDevice,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
 }))
@@ -113,6 +113,18 @@ const detail = {
   trackside_ap_business: [],
 }
 
+const editProfile = {
+  device_uuid: 'device-1',
+  name: 'MR2', system_name: 'MR-02', station: '车站 A', location: '', group_id: 1, device_vendor: 'H3C', device_type: 'AC',
+  primary_address: '192.0.2.12', backup_address: '',
+  ssh_enabled: true, ssh_port: 22, ssh_username: 'admin', telnet_enabled: false, telnet_port: 23, telnet_username: '',
+  tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '',
+  tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '',
+  snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_timeout_ms: 2000, snmp_retries: 1,
+  https_port: 443, remark: '', ssh_secret_configured: true, telnet_secret_configured: false,
+  tunnel1_secret_configured: false, tunnel2_secret_configured: false, snmp_ro_secret_configured: true,
+}
+
 function task(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'device-task-1',
@@ -168,6 +180,7 @@ async function openEdit(wrapper: VueWrapper): Promise<void> {
   expect(button).toBeTruthy()
   await button!.trigger('click')
   await flushPromises()
+  expect(mocks.getDeviceEditProfile).toHaveBeenCalledWith('device-1', expect.any(AbortSignal))
   expect(wrapper.find('[data-testid="device-save"]').exists()).toBe(true)
 }
 
@@ -236,6 +249,9 @@ const tableStub = defineComponent({
       props.data.length
         ? h('button', { 'data-testid': 'select-first-device', onClick: () => emit('selection-change', [props.data[0]]) }, '选择首台设备')
         : null,
+      props.data.length > 1
+        ? h('button', { 'data-testid': 'select-second-device', onClick: () => emit('selection-change', [props.data[1]]) }, '选择第二台设备')
+        : null,
       slots.default?.(),
     ])
   },
@@ -280,7 +296,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   document.body.innerHTML = ''
   mocks.listDevices.mockResolvedValue({ items: [listItem], groups: [{ id: 1, name: '车载 MR' }], total: 1, page: 1, page_size: 50, total_pages: 1 })
-  mocks.getDevice.mockResolvedValue(detail)
+  mocks.getDeviceEditProfile.mockResolvedValue(editProfile)
   mocks.updateDevice.mockResolvedValue({ action: 'updated', device: detail.device })
   mocks.startDeviceFormConnectionTest.mockResolvedValue({
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
@@ -305,6 +321,39 @@ beforeEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('ignores stale edit profile responses and keeps save/test bound to the editing UUID', async () => {
+    let resolveFirst!: (value: typeof editProfile) => void
+    let resolveSecond!: (value: typeof editProfile) => void
+    const firstProfile = new Promise<typeof editProfile>((resolve) => { resolveFirst = resolve })
+    const secondProfile = new Promise<typeof editProfile>((resolve) => { resolveSecond = resolve })
+    const secondRow = { ...listItem, device_uuid: 'device-2', name: 'MR3' }
+    mocks.listDevices.mockResolvedValue({ items: [listItem, secondRow], groups: [{ id: 1, name: '车载 MR' }], total: 2, page: 1, page_size: 50, total_pages: 1 })
+    mocks.getDeviceEditProfile
+      .mockImplementationOnce(() => firstProfile)
+      .mockImplementationOnce(() => secondProfile)
+
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    await wrapper.findAll('button').find((item) => item.text() === '编辑' && item.attributes('disabled') === undefined)!.trigger('click')
+    await wrapper.get('[data-testid="select-second-device"]').trigger('click')
+    await wrapper.findAll('button').find((item) => item.text() === '编辑' && item.attributes('disabled') === undefined)!.trigger('click')
+
+    expect(mocks.getDeviceEditProfile).toHaveBeenCalledTimes(2)
+    expect(mocks.getDeviceEditProfile.mock.calls[0][1].aborted).toBe(true)
+    resolveSecond({ ...editProfile, device_uuid: 'device-2', name: 'MR3' })
+    await flushPromises()
+    expect((wrapper.get('[data-testid="device-name"] input').element as HTMLInputElement).value).toBe('MR3')
+
+    await wrapper.get('[data-testid="device-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateDevice).toHaveBeenCalledWith('device-2', expect.objectContaining({ name: 'MR3' }))
+
+    resolveFirst({ ...editProfile, device_uuid: 'device-1', name: '旧设备' })
+    await flushPromises()
+    expect(mocks.updateDevice).toHaveBeenCalledWith('device-2', expect.objectContaining({ name: 'MR3' }))
+    wrapper.unmount()
+  })
+
   it('saves an edit and reports backend validation and write failures', async () => {
     const wrapper = await renderView()
     await openEdit(wrapper)
@@ -378,6 +427,22 @@ describe('DeviceManagementView mounted interactions', () => {
     await flushPromises()
     await openEdit(wrapper)
     expect((wrapper.get('[data-testid="ssh-password"] input').element as HTMLInputElement).value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('keeps task submission successful when task refresh or task window presentation fails', async () => {
+    const wrapper = await renderView()
+    await openEdit(wrapper)
+    mocks.taskStore!.refresh.mockRejectedValueOnce(new Error('task store unavailable'))
+    mocks.openTaskWindow.mockResolvedValueOnce({ success: false, error: 'task window unavailable' })
+
+    await wrapper.get('[data-testid="form-connection-test"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.startDeviceFormConnectionTest).toHaveBeenCalled()
+    expect(mocks.messages.warning).toHaveBeenCalledWith('任务已提交，但任务状态刷新失败；任务窗口打开失败')
+    expect(mocks.messages.error).not.toHaveBeenCalledWith('表单连接测试任务提交失败')
+    expect(mocks.messages.success).not.toHaveBeenCalledWith('SSH 表单连接测试任务已提交')
     wrapper.unmount()
   })
 

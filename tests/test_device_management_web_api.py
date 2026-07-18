@@ -46,6 +46,7 @@ from netconsole.models.device_snmp import DeviceSnmpProfileResult
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_detail_repository import DeviceDetailRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_management_web_service import (
@@ -65,6 +66,14 @@ from netconsole.services.device_management_web_service import (
     run_device_diagnostic_download,
     run_device_optical_refresh,
 )
+from netconsole.services.device_command_profile_service import (
+    resolve_device_inventory_profile,
+)
+from netconsole.services.device_operation_service import (
+    DeviceInventoryRefreshFailed,
+    DeviceOperationService,
+)
+from netconsole.services.job_center.job_runner import JobRunner
 from netconsole.services.device_import_export import TEMPLATE_FIELDS
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -230,6 +239,14 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
         desktop_action_service=desktop_actions,
         site_name="demo",
         process_adapter=adapter,  # type: ignore[arg-type]
+        device_operation_service=DeviceOperationService(
+            PathResolver(
+                app_root=Path(__file__).parents[1], data_root=paths.data_root
+            ),
+            DeviceDetailRepository(paths, site_name="demo"),
+            tasks,
+            adapter,
+        ),
     )
     app = FastAPI()
     app.state.device_management_service = service
@@ -347,8 +364,36 @@ def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) 
                 "interface_name": "GE1/0/1",
                 "collected_at": collected_at,
                 "link_status": link_status,
+                "last_change": collected_at,
+                "raw_log_path": "C:\\private\\device-history.log",
             }
         )
+
+    repository_rows = facts.list_object_history_page(
+        "interface",
+        str(mr.device_uuid),
+        "GE1/0/1",
+        limit=1,
+        offset=0,
+    )
+    assert repository_rows[0]["last_change"] == "2026-07-16T11:00:00"
+    facts.append_optical_history(
+        {
+            "device_uuid": str(mr.device_uuid),
+            "interface_name": "GE1/0/1",
+            "collected_at": "2026-07-16T12:00:00",
+            "status": "no_light",
+            "rx_power": "-40 dBm",
+        }
+    )
+    optical_repository_rows = facts.list_object_history_page(
+        "optical",
+        str(mr.device_uuid),
+        "GE1/0/1",
+        limit=1,
+        offset=0,
+    )
+    assert optical_repository_rows[0]["status"] == "no_light"
 
     response = client.get(
         f"/api/device-management/devices/{mr.device_uuid}/history",
@@ -363,7 +408,19 @@ def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) 
     assert response.status_code == 200
     assert response.json()["total"] == 2
     assert response.json()["total_pages"] == 2
-    assert response.json()["items"][0]["link_status"] == "UP"
+    assert response.json()["items"][0]["values"]["link_status"] == "UP"
+    assert "last_change" not in response.json()["items"][0]["values"]
+    assert response.json()["source"]["source"] == "device_management_web_service"
+    assert "raw_log_path" not in response.text
+    assert "C:\\private" not in response.text
+
+    optical_response = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/history",
+        params={"kind": "optical", "object_name": "GE1/0/1"},
+    )
+    assert optical_response.status_code == 200
+    assert optical_response.json()["items"][0]["values"]["rx_power"] == "-40 dBm"
+    assert "status" not in optical_response.json()["items"][0]["values"]
 
 
 def test_real_edit_is_validated_and_persisted(
@@ -404,6 +461,102 @@ def test_real_edit_is_validated_and_persisted(
     assert "snmp_v3_enabled" not in detail
     assert "snmp_rw_community" not in detail
     assert devices.get_by_uuid(str(mr.device_uuid)).name == "MR-NEW"
+
+
+def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    def fail_large_read(*_args, **_kwargs):
+        raise AssertionError("编辑资料不得读取设备大快照表")
+
+    monkeypatch.setattr(
+        DeviceFactRepository, "list_device_interfaces", fail_large_read
+    )
+    monkeypatch.setattr(
+        DeviceFactRepository, "list_optical_modules", fail_large_read
+    )
+    monkeypatch.setattr(
+        DeviceFactRepository, "list_lldp_neighbors", fail_large_read
+    )
+    edit = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/edit-profile"
+    )
+    assert edit.status_code == 200
+    assert edit.json()["device_uuid"] == str(mr.device_uuid)
+    assert "secret-password" not in edit.text
+
+    monkeypatch.setattr(
+        service,
+        "get_device_detail",
+        lambda *_args, **_kwargs: fail_large_read(),
+    )
+    created = client.post(
+        "/api/device-management/devices",
+        json={
+            "name": "narrow-write",
+            "primary_address": "192.0.2.88",
+            "device_vendor": "H3C",
+            "device_type": "SW",
+        },
+    )
+    updated = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={
+            "name": "MR-NARROW",
+            "primary_address": "192.0.2.12",
+            "device_vendor": "H3C",
+            "device_type": "AC",
+            "ssh_enabled": False,
+            "ssh_port": 2222,
+            "telnet_enabled": True,
+            "telnet_port": 2323,
+            "snmp_enabled": False,
+            "snmp_port": 1161,
+        },
+    )
+    duplicated = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/duplicate"
+    )
+    assert created.status_code == 201
+    assert updated.status_code == 200
+    assert duplicated.status_code == 201
+    roundtrip = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/edit-profile"
+    ).json()
+    assert roundtrip["ssh_enabled"] is False
+    assert roundtrip["ssh_port"] == 2222
+    assert roundtrip["telnet_enabled"] is True
+    assert roundtrip["telnet_port"] == 2323
+    assert roundtrip["snmp_enabled"] is False
+    assert roundtrip["snmp_port"] == 1161
+
+    schema = client.get("/openapi.json").json()
+    assert schema["paths"]["/api/device-management/devices/{device_uuid}"][
+        "get"
+    ]["deprecated"] is True
+    assert (
+        "/api/device-management/devices/{device_uuid}/edit-profile"
+        in schema["paths"]
+    )
+
+
+def test_router_redacts_file_not_found_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+
+    def missing(_device_uuid: str):
+        raise FileNotFoundError(r"C:\private\device-secret.json")
+
+    monkeypatch.setattr(service, "get_device_edit_profile", missing)
+    response = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/edit-profile"
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "资源不存在"}
+    assert "C:\\private" not in response.text
 
 
 def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path) -> None:
@@ -2255,58 +2408,44 @@ def test_import_completion_never_restores_whole_database_and_preserves_audit(
 
 
 def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: Path) -> None:
-    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
-    refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [str(mr.device_uuid)]})
-    assert refreshed.status_code == 202
+    client, service, adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    target_uuid = str(sw.device_uuid)
+    refreshed = client.post("/api/device-management/devices/batch-refresh-details", json={"device_uuids": [target_uuid]})
+    assert refreshed.status_code == 202, refreshed.text
     assert refreshed.json()["action"] == "batch_refresh_details"
     assert adapter.jobs[-1].task_type == "device_detail_collect"
     assert adapter.jobs[-1].params["owner"] == WEB_TASK_OWNER
     assert adapter.jobs[-1].params["task_source"] == "local"
+    assert adapter.jobs[-1].params["operation_id"] == "device.inventory.collect"
+    assert adapter.jobs[-1].params["profile_id"].startswith("h3c.comware.switch")
+    assert adapter.jobs[-1].params["idempotency_key"]
     collect_task_id = refreshed.json()["tasks"][0]["task_id"]
     duplicate_refresh = client.post(
         "/api/device-management/devices/batch-refresh-details",
-        json={"device_uuids": [str(mr.device_uuid)]},
+        json={"device_uuids": [target_uuid]},
     )
-    assert duplicate_refresh.status_code == 422
-    assert "正在运行" in duplicate_refresh.text
+    assert duplicate_refresh.status_code == 202
+    assert duplicate_refresh.json()["tasks"][0]["task_id"] == collect_task_id
     blocked_optical = client.post(
-        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
+        f"/api/device-management/devices/{target_uuid}/refresh-optical"
     )
     assert blocked_optical.status_code == 422
-    assert "详情采集任务正在运行" in blocked_optical.text
+    assert "未注册独立光模块刷新" in blocked_optical.text
     service.task_service.record_external_event(
         collect_task_id,
         "cancelled",
         {"message": "测试结束详情采集", "cancelled": True},
         site_name="demo",
     )
-    optical = client.post(
-        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
-    )
-    assert optical.status_code == 202
-    assert adapter.jobs[-1].task_type == DEVICE_OPTICAL_REFRESH_TASK_TYPE
-    job_count = len(adapter.jobs)
-    repeated_optical = client.post(
-        f"/api/device-management/devices/{mr.device_uuid}/refresh-optical"
-    )
-    assert repeated_optical.status_code == 202
-    assert repeated_optical.json()["task_id"] == optical.json()["task_id"]
-    assert len(adapter.jobs) == job_count
-    blocked_refresh = client.post(
-        "/api/device-management/devices/batch-refresh-details",
-        json={"device_uuids": [str(mr.device_uuid)]},
-    )
-    assert blocked_refresh.status_code == 422
-    assert "正在运行" in blocked_refresh.text
     diagnostic = client.post(
         "/api/device-management/diagnostic-download",
         json={"device_uuids": [str(mr.device_uuid)]},
     )
     assert diagnostic.status_code == 202
     detail = client.get(
-        f"/api/device-management/devices/{mr.device_uuid}"
+        f"/api/device-management/devices/{target_uuid}"
     ).json()
-    assert {collect_task_id, optical.json()["task_id"], diagnostic.json()["task_id"]} <= {
+    assert {collect_task_id} <= {
         task["task_id"] for task in detail["recent_tasks"]
     }
 
@@ -2338,7 +2477,7 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     batch_terminal = client.post(
         "/api/device-management/external-terminal/launch",
         json={
-            "device_uuids": [str(mr.device_uuid), str(_sw.device_uuid)],
+            "device_uuids": [str(mr.device_uuid), str(sw.device_uuid)],
             "terminal_type": "securecrt",
         },
     )
@@ -2524,11 +2663,12 @@ def test_securecrt_xshell_and_putty_use_local_adapter_without_shell(
 def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type(
     tmp_path: Path,
 ) -> None:
-    client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    client, service, adapter, _devices, _facts, _mr, sw = _fixture(tmp_path)
     started = client.post(
         "/api/device-management/devices/batch-refresh-details",
-        json={"device_uuids": [str(mr.device_uuid)]},
+        json={"device_uuids": [str(sw.device_uuid)]},
     )
+    assert started.status_code == 202, started.text
     task_id = started.json()["tasks"][0]["task_id"]
 
     assert client.get(f"/api/device-management/tasks/{task_id}").status_code == 200
@@ -2566,10 +2706,18 @@ def test_generic_device_task_query_and_cancel_enforce_owner_source_site_and_type
         )
 
 
-def test_device_detail_collect_handler_uses_formal_collector_without_real_devices(
+def test_device_detail_collect_handler_fails_closed_before_formal_collector(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _client, service, _adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    client, service, adapter, _devices, _facts, _mr, sw = _fixture(
+        tmp_path, app_root=Path(__file__).parents[1]
+    )
+    submitted = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [str(sw.device_uuid)]},
+    )
+    assert submitted.status_code == 202
+    params = dict(adapter.jobs[-1].params)
     collected: list[str] = []
 
     def fake_collect(device: Device, site: str, *, repository, paths):
@@ -2577,6 +2725,9 @@ def test_device_detail_collect_handler_uses_formal_collector_without_real_device
         assert site == "demo"
         assert paths is service.paths
         assert repository is not None
+        profile = resolve_device_inventory_profile(device, paths=paths)
+        assert profile.profile_id == params["profile_id"]
+        assert profile.profile_version == params["profile_version"]
         return SimpleNamespace(
             success=True,
             collect_run_uuid=f"run-{device.name}",
@@ -2595,20 +2746,54 @@ def test_device_detail_collect_handler_uses_formal_collector_without_real_device
         JobContext(
             "device-detail-formal-handler",
             "device_detail_collect",
-            {
-                "site_name": "demo",
-                "device_uuids": [str(mr.device_uuid), str(sw.device_uuid)],
-            },
+            params,
             None,
             lambda: False,
             service.paths,
         )
     )
 
-    assert set(collected) == {str(mr.device_uuid), str(sw.device_uuid)}
-    assert result["total"] == 2
-    assert result["success"] == 2
+    assert collected == [str(sw.device_uuid)]
+    assert result["total"] == 1
+    assert result["success"] == 1
     assert result["failed"] == 0
+
+    with pytest.raises(DeviceInventoryRefreshFailed) as mismatch:
+        run_device_detail_collect(
+            JobContext(
+                "device-detail-profile-mismatch",
+                "device_detail_collect",
+                {**params, "profile_id": "h3c.comware.switch.unexpected.v99"},
+                None,
+                lambda: False,
+                service.paths,
+            )
+        )
+    assert mismatch.value.summary["success"] == 0
+    assert mismatch.value.summary["failed"] == 1
+    assert "Profile" in str(mismatch.value)
+
+    def failed_collect(device: Device, site: str, *, repository, paths):
+        return SimpleNamespace(
+            success=False,
+            collect_run_uuid=f"run-{device.name}",
+            facts_updated=False,
+            interfaces_updated=0,
+            optical_modules_updated=0,
+            lldp_neighbors_updated=0,
+            error_message=r"连接失败 C:\private\secret.log password=hidden",
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        failed_collect,
+    )
+    job_result = JobRunner().run(adapter.jobs[-1])
+    assert job_result.ok is False
+    assert job_result.to_event()["type"] == "error"
+    assert "failed=1" in job_result.error
+    assert "C:\\private" not in job_result.error
+    assert "password=hidden" not in job_result.error
 
 
 def test_device_optical_refresh_handler_uses_formal_service(

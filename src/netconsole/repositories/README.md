@@ -11,7 +11,21 @@
 
 ## 主要入口
 
-各域 `*_repository.py` 提供查询/写入接口，`device_repository.py`、`task_repository.py`、`traffic_run_repository.py` 和 Mesh/Agent 仓储是主要入口。
+各域 `*_repository.py` 提供查询/写入接口，`device_repository.py`、`device_fact_repository.py`、`device_detail_repository.py`、`task_repository.py`、`traffic_run_repository.py` 和 Mesh/Agent 仓储是主要入口。
+
+### 设备详情快照
+
+设备详情页面通过 Query/Application Service 读取 Repository，不直接访问 SQLite：
+
+- overview 使用 `devices.db.latest_snapshot`；
+- 接口、光模块和 LLDP 使用各自最近快照，并保留可用的采集时间和 Task ID；
+- `device_detail_repository.py` 提供有上限的分页、筛选、详情和历史读取；
+- 任务摘要通过 Task Repository / `tasks.db` 获取；
+- 配置与关联业务继续由现有领域 Repository/Query Service 提供，不复制表或数据源。
+
+快照中未知的数值保持 `NULL`，不能写入伪造的零。Repository 不返回设备密码、SNMP community、Token、服务端绝对路径或任意环境变量。
+
+LLDP 历史 schema 中既有的邻居 `capabilities`、`model` 字段不做破坏性删除或数据清理；它们属于内部兼容存储，不进入设备详情公开 DTO/API/Web。公开契约收口由 Query/Application 映射完成，Repository 迁移不得借此重建或截断用户历史表。
 
 ## 依赖关系
 
@@ -23,7 +37,7 @@ Repository 依赖 Database/PathResolver/站点上下文，被 Service、Applicat
 
 ## 测试与修改
 
-修改 schema、索引、SQL、分页或事务时运行 database、paths、migration、repository 和对应 Service/API 测试，检查旧库兼容与 locked/WAL 行为。
+修改 schema、索引、SQL、分页或事务时先运行 database、paths、migration、repository 和对应 Service/API 定向测试，检查旧库兼容与 locked/WAL 行为；全量数据库/组合验证在最终集成时运行。当前低 CPU 限制下，本轮文档同步未运行测试或构建。
 
 ## 生成与清理
 
@@ -31,4 +45,4 @@ Repository 依赖 Database/PathResolver/站点上下文，被 Service、Applicat
 
 ## 相关文档
 
-参见 [数据与路径](../../../docs/DATA_LAYOUT.md)、[Job Center](../../../docs/JOB_CENTER.md) 和 [数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。
+参见 [设备管理页面](../../../apps/web/src/views/devices/README.md)、[数据与路径](../../../docs/DATA_LAYOUT.md)、[Job Center](../../../docs/JOB_CENTER.md)和[数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。

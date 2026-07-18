@@ -8,6 +8,7 @@ export const appRoutes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { navigationId: 'dashboard', moduleId: 'dashboard', title: 'Dashboard', desktopOnly: false } },
       { path: 'network/devices', name: 'device-management', component: () => import('../views/devices/DeviceManagementView.vue'), meta: { navigationId: 'devices', featureId: 'web.device_management', moduleId: 'devices', title: '设备管理', desktopOnly: false } },
+      { path: 'devices/:deviceId', name: 'device-detail', component: () => import('../views/devices/DeviceDetailView.vue'), meta: { navigationId: 'devices', featureId: 'web.device_management', moduleId: 'devices', title: '设备完整详情', desktopOnly: false, hiddenRoute: true } },
       { path: 'ac-management', redirect: { name: 'ac-fit-aps' }, meta: { moduleId: 'ac', title: 'AC 管理', desktopOnly: false, hiddenRoute: true } },
       { path: 'ac-management/fit-aps', name: 'ac-fit-aps', component: () => import('../views/ac-management/AcManagementView.vue'), meta: { navigationId: 'ac.fit-aps', featureId: 'web.ac_fit_ap_resources', moduleId: 'ac', title: 'AC 管理 / FIT-AP 资源', desktopOnly: false } },
       { path: 'ac-management/optical', name: 'ac-optical', component: () => import('../views/ac-management/AcManagementView.vue'), meta: { navigationId: 'ac.optical', featureId: 'web.ac_optical', moduleId: 'ac', title: 'AC 管理 / 光衰', desktopOnly: false } },

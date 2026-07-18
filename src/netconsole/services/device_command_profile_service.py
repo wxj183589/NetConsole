@@ -8,12 +8,18 @@ from pathlib import Path
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
 from netconsole.models.device import Device
+from netconsole.models.device_detail import (
+    DeviceCapability,
+    DevicePlatformFacts,
+    identify_device_platform,
+)
 from netconsole.services import command_guard
 
 
 PROFILE_SCHEMA_VERSION = "2026.07.device-command-profiles.v1"
 PROFILE_FILENAME = "device_command_profiles.json"
 DEVICE_INVENTORY_OPERATION_ID = "device.inventory.collect"
+STABLE_DEVICE_OPERATION_IDS = frozenset({DEVICE_INVENTORY_OPERATION_ID})
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _STEP_SELECTOR_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
@@ -196,10 +202,20 @@ def resolve_device_inventory_profile(
     device: Device,
     *,
     software_version: str | None = None,
+    platform_facts: DevicePlatformFacts | None = None,
     paths: PathResolver | None = None,
 ) -> DeviceCommandProfile:
-    vendor = str(device.device_vendor or "").strip()
-    role = _device_role(device.device_type)
+    bound = getattr(device, "_submitted_device_inventory_profile", None)
+    if platform_facts is None and isinstance(bound, tuple) and len(bound) == 3:
+        platform_facts = bound[2]
+    facts = platform_facts or identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=software_version,
+    )
+    vendor = str(facts.vendor or "").strip()
+    role = str(facts.role or "").strip().casefold()
+    platform = str(facts.platform or "").strip().casefold()
     if vendor.casefold() != "h3c":
         raise DeviceCommandProfileNotFound(
             f"设备详情采集仅支持 H3C: vendor={vendor or 'unknown'}"
@@ -208,13 +224,103 @@ def resolve_device_inventory_profile(
         raise DeviceCommandProfileNotFound(
             f"设备详情采集仅支持交换机: role={role or 'unknown'}"
         )
-    return resolve_device_command_profile(
+    if platform != "comware":
+        raise DeviceCommandProfileNotFound(
+            "设备详情采集仅支持已识别的 Comware 平台: "
+            f"platform={platform or 'unknown'}"
+        )
+    profile = resolve_device_command_profile(
         operation_id=DEVICE_INVENTORY_OPERATION_ID,
-        vendor="H3C",
+        vendor=vendor,
         role=role,
-        platform="comware",
-        software_version=software_version,
+        platform=platform,
+        software_version=facts.software_version,
         paths=paths,
+    )
+    if isinstance(bound, tuple) and len(bound) == 3:
+        expected_id, expected_version, _facts = bound
+        if (
+            profile.profile_id != expected_id
+            or profile.profile_version != expected_version
+        ):
+            raise DeviceCommandProfileNotFound("提交时命令 Profile 与实际执行 Profile 不一致")
+    return profile
+
+
+def bind_submitted_device_inventory_profile(
+    device: Device,
+    profile: DeviceCommandProfile,
+    platform_facts: DevicePlatformFacts,
+) -> Device:
+    """为单次 Worker 内的既有采集器绑定提交时已验证 Profile。"""
+
+    setattr(
+        device,
+        "_submitted_device_inventory_profile",
+        (profile.profile_id, profile.profile_version, platform_facts),
+    )
+    return device
+
+
+def resolve_device_operation_profile(
+    device: Device,
+    operation_id: str,
+    *,
+    software_version: str | None = None,
+    platform_facts: DevicePlatformFacts | None = None,
+    paths: PathResolver | None = None,
+) -> DeviceCommandProfile:
+    normalized = _normalize_identifier(operation_id, "operation_id")
+    if normalized not in STABLE_DEVICE_OPERATION_IDS:
+        raise DeviceCommandProfileNotFound(
+            f"设备操作未注册稳定命令 Profile: operation={normalized}"
+        )
+    return resolve_device_inventory_profile(
+        device,
+        software_version=software_version,
+        platform_facts=platform_facts,
+        paths=paths,
+    )
+
+
+def device_operation_capability(
+    device: Device,
+    operation_id: str,
+    *,
+    software_version: str | None = None,
+    platform_facts: DevicePlatformFacts | None = None,
+    paths: PathResolver | None = None,
+) -> DeviceCapability:
+    try:
+        profile = resolve_device_operation_profile(
+            device,
+            operation_id,
+            software_version=software_version,
+            platform_facts=platform_facts,
+            paths=paths,
+        )
+    except DeviceCommandProfileError as exc:
+        return DeviceCapability(
+            capability_id=operation_id,
+            available=False,
+            executable=False,
+            source="device_command_profile",
+            reason=str(exc),
+        )
+    return DeviceCapability(
+        capability_id=operation_id,
+        available=True,
+        executable=True,
+        source="device_command_profile",
+        reason=(
+            "命令 Profile 已通过 fixture/Guard 校验；真实设备状态仍为 "
+            f"{profile.real_device_status}"
+        ),
+        profile_id=profile.profile_id,
+        profile_version=profile.profile_version,
+        compatibility=profile.compatibility,
+        risk=profile.risk,
+        real_device_status=profile.real_device_status,
     )
 
 

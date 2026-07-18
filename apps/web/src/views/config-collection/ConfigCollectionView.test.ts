@@ -162,6 +162,19 @@ describe('ConfigCollectionView mounted workflow', () => {
     Reflect.deleteProperty(window, 'netconsoleDesktop')
   })
 
+  it('将未知快照大小显示为缺失值', async () => {
+    api.listConfigSnapshots.mockImplementation((deviceId: number) => Promise.resolve(
+      deviceId === deviceA.id ? [{ ...snapshotA, size_bytes: null }] : [snapshotB],
+    ))
+
+    const wrapper = await mountView()
+    const snapshotTable = wrapper.findAllComponents(TableStub)[1]
+
+    expect(snapshotTable.text()).toContain('—')
+    expect(snapshotTable.text()).not.toContain('null B')
+    wrapper.unmount()
+  })
+
   it('drives collection, save force confirmation and deletion confirmation through mocked APIs', async () => {
     const wrapper = await mountView()
     const tables = wrapper.findAllComponents(TableStub)

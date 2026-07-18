@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from netconsole.application.ac.web_application_service import AcWebApplicationService
 from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
+from netconsole.application.device_detail import DeviceDetailApplicationService
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
 from netconsole.application.system_maintenance import SystemMaintenanceApplicationService
 from netconsole.application.web_artifacts import WebArtifactStore
@@ -40,6 +41,7 @@ from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
+from netconsole.repositories.device_detail_repository import DeviceDetailRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.query_service import AcManagementQueryService
@@ -47,6 +49,8 @@ from netconsole.services.agent.controller import AgentControllerError, AgentCont
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
 from netconsole.services.device_management_web_service import DeviceManagementWebService
+from netconsole.services.device_detail_query_service import DeviceDetailQueryService
+from netconsole.services.device_operation_service import DeviceOperationService
 from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
@@ -216,17 +220,40 @@ def create_app(
         artifact_store=web_artifact_store,
         desktop_action_service=desktop_action_service,
     )
+    ac_management_query_service = AcManagementQueryService(paths)
+    online_mr_query_service = OnlineMrQueryService(paths)
+    device_detail_gateway = DeviceDetailRepository(paths)
+    device_operation_service = DeviceOperationService(
+        paths,
+        device_detail_gateway,
+        task_service,
+        web_process_adapter,
+    )
     device_management_service = DeviceManagementWebService(
         paths,
         task_service,
         desktop_action_service=desktop_action_service,
         process_adapter=web_process_adapter,
+        device_operation_service=device_operation_service,
     )
     config_collection_service = ConfigCollectionApplicationService(
         paths,
         task_service,
         process_adapter=web_process_adapter,
         desktop_action_service=desktop_action_service,
+    )
+    trackside_ap_business_query_service = TracksideApBusinessQueryService(paths)
+    device_detail_application_service = DeviceDetailApplicationService(
+        DeviceDetailQueryService(
+            device_detail_gateway,
+            task_service,
+            device_operation_service,
+            config_reader=config_collection_service,
+            business_reader=trackside_ap_business_query_service,
+            ac_business_reader=ac_management_query_service,
+            online_mr_reader=online_mr_query_service,
+        ),
+        device_operation_service,
     )
     file_management_service = FileManagementApplicationService(
         paths,
@@ -375,7 +402,7 @@ def create_app(
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
     app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
-    app.state.ac_management_query_service = AcManagementQueryService(paths)
+    app.state.ac_management_query_service = ac_management_query_service
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
     app.state.ac_mesh_link_refresh_service = ac_mesh_link_refresh_service
     app.state.job_center_query_service = JobCenterQueryService(
@@ -390,6 +417,7 @@ def create_app(
     )
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_management_service = device_management_service
+    app.state.device_detail_application_service = device_detail_application_service
     app.state.config_collection_service = config_collection_service
     app.state.command_reference_application_service = CommandReferenceApplicationService(
         paths,
@@ -399,7 +427,7 @@ def create_app(
     )
     app.state.file_management_service = file_management_service
     app.state.system_maintenance_service = system_maintenance_service
-    app.state.online_mr_query_service = OnlineMrQueryService(paths)
+    app.state.online_mr_query_service = online_mr_query_service
     app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
     app.state.online_mr_application_service = online_mr_application_service
     app.state.online_mr_web_control_service = online_mr_web_control_service or OnlineMrWebControlService(
@@ -433,7 +461,7 @@ def create_app(
         online_mr_query=app.state.online_mr_query_service,
         job_query=app.state.job_center_query_service,
     )
-    app.state.trackside_ap_business_query_service = TracksideApBusinessQueryService(paths)
+    app.state.trackside_ap_business_query_service = trackside_ap_business_query_service
     app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(paths)
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,

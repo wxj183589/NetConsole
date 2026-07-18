@@ -31,7 +31,7 @@ export interface ConfigSnapshot {
   device_uuid: string
   timestamp: string
   type: ConfigSnapshotType
-  size_bytes: number
+  size_bytes: number | null
   artifact_id: string
   filename: string
   hash: string

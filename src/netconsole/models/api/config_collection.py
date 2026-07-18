@@ -38,7 +38,7 @@ class ConfigSnapshotDTO(ApiModel):
     device_uuid: str
     timestamp: str
     type: str
-    size_bytes: int = 0
+    size_bytes: int | None = None
     artifact_id: str
     filename: str
     hash: str = ""

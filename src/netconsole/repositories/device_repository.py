@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import datetime
+from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.models.device import Device
@@ -13,6 +16,21 @@ SEARCH_COLUMNS = ("d.name", "d.system_name", "d.primary_address", "d.backup_addr
 class DeviceRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    def backup_to(self, target: Path) -> None:
+        """Create and validate a consistent SQLite backup at *target*."""
+
+        source_path = self.database.path.resolve()
+        if not source_path.is_file():
+            raise FileNotFoundError("设备数据库不存在")
+        target = Path(target).resolve()
+        with closing(self.database.connect()) as source, closing(
+            Database(target).connect()
+        ) as destination:
+            source.backup(destination)
+            integrity = destination.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or str(integrity[0]).casefold() != "ok":
+                raise sqlite3.DatabaseError("设备数据库备份完整性校验失败")
 
     def create(self, device: Device) -> Device:
         now = datetime.now().isoformat(timespec="seconds")

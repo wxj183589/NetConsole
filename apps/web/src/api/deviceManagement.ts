@@ -4,6 +4,13 @@ import type {
   DeviceConnectionTest,
   DeviceDeleteToken,
   DeviceDetailResponse,
+  DeviceDetailHistoryPage,
+  DeviceEditProfileResponse,
+  DeviceDetailRefreshTask,
+  DeviceDetailSectionResponse,
+  DeviceInterfaceDetailResponse,
+  DeviceDetailSection,
+  DeviceDetailSectionQuery,
   DeviceExportRequest,
   DeviceExternalTerminalAction,
   DeviceExternalTerminalBatch,
@@ -13,6 +20,7 @@ import type {
   DeviceGroup,
   DeviceImportPreview,
   DeviceHistoryPage,
+  DeviceOverviewResponse,
   DeviceListQuery,
   DeviceOmniPeekPreview,
   DevicePage,
@@ -37,6 +45,79 @@ export function listDevices(query: DeviceListQuery = {}): Promise<DevicePage> {
 
 export function getDevice(deviceUuid: string): Promise<DeviceDetailResponse> {
   return apiRequest<DeviceDetailResponse>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}`)
+}
+
+export function getDeviceEditProfile(deviceUuid: string, signal?: AbortSignal): Promise<DeviceEditProfileResponse> {
+  return apiRequest<DeviceEditProfileResponse>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/edit-profile`,
+    signal ? { signal } : undefined,
+  )
+}
+
+export function getDeviceOverview(deviceUuid: string, signal?: AbortSignal): Promise<DeviceOverviewResponse> {
+  return apiRequest<DeviceOverviewResponse>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/overview`, signal ? { signal } : undefined)
+}
+
+export function getDeviceDetailSection(
+  deviceUuid: string,
+  section: Exclude<DeviceDetailSection, 'overview'>,
+  query: DeviceDetailSectionQuery = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<DeviceDetailSectionResponse> {
+  const paths: Record<Exclude<DeviceDetailSection, 'overview'>, string> = {
+    interfaces: 'interfaces',
+    optical: 'transceivers',
+    lldp: 'lldp',
+    configuration: 'config-snapshots',
+    tasks: 'tasks',
+    business: 'business-associations',
+  }
+  const params = new URLSearchParams()
+  const values: DeviceDetailSectionQuery = { ...query }
+  if (section === 'optical' && values.status) {
+    values.severity = values.status
+    delete values.status
+  }
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+  })
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return apiRequest<DeviceDetailSectionResponse>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/${paths[section]}${suffix}`,
+    options.signal ? { signal: options.signal } : undefined,
+  )
+}
+
+export function getDeviceInterfaceDetail(deviceUuid: string, interfaceName: string, signal?: AbortSignal): Promise<DeviceInterfaceDetailResponse> {
+  return apiRequest<DeviceInterfaceDetailResponse>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/interfaces/${encodeURIComponent(interfaceName)}`,
+    signal ? { signal } : undefined,
+  )
+}
+
+export function refreshDeviceDetails(deviceUuid: string, idempotencyKey?: string): Promise<DeviceDetailRefreshTask> {
+  return apiRequest<DeviceDetailRefreshTask>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/refresh`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ operation_id: 'device.inventory.collect', ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}) }),
+    },
+  )
+}
+
+export function getDeviceDetailHistory(
+  deviceUuid: string,
+  kind: 'interface' | 'optical' | 'lldp',
+  objectName: string,
+  page = 1,
+  pageSize = 50,
+  signal?: AbortSignal,
+): Promise<DeviceDetailHistoryPage> {
+  const params = new URLSearchParams({ kind, object_name: objectName, page: String(page), page_size: String(pageSize) })
+  return apiRequest<DeviceDetailHistoryPage>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/history?${params}`,
+    signal ? { signal } : undefined,
+  )
 }
 
 export function startDeviceConnectionTest(deviceUuid: string, protocol: DeviceConnectionProtocol): Promise<DeviceConnectionTest> {

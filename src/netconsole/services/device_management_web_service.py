@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import closing
 import hashlib
 import json
 import math
 import os
 import secrets
 import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 import uuid
 from threading import RLock
 
@@ -26,7 +23,6 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
-from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.device_management import (
     DeviceCapabilityDTO,
@@ -35,6 +31,7 @@ from netconsole.models.api.device_management import (
     DeviceConnectionCommandDTO,
     DeviceConnectionTestDTO,
     DeviceDetailDTO,
+    DeviceEditProfileDTO,
     DeviceDetailItemDTO,
     DeviceBatchRefreshRequestDTO,
     DeviceDeleteDTO,
@@ -56,7 +53,6 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupRequestDTO,
-    DeviceHistoryPageDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportPreviewDTO,
     DeviceOmniPeekExportRequestDTO,
@@ -73,7 +69,13 @@ from netconsole.models.api.device_management import (
     DevicePageDTO,
     DeviceTaskSummaryDTO,
 )
+from netconsole.models.api.device_detail import (
+    DeviceDetailSourceDTO,
+    DeviceHistoryPageDTO,
+    DeviceHistoryRecordDTO,
+)
 from netconsole.models.device import DEVICE_TYPES, DEVICE_VENDORS, Device
+from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -178,6 +180,16 @@ SORT_FIELDS = {
 }
 
 
+class DeviceInventoryOperationService(Protocol):
+    def start_many(
+        self,
+        device_uuids: list[str],
+        operation_id: str,
+        *,
+        idempotency_key: str,
+    ) -> list[DeviceOperationTask]: ...
+
+
 class DeviceManagementWebService:
     def __init__(
         self,
@@ -187,12 +199,14 @@ class DeviceManagementWebService:
         desktop_action_service: DesktopActionService,
         site_name: str | None = None,
         process_adapter: LocalProcessAdapter | None = None,
+        device_operation_service: DeviceInventoryOperationService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
         self.desktop_action_service = desktop_action_service
         self.site_name = site_name
         self.process_adapter = process_adapter or LocalProcessAdapter(task_service)
+        self.device_operation_service = device_operation_service
         self._start_lock = RLock()
         self._mutation_lock = RLock()
         self._delete_tokens: dict[str, dict[str, object]] = {}
@@ -265,6 +279,7 @@ class DeviceManagementWebService:
         )
 
     def get_device_detail(self, device_uuid: str) -> DeviceDetailDTO:
+        """旧详情兼容路径；新抽屉/详情页不得调用此全量聚合。"""
         site = self.current_site_id()
         device_repository, group_repository, fact_repository = self._repositories(site)
         device = self._require_device(device_repository, device_uuid)
@@ -291,37 +306,8 @@ class DeviceManagementWebService:
             optical_modules,
             lldp_neighbors,
         )
-        https_port, _https_port_source = effective_https_port(device.https_port)
         return DeviceDetailDTO(
-            device=DeviceDetailItemDTO(
-                **list_item.model_dump(),
-                location=str(device.location or ""),
-                mac_address=str(device.mac_address or ""),
-                https_port=int(device.https_port) if device.https_port else None,
-                web_url=build_https_url(device.primary_address, https_port) or "",
-                ssh_username=str(device.ssh_username or ""),
-                telnet_username=str(device.telnet_username or ""),
-                tunnel_enabled=bool(device.tunnel_enabled),
-                tunnel1_enabled=bool(device.tunnel1_enabled),
-                tunnel1_host=str(device.tunnel1_host or ""),
-                tunnel1_port=int(device.tunnel1_port) if device.tunnel1_port else None,
-                tunnel1_username=str(device.tunnel1_username or ""),
-                tunnel2_enabled=bool(device.tunnel2_enabled),
-                tunnel2_host=str(device.tunnel2_host or ""),
-                tunnel2_port=int(device.tunnel2_port) if device.tunnel2_port else None,
-                tunnel2_username=str(device.tunnel2_username or ""),
-                snmp_v1_enabled=bool(device.snmp_v1_enabled),
-                snmp_v2c_enabled=bool(device.snmp_v2c_enabled),
-                snmp_timeout_ms=int(device.snmp_timeout_ms or 2000),
-                snmp_retries=int(device.snmp_retries) if device.snmp_retries is not None else 1,
-                ssh_secret_configured=bool(device.ssh_password),
-                telnet_secret_configured=bool(device.telnet_password),
-                tunnel1_secret_configured=bool(device.tunnel1_password),
-                tunnel2_secret_configured=bool(device.tunnel2_password),
-                snmp_ro_secret_configured=bool(device.snmp_ro_community),
-                remark=str(device.remark or ""),
-                created_at=str(device.created_at or ""),
-            ),
+            device=self._detail_item(device, list_item),
             fact=self._fact_summary(fact),
             recent_tasks=task_summaries,
             recent_collection=collection_summary,
@@ -331,6 +317,43 @@ class DeviceManagementWebService:
             optical_modules=optical_modules,
             lldp_neighbors=lldp_neighbors,
             trackside_ap_business=trackside_ap_business,
+        )
+
+    def get_device_edit_profile(self, device_uuid: str) -> DeviceEditProfileDTO:
+        site = self.current_site_id()
+        devices, groups, _facts = self._repositories(site)
+        device = self._require_device(devices, device_uuid)
+        latest_test = next(
+            iter(
+                self.task_service.repository(site).list_filtered(
+                    task_types={DEVICE_CONNECTION_TEST_TASK_TYPE},
+                    device=str(device.device_uuid or ""),
+                    limit=1,
+                )
+            ),
+            None,
+        )
+        group_names: dict[int, str] = {}
+        if device.group_id is not None:
+            try:
+                group_names[int(device.group_id)] = groups.get(
+                    int(device.group_id)
+                ).name
+            except KeyError:
+                pass
+        detail = self._detail_item(
+            device, self._list_item(device, group_names, latest_test)
+        )
+        return DeviceEditProfileDTO(
+            **detail.model_dump(),
+            protocol=str(device.protocol or "").strip() or None,
+            port=int(device.port) if device.port is not None else None,
+            ssh_enabled=bool(device.ssh_enabled),
+            ssh_port=int(device.ssh_port or 22),
+            telnet_enabled=bool(device.telnet_enabled),
+            telnet_port=int(device.telnet_port or 23),
+            snmp_enabled=bool(device.snmp_enabled),
+            snmp_port=int(device.snmp_port or 161),
         )
 
     def get_device_history(
@@ -346,26 +369,74 @@ class DeviceManagementWebService:
         self._require_device(devices, device_uuid)
         normalized_kind = str(kind or "").strip().lower()
         name = str(object_name or "").strip()
-        if normalized_kind == "interface":
-            items = facts.list_interface_history(device_uuid, name)
-        elif normalized_kind == "optical":
-            items = facts.list_optical_history(device_uuid, name)
-        elif normalized_kind == "lldp":
-            items = facts.list_lldp_history(device_uuid, name)
-        else:
+        if normalized_kind not in {"interface", "optical", "lldp"}:
             raise ValueError("不支持的设备历史类型")
-        total = len(items)
-        total_pages = max(1, math.ceil(total / page_size))
+        size = max(1, min(int(page_size), 200))
+        total = facts.count_object_history(normalized_kind, device_uuid, name)
+        total_pages = max(1, math.ceil(total / size))
         selected_page = min(max(1, page), total_pages)
-        start = (selected_page - 1) * page_size
+        rows = facts.list_object_history_page(
+            normalized_kind,
+            device_uuid,
+            name,
+            limit=size,
+            offset=(selected_page - 1) * size,
+        )
+        fields = {
+            "interface": (
+                "link_status",
+                "protocol_status",
+                "speed",
+                "duplex",
+                "interface_type",
+                "port_status",
+                "pvid",
+                "description",
+                "ip_address",
+                "mac_address",
+                "vlan",
+            ),
+            "optical": (
+                "rx_power",
+                "tx_power",
+                "temperature",
+                "voltage",
+                "bias_current",
+                "module_model",
+                "module_serial_number",
+                "module_vendor",
+                "rx_low_alarm",
+                "rx_high_alarm",
+                "rx_low_warning",
+                "rx_high_warning",
+            ),
+            "lldp": (
+                "neighbor_sysname",
+                "neighbor_mac",
+                "neighbor_interface",
+                "neighbor_ip",
+                "neighbor_device_uuid",
+            ),
+        }[normalized_kind]
+        items = [
+            DeviceHistoryRecordDTO(
+                kind=normalized_kind,
+                object_name=name,
+                collected_at=str(row.get("collected_at") or "") or None,
+                values={field: row.get(field) for field in fields},
+            )
+            for row in rows
+        ]
         return DeviceHistoryPageDTO(
-            kind=normalized_kind,
-            object_name=name,
-            items=items[start : start + page_size],
+            items=items,
             total=total,
             page=selected_page,
-            page_size=page_size,
+            page_size=size,
             total_pages=total_pages,
+            source=DeviceDetailSourceDTO(
+                source="device_management_web_service",
+                collected_at=items[0].collected_at if items else None,
+            ),
         )
 
     def list_groups(self) -> list[DeviceGroupDTO]:
@@ -382,7 +453,10 @@ class DeviceManagementWebService:
         device_repository, group_repository, _facts = self._repositories(site)
         device = self._device_from_write(payload, None, group_repository)
         created = device_repository.create(device)
-        return DeviceWriteDTO(action="created", device=self.get_device_detail(str(created.device_uuid)).device)
+        return DeviceWriteDTO(
+            action="created",
+            device=self._write_result_item(created, group_repository),
+        )
 
     def update_device(self, device_uuid: str, payload: DeviceWriteRequestDTO) -> DeviceWriteDTO:
         site = self.current_site_id()
@@ -390,18 +464,23 @@ class DeviceManagementWebService:
         existing = self._require_device(device_repository, device_uuid)
         updated = self._device_from_write(payload, existing, group_repository)
         saved = device_repository.update(updated)
-        return DeviceWriteDTO(action="updated", device=self.get_device_detail(str(saved.device_uuid)).device)
+        return DeviceWriteDTO(
+            action="updated", device=self._write_result_item(saved, group_repository)
+        )
 
     def duplicate_device(self, device_uuid: str) -> DeviceWriteDTO:
         site = self.current_site_id()
-        device_repository, _group_repository, _facts = self._repositories(site)
+        device_repository, group_repository, _facts = self._repositories(site)
         source = self._require_device(device_repository, device_uuid)
         record = source.to_record()
         record.update({"id": None, "device_uuid": None, "created_at": None, "updated_at": None})
         if str(record.get("name") or "").strip():
             record["name"] = f"{str(record['name']).strip()}-副本"
         created = device_repository.create(Device.from_mapping(record))
-        return DeviceWriteDTO(action="duplicated", device=self.get_device_detail(str(created.device_uuid)).device)
+        return DeviceWriteDTO(
+            action="duplicated",
+            device=self._write_result_item(created, group_repository),
+        )
 
     def issue_delete_token(self, payload: DeviceDeletionTokenRequestDTO) -> DeviceDeletionTokenDTO:
         site = self.current_site_id()
@@ -456,56 +535,24 @@ class DeviceManagementWebService:
         return DeviceGroupAssignmentDTO(success=result.success, failed=result.failed, group_id=payload.group_id)
 
     def start_batch_refresh(self, payload: DeviceBatchRefreshRequestDTO) -> DeviceTaskBatchDTO:
-        site = self.current_site_id()
-        devices, _groups, _facts = self._repositories(site)
-        device_uuids = self._unique_ids(payload.device_uuids)
-        for device_uuid in device_uuids:
-            self._require_device(devices, device_uuid)
-        requested = set(device_uuids)
-        with self._start_lock:
-            active = next(
-                (
-                    task
-                    for task in self.task_service.repository(site).list(
-                        statuses=ACTIVE_TASK_STATES, limit=1000
-                    )
-                    if self._is_owned_web_task(
-                        task,
-                        site,
-                        frozenset(
-                            {
-                                DEVICE_COLLECT_TASK_TYPE,
-                                DEVICE_OPTICAL_REFRESH_TASK_TYPE,
-                            }
-                        ),
-                    )
-                    and requested.intersection(
-                        item.strip() for item in str(task.device or "").split(",")
-                    )
-                ),
-                None,
+        if self.device_operation_service is None:
+            raise RuntimeError("DeviceOperationService 未接线")
+        operation_id = "device.inventory.collect"
+        batch_key = f"legacy-batch-{uuid.uuid4().hex}"
+        tasks = self.device_operation_service.start_many(
+            self._unique_ids(payload.device_uuids),
+            operation_id,
+            idempotency_key=batch_key,
+        )
+        references = [
+            DeviceTaskReferenceDTO(
+                task_id=task.task_id,
+                task_status=task.status,
+                action=task.operation_id,
+                message=task.message or "",
             )
-            if active is not None:
-                raise ValueError("所选设备已有详情采集任务正在运行")
-            task_id = f"device-detail-{uuid.uuid4().hex}"
-            job = BackgroundJob(
-                job_id=task_id,
-                task_type=DEVICE_COLLECT_TASK_TYPE,
-                params={
-                    "site_name": site,
-                    "device_uuids": device_uuids,
-                    "task_name": f"设备详情批量采集 · {len(device_uuids)} 台",
-                    "owner": WEB_TASK_OWNER,
-                    "task_source": "local",
-                    "device": ",".join(device_uuids),
-                    "app_root": str(self.paths.app_root),
-                    "data_root": str(self.paths.data_root),
-                    "_cancel_grace_ms": 2000,
-                },
-            )
-            self.process_adapter.start_job(job)
-            snapshot = self.task_service.repository(site).get(task_id)
-        references = [] if snapshot is None else [self._task_reference(snapshot)]
+            for task in tasks
+        ]
         return DeviceTaskBatchDTO(action="batch_refresh_details", tasks=references)
 
     def start_batch_connection_tests(
@@ -545,60 +592,11 @@ class DeviceManagementWebService:
         return DeviceTaskBatchDTO(action="batch_connection_test", tasks=references)
 
     def start_optical_refresh(self, device_uuid: str) -> DeviceTaskReferenceDTO:
-        site = self.current_site_id()
-        devices, _groups, _facts = self._repositories(site)
-        device = self._require_device(devices, device_uuid)
-        with self._start_lock:
-            active = next(
-                (
-                    task
-                    for task in self.task_service.repository(site).list(
-                        statuses=ACTIVE_TASK_STATES, limit=1000
-                    )
-                    if self._is_owned_web_task(
-                        task,
-                        site,
-                        frozenset(
-                            {
-                                DEVICE_COLLECT_TASK_TYPE,
-                                DEVICE_OPTICAL_REFRESH_TASK_TYPE,
-                            }
-                        ),
-                    )
-                    and device_uuid
-                    in {
-                        item.strip()
-                        for item in str(task.device or "").split(",")
-                        if item.strip()
-                    }
-                ),
-                None,
-            )
-            if active is not None:
-                if active.task_type == DEVICE_OPTICAL_REFRESH_TASK_TYPE:
-                    return self._task_reference(active)
-                raise ValueError("该设备已有详情采集任务正在运行")
-            task_id = f"device-optical-{uuid.uuid4().hex}"
-            job = BackgroundJob(
-                job_id=task_id,
-                task_type=DEVICE_OPTICAL_REFRESH_TASK_TYPE,
-                params={
-                    "site_name": site,
-                    "device_uuid": device_uuid,
-                    "task_name": f"设备光模块刷新 · {device.name}",
-                    "owner": WEB_TASK_OWNER,
-                    "task_source": "local",
-                    "device": device_uuid,
-                    "app_root": str(self.paths.app_root),
-                    "data_root": str(self.paths.data_root),
-                    "_cancel_grace_ms": 2000,
-                },
-            )
-            self.process_adapter.start_job(job)
-            snapshot = self.task_service.repository(site).get(task_id)
-            if snapshot is None:
-                raise RuntimeError("设备光模块刷新任务创建后未写入任务中心")
-            return self._task_reference(snapshot)
+        devices, _groups, _facts = self._repositories(self.current_site_id())
+        self._require_device(devices, device_uuid)
+        raise ValueError(
+            "未注册独立光模块刷新 Operation；请使用 device.inventory.collect"
+        )
 
     def preview_import(self, filename: str, stream: BinaryIO) -> DeviceImportPreviewDTO:
         site = self.current_site_id()
@@ -1759,19 +1757,11 @@ class DeviceManagementWebService:
 
     def _backup_device_database(self, site: str) -> Path:
         source_path = self.paths.site_db_path(site).resolve()
-        if not source_path.is_file():
-            raise FileNotFoundError("设备数据库不存在")
         target = self.paths.site_backups_dir(site) / f"device-import-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite"
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with closing(connect_sqlite(source_path)) as source, closing(
-                connect_sqlite(temporary)
-            ) as destination:
-                source.backup(destination)
-                integrity = destination.execute("PRAGMA integrity_check").fetchone()
-                if not integrity or str(integrity[0]).casefold() != "ok":
-                    raise sqlite3.DatabaseError("设备数据库备份完整性校验失败")
+            DeviceRepository(Database(source_path)).backup_to(temporary)
             os.replace(temporary, target)
         except Exception:
             temporary.unlink(missing_ok=True)
@@ -2557,6 +2547,59 @@ class DeviceManagementWebService:
             last_test_time=latest_test.updated_time if latest_test else "",
         )
 
+    def _write_result_item(
+        self, device: Device, groups: DeviceGroupRepository
+    ) -> DeviceDetailItemDTO:
+        group_names: dict[int, str] = {}
+        if device.group_id is not None:
+            try:
+                group = groups.get(int(device.group_id))
+                group_names[int(device.group_id)] = group.name
+            except KeyError:
+                pass
+        return self._detail_item(
+            device, self._list_item(device, group_names, latest_test=None)
+        )
+
+    @staticmethod
+    def _detail_item(
+        device: Device, list_item: DeviceListItemDTO
+    ) -> DeviceDetailItemDTO:
+        https_port, _https_port_source = effective_https_port(device.https_port)
+        return DeviceDetailItemDTO(
+            **list_item.model_dump(),
+            location=str(device.location or ""),
+            mac_address=str(device.mac_address or ""),
+            https_port=int(device.https_port) if device.https_port else None,
+            web_url=build_https_url(device.primary_address, https_port) or "",
+            ssh_username=str(device.ssh_username or ""),
+            telnet_username=str(device.telnet_username or ""),
+            tunnel_enabled=bool(device.tunnel_enabled),
+            tunnel1_enabled=bool(device.tunnel1_enabled),
+            tunnel1_host=str(device.tunnel1_host or ""),
+            tunnel1_port=int(device.tunnel1_port) if device.tunnel1_port else None,
+            tunnel1_username=str(device.tunnel1_username or ""),
+            tunnel2_enabled=bool(device.tunnel2_enabled),
+            tunnel2_host=str(device.tunnel2_host or ""),
+            tunnel2_port=int(device.tunnel2_port) if device.tunnel2_port else None,
+            tunnel2_username=str(device.tunnel2_username or ""),
+            snmp_v1_enabled=bool(device.snmp_v1_enabled),
+            snmp_v2c_enabled=bool(device.snmp_v2c_enabled),
+            snmp_timeout_ms=int(device.snmp_timeout_ms or 2000),
+            snmp_retries=(
+                int(device.snmp_retries)
+                if device.snmp_retries is not None
+                else 1
+            ),
+            ssh_secret_configured=bool(device.ssh_password),
+            telnet_secret_configured=bool(device.telnet_password),
+            tunnel1_secret_configured=bool(device.tunnel1_password),
+            tunnel2_secret_configured=bool(device.tunnel2_password),
+            snmp_ro_secret_configured=bool(device.snmp_ro_community),
+            remark=str(device.remark or ""),
+            created_at=str(device.created_at or ""),
+        )
+
     @staticmethod
     def _connection_status(task: TaskSnapshot | None) -> str:
         if task is None:
@@ -2917,68 +2960,11 @@ def run_device_csv_import(context: JobContext) -> dict[str, object]:
 
 
 def run_device_detail_collect(context: JobContext) -> dict[str, object]:
-    from netconsole.services.h3c_collect_service import collect_h3c_device_details
-
-    site = SiteManager(context.paths).validate_site_name(
-        str(context.params.get("site_name") or "")
+    from netconsole.services.device_operation_service import (
+        run_device_inventory_refresh,
     )
-    values = DeviceManagementWebService._unique_ids(
-        list(context.params.get("device_uuids") or [])
-    )
-    database = Database(context.paths.site_db_path(site))
-    devices = DeviceRepository(database)
-    facts = DeviceFactRepository(database)
-    selected = [
-        DeviceManagementWebService._require_device(devices, value) for value in values
-    ]
-    results: list[dict[str, object]] = []
-    context.progress("device_detail_collect", 0, len(selected), "正在采集设备详情")
 
-    def collect(device: Device):
-        context.check_cancelled()
-        return collect_h3c_device_details(
-            device, site, repository=facts, paths=context.paths
-        )
-
-    worker_count = max(1, min(20, len(selected)))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {executor.submit(collect, device): device for device in selected}
-        for index, future in enumerate(as_completed(futures), start=1):
-            context.check_cancelled()
-            device = futures[future]
-            try:
-                result = future.result()
-                item = {
-                    "device_uuid": str(device.device_uuid or ""),
-                    "success": bool(result.success),
-                    "collect_run_uuid": result.collect_run_uuid,
-                    "facts_updated": bool(result.facts_updated),
-                    "interfaces_updated": int(result.interfaces_updated),
-                    "optical_modules_updated": int(result.optical_modules_updated),
-                    "lldp_neighbors_updated": int(result.lldp_neighbors_updated),
-                    "error_message": sanitize_sensitive_text(
-                        result.error_message or "", device
-                    ),
-                }
-            except Exception as exc:
-                item = {
-                    "device_uuid": str(device.device_uuid or ""),
-                    "success": False,
-                    "error_message": sanitize_sensitive_text(str(exc), device),
-                }
-            results.append(item)
-            context.progress(
-                "device_detail_collect",
-                index,
-                len(selected),
-                f"设备详情采集 {index}/{len(selected)}",
-            )
-    return {
-        "total": len(results),
-        "success": sum(1 for item in results if item["success"]),
-        "failed": sum(1 for item in results if not item["success"]),
-        "results": results,
-    }
+    return run_device_inventory_refresh(context)
 
 
 def run_device_optical_refresh(context: JobContext) -> dict[str, object]:

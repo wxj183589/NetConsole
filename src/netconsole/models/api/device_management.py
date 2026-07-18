@@ -134,6 +134,19 @@ class DeviceDetailItemDTO(DeviceListItemDTO):
     created_at: str = ""
 
 
+class DeviceEditProfileDTO(DeviceDetailItemDTO):
+    """设备编辑所需的非敏感事实；秘密只返回是否已配置。"""
+
+    protocol: str | None = None
+    port: int | None = None
+    ssh_enabled: bool = False
+    ssh_port: int = 22
+    telnet_enabled: bool = False
+    telnet_port: int = 23
+    snmp_enabled: bool = False
+    snmp_port: int = 161
+
+
 class DeviceDetailDTO(ApiModel):
     device: DeviceDetailItemDTO
     fact: DeviceFactDTO | None = None
@@ -266,16 +279,6 @@ class DeviceBatchRefreshRequestDTO(ApiModel):
 
 class DeviceBatchConnectionRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=200)
-
-
-class DeviceHistoryPageDTO(ApiModel):
-    kind: Literal["interface", "optical", "lldp"]
-    object_name: str
-    items: list[dict[str, object | None]] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    total_pages: int = 1
 
 
 class DeviceImportPreviewRequestDTO(ApiModel):

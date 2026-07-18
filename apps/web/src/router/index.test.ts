@@ -29,6 +29,13 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
   })
 
+  it('registers the standalone device detail route with list navigation context', () => {
+    const route = routes.find((item) => item.name === 'device-detail')
+    expect(route?.path).toBe('devices/:deviceId')
+    expect(route?.meta?.navigationId).toBe('devices')
+    expect(route?.meta?.hiddenRoute).toBe(true)
+  })
+
   it('does not register excluded or unfinished routes', () => {
     const paths = routes.map((route) => `/${route.path}`)
     expect(paths.some((path) => /snmp|wifi-survey/.test(path))).toBe(false)

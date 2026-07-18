@@ -37,6 +37,26 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.list() == []
 
 
+def test_device_repository_backup_is_consistent(tmp_path):
+    repository = make_repository(tmp_path)
+    created = repository.create(
+        Device(name="Core-SW", primary_address="10.0.0.1")
+    )
+    backup_path = tmp_path / "backups" / "devices.sqlite"
+    backup_path.parent.mkdir()
+
+    repository.backup_to(backup_path)
+
+    backup = DeviceRepository(Database(backup_path))
+    restored = backup.get_by_uuid(str(created.device_uuid))
+    assert restored is not None
+    assert restored.name == "Core-SW"
+    with Database(backup_path).connect() as connection:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+    assert integrity is not None
+    assert str(integrity[0]).casefold() == "ok"
+
+
 def test_delete_many_by_uuid_is_all_or_nothing(tmp_path):
     repository = make_repository(tmp_path)
     first = repository.create(Device(name="SW1", primary_address="10.0.0.1"))

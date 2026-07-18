@@ -5,10 +5,10 @@ from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.device_management_web_service import (
     run_device_connection_test,
     run_device_csv_import,
-    run_device_detail_collect,
     run_device_diagnostic_download,
     run_device_optical_refresh,
 )
+from netconsole.services.device_operation_service import run_device_inventory_refresh
 
 device_csv_import = run_device_csv_import
 device_list_page = legacy_handler(legacy_tasks._device_list_page)
@@ -39,7 +39,7 @@ HANDLERS = {
     "device_group_count_devices": device_group_count_devices,
     "device_group_delete": device_group_delete,
     "device_connection_test": run_device_connection_test,
-    "device_detail_collect": run_device_detail_collect,
+    "device_detail_collect": run_device_inventory_refresh,
     "device_optical_refresh": run_device_optical_refresh,
     "device_diagnostic_download": run_device_diagnostic_download,
 }
