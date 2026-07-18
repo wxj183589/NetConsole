@@ -11,6 +11,8 @@ import {
   startTracksideApUpdate,
   tracksideApBusinessDownloadRequest,
 } from '../../api/tracksideApBusiness'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { downloadBackendResource } from '../../platform/runtime'
 import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask } from '../../types/tracksideApBusiness'
@@ -31,7 +33,32 @@ const filters = reactive({ station: '', query: '', optical_anomaly_only: false, 
 let pollTimer: number | undefined
 let loadGeneration = 0
 
-const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+interface TaskResultRow { name: string; value: string }
+
+const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
+  { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
+  { key: 'device_name', label: '车站交换机', valueType: 'name', fixed: 'left' },
+  { key: 'interface_name', label: '接口', valueType: 'port', displayValue: (row) => displayTracksideValue(displayInterfaceName(row.interface_name)) },
+  { key: 'link_status', label: '链路', valueType: 'status' },
+  { key: 'port_type', label: '端口类型', valueType: 'status' },
+  { key: 'description', label: '描述', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+  { key: 'pvid', label: 'PVID', valueType: 'number', displayValue: (row) => displayTracksideValue(row.pvid) },
+  { key: 'vlan', label: 'VLAN', displayValue: (row) => displayTracksideValue(row.vlan) },
+  { key: 'switch_rx_power', label: '交换机 Rx', valueType: 'number' },
+  { key: 'switch_optical_status', label: '交换机光衰', valueType: 'status', cellKind: 'tag' },
+  { key: 'ap_mac', label: 'AP MAC', valueType: 'mac' },
+  { key: 'ap_name', label: '当前轨旁 AP', valueType: 'name' },
+  { key: 'ap_rx_power', label: 'AP Rx', valueType: 'number' },
+  { key: 'ap_optical_status', label: 'AP 光衰', valueType: 'status', cellKind: 'tag' },
+  { key: 'optical_severity', label: '综合', valueType: 'status', cellKind: 'tag' },
+  { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
+]
+const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
+  { key: 'name', label: '结果项', valueType: 'name' },
+  { key: 'value', label: '值', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
+const taskRows = computed<TaskResultRow[]>(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 const exportArtifactAvailable = computed(() => (
   task.value?.status === 'COMPLETED'
@@ -152,38 +179,28 @@ onBeforeUnmount(stopPolling)
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
       </div>
-      <el-table
+      <NcDataTable
         v-loading="initialLoading"
+        table-id="trackside-ap-business"
+        route-key="/rail-transit/trackside-ap-business"
         :data="page?.items || []"
-        table-layout="auto"
-        stripe
+        :columns="businessColumns"
         height="calc(100vh - 470px)"
         :empty-text="page?.empty_reason || '暂无轨旁 AP 业务数据'"
       >
-        <el-table-column prop="site" label="站点" min-width="120" fixed="left" />
-        <el-table-column prop="device_name" label="车站交换机" min-width="150" fixed="left" />
-        <el-table-column prop="interface_name" label="接口" min-width="110"><template #default="{ row }">{{ displayTracksideValue(displayInterfaceName(row.interface_name)) }}</template></el-table-column>
-        <el-table-column prop="link_status" label="链路" min-width="85" />
-        <el-table-column prop="port_type" label="端口类型" min-width="105" />
-        <el-table-column prop="description" label="描述" min-width="150" show-overflow-tooltip />
-        <el-table-column prop="pvid" label="PVID" min-width="70"><template #default="{ row }">{{ displayTracksideValue(row.pvid) }}</template></el-table-column>
-        <el-table-column prop="vlan" label="VLAN" min-width="90"><template #default="{ row }">{{ displayTracksideValue(row.vlan) }}</template></el-table-column>
-        <el-table-column label="交换机 Rx" min-width="110"><template #default="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template></el-table-column>
-        <el-table-column label="交换机光衰" min-width="120"><template #default="{ row }"><el-tag :type="tracksideOpticalPresentation(row.switch_optical_status).tagType" :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ tracksideOpticalPresentation(row.switch_optical_status).label }}</el-tag></template></el-table-column>
-        <el-table-column prop="ap_mac" label="AP MAC" min-width="145" />
-        <el-table-column prop="ap_name" label="当前轨旁 AP" min-width="150" />
-        <el-table-column label="AP Rx" min-width="95"><template #default="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template></el-table-column>
-        <el-table-column label="AP 光衰" min-width="110"><template #default="{ row }"><el-tag :type="tracksideOpticalPresentation(row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_optical_status).label }}</el-tag></template></el-table-column>
-        <el-table-column label="综合" min-width="100"><template #default="{ row }"><el-tag :type="tracksideOpticalPresentation(row.optical_severity).tagType" :class="tracksideOpticalPresentation(row.optical_severity).className">{{ tracksideOpticalPresentation(row.optical_severity).label }}</el-tag></template></el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" min-width="170" />
-        <el-table-column label="操作" min-width="150" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="taskRunning || !row.site || !isFeatureEnabled('web.rail_trackside_ap_business_update')" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :disabled="taskRunning || !row.ap_name || !isFeatureEnabled('web.rail_trackside_ap_business_update')" @click="updateAp(row)">更新 AP</el-button></template></el-table-column>
-      </el-table>
+        <template #cell-switch_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
+        <template #cell-switch_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.switch_optical_status).tagType" :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ tracksideOpticalPresentation(row.switch_optical_status).label }}</el-tag></template>
+        <template #cell-ap_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
+        <template #cell-ap_optical_status="{ row }"><el-tag :type="tracksideOpticalPresentation(row.ap_optical_status).tagType" :class="tracksideOpticalPresentation(row.ap_optical_status).className">{{ tracksideOpticalPresentation(row.ap_optical_status).label }}</el-tag></template>
+        <template #cell-optical_severity="{ row }"><el-tag :type="tracksideOpticalPresentation(row.optical_severity).tagType" :class="tracksideOpticalPresentation(row.optical_severity).className">{{ tracksideOpticalPresentation(row.optical_severity).label }}</el-tag></template>
+        <template #cell-actions="{ row }"><el-button link type="primary" :disabled="taskRunning || !row.site || !isFeatureEnabled('web.rail_trackside_ap_business_update')" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :disabled="taskRunning || !row.ap_name || !isFeatureEnabled('web.rail_trackside_ap_business_update')" @click="updateAp(row)">更新 AP</el-button></template>
+      </NcDataTable>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" /></div>
     </div>
-    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>轨旁 AP 任务</h2><p>{{ task.task_id }}</p></div><div class="task-actions"><el-tag>{{ task.status }}</el-tag><el-button v-if="exportArtifactAvailable" type="primary" @click="downloadExport">保存导出表格</el-button></div></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="300"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><el-alert title="停止、日志和恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert></div>
+    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>轨旁 AP 任务</h2><p>{{ task.task_id }}</p></div><div class="task-actions"><el-tag>{{ task.status }}</el-tag><el-button v-if="exportArtifactAvailable" type="primary" @click="downloadExport">保存导出表格</el-button></div></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><NcDataTable v-if="taskRows.length" table-id="trackside-ap-business-task-result" route-key="/rail-transit/trackside-ap-business" :data="taskRows" :columns="taskResultColumns" max-height="300" :show-column-settings="false" /><el-alert title="停止、日志和恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert></div>
   </section>
 </template>
 
 <style scoped>
-.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading,.task-actions{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.task-card{display:flex;flex-direction:column;gap:12px}.content-card :deep(.el-table .cell){text-align:center}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-no-module,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading,.task-actions{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.task-card{display:flex;flex-direction:column;gap:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-no-module,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>

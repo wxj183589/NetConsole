@@ -36,4 +36,22 @@ describe('Rail Transit base data controlled view', () => {
     expect(source).not.toContain('username')
     expect(source).not.toContain('client_count')
   })
+
+  it('uses the shared typed data table contract for every base-data table', () => {
+    expect(source).toContain("import NcDataTable from '../../components/table/NcDataTable.vue'")
+    expect(source).toContain('NcTableColumn<Station>[]')
+    expect(source).toContain('NcTableColumn<DataQualityIssue>[]')
+    expect(source).toContain('NcTableColumn<MergeFieldDiff>[]')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
+    expect(source).toContain('#cell-expand')
+    expect(source).toContain(':preference-scope="row.entity_id"')
+    expect(source).toContain(':preference-scope="String(row.row_number)"')
+    expect(source).toContain("alignmentReason: 'long-text'")
+    expect(source).toContain("alignmentReason: 'path'")
+
+    const tableIds = [...source.matchAll(/table-id="([^"]+)"/g)].map((match) => match[1])
+    expect(tableIds.length).toBeGreaterThanOrEqual(12)
+    expect(new Set(tableIds).size).toBe(tableIds.length)
+  })
 })

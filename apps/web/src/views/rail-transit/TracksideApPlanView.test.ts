@@ -12,5 +12,10 @@ describe('trackside AP plan view', () => {
       'web.rail_trackside_ap_plan_write', 'web.rail_trackside_ap_plan_export',
     ]) expect(source).toContain(contract)
     expect(source).not.toContain('cancelTracksideApTask')
+    expect(source).toContain('const planColumns: NcTableColumn<TracksideApPlanRow>[]')
+    expect(source).toContain('table-id="trackside-ap-plan"')
+    expect(source).toContain('table-id="trackside-ap-plan-import-preview"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
   })
 })

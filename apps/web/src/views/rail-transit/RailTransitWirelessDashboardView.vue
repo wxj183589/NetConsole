@@ -13,8 +13,16 @@ import {
   getWirelessDashboardSummary,
   getWirelessDashboardTrains,
 } from '../../api/wirelessDashboard'
-import type { WirelessDashboard } from '../../types/wirelessDashboard'
-import type { MrCommunicationStatus } from '../../types/trainCommunication'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
+import type { AcMeshLinkRecord } from '../../types/acMeshLink'
+import type { AgentItem } from '../../types/agent'
+import type { MrCommunicationStatus, TrainCommunicationRow } from '../../types/trainCommunication'
+import type {
+  WirelessDashboard,
+  WirelessDashboardAlert,
+  WirelessDashboardFreshnessItem,
+} from '../../types/wirelessDashboard'
 
 const router = useRouter()
 const data = ref<WirelessDashboard | null>(null)
@@ -24,6 +32,53 @@ const failureCount = ref(0)
 const lastRefreshAt = ref('')
 const due = { infrastructure: 0, mesh: 0, alerts: 0, freshness: 0, analysis: 0, agents: 0 }
 let timer: ReturnType<typeof setTimeout> | undefined
+
+function dashboardColumn<Row extends object>(
+  key: string,
+  label: string,
+  valueType: NcColumnValueType = 'text',
+  options: Partial<NcTableColumn<Row>> = {},
+): NcTableColumn<Row> {
+  return { key, label, valueType, ...options }
+}
+
+const meshLinkColumns: NcTableColumn<AcMeshLinkRecord>[] = [
+  dashboardColumn('mr_name', '车载 MR', 'name', { minWidth: 125 }),
+  dashboardColumn('peer_ap_name', '当前轨旁 AP', 'name', { minWidth: 145 }),
+  dashboardColumn('mesh_interface', 'Mesh 接口', 'port', { width: 100 }),
+  dashboardColumn('rssi', 'RSSI', 'number', { width: 85 }),
+  dashboardColumn('location', '站点 / 区间', 'text', { minWidth: 145 }),
+]
+
+const trainColumns: NcTableColumn<TrainCommunicationRow>[] = [
+  dashboardColumn('train_no', '列车', 'name', { width: 70 }),
+  dashboardColumn('mr_ct', 'MR-CT', 'status', { minWidth: 140 }),
+  dashboardColumn('mr_tc', 'MR-TC', 'status', { minWidth: 140 }),
+  dashboardColumn('communication_status', '状态', 'status', { width: 90, cellKind: 'tag' }),
+]
+
+const alertColumns: NcTableColumn<WirelessDashboardAlert>[] = [
+  dashboardColumn('severity', '级别', 'status', { width: 78, cellKind: 'tag' }),
+  dashboardColumn('title', '对象', 'name', { minWidth: 150 }),
+  dashboardColumn('message', '已有结论', 'description', { minWidth: 250, align: 'left', alignmentReason: 'long-text' }),
+  dashboardColumn('actions', '操作', 'actions', { width: 70, cellKind: 'actions', actionLabels: ['详情'] }),
+]
+
+const freshnessColumns: NcTableColumn<WirelessDashboardFreshnessItem>[] = [
+  dashboardColumn('label', '数据源', 'name', { minWidth: 145 }),
+  dashboardColumn('status', '状态', 'status', { width: 95, cellKind: 'tag' }),
+  dashboardColumn('updated_at', '更新时间', 'datetime', { minWidth: 170 }),
+  dashboardColumn('age_seconds', '数据年龄', 'duration', { width: 100 }),
+]
+
+const agentColumns: NcTableColumn<AgentItem>[] = [
+  dashboardColumn('name', 'Agent', 'name', { minWidth: 140 }),
+  dashboardColumn('base_url', '地址', 'description', { minWidth: 180, align: 'left', alignmentReason: 'path' }),
+  dashboardColumn('status', '状态', 'status', { width: 95, cellKind: 'tag' }),
+  dashboardColumn('version', '版本', 'text', { width: 120 }),
+  dashboardColumn('last_checked_at', '最后检查', 'datetime', { minWidth: 175 }),
+  dashboardColumn('last_error_message', '错误摘要', 'error', { minWidth: 180, align: 'left', alignmentReason: 'long-text' }),
+]
 
 const summaryCards = computed(() => {
   const s = data.value?.summary
@@ -133,39 +188,37 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
           <span>AP 在线 <b>{{ data?.infrastructure.ac.online_aps ?? 0 }}</b></span><span>AP 离线 <b>{{ data?.infrastructure.ac.offline_aps ?? 0 }}</b></span>
           <span>光衰异常 <b>{{ data?.infrastructure.ac.optical_anomalies ?? 0 }}</b></span><span>活动链路 <b>{{ data?.infrastructure.mesh_link.active_links ?? 0 }}</b></span>
         </div>
-        <el-table :data="data?.infrastructure.current_links || []" size="small" max-height="285" empty-text="暂无 Mesh-Link 快照">
-          <el-table-column prop="mr_name" label="车载 MR" min-width="125" /><el-table-column prop="peer_ap_name" label="当前轨旁 AP" min-width="145" />
-          <el-table-column prop="mesh_interface" label="Mesh 接口" width="100" /><el-table-column label="RSSI" width="85"><template #default="{ row }">{{ display(row.rssi, ' dBm') }}</template></el-table-column>
-          <el-table-column label="站点 / 区间" min-width="145"><template #default="{ row }">{{ [row.station, row.section].filter(Boolean).join(' / ') || '无数据' }}</template></el-table-column>
-        </el-table>
+        <NcDataTable table-id="rail-wireless-dashboard-mesh-links" route-key="/rail-transit/wireless-dashboard" :data="data?.infrastructure.current_links || []" :columns="meshLinkColumns" :show-column-settings="false" :stripe="false" size="small" max-height="285" empty-text="暂无 Mesh-Link 快照">
+          <template #cell-rssi="{ row }">{{ display(row.rssi, ' dBm') }}</template>
+          <template #cell-location="{ row }">{{ [row.station, row.section].filter(Boolean).join(' / ') || '无数据' }}</template>
+        </NcDataTable>
       </article>
 
       <article class="panel">
         <div class="panel-title"><div><h2>在线列车通信</h2><p>CT / TC 独立展示，不合并两端状态</p></div><el-button link type="primary" @click="go('/rail-transit/train-communication')">查看全部列车</el-button></div>
-        <el-table :data="data?.trains.items || []" size="small" max-height="355" empty-text="暂无列车资料">
-          <el-table-column prop="train_no" label="列车" width="70" />
-          <el-table-column label="MR-CT" min-width="140"><template #default="{ row }"><template v-if="mrRole(row, 'CT')"><el-tag size="small" :type="statusType(mrRole(row, 'CT')!.communication_status)">{{ mrRole(row, 'CT')!.communication_status }}</el-tag> {{ mrRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template></el-table-column>
-          <el-table-column label="MR-TC" min-width="140"><template #default="{ row }"><template v-if="mrRole(row, 'TC')"><el-tag size="small" :type="statusType(mrRole(row, 'TC')!.communication_status)">{{ mrRole(row, 'TC')!.communication_status }}</el-tag> {{ mrRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template></el-table-column>
-          <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="statusType(row.communication_status)">{{ row.communication_status }}</el-tag></template></el-table-column>
-        </el-table>
+        <NcDataTable table-id="rail-wireless-dashboard-trains" route-key="/rail-transit/wireless-dashboard" :data="data?.trains.items || []" :columns="trainColumns" :show-column-settings="false" :stripe="false" size="small" max-height="355" empty-text="暂无列车资料">
+          <template #cell-mr_ct="{ row }"><template v-if="mrRole(row, 'CT')"><el-tag size="small" :type="statusType(mrRole(row, 'CT')!.communication_status)">{{ mrRole(row, 'CT')!.communication_status }}</el-tag> {{ mrRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>
+          <template #cell-mr_tc="{ row }"><template v-if="mrRole(row, 'TC')"><el-tag size="small" :type="statusType(mrRole(row, 'TC')!.communication_status)">{{ mrRole(row, 'TC')!.communication_status }}</el-tag> {{ mrRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>
+          <template #cell-communication_status="{ row }"><el-tag :type="statusType(row.communication_status)">{{ row.communication_status }}</el-tag></template>
+        </NcDataTable>
       </article>
     </div>
 
     <div class="two-columns">
       <article class="panel">
         <div class="panel-title"><div><h2>告警与异常</h2><p>仅复用已有状态和分析结果，不在浏览器推断</p></div><span>{{ data?.alerts.total ?? 0 }} 条</span></div>
-        <el-table :data="data?.alerts.items || []" size="small" max-height="350" empty-text="当前没有既有告警">
-          <el-table-column label="级别" width="78"><template #default="{ row }"><el-tag :type="statusType(row.severity)">{{ row.severity }}</el-tag></template></el-table-column>
-          <el-table-column prop="title" label="对象" min-width="150" /><el-table-column prop="message" label="已有结论" min-width="250" show-overflow-tooltip />
-          <el-table-column label="操作" width="70"><template #default="{ row }"><el-button v-if="row.detail_path" link type="primary" @click="go(row.detail_path)">详情</el-button></template></el-table-column>
-        </el-table>
+        <NcDataTable table-id="rail-wireless-dashboard-alerts" route-key="/rail-transit/wireless-dashboard" :data="data?.alerts.items || []" :columns="alertColumns" :show-column-settings="false" :stripe="false" size="small" max-height="350" empty-text="当前没有既有告警">
+          <template #cell-severity="{ row }"><el-tag :type="statusType(row.severity)">{{ row.severity }}</el-tag></template>
+          <template #cell-actions="{ row }"><el-button v-if="row.detail_path" link type="primary" @click="go(row.detail_path)">详情</el-button></template>
+        </NcDataTable>
       </article>
       <article class="panel">
         <div class="panel-title"><div><h2>数据时效</h2><p>展示各数据源自己的状态和更新时间</p></div></div>
-        <el-table :data="data?.freshness.items || []" size="small" max-height="350">
-          <el-table-column prop="label" label="数据源" min-width="145" /><el-table-column label="状态" width="95"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template></el-table-column>
-          <el-table-column label="更新时间" min-width="170"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column><el-table-column label="数据年龄" width="100"><template #default="{ row }">{{ row.age_seconds === null ? '无数据' : `${row.age_seconds}s` }}</template></el-table-column>
-        </el-table>
+        <NcDataTable table-id="rail-wireless-dashboard-freshness" route-key="/rail-transit/wireless-dashboard" :data="data?.freshness.items || []" :columns="freshnessColumns" :show-column-settings="false" :stripe="false" size="small" max-height="350">
+          <template #cell-status="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template>
+          <template #cell-updated_at="{ row }">{{ formatTime(row.updated_at) }}</template>
+          <template #cell-age_seconds="{ row }">{{ row.age_seconds === null ? '无数据' : `${row.age_seconds}s` }}</template>
+        </NcDataTable>
       </article>
     </div>
 
@@ -175,7 +228,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
       <article class="panel"><div class="panel-title"><div><h2>Mesh 离线分析</h2><p>既有解析结果摘要</p></div><el-button link type="primary" @click="go('/rail-transit/mesh-analysis')">分析详情</el-button></div><div class="analysis-grid"><span>会话 <b>{{ data?.analysis.summary.session_count ?? 0 }}</b></span><span>链路记录 <b>{{ data?.analysis.summary.link_record_count ?? 0 }}</b></span><span>切换 <b>{{ data?.analysis.summary.switch_event_count ?? 0 }}</b></span><span>短时建链 <b>{{ data?.analysis.summary.short_link_count ?? 0 }}</b></span><span>乒乓 <b>{{ data?.analysis.summary.pingpong_count ?? 0 }}</b></span><span>未匹配 AP <b>{{ data?.analysis.summary.unmatched_ap_count ?? 0 }}</b></span></div></article>
     </div>
 
-    <article class="panel"><div class="panel-title"><div><h2>Agent 状态</h2><p>仅使用 Controller 已缓存状态，不主动连接 Agent</p></div><el-button link type="primary" @click="go('/agents')">Agent 控制中心</el-button></div><el-table :data="data?.agents.items || []" size="small" empty-text="当前局点未登记 Agent"><el-table-column prop="name" label="Agent" min-width="140" /><el-table-column prop="base_url" label="地址" min-width="180" /><el-table-column label="状态" width="95"><template #default="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template></el-table-column><el-table-column prop="version" label="版本" width="120" /><el-table-column label="最后检查" min-width="175"><template #default="{ row }">{{ formatTime(row.last_checked_at) }}</template></el-table-column><el-table-column prop="last_error_message" label="错误摘要" min-width="180" show-overflow-tooltip /></el-table></article>
+    <article class="panel"><div class="panel-title"><div><h2>Agent 状态</h2><p>仅使用 Controller 已缓存状态，不主动连接 Agent</p></div><el-button link type="primary" @click="go('/agents')">Agent 控制中心</el-button></div><NcDataTable table-id="rail-wireless-dashboard-agents" route-key="/rail-transit/wireless-dashboard" :data="data?.agents.items || []" :columns="agentColumns" :show-column-settings="false" :stripe="false" size="small" empty-text="当前局点未登记 Agent"><template #cell-status="{ row }"><el-tag :type="statusType(row.status)">{{ row.status }}</el-tag></template><template #cell-last_checked_at="{ row }">{{ formatTime(row.last_checked_at) }}</template></NcDataTable></article>
   </section>
 </template>
 

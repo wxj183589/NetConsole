@@ -320,7 +320,11 @@ defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, togg
             :header-align="column.headerAlign"
             :fixed="column.fixed"
             :sortable="column.sortable"
-          />
+          >
+            <template v-if="column.type === 'expand'" #default="scope">
+              <slot :name="`cell-${column.key}`" v-bind="scope" :column-definition="column" />
+            </template>
+          </el-table-column>
           <el-table-column
             v-else
             v-bind="safeNcTableColumnAttrs(column.columnAttrs)"

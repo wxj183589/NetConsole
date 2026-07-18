@@ -24,5 +24,10 @@ describe('car network diagnostic view', () => {
       'exportOnlineMrReport',
       'queryOnlineMrMetrics',
     ]) expect(source).not.toContain(unrelated)
+    expect(source).toContain('const trainColumns: NcTableColumn<OnlineTrainRow>[]')
+    expect(source).toContain('table-id="car-network-diagnostic-trains"')
+    expect(source).toContain('table-id="car-network-diagnostic-result"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
   })
 })

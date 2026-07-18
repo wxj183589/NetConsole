@@ -5,7 +5,15 @@ import { useRouter } from 'vue-router'
 import { useTrainCommunicationStore } from '../../stores/trainCommunication'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
 import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
-import type { CommunicationStatus, MrCommunicationStatus, TrainCommunicationRow } from '../../types/trainCommunication'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
+import type {
+  CommunicationPackage,
+  CommunicationStatus,
+  CommunicationTask,
+  MrCommunicationStatus,
+  TrainCommunicationRow,
+} from '../../types/trainCommunication'
 
 const router = useRouter()
 const store = useTrainCommunicationStore()
@@ -13,6 +21,55 @@ const drawerVisible = ref(false)
 const activeDetailTab = ref('overview')
 const activeExecutorTab = ref('local')
 const rawExpanded = ref<string[]>([])
+
+function trainColumn<Row extends object>(
+  key: string,
+  label: string,
+  valueType: NcColumnValueType = 'text',
+  options: Partial<NcTableColumn<Row>> = {},
+): NcTableColumn<Row> {
+  return { key, label, valueType, ...options }
+}
+
+const trainColumns: NcTableColumn<TrainCommunicationRow>[] = [
+  trainColumn('train_no', '列车', 'name', { fixed: 'left', width: 85 }),
+  trainColumn('mr_ct', 'MR-CT', 'status', { minWidth: 150 }),
+  trainColumn('mr_tc', 'MR-TC', 'status', { minWidth: 150 }),
+  trainColumn('position', '当前位置', 'text', { minWidth: 155 }),
+  trainColumn('rssi', 'RSSI', 'number', { width: 105 }),
+  trainColumn('fping', 'fping', 'duration', { width: 125 }),
+  trainColumn('loss', '丢包', 'percentage', { width: 105 }),
+  trainColumn('iperf', 'iPerf', 'rate', { width: 120 }),
+  trainColumn('executor', '采集/执行端', 'status', { minWidth: 130 }),
+  trainColumn('integrity', '完整性', 'status', { width: 105 }),
+  trainColumn('communication_status', '综合状态', 'status', { width: 105, cellKind: 'tag' }),
+  trainColumn('last_updated_at', '最近更新', 'datetime', { width: 175 }),
+  trainColumn('actions', '操作', 'actions', { width: 90, cellKind: 'actions', actionLabels: ['详情'] }),
+]
+
+type CollectorRow = Record<string, unknown>
+
+const collectorColumns: NcTableColumn<CollectorRow>[] = [
+  trainColumn('label', '采集器', 'name'),
+  trainColumn('status', '状态', 'status', { width: 110 }),
+  trainColumn('size_bytes', '原始文件字节', 'number', { width: 130 }),
+  trainColumn('error', '错误', 'error', { align: 'left', alignmentReason: 'long-text' }),
+]
+
+const taskColumns: NcTableColumn<CommunicationTask>[] = [
+  trainColumn('name', '任务', 'name'), trainColumn('status', '状态', 'status', { width: 110 }),
+  trainColumn('progress', '进度', 'percentage', { width: 90 }),
+  trainColumn('started_at', '开始时间', 'datetime', { width: 175 }),
+  trainColumn('ended_at', '结束时间', 'datetime', { width: 175 }),
+  trainColumn('error_summary', '错误摘要', 'error', { align: 'left', alignmentReason: 'long-text' }),
+]
+
+const packageColumns: NcTableColumn<CommunicationPackage>[] = [
+  trainColumn('package_name', '包名', 'name'), trainColumn('executor', '来源', 'status', { width: 90 }),
+  trainColumn('import_status', '导入状态', 'status', { width: 110 }),
+  trainColumn('data_integrity', '完整性', 'status', { width: 100 }),
+  trainColumn('package_reference', '安全引用', 'description', { align: 'left', alignmentReason: 'path' }),
+]
 
 const summaryCards = computed(() => {
   const value = store.summary
@@ -79,21 +136,20 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
         <el-checkbox v-model="store.filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" @click="store.applyFilters">查询</el-button>
       </div>
-      <el-table v-loading="store.loading" :data="store.trains" stripe height="calc(100vh - 470px)" empty-text="暂无已登记列车通信数据" @row-dblclick="handleRowDoubleClick">
-        <el-table-column prop="train_no" label="列车" width="85" fixed="left" />
-        <el-table-column label="MR-CT" min-width="150"><template #default="{ row }"><span v-if="mrByRole(row, 'CT')"><el-tag :type="statusType(mrByRole(row, 'CT')!.communication_status)" size="small">{{ statusLabel(mrByRole(row, 'CT')!.communication_status) }}</el-tag> {{ mrByRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</span><span v-else>无数据</span></template></el-table-column>
-        <el-table-column label="MR-TC" min-width="150"><template #default="{ row }"><span v-if="mrByRole(row, 'TC')"><el-tag :type="statusType(mrByRole(row, 'TC')!.communication_status)" size="small">{{ statusLabel(mrByRole(row, 'TC')!.communication_status) }}</el-tag> {{ mrByRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</span><span v-else>无数据</span></template></el-table-column>
-        <el-table-column label="当前位置" min-width="155"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ [mr.station, mr.section].filter(Boolean).join(' / ') || '无数据' }}</div></template></el-table-column>
-        <el-table-column label="RSSI" width="105"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ display(mr.rssi, ' dBm') }}</div></template></el-table-column>
-        <el-table-column label="fping" width="125"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.fping_latest_rtt_ms, 'ms') }}</div></template></el-table-column>
-        <el-table-column label="丢包" width="105"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.fping_loss_percent, '%') }}</div></template></el-table-column>
-        <el-table-column label="iPerf" width="120"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.iperf_latest_mbps, 'Mbps') }}</div></template></el-table-column>
-        <el-table-column label="采集/执行端" min-width="130"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ mr.collection_status }} / {{ mr.executor || '无数据' }}</div></template></el-table-column>
-        <el-table-column label="完整性" width="105"><template #default="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ mr.data_integrity }}</div></template></el-table-column>
-        <el-table-column label="综合状态" width="105"><template #default="{ row }"><el-tag :type="statusType(row.communication_status)">{{ statusLabel(row.communication_status) }}</el-tag></template></el-table-column>
-        <el-table-column label="最近更新" width="175"><template #default="{ row }">{{ formatTime(row.last_updated_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openTrain(row.train_id)">详情</el-button></template></el-table-column>
-      </el-table>
+      <NcDataTable v-loading="store.loading" table-id="rail-train-communication-trains" route-key="/rail-transit/train-communication" :data="store.trains" :columns="trainColumns" height="calc(100vh - 470px)" empty-text="暂无已登记列车通信数据" @row-dblclick="handleRowDoubleClick">
+        <template #cell-mr_ct="{ row }"><span v-if="mrByRole(row, 'CT')"><el-tag :type="statusType(mrByRole(row, 'CT')!.communication_status)" size="small">{{ statusLabel(mrByRole(row, 'CT')!.communication_status) }}</el-tag> {{ mrByRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</span><span v-else>无数据</span></template>
+        <template #cell-mr_tc="{ row }"><span v-if="mrByRole(row, 'TC')"><el-tag :type="statusType(mrByRole(row, 'TC')!.communication_status)" size="small">{{ statusLabel(mrByRole(row, 'TC')!.communication_status) }}</el-tag> {{ mrByRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</span><span v-else>无数据</span></template>
+        <template #cell-position="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ [mr.station, mr.section].filter(Boolean).join(' / ') || '无数据' }}</div></template>
+        <template #cell-rssi="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ display(mr.rssi, ' dBm') }}</div></template>
+        <template #cell-fping="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.fping_latest_rtt_ms, 'ms') }}</div></template>
+        <template #cell-loss="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.fping_loss_percent, '%') }}</div></template>
+        <template #cell-iperf="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ metric(mr.iperf_latest_mbps, 'Mbps') }}</div></template>
+        <template #cell-executor="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ mr.collection_status }} / {{ mr.executor || '无数据' }}</div></template>
+        <template #cell-integrity="{ row }"><div v-for="mr in row.mrs" :key="mr.mr_id">{{ mr.mr_role }}：{{ mr.data_integrity }}</div></template>
+        <template #cell-communication_status="{ row }"><el-tag :type="statusType(row.communication_status)">{{ statusLabel(row.communication_status) }}</el-tag></template>
+        <template #cell-last_updated_at="{ row }">{{ formatTime(row.last_updated_at) }}</template>
+        <template #cell-actions="{ row }"><el-button link type="primary" @click="openTrain(row.train_id)">详情</el-button></template>
+      </NcDataTable>
       <div class="pagination"><span>共 {{ store.total }} 列车</span><el-pagination :current-page="store.filters.page" :page-size="store.filters.page_size" layout="prev, pager, next" :total="store.total" @current-change="store.setPage" /></div>
     </div>
 
@@ -130,15 +186,15 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
                   <el-descriptions-item label="Session">{{ display(store.selectedMr.mr.session_id) }}</el-descriptions-item><el-descriptions-item label="采集状态">{{ store.selectedMr.mr.collection_status }}</el-descriptions-item><el-descriptions-item label="数据完整性">{{ store.selectedMr.mr.data_integrity }}</el-descriptions-item>
                   <el-descriptions-item label="fping">{{ metric(store.selectedMr.mr.fping.latest_value, 'ms') }} / {{ metric(store.selectedMr.mr.fping.loss_percent, '%') }}</el-descriptions-item><el-descriptions-item label="iPerf">{{ metric(store.selectedMr.mr.iperf.latest_value, 'Mbps') }}</el-descriptions-item><el-descriptions-item label="数据时间">{{ formatTime(store.selectedMr.mr.collected_at) }}</el-descriptions-item>
                 </el-descriptions>
-                <h3>采集器</h3><el-table :data="store.selectedMr.collectors" border empty-text="暂无采集器状态"><el-table-column prop="label" label="采集器" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="size_bytes" label="原始文件字节" width="130" /><el-table-column prop="error" label="错误" /></el-table>
+                <h3>采集器</h3><NcDataTable table-id="rail-train-communication-collectors" route-key="/rail-transit/train-communication" :data="store.selectedMr.collectors" :columns="collectorColumns" :show-column-settings="false" :stripe="false" border empty-text="暂无采集器状态" />
                 <el-collapse @change="handleRawChange"><el-collapse-item title="原始采集（默认折叠，仅受控 tail）" name="raw">
                   <el-tabs :model-value="store.rawSource" @tab-change="handleRawTabChange">
                     <el-tab-pane v-for="source in store.selectedMr.raw_sources" :key="source.name" :name="source.name" :label="source.label" />
                   </el-tabs>
                   <p v-if="!store.rawTail?.exists" class="empty-text">{{ store.rawTail?.message || '文件不存在或尚未生成' }}</p><pre v-else>{{ store.rawTail.lines.join('\n') }}</pre>
                 </el-collapse-item></el-collapse>
-                <h3>关联任务</h3><el-table :data="store.selectedMr.tasks" border empty-text="暂无关联任务"><el-table-column prop="name" label="任务" /><el-table-column prop="status" label="状态" width="110" /><el-table-column prop="progress" label="进度" width="90" /><el-table-column prop="started_at" label="开始时间" width="175" /><el-table-column prop="ended_at" label="结束时间" width="175" /><el-table-column prop="error_summary" label="错误摘要" /></el-table>
-                <h3>采集包</h3><el-table :data="store.selectedMr.packages" border empty-text="暂无采集包"><el-table-column prop="package_name" label="包名" /><el-table-column prop="executor" label="来源" width="90" /><el-table-column prop="import_status" label="导入状态" width="110" /><el-table-column prop="data_integrity" label="完整性" width="100" /><el-table-column prop="package_reference" label="安全引用" /></el-table>
+                <h3>关联任务</h3><NcDataTable table-id="rail-train-communication-tasks" route-key="/rail-transit/train-communication" :data="store.selectedMr.tasks" :columns="taskColumns" :show-column-settings="false" :stripe="false" border empty-text="暂无关联任务" />
+                <h3>采集包</h3><NcDataTable table-id="rail-train-communication-packages" route-key="/rail-transit/train-communication" :data="store.selectedMr.packages" :columns="packageColumns" :show-column-settings="false" :stripe="false" border empty-text="暂无采集包" />
               </template><el-empty v-else description="请先选择 MR" />
             </el-tab-pane>
           </el-tabs>

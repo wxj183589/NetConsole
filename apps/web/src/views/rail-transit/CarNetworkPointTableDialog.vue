@@ -9,6 +9,8 @@ import {
   previewCarNetworkPointTable, recoverCarNetworkPointTableTasks, saveCarNetworkPointTable,
   transformCarNetworkPointTable,
 } from '../../api/railTransitWeb'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import type { CarNetworkPointPreview, CarNetworkPointRow, RailTransitTask } from '../../types/railTransitWeb'
 
@@ -20,6 +22,53 @@ const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const roleOptions = [{ label: '车内 IP', value: 'vehicle_ip' }, { label: '落地 IP', value: 'uplink_ip' }, { label: '全部', value: 'all' }, { label: '忽略', value: 'ignore' }]
 const sshOptions = [{ label: '主用地址', value: 'primary_address' }, { label: '备用地址', value: 'backup_address' }, { label: '不生成', value: 'empty' }]
 const emptyRow = (): CarNetworkPointRow => ({ train_id: '', train_no: '', display_name: '', tc: '', end: '', node_name: '', node_type: '', device_id: '', device_name: '', device_group: '', station: '', primary_address: '', backup_address: '', ip_vehicle: '', ip_uplink: '', ssh_host: '', vrrp_ip: '', address_mapping_mode: 'global', primary_address_role: '', backup_address_role: '', remark: '' })
+const pointTableFields: readonly {
+  key: keyof CarNetworkPointRow & string
+  label: string
+  longText?: boolean
+}[] = [
+  { key: 'tc', label: 'TC' },
+  { key: 'end', label: '端位' },
+  { key: 'node_name', label: '节点名称' },
+  { key: 'node_type', label: '节点类型' },
+  { key: 'device_id', label: '设备ID' },
+  { key: 'device_name', label: '设备名称' },
+  { key: 'device_group', label: '设备组' },
+  { key: 'station', label: '站点' },
+  { key: 'primary_address', label: '主用地址' },
+  { key: 'backup_address', label: '备用地址' },
+  { key: 'ip_vehicle', label: '车内IP' },
+  { key: 'ip_uplink', label: '落地IP' },
+  { key: 'ssh_host', label: 'SSH地址' },
+  { key: 'vrrp_ip', label: 'VRRP IP' },
+  { key: 'primary_address_role', label: '主用角色' },
+  { key: 'backup_address_role', label: '备用角色' },
+  { key: 'remark', label: '备注', longText: true },
+]
+
+function editablePointColumn(field: typeof pointTableFields[number]): NcTableColumn<CarNetworkPointRow> {
+  return {
+    key: field.key,
+    label: field.label,
+    prop: field.key,
+    ...(field.longText ? { valueType: 'description', align: 'left', alignmentReason: 'long-text' } : {}),
+  }
+}
+
+const pointTableColumns: NcTableColumn<CarNetworkPointRow>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
+  { key: 'train_id', label: '列车ID', valueType: 'name', fixed: 'left' },
+  { key: 'train_no', label: '车号', valueType: 'name' },
+  { key: 'display_name', label: '显示名', valueType: 'name' },
+  ...pointTableFields.map(editablePointColumn),
+  { key: 'address_mapping_mode', label: '映射模式', valueType: 'status' },
+]
+const previewColumns: NcTableColumn<CarNetworkPointPreview['rows'][number]>[] = [
+  { key: 'row_number', label: '行', valueType: 'number' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'key', label: '节点', valueType: 'name' },
+  { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
 
 const visible = computed({ get: () => props.modelValue, set: (value) => emit('update:modelValue', value) })
 const rows = ref<CarNetworkPointRow[]>([])
@@ -199,15 +248,17 @@ onBeforeUnmount(stopPolling)
         <el-select v-model="exportFormat" style="width:95px"><el-option label="XLSX" value="xlsx" /><el-option label="CSV" value="csv" /></el-select><el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_export') || taskRunning" @click="exportTable">导出</el-button>
         <el-button type="primary" :disabled="locked || !canWrite || !dirty || taskRunning" @click="save()">保存点表</el-button><el-button @click="closeDialog">取消</el-button>
       </div>
-      <el-table v-loading="loading" :data="filteredRows" border stripe height="42vh" empty-text="暂无点表数据，可从设备管理生成、新增或导入" @selection-change="(value: CarNetworkPointRow[]) => selectedRows = value">
-        <el-table-column type="selection" width="46" fixed="left" /><el-table-column label="列车ID" width="120" fixed="left"><template #default="{ row }"><el-input v-model="row.train_id" :disabled="locked" @input="markDirty" /></template></el-table-column><el-table-column label="车号" width="90"><template #default="{ row }"><el-input v-model="row.train_no" :disabled="locked" @input="markDirty" /></template></el-table-column><el-table-column label="显示名" width="130"><template #default="{ row }"><el-input v-model="row.display_name" :disabled="locked" @input="markDirty" /></template></el-table-column>
-        <el-table-column v-for="field in [{k:'tc',l:'TC'},{k:'end',l:'端位'},{k:'node_name',l:'节点名称'},{k:'node_type',l:'节点类型'},{k:'device_id',l:'设备ID'},{k:'device_name',l:'设备名称'},{k:'device_group',l:'设备组'},{k:'station',l:'站点'},{k:'primary_address',l:'主用地址'},{k:'backup_address',l:'备用地址'},{k:'ip_vehicle',l:'车内IP'},{k:'ip_uplink',l:'落地IP'},{k:'ssh_host',l:'SSH地址'},{k:'vrrp_ip',l:'VRRP IP'},{k:'primary_address_role',l:'主用角色'},{k:'backup_address_role',l:'备用角色'},{k:'remark',l:'备注'}]" :key="field.k" :label="field.l" width="140"><template #default="{ row }"><el-input v-model="row[field.k]" :disabled="locked" @input="markDirty" /></template></el-table-column>
-        <el-table-column label="映射模式" width="120"><template #default="{ row }"><el-select v-model="row.address_mapping_mode" :disabled="locked" @change="markDirty"><el-option label="全局" value="global" /><el-option label="自定义" value="custom" /></el-select></template></el-table-column>
-      </el-table>
+      <NcDataTable v-loading="loading" table-id="car-network-point-table" route-key="/rail-transit/car-network-diagnostic" :data="filteredRows" :columns="pointTableColumns" border height="42vh" empty-text="暂无点表数据，可从设备管理生成、新增或导入" @selection-change="(value: CarNetworkPointRow[]) => selectedRows = value">
+        <template #cell-train_id="{ row }"><el-input v-model="row.train_id" :disabled="locked" @input="markDirty" /></template>
+        <template #cell-train_no="{ row }"><el-input v-model="row.train_no" :disabled="locked" @input="markDirty" /></template>
+        <template #cell-display_name="{ row }"><el-input v-model="row.display_name" :disabled="locked" @input="markDirty" /></template>
+        <template v-for="field in pointTableFields" #[`cell-${field.key}`]="{ row }" :key="field.key"><el-input v-model="row[field.key]" :disabled="locked" @input="markDirty" /></template>
+        <template #cell-address_mapping_mode="{ row }"><el-select v-model="row.address_mapping_mode" :disabled="locked" @change="markDirty"><el-option label="全局" value="global" /><el-option label="自定义" value="custom" /></el-select></template>
+      </NcDataTable>
       <div v-if="task" class="task-bar"><span>任务 {{ task.task_id }}</span><el-tag>{{ task.status }}</el-tag><span>{{ task.error_message || task.message }}</span><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
     <el-dialog v-model="previewVisible" title="点表导入预览" width="900px" append-to-body>
-      <div v-if="preview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><el-table :data="preview.rows" border height="350"><el-table-column prop="row_number" label="行" width="70" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="key" label="节点" min-width="180" /><el-table-column prop="message" label="说明" min-width="260" /></el-table><el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div>
+      <div v-if="preview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><NcDataTable table-id="car-network-point-table-import-preview" route-key="/rail-transit/car-network-diagnostic" :data="preview.rows" :columns="previewColumns" border height="350" :show-column-settings="false" /><el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div>
       <template #footer><el-button @click="previewVisible = false">取消</el-button><el-button type="primary" :disabled="!preview?.can_apply" @click="applyPreview">应用到编辑区</el-button></template>
     </el-dialog>
   </el-dialog>

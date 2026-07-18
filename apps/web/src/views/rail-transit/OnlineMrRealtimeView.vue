@@ -7,12 +7,14 @@ import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { addOnlineMrNote, listOnlineMrNotes } from '../../api/onlineMr'
 import { getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import { getTrainCommunicationSummary, listTrainCommunications } from '../../api/trainCommunication'
 import { isFeatureEnabled } from '../../features'
 import { useOnlineMrStore } from '../../stores/onlineMr'
-import type { OnlineMrManualNote } from '../../types/onlineMr'
+import type { OnlineMrCollectorStatus, OnlineMrManualNote } from '../../types/onlineMr'
 import type { RailTransitTask } from '../../types/railTransitWeb'
 import type { MrCommunicationStatus } from '../../types/trainCommunication'
 
@@ -35,6 +37,18 @@ const parseLoading = ref(false)
 let parseTimer: number | null = null
 const terminalTaskStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const parseTaskStorageKey = 'netconsole.online-mr.parse-task'
+const collectorColumns: NcTableColumn<OnlineMrCollectorStatus>[] = [
+  { key: 'label', label: '采集项', valueType: 'name' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'raw_file', label: 'Raw', valueType: 'description', align: 'left', alignmentReason: 'path' },
+  { key: 'size_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
+]
+const noteColumns: NcTableColumn<OnlineMrManualNote>[] = [
+  { key: 'local_time', label: '时间', valueType: 'datetime' },
+  { key: 'title', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+  { key: 'audit_source', label: '审计来源', valueType: 'status', displayValue: (row) => noteAuditSource(row) },
+]
 const controlMr = computed(() => controlMrs.value.find((item) => item.mr_id === controlMrId.value) || null)
 const selectedId = computed({
   get: () => store.selected?.session_id || '',
@@ -346,21 +360,10 @@ onBeforeUnmount(() => {
             <div><h3>采集器状态</h3><p>终态会话会校正过期的 running 视图状态</p></div>
             <span>{{ store.collectors.filter((item) => item.enabled).length }} 项启用</span>
           </div>
-          <el-table :data="store.collectors" size="small" max-height="360">
-            <el-table-column prop="label" label="采集项" min-width="138" />
-            <el-table-column label="状态" width="104">
-              <template #default="scope">
-                <el-tag :type="collectorType(scope.row.status)" effect="light">{{ scope.row.status }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="Raw" min-width="190">
-              <template #default="scope"><code>{{ scope.row.raw_file }}</code></template>
-            </el-table-column>
-            <el-table-column label="大小" width="96">
-              <template #default="scope">{{ formatBytes(scope.row.size_bytes) }}</template>
-            </el-table-column>
-            <el-table-column prop="updated_at" label="更新时间" min-width="156" />
-          </el-table>
+          <NcDataTable table-id="online-mr-collectors" route-key="/rail-transit/online-mr" :data="store.collectors" :columns="collectorColumns" compact max-height="360">
+            <template #cell-status="{ row }"><el-tag :type="collectorType(row.status)" effect="light">{{ row.status }}</el-tag></template>
+            <template #cell-raw_file="{ row }"><code>{{ row.raw_file }}</code></template>
+          </NcDataTable>
         </div>
 
         <div class="content-card mr-panel">
@@ -439,13 +442,7 @@ onBeforeUnmount(() => {
           >记录备注</el-button>
           <el-button @click="noteText = ''">清空输入</el-button>
         </div>
-        <el-table v-loading="noteLoading" :data="notes" max-height="230" empty-text="当前会话暂无备注">
-          <el-table-column prop="local_time" label="时间" width="185" />
-          <el-table-column prop="title" label="备注" min-width="280" />
-          <el-table-column label="审计来源" width="190">
-            <template #default="{ row }">{{ noteAuditSource(row) }}</template>
-          </el-table-column>
-        </el-table>
+        <NcDataTable v-loading="noteLoading" table-id="online-mr-notes" route-key="/rail-transit/online-mr" :preference-scope="store.selected.session_id" :data="notes" :columns="noteColumns" max-height="230" empty-text="当前会话暂无备注" />
         <div class="parse-actions">
           <el-button
             type="primary"

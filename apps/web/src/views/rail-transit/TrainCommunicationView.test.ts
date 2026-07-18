@@ -31,4 +31,16 @@ describe('train communication Online MR control integration', () => {
     expect(source).toContain('仅光衰异常')
     expect(source).not.toMatch(/READ ONLY|只读|迁移/)
   })
+
+  it('uses typed shared data tables for the train and MR detail tables', () => {
+    expect(source).toContain("import NcDataTable")
+    expect(source).toContain('NcTableColumn<TrainCommunicationRow>')
+    expect(source.match(/<NcDataTable\b/g)).toHaveLength(4)
+    expect(source).toContain('table-id="rail-train-communication-trains"')
+    expect(source).toContain('table-id="rail-train-communication-collectors"')
+    expect(source).toContain('table-id="rail-train-communication-tasks"')
+    expect(source).toContain('table-id="rail-train-communication-packages"')
+    expect(source).toContain("alignmentReason: 'long-text'")
+    expect(source).not.toContain('<el-table')
+  })
 })

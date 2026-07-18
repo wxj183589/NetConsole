@@ -28,4 +28,17 @@ describe('rail transit wireless dashboard', () => {
     expect(source).toContain('保留上次数据')
     expect(source).not.toContain('setInterval')
   })
+
+  it('uses typed compact data tables with stable dashboard identities', () => {
+    expect(source).toContain("import NcDataTable")
+    expect(source).toContain('NcTableColumn<WirelessDashboardAlert>')
+    expect(source.match(/<NcDataTable\b/g)).toHaveLength(5)
+    expect(source).toContain('table-id="rail-wireless-dashboard-mesh-links"')
+    expect(source).toContain('table-id="rail-wireless-dashboard-trains"')
+    expect(source).toContain('table-id="rail-wireless-dashboard-alerts"')
+    expect(source).toContain('table-id="rail-wireless-dashboard-freshness"')
+    expect(source).toContain('table-id="rail-wireless-dashboard-agents"')
+    expect(source).toContain("alignmentReason: 'long-text'")
+    expect(source).not.toContain('<el-table')
+  })
 })

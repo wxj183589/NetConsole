@@ -14,5 +14,10 @@ describe('car network point table dialog', () => {
       'web.rail_car_network_point_table_write', 'web.rail_car_network_point_table_export',
     ]) expect(source).toContain(contract)
     expect(source).not.toContain('cancelCarNetworkPointTableTask')
+    expect(source).toContain('const pointTableColumns: NcTableColumn<CarNetworkPointRow>[]')
+    expect(source).toContain('table-id="car-network-point-table"')
+    expect(source).toContain('table-id="car-network-point-table-import-preview"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
   })
 })

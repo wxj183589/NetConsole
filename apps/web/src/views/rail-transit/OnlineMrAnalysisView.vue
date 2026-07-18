@@ -10,6 +10,8 @@ import {
   queryOnlineMrTimeline,
   recoverRailTransitTasks,
 } from '../../api/railTransitWeb'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import type { OnlineMrSessionDetail, OnlineMrSessionSummary } from '../../types/onlineMr'
 import type { OnlineMrMetricSeries, OnlineMrTimelineEvent, RailTransitTask } from '../../types/railTransitWeb'
@@ -31,7 +33,34 @@ const taskLoading = ref(false)
 const error = ref('')
 let pollTimer: number | undefined
 
-const metricRows = computed(() => metrics.value.map((series) => ({
+interface MetricSummaryRow {
+  metric_type: string
+  series_key: string
+  count: number
+  minimum: number | null
+  average: number | null
+  maximum: number | null
+  latest: number | string | null
+}
+
+const metricColumns: NcTableColumn<MetricSummaryRow>[] = [
+  { key: 'metric_type', label: '指标', valueType: 'name' },
+  { key: 'series_key', label: '序列', valueType: 'name' },
+  { key: 'count', label: '样本', valueType: 'number' },
+  { key: 'minimum', label: '最小', valueType: 'number', displayValue: (row) => display(row.minimum) },
+  { key: 'average', label: '平均', valueType: 'number', displayValue: (row) => display(row.average) },
+  { key: 'maximum', label: '最大', valueType: 'number', displayValue: (row) => display(row.maximum) },
+  { key: 'latest', label: '最近', displayValue: (row) => display(row.latest) },
+]
+const timelineColumns: NcTableColumn<OnlineMrTimelineEvent>[] = [
+  { key: 'local_time', label: '本地时间', valueType: 'datetime' },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime' },
+  { key: 'source', label: '来源', valueType: 'name' },
+  { key: 'event_type', label: '事件', valueType: 'status' },
+  { key: 'severity', label: '级别', valueType: 'status' },
+  { key: 'title', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
+const metricRows = computed<MetricSummaryRow[]>(() => metrics.value.map((series) => ({
   metric_type: series.metric_type,
   series_key: series.series_key || '默认序列',
   count: series.summary.count,
@@ -114,8 +143,8 @@ onBeforeUnmount(stopPolling)
     <el-empty v-if="!detail && !loading" description="当前局点暂无 Online MR 会话" />
     <template v-if="detail">
       <div class="summary-grid"><article><span>会话状态</span><strong>{{ detail.status }}</strong></article><article><span>MR</span><strong>{{ detail.device_name || detail.mr_name }}</strong></article><article><span>完整性</span><strong>{{ detail.data_integrity }}</strong></article><article><span>执行端</span><strong>{{ detail.executor_kind || '无数据' }}</strong></article><article><span>采集时长</span><strong>{{ display(detail.duration_minutes) }} min</strong></article></div>
-      <div class="content-card"><div class="toolbar"><strong>指标</strong><el-checkbox-group v-model="metricTypes"><el-checkbox label="rssi">RSSI</el-checkbox><el-checkbox label="ctl_busy">Channel Busy</el-checkbox><el-checkbox label="ping_rtt">fping RTT</el-checkbox><el-checkbox label="ping_loss">丢包</el-checkbox><el-checkbox label="iperf_bitrate">iPerf</el-checkbox></el-checkbox-group><el-button type="primary" :loading="loading" @click="loadAnalysis">重新查询</el-button></div><el-table :data="metricRows" border stripe empty-text="所选会话暂无结构化指标"><el-table-column prop="metric_type" label="指标" width="150" /><el-table-column prop="series_key" label="序列" min-width="220" /><el-table-column prop="count" label="样本" width="90" /><el-table-column label="最小"><template #default="{ row }">{{ display(row.minimum) }}</template></el-table-column><el-table-column label="平均"><template #default="{ row }">{{ display(row.average) }}</template></el-table-column><el-table-column label="最大"><template #default="{ row }">{{ display(row.maximum) }}</template></el-table-column><el-table-column label="最近"><template #default="{ row }">{{ display(row.latest) }}</template></el-table-column></el-table></div>
-      <div class="content-card"><h2>会话时间线</h2><el-table :data="timeline" border stripe height="360" empty-text="暂无会话事件"><el-table-column prop="local_time" label="本地时间" width="185" /><el-table-column prop="device_time" label="设备时间" width="185" /><el-table-column prop="source" label="来源" width="130" /><el-table-column prop="event_type" label="事件" width="130" /><el-table-column prop="severity" label="级别" width="90" /><el-table-column prop="title" label="说明" min-width="240" /></el-table></div>
+      <div class="content-card"><div class="toolbar"><strong>指标</strong><el-checkbox-group v-model="metricTypes"><el-checkbox label="rssi">RSSI</el-checkbox><el-checkbox label="ctl_busy">Channel Busy</el-checkbox><el-checkbox label="ping_rtt">fping RTT</el-checkbox><el-checkbox label="ping_loss">丢包</el-checkbox><el-checkbox label="iperf_bitrate">iPerf</el-checkbox></el-checkbox-group><el-button type="primary" :loading="loading" @click="loadAnalysis">重新查询</el-button></div><NcDataTable table-id="online-mr-analysis-metrics" route-key="/rail-transit/online-mr-analysis" :data="metricRows" :columns="metricColumns" border empty-text="所选会话暂无结构化指标" /></div>
+      <div class="content-card"><h2>会话时间线</h2><NcDataTable table-id="online-mr-analysis-timeline" route-key="/rail-transit/online-mr-analysis" :data="timeline" :columns="timelineColumns" border height="360" empty-text="暂无会话事件" /></div>
       <div class="content-card report-card"><div><h2>分析报告</h2><p>报告由 Export Process 生成；停止、日志、Artifact 保存和打开操作统一在任务窗口完成。</p></div><div class="report-actions"><el-input v-model="outputName" placeholder="可选报告文件名" /><el-button type="primary" :loading="taskLoading" :disabled="!isFeatureEnabled('web.online_mr_report_export')" @click="startReport">生成 XLSX 报告</el-button><el-button @click="openTaskWindow">打开任务窗口</el-button></div><el-alert v-if="task" :title="`${task.status} · ${task.error_message || task.message || task.task_id}`" :type="task.status === 'FAILED' ? 'error' : 'info'" :closable="false" /></div>
     </template>
   </section>

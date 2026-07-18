@@ -7,8 +7,10 @@ import {
   exportTracksideApPlan, getTracksideApPlan, getTracksideApTask,
   previewTracksideApPlan, recoverTracksideApTasks, saveTracksideApPlan,
 } from '../../api/tracksideApBusiness'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
-import type { TracksideApPlanPreview, TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import type { TracksideApPlanPreview, TracksideApPlanPreviewRow, TracksideApPlanRow, TracksideApTask } from '../../types/tracksideApBusiness'
 
 const storageKey = 'netconsole.trackside-ap-plan.last-task'
 const router = useRouter()
@@ -25,6 +27,22 @@ const preview = ref<TracksideApPlanPreview | null>(null)
 const previewVisible = ref(false)
 let pollTimer: number | undefined
 
+const planColumns: NcTableColumn<TracksideApPlanRow>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
+  { key: 'station_name', label: '站点', valueType: 'name', fixed: 'left' },
+  { key: 'ap_count', label: 'AP 数', valueType: 'number' },
+  { key: 'ap_start_address', label: 'AP 起始地址', valueType: 'ip' },
+  { key: 'mask_length', label: '掩码', valueType: 'number' },
+  { key: 'ap_gateway', label: 'AP 网关', valueType: 'ip' },
+  { key: 'ap_management_vlans', label: '管理 VLAN' },
+  { key: 'remark', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
+const previewColumns: NcTableColumn<TracksideApPlanPreviewRow>[] = [
+  { key: 'row_number', label: '行', valueType: 'number' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'key', label: '站点', valueType: 'name' },
+  { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
 const canWrite = computed(() => isFeatureEnabled('web.rail_trackside_ap_plan_write') && isFeatureEnabled('web.rail_task_control'))
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 
@@ -140,16 +158,15 @@ onBeforeUnmount(stopPolling)
         <el-button :disabled="!isFeatureEnabled('web.rail_trackside_ap_plan_export') || taskRunning" @click="exportPlan(true)">导出模板</el-button>
         <span class="dirty">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
       </div>
-      <el-table v-loading="loading" :data="rows" border stripe height="calc(100vh - 340px)" empty-text="暂无轨旁 AP 规划，可新增或导入" @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value">
-        <el-table-column type="selection" width="46" fixed="left" />
-        <el-table-column label="站点" min-width="150" fixed="left"><template #default="{ row }"><el-input v-model="row.station_name" :disabled="!canWrite" @input="markDirty" /></template></el-table-column>
-        <el-table-column label="AP 数" width="110"><template #default="{ row }"><el-input-number v-model="row.ap_count" :disabled="!canWrite" :min="0" controls-position="right" @change="markDirty" /></template></el-table-column>
-        <el-table-column label="AP 起始地址" min-width="170"><template #default="{ row }"><el-input v-model="row.ap_start_address" :disabled="!canWrite" @input="markDirty" /></template></el-table-column>
-        <el-table-column label="掩码" width="105"><template #default="{ row }"><el-input-number v-model="row.mask_length" :disabled="!canWrite" :min="0" :max="32" controls-position="right" @change="markDirty" /></template></el-table-column>
-        <el-table-column label="AP 网关" min-width="160"><template #default="{ row }"><el-input v-model="row.ap_gateway" :disabled="!canWrite" @input="markDirty" /></template></el-table-column>
-        <el-table-column label="管理 VLAN" min-width="170"><template #default="{ row }"><el-input v-model="row.ap_management_vlans" :disabled="!canWrite" @input="markDirty" /></template></el-table-column>
-        <el-table-column label="备注" min-width="190"><template #default="{ row }"><el-input v-model="row.remark" :disabled="!canWrite" @input="markDirty" /></template></el-table-column>
-      </el-table>
+      <NcDataTable v-loading="loading" table-id="trackside-ap-plan" route-key="/rail-transit/trackside-ap-plan" :data="rows" :columns="planColumns" border height="calc(100vh - 340px)" empty-text="暂无轨旁 AP 规划，可新增或导入" @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value">
+        <template #cell-station_name="{ row }"><el-input v-model="row.station_name" :disabled="!canWrite" @input="markDirty" /></template>
+        <template #cell-ap_count="{ row }"><el-input-number v-model="row.ap_count" :disabled="!canWrite" :min="0" controls-position="right" @change="markDirty" /></template>
+        <template #cell-ap_start_address="{ row }"><el-input v-model="row.ap_start_address" :disabled="!canWrite" @input="markDirty" /></template>
+        <template #cell-mask_length="{ row }"><el-input-number v-model="row.mask_length" :disabled="!canWrite" :min="0" :max="32" controls-position="right" @change="markDirty" /></template>
+        <template #cell-ap_gateway="{ row }"><el-input v-model="row.ap_gateway" :disabled="!canWrite" @input="markDirty" /></template>
+        <template #cell-ap_management_vlans="{ row }"><el-input v-model="row.ap_management_vlans" :disabled="!canWrite" @input="markDirty" /></template>
+        <template #cell-remark="{ row }"><el-input v-model="row.remark" :disabled="!canWrite" @input="markDirty" /></template>
+      </NcDataTable>
     </div>
     <div v-if="task" class="content-card task-card">
       <div class="task-heading"><div><h2>规划任务</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div>
@@ -160,7 +177,7 @@ onBeforeUnmount(stopPolling)
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>
       <div v-if="preview" class="preview">
         <el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions>
-        <el-table :data="preview.rows" border height="360"><el-table-column prop="row_number" label="行" width="70" /><el-table-column prop="status" label="状态" width="100" /><el-table-column prop="key" label="站点" min-width="150" /><el-table-column prop="message" label="说明" min-width="260" /></el-table>
+        <NcDataTable table-id="trackside-ap-plan-import-preview" route-key="/rail-transit/trackside-ap-plan" :data="preview.rows" :columns="previewColumns" border height="360" :show-column-settings="false" />
         <el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或更换重复策略后重新导入" type="error" :closable="false" />
       </div>
       <template #footer><el-button @click="previewVisible = false">取消</el-button><el-button type="primary" :disabled="!preview?.can_apply" @click="applyPreview">应用到编辑区</el-button></template>

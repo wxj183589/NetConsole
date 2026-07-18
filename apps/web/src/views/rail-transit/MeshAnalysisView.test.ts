@@ -48,4 +48,21 @@ describe('Mesh analysis view', () => {
       suggestedName: 'mesh.zip',
     })
   })
+
+  it('uses typed shared tables with stable identities and scoped detail preferences', () => {
+    expect(source).toContain("import NcDataTable from '../../components/table/NcDataTable.vue'")
+    expect(source).toContain('NcTableColumn<MeshAnalysisSession>[]')
+    expect(source).toContain('NcTableColumn<MeshLinkDetail>[]')
+    expect(source).toContain('NcTableColumn<MeshAnomaly>[]')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
+    expect(source).toContain(':preference-scope="selected.session.session_id"')
+    expect(source).toContain(':preference-scope="task.task_id"')
+    expect(source).toContain("alignmentReason: 'long-text'")
+    expect(source).toContain("alignmentReason: 'path'")
+
+    const tableIds = [...source.matchAll(/table-id="([^"]+)"/g)].map((match) => match[1])
+    expect(tableIds.length).toBeGreaterThanOrEqual(11)
+    expect(new Set(tableIds).size).toBe(tableIds.length)
+  })
 })

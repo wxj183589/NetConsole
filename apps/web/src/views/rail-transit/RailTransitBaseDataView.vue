@@ -4,8 +4,24 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
-import type { MergeFieldDecision, TracksideAp, VehicleMr } from '../../types/railTransitBaseData'
+import type {
+  DataQualityEntityGroup,
+  DataQualityIssue,
+  ImportChange,
+  ImportOperation,
+  MergeFieldDecision,
+  MergeFieldDiff,
+  MergePlanItem,
+  Relation,
+  Section,
+  Station,
+  TracksideAp,
+  Train,
+  VehicleMr,
+} from '../../types/railTransitBaseData'
 
 const store = useRailTransitBaseDataStore()
 const router = useRouter()
@@ -36,6 +52,115 @@ const summaryCards = computed(() => [
   ['重复静态 IP', store.summary?.duplicate_static_ip_count || 0, 'danger'],
   ['未关联列车 MR', store.summary?.unbound_mr_count || 0, 'warning'],
 ])
+
+const stationColumns: NcTableColumn<Station>[] = [
+  { key: 'sort_order', label: '顺序', valueType: 'number', width: 80 },
+  { key: 'name', label: '站点名称', valueType: 'name', minWidth: 180 },
+  { key: 'code', label: '站点编码', minWidth: 120, displayValue: (row) => display(row.code) },
+  { key: 'ap_count', label: 'AP 数量', valueType: 'number', width: 110 },
+  { key: 'section_count', label: '关联区间', valueType: 'number', width: 110 },
+  { key: 'mileage_range', label: '里程范围', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
+  { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
+]
+const sectionColumns: NcTableColumn<Section>[] = [
+  { key: 'name', label: '区间名称', valueType: 'name', minWidth: 200 },
+  { key: 'start_station', label: '起始站', minWidth: 140, displayValue: (row) => display(row.start_station) },
+  { key: 'end_station', label: '终点站', minWidth: 140, displayValue: (row) => display(row.end_station) },
+  { key: 'line_side', label: '线路方向', minWidth: 120, displayValue: (row) => display(row.line_side) },
+  { key: 'ap_count', label: 'AP 数量', valueType: 'number', width: 110 },
+  { key: 'mileage_range', label: '里程范围', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
+]
+const apColumns: NcTableColumn<TracksideAp>[] = [
+  { key: 'name', label: 'AP 名称 / 点位', valueType: 'name', minWidth: 170, fixed: 'left', displayValue: (row) => row.name || row.point_code || '--' },
+  { key: 'mac', label: 'AP MAC', valueType: 'mac', minWidth: 150 },
+  { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125, displayValue: (row) => display(row.management_ip) },
+  { key: 'station', label: '站点', minWidth: 130, displayValue: (row) => display(row.station) },
+  { key: 'section', label: '区间', minWidth: 170, displayValue: (row) => display(row.section) },
+  { key: 'mileage', label: '里程', valueType: 'mileage', minWidth: 120, displayValue: (row) => row.mileage.normalized || row.mileage.raw || '--' },
+  { key: 'line_side', label: '线路方向', width: 110, displayValue: (row) => display(row.line_side) },
+  { key: 'fit_ap_status', label: 'FIT-AP 状态', valueType: 'status', width: 120 },
+  { key: 'mesh_related_name', label: '关联 MR', minWidth: 150 },
+  { key: 'optical_status', label: '光衰', valueType: 'status', width: 105 },
+  { key: 'source_file', label: '数据来源', align: 'left', alignmentReason: 'path', minWidth: 150, showOverflowTooltip: true },
+  { key: 'issues', label: '问题', valueType: 'status', width: 90 },
+  { key: 'actions', label: '跳转', valueType: 'actions', width: 190, fixed: 'right', hideable: false },
+]
+const trainColumns: NcTableColumn<Train>[] = [
+  { key: 'train_no', label: '列车编号', minWidth: 120 },
+  { key: 'name', label: '列车名称', valueType: 'name', minWidth: 150 },
+  { key: 'mr_count', label: 'MR 数量', valueType: 'number', width: 100 },
+  { key: 'roles', label: 'MR 角色', minWidth: 130, displayValue: (row) => row.roles.join(' / ') || '--' },
+  { key: 'latest_mesh_status', label: '最近 Mesh-Link', valueType: 'status', width: 140 },
+  { key: 'latest_session_id', label: '最近 Online MR', minWidth: 210, displayValue: (row) => display(row.latest_session_id) },
+  { key: 'issues', label: '问题', valueType: 'number', width: 90, displayValue: (row) => row.issue_count || '--' },
+]
+const mrColumns: NcTableColumn<VehicleMr>[] = [
+  { key: 'name', label: 'MR 名称', valueType: 'name', minWidth: 170 },
+  { key: 'device_id', label: '设备 ID', valueType: 'number', width: 100 },
+  { key: 'train_id', label: '所属列车', minWidth: 120 },
+  { key: 'role', label: '角色', width: 80 },
+  { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125 },
+  { key: 'mac', label: 'MAC', valueType: 'mac', minWidth: 150, displayValue: (row) => display(row.mac) },
+  { key: 'connection', label: '协议 / 端口', minWidth: 120, displayValue: (row) => `${display(row.protocol)} / ${display(row.port)}` },
+  { key: 'mesh_status', label: 'Mesh-Link', valueType: 'status', width: 120 },
+  { key: 'mesh_related_name', label: '当前轨旁 AP', minWidth: 160, displayValue: (row) => display(row.runtime.mesh_related_name) },
+  { key: 'actions', label: '跳转', valueType: 'actions', width: 190, hideable: false },
+]
+const issueGroupColumns: NcTableColumn<DataQualityEntityGroup>[] = [
+  { key: 'expand', label: '', type: 'expand', width: 48, hideable: false },
+  { key: 'status', label: '状态', valueType: 'status', width: 110 },
+  { key: 'entity_type', label: '实体类型', width: 110 },
+  { key: 'display_name', label: '实体', valueType: 'name', minWidth: 180 },
+  { key: 'issue_count', label: '问题数', valueType: 'number', width: 90 },
+  { key: 'counts', label: '错误 / 警告 / 提示', width: 160, displayValue: (row) => `${row.error_count} / ${row.warning_count} / ${row.info_count}` },
+  { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, alignmentReason: 'long-text', showOverflowTooltip: true },
+]
+const issueColumns: NcTableColumn<DataQualityIssue>[] = [
+  { key: 'field_name', label: '字段', minWidth: 150 },
+  { key: 'message', label: '字段问题', valueType: 'error', minWidth: 260, alignmentReason: 'long-text' },
+  { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 260, alignmentReason: 'long-text' },
+]
+const mergeColumns: NcTableColumn<MergePlanItem>[] = [
+  { key: 'expand', label: '', type: 'expand', width: 48, hideable: false },
+  { key: 'row_number', label: '行号', valueType: 'number', width: 80 },
+  { key: 'result', label: '处理结果', valueType: 'status', width: 150 },
+  { key: 'source_identity', label: '来源身份', minWidth: 210, displayValue: (row) => `${display(row.source_identity.ap_name)} / ${display(row.source_identity.ap_mac)}` },
+  { key: 'matched_entity_name', label: '正式实体', valueType: 'name', minWidth: 170, displayValue: (row) => display(row.matched_entity_name) },
+  { key: 'match_method', label: '匹配方式', width: 140 },
+  { key: 'field_diffs', label: '字段差异', valueType: 'description', minWidth: 320, alignmentReason: 'long-text', displayValue: (row) => diffSummary(row.field_diffs), showOverflowTooltip: true },
+  { key: 'conflict_summary', label: '冲突', valueType: 'error', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => display(row.conflict_summary) },
+]
+const mergeFieldColumns: NcTableColumn<MergeFieldDiff>[] = [
+  { key: 'field_name', label: '字段', minWidth: 160 },
+  { key: 'current_value', label: '当前值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.current_value) },
+  { key: 'proposed_value', label: '导入值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.proposed_value) },
+  { key: 'decision', label: '处置', valueType: 'actions', minWidth: 200, hideable: false },
+]
+const operationColumns: NcTableColumn<ImportOperation>[] = [
+  { key: 'started_at', label: '开始时间', valueType: 'datetime', minWidth: 180 },
+  { key: 'source_file_name', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 180, showOverflowTooltip: true },
+  { key: 'status', label: '状态', valueType: 'status', width: 120 },
+  { key: 'counts', label: '新增 / 更新 / 跳过', width: 160, displayValue: (row) => `${row.created_count} / ${row.updated_count} / ${row.skipped_count}` },
+  { key: 'owner', label: '操作者', width: 110 },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 180, hideable: false },
+]
+const changeColumns: NcTableColumn<ImportChange>[] = [
+  { key: 'entity_id', label: '实体', valueType: 'name', minWidth: 180 },
+  { key: 'action', label: '动作', width: 100 },
+  { key: 'field_name', label: '字段', width: 150 },
+  { key: 'old_value', label: '原值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.old_value) },
+  { key: 'new_value', label: '新值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.new_value) },
+  { key: 'confirmation_method', label: '确认方式', width: 140 },
+]
+const relationColumns: NcTableColumn<Relation>[] = [
+  { key: 'train_no', label: '列车', width: 100 },
+  { key: 'mr_name', label: '车载 MR', valueType: 'name', minWidth: 170 },
+  { key: 'ap_name', label: '当前轨旁 AP', valueType: 'name', minWidth: 180 },
+  { key: 'station', label: '站点', minWidth: 140, displayValue: (row) => display(row.station) },
+  { key: 'section', label: '区间', minWidth: 180, displayValue: (row) => display(row.section) },
+  { key: 'status', label: '状态', valueType: 'status', width: 110 },
+  { key: 'updated_at', label: '最近更新', valueType: 'datetime', minWidth: 180 },
+]
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -189,25 +314,10 @@ function formatBytes(value: number): string {
         <el-tab-pane label="站点与区间" name="locations">
           <el-tabs v-model="locationTab" type="card">
             <el-tab-pane label="站点" name="stations">
-              <el-table :data="store.stations" stripe height="calc(100vh - 365px)" empty-text="暂无站点资料">
-                <el-table-column prop="sort_order" label="顺序" width="80" />
-                <el-table-column prop="name" label="站点名称" min-width="180" />
-                <el-table-column prop="code" label="站点编码" min-width="120"><template #default="scope">{{ display(scope.row.code) }}</template></el-table-column>
-                <el-table-column prop="ap_count" label="AP 数量" width="110" />
-                <el-table-column prop="section_count" label="关联区间" width="110" />
-                <el-table-column label="里程范围" min-width="160"><template #default="scope">{{ mileageRange(scope.row.mileage_min, scope.row.mileage_max) }}</template></el-table-column>
-                <el-table-column prop="remark" label="备注" min-width="180"><template #default="scope">{{ display(scope.row.remark) }}</template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="store.stations" :columns="stationColumns" height="calc(100vh - 365px)" empty-text="暂无站点资料" />
             </el-tab-pane>
             <el-tab-pane label="区间" name="sections">
-              <el-table :data="store.sections" stripe height="calc(100vh - 365px)" empty-text="暂无区间资料">
-                <el-table-column prop="name" label="区间名称" min-width="200" />
-                <el-table-column prop="start_station" label="起始站" min-width="140"><template #default="scope">{{ display(scope.row.start_station) }}</template></el-table-column>
-                <el-table-column prop="end_station" label="终点站" min-width="140"><template #default="scope">{{ display(scope.row.end_station) }}</template></el-table-column>
-                <el-table-column prop="line_side" label="线路方向" min-width="120"><template #default="scope">{{ display(scope.row.line_side) }}</template></el-table-column>
-                <el-table-column prop="ap_count" label="AP 数量" width="110" />
-                <el-table-column label="里程范围" min-width="160"><template #default="scope">{{ mileageRange(scope.row.mileage_min, scope.row.mileage_max) }}</template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="store.sections" :columns="sectionColumns" height="calc(100vh - 365px)" empty-text="暂无区间资料" />
             </el-tab-pane>
           </el-tabs>
         </el-tab-pane>
@@ -221,36 +331,22 @@ function formatBytes(value: number): string {
             <el-select v-model="store.apFilters.has_issue" clearable placeholder="数据质量"><el-option label="只看异常" :value="true" /><el-option label="只看正常" :value="false" /></el-select>
             <el-button type="primary" @click="store.applyApFilters">应用筛选</el-button>
           </div>
-          <el-table :data="store.aps" stripe height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
-            <el-table-column label="AP 名称 / 点位" min-width="170" fixed="left"><template #default="scope">{{ scope.row.name || scope.row.point_code || '--' }}</template></el-table-column>
-            <el-table-column prop="mac" label="AP MAC" min-width="150" />
-            <el-table-column prop="management_ip" label="管理 IP" min-width="125"><template #default="scope">{{ display(scope.row.management_ip) }}</template></el-table-column>
-            <el-table-column prop="station" label="站点" min-width="130"><template #default="scope">{{ display(scope.row.station) }}</template></el-table-column>
-            <el-table-column prop="section" label="区间" min-width="170"><template #default="scope">{{ display(scope.row.section) }}</template></el-table-column>
-            <el-table-column label="里程" min-width="120"><template #default="scope">{{ scope.row.mileage.normalized || scope.row.mileage.raw || '--' }}</template></el-table-column>
-            <el-table-column prop="line_side" label="线路方向" width="110"><template #default="scope">{{ display(scope.row.line_side) }}</template></el-table-column>
-            <el-table-column label="FIT-AP 状态" width="120"><template #default="scope"><el-tag :type="stateType(scope.row.runtime.fit_ap_status)">{{ scope.row.runtime.fit_ap_status }}</el-tag></template></el-table-column>
-            <el-table-column label="关联 MR" min-width="150"><template #default="scope">{{ display(scope.row.runtime.mesh_related_name) }}</template></el-table-column>
-            <el-table-column label="光衰" width="105"><template #default="scope"><el-tag :type="stateType(scope.row.runtime.optical_status)">{{ scope.row.runtime.optical_status }}</el-tag></template></el-table-column>
-            <el-table-column prop="source_file" label="数据来源" min-width="150" show-overflow-tooltip />
-            <el-table-column label="问题" width="90"><template #default="scope"><el-tag v-if="scope.row.issue_count" :type="issueType(scope.row.highest_issue_severity)">{{ scope.row.issue_count }}</el-tag><span v-else>--</span></template></el-table-column>
-            <el-table-column label="跳转" width="190" fixed="right"><template #default="scope"><el-button link type="primary" @click="openApAc(scope.row)">FIT-AP</el-button><el-button link type="primary" @click="openApMesh(scope.row)">Mesh-Link</el-button></template></el-table-column>
-          </el-table>
+          <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="store.aps" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
+            <template #cell-fit_ap_status="{ row }"><el-tag :type="stateType(row.runtime.fit_ap_status)">{{ row.runtime.fit_ap_status }}</el-tag></template>
+            <template #cell-mesh_related_name="{ row }">{{ display(row.runtime.mesh_related_name) }}</template>
+            <template #cell-optical_status="{ row }"><el-tag :type="stateType(row.runtime.optical_status)">{{ row.runtime.optical_status }}</el-tag></template>
+            <template #cell-issues="{ row }"><el-tag v-if="row.issue_count" :type="issueType(row.highest_issue_severity)">{{ row.issue_count }}</el-tag><span v-else>--</span></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-button link type="primary" @click="openApMesh(row)">Mesh-Link</el-button></template>
+          </NcDataTable>
           <el-pagination background layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
         </el-tab-pane>
 
         <el-tab-pane label="列车与车载 MR" name="vehicles">
           <el-tabs v-model="vehicleTab" type="card">
             <el-tab-pane label="列车" name="trains">
-              <el-table :data="store.trains" stripe height="calc(100vh - 365px)" empty-text="暂无列车资料">
-                <el-table-column prop="train_no" label="列车编号" min-width="120" />
-                <el-table-column prop="name" label="列车名称" min-width="150" />
-                <el-table-column prop="mr_count" label="MR 数量" width="100" />
-                <el-table-column label="MR 角色" min-width="130"><template #default="scope">{{ scope.row.roles.join(' / ') || '--' }}</template></el-table-column>
-                <el-table-column label="最近 Mesh-Link" width="140"><template #default="scope"><el-tag :type="stateType(scope.row.latest_mesh_status)">{{ scope.row.latest_mesh_status }}</el-tag></template></el-table-column>
-                <el-table-column prop="latest_session_id" label="最近 Online MR" min-width="210"><template #default="scope">{{ display(scope.row.latest_session_id) }}</template></el-table-column>
-                <el-table-column label="问题" width="90"><template #default="scope">{{ scope.row.issue_count || '--' }}</template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="rail-base-trains" route-key="/rail-transit/base-data" :data="store.trains" :columns="trainColumns" height="calc(100vh - 365px)" empty-text="暂无列车资料">
+                <template #cell-latest_mesh_status="{ row }"><el-tag :type="stateType(row.latest_mesh_status)">{{ row.latest_mesh_status }}</el-tag></template>
+              </NcDataTable>
             </el-tab-pane>
             <el-tab-pane label="车载 MR" name="mrs">
               <div class="filter-bar">
@@ -259,18 +355,10 @@ function formatBytes(value: number): string {
                 <el-select v-model="store.mrFilters.mr_role" clearable placeholder="MR 角色"><el-option label="CT" value="CT" /><el-option label="TC" value="TC" /></el-select>
                 <el-button type="primary" @click="store.applyMrFilters">应用筛选</el-button>
               </div>
-              <el-table :data="store.mrs" stripe height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
-                <el-table-column prop="name" label="MR 名称" min-width="170" />
-                <el-table-column prop="device_id" label="设备 ID" width="100" />
-                <el-table-column prop="train_id" label="所属列车" min-width="120" />
-                <el-table-column prop="role" label="角色" width="80" />
-                <el-table-column prop="management_ip" label="管理 IP" min-width="125" />
-                <el-table-column prop="mac" label="MAC" min-width="150"><template #default="scope">{{ display(scope.row.mac) }}</template></el-table-column>
-                <el-table-column label="协议 / 端口" min-width="120"><template #default="scope">{{ display(scope.row.protocol) }} / {{ display(scope.row.port) }}</template></el-table-column>
-                <el-table-column label="Mesh-Link" width="120"><template #default="scope"><el-tag :type="stateType(scope.row.runtime.mesh_status)">{{ scope.row.runtime.mesh_status }}</el-tag></template></el-table-column>
-                <el-table-column label="当前轨旁 AP" min-width="160"><template #default="scope">{{ display(scope.row.runtime.mesh_related_name) }}</template></el-table-column>
-                <el-table-column label="跳转" width="190"><template #default="scope"><el-button link type="primary" @click="openMrMesh(scope.row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(scope.row)">Online MR</el-button></template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="store.mrs" :columns="mrColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
+                <template #cell-mesh_status="{ row }"><el-tag :type="stateType(row.runtime.mesh_status)">{{ row.runtime.mesh_status }}</el-tag></template>
+                <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
+              </NcDataTable>
               <el-pagination background layout="total, prev, pager, next, sizes" :total="store.mrTotal" :current-page="store.mrFilters.page" :page-size="store.mrFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setMrPage" @size-change="(size: number) => { store.mrFilters.page_size = size; store.applyMrFilters() }" />
             </el-tab-pane>
           </el-tabs>
@@ -286,15 +374,10 @@ function formatBytes(value: number): string {
           <div class="issue-stats">
             <el-tag v-for="item in issueCodeStats" :key="item[0]" type="info">{{ item[0] }}：{{ item[1] }}</el-tag>
           </div>
-          <el-table :data="store.issueGroups" stripe height="calc(100vh - 460px)" empty-text="当前没有数据质量问题">
-            <el-table-column type="expand"><template #default="scope"><el-table :data="scope.row.issues" size="small"><el-table-column prop="field_name" label="字段" width="150" /><el-table-column prop="message" label="字段问题" min-width="260" /><el-table-column prop="suggested_action" label="建议处理" min-width="260" /></el-table></template></el-table-column>
-            <el-table-column label="状态" width="110"><template #default="scope"><el-tag v-if="scope.row.blocking" type="danger">阻断</el-tag><el-tag v-else-if="scope.row.needs_confirmation" type="warning">待确认</el-tag><el-tag v-else type="info">提示</el-tag></template></el-table-column>
-            <el-table-column prop="entity_type" label="实体类型" width="110" />
-            <el-table-column prop="display_name" label="实体" min-width="180" />
-            <el-table-column prop="issue_count" label="问题数" width="90" />
-            <el-table-column label="错误 / 警告 / 提示" width="160"><template #default="scope">{{ scope.row.error_count }} / {{ scope.row.warning_count }} / {{ scope.row.info_count }}</template></el-table-column>
-            <el-table-column prop="suggested_action" label="建议处理" min-width="300" show-overflow-tooltip />
-          </el-table>
+          <NcDataTable table-id="rail-base-quality-groups" route-key="/rail-transit/base-data" :data="store.issueGroups" :columns="issueGroupColumns" height="calc(100vh - 460px)" empty-text="当前没有数据质量问题">
+            <template #cell-expand="{ row }"><NcDataTable table-id="rail-base-quality-issues" route-key="/rail-transit/base-data" :preference-scope="row.entity_id" :data="row.issues" :columns="issueColumns" compact :show-column-settings="false" /></template>
+            <template #cell-status="{ row }"><el-tag v-if="row.blocking" type="danger">阻断</el-tag><el-tag v-else-if="row.needs_confirmation" type="warning">待确认</el-tag><el-tag v-else type="info">提示</el-tag></template>
+          </NcDataTable>
           <el-pagination background layout="total, prev, pager, next" :total="store.issueGroupTotal" :current-page="store.issueFilters.page" :page-size="store.issueFilters.page_size" @current-change="store.setIssuePage" />
         </el-tab-pane>
 
@@ -318,77 +401,40 @@ function formatBytes(value: number): string {
             </div>
             <el-tag v-else type="info">写入未授权，仅可预览</el-tag>
           </div>
-          <el-table v-loading="store.previewLoading" :data="mergeRows" stripe height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
-            <el-table-column type="expand">
-              <template #default="scope">
-                <el-table :data="scope.row.field_diffs" size="small">
-                  <el-table-column prop="field_name" label="字段" width="160" />
-                  <el-table-column label="当前值" min-width="160"><template #default="field">{{ display(field.row.current_value) }}</template></el-table-column>
-                  <el-table-column label="导入值" min-width="160"><template #default="field">{{ display(field.row.proposed_value) }}</template></el-table-column>
-                  <el-table-column label="处置" min-width="200">
-                    <template #default="field">
-                      <el-select
-                        v-if="field.row.action === 'manual_review'"
-                        v-model="decisionSelections[decisionKey(scope.row.row_number, field.row.field_name)]"
-                        placeholder="请选择"
-                      >
-                        <el-option label="保留正式值" value="keep_existing" />
-                        <el-option label="采用导入值" value="use_imported" />
-                      </el-select>
-                      <span v-else>{{ field.row.action }}</span>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </template>
-            </el-table-column>
-            <el-table-column prop="row_number" label="行号" width="80" />
-            <el-table-column label="处理结果" width="150"><template #default="scope"><el-tag :type="mergeType(scope.row.result)">{{ scope.row.result }}</el-tag></template></el-table-column>
-            <el-table-column label="来源身份" min-width="210"><template #default="scope">{{ display(scope.row.source_identity.ap_name) }} / {{ display(scope.row.source_identity.ap_mac) }}</template></el-table-column>
-            <el-table-column prop="matched_entity_name" label="正式实体" min-width="170"><template #default="scope">{{ display(scope.row.matched_entity_name) }}</template></el-table-column>
-            <el-table-column prop="match_method" label="匹配方式" width="140" />
-            <el-table-column label="字段差异" min-width="320" show-overflow-tooltip><template #default="scope">{{ diffSummary(scope.row.field_diffs) }}</template></el-table-column>
-            <el-table-column prop="conflict_summary" label="冲突" min-width="240"><template #default="scope">{{ display(scope.row.conflict_summary) }}</template></el-table-column>
-          </el-table>
+          <NcDataTable v-loading="store.previewLoading" table-id="rail-base-merge-plan" route-key="/rail-transit/base-data" :data="mergeRows" :columns="mergeColumns" height="calc(100vh - 520px)" empty-text="请选择文件生成合并预览">
+            <template #cell-expand="{ row }">
+              <NcDataTable table-id="rail-base-merge-field-diffs" route-key="/rail-transit/base-data" :preference-scope="String(row.row_number)" :data="row.field_diffs" :columns="mergeFieldColumns" compact :show-column-settings="false">
+                <template #cell-decision="{ row: field }">
+                  <el-select v-if="field.action === 'manual_review'" v-model="decisionSelections[decisionKey(row.row_number, field.field_name)]" placeholder="请选择">
+                    <el-option label="保留正式值" value="keep_existing" />
+                    <el-option label="采用导入值" value="use_imported" />
+                  </el-select>
+                  <span v-else>{{ field.action }}</span>
+                </template>
+              </NcDataTable>
+            </template>
+            <template #cell-result="{ row }"><el-tag :type="mergeType(row.result)">{{ row.result }}</el-tag></template>
+          </NcDataTable>
         </el-tab-pane>
 
         <el-tab-pane label="导入审计" name="operations">
           <el-alert title="审计记录只保存文件摘要、字段差异和操作结果，不保存上传原文件。" type="info" :closable="false" show-icon />
-          <el-table :data="store.importOperations" stripe class="operation-table" empty-text="暂无导入操作">
-            <el-table-column prop="started_at" label="开始时间" min-width="180" />
-            <el-table-column prop="source_file_name" label="来源文件" min-width="180" show-overflow-tooltip />
-            <el-table-column prop="status" label="状态" width="120" />
-            <el-table-column label="新增 / 更新 / 跳过" width="160"><template #default="scope">{{ scope.row.created_count }} / {{ scope.row.updated_count }} / {{ scope.row.skipped_count }}</template></el-table-column>
-            <el-table-column prop="owner" label="操作者" width="110" />
-            <el-table-column label="操作" width="180">
-              <template #default="scope">
-                <el-button link type="primary" @click="store.selectImportOperation(scope.row.operation_id)">查看变更</el-button>
+          <NcDataTable table-id="rail-base-import-operations" route-key="/rail-transit/base-data" :data="store.importOperations" :columns="operationColumns" class="operation-table" empty-text="暂无导入操作">
+            <template #cell-actions="{ row }">
+                <el-button link type="primary" @click="store.selectImportOperation(row.operation_id)">查看变更</el-button>
                 <el-button
-                  v-if="store.importPolicies?.rollback_enabled && store.canApplyImport() && scope.row.status === 'APPLIED'"
-                  link type="danger" @click="handleRollback(scope.row.operation_id)"
+                  v-if="store.importPolicies?.rollback_enabled && store.canApplyImport() && row.status === 'APPLIED'"
+                  link type="danger" @click="handleRollback(row.operation_id)"
                 >回滚</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-table v-if="store.selectedOperationId" :data="store.importChanges" stripe class="change-table" empty-text="该操作没有字段变更">
-            <el-table-column prop="entity_id" label="实体" min-width="180" />
-            <el-table-column prop="action" label="动作" width="100" />
-            <el-table-column prop="field_name" label="字段" width="150" />
-            <el-table-column label="原值" min-width="160"><template #default="scope">{{ display(scope.row.old_value) }}</template></el-table-column>
-            <el-table-column label="新值" min-width="160"><template #default="scope">{{ display(scope.row.new_value) }}</template></el-table-column>
-            <el-table-column prop="confirmation_method" label="确认方式" width="140" />
-          </el-table>
+            </template>
+          </NcDataTable>
+          <NcDataTable v-if="store.selectedOperationId" table-id="rail-base-import-changes" route-key="/rail-transit/base-data" :preference-scope="store.selectedOperationId" :data="store.importChanges" :columns="changeColumns" class="change-table" empty-text="该操作没有字段变更" />
         </el-tab-pane>
 
         <el-tab-pane label="关联运行状态" name="relations">
-          <el-table :data="store.relations" stripe height="calc(100vh - 330px)" empty-text="暂无 Mesh-Link 关联快照">
-            <el-table-column prop="train_no" label="列车" width="100" />
-            <el-table-column prop="mr_name" label="车载 MR" min-width="170" />
-            <el-table-column prop="ap_name" label="当前轨旁 AP" min-width="180" />
-            <el-table-column prop="station" label="站点" min-width="140"><template #default="scope">{{ display(scope.row.station) }}</template></el-table-column>
-            <el-table-column prop="section" label="区间" min-width="180"><template #default="scope">{{ display(scope.row.section) }}</template></el-table-column>
-            <el-table-column label="状态" width="110"><template #default="scope"><el-tag :type="stateType(scope.row.status)">{{ scope.row.status }}</el-tag></template></el-table-column>
-            <el-table-column prop="updated_at" label="最近更新" min-width="180" />
-          </el-table>
+          <NcDataTable table-id="rail-base-relations" route-key="/rail-transit/base-data" :data="store.relations" :columns="relationColumns" height="calc(100vh - 330px)" empty-text="暂无 Mesh-Link 关联快照">
+            <template #cell-status="{ row }"><el-tag :type="stateType(row.status)">{{ row.status }}</el-tag></template>
+          </NcDataTable>
         </el-tab-pane>
       </el-tabs>
     </div>

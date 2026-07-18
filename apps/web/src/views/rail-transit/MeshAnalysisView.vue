@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   createMeshProfile, getMeshAlignment, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
   getMeshRssi, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
@@ -15,8 +17,8 @@ import {
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
-  MeshAlignment, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact,
-  MeshChannelBusy, MeshLinkDetail, MeshProfile, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent, MeshTimelineItem,
+  MeshAlignment, MeshAlignmentPoint, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact,
+  MeshChannelBusy, MeshLinkDetail, MeshProfile, MeshRawSource, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent, MeshTimelineItem,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -70,6 +72,117 @@ const cards = computed(() => summary.value ? [
   ['乒乓切换', summary.value.pingpong_count], ['未匹配 AP', summary.value.unmatched_ap_count],
 ] : [])
 const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+type TaskResultRow = { name: string; value: string }
+const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
+  { key: 'name', label: '结果项', minWidth: 220 },
+  { key: 'value', label: '值', align: 'left', alignmentReason: 'long-text', minWidth: 240 },
+]
+const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
+  { key: 'analysis_time', label: '分析时间', valueType: 'datetime', width: 175 },
+  { key: 'train_name', label: '列车', minWidth: 100 },
+  { key: 'mr_name', label: 'MR', valueType: 'name', minWidth: 145 },
+  { key: 'mr_role', label: '角色', width: 70 },
+  { key: 'source_type', label: '来源', width: 125 },
+  { key: 'original_filename', label: '原始日志', align: 'left', alignmentReason: 'path', minWidth: 260, showOverflowTooltip: true },
+  { key: 'link_record_count', label: '链路记录', valueType: 'number', width: 110 },
+  { key: 'link_roles', label: '主 / 备', width: 125, displayValue: (row) => `${row.active_link_count} / ${row.standby_link_count}` },
+  { key: 'event_count', label: '事件', valueType: 'number', width: 90 },
+  { key: 'data_integrity', label: '完整性', valueType: 'status', width: 95 },
+  { key: 'warnings', label: '告警', valueType: 'status', width: 80 },
+  { key: 'report_count', label: '报告', valueType: 'number', width: 75 },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
+]
+const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
+  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185, fixed: 'left' },
+  { key: 'local_radio', label: 'Mesh Radio', valueType: 'number', width: 105 },
+  { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 160 },
+  { key: 'peer_ap_mac', label: 'Peer MAC', valueType: 'mac', width: 145 },
+  { key: 'link_role', label: '角色', width: 90 },
+  { key: 'rssi', label: 'RSSI', valueType: 'number', width: 90, displayValue: (row) => display(row.rssi) },
+  { key: 'station', label: '站点', width: 130 },
+  { key: 'section', label: '区间', width: 150 },
+  { key: 'mileage', label: '里程', valueType: 'mileage', width: 120 },
+  { key: 'line_side', label: '方向', width: 95 },
+  { key: 'event_type', label: '事件', width: 120 },
+  { key: 'duration_ms', label: '上报时长(ms)', valueType: 'duration', width: 130 },
+  { key: 'match_method', label: '匹配方式', minWidth: 180 },
+  { key: 'warning', label: '数据告警', valueType: 'error', minWidth: 150, alignmentReason: 'long-text' },
+]
+const timelineColumns: NcTableColumn<MeshTimelineItem>[] = [
+  { key: 'start_time', label: '开始', valueType: 'datetime', width: 185 },
+  { key: 'end_time', label: '结束', valueType: 'datetime', width: 185 },
+  { key: 'duration_seconds', label: '持续(s)', valueType: 'duration', width: 100 },
+  { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 160 },
+  { key: 'peer_ap_mac', label: 'Peer MAC', valueType: 'mac', width: 145 },
+  { key: 'rssi_range', label: 'RSSI min / avg / max', width: 185, displayValue: (row) => `${display(row.rssi_min)} / ${display(row.rssi_avg)} / ${display(row.rssi_max)}` },
+  { key: 'station', label: '站点', width: 130 },
+  { key: 'section', label: '区间', minWidth: 150 },
+]
+const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
+  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
+  { key: 'event_type', label: '事件', width: 130 },
+  { key: 'from_ap_name', label: '原 AP', valueType: 'name', minWidth: 150 },
+  { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
+  { key: 'rssi_change', label: 'RSSI 前 / 后', width: 135, displayValue: (row) => `${display(row.before_rssi)} / ${display(row.after_rssi)}` },
+  { key: 'duration_ms', label: '耗时(ms)', valueType: 'duration', width: 100 },
+  { key: 'is_short_link', label: '短时', width: 75, displayValue: (row) => row.is_short_link ? '是' : '否' },
+  { key: 'is_pingpong', label: '乒乓', width: 75, displayValue: (row) => row.is_pingpong ? '是' : '否' },
+  { key: 'station', label: '站点', width: 130 },
+]
+const busyColumns: NcTableColumn<MeshChannelBusy>[] = [
+  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
+  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80 },
+  { key: 'ctl_busy', label: 'CtlBusy', valueType: 'percentage', width: 95, displayValue: (row) => display(row.ctl_busy) },
+  { key: 'tx_busy', label: 'TxBusy', valueType: 'percentage', width: 95, displayValue: (row) => display(row.tx_busy) },
+  { key: 'rx_busy', label: 'RxBusy', valueType: 'percentage', width: 95, displayValue: (row) => display(row.rx_busy) },
+  { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 160 },
+  { key: 'station', label: '站点', width: 140 },
+  { key: 'source_type', label: '结构化来源', width: 160 },
+]
+const anomalyColumns: NcTableColumn<MeshAnomaly>[] = [
+  { key: 'severity', label: '级别', valueType: 'status', width: 90 },
+  { key: 'anomaly_type', label: '类型', width: 140 },
+  { key: 'start_time', label: '开始', valueType: 'datetime', width: 185 },
+  { key: 'end_time', label: '结束', valueType: 'datetime', width: 185 },
+  { key: 'peer_ap_name', label: 'AP', valueType: 'name', minWidth: 150 },
+  { key: 'description', label: '说明', valueType: 'description', minWidth: 260, alignmentReason: 'long-text' },
+  { key: 'evidence_reference', label: '证据引用', align: 'left', alignmentReason: 'long-text', minWidth: 160 },
+]
+const apStatisticColumns: NcTableColumn<MeshApStatistics>[] = [
+  { key: 'peer_ap_name', label: 'AP', valueType: 'name', minWidth: 160 },
+  { key: 'peer_ap_mac', label: 'MAC', valueType: 'mac', width: 145 },
+  { key: 'station', label: '站点', width: 130 },
+  { key: 'section', label: '区间', minWidth: 145 },
+  { key: 'link_up_count', label: '主链记录', valueType: 'number', width: 105 },
+  { key: 'link_down_count', label: '备链记录', valueType: 'number', width: 105 },
+  { key: 'switch_in_count', label: '切入', valueType: 'number', width: 75 },
+  { key: 'switch_out_count', label: '切出', valueType: 'number', width: 75 },
+  { key: 'rssi', label: '平均 / 最小 RSSI', width: 150, displayValue: (row) => `${display(row.avg_rssi)} / ${display(row.min_rssi)}` },
+  { key: 'match_status', label: '匹配', valueType: 'status', width: 90 },
+]
+const alignmentColumns: NcTableColumn<MeshAlignmentPoint>[] = [
+  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
+  { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 150 },
+  { key: 'rssi', label: 'RSSI', valueType: 'number', width: 90, displayValue: (row) => display(row.rssi) },
+  { key: 'fping_rtt_ms', label: 'fping RTT', valueType: 'duration', width: 110, displayValue: (row) => display(row.fping_rtt_ms, ' ms') },
+  { key: 'fping_loss_percent', label: '丢包', valueType: 'percentage', width: 95, displayValue: (row) => display(row.fping_loss_percent, '%') },
+  { key: 'iperf_mbps', label: 'iPerf', valueType: 'rate', width: 110, displayValue: (row) => display(row.iperf_mbps, ' Mbps') },
+  { key: 'station', label: '站点', width: 130 },
+]
+const artifactColumns: NcTableColumn<MeshArtifact>[] = [
+  { key: 'artifact_type', label: '类型', width: 140 },
+  { key: 'name', label: '文件名', align: 'left', alignmentReason: 'path', minWidth: 260 },
+  { key: 'size_bytes', label: '大小', valueType: 'number', width: 110, displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'modified_at', label: '生成时间', valueType: 'datetime', width: 175 },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 90, hideable: false },
+]
+const sourceColumns: NcTableColumn<MeshRawSource>[] = [
+  { key: 'name', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 260 },
+  { key: 'source_type', label: '来源类型', width: 150 },
+  { key: 'exists', label: '状态', valueType: 'status', width: 100, displayValue: (row) => row.exists ? '可用' : '缺失' },
+  { key: 'size_bytes', label: '大小', valueType: 'number', width: 110, displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'tail', label: '日志片段', valueType: 'actions', width: 110, hideable: false },
+]
 
 onMounted(async () => { await Promise.all([refreshOverview(), loadProfiles(), recoverTask()]); scheduleRefresh() })
 onBeforeUnmount(() => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = null; stopTaskPolling() })
@@ -234,7 +347,7 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
-    <div v-if="task" class="content-card task-card"><div class="detail-heading"><div><h2>MESH 处理结果 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><el-table v-if="taskRows.length" :data="taskRows" max-height="220"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="值" /></el-table><el-alert title="停止、日志、恢复与生成报告下载统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow()">打开任务窗口</el-button></el-alert></div>
+    <div v-if="task" class="content-card task-card"><div class="detail-heading"><div><h2>MESH 处理结果 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><NcDataTable v-if="taskRows.length" table-id="mesh-analysis-task-results" route-key="/rail-transit/mesh-analysis" :preference-scope="task.task_id" :data="taskRows" :columns="taskResultColumns" max-height="220" /><el-alert title="停止、日志、恢复与生成报告下载统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow()">打开任务窗口</el-button></el-alert></div>
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(880px, 96vw)"><el-form label-position="top"><el-form-item label="MESH MR profile"><el-select v-model="selectedProfileId" filterable placeholder="选择 profile" style="width:100%"><el-option v-for="profile in profiles" :key="profile.mr_id" :label="`${profile.display_name} · ${profile.source_file_count} 文件`" :value="profile.mr_id" /></el-select></el-form-item><el-form-item label="选择原始日志"><div class="jump-actions"><el-button @click="fileInput?.click()">选择 LOG/TXT 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div><input ref="fileInput" class="hidden-input" type="file" multiple accept=".log,.txt" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles"></el-form-item><el-divider content-position="left">创建新 profile</el-divider><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建 profile</el-button></el-form><template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selectedProfileId || !selectedFiles.length" @click="startImport">开始导入分析</el-button></template></el-dialog>
 
@@ -249,21 +362,10 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
         <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
         <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
       </div>
-      <el-table :data="sessions" border stripe height="340" empty-text="暂无已持久化 Mesh 分析来源" @row-dblclick="openSession">
-        <el-table-column prop="analysis_time" label="分析时间" width="175" />
-        <el-table-column prop="train_name" label="列车" width="100" />
-        <el-table-column prop="mr_name" label="MR" min-width="145" />
-        <el-table-column prop="mr_role" label="角色" width="70" />
-        <el-table-column prop="source_type" label="来源" width="125" />
-        <el-table-column prop="original_filename" label="原始日志" min-width="260" show-overflow-tooltip />
-        <el-table-column prop="link_record_count" label="链路记录" width="110" />
-        <el-table-column label="主 / 备" width="125"><template #default="{ row }">{{ row.active_link_count }} / {{ row.standby_link_count }}</template></el-table-column>
-        <el-table-column prop="event_count" label="事件" width="90" />
-        <el-table-column prop="data_integrity" label="完整性" width="95" />
-        <el-table-column label="告警" width="80"><template #default="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template></el-table-column>
-        <el-table-column prop="report_count" label="报告" width="75" />
-        <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openSession(row)">查看</el-button></template></el-table-column>
-      </el-table>
+      <NcDataTable table-id="mesh-analysis-sessions" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @row-dblclick="openSession">
+        <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
+        <template #cell-actions="{ row }"><el-button link type="primary" @click="openSession(row)">查看</el-button></template>
+      </NcDataTable>
       <div class="pagination"><span>共 {{ total }} 个来源</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="total" @current-change="(page: number) => { filters.page = page; refreshOverview() }" /></div>
     </div>
 
@@ -282,27 +384,27 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
       <el-tabs v-model="activeTab">
         <el-tab-pane label="链路明细" name="links">
           <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
-          <el-table :data="links" border stripe height="430"><el-table-column prop="timestamp" label="时间" width="185" fixed="left" /><el-table-column prop="local_radio" label="Mesh Radio" width="105" /><el-table-column prop="peer_ap_name" label="Peer AP" min-width="160" /><el-table-column prop="peer_ap_mac" label="Peer MAC" width="145" /><el-table-column prop="link_role" label="角色" width="90" /><el-table-column label="RSSI" width="90"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column><el-table-column prop="station" label="站点" width="130" /><el-table-column prop="section" label="区间" width="150" /><el-table-column prop="mileage" label="里程" width="120" /><el-table-column prop="line_side" label="方向" width="95" /><el-table-column prop="event_type" label="事件" width="120" /><el-table-column prop="duration_ms" label="上报时长(ms)" width="130" /><el-table-column prop="match_method" label="匹配方式" min-width="180" /><el-table-column prop="warning" label="数据告警" min-width="150" /></el-table>
+          <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" border height="430" />
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination :current-page="linkFilters.page" :page-size="linkFilters.page_size" layout="prev, pager, next" :total="linkTotal" @current-change="reloadLinks" /></div>
         </el-tab-pane>
 
-        <el-tab-pane label="主链路时间线" name="timeline"><el-table :data="timeline" border height="430"><el-table-column prop="start_time" label="开始" width="185" /><el-table-column prop="end_time" label="结束" width="185" /><el-table-column prop="duration_seconds" label="持续(s)" width="100" /><el-table-column prop="peer_ap_name" label="Peer AP" min-width="160" /><el-table-column prop="peer_ap_mac" label="Peer MAC" width="145" /><el-table-column label="RSSI min / avg / max" width="185"><template #default="{ row }">{{ display(row.rssi_min) }} / {{ display(row.rssi_avg) }} / {{ display(row.rssi_max) }}</template></el-table-column><el-table-column prop="station" label="站点" width="130" /><el-table-column prop="section" label="区间" min-width="150" /></el-table></el-tab-pane>
+        <el-tab-pane label="主链路时间线" name="timeline"><NcDataTable table-id="mesh-analysis-timeline" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="timeline" :columns="timelineColumns" border height="430" /></el-tab-pane>
 
-        <el-tab-pane label="切换事件" name="switches"><el-table :data="switches" border height="430"><el-table-column prop="timestamp" label="时间" width="185" /><el-table-column prop="event_type" label="事件" width="130" /><el-table-column prop="from_ap_name" label="原 AP" min-width="150" /><el-table-column prop="to_ap_name" label="目标 AP" min-width="150" /><el-table-column label="RSSI 前 / 后" width="135"><template #default="{ row }">{{ display(row.before_rssi) }} / {{ display(row.after_rssi) }}</template></el-table-column><el-table-column prop="duration_ms" label="耗时(ms)" width="100" /><el-table-column label="短时" width="75"><template #default="{ row }">{{ row.is_short_link ? '是' : '否' }}</template></el-table-column><el-table-column label="乒乓" width="75"><template #default="{ row }">{{ row.is_pingpong ? '是' : '否' }}</template></el-table-column><el-table-column prop="station" label="站点" width="130" /></el-table></el-tab-pane>
+        <el-tab-pane label="切换事件" name="switches"><NcDataTable table-id="mesh-analysis-switch-events" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="switches" :columns="switchColumns" border height="430" /></el-tab-pane>
 
         <el-tab-pane label="RSSI" name="rssi"><template v-if="rssi"><div class="mini-summary"><span>最近 <strong>{{ display(rssi.statistics.latest_rssi) }}</strong></span><span>最小 <strong>{{ display(rssi.statistics.min_rssi) }}</strong></span><span>平均 <strong>{{ display(rssi.statistics.avg_rssi) }}</strong></span><span>最大 <strong>{{ display(rssi.statistics.max_rssi) }}</strong></span><span>样本 <strong>{{ rssi.statistics.sample_count }}</strong></span><span>缺失 <strong>{{ rssi.statistics.missing_sample_count }}</strong></span></div><MeshRssiChart :points="rssi.points" /><p class="hint">{{ rssi.downsampled ? `已由后端从 ${rssi.total_points} 点降采样` : '展示全部结构化样本' }}；空值保持为空，不用 0 补齐。</p></template></el-tab-pane>
 
-        <el-tab-pane label="空口繁忙度" name="busy"><el-table :data="channelBusy" border height="430"><el-table-column prop="timestamp" label="时间" width="185" /><el-table-column prop="local_radio" label="Radio" width="80" /><el-table-column label="CtlBusy" width="95"><template #default="{ row }">{{ display(row.ctl_busy) }}</template></el-table-column><el-table-column label="TxBusy" width="95"><template #default="{ row }">{{ display(row.tx_busy) }}</template></el-table-column><el-table-column label="RxBusy" width="95"><template #default="{ row }">{{ display(row.rx_busy) }}</template></el-table-column><el-table-column prop="peer_ap_name" label="Peer AP" min-width="160" /><el-table-column prop="station" label="站点" width="140" /><el-table-column prop="source_type" label="结构化来源" width="160" /></el-table></el-tab-pane>
+        <el-tab-pane label="空口繁忙度" name="busy"><NcDataTable table-id="mesh-analysis-channel-busy" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="channelBusy" :columns="busyColumns" border height="430" /></el-tab-pane>
 
-        <el-tab-pane :label="`异常摘要 (${anomalyTotal})`" name="anomalies"><el-table :data="anomalies" border height="430"><el-table-column label="级别" width="90"><template #default="{ row }"><el-tag :type="severityType(row.severity)">{{ row.severity }}</el-tag></template></el-table-column><el-table-column prop="anomaly_type" label="类型" width="140" /><el-table-column prop="start_time" label="开始" width="185" /><el-table-column prop="end_time" label="结束" width="185" /><el-table-column prop="peer_ap_name" label="AP" min-width="150" /><el-table-column prop="description" label="说明" min-width="260" /><el-table-column prop="evidence_reference" label="证据引用" min-width="160" /></el-table></el-tab-pane>
+        <el-tab-pane :label="`异常摘要 (${anomalyTotal})`" name="anomalies"><NcDataTable table-id="mesh-analysis-anomalies" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="anomalies" :columns="anomalyColumns" border height="430"><template #cell-severity="{ row }"><el-tag :type="severityType(row.severity)">{{ row.severity }}</el-tag></template></NcDataTable></el-tab-pane>
 
-        <el-tab-pane label="AP 统计" name="aps"><el-table :data="apStatistics" border height="430"><el-table-column prop="peer_ap_name" label="AP" min-width="160" /><el-table-column prop="peer_ap_mac" label="MAC" width="145" /><el-table-column prop="station" label="站点" width="130" /><el-table-column prop="section" label="区间" min-width="145" /><el-table-column prop="link_up_count" label="主链记录" width="105" /><el-table-column prop="link_down_count" label="备链记录" width="105" /><el-table-column prop="switch_in_count" label="切入" width="75" /><el-table-column prop="switch_out_count" label="切出" width="75" /><el-table-column label="平均 / 最小 RSSI" width="150"><template #default="{ row }">{{ display(row.avg_rssi) }} / {{ display(row.min_rssi) }}</template></el-table-column><el-table-column prop="match_status" label="匹配" width="90" /></el-table></el-tab-pane>
+        <el-tab-pane label="AP 统计" name="aps"><NcDataTable table-id="mesh-analysis-ap-statistics" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="apStatistics" :columns="apStatisticColumns" border height="430" /></el-tab-pane>
 
-        <el-tab-pane label="fping / iPerf 对齐" name="alignment"><el-alert v-if="alignment?.message" :title="alignment.message" type="info" :closable="false" /><el-table :data="alignment?.items || []" border height="400" empty-text="暂无可对齐的结构化流量数据"><el-table-column prop="timestamp" label="时间" width="185" /><el-table-column prop="peer_ap_name" label="Peer AP" min-width="150" /><el-table-column label="RSSI" width="90"><template #default="{ row }">{{ display(row.rssi) }}</template></el-table-column><el-table-column label="fping RTT" width="110"><template #default="{ row }">{{ display(row.fping_rtt_ms, ' ms') }}</template></el-table-column><el-table-column label="丢包" width="95"><template #default="{ row }">{{ display(row.fping_loss_percent, '%') }}</template></el-table-column><el-table-column label="iPerf" width="110"><template #default="{ row }">{{ display(row.iperf_mbps, ' Mbps') }}</template></el-table-column><el-table-column prop="station" label="站点" width="130" /></el-table></el-tab-pane>
+        <el-tab-pane label="fping / iPerf 对齐" name="alignment"><el-alert v-if="alignment?.message" :title="alignment.message" type="info" :closable="false" /><NcDataTable table-id="mesh-analysis-traffic-alignment" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="alignment?.items || []" :columns="alignmentColumns" border height="400" empty-text="暂无可对齐的结构化流量数据" /></el-tab-pane>
 
         <el-tab-pane label="报告与来源" name="artifacts">
-          <h3>已有报告与文件</h3><el-table :data="artifacts" border><el-table-column prop="artifact_type" label="类型" width="140" /><el-table-column prop="name" label="文件名" min-width="260" /><el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column><el-table-column prop="modified_at" label="生成时间" width="175" /><el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></el-table-column></el-table>
-          <h3>原始数据来源</h3><el-table :data="selected.sources" border><el-table-column prop="name" label="来源文件" min-width="260" /><el-table-column prop="source_type" label="来源类型" width="150" /><el-table-column label="状态" width="100"><template #default="{ row }">{{ row.exists ? '可用' : '缺失' }}</template></el-table-column><el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template></el-table-column><el-table-column label="日志片段" width="110"><template #default="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></el-table-column></el-table>
+          <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
+          <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </el-tab-pane>
       </el-tabs>

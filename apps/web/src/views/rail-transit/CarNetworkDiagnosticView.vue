@@ -8,6 +8,8 @@ import {
   recoverCarNetworkDiagnostics,
   startCarNetworkDiagnostic,
 } from '../../api/railTransitWeb'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import type { OnlineTrainRow, RailTransitTask } from '../../types/railTransitWeb'
 import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
@@ -23,6 +25,21 @@ const error = ref('')
 const pointTableVisible = ref(false)
 let pollTimer: number | undefined
 
+interface DiagnosticResultRow { name: string; value: string }
+
+const trainColumns: NcTableColumn<OnlineTrainRow>[] = [
+  { key: 'train_no', label: '列车', valueType: 'name', fixed: 'left' },
+  { key: 'train_name', label: '名称', valueType: 'name' },
+  { key: 'communication_status', label: '通信状态', valueType: 'status' },
+  { key: 'current_mesh_links', label: 'Mesh-Link', valueType: 'number' },
+  { key: 'active_sessions', label: '活动会话', valueType: 'number' },
+  { key: 'warning_count', label: '告警', valueType: 'number' },
+  { key: 'last_updated_at', label: '更新时间', valueType: 'datetime' },
+]
+const resultColumns: NcTableColumn<DiagnosticResultRow>[] = [
+  { key: 'name', label: '结果项', valueType: 'name' },
+  { key: 'value', label: '诊断结果', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
+]
 const canStart = computed(() => Boolean(
   selectedTrainId.value
   && !loading.value
@@ -30,7 +47,7 @@ const canStart = computed(() => Boolean(
   && isFeatureEnabled('web.rail_car_network_diagnostic_execute')
   && isFeatureEnabled('web.rail_task_control'),
 ))
-const resultRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({
+const resultRows = computed<DiagnosticResultRow[]>(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({
   name,
   value: typeof value === 'string' ? value : JSON.stringify(value),
 })))
@@ -130,15 +147,7 @@ onBeforeUnmount(stopPolling)
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverDiagnostic">恢复任务状态</el-button></el-alert>
 
     <div class="content-card">
-      <el-table v-loading="loading" :data="trains" stripe height="340" empty-text="暂无可检测的在线列车" highlight-current-row @current-change="(row: OnlineTrainRow | undefined) => selectedTrainId = row?.train_id || ''">
-        <el-table-column prop="train_no" label="列车" width="95" fixed="left" />
-        <el-table-column prop="train_name" label="名称" min-width="140" />
-        <el-table-column prop="communication_status" label="通信状态" width="110" />
-        <el-table-column prop="current_mesh_links" label="Mesh-Link" width="105" />
-        <el-table-column prop="active_sessions" label="活动会话" width="100" />
-        <el-table-column prop="warning_count" label="告警" width="80" />
-        <el-table-column prop="last_updated_at" label="更新时间" width="180" />
-      </el-table>
+      <NcDataTable v-loading="loading" table-id="car-network-diagnostic-trains" route-key="/rail-transit/car-network-diagnostic" :data="trains" :columns="trainColumns" row-key="train_id" height="340" empty-text="暂无可检测的在线列车" highlight-current-row @current-change="(row: OnlineTrainRow | undefined) => selectedTrainId = row?.train_id || ''" />
       <p class="selection">当前选择：{{ trains.find((item) => item.train_id === selectedTrainId)?.train_name || '请选择列车' }}</p>
     </div>
 
@@ -147,7 +156,7 @@ onBeforeUnmount(stopPolling)
       <el-alert title="停止、日志和任务恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
       <el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" show-icon />
       <p v-else-if="task.message" class="task-message">{{ task.message }}</p>
-      <el-table v-if="resultRows.length" :data="resultRows" border max-height="460"><el-table-column prop="name" label="结果项" width="220" /><el-table-column prop="value" label="诊断结果" min-width="520" show-overflow-tooltip /></el-table>
+      <NcDataTable v-if="resultRows.length" table-id="car-network-diagnostic-result" route-key="/rail-transit/car-network-diagnostic" :data="resultRows" :columns="resultColumns" border max-height="460" />
       <el-empty v-else-if="terminalStates.has(task.status)" description="任务没有返回诊断结果" />
       <el-skeleton v-else :rows="4" animated />
     </div>

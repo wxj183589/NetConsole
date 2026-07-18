@@ -18,8 +18,8 @@ const ElTable = defineComponent({
 
 const ElTableColumn = defineComponent({
   name: 'ElTableColumn',
-  props: ['columnKey', 'label', 'width', 'align', 'headerAlign'],
-  setup(props) {
+  props: ['columnKey', 'label', 'width', 'align', 'headerAlign', 'type'],
+  setup(props, { slots }) {
     return () => h('div', {
       class: 'el-table-column-stub',
       'data-key': props.columnKey,
@@ -27,7 +27,7 @@ const ElTableColumn = defineComponent({
       'data-width': props.width,
       'data-align': props.align,
       'data-header-align': props.headerAlign,
-    })
+    }, slots.default?.({ row: { name: 'AP01' }, $index: 0 }))
   },
 })
 
@@ -93,6 +93,25 @@ describe('NcDataTable', () => {
     expect(raw).not.toBeNull()
     const saved = JSON.parse(raw ?? '{}')
     expect(saved.columns[0].width).toBeGreaterThan(20)
+    wrapper.unmount()
+  })
+
+  it('forwards the controlled cell slot for expand columns', () => {
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'device-details',
+        routeKey: '/devices',
+        showColumnSettings: false,
+        data: [{ name: 'AP01' }],
+        columns: [{ key: 'details', label: '详情', type: 'expand', valueType: 'text' }],
+      },
+      slots: {
+        'cell-details': ({ row }: { row: { name: string } }) => h('span', { class: 'expanded-row' }, row.name),
+      },
+      global,
+    })
+
+    expect(wrapper.get('.expanded-row').text()).toBe('AP01')
     wrapper.unmount()
   })
 })

@@ -31,9 +31,13 @@ describe('trackside AP business view', () => {
     expect(source).toContain('正在刷新，当前数据保持显示')
   })
 
-  it('uses centered auto-layout columns and the strict optical presentation map', () => {
-    expect(source).toContain('table-layout="auto"')
-    expect(source).toContain(':deep(.el-table .cell){text-align:center}')
+  it('uses the standard data table and the strict optical presentation map', () => {
+    expect(source).toContain("import NcDataTable from '../../components/table/NcDataTable.vue'")
+    expect(source).toContain('const businessColumns: NcTableColumn<TracksideApBusinessRow>[]')
+    expect(source).toContain('table-id="trackside-ap-business"')
+    expect(source).toContain('table-id="trackside-ap-business-task-result"')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
     expect(source).toContain('tracksideOpticalPresentation(row.switch_optical_status)')
     expect(source).toContain('tracksideOpticalPresentation(row.ap_optical_status)')
     expect(source).toContain('tracksideOpticalPresentation(row.optical_severity)')
