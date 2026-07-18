@@ -24,6 +24,7 @@ from netconsole.services.mesh_quality_analysis import (
     analyze_switch_events,
     build_active_segments as build_quality_active_segments,
     build_busy_analysis,
+    build_overview,
     build_sample_quality,
     get_threshold_template,
     load_threshold_templates,
@@ -144,6 +145,27 @@ def test_template_overview_fields_explain_selected_evaluation_context():
     assert fields["RSSI 良好线"] == 32
     assert fields["可用备份线"] == 32
     assert fields["无备份风险窗口"] == "5秒"
+
+    overview = build_overview(
+        "MR-01",
+        "",
+        "MR_RAW_MESH_LOG",
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        100,
+        "优秀",
+        [],
+        template.key,
+        template.rules,
+    )
+    assert overview["报告名称"] == "MR-01"
+    assert overview["评估模板"] == template.label
+    assert overview["RSSI 良好线"] == template.rules.rssi_good_threshold
 
 
 

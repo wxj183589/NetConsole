@@ -2379,7 +2379,6 @@ class MeshMrRepository:
                 previous = previous_by_session.get(session_id)
                 if previous is not None:
                     previous_metrics = _metrics_from_row(dict(previous))
-                    seconds = max((datetime.fromisoformat(row["sample_time"]) - datetime.fromisoformat(previous["sample_time"])).total_seconds(), 0.0)
                     for key in _counter_keys():
                         current = metrics.get(key)
                         last = previous_metrics.get(key)

@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 
 from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetwork
-from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, quality_to_rssi_dbm
+from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, quality_to_rssi_dbm
 from netconsole.utils.text_encoding import decode_bytes_with_fallback
 
 

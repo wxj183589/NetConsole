@@ -913,7 +913,7 @@ def build_overview(
     excluded_link_count: int = 0,
 ) -> dict[str, object]:
     sample_keys = {(row.get("radio"), row.get("sample_time")) for row in rows}
-    return {
+    overview = {
         "报告名称": report_name or mr_name,
         "MR 名称": mr_name,
         "数据来源类型": data_source_type,

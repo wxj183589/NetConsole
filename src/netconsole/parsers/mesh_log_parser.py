@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import io
 import re
 from datetime import datetime
 from pathlib import Path

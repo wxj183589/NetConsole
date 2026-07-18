@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import re
 
-from netconsole.services.ap_online_overview import is_fit_ap_online
 from netconsole.utils.station_normalize import normalize_station_value
 
 

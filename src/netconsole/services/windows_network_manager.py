@@ -685,7 +685,6 @@ def _route_from_powershell_row(row: dict, fallback_index: int = 0) -> RouteInfo:
 
 def _parse_netsh_interfaces(output: str) -> list[dict]:
     rows: list[dict] = []
-    order_index = 0
     for line in output.splitlines():
         text = line.strip()
         if not text or text.startswith("-") or "Admin State" in text or "管理状态" in text:
@@ -708,6 +707,7 @@ def _parse_netsh_interfaces(output: str) -> list[dict]:
 def _parse_route_print(output: str) -> list[RouteInfo]:
     rows: list[RouteInfo] = []
     in_ipv4_routes = False
+    order_index = 0
     for line in output.splitlines():
         text = line.strip()
         if not text:

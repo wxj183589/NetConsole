@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
@@ -22,7 +21,7 @@ class OnlineMrAnalysisReportExporter:
 
     def export(self, session_dir: Path, output_path: Path) -> Path:
         from openpyxl import Workbook
-        from openpyxl.chart import BarChart, LineChart, Reference
+        from openpyxl.chart import BarChart, LineChart
         from openpyxl.styles import Alignment, Font, PatternFill
 
         session_dir = Path(session_dir)

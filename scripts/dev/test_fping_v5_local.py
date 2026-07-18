@@ -5,11 +5,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
 from netconsole.core.ping.fping_v5_runner import check_fping_v5_available, run_fping_v5_json
 from netconsole.core.ping.fping_v5_stats import FpingV5Stats
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:

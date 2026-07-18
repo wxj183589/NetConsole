@@ -5,9 +5,10 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-
 from netconsole.services.mesh_link_detail_export import export_mesh_link_details_xlsx
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _rows(total: int):

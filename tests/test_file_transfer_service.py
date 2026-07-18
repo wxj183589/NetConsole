@@ -125,7 +125,7 @@ def test_download_file_prefers_sftp_and_falls_back_to_scp(tmp_path, monkeypatch)
     assert calls == ["sftp", "scp"]
     assert result.success is True
     assert result.local_path == f"files/file_manager/downloads/SW-A__{device.device_uuid}/bin/SW-A_boot.bin"
-    assert (paths := paths_from_result(tmp_path, "demo", result.local_path)).read_text(encoding="utf-8") == "downloaded"
+    assert paths_from_result(tmp_path, "demo", result.local_path).read_text(encoding="utf-8") == "downloaded"
 
 
 def test_batch_file_download_keeps_failures_isolated():

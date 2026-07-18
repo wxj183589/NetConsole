@@ -316,6 +316,23 @@ def test_powershell_empty_and_single_object_json_results(monkeypatch) -> None:
     assert manager_module._ensure_list(rows)[0]["Name"] == "Ethernet"
 
 
+def test_route_print_parser_assigns_stable_order_indexes() -> None:
+    rows = manager_module._parse_route_print(
+        """
+IPv4 Route Table
+===========================================================================
+Active Routes:
+Network Destination        Netmask          Gateway       Interface  Metric
+          0.0.0.0          0.0.0.0       10.0.0.1        10.0.0.2     25
+       10.122.0.0      255.255.0.0         On-link      10.122.0.2    281
+===========================================================================
+"""
+    )
+
+    assert [row.order_index for row in rows] == [0, 1]
+    assert [row.destination_prefix for row in rows] == ["0.0.0.0/0", "10.122.0.0/16"]
+
+
 
 
 

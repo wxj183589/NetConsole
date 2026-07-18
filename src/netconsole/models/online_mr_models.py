@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.services.online_mr.collection_commands import (
-    CONFIG_COLLECT_COMMANDS,
-    INIT_COMMANDS,
-    TASK_COMMANDS,
-    TERMINAL_MONITOR_INIT_COMMANDS,
-    repeat_command_group,
+    CONFIG_COLLECT_COMMANDS as _CONFIG_COLLECT_COMMANDS,
+    INIT_COMMANDS as _INIT_COMMANDS,
+    TASK_COMMANDS as _TASK_COMMANDS,
+    TERMINAL_MONITOR_INIT_COMMANDS as _TERMINAL_MONITOR_INIT_COMMANDS,
+    repeat_command_group as _repeat_command_group,
 )
+
+
+CONFIG_COLLECT_COMMANDS = _CONFIG_COLLECT_COMMANDS
+INIT_COMMANDS = _INIT_COMMANDS
+TASK_COMMANDS = _TASK_COMMANDS
+TERMINAL_MONITOR_INIT_COMMANDS = _TERMINAL_MONITOR_INIT_COMMANDS
+repeat_command_group = _repeat_command_group
 
 
 STATE_CREATED = "CREATED"

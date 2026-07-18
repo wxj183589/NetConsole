@@ -5,7 +5,6 @@ import pytest
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services import h3c_ac_collect_service

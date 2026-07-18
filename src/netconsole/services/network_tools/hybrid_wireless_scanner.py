@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from netconsole.models.wireless_scan_models import WirelessAdapter, WirelessNetwork
 from netconsole.services.network_tools.netsh_wireless_scanner import NetshWirelessScanner
-from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac
+from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, normalize_mac
 from netconsole.services.network_tools.windows_wlan_scanner import SCAN_SOURCE_WLAN_API, WindowsWlanScanner
 
 
