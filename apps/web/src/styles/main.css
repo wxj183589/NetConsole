@@ -20,7 +20,20 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .brand strong, .brand span { display: block; }
 .brand strong { color: var(--nc-text-inverse); font-size: 17px; letter-spacing: .2px; }
 .brand span { margin-top: 3px; color: color-mix(in srgb, var(--nc-text-inverse), transparent 48%); font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; }
-.app-menu { flex: 1; min-height: 0; padding: 14px 10px; overflow-x: hidden; overflow-y: auto; background: transparent; border: 0; }
+.app-menu {
+  --el-menu-active-color: var(--nc-primary-hover);
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: var(--nc-bg-sidebar-hover);
+  --el-menu-hover-text-color: var(--nc-text-inverse);
+  --el-menu-text-color: color-mix(in srgb, var(--nc-text-inverse), transparent 38%);
+  flex: 1;
+  min-height: 0;
+  padding: 14px 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: transparent;
+  border: 0;
+}
 .app-menu.el-menu--collapse { width: 100%; padding-inline: 6px; }
 .app-menu .el-menu-item,
 .app-menu .el-sub-menu__title { margin-bottom: 6px; color: color-mix(in srgb, var(--nc-text-inverse), transparent 38%); background: transparent; border-radius: var(--nc-radius-base); }
