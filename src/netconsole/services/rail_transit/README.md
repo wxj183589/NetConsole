@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP，`mesh_analysis_query_service.py` 和看板服务提供聚合查询。
+`base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP 快照、光衰和多 Sheet 业务导出，`mesh_analysis_query_service.py` 和看板服务提供聚合查询。正式轨旁工作簿仍由独立 Export Process 从局点数据库重建，使用临时文件与原子替换，不以 Vue 当前页数据为事实源。
 
 ## 依赖关系
 

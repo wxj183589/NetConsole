@@ -6,9 +6,9 @@
 
 - 统一任务窗口完成取消竞态、终态收敛、日志脱敏、Artifact 授权、受管下载、打开文件与定位目录闭环；任务子窗口保持单实例并可在加载失败或崩溃后安全重建，关闭窗口不停止后台任务。
 - 设备管理完成真实 CRUD、凭据保持/替换/清除三态、导入预览、诊断与设备导出 Artifact、统一任务摘要以及 SecureCRT/Xshell/PuTTY 严格白名单桌面契约；真实设备连接和外部终端点击仍待现场验收。
-- 新增设备快速详情抽屉与 `/devices/:deviceId` 完整详情页，共用 Device Detail Application/Query Service、分页 DTO/API 和 Vue presentation；开页只读最近快照、页签懒加载，刷新通过 Task Center 的 `device.inventory.collect`。当前命令执行只允许可执行 Profile 匹配的 H3C/Comware 交换机，H3C AC/MR 仅关联现有业务查询，Huawei/ZTE 与未知或未验证平台失败关闭。设备详情不提供独立 Health 契约；LLDP 公开 DTO/页面移除邻居能力和型号；接口移除入/出速率、错误统计及最后变化；光模块移除采集状态和阈值来源，正常状态不展示原因，异常原因继续中文显示并按后端严重性使用语义告警色；关联业务公开契约移除重复的 AC/AP、交换机、光模块严重性及 MR 会话字段。完整页按剩余视口高度伸展，抽屉继续限制独立滚动高度。底层 DB/Repository 兼容字段保留且不破坏旧数据。定向自动测试已通过，Electron 视觉交互和真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
-- AC/FIT-AP 完成 AC 信息、资源、Radio、光衰、写操作、单 AP 深度更新、元数据导入/保存、历史查询和 AC Web 入口；普通更新与 verbose 深度更新保持分离，真实 AC/AP 验收仍待现场执行。
-- 轨道交通按历史有效业务契约拆分车内点表、轨旁 AP 规划与业务、在线列车 CT/TC、连续采集、Online MR 实时/分析、强停恢复、离线 MESH 导入分析与报告，不再以只读聚合页代替业务闭环。
+- 新增设备快速详情抽屉与 `/devices/:deviceId` 完整详情页，共用 Device Detail Application/Query Service、分页 DTO/API 和 Vue presentation；开页只读最近快照、页签懒加载，刷新通过 Task Center 的 `device.inventory.collect`。当前命令执行只允许可执行 Profile 匹配的 H3C/Comware 交换机，H3C AC/MR 仅关联现有业务查询，Huawei/ZTE 与未知或未验证平台失败关闭。设备详情不提供独立 Health 契约；LLDP 公开 DTO/页面移除邻居能力和型号；接口移除入/出速率、错误统计及最后变化；光模块移除采集状态和阈值来源，正常状态不展示原因，异常原因继续中文显示并按后端严重性使用语义告警色；关联业务公开契约移除重复的 AC/AP、交换机、光模块严重性及 MR 会话字段。完整页按剩余视口高度伸展，抽屉继续限制独立滚动高度。被删除的公开字段不保留 DTO/TypeScript/API 别名或双读兼容；存储层本轮未改 schema，仍按各业务的现行事实字段读写。定向自动测试已通过，Electron 视觉交互和真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
+- AC/FIT-AP 完成 AC 信息、资源、Radio、光衰、写操作、单 AP 深度更新、元数据导入/保存、历史查询和 AC Web 入口；光衰导航与重复 Tab 已并入 FIT-AP 资源，列默认按连接交换机和端口自然升序，站点缺失时只提供唯一 LLDP 交换机站点建议，未经人工保存不写库。Mesh-Link 对外契约硬删除链路状态/信道/带宽/AP 状态/光衰状态旧字段，改为展示轨旁 AP 室外侧和室内侧收光，不保留 API/TS fallback。普通更新与 verbose 深度更新保持分离，真实 AC/AP 验收仍待现场执行。
+- 轨道交通按历史有效业务契约拆分车内点表、轨旁 AP 规划与业务、在线列车 CT/TC、连续采集、Online MR 实时/分析、强停恢复、离线 MESH 导入分析与报告，不再以只读聚合页代替业务闭环。轨旁 AP 业务表已改为内容居中、自动表格布局和通用接口简称，后续刷新保留上一次成功数据；光衰状态按 Python 严重性事实源中文化并着色。新增的业务导出只通过 Export Process/Task Center/Artifact 执行，保留原 8 个业务 Sheet 与 `_netconsole_meta`，并统一 `A2` 冻结、筛选、居中和采样自动列宽。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。
 - 网络工具完成 Ping/fping/TCP、持续探测增量结果、iPerf、无线扫描分页/状态/详情和安全导出；命令参考完成实时搜索、共享任务窗口导出和取消收敛。
 - 系统设置整合主题、语言、工具路径、中央功能 profile、预览和原子保存；应用日志与安全维护完成日志展示、脱敏、受控清理、取消、日志/许可证导出及 Artifact 闭环，不再保留第二套独立功能开关页面。
@@ -35,7 +35,7 @@
 ### 数据库
 
 - 基于真实 `devices.db` 的 SQLite Backup 副本和 `EXPLAIN QUERY PLAN`，为设备接口/光模块/LLDP 历史及 FIT-AP 资源/Radio/LLDP/光衰历史增加 7 个幂等复合索引；典型 100 行查询由全表扫描和临时排序降至索引搜索。旧库副本迁移保持行数、通过 `quick_check`，未删除表、字段或业务数据；Task、Agent、Traffic、iPerf、Online MR 与 MESH 未发现需要强制 schema 修改的证据。
-- 新建 `devices.db` 只创建设备 SNMP v1/v2c、端口、RO community、超时和重试字段；旧库中 v3/RW/Context 等历史列不删除、不改写，活动模型、API 与导入导出忽略这些字段。
+- 新建 `devices.db` 只创建设备 SNMP v1/v2c、端口、RO community、超时和重试字段；活动模型、DTO、API 与导入导出不提供 v3/RW/Context 旧字段别名、双读或 fallback。如需从历史库物理移除退役列，只能通过独立维护脚本备份后重建/迁移，不进入正式启动路径。
 
 ### 验证
 

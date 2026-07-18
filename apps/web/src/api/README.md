@@ -33,6 +33,10 @@ LLDP 客户端公开字段保留本地接口、归一化本地接口、邻居系
 
 客户端依赖 Backend Router 的 DTO、Application Service 的用例契约以及 Web 类型层；Electron 能力不应从这里直接访问 Node。
 
+### 轨旁 AP 业务导出
+
+`tracksideApBusiness.ts` 通过 `POST /api/rail-transit/trackside-ap-business/export` 创建正式导出任务，并通过 `/artifacts/{artifact_id}/download` 构造受控下载请求。Vue 只轮询任务和调用 Runtime Adapter，不生成 XLSX、不接收服务端绝对路径，也不兼容历史导出路由。
+
 ## 数据与状态
 
 这里只保存请求参数、响应映射和轻量错误信息；任务、设备、文件和会话状态由 API/Store 管理。设备密码、SNMP community、Token、服务端绝对路径和任意环境变量不得进入响应。设备详情缺失值保持 `null`，合法数值 `0` 不得被空值映射吞掉。

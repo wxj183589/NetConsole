@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`ac_service.py`、`query_service.py`、`ac_command_service.py`、`mesh_link_*` 和 optical service 是当前主要入口。
+`ac_service.py`、`query_service.py`、`ac_command_service.py`、`mesh_link_*` 和 optical service 是当前主要入口。`query_service.py` 默认按连接交换机和归一化端口自然排序，只在 LLDP 邻居唯一匹配已知交换机时给出站点建议。Mesh-Link 公开 DTO 只保留当前页面所需事实和两侧收光，已删除字段不提供兼容别名。
 
 ## 依赖关系
 

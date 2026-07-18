@@ -22,19 +22,19 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 ## 页面能力
 
 - AC 总览：管理 IP、型号、软件版本、AP 总数、在线/离线/未认证、Radio 数量、关联光衰异常和数据更新时间；
-- FIT-AP：后端搜索、筛选、排序和分页，前端列显隐、手工列宽及横向滚动；
+- FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端列显隐、手工列宽及横向滚动，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 默认关闭，启用后必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
-- Mesh-Link 在线监控：车载 MR 状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、AP 在线与光衰关联、最近快照和切换事件；可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
+- Mesh-Link 在线监控：车载 MR 在线状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、轨旁 AP 室外侧/室内侧收光、最近快照和切换事件；公开 DTO/API/TypeScript 已删除 `link_status/channel/bandwidth/ap_online_status/optical_status` 旧字段及对应筛选，不保留别名或 fallback。原始快照链路状态只在 Query Service 内部用于计算 MR 在线和汇总，不对外暴露。可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
 
 Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留。单 AP 深度更新执行已迁入 Application Service 的固定 bulk 命令序列并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
 Electron 的“打开 AC Web”使用固定 HTTPS URL 规则：优先使用已采集端口，缺失或无效时回退 443；Python DTO 生成受控 URL，Vue 只通过现有 Electron 外部 URL Bridge 打开。
 
-FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。
+FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保存通过受控后台任务写入现有元数据表。归属站点缺失时，Query Service 只在 LLDP 已匹配/部分匹配且邻居唯一对应有站点的交换机时返回建议；页面明确标记“保存后才写入”，不自动修改元数据。Radio、LLDP、光衰历史按 AP UUID 分页读取，仅返回展示白名单字段，不向 Web 暴露 `raw_log_path`，并继续遵守 Web 既有序列号脱敏边界。
 
 ## 光衰关联规则
 
