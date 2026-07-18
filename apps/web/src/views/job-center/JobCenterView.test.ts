@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import JobCenterView from './JobCenterView.vue'
+import source from './JobCenterView.vue?raw'
 
 const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
@@ -66,6 +67,11 @@ vi.mock('@element-plus/icons-vue', () => ({
 vi.mock('../../components/NcStatusTag.vue', async () => {
   const { defineComponent, h } = await import('vue')
   return { default: defineComponent(() => () => h('status-tag')) }
+})
+
+vi.mock('../../components/table/NcDataTable.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return { default: defineComponent((_props, { slots }) => () => h('data-table', slots.default?.())) }
 })
 
 vi.mock('element-plus/es', async () => {
@@ -235,6 +241,12 @@ async function click(target: HostNode): Promise<void> {
 }
 
 describe('Job Center saved artifact capability lifecycle', () => {
+  it('uses the unified data table contract', () => {
+    expect(source).toContain('table-id="job-center-tasks"')
+    expect(source).toContain(':columns="columns"')
+    expect(source).not.toContain('<el-table')
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     platformMocks.open.mockResolvedValue({ success: true })

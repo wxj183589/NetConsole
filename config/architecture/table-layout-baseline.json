@@ -45,41 +45,6 @@
       "status": "BLOCKED"
     },
     {
-      "key": "apps/web/src/components/traffic/TrafficRunHistory.vue#1",
-      "path": "apps/web/src/components/traffic/TrafficRunHistory.vue",
-      "ordinal": 1,
-      "table_id": "legacy:components:traffic:TrafficRunHistory:1",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/agents/AgentListView.vue#1",
-      "path": "apps/web/src/views/agents/AgentListView.vue",
-      "ordinal": 1,
-      "table_id": "legacy:views:agents:AgentListView:1",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/agents/AgentListView.vue#2",
-      "path": "apps/web/src/views/agents/AgentListView.vue",
-      "ordinal": 2,
-      "table_id": "legacy:views:agents:AgentListView:2",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/agents/AgentListView.vue#3",
-      "path": "apps/web/src/views/agents/AgentListView.vue",
-      "ordinal": 3,
-      "table_id": "legacy:views:agents:AgentListView:3",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/agents/AgentListView.vue#4",
-      "path": "apps/web/src/views/agents/AgentListView.vue",
-      "ordinal": 4,
-      "table_id": "legacy:views:agents:AgentListView:4",
-      "status": "BLOCKED"
-    },
-    {
       "key": "apps/web/src/views/command-reference/CommandReferenceView.vue#1",
       "path": "apps/web/src/views/command-reference/CommandReferenceView.vue",
       "ordinal": 1,
@@ -119,13 +84,6 @@
       "path": "apps/web/src/views/file-management/FileManagementView.vue",
       "ordinal": 3,
       "table_id": "legacy:views:file-management:FileManagementView:3",
-      "status": "BLOCKED"
-    },
-    {
-      "key": "apps/web/src/views/job-center/JobCenterView.vue#1",
-      "path": "apps/web/src/views/job-center/JobCenterView.vue",
-      "ordinal": 1,
-      "table_id": "legacy:views:job-center:JobCenterView:1",
       "status": "BLOCKED"
     },
     {

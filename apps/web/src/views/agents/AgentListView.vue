@@ -13,6 +13,8 @@ import {
   probeUnsaved,
 } from '../../api/agents'
 import NcStatusTag from '../../components/NcStatusTag.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAgentStore } from '../../stores/agents'
 import type {
   AgentFormValue,
@@ -22,8 +24,11 @@ import type {
   AgentRemoteStatus,
   AgentRemoteTask,
   AgentStatus,
+  AgentToolStatus,
   AgentToolsStatus,
 } from '../../types/agent'
+
+type AgentToolRow = AgentToolStatus & { name: string }
 
 const store = useAgentStore()
 const search = ref('')
@@ -53,6 +58,43 @@ let taskTimer: number | undefined
 const formRef = ref<FormInstance>()
 const form = reactive<AgentFormValue>(emptyForm())
 const visibleAgents = computed(() => store.filtered(search.value, statusFilter.value, enabledFilter.value))
+const toolRows = computed<AgentToolRow[]>(() => remoteTools.value ? [
+  { name: 'MR Collector', ...remoteTools.value.mr_collector },
+  { name: 'fping', ...remoteTools.value.fping },
+  { name: 'iPerf3', ...remoteTools.value.iperf3 },
+] : [])
+const agentColumns: NcTableColumn<AgentItem>[] = [
+  { key: 'agent', label: 'Agent', valueType: 'name', fixed: 'left' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'platform', label: '平台 / 版本', valueType: 'text' },
+  { key: 'latency_ms', label: '延迟', valueType: 'duration', displayValue: (row) => row.latency_ms === null ? '—' : `${row.latency_ms} ms` },
+  { key: 'last_seen_at', label: '最近在线', valueType: 'datetime', displayValue: (row) => formatTime(row.last_seen_at) },
+  { key: 'note', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'description' },
+  { key: 'last_error_message', label: '最近错误', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '测试', '禁用', '归档'] },
+]
+const toolColumns: NcTableColumn<AgentToolRow>[] = [
+  { key: 'name', label: '工具', valueType: 'name' },
+  { key: 'ready', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'version', label: '版本', valueType: 'text' },
+  { key: 'path', label: '路径', valueType: 'description', align: 'left', alignmentReason: 'path' },
+  { key: 'warning', label: '提示', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+]
+const remoteTaskColumns: NcTableColumn<AgentRemoteTask>[] = [
+  { key: 'task_id', label: '任务 ID', valueType: 'text' }, { key: 'task_type', label: '类型', valueType: 'text' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'start_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTime(row.start_time || row.created_at) },
+  { key: 'end_time', label: '结束时间', valueType: 'datetime', displayValue: (row) => formatTime(row.end_time) },
+  { key: 'error_message', label: '错误摘要', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
+]
+const packageColumns: NcTableColumn<AgentRemotePackage>[] = [
+  { key: 'package_id', label: '采集包 ID', valueType: 'text' }, { key: 'task_type', label: '任务类型', valueType: 'text' },
+  { key: 'task_id', label: '任务 ID', valueType: 'text' },
+  { key: 'size', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size) },
+  { key: 'start_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTime(row.start_time) },
+  { key: 'end_time', label: '结束时间', valueType: 'datetime', displayValue: (row) => formatTime(row.end_time) },
+]
 const rules: FormRules<AgentFormValue> = {
   name: [{ required: true, message: '请输入 Agent 名称', trigger: 'blur' }],
   base_url: [
@@ -308,24 +350,18 @@ function capabilityText(capabilities: Record<string, unknown>): string {
         </div>
       </div>
       <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" />
-      <el-table v-loading="store.loading" :data="visibleAgents" empty-text="暂无 Agent，请先添加" stripe>
-        <el-table-column label="Agent" min-width="180"><template #default="{ row }"><strong>{{ row.name }}</strong><small class="secondary-text">{{ row.base_url }}</small></template></el-table-column>
-        <el-table-column label="状态" width="104"><template #default="{ row }"><NcStatusTag :status="row.status" /></template></el-table-column>
-        <el-table-column label="平台 / 版本" min-width="150"><template #default="{ row }">{{ row.platform || '--' }} {{ row.architecture || '' }}<small class="secondary-text">{{ row.version || '未获取版本' }}</small></template></el-table-column>
-        <el-table-column label="延迟" width="90"><template #default="{ row }">{{ row.latency_ms === null ? '--' : `${row.latency_ms} ms` }}</template></el-table-column>
-        <el-table-column label="最近在线" width="174"><template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template></el-table-column>
-        <el-table-column prop="note" label="备注" min-width="130" show-overflow-tooltip />
-        <el-table-column label="最近错误" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ row.last_error_message || '--' }}</template></el-table-column>
-        <el-table-column label="操作" width="275" fixed="right">
-          <template #default="{ row }">
+      <NcDataTable v-loading="store.loading" table-id="agent-list" route-key="/agents" :data="visibleAgents" :columns="agentColumns" empty-text="暂无 Agent，请先添加">
+        <template #cell-agent="{ row }"><strong>{{ row.name }}</strong><small class="secondary-text">{{ row.base_url }}</small></template>
+        <template #cell-status="{ row }"><NcStatusTag :status="row.status" /></template>
+        <template #cell-platform="{ row }">{{ row.platform || '—' }} {{ row.architecture || '' }}<small class="secondary-text">{{ row.version || '未获取版本' }}</small></template>
+        <template #cell-actions="{ row }">
             <el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button>
             <el-button link type="primary" :icon="Edit" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" :disabled="!row.enabled" @click="probe(row)">测试</el-button>
             <el-button link :type="row.enabled ? 'warning' : 'success'" @click="toggle(row)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
             <el-button link type="danger" @click="archive(row)">归档</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+        </template>
+      </NcDataTable>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑 Agent' : '新增 Agent'" width="min(640px, 92vw)" destroy-on-close>
@@ -382,43 +418,23 @@ function capabilityText(capabilities: Record<string, unknown>): string {
           <el-tab-pane label="工具状态" name="tools">
             <div v-loading="remoteLoading" class="remote-tab-body">
               <el-empty v-if="!remoteTools" description="暂未读取工具状态" :image-size="72" />
-              <el-table v-else :data="[
-                { name: 'MR Collector', ...remoteTools.mr_collector },
-                { name: 'fping', ...remoteTools.fping },
-                { name: 'iPerf3', ...remoteTools.iperf3 },
-              ]" stripe>
-                <el-table-column prop="name" label="工具" width="150" />
-                <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="row.ready ? 'success' : 'danger'">{{ row.ready ? 'READY' : '不可用' }}</el-tag></template></el-table-column>
-                <el-table-column prop="version" label="版本" min-width="130"><template #default="{ row }">{{ row.version || '--' }}</template></el-table-column>
-                <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
-                <el-table-column prop="warning" label="提示" min-width="180"><template #default="{ row }">{{ row.warning || '--' }}</template></el-table-column>
-              </el-table>
+              <NcDataTable v-else table-id="agent-tool-status" route-key="/agents" :data="toolRows" :columns="toolColumns" :show-column-settings="false">
+                <template #cell-ready="{ row }"><el-tag :type="row.ready ? 'success' : 'danger'">{{ row.ready ? 'READY' : '不可用' }}</el-tag></template>
+              </NcDataTable>
             </div>
           </el-tab-pane>
           <el-tab-pane label="远端任务" name="tasks">
             <div v-loading="remoteLoading" class="remote-tab-body">
-              <el-table :data="remoteTasks" empty-text="Agent 暂无任务" stripe>
-                <el-table-column prop="task_id" label="任务 ID" min-width="170" show-overflow-tooltip />
-                <el-table-column prop="task_type" label="类型" min-width="150" />
-                <el-table-column label="状态" width="110"><template #default="{ row }"><NcStatusTag :status="normalizedStatus(row.status)" /></template></el-table-column>
-                <el-table-column label="开始时间" width="176"><template #default="{ row }">{{ formatTime(row.start_time || row.created_at) }}</template></el-table-column>
-                <el-table-column label="结束时间" width="176"><template #default="{ row }">{{ formatTime(row.end_time) }}</template></el-table-column>
-                <el-table-column prop="error_message" label="错误摘要" min-width="170"><template #default="{ row }">{{ row.error_message || '--' }}</template></el-table-column>
-                <el-table-column label="操作" width="92" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openTask(row)">详情</el-button></template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="agent-remote-tasks" route-key="/agents" :data="remoteTasks" :columns="remoteTaskColumns" empty-text="Agent 暂无任务">
+                <template #cell-status="{ row }"><NcStatusTag :status="normalizedStatus(row.status)" /></template>
+                <template #cell-actions="{ row }"><el-button link type="primary" @click="openTask(row)">详情</el-button></template>
+              </NcDataTable>
             </div>
           </el-tab-pane>
           <el-tab-pane label="采集包" name="packages">
             <div v-loading="remoteLoading" class="remote-tab-body">
               <el-alert title="本页只读；下载导入请暂用桌面端现有 Agent 包导入入口。" type="info" show-icon :closable="false" />
-              <el-table :data="remotePackages" empty-text="Agent 暂无采集包" stripe>
-                <el-table-column prop="package_id" label="采集包 ID" min-width="210" show-overflow-tooltip />
-                <el-table-column prop="task_type" label="任务类型" min-width="170" />
-                <el-table-column prop="task_id" label="任务 ID" min-width="180" show-overflow-tooltip />
-                <el-table-column label="大小" width="110"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
-                <el-table-column label="开始时间" width="176"><template #default="{ row }">{{ formatTime(row.start_time) }}</template></el-table-column>
-                <el-table-column label="结束时间" width="176"><template #default="{ row }">{{ formatTime(row.end_time) }}</template></el-table-column>
-              </el-table>
+              <NcDataTable table-id="agent-remote-packages" route-key="/agents" :data="remotePackages" :columns="packageColumns" empty-text="Agent 暂无采集包" />
             </div>
           </el-tab-pane>
         </el-tabs>

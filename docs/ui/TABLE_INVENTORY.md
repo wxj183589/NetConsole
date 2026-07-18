@@ -7,6 +7,7 @@
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1021` | `device-detail-capabilities` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1052` | `device-detail-sections` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1081` | `device-detail-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/network-tools/traffic` | `apps/web/src/components/traffic/TrafficRunHistory.vue:54` | `traffic-run-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:445` | `ac-fit-ap-resources` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:484` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:542` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
@@ -18,26 +19,25 @@
 | `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:248` | `ac-mesh-detail-events` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:274` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:276` | `ac-trackside-plan` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:353` | `agent-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:421` | `agent-tool-status` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:428` | `agent-remote-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:437` | `agent-remote-packages` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1249` | `device-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1410` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/tasks` | `apps/web/src/views/job-center/JobCenterView.vue:238` | `job-center-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:323` | `legacy:components:network-tools:NetworkToolboxPanel:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:343` | `legacy:components:network-tools:NetworkToolboxPanel:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:NetworkToolboxPanel` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:349` | `legacy:components:network-tools:NetworkToolboxPanel:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:WirelessScanPanel` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:379` | `legacy:components:network-tools:WirelessScanPanel:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:WirelessScanPanel` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:385` | `legacy:components:network-tools:WirelessScanPanel:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `embedded:WirelessScanPanel` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:394` | `legacy:components:network-tools:WirelessScanPanel:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `embedded:TrafficRunHistory` | `apps/web/src/components/traffic/TrafficRunHistory.vue:45` | `legacy:components:traffic:TrafficRunHistory:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:311` | `legacy:views:agents:AgentListView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:385` | `legacy:views:agents:AgentListView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:400` | `legacy:views:agents:AgentListView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:414` | `legacy:views:agents:AgentListView:4` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/command-reference` | `apps/web/src/views/command-reference/CommandReferenceView.vue:300` | `legacy:views:command-reference:CommandReferenceView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:569` | `legacy:views:config-collection:ConfigCollectionView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:588` | `legacy:views:config-collection:ConfigCollectionView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:453` | `legacy:views:file-management:FileManagementView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:480` | `legacy:views:file-management:FileManagementView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/file` | `apps/web/src/views/file-management/FileManagementView.vue:517` | `legacy:views:file-management:FileManagementView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
-| `/job-center` | `apps/web/src/views/job-center/JobCenterView.vue:223` | `legacy:views:job-center:JobCenterView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/rail-transit` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:133` | `legacy:views:rail-transit:CarNetworkDiagnosticView:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/rail-transit` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:150` | `legacy:views:rail-transit:CarNetworkDiagnosticView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/rail-transit` | `apps/web/src/views/rail-transit/CarNetworkPointTableDialog.vue:202` | `legacy:views:rail-transit:CarNetworkPointTableDialog:1` | `el-table` | 否 | 否 | 否 | BLOCKED |
@@ -92,4 +92,4 @@
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:339` | `legacy:views:system:SystemMaintenanceView:2` | `el-table` | 否 | 否 | 否 | BLOCKED |
 | `/system` | `apps/web/src/views/system/SystemMaintenanceView.vue:349` | `legacy:views:system:SystemMaintenanceView:3` | `el-table` | 否 | 否 | 否 | BLOCKED |
 
-总计：16 张已迁移，71 张待迁移。
+总计：22 张已迁移，65 张待迁移。

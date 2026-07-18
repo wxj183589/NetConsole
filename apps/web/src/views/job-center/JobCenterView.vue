@@ -5,6 +5,8 @@ import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh, View } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
+import NcDataTable from '../../components/table/NcDataTable.vue'
+import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
@@ -32,6 +34,19 @@ const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return store.tasks.filter((task) => matchesFilter(task) && (moduleFilter.value === 'all' || task.module === moduleFilter.value) && (!search || taskSearchText(task).includes(search)))
 })
+const columns: NcTableColumn<TaskItem>[] = [
+  { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'progress', label: '进度', valueType: 'percentage' },
+  { key: 'site_name', label: '局点', valueType: 'text' },
+  { key: 'device_name', label: '设备', valueType: 'name' },
+  { key: 'executor', label: 'Owner / 执行端', valueType: 'text', displayValue: (row) => `${row.owner || '—'} / ${row.executor}` },
+  { key: 'started_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTime(row.started_time || row.created_time) },
+  { key: 'duration_seconds', label: '持续时间', valueType: 'duration', displayValue: (row) => formatDuration(row.duration_seconds) },
+  { key: 'session_id', label: 'Session', valueType: 'text' },
+  { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
+]
 
 watch(drawerVisible, (visible) => {
   store.setDetailVisible(visible)
@@ -220,26 +235,15 @@ const revealSaved = () => runSavedAction('reveal')
       </div>
 
       <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" class="job-error" />
-      <el-table v-loading="store.loading" :data="visibleTasks" empty-text="暂无任务记录" stripe height="calc(100vh - 390px)">
-        <el-table-column label="任务" min-width="240" fixed="left">
-          <template #default="{ row }">
+      <NcDataTable v-loading="store.loading" table-id="job-center-tasks" route-key="/tasks" :data="visibleTasks" :columns="columns" empty-text="暂无任务记录" height="calc(100vh - 390px)">
+        <template #cell-task="{ row }">
             <strong class="cell-title">{{ row.name }}</strong>
             <small class="cell-subtitle">{{ row.type }} · {{ row.id }}</small>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="105"><template #default="{ row }"><NcStatusTag :status="row.status" /></template></el-table-column>
-        <el-table-column label="进度" width="150"><template #default="{ row }"><el-progress :percentage="row.progress" :stroke-width="7" /></template></el-table-column>
-        <el-table-column prop="site_name" label="局点" min-width="150" show-overflow-tooltip />
-        <el-table-column prop="device_name" label="设备" min-width="145" show-overflow-tooltip />
-        <el-table-column label="Owner / 执行端" width="140"><template #default="{ row }">{{ row.owner || '--' }} / {{ row.executor }}</template></el-table-column>
-        <el-table-column label="开始时间" width="176"><template #default="{ row }">{{ formatTime(row.started_time || row.created_time) }}</template></el-table-column>
-        <el-table-column label="持续时间" width="105"><template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template></el-table-column>
-        <el-table-column prop="session_id" label="Session" min-width="190" show-overflow-tooltip />
-        <el-table-column prop="error_summary" label="错误 / 告警" min-width="220" show-overflow-tooltip />
-        <el-table-column label="操作" width="82" fixed="right">
-          <template #default="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
-        </el-table-column>
-      </el-table>
+        </template>
+        <template #cell-status="{ row }"><NcStatusTag :status="row.status" /></template>
+        <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :stroke-width="7" /></template>
+        <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
+      </NcDataTable>
     </div>
 
     <el-drawer v-model="drawerVisible" title="任务详情" size="min(820px, 94vw)">

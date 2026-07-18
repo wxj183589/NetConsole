@@ -63,11 +63,17 @@ const containerRef = ref<HTMLElement>()
 const displayRevision = ref(0)
 const bodyFont = ref('400 14px "Microsoft YaHei UI", sans-serif')
 const headerFont = ref('600 14px "Microsoft YaHei UI", sans-serif')
-const currentLanguage = ref(props.language || (typeof document === 'undefined' ? 'zh-CN' : document.documentElement.lang || 'zh-CN'))
+const currentLanguage = ref(props.language || documentLanguage())
 const preferences = ref<NcTablePreferences>()
 const manualWidths = ref<Record<string, number>>({})
 let rootObserver: MutationObserver | undefined
 let resizeObserver: ResizeObserver | undefined
+
+function documentLanguage(): string {
+  return typeof document !== 'undefined' && document.documentElement?.lang
+    ? document.documentElement.lang
+    : 'zh-CN'
+}
 
 const identity = computed(() => ({
   userKey: props.userKey,
@@ -246,14 +252,15 @@ function handleViewportChange(): void {
 }
 
 onMounted(() => {
-  if (typeof document === 'undefined') return
+  const rootElement = typeof document === 'undefined' ? undefined : document.documentElement
+  if (!rootElement) return
   refreshFonts()
   rootObserver = new MutationObserver((records) => {
     const languageChanged = records.some((record) => record.attributeName === 'lang')
-    if (languageChanged && !props.language) currentLanguage.value = document.documentElement.lang || 'zh-CN'
+    if (languageChanged && !props.language) currentLanguage.value = documentLanguage()
     handleViewportChange()
   })
-  rootObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'lang'] })
+  rootObserver.observe(rootElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'lang'] })
   void document.fonts?.ready.then(() => {
     handleViewportChange()
   })
@@ -261,13 +268,13 @@ onMounted(() => {
     resizeObserver = new ResizeObserver(handleViewportChange)
     resizeObserver.observe(containerRef.value)
   }
-  window.addEventListener('resize', handleViewportChange)
+  window.addEventListener?.('resize', handleViewportChange)
 })
 
 onBeforeUnmount(() => {
   rootObserver?.disconnect()
   resizeObserver?.disconnect()
-  window.removeEventListener('resize', handleViewportChange)
+  window.removeEventListener?.('resize', handleViewportChange)
 })
 
 defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, toggleRowSelection })
