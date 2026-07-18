@@ -107,6 +107,7 @@ flowchart LR
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
+.\.venv\Scripts\python.exe main.py
 .\.venv\Scripts\python.exe main.py --mode web
 .\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
@@ -115,6 +116,8 @@ flowchart LR
 cd apps\desktop_electron
 pnpm dev
 ```
+
+无参数 `main.py` 是源码态 PyCharm/命令行的 Electron Desktop 入口：它使用项目本地 Electron 运行时执行同一 `scripts/dev.mjs` 编排链，不恢复 Qt，也不单独启动第二套 FastAPI。依赖已安装时不要求全局 `pnpm` 在 `PATH` 中；缺少 `apps/desktop_electron` 或 `apps/web` 的 `node_modules` 时会明确提示先安装锁定依赖。`--mode web|server` 继续只用于本机开发诊断。
 
 前端首次运行或依赖变化后执行：
 

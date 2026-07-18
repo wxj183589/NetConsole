@@ -115,8 +115,9 @@ def main() -> int:
             _verify_release_contract()
             return 0
         if not sys.argv[1:]:
-            print("NetConsole 桌面端请启动 Electron；Python 入口仅用于受管 Backend、Worker 和本机开发诊断。", file=sys.stderr)
-            return 2
+            from netconsole.launcher.electron_desktop import launch_electron_desktop
+
+            return launch_electron_desktop()
         from netconsole.launcher.launcher import launch
 
         return launch(sys.argv[1:])

@@ -11,12 +11,11 @@ const projectRoot = resolve(appRoot, '..', '..')
 const webRoot = resolve(projectRoot, 'apps', 'web')
 const webRequire = createRequire(resolve(webRoot, 'package.json'))
 const viteCli = resolve(dirname(webRequire.resolve('vite/package.json')), 'bin', 'vite.js')
-const pnpmCli = process.env.npm_execpath
+const typescriptCli = resolve(dirname(require.resolve('typescript/package.json')), 'bin', 'tsc')
+const buildScript = resolve(appRoot, 'scripts', 'build.mjs')
 const devPort = 5173
 const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke')
-
-if (!pnpmCli) throw new Error('请通过 pnpm dev 或 pnpm smoke:dev 启动 Electron')
 
 function spawnNode(args, options = {}) {
   return spawn(process.execPath, args, {
@@ -27,13 +26,13 @@ function spawnNode(args, options = {}) {
   })
 }
 
-function runPnpm(args) {
+function runNode(args, label) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawnNode([pnpmCli, ...args])
+    const child = spawnNode(args)
     child.once('error', reject)
     child.once('exit', (code) => {
       if (code === 0) resolvePromise()
-      else reject(new Error(`pnpm ${args.join(' ')} failed with exit code ${code}`))
+      else reject(new Error(`${label} failed with exit code ${code}`))
     })
   })
 }
@@ -86,7 +85,8 @@ async function assertDevPortAvailable() {
   })
 }
 
-await runPnpm(['run', 'build:main'])
+await runNode([typescriptCli, '--noEmit', '-p', resolve(appRoot, 'tsconfig.json')], 'Electron typecheck')
+await runNode([buildScript], 'Electron main/preload build')
 await assertDevPortAvailable()
 
 const vite = spawnNode([
@@ -115,12 +115,14 @@ try {
   await waitForVite(vite)
   const electronExecutable = require('electron')
   const pythonExecutable = discoverPython()
+  const electronEnv = { ...process.env }
+  delete electronEnv.ELECTRON_RUN_AS_NODE
   electron = spawn(electronExecutable, [appRoot], {
     cwd: projectRoot,
     stdio: 'inherit',
     shell: false,
     env: {
-      ...process.env,
+      ...electronEnv,
       NETCONSOLE_WEB_DEV_URL: devUrl,
       NETCONSOLE_PROJECT_ROOT: projectRoot,
       ...(pythonExecutable ? { NETCONSOLE_PYTHON: pythonExecutable } : {}),

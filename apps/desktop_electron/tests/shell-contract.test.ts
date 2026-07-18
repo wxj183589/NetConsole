@@ -41,6 +41,13 @@ describe('Electron shell product contract', () => {
     expect(devSource).toContain("electron.once('close', finish)")
   })
 
+  it('can be launched directly without a global pnpm command', () => {
+    expect(devSource).not.toContain('npm_execpath')
+    expect(devSource).toContain("require.resolve('typescript/package.json')")
+    expect(devSource).toContain('Electron main/preload build')
+    expect(devSource).toContain('delete electronEnv.ELECTRON_RUN_AS_NODE')
+  })
+
   it('keeps one hide-on-close task window without stopping the backend', () => {
     expect(source).toContain('let taskWindow: BrowserWindow | undefined')
     expect(source).toContain("url.searchParams.set('task_window', '1')")

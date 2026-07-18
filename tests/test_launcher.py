@@ -101,11 +101,74 @@ def test_help_exit_is_not_recorded_as_startup_failure(tmp_path: Path, monkeypatc
 
 def test_empty_python_entrypoint_rejects_legacy_desktop_start(capsys, monkeypatch) -> None:
     from netconsole import entrypoint
+    from netconsole.launcher import electron_desktop
 
     monkeypatch.setattr(sys, "argv", ["NetConsole"])
+    calls: list[bool] = []
+    monkeypatch.setattr(electron_desktop, "launch_electron_desktop", lambda: calls.append(True) or 0)
 
-    assert entrypoint.main() == 2
-    assert "请启动 Electron" in capsys.readouterr().err
+    assert entrypoint.main() == 0
+    assert calls == [True]
+    assert capsys.readouterr().err == ""
+
+
+def test_electron_desktop_plan_uses_project_runtime_without_global_pnpm(tmp_path: Path) -> None:
+    from netconsole.launcher.electron_desktop import build_electron_desktop_launch_plan
+
+    desktop = tmp_path / "apps" / "desktop_electron"
+    web = tmp_path / "apps" / "web"
+    electron = desktop / "node_modules" / "electron" / "dist" / "electron.exe"
+    for path in (
+        desktop / "scripts" / "dev.mjs",
+        electron,
+        desktop / "node_modules" / "typescript" / "bin" / "tsc",
+        web / "node_modules" / "vite" / "bin" / "vite.js",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+
+    plan = build_electron_desktop_launch_plan(
+        project_root=tmp_path,
+        python_executable=python,
+        environment={},
+    )
+
+    assert plan.executable == electron.resolve()
+    assert plan.arguments == (str((desktop / "scripts" / "dev.mjs").resolve()),)
+    assert plan.environment["ELECTRON_RUN_AS_NODE"] == "1"
+    assert plan.environment["NETCONSOLE_PROJECT_ROOT"] == str(tmp_path.resolve())
+    assert plan.environment["NETCONSOLE_PYTHON"] == str(python.resolve())
+
+
+def test_electron_desktop_plan_accepts_explicit_node_override(tmp_path: Path) -> None:
+    from netconsole.launcher.electron_desktop import build_electron_desktop_launch_plan
+
+    desktop = tmp_path / "apps" / "desktop_electron"
+    web = tmp_path / "apps" / "web"
+    for path in (
+        desktop / "scripts" / "dev.mjs",
+        desktop / "node_modules" / "electron" / "dist" / "electron.exe",
+        desktop / "node_modules" / "typescript" / "bin" / "tsc",
+        web / "node_modules" / "vite" / "bin" / "vite.js",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    python = tmp_path / "python.exe"
+    python.write_text("", encoding="utf-8")
+    node = tmp_path / "node.exe"
+    node.write_text("", encoding="utf-8")
+
+    plan = build_electron_desktop_launch_plan(
+        project_root=tmp_path,
+        python_executable=python,
+        environment={"NETCONSOLE_NODE": str(node), "ELECTRON_RUN_AS_NODE": "1"},
+    )
+
+    assert plan.executable == node.resolve()
+    assert "ELECTRON_RUN_AS_NODE" not in plan.environment
 
 
 def test_entrypoint_dispatches_packaged_electron_backend(monkeypatch) -> None:

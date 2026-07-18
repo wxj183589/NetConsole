@@ -30,6 +30,7 @@ scripts/build/release.py
 Electron 基础验证：
 
 ```powershell
+.\.venv\Scripts\python.exe main.py
 cd apps/desktop_electron
 pnpm install --frozen-lockfile
 pnpm test
@@ -37,7 +38,7 @@ pnpm build
 pnpm smoke:dev
 ```
 
-`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。未来打包态 Main 固定启动 `resources/backend/NetConsoleBackend.exe --electron-backend`，该内部参数只分派受管 Electron Runtime，不是用户启动模式。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
+无参数 `main.py` 是 PyCharm/源码态 Electron 开发入口，复用 `scripts/dev.mjs`，不属于安装包入口，也不改变 Electron Main 对 Backend 的所有权。`pnpm build` 构建单文件 main/preload 和唯一 `apps/web/dist`。`pnpm start` 可在源码环境验证生产静态资源由本机 FastAPI 同源托管，但仍依赖项目 Python 虚拟环境；正式安装包必须另行定义 Python bundle、资源白名单、代码签名、升级和卸载策略。未来打包态 Main 固定启动 `resources/backend/NetConsoleBackend.exe --electron-backend`，该内部参数只分派受管 Electron Runtime，不是用户启动模式。当前只采用 Electron + esbuild，不引入第二个安装/打包框架。
 
 `BuildConfig` 从 `src/netconsole/core/version.py` 读取应用名、版本和作者；构建临时文件和发布包统一写入 `dist/`。
 
