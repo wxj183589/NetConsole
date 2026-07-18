@@ -2,17 +2,19 @@
 
 NetConsole uses SQLite for local management data.
 
-Main database path:
+Main database path relative to the active application data root:
 
 ```text
-.local/data/sites/<site_name>/db/devices.db
+data/sites/<site_name>/db/devices.db
 ```
 
 The schema in code is the current source of truth for a new database.
 
-The built-in demonstration site is `demo`. If `.local/data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
+The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
 
-If the database already exists, the application uses it directly and does not change its table structure or add missing demo fact data automatically. For development testing, delete `.local/data/sites/demo/db/devices.db` manually and restart the application to regenerate the current demo database. No database upgrade or demo backfill logic is used.
+If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current E6 migration adds history-query indexes without changing field meaning. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
+
+Current schema version: `2026.07.18.history_query_indexes`. Query-plan evidence and rollback boundaries are recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 Current local tables:
 

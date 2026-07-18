@@ -6,7 +6,7 @@ from pathlib import Path
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.17.ac_fit_ap_radio_connection_fields"
+CURRENT_SCHEMA_VERSION = "2026.07.18.history_query_indexes"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -237,6 +237,8 @@ CREATE TABLE IF NOT EXISTS device_interfaces_history (
     updated_at TEXT,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_device_interfaces_history_device_interface_time
+    ON device_interfaces_history(device_uuid, interface_name, collected_at DESC, id DESC);
 """
 
 DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA = """
@@ -270,6 +272,8 @@ CREATE TABLE IF NOT EXISTS device_optical_modules_history (
     updated_at TEXT,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_device_optical_history_device_interface_time
+    ON device_optical_modules_history(device_uuid, interface_name, collected_at DESC, id DESC);
 """
 
 DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA = """
@@ -288,6 +292,8 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors_history (
     updated_at TEXT,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_device_lldp_history_device_interface_time
+    ON device_lldp_neighbors_history(device_uuid, local_interface, collected_at DESC, id DESC);
 """
 
 AC_AP_SUMMARY_SCHEMA = """
@@ -431,6 +437,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resource_history (
     raw_log_path TEXT,
     created_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_fit_ap_resource_history_ac_time
+    ON ac_fit_ap_resource_history(ac_device_uuid, collected_at DESC, id DESC);
 """
 
 AP_EXTENSION_POINTS_SCHEMA = """
@@ -751,6 +759,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_optical_history (
     raw_log_path TEXT,
     created_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_fit_ap_optical_history_ap_time
+    ON ac_fit_ap_optical_history(ap_uuid, collected_at DESC, id DESC);
 """
 
 AC_FIT_AP_LLDP_HISTORY_SCHEMA = """
@@ -777,6 +787,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_lldp_history (
     raw_log_path TEXT,
     created_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_ap_time
+    ON ac_fit_ap_lldp_history(ap_uuid, collected_at DESC, id DESC);
 """
 
 AC_FIT_AP_RADIO_HISTORY_SCHEMA = """
@@ -800,6 +812,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_history (
     raw_log_path TEXT,
     created_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_fit_ap_radio_history_ap_time
+    ON ac_fit_ap_radio_history(ap_uuid, collected_at DESC, id DESC);
 """
 
 AP_ENTITIES_SCHEMA = """

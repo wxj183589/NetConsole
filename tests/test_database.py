@@ -31,6 +31,24 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
             ]
             for row in fit_ap_resource_indexes
         }
+        history_index_columns = {
+            table: {
+                row["name"]: [
+                    column["name"]
+                    for column in conn.execute(f"PRAGMA index_info({row['name']})").fetchall()
+                ]
+                for row in conn.execute(f"PRAGMA index_list({table})").fetchall()
+            }
+            for table in (
+                "device_interfaces_history",
+                "device_optical_modules_history",
+                "device_lldp_neighbors_history",
+                "ac_fit_ap_resource_history",
+                "ac_fit_ap_optical_history",
+                "ac_fit_ap_lldp_history",
+                "ac_fit_ap_radio_history",
+            )
+        }
 
     assert "collect_runs" in table_names
     assert "device_facts" in table_names
@@ -59,6 +77,35 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert ap_entity_indexes["idx_ap_entities_site_ac_apid_lookup"]["unique"] == 0
     assert ap_entity_indexes["idx_ap_entities_site_ac_name_lookup"]["unique"] == 0
     assert ["ac_device_uuid", "serial_number"] not in fit_ap_resource_index_columns.values()
+    assert history_index_columns["device_interfaces_history"]["idx_device_interfaces_history_device_interface_time"] == [
+        "device_uuid",
+        "interface_name",
+        "collected_at",
+        "id",
+    ]
+    assert history_index_columns["device_optical_modules_history"]["idx_device_optical_history_device_interface_time"] == [
+        "device_uuid",
+        "interface_name",
+        "collected_at",
+        "id",
+    ]
+    assert history_index_columns["device_lldp_neighbors_history"]["idx_device_lldp_history_device_interface_time"] == [
+        "device_uuid",
+        "local_interface",
+        "collected_at",
+        "id",
+    ]
+    assert history_index_columns["ac_fit_ap_resource_history"]["idx_fit_ap_resource_history_ac_time"] == [
+        "ac_device_uuid",
+        "collected_at",
+        "id",
+    ]
+    for table, index_name in (
+        ("ac_fit_ap_optical_history", "idx_fit_ap_optical_history_ap_time"),
+        ("ac_fit_ap_lldp_history", "idx_fit_ap_lldp_history_ap_time"),
+        ("ac_fit_ap_radio_history", "idx_fit_ap_radio_history_ap_time"),
+    ):
+        assert history_index_columns[table][index_name] == ["ap_uuid", "collected_at", "id"]
     assert "base" + "line" not in config_snapshot_columns
     for column in ("interface_type", "port_status", "pvid"):
         assert column in interface_columns
@@ -129,6 +176,7 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
         conn.execute("UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'", ("2026.06.23.device_ap_rebuild_mac",))
         conn.execute("DROP TABLE ap_extension_points")
         conn.execute("DROP TABLE ap_extension_import_batches")
+        conn.execute("DROP INDEX idx_fit_ap_radio_history_ap_time")
         conn.commit()
 
     db.initialize()
@@ -137,11 +185,15 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
         version = conn.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()["value"]
         device_count = conn.execute("SELECT COUNT(*) AS count FROM devices WHERE device_uuid = 'device-1'").fetchone()["count"]
         table_names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        radio_history_indexes = {
+            row["name"] for row in conn.execute("PRAGMA index_list(ac_fit_ap_radio_history)").fetchall()
+        }
 
     assert version == CURRENT_SCHEMA_VERSION
     assert device_count == 1
     assert "ap_extension_points" in table_names
     assert "ap_extension_import_batches" in table_names
+    assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
 
 
 def test_database_initialize_rejects_schema_without_metadata(tmp_path):

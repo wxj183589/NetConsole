@@ -25,6 +25,10 @@
 - Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品方向。Qt 已完成既有打包成果，本版本起不再作为新版本发布门或新功能入口，源码暂留作 1:1 迁移事实源，待 Electron 全部有效功能完成真实验收后单独删除。
 - 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](development/electron-parity-wave2.md)。
 
+### 数据库
+
+- 基于真实 `devices.db` 的 SQLite Backup 副本和 `EXPLAIN QUERY PLAN`，为设备接口/光模块/LLDP 历史及 FIT-AP 资源/Radio/LLDP/光衰历史增加 7 个幂等复合索引；典型 100 行查询由全表扫描和临时排序降至索引搜索。旧库副本迁移保持行数、通过 `quick_check`，未删除表、字段或业务数据；Task、Agent、Traffic、iPerf、Online MR 与 MESH 未发现需要强制 schema 修改的证据。
+
 ### 验证
 
 - Python 组合测试：2577 项通过、2 项按既有条件跳过；唯一未运行项为已退出发布门的旧 Qt PyInstaller 实包冒烟。

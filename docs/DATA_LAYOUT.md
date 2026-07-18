@@ -173,6 +173,7 @@ sessions/<session>/
 ## 6. 数据稳定性边界
 
 - 设备管理、FIT AP 资源和其他主应用数据库默认要求兼容，schema 调整需要单独迁移方案和回滚。
+- `devices.db` 当前 schema 版本为 `2026.07.18.history_query_indexes`；历史明细按设备/AP 身份和 `collected_at, id` 使用复合索引。升级只幂等创建索引，不改变字段或事实含义；性能证据、一次性磁盘成本和回滚见 [E6 数据库调优归档](archive/migrations/electron-only/E6-2026-07-18.md)。
 - 轨道交通基础资料 Query Service 只允许 SQLite `mode=ro + query_only` 和显式安全字段；账号、密码、Community、Token 及隧道凭据不得进入公共 DTO 或预览结果。
 - 轨道交通基础资料正式写入默认关闭，不新增主表；受控 Service 只允许事务更新既有 `ap_extension_points`，写前备份、操作审计、预览有效期和数据库哈希乐观锁缺一不可。宁波地铁 12 号线真实库在 5C-6B 仍未授权写入。
 - `tasks.db` 由 `TaskRepository` 和 Online MR Task/Session Repository 幂等初始化，使用 WAL/busy timeout/foreign keys；任务快照、事件和映射按各自事务提交，不自动删除业务结果或原始日志。
