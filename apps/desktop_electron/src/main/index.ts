@@ -64,12 +64,16 @@ async function startDesktop(): Promise<void> {
     isPackaged: app.isPackaged,
     appPath: app.getAppPath(),
     resourcesPath: process.resourcesPath,
+    userDataPath: app.getPath('userData'),
   })
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
   backend = new PythonBackendManager({
     executable: config.backendExecutable,
     argumentsPrefix: config.backendArgumentsPrefix,
     projectRoot: config.projectRoot,
+    dataRoot: config.dataRoot,
+    runtimeMode: config.runtimeMode,
+    pythonPath: config.backendPythonPath,
     rendererOrigin: config.rendererOrigin,
     startupTimeoutMs: config.startupTimeoutMs,
     logger,

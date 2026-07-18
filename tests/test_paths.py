@@ -4,6 +4,7 @@ from pathlib import Path
 
 from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
+from netconsole.core import runtime_environment
 from netconsole.core.runtime_environment import validate_runtime_write_path
 
 
@@ -16,7 +17,7 @@ def test_pytest_data_root_is_isolated_from_project_local_data() -> None:
 
 
 def test_path_resolver_creates_site_dirs(tmp_path):
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     site = paths.ensure_site_dirs()
 
     assert site == tmp_path / "data" / "sites" / "demo"
@@ -42,7 +43,7 @@ def test_path_resolver_creates_site_dirs(tmp_path):
 
 
 def test_path_resolver_site_paths_use_files_and_cache_layout(tmp_path):
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     site = paths.site_dir("demo")
 
     assert paths.config_center_raw_logs_root("demo") == site / "files" / "config_center" / "raw_logs"
@@ -60,7 +61,7 @@ def test_path_resolver_site_paths_use_files_and_cache_layout(tmp_path):
 
 
 def test_path_resolver_creates_project_dirs(tmp_path):
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_project_dirs()
 
     assert paths.data_dir.is_dir()
@@ -70,6 +71,42 @@ def test_path_resolver_creates_project_dirs(tmp_path):
     assert not (tmp_path / "docs").exists()
     assert not (tmp_path / "tests").exists()
     assert not (tmp_path / "project").exists()
+
+
+def test_path_resolver_does_not_derive_data_root_from_app_root(tmp_path):
+    app = tmp_path / "application"
+    configured = Path(os.environ["NETCONSOLE_DATA_ROOT"]).resolve()
+
+    paths = PathResolver(app_root=app)
+
+    assert paths.app_root == app.resolve()
+    assert paths.data_root == configured
+    assert paths.data_root != paths.app_root
+
+
+def test_development_data_root_defaults_to_local_app_data(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    local_app_data = tmp_path / "local-app-data"
+    monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(runtime_environment, "is_packaged_runtime", lambda: False)
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: source_root)
+
+    assert runtime_environment.data_root() == local_app_data / "NetConsole" / "Development"
+
+
+def test_development_data_root_rejects_source_repository(tmp_path, monkeypatch):
+    source_root = tmp_path / "source"
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(source_root / ".local"))
+    monkeypatch.setattr(runtime_environment, "is_packaged_runtime", lambda: False)
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: source_root)
+
+    try:
+        runtime_environment.data_root()
+    except RuntimeError as exc:
+        assert "must not be inside the source repository" in str(exc)
+    else:
+        raise AssertionError("expected source-tree data root rejection")
 
 
 def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):

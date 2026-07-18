@@ -14,14 +14,18 @@ describe('desktop config', () => {
         NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe',
         NETCONSOLE_WEB_DEV_URL: 'http://127.0.0.1:5173',
         NETCONSOLE_BACKEND_TIMEOUT_MS: '12000',
+        LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
       },
       fileExists: () => true,
     })
 
     expect(config).toMatchObject({
       projectRoot: 'C:\\repo',
+      dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+      runtimeMode: 'desktop-development',
       backendExecutable: 'C:\\repo\\.venv\\Scripts\\python.exe',
       backendArgumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
+      backendPythonPath: 'C:\\repo\\src',
       devServerUrl: 'http://127.0.0.1:5173',
       rendererOrigin: 'http://127.0.0.1:5173',
       startupTimeoutMs: 12000,
@@ -53,12 +57,31 @@ describe('desktop config', () => {
       appPath: 'C:\\installed\\resources\\app.asar',
       resourcesPath: 'C:\\installed\\resources',
       platform: 'win32',
-      env: { NETCONSOLE_PYTHON: 'C:\\untrusted\\python.exe' },
+      env: {
+        NETCONSOLE_PYTHON: 'C:\\untrusted\\python.exe',
+        LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+      },
       fileExists: () => true,
     })
 
     expect(config.backendExecutable).toBe('C:\\installed\\resources\\backend\\NetConsoleBackend.exe')
     expect(config.backendArgumentsPrefix).toEqual(['--electron-backend'])
+    expect(config.dataRoot).toBe('C:\\Users\\tester\\AppData\\Local\\NetConsole')
+    expect(config).not.toHaveProperty('backendPythonPath')
+  })
+
+  it('rejects a desktop data root inside the project', () => {
+    expect(() => loadDesktopConfig({
+      isPackaged: false,
+      appPath: 'C:\\repo\\apps\\desktop_electron',
+      resourcesPath: 'C:\\resources',
+      platform: 'win32',
+      env: {
+        NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe',
+        NETCONSOLE_DATA_ROOT: 'C:\\repo\\.local',
+      },
+      fileExists: () => true,
+    })).toThrow('must not be inside')
   })
 
   it('shows the default menu only for an explicitly enabled development server', () => {

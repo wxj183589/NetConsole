@@ -61,10 +61,12 @@ describe('real Python backend integration', () => {
       executable: findProjectPython(),
       argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
       projectRoot,
+      dataRoot,
+      runtimeMode: 'desktop-development',
+      pythonPath: resolve(projectRoot, 'src'),
       startupTimeoutMs: 15_000,
       stopTimeoutMs: 8_000,
       environment: {
-        NETCONSOLE_DATA_ROOT: dataRoot,
         ONLINE_MR_WEB_CONTROL_ENABLED: '0',
         ONLINE_MR_AGENT_EXECUTOR_ENABLED: '0',
       },

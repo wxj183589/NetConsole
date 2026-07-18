@@ -1,10 +1,13 @@
 import { existsSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 export interface DesktopConfig {
   projectRoot: string
+  dataRoot: string
+  runtimeMode: 'desktop-development' | 'desktop-packaged'
   backendExecutable: string
   backendArgumentsPrefix: string[]
+  backendPythonPath?: string
   devServerUrl?: string
   rendererOrigin?: string
   startupTimeoutMs: number
@@ -14,6 +17,7 @@ export interface DesktopConfigInput {
   isPackaged: boolean
   appPath: string
   resourcesPath: string
+  userDataPath?: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   fileExists?: (path: string) => boolean
@@ -38,16 +42,47 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
         : `未找到项目 Python 运行时：${backendExecutable}`,
     )
   }
+  const dataRoot = resolveDesktopDataRoot(input, projectRoot, env, platform)
 
   return {
     projectRoot,
+    dataRoot,
+    runtimeMode: input.isPackaged ? 'desktop-packaged' : 'desktop-development',
     backendExecutable,
     backendArgumentsPrefix: input.isPackaged
       ? ['--electron-backend']
       : ['-m', 'netconsole.backend.electron_runtime'],
+    ...(!input.isPackaged ? { backendPythonPath: resolve(projectRoot, 'src') } : {}),
     ...(devServerUrl ? { devServerUrl, rendererOrigin: new URL(devServerUrl).origin } : {}),
     startupTimeoutMs: parseTimeout(env.NETCONSOLE_BACKEND_TIMEOUT_MS),
   }
+}
+
+function resolveDesktopDataRoot(
+  input: DesktopConfigInput,
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string {
+  const override = env.NETCONSOLE_DATA_ROOT?.trim()
+  let candidate: string
+  if (override) {
+    candidate = resolveDeveloperPath(override, '', 'NETCONSOLE_DATA_ROOT')
+  } else if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA?.trim()
+    if (!localAppData) throw new Error('LOCALAPPDATA is required to resolve the desktop data root')
+    candidate = resolve(localAppData, 'NetConsole', ...(input.isPackaged ? [] : ['Development']))
+  } else {
+    if (!input.userDataPath) throw new Error('userDataPath is required to resolve the desktop data root')
+    candidate = input.isPackaged
+      ? resolve(input.userDataPath)
+      : resolve(input.userDataPath, 'Development')
+  }
+  const fromProject = relative(projectRoot, candidate)
+  if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {
+    throw new Error('Electron data root must not be inside the project or installation directory')
+  }
+  return candidate
 }
 
 export function isDevelopmentMenuEnabled(

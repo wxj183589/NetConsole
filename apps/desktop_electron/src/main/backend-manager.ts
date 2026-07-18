@@ -2,7 +2,7 @@ import { spawn as spawnChild } from 'node:child_process'
 import type { SpawnOptionsWithoutStdio } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { delimiter, resolve } from 'node:path'
+import { delimiter } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
 import {
@@ -35,6 +35,9 @@ export interface PythonBackendManagerOptions {
   executable: string
   argumentsPrefix: string[]
   projectRoot: string
+  dataRoot: string
+  runtimeMode: 'desktop-development' | 'desktop-packaged'
+  pythonPath?: string
   rendererOrigin?: string
   startupTimeoutMs?: number
   stopTimeoutMs?: number
@@ -154,13 +157,20 @@ export class PythonBackendManager {
       '0',
       ...(this.options.rendererOrigin ? ['--renderer-origin', this.options.rendererOrigin] : []),
     ]
-    const sourcePath = resolve(this.options.projectRoot, 'src')
-    const existingPythonPath = this.options.environment?.PYTHONPATH ?? process.env.PYTHONPATH
-    const environment = {
+    const environment: NodeJS.ProcessEnv = {
       ...process.env,
       ...this.options.environment,
       PYTHONUNBUFFERED: '1',
-      PYTHONPATH: existingPythonPath ? `${sourcePath}${delimiter}${existingPythonPath}` : sourcePath,
+      NETCONSOLE_DATA_ROOT: this.options.dataRoot,
+      NETCONSOLE_RUNTIME_MODE: this.options.runtimeMode,
+    }
+    if (this.options.pythonPath) {
+      const existingPythonPath = this.options.environment?.PYTHONPATH ?? process.env.PYTHONPATH
+      environment.PYTHONPATH = existingPythonPath
+        ? `${this.options.pythonPath}${delimiter}${existingPythonPath}`
+        : this.options.pythonPath
+    } else {
+      delete environment.PYTHONPATH
     }
 
     let child: ManagedChildProcess | undefined

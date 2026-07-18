@@ -74,6 +74,9 @@ function createManager(options: {
     executable: 'C:\\Python\\python.exe',
     argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
     projectRoot: 'C:\\NetConsole',
+    dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+    runtimeMode: 'desktop-development',
+    pythonPath: 'C:\\NetConsole\\src',
     startupTimeoutMs: 50,
     stopTimeoutMs: 5,
     pollIntervalMs: 1,
@@ -108,6 +111,12 @@ describe('PythonBackendManager', () => {
     expect(spawnCalls[0].args).toContain('0')
     expect(spawnCalls[0].options.shell).toBe(false)
     expect(spawnCalls[0].options.windowsHide).toBe(true)
+    expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_DATA_ROOT).toBe(
+      'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+    )
+    expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_RUNTIME_MODE).toBe(
+      'desktop-development',
+    )
     expect(JSON.parse(handshake).session_token).toBe(TOKEN)
     expect(manager.getStatus()).toEqual({ state: 'ready', baseUrl: first.baseUrl })
 
@@ -154,6 +163,8 @@ describe('PythonBackendManager', () => {
       executable: 'python.exe',
       argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
       projectRoot: 'C:\\NetConsole',
+      dataRoot: 'C:\\NetConsoleData',
+      runtimeMode: 'desktop-development',
       createToken: () => 'invalid',
       spawnProcess,
     })
@@ -186,6 +197,8 @@ describe('PythonBackendManager', () => {
       executable: 'python.exe',
       argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
       projectRoot: 'C:\\NetConsole',
+      dataRoot: 'C:\\NetConsoleData',
+      runtimeMode: 'desktop-development',
       startupTimeoutMs: 2,
       stopTimeoutMs: 1,
       pollIntervalMs: 1,

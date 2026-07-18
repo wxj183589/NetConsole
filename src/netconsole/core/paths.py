@@ -28,8 +28,6 @@ class PathResolver:
         object.__setattr__(self, "app_root", resolved_app_root)
         if configured_data_root is not None:
             resolved_data_root = Path(configured_data_root).resolve()
-        elif configured_app_root is not None:
-            resolved_data_root = resolved_app_root
         else:
             resolved_data_root = default_data_root()
         object.__setattr__(self, "data_root", resolved_data_root)
