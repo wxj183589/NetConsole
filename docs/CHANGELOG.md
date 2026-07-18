@@ -39,10 +39,10 @@
 
 ### 验证
 
-- 以下全量计数是 2026-07-18 已完成的组合基线，不包含随后收口的设备详情；本次设备详情字段与布局收口在最终设备 diff 上完成 Python 定向测试 15 项、Vue 单 Worker 定向测试 12 项、类型检查和受影响的 UI 架构门。E10B 九门基线此前已通过，当前低 CPU 模式不重复运行其余八门、最终全量测试或生产构建。Electron 多尺寸/多缩放人工视觉验收仍待执行。
-- Python 全量测试：2052 项通过、1 项按既有环境条件跳过；依赖 `pip check` 通过。
-- Vue：62 个测试文件、191 项测试通过，TypeScript 检查和生产构建通过；Electron：13 个测试文件、89 项测试通过，typecheck、main/preload 构建与最终 Package Smoke 通过。
-- 改动范围 Ruff check/format 和文档/迁移 Guard 通过；全仓 Ruff 的 37 项既有问题未在本次发布中扩大修复范围。
+- 2026-07-19 在本轮所有并行改动提交到最终 `main` 组合后执行一次必要全量门。Electron 多尺寸/多缩放人工视觉验收仍待执行。
+- Python 全量运行结果为 2128 项通过、1 项跳过、1 项失败；唯一失败是设备详情 API 旧断言仍期待全字段空端口为 `no_light`，已按已确认产品规则改为 `no_module`，随后只定向复验设备详情 API/Query Service 16 项全部通过，未重复运行 Python 全量。`pip check` 通过。
+- Vue：69 个测试文件、249 项测试通过，TypeScript 检查与生产构建通过。本轮未修改 Electron Main/Preload，按定向优先原则未重复执行 Electron 全量。
+- 全仓 Ruff 通过；Electron-only 架构九门 `9/9` 通过且新增 finding 为 0；目录 README `145/145`、文档/目录质量测试 14 项通过。
 - Electron `win-unpacked` Package Smoke、NSIS 1.3.9 安装器生成、系统临时目录静默安装、受管 Backend 启动冒烟与卸载通过；Agent Windows x64 完整构建、Go 全量测试及交付目录本地工具复验通过。
 
 ## v1.3.8 - 2026-07-12
