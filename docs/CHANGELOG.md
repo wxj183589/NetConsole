@@ -14,6 +14,7 @@
 
 ### 桌面与发布
 
+- 新增构建产物安全回收脚本：严格白名单、默认 dry-run、拒绝路径逃逸和符号链接；已按用户授权回收仓库 `dist/v1.3.8` 历史 Qt 临时终版 9,804 个文件（约 2.63 GB），未触碰 v1.3.9、Electron 构建或业务数据。
 - Electron 启动链新增单调时钟时间线，区分状态页、Backend handshake/health、Vue mounted 和真实 interactive；Desktop 历史任务及 Agent/Traffic/File 恢复移出首屏关键路径，Netmiko/OpenPyXL 改为首次真实使用时加载。连续两次源码冒烟的可交互时间为 1991.2 ms 和 2068.2 ms，相对同口径 2926.8 ms 基线中位改善 30.6%。
 - 源码开发数据根迁至 `%LOCALAPPDATA%\NetConsole\Development`，打包态使用 `%LOCALAPPDATA%\NetConsole`；Electron 明确向 Backend 传递运行模式和数据根，拒绝仓库/安装目录内写入。历史 `.local/data`、`.local/runtime` 与根 `data` 已通过无覆盖、哈希和 SQLite Backup API 迁移，冲突保留，明确测试残留按白名单清理。
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
