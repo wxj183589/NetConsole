@@ -58,3 +58,5 @@ finalWidth >= headerRequiredWidth
 ## 增量迁移
 
 阶段 1 的旧表进入 `table-layout-baseline.json` 并在清单标记 `BLOCKED`。新表不得使用直接 `el-table`；逐域迁移后删除对应基线记录。固定列例外必须精确到表格和列，包含原因、测试与到期日期，禁止页面级通配。
+
+当前清单中的 87 张标准表格均已迁移为 `NcDataTable + NcTableColumn`，旧表基线为空。后续新增表格必须在同一提交中接入公共组件、补充定向测试并更新 `TABLE_INVENTORY.md`；截图、DPI/缩放和人工验收仍是独立门禁。

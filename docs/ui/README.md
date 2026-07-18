@@ -8,4 +8,4 @@
 - [响应式布局](RESPONSIVE_LAYOUT.md)
 - [视觉测试](VISUAL_TESTING.md)
 
-当前处于分阶段迁移期。`TABLE_INVENTORY.md` 中 `BLOCKED` 是明确的旧表债务；只有使用统一组件并通过 Guard 的表格才标记 `MIGRATED`。截图和人工 DPI 验收未执行前，不得把公共组件自动测试写成全局视觉完成。
+当前登记的 87 张标准表格均已使用统一组件并通过 Guard，`table-layout-baseline.json` 不再保留旧表债务。后续新增表格仍必须直接使用 `NcDataTable` 并登记清单；截图、DPI/缩放和人工验收未执行前，不得把自动测试写成全局视觉验收完成。

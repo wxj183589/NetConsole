@@ -43,6 +43,7 @@ finalWidth >= headerRequiredWidth
 ```powershell
 pnpm --dir apps/web exec vitest run src/components/table
 pnpm --dir apps/web exec vue-tsc -b --pretty false
+pnpm --dir apps/web test:visual
 \.venv\Scripts\python.exe scripts\ui\check_table_contracts.py
 \.venv\Scripts\python.exe -m pytest tests\test_ui_table_guards.py -q
 ```
