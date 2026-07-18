@@ -315,33 +315,33 @@ const revealSaved = () => runSavedAction('reveal')
 .job-center { max-width: 1720px; margin: 0 auto; }
 .readonly-alert { margin-bottom: 16px; }
 .job-metrics { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 14px; margin-bottom: 16px; }
-.job-metrics article { padding: 16px 18px; background: #fff; border: 1px solid #dfe7f1; border-top: 3px solid #74869f; border-radius: 10px; }
-.job-metrics article.active { border-top-color: #24a06b; }
-.job-metrics article.success { border-top-color: #70a692; }
-.job-metrics article.danger { border-top-color: #d95757; }
-.job-metrics article.warning { border-top-color: #d89b28; }
-.job-metrics span { display: block; color: #718096; font-size: 12px; }
-.job-metrics strong { display: block; margin-top: 7px; color: #172033; font-size: 25px; }
+.job-metrics article { padding: 16px 18px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-top: 3px solid var(--nc-border-strong); border-radius: 10px; }
+.job-metrics article.active { border-top-color: var(--nc-primary); }
+.job-metrics article.success { border-top-color: var(--nc-success); }
+.job-metrics article.danger { border-top-color: var(--nc-danger); }
+.job-metrics article.warning { border-top-color: var(--nc-warning); }
+.job-metrics span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
+.job-metrics strong { display: block; margin-top: 7px; color: var(--nc-text-primary); font-size: 25px; }
 .job-table-card { min-width: 0; }
-.job-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 19px; border-bottom: 1px solid #e8edf4; }
+.job-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 19px; border-bottom: 1px solid var(--nc-divider); }
 .job-toolbar h2, .detail-heading h2, .log-heading h3 { margin: 0; }
-.job-toolbar p, .detail-heading p, .log-heading p { margin: 5px 0 0; color: #7b8798; font-size: 12px; }
+.job-toolbar p, .detail-heading p, .log-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .job-toolbar-actions { display: flex; align-items: center; gap: 10px; }
 .job-error { margin: 12px 16px 0; width: auto; }
 .cell-title, .cell-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cell-subtitle { margin-top: 5px; color: #8793a5; font-size: 11px; }
+.cell-subtitle { margin-top: 5px; color: var(--nc-text-tertiary); font-size: 11px; }
 .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .detail-alert { margin: 0 0 15px; }
 .association-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .native-action-error { margin-top: 12px; }
 .log-section { margin-top: 22px; }
 .log-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-.task-log { min-height: 150px; max-height: 360px; padding: 12px; overflow: auto; color: #d6e0ec; background: #101827; border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
-.log-line { display: grid; grid-template-columns: 155px 90px 1fr; gap: 10px; padding: 4px 2px; border-bottom: 1px solid #ffffff0c; }
-.log-line time, .log-line span { color: #8493a8; }
+.task-log { min-height: 150px; max-height: 360px; padding: 12px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; }
+.log-line { display: grid; grid-template-columns: 155px 90px 1fr; gap: 10px; padding: 4px 2px; border-bottom: 1px solid var(--nc-border-code); }
+.log-line time, .log-line span { color: var(--nc-text-code-muted); }
 .log-line p { margin: 0; overflow-wrap: anywhere; }
-.log-line.error p { color: #ff9d9d; }
-.log-line.warning p { color: #ffd47e; }
+.log-line.error p { color: var(--nc-text-code-danger); }
+.log-line.warning p { color: var(--nc-text-code-warning); }
 code { overflow-wrap: anywhere; font-family: Consolas, "Microsoft YaHei", monospace; }
 @media (max-width: 1200px) {
   .job-metrics { grid-template-columns: repeat(3, 1fr); }

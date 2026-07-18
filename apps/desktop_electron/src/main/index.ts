@@ -1,9 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererReadyReport } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererHostReport } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
-import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig } from './config'
+import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import {
@@ -17,8 +17,15 @@ import {
   safeDiagnosticUrl,
 } from './renderer-diagnostics'
 import {
+  MANAGED_RENDERER_RETRY_ACTION,
+  ManagedRendererRetryNavigation,
+  ManagedWindowErrorCoordinator,
+  RendererThemeDisplayGate,
+} from './renderer-theme-display-gate'
+import {
   desktopSessionCookiePath,
   installWindowSecurity,
+  isAllowedNavigation,
   isTrustedRendererSender,
   secureWebPreferences,
 } from './security'
@@ -45,6 +52,11 @@ let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
 let codexTemporaryDataRoot: string | undefined
+const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
+const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
+const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
+const windowRendererTargets = new WeakMap<BrowserWindow, string>()
+const RENDERER_THEME_READY_TIMEOUT_MS = 10_000
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
@@ -160,25 +172,36 @@ async function startDesktop(): Promise<void> {
       secure: false,
       path: cookiePath,
     })
+    rememberManagedRendererTarget(mainWindow, rendererUrl)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
-    mainWindow.webContents.once('dom-ready', () => startupTimeline?.mark('renderer.dom_ready'))
-    void mainWindow.loadURL(rendererUrl).catch((cause) => {
+    const rendererWindow = mainWindow
+    rendererWindow.webContents.once('dom-ready', () => startupTimeline?.mark('renderer.dom_ready'))
+    armRendererThemeDisplay(rendererWindow)
+    void rendererWindow.loadURL(rendererUrl).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause)
       if (/ERR_ABORTED/.test(message)) {
         logger('ELECTRON_RENDERER_NAVIGATION_SUPERSEDED')
         return
       }
       logger('ELECTRON_RENDERER_NAVIGATION_REJECTED', message)
+      void showManagedWindowError(
+        rendererWindow,
+        'NetConsole 界面加载失败',
+        '界面资源加载失败，请检查本机日志后重试。',
+        true,
+      )
       if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
     })
   } catch (cause) {
-    await loadStatusPage(
-      mainWindow,
-      'NetConsole 启动失败',
-      cause instanceof Error ? cause.message : '本地 Python 后端启动失败。',
-      rendererUrl,
-    )
+    if (mainWindow) {
+      await showManagedWindowError(
+        mainWindow,
+        'NetConsole 启动失败',
+        cause instanceof Error ? cause.message : '本地 Python 后端启动失败。',
+        Boolean(windowRendererTargets.get(mainWindow)),
+      )
+    }
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
   }
 }
@@ -206,15 +229,46 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
     (target) => logger('ELECTRON_NAVIGATION_BLOCKED', `target=${safeDiagnosticUrl(target)}`),
     () => logger('ELECTRON_UNMANAGED_DOWNLOAD_BLOCKED'),
   )
+  const retryNavigation = new ManagedRendererRetryNavigation(
+    window,
+    () => retryManagedRenderer(window),
+    () => logger('ELECTRON_RENDERER_RETRY_REJECTED'),
+    (cause) => logger(
+      'ELECTRON_RENDERER_RETRY_FAILED',
+      `type=${cause instanceof Error ? cause.name : 'unknown'}`,
+    ),
+  )
+  const errorCoordinator = new ManagedWindowErrorCoordinator()
+  const displayGate = new RendererThemeDisplayGate(window, {
+    timeoutMs: RENDERER_THEME_READY_TIMEOUT_MS,
+    renderTimeoutFallback: () => loadStatusPage(
+      window,
+      'NetConsole 界面启动超时',
+      '界面没有在限定时间内完成主题和设置加载，请重试。',
+      Boolean(windowRendererTargets.get(window)),
+    ),
+    onVisible: (reason) => {
+      if (reason !== 'theme-ready') errorCoordinator.markVisible()
+      logger('ELECTRON_WINDOW_VISIBLE', `reason=${reason}`)
+    },
+    onFallbackError: (reason, cause) => logger(
+      'ELECTRON_WINDOW_FALLBACK_FAILED',
+      `reason=${reason} type=${cause instanceof Error ? cause.name : 'unknown'}`,
+    ),
+  })
+  windowDisplayGates.set(window, displayGate)
+  windowErrorCoordinators.set(window, errorCoordinator)
+  windowRetryNavigations.set(window, retryNavigation)
+  window.once('closed', () => displayGate.dispose())
   return window
 }
 
 function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): void {
   installRendererDiagnostics(window, {
     logger,
-    getRetryUrl: () => rendererUrl,
+    canRetry: () => Boolean(windowRendererTargets.get(window)),
     ...(smoke ? { onLoadStarted: handleRendererLoadStarted, onLoadStopped: handleRendererLoadStopped } : {}),
-    showError: (title, detail, retryUrl) => loadStatusPage(window, title, detail, retryUrl),
+    showError: (title, detail, retryable) => showManagedWindowError(window, title, detail, retryable),
   })
 }
 
@@ -235,26 +289,62 @@ async function openTaskWindow(context: { taskId?: string; module?: string; statu
   if (context.taskId) url.searchParams.set('task_id', context.taskId)
   if (context.module) url.searchParams.set('module', context.module)
   if (context.status) url.searchParams.set('status', context.status)
-  await taskWindow.loadURL(url.toString())
-  if (taskWindow.isMinimized()) taskWindow.restore()
-  taskWindow.show()
-  taskWindow.focus()
+  const taskRendererTarget = url.toString()
+  rememberManagedRendererTarget(taskWindow, taskRendererTarget)
+  armRendererThemeDisplay(taskWindow)
+  await taskWindow.loadURL(taskRendererTarget)
 }
 
 async function loadStatusPage(
   window: BrowserWindow,
   title: string,
   detail: string,
-  retryUrl = '',
+  retryable = false,
 ): Promise<void> {
-  const retry = retryUrl
-    ? `<a href="${escapeHtml(retryUrl)}">重试</a>`
+  const retryNavigation = windowRetryNavigations.get(window)
+  retryNavigation?.disarm()
+  const statusTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  const statusBackground = resolveDesktopBackgroundColor(statusTheme)
+  const statusPanel = statusTheme === 'dark' ? '#18212d' : '#ffffff'
+  const statusText = statusTheme === 'dark' ? '#f2f4f7' : '#182230'
+  const statusMuted = statusTheme === 'dark' ? '#98a2b3' : '#667085'
+  const statusBorder = statusTheme === 'dark' ? '#344054' : '#e4e7ec'
+  const statusShadow = statusTheme === 'dark'
+    ? '0 14px 38px rgb(0 0 0 / 42%)'
+    : '0 14px 38px rgb(7 16 31 / 12%)'
+  window.setBackgroundColor(statusBackground)
+  const retry = retryable
+    ? `<a href="${MANAGED_RENDERER_RETRY_ACTION}">重试</a>`
     : ''
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${DESKTOP_SAFE_BACKGROUND_COLOR};color:#182230;font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid #e4e7ec;border-radius:14px;background:#fff;text-align:center;box-shadow:0 14px 38px rgb(7 16 31 / 12%)}h1{font-size:22px;margin:0 0 12px}p{color:#667085;line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
-  await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${statusBackground};color:${statusText};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${statusBorder};border-radius:14px;background:${statusPanel};text-align:center;box-shadow:${statusShadow}}h1{font-size:22px;margin:0 0 12px}p{color:${statusMuted};line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
+  const statusPageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+  await window.loadURL(statusPageUrl)
+  if (retryable && !window.isDestroyed()) retryNavigation?.armForStatusPage(statusPageUrl)
 }
 
-function handleRendererReady(report: RendererReadyReport): void {
+function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
+  const window = sourceWindow === mainWindow
+    ? mainWindow
+    : sourceWindow === taskWindow
+      ? taskWindow
+      : undefined
+  if ('resolvedTheme' in report) {
+    const revealed = Boolean(window && windowDisplayGates.get(window)?.acceptResolvedTheme())
+    if (revealed && window && window === taskWindow) {
+      if (window.isMinimized()) window.restore()
+      window.focus()
+    }
+    return
+  }
+  if (report.phase === 'failed' && window && windowDisplayGates.get(window)?.isWaiting()) {
+    void showManagedWindowError(
+      window,
+      'NetConsole 界面启动失败',
+      '界面运行时初始化失败，请检查本机日志后重试。',
+      Boolean(windowRendererTargets.get(window)),
+    )
+  }
+  if (window !== mainWindow) return
   if (report.phase === 'mounted') startupTimeline?.mark('renderer.mounted')
   if (report.phase === 'interactive' && report.healthOk) startupTimeline?.mark('desktop.interactive')
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
@@ -377,6 +467,76 @@ async function handleFatalStartup(cause: unknown): Promise<void> {
     mainWindow.show()
   }
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
+}
+
+function armRendererThemeDisplay(window: BrowserWindow): void {
+  windowRetryNavigations.get(window)?.disarm()
+  windowErrorCoordinators.get(window)?.reset()
+  windowDisplayGates.get(window)?.arm()
+}
+
+async function retryManagedRenderer(window: BrowserWindow): Promise<void> {
+  const target = windowRendererTargets.get(window)
+  if (
+    window.isDestroyed()
+    || !target
+    || !isAllowedNavigation(target, [...rendererOrigins])
+  ) {
+    logger('ELECTRON_RENDERER_RETRY_REJECTED')
+    return
+  }
+  logger('ELECTRON_RENDERER_RETRY_STARTED')
+  armRendererThemeDisplay(window)
+  try {
+    await window.loadURL(target)
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    if (/ERR_ABORTED/.test(message)) {
+      logger('ELECTRON_RENDERER_RETRY_SUPERSEDED')
+      return
+    }
+    logger(
+      'ELECTRON_RENDERER_RETRY_NAVIGATION_FAILED',
+      `type=${cause instanceof Error ? cause.name : 'unknown'}`,
+    )
+    await showManagedWindowError(
+      window,
+      'NetConsole 界面加载失败',
+      '界面资源加载失败，请检查本机日志后重试。',
+      true,
+    )
+  }
+}
+
+function rememberManagedRendererTarget(window: BrowserWindow, target: string): void {
+  if (!isAllowedNavigation(target, [...rendererOrigins])) {
+    throw new Error('managed Renderer target is not trusted')
+  }
+  windowRendererTargets.set(window, target)
+}
+
+async function showManagedWindowError(
+  window: BrowserWindow,
+  title: string,
+  detail: string,
+  retryable = false,
+): Promise<void> {
+  const coordinator = windowErrorCoordinators.get(window)
+  const show = async () => {
+    const render = () => loadStatusPage(window, title, detail, retryable)
+    const gate = windowDisplayGates.get(window)
+    if (gate?.isWaiting()) {
+      await gate.revealFallback('renderer-failed', render)
+      return
+    }
+    await render()
+    if (!window.isDestroyed() && !window.isVisible()) window.show()
+  }
+  if (coordinator) {
+    await coordinator.show(show)
+  } else {
+    await show()
+  }
 }
 
 function escapeHtml(value: string): string {

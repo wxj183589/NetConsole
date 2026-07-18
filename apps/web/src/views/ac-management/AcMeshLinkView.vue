@@ -268,7 +268,7 @@ function matchLabel(method: string): string {
 .content-card { padding: 0 16px 14px; overflow: hidden; }
 .toolbar { flex-wrap: wrap; margin-bottom: 12px; }.toolbar .el-input { width: 250px; }.toolbar .el-select { width: 135px; }.toolbar.compact .el-input { width: 300px; }
 .pagination { justify-content: space-between; padding-top: 12px; color: var(--el-text-color-secondary); }
-.raw-panel { padding: 0 14px; }.raw-panel pre { max-height: 360px; overflow: auto; margin: 0; padding: 12px; background: #111827; color: #d1d5db; border-radius: 8px; font: 12px/1.6 Consolas, monospace; }.empty-raw { padding: 12px 0; }
+.raw-panel { padding: 0 14px; }.raw-panel pre { max-height: 360px; overflow: auto; margin: 0; padding: 12px; background: var(--nc-bg-code); color: var(--nc-text-code); border-radius: 8px; font: 12px/1.6 Consolas, monospace; }.empty-raw { padding: 12px 0; }
 .detail-title { justify-content: space-between; margin-bottom: 16px; }.detail-actions { margin: 14px 0; }.detail-title + .el-descriptions { margin-bottom: 12px; }
 @media (max-width: 1500px) { .summary-grid { grid-template-columns: repeat(4, minmax(140px, 1fr)); } }
 @media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }.page-heading { align-items: flex-start; flex-direction: column; } }

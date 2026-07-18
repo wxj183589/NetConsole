@@ -329,10 +329,10 @@ function clearCurrentView(): void {
 }
 
 .metric-card {
-  background: #fff;
+  background: var(--nc-bg-panel);
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 16px;
-  box-shadow: 0 10px 30px rgb(15 23 42 / 4%);
+  box-shadow: var(--nc-shadow-card);
   padding: 18px;
 }
 

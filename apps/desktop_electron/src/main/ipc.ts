@@ -1,6 +1,6 @@
 import { basename, isAbsolute } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererReadyReport, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererHostReport, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
@@ -72,7 +72,7 @@ export interface DesktopIpcDependencies {
   backend: BackendLike
   pathRegistry?: GrantedPathRegistry
   isTrustedSender: (event: IpcEventLike) => boolean
-  onRendererReady?: (report: RendererReadyReport) => void
+  onRendererReady?: (report: RendererHostReport, window: unknown) => void
   logger?: DesktopLogger
   fetchImpl?: typeof fetch
 }
@@ -268,11 +268,11 @@ export function registerDesktopIpc(
     if (!dependencies.isTrustedSender(event)) return
     try {
       const report = validateRendererReadyReport(value)
+      const window = dependencies.windowForEvent?.(event) ?? dependencies.window
       if ('resolvedTheme' in report) {
-        updateWindowTheme(dependencies.windowForEvent?.(event) ?? dependencies.window, report.resolvedTheme)
-      } else {
-        dependencies.onRendererReady?.(report)
+        updateWindowTheme(window, report.resolvedTheme)
       }
+      dependencies.onRendererReady?.(report, window)
     } catch {
       dependencies.logger?.('ELECTRON_RENDERER_READY_REJECTED')
     }

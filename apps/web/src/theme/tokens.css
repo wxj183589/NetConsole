@@ -32,6 +32,7 @@
   --nc-radius-lg: 10px;
   --nc-card-padding: 16px;
   --nc-content-padding: 20px;
+  --nc-content-max-width: none;
   --nc-card-gap: 16px;
   --nc-table-row-height: 40px;
   --nc-shell-header-height: 56px;

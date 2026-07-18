@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { initializeSystemAppearance } from './appearance'
+import { applySafeSystemAppearance, initializeSystemAppearance } from './appearance'
 import type { SystemSettingsSnapshot } from '../types/systemSettings'
 
 const snapshot = (): SystemSettingsSnapshot => ({
@@ -35,11 +35,13 @@ afterEach(() => {
   document.documentElement.className = ''
   document.documentElement.removeAttribute('data-theme')
   document.documentElement.removeAttribute('style')
+  Reflect.deleteProperty(window, 'netconsoleDesktop')
 })
 
 describe('system appearance bootstrap', () => {
   it('applies the safe default and saved appearance before Vue mounts', () => {
     const mainSource = readFileSync(resolve(process.cwd(), 'src', 'main.ts'), 'utf8')
+    expect(mainSource).toContain('if (!window.netconsoleDesktop) applySafeSystemAppearance()')
     expect(mainSource.indexOf('applySafeSystemAppearance()')).toBeLessThan(
       mainSource.indexOf('await initializePlatformRuntime()'),
     )
@@ -66,5 +68,18 @@ describe('system appearance bootstrap', () => {
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(document.documentElement.lang).toBe('zh-CN')
     expect(document.documentElement.style.getPropertyValue('--nc-primary')).toBe('#0078D4')
+  })
+
+  it('does not report the invisible safe default as the persisted Electron theme', () => {
+    const reportRendererReady = vi.fn()
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { reportRendererReady },
+    })
+
+    applySafeSystemAppearance()
+
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(reportRendererReady).not.toHaveBeenCalled()
   })
 })

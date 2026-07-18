@@ -8,6 +8,8 @@
 
 `main.css` 只消费 `--nc-*` Token，不定义固定的浅色或深色外壳色值。业务页面不得在此建立局部主题事实源。
 
+路由根页面由 `.app-shell .app-workspace .app-main > *` 统一设置为 `width: 100%` 和流式 `max-width`；该共享选择器明确覆盖页面历史 scoped `max-width`，最大化、2K 和 4K 工作区不再被压成窄列。窄屏通过共享 gutter 媒体规则收缩；宽表本身保持 `width: 100%` 并由 Element Plus 表格容器处理横向滚动。
+
 ## 主要入口
 
 - `main.css`：侧栏、顶部栏、内容区、滚动条和公共页面骨架。
@@ -24,7 +26,7 @@
 
 ## 测试
 
-主题、布局和 Element Plus 映射由 `../theme/*.test.ts`、`../layouts/AppLayout.test.ts` 与架构 Guard 覆盖。
+主题、流式布局和 Element Plus 映射由 `../theme/*.test.ts`、`../layouts/AppLayout.test.ts` 与架构 Guard 覆盖。
 
 ## 修改规则
 

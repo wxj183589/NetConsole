@@ -8,7 +8,7 @@ withDefaults(defineProps<{
   title: '',
   description: '',
   eyebrow: '',
-  maxWidth: '1680px',
+  maxWidth: 'var(--nc-content-max-width)',
 })
 </script>
 

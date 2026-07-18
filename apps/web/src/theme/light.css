@@ -1,4 +1,3 @@
-:root,
 html[data-theme="light"] {
   color-scheme: light;
   --nc-bg-app: #f4f6f8;
@@ -14,6 +13,13 @@ html[data-theme="light"] {
   --nc-bg-elevated: #ffffff;
   --nc-bg-muted: #f2f4f7;
   --nc-bg-code: #182230;
+  --nc-bg-code-muted: #1f2b3a;
+  --nc-bg-code-header: #202c3b;
+  --nc-bg-code-match: rgb(114 94 24 / 17%);
+  --nc-bg-code-current: rgb(168 127 34 / 33%);
+  --nc-bg-code-added: #1f3d2b;
+  --nc-bg-code-removed: #4a2428;
+  --nc-bg-code-modified: #4a3a1f;
   --nc-text-primary: #182230;
   --nc-text-secondary: #667085;
   --nc-text-tertiary: #7f8a9a;
@@ -21,9 +27,15 @@ html[data-theme="light"] {
   --nc-text-active: var(--nc-primary);
   --nc-text-inverse: #ffffff;
   --nc-text-code: #d6e0ec;
+  --nc-text-code-muted: #9aa8ba;
+  --nc-text-code-accent: #9bbfff;
+  --nc-text-code-success: #96e6b3;
+  --nc-text-code-danger: #ffabab;
+  --nc-text-code-warning: #f0c77d;
   --nc-border: #e4e7ec;
   --nc-border-light: #edf0f3;
   --nc-border-strong: #d0d5dd;
+  --nc-border-code: rgb(255 255 255 / 7%);
   --nc-divider: #e4e7ec;
   --nc-scrollbar-thumb: #cbd2dc;
   --nc-scrollbar-thumb-hover: #98a2b3;

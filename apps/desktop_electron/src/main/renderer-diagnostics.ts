@@ -4,8 +4,8 @@ import type { DesktopLogger } from './logger'
 
 export interface RendererDiagnosticsOptions {
   logger: DesktopLogger
-  getRetryUrl: () => string
-  showError: (title: string, detail: string, retryUrl: string) => Promise<void>
+  canRetry: () => boolean
+  showError: (title: string, detail: string, retryable: boolean) => Promise<void>
   onLoadStarted?: () => void
   onLoadStopped?: () => void
 }
@@ -111,9 +111,8 @@ function showFailure(
   title: string,
   detail: string,
 ): void {
-  const retryUrl = options.getRetryUrl()
-  if (!retryUrl) return
-  void options.showError(title, detail, retryUrl).catch(() => {
+  if (!options.canRetry()) return
+  void options.showError(title, detail, true).catch(() => {
     options.logger('ELECTRON_RENDERER_ERROR_PAGE_FAILED')
   })
 }

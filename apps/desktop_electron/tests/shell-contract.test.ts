@@ -8,6 +8,10 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'index.ts'),
   'utf8',
 )
+const displayGateSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'renderer-theme-display-gate.ts'),
+  'utf8',
+)
 const devSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'dev.mjs'),
   'utf8',
@@ -24,7 +28,7 @@ describe('Electron shell product contract', () => {
 
   it('starts the smoke watchdog before awaiting the renderer navigation', () => {
     expect(source.indexOf('startSmokeWatchdog()')).toBeLessThan(
-      source.indexOf('void mainWindow.loadURL(rendererUrl)'),
+      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
     )
     expect(source).toContain("logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')")
     expect(source).toContain("logger('ELECTRON_SMOKE_RENDERER_STABLE')")
@@ -34,6 +38,49 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("app.on('window-all-closed', () => requestExit(0))")
     expect(source).toContain('mainWindow.destroy()')
     expect(source).toContain('setImmediate(() => process.exit(requestedExitCode))')
+  })
+
+  it('shows an observable system-themed loading page and gates the business renderer theme', () => {
+    expect(source).toContain('show: false')
+    expect(source).toContain('nativeTheme.shouldUseDarkColors')
+    expect(source).toContain('armRendererThemeDisplay(rendererWindow)')
+    expect(source).toContain("windowDisplayGates.get(window)?.acceptResolvedTheme()")
+    expect(displayGateSource).toContain('if (this.window.isVisible?.()) this.window.hide()')
+    expect(source).toContain("startupTimeline.mark('electron.loading_view_shown')\n  mainWindow.show()")
+    expect(source.indexOf("startupTimeline.mark('electron.loading_view_shown')")).toBeLessThan(
+      source.indexOf('const runtime = await backend.start()'),
+    )
+    expect(source.indexOf('armRendererThemeDisplay(rendererWindow)')).toBeLessThan(
+      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
+    )
+  })
+
+  it('retries a fallback only through the Main-managed renderer target', () => {
+    const retrySource = source.slice(
+      source.indexOf('async function retryManagedRenderer'),
+      source.indexOf('async function showManagedWindowError'),
+    )
+    expect(source).toContain('MANAGED_RENDERER_RETRY_ACTION')
+    expect(source).not.toContain('href="${escapeHtml(retryUrl)}"')
+    expect(source).toContain('rememberManagedRendererTarget(mainWindow, rendererUrl)')
+    expect(source).toContain('rememberManagedRendererTarget(taskWindow, taskRendererTarget)')
+    expect(source).toContain('const taskRendererTarget = url.toString()')
+    expect(source).toContain('const windowRendererTargets = new WeakMap<BrowserWindow, string>()')
+    expect(source.indexOf('rememberManagedRendererTarget(mainWindow, rendererUrl)')).toBeLessThan(
+      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
+    )
+    const taskWindowSource = source.slice(
+      source.indexOf('async function openTaskWindow'),
+      source.indexOf('async function loadStatusPage'),
+    )
+    expect(taskWindowSource.indexOf('rememberManagedRendererTarget(taskWindow, taskRendererTarget)'))
+      .toBeLessThan(taskWindowSource.indexOf('await taskWindow.loadURL(taskRendererTarget)'))
+    expect(retrySource).toContain('const target = windowRendererTargets.get(window)')
+    expect(retrySource).toContain('isAllowedNavigation(target, [...rendererOrigins])')
+    expect(retrySource.indexOf('armRendererThemeDisplay(window)')).toBeLessThan(
+      retrySource.indexOf('await window.loadURL(target)'),
+    )
+    expect(retrySource).not.toContain('window.loadURL(rendererUrl)')
   })
 
   it('cleans up the dev server for either Electron child completion event', () => {

@@ -2,6 +2,10 @@ import type { SystemTheme, SystemThemeColor } from '../types/systemSettings'
 
 export type ResolvedTheme = Exclude<SystemTheme, 'auto'>
 
+export interface ApplyThemeOptions {
+  reportDesktop?: boolean
+}
+
 export const NETCONSOLE_THEME_CHANGE_EVENT = 'netconsole:theme-change'
 
 const SYSTEM_DARK_QUERY = '(prefers-color-scheme: dark)'
@@ -15,7 +19,11 @@ export function resolveTheme(theme: SystemTheme, prefersDark = systemPrefersDark
   return theme
 }
 
-export function applyNetConsoleTheme(theme: SystemTheme, color: SystemThemeColor): ResolvedTheme {
+export function applyNetConsoleTheme(
+  theme: SystemTheme,
+  color: SystemThemeColor,
+  options: ApplyThemeOptions = {},
+): ResolvedTheme {
   activeTheme = theme
   const resolved = resolveTheme(theme)
   const root = document.documentElement
@@ -25,7 +33,7 @@ export function applyNetConsoleTheme(theme: SystemTheme, color: SystemThemeColor
   root.style.setProperty('--nc-accent', color)
   bindSystemPreference(theme === 'auto')
   notifyThemeChange(resolved, color)
-  syncDesktopBackground(resolved)
+  if (options.reportDesktop !== false) syncDesktopBackground(resolved)
   return resolved
 }
 

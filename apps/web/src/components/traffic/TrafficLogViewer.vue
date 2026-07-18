@@ -70,9 +70,9 @@ function clearDisplay(): void {
 }
 
 .log-viewer {
-  background: #0f172a;
+  background: var(--nc-bg-code);
   border-radius: 12px;
-  color: #dbeafe;
+  color: var(--nc-text-code);
   font-family: Consolas, 'Cascadia Mono', monospace;
   font-size: 12px;
   max-height: 320px;
@@ -91,14 +91,14 @@ function clearDisplay(): void {
 
 .source,
 .event-type {
-  color: #93c5fd;
+  color: var(--nc-text-code-accent);
 }
 
 .event-type.error {
-  color: #fca5a5;
+  color: var(--nc-text-code-danger);
 }
 
 .message {
-  color: #e5e7eb;
+  color: var(--nc-text-code);
 }
 </style>

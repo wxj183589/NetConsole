@@ -10,6 +10,10 @@ import {
   secureWebPreferences,
 } from '../src/main/security'
 import {
+  MANAGED_RENDERER_RETRY_ACTION,
+  ManagedRendererRetryNavigation,
+} from '../src/main/renderer-theme-display-gate'
+import {
   validateArtifactFileName,
   validateBackendDownloadRequest,
 } from '../src/shared/validation'
@@ -161,6 +165,48 @@ describe('Electron security policy', () => {
     expect(downloadEvent.preventDefault).toHaveBeenCalledOnce()
     expect(openHandler?.({ url: 'https://example.com' })).toEqual({ action: 'deny' })
     expect(blocked).toHaveBeenCalledTimes(4)
+  })
+
+  it('keeps the security guard while allowing one Main-managed retry action', async () => {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>()
+    const currentUrl = 'data:text/html;charset=utf-8,managed-error'
+    const blocked = vi.fn()
+    const retry = vi.fn(async () => undefined)
+    const window = {
+      isDestroyed: vi.fn(() => false),
+      webContents: {
+        getURL: vi.fn(() => currentUrl),
+        setWindowOpenHandler: vi.fn(),
+        on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+          listeners.set(event, [...(listeners.get(event) ?? []), handler])
+        }),
+        session: {
+          on: vi.fn(),
+          setPermissionCheckHandler: vi.fn(),
+          setPermissionRequestHandler: vi.fn(),
+          webRequest: { onHeadersReceived: vi.fn() },
+        },
+      },
+    } as unknown as BrowserWindow
+    installWindowSecurity(
+      window,
+      () => ['http://127.0.0.1:5173'],
+      () => ['http://127.0.0.1:5173'],
+      true,
+      blocked,
+    )
+    const navigation = new ManagedRendererRetryNavigation(window, retry)
+    navigation.armForStatusPage(currentUrl)
+    const event = { preventDefault: vi.fn() }
+
+    for (const listener of listeners.get('will-navigate') ?? []) {
+      listener(event, MANAGED_RENDERER_RETRY_ACTION)
+    }
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledOnce())
+
+    expect(listeners.get('will-navigate')).toHaveLength(2)
+    expect(event.preventDefault).toHaveBeenCalledTimes(2)
+    expect(blocked).toHaveBeenCalledWith(MANAGED_RENDERER_RETRY_ACTION)
   })
 
   it('trusts only the current main frame at an allowed origin for IPC', () => {

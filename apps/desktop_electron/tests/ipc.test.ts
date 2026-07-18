@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { registerDesktopIpc } from '../src/main/ipc'
 import { GrantedPathRegistry } from '../src/main/path-access'
-import type { RendererReadyReport } from '../src/shared/bridge'
+import type { RendererHostReport } from '../src/shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../src/shared/bridge'
 
 class FakeIpcMain {
@@ -26,7 +26,7 @@ class FakeIpcMain {
 
 function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
-  onRendererReady?: (report: RendererReadyReport) => void
+  onRendererReady?: (report: RendererHostReport, window: unknown) => void
   openTaskWindow?: (value: unknown) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
@@ -230,13 +230,16 @@ describe('desktop IPC', () => {
     const setBackgroundColor = vi.fn()
     const logger = vi.fn()
     const managedWindow = { setBackgroundColor }
-    const { ipcMain, sender } = createHarness({ logger, windowForEvent: () => managedWindow })
+    const onRendererReady = vi.fn()
+    const { ipcMain, sender } = createHarness({ logger, onRendererReady, windowForEvent: () => managedWindow })
     const listener = ipcMain.listeners.get(DESKTOP_IPC.rendererReady)!
 
     listener({ sender }, { resolvedTheme: 'dark' })
     listener({ sender }, { resolvedTheme: 'light' })
     expect(setBackgroundColor).toHaveBeenNthCalledWith(1, '#0f141c')
     expect(setBackgroundColor).toHaveBeenNthCalledWith(2, '#f4f6f8')
+    expect(onRendererReady).toHaveBeenNthCalledWith(1, { resolvedTheme: 'dark' }, managedWindow)
+    expect(onRendererReady).toHaveBeenNthCalledWith(2, { resolvedTheme: 'light' }, managedWindow)
 
     listener({ sender }, { resolvedTheme: 'auto' })
     listener({ sender }, { resolvedTheme: 'dark', arbitraryWindowOption: true })

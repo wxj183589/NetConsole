@@ -23,7 +23,7 @@ describe('renderer diagnostics', () => {
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
       logger,
-      getRetryUrl: () => 'http://127.0.0.1:5173',
+      canRetry: () => true,
       showError,
       onLoadStarted,
       onLoadStopped,
@@ -44,7 +44,7 @@ describe('renderer diagnostics', () => {
     expect(showError).toHaveBeenCalledWith(
       'NetConsole 页面加载失败',
       '连接失败',
-      'http://127.0.0.1:5173',
+      true,
     )
     expect(JSON.stringify(logger.mock.calls)).not.toContain('token=secret')
     expect(onLoadStarted).toHaveBeenCalledOnce()
@@ -63,7 +63,7 @@ describe('renderer diagnostics', () => {
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
       logger: vi.fn(),
-      getRetryUrl: () => 'http://127.0.0.1:5173',
+      canRetry: () => true,
       showError,
     })
     const didFailLoad = webListeners.get('did-fail-load') as (
@@ -85,7 +85,7 @@ describe('renderer diagnostics', () => {
     expect(showError).toHaveBeenCalledWith(
       'NetConsole 页面异常退出',
       '渲染进程已退出，请重试。',
-      'http://127.0.0.1:5173',
+      true,
     )
   })
 
@@ -102,7 +102,7 @@ describe('renderer diagnostics', () => {
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
       logger,
-      getRetryUrl: () => 'http://127.0.0.1:5173',
+      canRetry: () => true,
       showError,
     })
 
@@ -112,7 +112,7 @@ describe('renderer diagnostics', () => {
     expect(showError).toHaveBeenCalledWith(
       'NetConsole 桌面桥接加载失败',
       '桌面安全桥接未能加载，请重试。',
-      'http://127.0.0.1:5173',
+      true,
     )
     expect(JSON.stringify(logger.mock.calls)).not.toContain('C:\\private')
     expect(JSON.stringify(logger.mock.calls)).not.toContain('secret')
@@ -134,7 +134,7 @@ describe('renderer diagnostics', () => {
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
       logger,
-      getRetryUrl: () => 'http://127.0.0.1:5173',
+      canRetry: () => true,
       showError,
     })
 
@@ -148,7 +148,7 @@ describe('renderer diagnostics', () => {
     expect(showError).toHaveBeenCalledWith(
       'NetConsole 页面无响应',
       '页面暂时无响应，请重试。',
-      'http://127.0.0.1:5173',
+      true,
     )
     expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_RESPONSIVE')
     expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_ERROR_PAGE_FAILED')
@@ -179,7 +179,7 @@ describe('renderer diagnostics', () => {
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
       logger,
-      getRetryUrl: () => 'http://127.0.0.1:5173',
+      canRetry: () => true,
       showError: vi.fn(async () => undefined),
     })
 

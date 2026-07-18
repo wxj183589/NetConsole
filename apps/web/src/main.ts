@@ -17,7 +17,8 @@ import './styles/main.css'
 import { applySafeSystemAppearance, initializeSystemAppearance } from './settings/appearance'
 
 async function bootstrap(): Promise<void> {
-  applySafeSystemAppearance()
+  // Electron 在系统配色启动页上等待持久化设置；Browser 仍需要同步安全默认。
+  if (!window.netconsoleDesktop) applySafeSystemAppearance()
   try {
     await initializePlatformRuntime()
   } catch (cause) {

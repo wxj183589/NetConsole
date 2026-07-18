@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import source from './AppLayout.vue?raw'
+import ncLayoutSource from './NcLayout.vue?raw'
 
 const styles = readFileSync(fileURLToPath(new URL('../styles/main.css', import.meta.url)), 'utf8')
 
@@ -44,6 +45,18 @@ describe('App layout foundation', () => {
     expect(styles).toContain('--el-menu-hover-bg-color: var(--nc-bg-hover)')
     expect(styles).toContain('--el-menu-active-color: var(--nc-text-active)')
     expect(styles).toContain('.el-menu--popup')
+  })
+
+  it('lets routed pages use all desktop workspace width without breaking narrow tables', () => {
+    expect(styles).toContain('.app-workspace { flex: 1 1 auto; width: 0; min-width: 0; }')
+    expect(styles).toContain('.app-shell .app-workspace .app-main > * { width: 100%; max-width: var(--nc-content-max-width); margin-inline: 0; }')
+    expect(styles).toContain('.app-main .el-table { width: 100%; }')
+    expect(styles).toContain('.app-main { width: 100%;')
+    expect(styles).toContain('.task-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
+    expect(styles).toContain('.agent-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
+    expect(styles).toContain('@media (max-width: 850px)')
+    expect(ncLayoutSource).toContain("maxWidth: 'var(--nc-content-max-width)'")
+    expect(ncLayoutSource).not.toContain("maxWidth: '1680px'")
   })
 
   it('themes shell states and scrollbars entirely through semantic tokens', () => {
