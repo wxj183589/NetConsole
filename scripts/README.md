@@ -1,6 +1,6 @@
 # 项目脚本
 
-本目录按 `build/`、`dev/`、`maintenance/` 分组保存构建、开发 smoke 和维护脚本。脚本应从自身位置或统一项目根定位资源，不依赖调用者当前目录，也不实现 UI 业务。
+本目录按 `build/`、`dev/`、`maintenance/`、`quality/`、`architecture/` 和 `ui/` 分组保存构建、开发 smoke、维护与门禁脚本。脚本应从自身位置或统一项目根定位资源，不依赖调用者当前目录，也不实现 UI 业务。
 
 修改脚本后使用 `python -m scripts.<group>.<module>` 或项目规定的 PowerShell 入口验证；临时输出写入 `.local/`、`dist/` 或测试临时目录并按规则清理。
 
@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`build/` 负责编译发布，`dev/` 负责本地 smoke，`maintenance/` 负责迁移/审计，`quality/` 负责仓库门禁；模块均可按 Python module 方式运行。
+`build/` 负责编译发布，`dev/` 负责本地 smoke，`maintenance/` 负责迁移/审计，`quality/` 负责仓库门禁，`architecture/` 负责 Electron-only 分层门禁，`ui/` 负责表格和字段展示契约；模块均可按 Python module 方式运行。
 
 ## 依赖关系
 

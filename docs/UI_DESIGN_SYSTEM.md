@@ -14,6 +14,7 @@
 - `apps/web/src/theme/theme.ts`：浅色、深色、跟随系统的运行时切换；
 - `apps/web/src/theme/echarts.ts`：从当前 CSS Token 读取图表色并通知已挂载图表重绘；
 - `NcCard`、`NcStatusTag`、`NcTable` 和 `NcLayout`：首批公共基础件；
+- `components/table/NcDataTable`：标准业务表格、统一列定义、自动列宽、列设置和视图偏好的阶段 1 基础；当前仍有旧表待按清单逐域迁移；
 - `AppLayout`：继续作为唯一应用 Shell，并开始消费统一尺寸和颜色 Token。
 - Electron Main：窗口初始背景使用预定义浅/深安全色，运行期只接受受信 Renderer 报告的 `{ resolvedTheme: 'light' | 'dark' }`，不接受任意颜色或窗口参数。
 
@@ -92,6 +93,12 @@ NetConsole Design Token
 - 路径、错误和命令摘要使用省略号、Tooltip 或详情；
 - 分页/懒加载，不在 Renderer 一次构造无上限数据；
 - loading、empty、success、error、cancelled 均有可见反馈。
+
+### `NcDataTable`
+
+新增和完成迁移的标准数据表格使用 `NcDataTable`。它保证表头/内容默认居中、缺失值统一、文本真实测量、字段类型宽度基线、跨页宽度稳定、手工列宽与列布局偏好，并在容器不足时保持表头完整后由表格区域横向滚动。核心不变量是 `finalWidth >= headerRequiredWidth`。详情、日志等长文本左对齐必须在列定义中声明原因。
+
+当前清单仍包含阶段 1 前已存在的直接 `el-table`，状态为 `BLOCKED`；该状态表示待迁移债务，不能写成全局表格整改完成。详见 [表格与字段展示标准](ui/TABLE_AND_FIELD_STANDARDS.md) 和 [表格清单](ui/TABLE_INVENTORY.md)。
 
 ### `NcLayout`
 

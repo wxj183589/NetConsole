@@ -12,6 +12,11 @@ const en: Record<string, string> = {
   'settings.appearance': 'Appearance', 'settings.tools': 'Tool paths', 'settings.terminal': 'External terminal',
   'settings.site': 'Current site', 'settings.features': 'Feature switches', 'settings.unsaved': 'Unsaved changes',
   'settings.language_block': 'BLOCKED_ON_GLOBAL_I18N: Shell and settings consume the shared runtime; business modules are not fully connected.',
+  'common.yes': 'Yes', 'common.no': 'No',
+  'table.no_data': 'No data', 'table.column_settings': 'Column settings',
+  'table.autofit': 'Auto fit columns', 'table.reset_layout': 'Restore default layout',
+  'table.pin': 'Pin position', 'table.pin_left': 'Left', 'table.pin_right': 'Right',
+  'table.unpinned': 'Unpinned', 'table.move_up': 'Move up', 'table.move_down': 'Move down',
 }
 export function setAppLocale(value: SystemLanguage): void { locale.value = value }
 export function currentAppLocale(): SystemLanguage { return locale.value }

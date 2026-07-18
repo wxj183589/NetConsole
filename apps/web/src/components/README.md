@@ -2,7 +2,7 @@
 
 本目录提供跨页面复用的 Vue 组件和基础交互约束；业务域专属组件放在对应子目录或视图目录。公共组件不得隐藏网络、数据库或长耗时任务。
 
-主要入口包括 `NcCard.vue`、`NcStatusTag.vue`、`NcTable.vue` 等；表格遵守 `docs/ui_table_guidelines.md`。修改后运行组件测试并检查主题、滚动和可访问性。
+主要入口包括 `NcCard.vue`、`NcStatusTag.vue`、`NcTable.vue` 和 `table/NcDataTable.vue`。`NcTable` 是尚未迁移页面的基础样式包装器；新增和完成迁移的标准业务表格使用 `NcDataTable` 及统一列定义、自动列宽和视图偏好。表格遵守 `docs/ui/TABLE_AND_FIELD_STANDARDS.md`。修改后运行组件定向测试并检查主题、滚动和可访问性。
 
 ## 用途与边界
 
@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`NcCard.vue`、`NcStatusTag.vue`、`NcTable.vue` 是公共基元，Mesh、网络工具和 Traffic 组件在各自子目录维护。
+`NcCard.vue`、`NcStatusTag.vue`、`NcTable.vue` 是基础基元，`table/` 是标准数据表格公共实现；Mesh、网络工具和 Traffic 组件在各自子目录维护。
 
 ## 依赖关系
 
@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [表格规范](../../../../docs/ui_table_guidelines.md)、[UI 设计系统](../../../../docs/UI_DESIGN_SYSTEM.md) 和 `src/theme/`。
+参见 [表格规范](../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[表格迁移清单](../../../../docs/ui/TABLE_INVENTORY.md)、[UI 设计系统](../../../../docs/UI_DESIGN_SYSTEM.md) 和 `src/theme/`。

@@ -47,6 +47,8 @@
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
 | [表格与 UI 规范](ui_table_guidelines.md) | Vue/Element Plus 表格、列宽、滚动、密度和状态 | Vue UI 开发 | `NcTable`、Element Plus、相关测试 | 公共组件、页面布局或表格规则变化 |
 | [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/web/src/theme`、`apps/web/src/styles`、Electron 主题 IPC | Token、主题、组件、窗口背景或图表规范变化 |
+| [表格与字段展示标准](ui/TABLE_AND_FIELD_STANDARDS.md) | `NcDataTable`、自动列宽、对齐、缺失值、偏好和增量 Guard | Web/UI 开发 | `apps/web/src/components/table`、`scripts/ui`、表格清单 | 公共表格契约、列定义或迁移状态变化 |
+| [表格迁移清单](ui/TABLE_INVENTORY.md) | 所有 Vue 表格的组件、对齐、列宽和整改状态 | Web/UI 开发与验收 | `scripts/ui/export_table_inventory.py` 扫描结果 | 任一表格新增、删除或迁移 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |
 | [独立 Agent](AGENT.md) | Windows Go Agent 的边界、能力和集成状态 | 现场采集/远程执行开发 | `apps/agent/`、Agent API/测试 | Agent 能力、协议、命令或发布方式变化 |
 | [Agent Controller](AGENT_CONTROLLER.md) | 多 Agent 配置、健康检查、认证、REST/WebSocket 与 Web 管理边界 | Agent 控制面开发 | `services/agent`、`repositories/agent_repository.py`、Agent Router | Controller 模型、探测协议、凭据或调度变化 |

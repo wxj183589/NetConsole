@@ -1,6 +1,6 @@
 # Vue 表格与高密度数据规范
 
-本文定义 Electron 唯一 Vue Renderer 的表格规则。旧 QTableWidget、Delegate 和 QCheckBox 规范已经归档；新代码使用 Element Plus、`NcTable` 与 [NetConsole UI Design System](UI_DESIGN_SYSTEM.md)。
+本文是 Electron 唯一 Vue Renderer 的表格入口说明。完整列模型、自动列宽、字段对齐、偏好和 Guard 以 [表格与字段展示标准](ui/TABLE_AND_FIELD_STANDARDS.md) 为准，迁移状态以 [表格清单](ui/TABLE_INVENTORY.md) 为准。旧 QTableWidget、Delegate 和 QCheckBox 规范已经归档；新增标准表格使用 `NcDataTable`，`NcTable` 只保留给尚未迁移的旧页面。
 
 ## 选择与批量操作
 
@@ -11,14 +11,15 @@
 
 ## 列宽与滚动
 
-- 核心标识列给出稳定 `min-width`，短状态/时间列使用明确宽度。
+- 页面不再散写 `min-width`；字段类型基线由 `columnPresets.ts` 维护，最终宽度由统一测量算法确定。
+- 自动列宽的绝对下限是完整表头宽度，排序、筛选和状态图标必须计入。
 - 总宽超过视口时允许横向滚动，不能为塞进窗口而把字段压缩到不可读。
 - 页面、弹窗和子窗口内容超出时提供纵向和必要的横向滚动；操作区始终可达。
 - 允许用户手工调整列宽；固定列只用于确有操作必要的首尾列。
 
 ## 密度与状态
 
-- 默认使用 `NcTable` 的 40px 行高和 14px 字体；仅在信息密集页面显式启用 `compact`。
+- 默认使用 `NcDataTable` 的 40px 行高和 14px 字体；仅在信息密集页面显式启用 `compact`。
 - loading、empty、success、warning、failed、cancelled 均有可见反馈。
 - 状态使用 `NcStatusTag` 和统一语义 Token，不在页面重复维护颜色/标签映射。
 - 路径、命令、错误和长文本使用省略、Tooltip 或详情区，不直接撑破表格。

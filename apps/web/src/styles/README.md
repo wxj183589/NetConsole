@@ -8,7 +8,7 @@
 
 `main.css` 只消费 `--nc-*` Token，不定义固定的浅色或深色外壳色值。业务页面不得在此建立局部主题事实源。
 
-路由根页面由 `.app-shell .app-workspace .app-main > *` 统一设置为 `width: 100%` 和流式 `max-width`；该共享选择器明确覆盖页面历史 scoped `max-width`，最大化、2K 和 4K 工作区不再被压成窄列。窄屏通过共享 gutter 媒体规则收缩；宽表本身保持 `width: 100%` 并由 Element Plus 表格容器处理横向滚动。
+路由根页面由 `.app-shell .app-workspace .app-main > *` 统一设置为 `width: 100%` 和流式 `max-width`；该共享选择器明确覆盖页面历史 scoped `max-width`，最大化、2K 和 4K 工作区不再被压成窄列。窄屏通过共享 gutter 媒体规则收缩；已迁移宽表由 `NcDataTable` 内部滚动区域处理横向滚动，页面不得用全局 CSS 压缩列宽或覆盖对齐。
 
 ## 主要入口
 

@@ -38,6 +38,8 @@ flowchart LR
 | Domain Service / Parser | 设备与业务规则、解析、归一化、报告 | UI、HTTP、IPC |
 | Repository | SQLite 查询、事务、迁移、分页与记录映射 | UI、设备命令和业务判定 |
 
+Vue 标准业务表格通过 `apps/web/src/components/table/NcDataTable.vue` 和强类型列定义表达展示契约；文本测量、自动列宽、缺失值、对齐和视图偏好属于共享 Renderer 基础，不由业务页面重复实现。该基础不读取数据库、不执行设备命令，也不改变 DTO 字段语义。现有直接 `el-table` 按 [表格迁移清单](ui/TABLE_INVENTORY.md) 分域收敛，新增违规由 `scripts/ui/` Guard 阻止。
+
 ## 后台任务与导出
 
 预计超过 300ms 的网络、磁盘、解析、批量和 CPU 工作进入 Job Center。`TaskApplicationService/TaskRuntime` 维护七状态、JSONL 事件、协作取消和 `tasks.db`；`LocalProcessAdapter` 负责 Worker 进程和 Windows 进程树回收。所有正式导出进入独立 Export Process，先写临时文件，成功后原子替换。

@@ -11,8 +11,12 @@
 | `ui_business_logic.yaml` | 对 Vue/TypeScript AST 发现的可疑业务符号进行人工职责分类。 |
 | `theme_color_literals.yaml` | 对确实不能迁入 Token 的品牌、状态或图表系列基础色按文件、selector、属性和值精确登记。 |
 | `required_readmes.yaml` | 列出必须存在的目录职责 README，包括本文件。 |
+| `table-layout-baseline.json` | 记录全局表格整改阶段 1 已存在的直接 `el-table`；逐域迁移后删除对应项，不得扩充以接纳新债务。 |
+| `table-layout-exceptions.yaml` | 只登记固定复选框、序号、展开或图标列的精确限时例外。 |
 
 所有 `.yaml` 使用 JSON-compatible YAML 子集和 UTF-8 编码，由 Guard 自身读取，不引入额外 YAML 运行依赖。列表项必须使用仓库相对精确路径；禁止目录级通配或整层豁免。
+
+表格 Guard 由 `scripts/ui/` 独立执行。表格例外必须精确包含 `table_id`、`column_key`、`reason`、`fixed_width`、`test` 和 `expires_at`，禁止通配。旧表基线是显式迁移债务，不是长期豁免。
 
 ## Direct SQL 分类
 
