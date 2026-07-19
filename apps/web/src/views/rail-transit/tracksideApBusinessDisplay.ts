@@ -14,7 +14,7 @@ const opticalPresentations: Record<string, TracksideOpticalPresentation> = {
   link_abnormal: { label: '链路异常', tagType: 'danger', className: 'optical-link-abnormal' },
   link_down: { label: '链路断开', tagType: 'danger', className: 'optical-link-down' },
   no_light: { label: '无光', tagType: 'danger', className: 'optical-no-light' },
-  no_module: { label: '无光模块', tagType: 'danger', className: 'optical-no-module' },
+  no_module: { label: '无光模块', tagType: 'info', className: 'optical-no-module' },
   skipped: { label: '未检查', tagType: 'info', className: 'optical-skipped' },
   not_collected: { label: '未采集', tagType: 'info', className: 'optical-not-collected' },
   unknown: { label: '未知', tagType: 'info', className: 'optical-unknown' },

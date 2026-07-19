@@ -11,7 +11,7 @@ describe('trackside AP business display', () => {
     ['link_abnormal', '链路异常', 'danger'],
     ['link_down', '链路断开', 'danger'],
     ['no_light', '无光', 'danger'],
-    ['no_module', '无光模块', 'danger'],
+    ['no_module', '无光模块', 'info'],
     ['skipped', '未检查', 'info'],
     ['not_collected', '未采集', 'info'],
     ['unknown', '未知', 'info'],

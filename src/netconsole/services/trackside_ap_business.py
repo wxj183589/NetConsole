@@ -1316,6 +1316,12 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
     return worse_optical_severity(switch_status, ap_status)
 
 
+def is_trackside_optical_abnormal_status(status: object) -> bool:
+    """Return whether a trackside optical status belongs in the optical anomaly set."""
+    normalized = _normalized_optical_status(status)
+    return normalized in OPTICAL_TREATMENT_ISSUE_STATUSES or normalized == "critical"
+
+
 def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
     if not row:
         return False
