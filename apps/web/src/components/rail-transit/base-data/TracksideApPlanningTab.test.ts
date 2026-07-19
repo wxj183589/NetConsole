@@ -12,6 +12,8 @@ describe('trackside AP planning base-data tab', () => {
       'web.rail_trackside_ap_plan_write', 'web.rail_trackside_ap_plan_export',
     ]) expect(source).toContain(contract)
     expect(source).toContain("emit('change'")
+    expect(source).toContain('rows.value.map((row) => ({ ...row }))')
+    expect(source).not.toContain('structuredClone(rows.value)')
     expect(source).toContain("route-key=\"/rail-transit/base-data\"")
     expect(source).not.toContain('saveTracksideApPlan')
     expect(source).not.toContain('<el-table')

@@ -66,9 +66,10 @@ function rememberTask(value: TracksideApTask | null): void {
   else localStorage.removeItem(storageKey)
 }
 function renumber(): void { rows.value.forEach((row, index) => { row.sort_order = index }) }
+function copyRows(): TracksideApPlanRow[] { return rows.value.map((row) => ({ ...row })) }
 function publishDirty(): void {
   dirty.value = true
-  emit('change', structuredClone(rows.value), true)
+  emit('change', copyRows(), true)
 }
 
 async function loadPlan(force = false): Promise<boolean> {
@@ -82,7 +83,7 @@ async function loadPlan(force = false): Promise<boolean> {
     rows.value = (await getTracksideApPlan()).items
     dirty.value = false
     selectedRows.value = []
-    emit('change', structuredClone(rows.value), false)
+    emit('change', copyRows(), false)
     return true
   } catch (reason) {
     error.value = failure(reason, '轨旁 AP 规划加载失败')

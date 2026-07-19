@@ -169,7 +169,11 @@ function persist(nextColumns = resolvedColumns.value): void {
 
 function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']) => void): void {
   const next: NcTablePreferences = preferences.value
-    ? structuredClone(preferences.value)
+    ? {
+        version: 1,
+        order: [...preferences.value.order],
+        columns: preferences.value.columns.map((column) => ({ ...column })),
+      }
     : {
         version: 1,
         order: resolvedColumns.value.map((column) => column.key),

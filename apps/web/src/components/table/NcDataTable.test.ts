@@ -95,14 +95,14 @@ describe('NcDataTable', () => {
     }
   })
 
-  it('clamps manual drag width and persists it in the isolated layout key', async () => {
+  it('clamps manual drag width and safely updates reactive layout preferences', async () => {
     const wrapper = mount(NcDataTable, {
       props: {
         tableId: 'device-list',
         routeKey: '/devices',
         language: 'zh-CN',
         userKey: 'operator',
-        showColumnSettings: false,
+        showColumnSettings: true,
         data: [{ name: 'AP01' }],
         columns: [{ key: 'name', label: '完整设备名称', valueType: 'name' }],
       },
@@ -126,6 +126,9 @@ describe('NcDataTable', () => {
     expect(raw).not.toBeNull()
     const saved = JSON.parse(raw ?? '{}')
     expect(saved.columns[0].width).toBeGreaterThan(20)
+    const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
+    expect(() => settings.vm.$emit('toggle', 'name', true)).not.toThrow()
+    await wrapper.vm.$nextTick()
     wrapper.unmount()
   })
 
