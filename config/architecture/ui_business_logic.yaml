@@ -24,7 +24,6 @@
   {"path":"apps/web/src/stores/traffic.ts","symbol":"mergeSamples","classification":"DISPLAY_ONLY","reason":"按样本键合并图表缓存，不重算流量指标。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/theme/theme.ts","symbol":"resolveTheme","classification":"DISPLAY_ONLY","reason":"解析主题展示设置。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/ac-management/AcManagementView.vue","symbol":"nextConfigMatch","classification":"DISPLAY_ONLY","reason":"选择下一条配置对比展示项。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/ac-management/AcMeshLinkView.vue","symbol":"matchLabel","classification":"DISPLAY_ONLY","reason":"将匹配状态映射为展示标签。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/agents/AgentListView.vue","symbol":"normalizedStatus","classification":"DISPLAY_ONLY","reason":"将状态值规范化为展示筛选键。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/config-collection/configDiff.ts","symbol":"parseConfigDiffRows","classification":"DISPLAY_ONLY","reason":"将 Backend diff 文本拆成表格行，不判定配置业务语义。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/config-collection/configDiff.ts","symbol":"parseConfigDiffSummary","classification":"DISPLAY_ONLY","reason":"提取 Backend diff 的展示摘要。","test":"tests/architecture/test_architecture_guards.py"},

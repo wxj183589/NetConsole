@@ -4,7 +4,7 @@
 
 Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。现有自动闭环仍待 Electron 人工和真实 AC 验收；历史行为只通过 Git 与最终迁移矩阵核对，全部缺口完成前不得标记 `COMPLETE`。
 
-阶段 5C-5 增加独立的 `/ac-management/mesh-links` 页面，Feature key 为 `web.ac_mesh_links`。阶段 5C-5A 再增加 Feature key `ac.mesh_link.refresh` 的受控手工刷新。该页面展示“车载 MR ↔ 轨旁 FIT-AP”的 AC Mesh-Link 快照，不把 MR 建模为无线客户端。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
+以列车为中心的 Mesh-Link 在线监控已并入 `/rail-transit/train-online`，AC 管理不再提供独立页面、导航或页面 Feature。底层 API 与 `web.rail_train_online` 共用门禁，Parser、Query Service、历史快照和 `ac_mesh_link_refresh` Task 继续作为列车在线状态的事实源。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
 
 当前 FIT-AP 更新链路为：
 
@@ -28,7 +28,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 默认关闭，启用后必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
-- Mesh-Link 在线监控：车载 MR 在线状态、当前轨旁 AP、Mesh Radio、RSSI、站点/区间、轨旁 AP 室外侧/室内侧收光、最近快照和切换事件；公开 DTO/API/TypeScript 已删除 `link_status/channel/bandwidth/ap_online_status/optical_status` 旧字段及对应筛选，不保留别名或 fallback。原始快照链路状态只在 Query Service 内部用于计算 MR 在线和汇总，不对外暴露。可选择 AC 创建一次 `ac_mesh_link_refresh` 任务，任务完成后自动刷新结构化数据和 raw。页面隐藏或卸载只停止轮询，不取消后台任务。
+- Mesh-Link 底层能力：AC 管理只保留受控采集、Parser、结构化快照、raw 和基础设施查询，不再呈现列车监控页面。列车、CT/TC 端点、当前 AP、RSSI、位置、匹配状态和两侧收光统一由“轨道交通 / 列车在线情况”展示。
 
 Radio State/Usage/Clients 来自真实 `display wlan ap all radio` fixture；Mode/Band 只从 H3C `display wlan ap all radio type` 原文提取，缺失时显示“--”，不按 RID 或信道推断。connection-record 与 radio type 已用 H3C 官方样例做契约测试，仍需真实 AC 验收。普通更新不执行全量 `radio verbose`；已有 BSSID 会被保留。单 AP 深度更新执行已迁入 Application Service 的固定 bulk 命令序列并只 upsert 所选 AP，不删除同 AC 的其他 AP，也不猜测尚无事实源的 name 作用域 verbose 命令。Web DTO 不返回 AP/设备序列号，不显示 Radio 3。
 
@@ -69,6 +69,9 @@ GET /api/ac-management/optical-anomalies
 GET /api/ac-management/config-snapshots
 GET /api/ac-management/config-snapshots/{snapshot_id}
 GET /api/ac-management/config-snapshots/{snapshot_id}/diff
+POST /api/ac-management/refresh/fit-ap
+
+# deprecated 底层 Mesh-Link 契约；不再对应 AC 用户页面
 GET /api/ac-management/mesh-links/summary
 GET /api/ac-management/mesh-links/current
 GET /api/ac-management/mesh-links/mrs
@@ -76,7 +79,12 @@ GET /api/ac-management/mesh-links/mrs/{mr_id}
 GET /api/ac-management/mesh-links/snapshots
 GET /api/ac-management/mesh-links/raw-tail
 POST /api/ac-management/mesh-links/refresh
-POST /api/ac-management/refresh/fit-ap
+
+# 正式列车在线入口
+GET  /api/rail-transit/train-online/trains
+GET  /api/rail-transit/train-online/trains/{train_id}
+GET  /api/rail-transit/train-online/trains/{train_id}/events
+POST /api/rail-transit/train-online/refresh
 GET  /api/ac-management/web-tasks/{task_id}
 POST /api/ac-management/web-tasks/{task_id}/cancel
 POST /api/ac-management/web-tasks/recover

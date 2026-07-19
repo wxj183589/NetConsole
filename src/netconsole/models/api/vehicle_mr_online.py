@@ -8,30 +8,45 @@ from netconsole.models.api.common import ApiModel
 
 
 class VehicleMrEndStateDTO(ApiModel):
-    seen: bool = False
-    station: str = ""
-    ap_name: str = ""
-    rssi: int | None = None
-    last_seen_at: str = ""
-    match_method: str = "unmatched"
-    match_score: int = 0
+    endpoint: Literal["CT", "TC"]
+    mr_id: str | None = None
+    mr_name: str | None = None
+    online_status: Literal["ONLINE", "OFFLINE", "STALE", "UNKNOWN"] = "UNKNOWN"
+    current_ap_name: str | None = None
+    current_ap_mac: str | None = None
+    mesh_radio: str | None = None
+    rssi_dbm: int | None = None
+    station_name: str | None = None
+    section_name: str | None = None
+    mileage: str | None = None
+    direction: str | None = None
+    match_status: Literal[
+        "EXACT", "NAME_NORMALIZED", "MAC_MATCHED", "UNMATCHED", "UNKNOWN"
+    ] = "UNKNOWN"
+    outdoor_optical_power: str | None = None
+    indoor_optical_power: str | None = None
+    updated_at: str | None = None
+    data_status: Literal["FRESH", "STALE", "ERROR", "NO_DATA", "UNKNOWN"] = "NO_DATA"
 
 
 class VehicleMrTrainStateDTO(ApiModel):
     train_id: str
     train_no: str
-    display_name: str
+    train_name: str
     is_registered: bool
-    status: str
-    current_station: str = "-"
-    last_ac_time: str = ""
-    last_seen_at: str = ""
-    tc1: VehicleMrEndStateDTO = Field(default_factory=VehicleMrEndStateDTO)
-    tc2: VehicleMrEndStateDTO = Field(default_factory=VehicleMrEndStateDTO)
-    online_policy: str = "auto"
-    expected_end: str = ""
-    direction: str = "未知"
-    status_reason: str = ""
+    overall_status: Literal[
+        "BOTH_ONLINE", "ONE_SIDE_ONLINE", "BOTH_OFFLINE", "STALE", "UNKNOWN"
+    ]
+    ct: VehicleMrEndStateDTO
+    tc: VehicleMrEndStateDTO
+    current_station: str | None = None
+    current_section: str | None = None
+    current_mileage: str | None = None
+    direction: str | None = None
+    policy: str | None = None
+    reason_code: str | None = None
+    reason_text: str | None = None
+    updated_at: str | None = None
 
 
 class VehicleMrOnlinePageDTO(ApiModel):
@@ -40,10 +55,14 @@ class VehicleMrOnlinePageDTO(ApiModel):
     page: int = 1
     page_size: int = 50
     site_id: str
-    online_count: int = 0
-    abnormal_count: int = 0
-    offline_count: int = 0
-    unregistered_count: int = 0
+    mr_total: int = 0
+    both_online_count: int = 0
+    one_side_online_count: int = 0
+    both_offline_count: int = 0
+    stale_count: int = 0
+    unknown_count: int = 0
+    active_mesh_link_count: int = 0
+    unmatched_ap_count: int = 0
 
 
 class VehicleMrTrainMappingDTO(ApiModel):
@@ -67,6 +86,7 @@ class VehicleMrMappingSaveRequestDTO(ApiModel):
 
 
 class VehicleMrControllerDTO(ApiModel):
+    controller_id: str
     device_id: int
     name: str
     primary_address: str = ""

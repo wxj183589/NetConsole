@@ -4,6 +4,7 @@ import {
   cancelVehicleMrOnlineTask,
   exportVehicleMrHistory,
   exportVehicleMrMappingTemplate,
+  getVehicleMrOnlineDetail,
   getVehicleMrOnlineTask,
   listVehicleMrEvents,
   listVehicleMrControllers,
@@ -24,11 +25,12 @@ describe('vehicle MR online API', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
     vi.stubGlobal('fetch', fetchMock)
 
-    await listVehicleMrOnline({ query: '01' })
+    await listVehicleMrOnline({ query: '01', overall_status: 'BOTH_ONLINE', unmatched_only: true })
     await listVehicleMrMappings()
     await listVehicleMrControllers()
     await listVehicleMrEvents('train-1')
-    await refreshVehicleMrOnline()
+    await getVehicleMrOnlineDetail('train-1')
+    await refreshVehicleMrOnline('ac-uuid-1')
     await refreshVehicleMrApMapping('train-1')
     await saveVehicleMrMappings([])
     await getVehicleMrOnlineTask('task-1')
@@ -40,10 +42,11 @@ describe('vehicle MR online API', () => {
     await exportVehicleMrMappingTemplate()
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      '/api/rail-transit/train-online/trains?query=01',
+      '/api/rail-transit/train-online/trains?query=01&overall_status=BOTH_ONLINE&unmatched_only=true',
       '/api/rail-transit/train-online/mappings',
       '/api/rail-transit/train-online/controllers',
       '/api/rail-transit/train-online/trains/train-1/events?limit=200',
+      '/api/rail-transit/train-online/trains/train-1',
       '/api/rail-transit/train-online/refresh',
       '/api/rail-transit/train-online/ap-mapping/refresh?train_id=train-1',
       '/api/rail-transit/train-online/mappings',
@@ -55,6 +58,7 @@ describe('vehicle MR online API', () => {
       '/api/rail-transit/train-online/history/export',
       '/api/rail-transit/train-online/mappings/template/export',
     ])
-    expect(JSON.parse(fetchMock.mock.calls[6][1].body).explicit_confirmation).toBe(true)
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ controller_id: 'ac-uuid-1', include_switch_history: false })
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body).explicit_confirmation).toBe(true)
   })
 })

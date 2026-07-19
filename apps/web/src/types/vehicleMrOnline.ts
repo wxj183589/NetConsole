@@ -1,17 +1,25 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface VehicleMrEndState {
-  seen: boolean; station: string; ap_name: string; rssi: number | null; last_seen_at: string
-  match_method: string; match_score: number
+  endpoint: 'CT' | 'TC'
+  mr_id: string | null; mr_name: string | null; online_status: 'ONLINE' | 'OFFLINE' | 'STALE' | 'UNKNOWN'
+  current_ap_name: string | null; current_ap_mac: string | null; mesh_radio: string | null; rssi_dbm: number | null
+  station_name: string | null; section_name: string | null; mileage: string | null; direction: string | null
+  match_status: 'EXACT' | 'NAME_NORMALIZED' | 'MAC_MATCHED' | 'UNMATCHED' | 'UNKNOWN'
+  outdoor_optical_power: string | null; indoor_optical_power: string | null
+  updated_at: string | null; data_status: 'FRESH' | 'STALE' | 'ERROR' | 'NO_DATA' | 'UNKNOWN'
 }
 export interface VehicleMrTrainState {
-  train_id: string; train_no: string; display_name: string; is_registered: boolean; status: string
-  current_station: string; last_ac_time: string; last_seen_at: string; tc1: VehicleMrEndState; tc2: VehicleMrEndState
-  online_policy: string; expected_end: string; direction: string; status_reason: string
+  train_id: string; train_no: string; train_name: string; is_registered: boolean
+  overall_status: 'BOTH_ONLINE' | 'ONE_SIDE_ONLINE' | 'BOTH_OFFLINE' | 'STALE' | 'UNKNOWN'
+  ct: VehicleMrEndState; tc: VehicleMrEndState
+  current_station: string | null; current_section: string | null; current_mileage: string | null; direction: string | null
+  policy: string | null; reason_code: string | null; reason_text: string | null; updated_at: string | null
 }
 export interface VehicleMrOnlinePage {
   items: VehicleMrTrainState[]; total: number; page: number; page_size: number; site_id: string
-  online_count: number; abnormal_count: number; offline_count: number; unregistered_count: number
+  mr_total: number; both_online_count: number; one_side_online_count: number; both_offline_count: number
+  stale_count: number; unknown_count: number; active_mesh_link_count: number; unmatched_ap_count: number
 }
 export interface VehicleMrTrainMapping {
   id: number | null; enabled: boolean; train_display_name: string; train_id: string; train_no: string
@@ -20,7 +28,7 @@ export interface VehicleMrTrainMapping {
 }
 export interface VehicleMrEventPage { items: Array<Record<string, unknown>>; total: number }
 export interface VehicleMrController {
-  device_id: number; name: string; primary_address: string; protocol: string; connection_ready: boolean
+  controller_id: string; device_id: number; name: string; primary_address: string; protocol: string; connection_ready: boolean
 }
 export interface VehicleMrHistoryFilters {
   start_time?: string; end_time?: string; car_end_label?: string; event_status?: string

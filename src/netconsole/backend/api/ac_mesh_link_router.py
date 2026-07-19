@@ -37,12 +37,12 @@ def _refresh_service(request: Request) -> AcMeshLinkRefreshApplicationService:
     return request.app.state.ac_mesh_link_refresh_service
 
 
-@router.get("/summary", response_model=AcMeshLinkSummaryDTO)
+@router.get("/summary", response_model=AcMeshLinkSummaryDTO, deprecated=True)
 def summary(request: Request) -> AcMeshLinkSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
 
 
-@router.post("/refresh", response_model=AcMeshLinkRefreshResponseDTO, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/refresh", response_model=AcMeshLinkRefreshResponseDTO, status_code=status.HTTP_202_ACCEPTED, deprecated=True)
 def refresh_mesh_links(
     request: Request,
     payload: AcMeshLinkRefreshRequestDTO,
@@ -73,7 +73,7 @@ def refresh_mesh_links(
     )
 
 
-@router.get("/current", response_model=AcMeshLinkPageDTO)
+@router.get("/current", response_model=AcMeshLinkPageDTO, deprecated=True)
 def current_links(
     request: Request,
     controller_id: str = Query(default="", max_length=100),
@@ -112,7 +112,7 @@ def current_links(
     )
 
 
-@router.get("/mrs", response_model=AcMeshMrPageDTO)
+@router.get("/mrs", response_model=AcMeshMrPageDTO, deprecated=True)
 def mrs(
     request: Request,
     online_status: str = Query(default="", pattern="^(|online|offline|stale|unknown)$"),
@@ -149,7 +149,7 @@ def mrs(
     )
 
 
-@router.get("/offline-mrs", response_model=AcMeshMrPageDTO)
+@router.get("/offline-mrs", response_model=AcMeshMrPageDTO, deprecated=True)
 def offline_mrs(
     request: Request,
     page: int = Query(default=1, ge=1),
@@ -158,7 +158,7 @@ def offline_mrs(
     return _query(lambda: _service(request).list_offline_mrs(_site_id(request), page=page, page_size=page_size))
 
 
-@router.get("/unmatched", response_model=AcMeshLinkPageDTO)
+@router.get("/unmatched", response_model=AcMeshLinkPageDTO, deprecated=True)
 def unmatched_links(
     request: Request,
     page: int = Query(default=1, ge=1),
@@ -172,7 +172,7 @@ def unmatched_links(
     )
 
 
-@router.get("/mrs/{mr_id}", response_model=AcMeshMrDetailDTO)
+@router.get("/mrs/{mr_id}", response_model=AcMeshMrDetailDTO, deprecated=True)
 def mr_detail(request: Request, mr_id: str) -> AcMeshMrDetailDTO:
     result = _query(lambda: _service(request).get_mr_link_detail(_site_id(request), mr_id))
     if result is None:
@@ -180,7 +180,7 @@ def mr_detail(request: Request, mr_id: str) -> AcMeshMrDetailDTO:
     return result
 
 
-@router.get("/snapshots", response_model=AcMeshSnapshotPageDTO)
+@router.get("/snapshots", response_model=AcMeshSnapshotPageDTO, deprecated=True)
 def snapshots(
     request: Request,
     page: int = Query(default=1, ge=1),
@@ -189,7 +189,7 @@ def snapshots(
     return _query(lambda: _service(request).list_recent_snapshots(_site_id(request), page=page, page_size=page_size))
 
 
-@router.get("/raw-tail", response_model=AcMeshRawTailDTO)
+@router.get("/raw-tail", response_model=AcMeshRawTailDTO, deprecated=True)
 def raw_tail(
     request: Request,
     snapshot_id: int | None = Query(default=None, ge=1),
@@ -198,7 +198,7 @@ def raw_tail(
     return _query(lambda: _service(request).get_raw_tail(_site_id(request), snapshot_id=snapshot_id, limit=limit))
 
 
-@router.get("/snapshots/{snapshot_id}", response_model=AcMeshSnapshotDetailDTO)
+@router.get("/snapshots/{snapshot_id}", response_model=AcMeshSnapshotDetailDTO, deprecated=True)
 def snapshot_detail(request: Request, snapshot_id: int) -> AcMeshSnapshotDetailDTO:
     result = _query(lambda: _service(request).get_snapshot(_site_id(request), snapshot_id))
     if result is None:

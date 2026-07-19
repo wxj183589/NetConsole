@@ -23,6 +23,8 @@ describe('Mesh analysis view', () => {
     expect(source).toContain("openTaskWindow({ module: 'rail'")
     expect(source).not.toContain('cancelRailTransitTask')
     expect(source).toContain('生成分析报告')
+    expect(source).toContain("router.push('/rail-transit/train-online')")
+    expect(source).not.toContain("router.push('/ac-management/mesh-links')")
     expect(source).not.toMatch(/READ ONLY|只读|迁移/)
     expect(source).not.toMatch(/>s*删除s*</)
   })

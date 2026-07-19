@@ -499,10 +499,10 @@ function openApAc(ap: TracksideAp): void {
   router.push({ path: '/ac-management', query: { ap: ap.runtime.fit_ap_status !== 'unknown' ? ap.name : undefined } })
 }
 function openApMesh(ap: TracksideAp): void {
-  router.push({ path: '/ac-management/mesh-links', query: { peer_ap_name: ap.name } })
+  router.push({ path: '/rail-transit/train-online', query: { query: ap.name } })
 }
 function openMrMesh(mr: VehicleMr): void {
-  router.push({ path: '/ac-management/mesh-links', query: { mr_name: mr.name } })
+  router.push({ path: '/rail-transit/train-online', query: { query: mr.name } })
 }
 function openMrSession(mr: VehicleMr): void {
   router.push({ path: '/rail-transit/online-mr', query: { session_id: mr.runtime.latest_session_id || undefined, device_id: mr.id } })

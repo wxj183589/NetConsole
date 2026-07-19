@@ -9,6 +9,8 @@ from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAd
 from netconsole.application.rail_transit import web_application_service
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.core.paths import PathResolver
+from netconsole.models.api.ac_mesh_link import AcMeshMrPageDTO, AcMeshMrStatusDTO
+from netconsole.models.api.vehicle_mr_online import VehicleMrEndStateDTO
 from netconsole.models.device import Device
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -39,9 +41,9 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
                     tc2=VehicleMrEndState(seen=True, station="站点A", ap_name="AP-TC", rssi=-60),
                 ),
                 VehicleMrTrainState(
-                    train_id="unregistered-1",
-                    train_no="",
-                    is_registered=False,
+                    train_id="train-2",
+                    train_no="02",
+                    is_registered=True,
                     status=TRAIN_STATUS_OFFLINE,
                 ),
             ]
@@ -53,20 +55,78 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
             return [{"train_id": train_id, "limit": limit, "ap_name": "AP-CT"}]
 
     monkeypatch.setattr(vehicle_mr_online_query_service, "VehicleMrOnlineStore", Store)
+
+    class MeshQuery:
+        def list_mrs(self, _site_id: str, *, page: int, page_size: int) -> AcMeshMrPageDTO:
+            assert page == 1
+            assert page_size == 200
+            return AcMeshMrPageDTO(
+                items=[
+                    AcMeshMrStatusDTO(
+                        mr_id="mr-01-ct", train_no="01", car_end="CT", mr_name="列车01-MR-CT",
+                        online_status="online", peer_ap_name="AP-CT", peer_ap_mac="aa:bb:cc:dd:ee:01",
+                        mesh_radio="Radio 1", rssi=-55, station="站点A", section="区间A",
+                        mileage="K1+000", line_side="上行", ap_rx_power="-10 dBm",
+                        switch_rx_power="-12 dBm", last_seen_at="2026-07-19 12:00:00",
+                        match_method="mac_exact", data_status="fresh",
+                    ),
+                    AcMeshMrStatusDTO(
+                        mr_id="mr-01-tc", train_no="01", car_end="CW", mr_name="列车01-MR-TC",
+                        online_status="online", peer_ap_name="AP-TC", peer_ap_mac="aa:bb:cc:dd:ee:02",
+                        mesh_radio="Radio 2", rssi=-60, station="站点A", section="区间A",
+                        mileage="K1+010", line_side="上行", last_seen_at="2026-07-19 12:00:01",
+                        match_method="unmatched", data_status="fresh",
+                    ),
+                    AcMeshMrStatusDTO(mr_id="mr-02-ct", train_no="02", car_end="CT", online_status="offline", data_status="fresh"),
+                    AcMeshMrStatusDTO(mr_id="mr-02-tc", train_no="02", car_end="CW", online_status="offline", data_status="fresh"),
+                ],
+                total=4,
+                page=1,
+                page_size=200,
+            )
+
     service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
-        PathResolver(app_root=tmp_path, data_root=tmp_path)
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+        mesh_query=MeshQuery(),  # type: ignore[arg-type]
     )
 
     page = service.list_trains("demo")
 
-    assert page.online_count == 1
-    assert page.offline_count == 1
-    assert page.unregistered_count == 1
-    assert page.items[0].tc1.ap_name == "AP-CT"
-    assert page.items[0].tc1.rssi == -55
-    assert page.items[0].tc2.ap_name == "AP-TC"
+    assert page.mr_total == 4
+    assert page.both_online_count == 1
+    assert page.both_offline_count == 1
+    assert page.active_mesh_link_count == 2
+    assert page.unmatched_ap_count == 1
+    assert page.items[0].overall_status == "BOTH_ONLINE"
+    assert page.items[0].ct.current_ap_name == "AP-CT"
+    assert page.items[0].ct.current_ap_mac == "aa:bb:cc:dd:ee:01"
+    assert page.items[0].ct.match_status == "MAC_MATCHED"
+    assert page.items[0].ct.outdoor_optical_power == "-10 dBm"
+    assert page.items[0].tc.current_ap_name == "AP-TC"
+    assert page.items[0].tc.match_status == "UNMATCHED"
+    assert service.get_train("demo", "train-1") == page.items[0]
+    assert service.list_trains("demo", unmatched_only=True).items == [page.items[0]]
     assert service.list_mappings("demo")[0].tc2_peer_name == "MR-TC"
     assert service.list_events("demo", "train-1").items[0]["ap_name"] == "AP-CT"
+
+
+@pytest.mark.parametrize(
+    ("ct_status", "tc_status", "expected"),
+    [
+        ("ONLINE", "OFFLINE", "ONE_SIDE_ONLINE"),
+        ("STALE", "OFFLINE", "STALE"),
+        ("UNKNOWN", "UNKNOWN", "UNKNOWN"),
+    ],
+)
+def test_vehicle_mr_overall_status_is_decided_by_query_service(
+    ct_status: str,
+    tc_status: str,
+    expected: str,
+) -> None:
+    ct = VehicleMrEndStateDTO(endpoint="CT", online_status=ct_status)  # type: ignore[arg-type]
+    tc = VehicleMrEndStateDTO(endpoint="TC", online_status=tc_status)  # type: ignore[arg-type]
+
+    assert vehicle_mr_online_query_service.VehicleMrOnlineQueryService._overall_status(ct, tc) == expected
 
 
 def test_vehicle_mr_application_starts_registered_refresh_and_mapping_jobs(tmp_path: Path) -> None:

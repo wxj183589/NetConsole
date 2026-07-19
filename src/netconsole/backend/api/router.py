@@ -48,7 +48,7 @@ api_router.include_router(
 )
 api_router.include_router(
     ac_mesh_link_router,
-    dependencies=[Depends(require_feature("web.ac_mesh_links"))],
+    dependencies=[Depends(require_feature("web.rail_train_online"))],
 )
 api_router.include_router(
     job_center_router,

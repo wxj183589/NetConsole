@@ -4,8 +4,15 @@ import source from './VehicleMrOnlineView.vue?raw'
 
 describe('vehicle MR online view', () => {
   it('exposes persisted CT/TC state and real refresh and mapping actions', () => {
-    expect(source).toContain('MR-CT 当前 AP')
-    expect(source).toContain('MR-TC 当前 AP')
+    expect(source).toContain('CT 当前 AP')
+    expect(source).toContain('TC 当前 AP')
+    expect(source).toContain('selectedTrain.ct')
+    expect(source).toContain('selectedTrain.tc')
+    expect(source).toContain('轨旁 AP 室外侧收光')
+    expect(source).toContain('轨旁 AP 室内侧收光')
+    expect(source).toContain('未匹配轨旁 AP')
+    expect(source).toContain('getVehicleMrOnlineDetail')
+    expect(source).toContain("route.query.query || route.query.mr_name || route.query.peer_ap_name")
     expect(source).toContain('refreshVehicleMrOnline')
     expect(source).toContain('refreshVehicleMrApMapping')
     expect(source).toContain('saveVehicleMrMappings')
@@ -24,6 +31,9 @@ describe('vehicle MR online view', () => {
     expect(source).not.toContain('取消任务')
     expect(source).toContain('恢复任务')
     expect(source).not.toMatch(/READ ONLY|只读|迁移/)
+    expect(source).not.toContain('/ac-management/mesh-links')
+    expect(source).not.toContain('row.tc1.')
+    expect(source).not.toContain('row.tc2.')
   })
 
   it('uses typed data tables without changing editable mapping slots', () => {
@@ -37,6 +47,7 @@ describe('vehicle MR online view', () => {
     expect(source).toContain('table-id="rail-vehicle-mr-online-mappings"')
     expect(source).toContain('table-id="rail-vehicle-mr-online-mapping-preview"')
     expect(source).toContain('v-model="row.tc1_peer_name"')
+    expect(source).toContain('NcOverflowTooltip')
     expect(source).toContain("alignmentReason: 'long-text'")
     expect(source).not.toContain('<el-table')
   })

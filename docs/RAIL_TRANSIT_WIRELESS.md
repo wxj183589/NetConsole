@@ -26,7 +26,7 @@ Web 入口 `/rail-transit/wireless-dashboard` 通过薄聚合 Query Service 复�
 
 Web 入口 `/rail-transit/train-communication` 是 TC1/TC2 固定六节点拓扑状态页，只展示 MR、交换机、服务器、节点链路、VRRP 和跨 TC 通信。状态由 Python Service 返回；缺少明确关联或检测结果时分别显示“未配置”和“未检测”，不按名称、地址或前端规则猜测。
 
-“立即检测”只复用现有车内通信诊断 Task，不启动 Online MR、持续 fping/iPerf 或轨旁采集。轨旁 AP、RSSI、光衰、Agent、Mesh-Link 和 Online MR 继续由各自独立页面承载。详细契约见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
+“立即检测”只复用现有车内通信诊断 Task，不启动 Online MR、持续 fping/iPerf 或轨旁采集。列车 Mesh-Link、当前轨旁 AP、RSSI 和两侧收光由“列车在线情况”承载；Agent、Online MR 和其他轨旁业务继续使用各自页面。详细契约见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
 ## 5C-8 Mesh 原始日志分析结果 Web 化
 
@@ -64,9 +64,9 @@ Web 对外 DTO 从车载 MR 视角命名为 `peer_ap_*`，但匹配事实仍来�
 
 MR 先按 Peer Name 与设备管理名称精确匹配，再按唯一的列车号和 CT/CW 端匹配。AP 扩展信息只补充站点、区间、里程、方向和两侧收光，不修改原始 Mesh-Link 事实。公开 Mesh-Link 记录不再返回链路状态、信道、带宽、AP 在线状态和光衰状态旧字段；快照中的原始链路状态仅作内部新鲜度/在线计算事实，不构成兼容契约。
 
-## 5C-5 查询与 5C-5A 受控刷新边界
+## 列车在线统一查询与受控刷新边界
 
-Web 入口为 `/ac-management/mesh-links`，Feature key 为 `web.ac_mesh_links`。数据源为当前局点：
+唯一用户入口为 `/rail-transit/train-online`，页面和底层 Mesh-Link API 共用 Feature `web.rail_train_online`；旧 `web.ac_mesh_links` 页面 Feature 已删除。数据源仍为当前局点：
 
 ```text
 files/rail_transit/online_mr/parsed/vehicle_mr_online.sqlite
@@ -82,7 +82,9 @@ Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化�
 | 31～300 秒 | `recent` | 只显示历史/近期状态，不宣称当前在线 |
 | 超过 300 秒 | `stale` | 标记数据过期，不宣称当前在线 |
 
-只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。缺失字段显示“无数据”，不得从无关字段推测。
+只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。列车页由 `VehicleMrOnlineQueryService` 组合现有 `AcMeshLinkQueryService`，每列车一行返回 CT/TC 两端；Vue 不重新匹配 AP/MR，也不判断双端、单端、离线或过期。缺失字段返回 `null` 并显示“—”。
+
+公开列车状态固定为 `BOTH_ONLINE / ONE_SIDE_ONLINE / BOTH_OFFLINE / STALE / UNKNOWN`。端点状态固定为 `ONLINE / OFFLINE / STALE / UNKNOWN`，匹配状态固定为 `EXACT / NAME_NORMALIZED / MAC_MATCHED / UNMATCHED / UNKNOWN`。Canonical AP Identity 仍只用于 shadow/diagnostics，本轮没有接管生产匹配。
 
 旧 AC Mesh-Link 快照没有对应原始回显时，`/raw-tail` 继续返回 `available=false`，不得改用车载侧 Online MR 日志冒充。5C-5A 新任务把完整 UTF-8 回显保存到 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`，API 只返回局点内相对引用。失败 raw 转入受控 failure 目录，失败任务不覆盖最新成功快照。
 
@@ -91,6 +93,13 @@ Peer Name 缺失但 Peer MAC 存在时保留该链路，并仅在 Peer MAC 唯�
 ## API
 
 ```text
+GET /api/rail-transit/train-online/trains
+GET /api/rail-transit/train-online/trains/{train_id}
+GET /api/rail-transit/train-online/trains/{train_id}/events
+POST /api/rail-transit/train-online/refresh
+POST /api/rail-transit/train-online/ap-mapping/refresh
+
+# deprecated 底层查询/历史契约
 GET /api/ac-management/mesh-links/summary
 GET /api/ac-management/mesh-links/current
 GET /api/ac-management/mesh-links/mrs
@@ -103,4 +112,4 @@ GET /api/ac-management/mesh-links/raw-tail
 POST /api/ac-management/mesh-links/refresh
 ```
 
-`refresh` 是唯一 POST，仅接受 AC 标识和是否包含切换历史的布尔值。没有 PUT、PATCH、DELETE、任意命令、自动周期采集或 AC 配置操作。
+正式列车页的 `refresh` 与 deprecated AC alias 都调用同一个 `AcMeshLinkRefreshApplicationService`，只接受 AC 标识和是否包含切换历史的布尔值。`刷新页面` 只重新读取缓存；`刷新在线状态` 创建或复用真实 `ac_mesh_link_refresh` Task；`刷新 AP 映射` 只重算现有映射，不连接设备。没有 PUT、PATCH、DELETE、任意命令、自动周期采集或 AC 配置操作。

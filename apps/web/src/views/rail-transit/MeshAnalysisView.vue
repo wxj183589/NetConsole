@@ -375,7 +375,7 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
         <div class="jump-actions">
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
-          <el-button @click="router.push('/ac-management/mesh-links')">AC Mesh-Link</el-button>
+          <el-button @click="router.push('/rail-transit/train-online')">列车在线情况</el-button>
           <el-button v-if="selected.session.task_id" @click="openTaskWindow(selected.session.task_id)">任务窗口</el-button>
         </div>
       </div>

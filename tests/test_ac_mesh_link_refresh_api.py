@@ -61,6 +61,10 @@ def test_refresh_api_accepts_only_controller_and_history_flag(tmp_path: Path) ->
             "/api/ac-management/mesh-links/refresh",
             json={"controller_id": "ac-1", "include_switch_history": True},
         )
+        train_response = client.post(
+            "/api/rail-transit/train-online/refresh",
+            json={"controller_id": "ac-1", "include_switch_history": False},
+        )
         rejected = client.post(
             "/api/ac-management/mesh-links/refresh",
             json={"controller_id": "ac-1", "command": "system-view", "password": "secret"},
@@ -68,7 +72,12 @@ def test_refresh_api_accepts_only_controller_and_history_flag(tmp_path: Path) ->
 
     assert response.status_code == 202
     assert response.json()["task_id"] == "refresh-1"
-    assert refresh.calls == [{"site_name": "demo", "controller_id": "ac-1", "include_switch_history": True}]
+    assert train_response.status_code == 202
+    assert train_response.json()["task_id"] == "refresh-1"
+    assert refresh.calls == [
+        {"site_name": "demo", "controller_id": "ac-1", "include_switch_history": True},
+        {"site_name": "demo", "controller_id": "ac-1", "include_switch_history": False},
+    ]
     assert rejected.status_code == 422
 
 

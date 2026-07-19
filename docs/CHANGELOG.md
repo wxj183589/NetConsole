@@ -17,6 +17,7 @@
 - AC/FIT-AP 完成 AC 信息、资源、Radio、光衰、写操作、单 AP 深度更新、元数据导入/保存、历史查询和 AC Web 入口；光衰导航与重复 Tab 已并入 FIT-AP 资源，列默认按连接交换机和端口自然升序，站点缺失时只提供唯一 LLDP 交换机站点建议，未经人工保存不写库。Mesh-Link 对外契约硬删除链路状态/信道/带宽/AP 状态/光衰状态旧字段，改为展示轨旁 AP 室外侧和室内侧收光，不保留 API/TS fallback。普通更新与 verbose 深度更新保持分离，真实 AC/AP 验收仍待现场执行。
 - 轨道交通按历史有效业务契约拆分车内点表、轨旁 AP 规划与业务、在线列车 CT/TC、连续采集、Online MR 实时/分析、强停恢复、离线 MESH 导入分析与报告，不再以只读聚合页代替业务闭环。轨旁 AP 业务表已改为内容居中、自动表格布局和通用接口简称，后续刷新保留上一次成功数据；光衰状态按 Python 严重性事实源中文化并着色。新增的业务导出只通过 Export Process/Task Center/Artifact 执行，保留原 8 个业务 Sheet 与 `_netconsole_meta`，并统一 `A2` 冻结、筛选、居中和采样自动列宽。
 - 轨道交通“基础资料”升级为默认锁定的统一维护入口：站点、区间、轨旁 AP、车载 MR 和轨旁 AP 规划共用数据库哈希 revision、Python 校验和单 SQLite 事务，保存失败保留修改，路由离开/刷新/锁定受未保存保护。独立规划页面、AC/轨交重复导航和 AC 资料页重复规划卡片已移除，旧路由重定向到基础资料规划页签；规划导入预览、导出和 Task Center 继续复用既有服务。真实局点写入仍需 Feature、环境和目标范围授权，Electron 人工验收尚未完成。
+- AC 管理下独立 Mesh-Link 在线监控已合并到“轨道交通 / 列车在线情况”：每列车一行聚合 CT/TC 两端 MR、当前轨旁 AP、MAC、Radio、RSSI、站点/区间/里程、方向、匹配状态、两侧收光和更新时间；综合状态、数据过期和匹配结论由 Python Query Service 返回。旧页面、Store、导航和页面 API Client 已删除，旧 URL 重定向；Parser、Repository、历史快照、raw、Query Service 和受控 `ac_mesh_link_refresh` Task 保留，底层旧 API 标记 deprecated。
 - 在线列车车地通信检测收口为 TC1/TC2 固定六节点拓扑状态页，只保留节点/链路、VRRP、跨 TC、刷新和车内通信诊断 Task；移除本页的轨旁 AP、RSSI、fping/iPerf、光衰、Online MR、Agent、Mesh-Link 及综合统计入口。缺少 SW/SRV 关联或检测事实时明确显示“未配置/未检测”，不由 Vue 猜测正常状态；独立底层业务模块不删除。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。
 - 设备文件下载完成 Qt 历史 SFTP 行为取证、主备地址/凭据复用、受控命令 Profile 和设备侧只读边界；新增应用内主机密钥首次信任/仅本次信任/密钥变更阻止、数据根下原子 known_hosts、结构化错误和下载页兼容重定向。全局确认统一收口到 `NcConfirmDialog/useConfirm`，外部终端密码传递使用 `SECURITY` 确认；真实 SFTP、主机密钥和桌面动作仍待现场验收。
@@ -25,7 +26,7 @@
 
 ### 桌面与发布
 
-- 建立并完成全局表格与字段展示契约：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `finalWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。当前清单登记的 87 张标准表格均已迁移为 `NcDataTable + NcTableColumn`，旧表基线为 0，四个 UI Guard 和受影响页面定向测试通过；公共表格 Playwright 夹具已通过 3 种窗口与 3 种缩放的 9 组截图和 DOM 断言。真实业务页截图基线、中英文/浅深主题组合及 Electron 人工视觉验收仍待执行，不能据此宣称人工视觉验收完成。
+- 建立并完成全局表格与字段展示契约：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `finalWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。当前清单登记的 77 张标准表格均已迁移为 `NcDataTable + NcTableColumn`，旧表基线为 0，四个 UI Guard 和受影响页面定向测试通过；公共表格 Playwright 夹具已通过 3 种窗口与 3 种缩放的 9 组截图和 DOM 断言。真实业务页截图基线、中英文/浅深主题组合及 Electron 人工视觉验收仍待执行，不能据此宣称人工视觉验收完成。
 - 统一 Vue/Electron 全局主题：浅色、深色和跟随系统现在同时驱动侧栏、顶部栏、内容区、Element Plus 浮层与 ECharts，不再默认固定深色侧栏；系统设置仍是唯一持久化来源。Renderer 只通过严格单向 IPC 报告解析后的 `light|dark`，Electron Main 只映射预定义窗口背景，不能接收任意颜色或窗口参数。历史页面状态色已收口到语义 Token；Guard 已收窄 `--nc-text-primary` 被误判为状态色的规则并增加单元测试。Electron 多尺寸/多缩放人工视觉验收仍为 `PENDING`，自动测试不代表视觉通过。
 - 将 Windows x64 iPerf3 运行包升级并固定为用户提供的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`，补齐发行来源、四文件 SHA-256、GPLv3/LGPLv3/链接例外及 Cygwin 3.6.7-1 对应源码方案；fping 5.5/Cygwin 3.6.9-1 同步归档实际 ICMP 兼容补丁、构建配方、完整许可证与精确对应源码。Electron 与 Agent 打包复制前后只校验并复制仓库本地白名单工具，拒绝联网补齐、同名替换、来源篡改和额外文件；旧 3.20 来源不匹配文件不再保留。
 - 新增 `pnpm dev:codex` 本机受控调试链：Electron Main 继续持有唯一 FastAPI 生命周期，Vite/FastAPI 固定绑定 `127.0.0.1:5173/8000`，每次启动生成短期 Session 与系统临时数据根；浏览器 Vue 可复用正式 REST、WebSocket 和下载契约。新增鉴权、回环限定且路径脱敏的 `/api/dev/runtime-status`；生产 Electron 不注册该接口、不接受固定开发端口，也不暴露令牌、OpenAPI 或 DevTools。

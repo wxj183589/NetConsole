@@ -20,11 +20,6 @@
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:482` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:540` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:573` | `ac-fit-ap-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:195` | `ac-mesh-mrs` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:208` | `ac-mesh-current-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:215` | `ac-mesh-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:246` | `ac-mesh-detail-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/mesh-links` | `apps/web/src/views/ac-management/AcMeshLinkView.vue:248` | `ac-mesh-detail-events` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:263` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/agents` | `apps/web/src/views/agents/AgentListView.vue:355` | `agent-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/agents` | `apps/web/src/views/agents/AgentListView.vue:423` | `agent-tool-status` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
@@ -77,14 +72,14 @@
 | `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:231` | `rail-wireless-dashboard-agents` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:182` | `trackside-ap-business` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:200` | `trackside-ap-business-task-result` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:258` | `rail-vehicle-mr-online-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:267` | `rail-vehicle-mr-online-task-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:270` | `rail-vehicle-mr-online-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:272` | `rail-vehicle-mr-online-mappings` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:273` | `rail-vehicle-mr-online-mapping-preview` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:295` | `rail-vehicle-mr-online-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:305` | `rail-vehicle-mr-online-task-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:334` | `rail-vehicle-mr-online-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:336` | `rail-vehicle-mr-online-mappings` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:337` | `rail-vehicle-mr-online-mapping-preview` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/system-settings` | `apps/web/src/views/settings/SystemSettingsView.vue:230` | `system-feature-settings` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:356` | `system-log-entries` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:365` | `system-cleanup-items` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 | `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:377` | `system-open-source-components` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
 
-总计：82 张已迁移，0 张待迁移。
+总计：77 张已迁移，0 张待迁移。

@@ -42,8 +42,9 @@ describe('Web navigation registry', () => {
 
   it('registers the fixed child ordering without exposing unfinished routes', () => {
     expect(navigationRegistry.find((item) => item.navigation_id === 'ac')?.children.map((item) => item.title)).toEqual([
-      'AP 在线概览', 'FIT-AP 资源', 'AP 扩展信息', 'Mesh-Link 在线监控', 'AC 配置快照与对比',
+      'AP 在线概览', 'FIT-AP 资源', 'AP 扩展信息', 'AC 配置快照与对比',
     ])
+    expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
       '轨道交通无线看板', '基础资料', '列车在线情况', '车内通信检测', '在线列车车地通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',

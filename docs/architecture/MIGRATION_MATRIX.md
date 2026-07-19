@@ -58,5 +58,6 @@
 - 未知事实由 API 返回 `null` 并在页面显示“—”，不能伪造数值 `0`；设备详情 DTO 不得包含凭据或服务端绝对路径。
 - 设备详情 LLDP 公开契约不包含邻居能力或型号；删除的公开字段不保留 DTO/TypeScript/API 别名、双读或 fallback。如后续需要物理重建数据库，由独立维护脚本完成备份/迁移，不在正式启动路径中加入兼容迁移。
 - AC Mesh-Link 公开契约已硬删除 `link_status/channel/bandwidth/ap_online_status/optical_status` 及相关筛选；只返回当前产品需要的 MR/AP 事实、RSSI、位置和两侧收光。原始 snapshot status 只在 Query Service 内计算在线状态，不是公开兼容字段。
+- AC Mesh-Link 不再是独立用户页面；`/rail-transit/train-online` 是唯一列车在线入口，并由 `VehicleMrOnlineQueryService -> AcMeshLinkQueryService` 聚合每列车 CT/TC。旧 AC URL 重定向，底层 `/api/ac-management/mesh-links/*` 仅作为 deprecated API 保留，Core、Parser、Repository、历史和 raw 不删除。
 - 光模块正常状态不返回公开严重性原因，注意、告警、无光等异常原因继续保留；关联业务公开 DTO 不携带重复的 AC/AP、交换机、光模块严重性和 MR 会话细节，内部历史数据不因此删除。
 - Navigation Registry 当前注册项使用中立的 `legacy_page_id/legacy_feature_id`；`qt_page_id/qt_feature_id` 只在 schema v1 读取兼容与负向测试中保留，规范化后不会出现在活动导航项，也不代表 Qt 运行时存在。

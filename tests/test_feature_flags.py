@@ -53,6 +53,8 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
     assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].parent_id == "web.rail_transit_base_data"
     assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].item_type == "tab"
+    assert "web.ac_mesh_links" not in feature_ids
+    assert FEATURE_BY_ID["ac.mesh_link.refresh"].parent_id == "web.rail_train_online"
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
     form_test = FEATURE_BY_ID["web.device_form_connection_test"]
     assert form_test.parent_id == "web.device_management"

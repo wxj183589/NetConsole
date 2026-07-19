@@ -471,7 +471,10 @@ def create_app(
         job_query=app.state.job_center_query_service,
     )
     app.state.trackside_ap_business_query_service = trackside_ap_business_query_service
-    app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(paths)
+    app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(
+        paths,
+        mesh_query=app.state.ac_mesh_link_query_service,
+    )
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,

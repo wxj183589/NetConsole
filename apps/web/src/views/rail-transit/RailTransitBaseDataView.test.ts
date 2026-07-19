@@ -39,6 +39,8 @@ describe('Rail Transit base data maintenance view', () => {
     expect(source).toContain("window.addEventListener('beforeunload'")
     expect(source).toContain("route.query.tab")
     expect(source).toContain("name=\"trackside-ap-planning\"")
+    expect(source).toContain("path: '/rail-transit/train-online'")
+    expect(source).not.toContain("path: '/ac-management/mesh-links'")
   })
 
   it('does not expose generic deletion, credentials or unguarded persistence', () => {

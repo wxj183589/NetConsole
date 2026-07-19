@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
+from netconsole.models.api.ac_mesh_link import AcMeshLinkRefreshRequestDTO, AcMeshLinkRefreshResponseDTO
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.vehicle_mr_online import (
     VehicleMrEventPageDTO,
@@ -17,7 +18,13 @@ from netconsole.models.api.vehicle_mr_online import (
     VehicleMrMappingPreviewDTO,
     VehicleMrMappingSaveRequestDTO,
     VehicleMrOnlinePageDTO,
+    VehicleMrTrainStateDTO,
     VehicleMrTrainMappingDTO,
+)
+from netconsole.services.ac.mesh_link_refresh_service import (
+    AcMeshLinkRefreshApplicationService,
+    AcMeshLinkRefreshError,
+    AcMeshLinkRefreshErrorCode,
 )
 from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 
@@ -44,6 +51,10 @@ def _application_service(request: Request) -> RailTransitWebApplicationService:
     return service
 
 
+def _mesh_refresh_service(request: Request) -> AcMeshLinkRefreshApplicationService:
+    return request.app.state.ac_mesh_link_refresh_service
+
+
 def _site_id(request: Request) -> str:
     try:
         return SiteManager(request.app.state.paths).validate_site_name(_query_service(request).current_site_id())
@@ -51,21 +62,42 @@ def _site_id(request: Request) -> str:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="局点标识无效") from exc
 
 
-@router.get("/trains", response_model=VehicleMrOnlinePageDTO)
+@router.get("/trains", response_model=VehicleMrOnlinePageDTO, summary="分页查询列车 Mesh-Link 在线状态")
 def trains(
     request: Request,
     query: str = Query(default="", max_length=200),
-    train_status: str = Query(default="", max_length=50),
+    overall_status: str = Query(default="", pattern="^(|BOTH_ONLINE|ONE_SIDE_ONLINE|BOTH_OFFLINE|STALE|UNKNOWN)$"),
+    station: str = Query(default="", max_length=100),
+    section: str = Query(default="", max_length=100),
+    data_status: str = Query(default="", pattern="^(|FRESH|STALE|ERROR|NO_DATA|UNKNOWN)$"),
+    unmatched_only: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> VehicleMrOnlinePageDTO:
     return _query_service(request).list_trains(
         _site_id(request),
         query=query,
-        status=train_status,
+        status=overall_status,
+        station=station,
+        section=section,
+        data_status=data_status,
+        unmatched_only=unmatched_only,
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/trains/{train_id}",
+    response_model=VehicleMrTrainStateDTO,
+    summary="查询单列车 CT/TC 通信详情",
+    responses={404: {"description": "列车在线状态不存在"}},
+)
+def train_detail(request: Request, train_id: str) -> VehicleMrTrainStateDTO:
+    result = _query_service(request).get_train(_site_id(request), train_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="列车在线状态不存在")
+    return result
 
 
 @router.get("/mappings", response_model=list[VehicleMrTrainMappingDTO])
@@ -163,15 +195,33 @@ def stop_collection(request: Request, task_id: str) -> RailTransitTaskDTO:
 
 @router.post(
     "/refresh",
-    response_model=RailTransitTaskDTO,
+    response_model=AcMeshLinkRefreshResponseDTO,
     status_code=status.HTTP_202_ACCEPTED,
+    summary="创建或复用列车 Mesh-Link 采集任务",
+    responses={404: {"description": "AC 不存在"}, 422: {"description": "AC 连接配置无效"}, 503: {"description": "任务暂时无法创建"}},
     dependencies=[Depends(require_feature("web.rail_train_online_refresh"))],
 )
-def refresh(request: Request) -> RailTransitTaskDTO:
+def refresh(request: Request, payload: AcMeshLinkRefreshRequestDTO) -> AcMeshLinkRefreshResponseDTO:
     try:
-        return _application_service(request).start_vehicle_mr_online_refresh(_site_id(request))
-    except RailTransitWebError as exc:
-        _raise_error(exc)
+        result = _mesh_refresh_service(request).start_refresh(
+            site_name=_site_id(request),
+            controller_id=payload.controller_id,
+            include_switch_history=payload.include_switch_history,
+        )
+    except AcMeshLinkRefreshError as exc:
+        status_code = status.HTTP_404_NOT_FOUND if exc.code == AcMeshLinkRefreshErrorCode.CONTROLLER_NOT_FOUND else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.message}) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "AC_MESH_LINK_INTERNAL_ERROR", "message": "Mesh-Link 刷新任务暂时无法创建"},
+        ) from exc
+    return AcMeshLinkRefreshResponseDTO(
+        task_id=result.task.task_id,
+        status=result.task.status.value,
+        already_running=result.already_running,
+        message="Mesh-Link 刷新任务正在运行" if result.already_running else "Mesh-Link 刷新任务已创建",
+    )
 
 
 @router.post(

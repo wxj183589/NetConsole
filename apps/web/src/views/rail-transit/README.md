@@ -4,6 +4,8 @@
 
 各页面通过对应 API、Store 和 ViewModel 展示查询或受控操作；修改领域字段、图表或导入流程时运行本目录定向测试并同步专题文档。
 
+`VehicleMrOnlineView.vue` 是列车 Mesh-Link 在线状态的唯一用户入口。页面每列车一行展示 CT/TC 两端，通信详情抽屉展示 MR、当前 AP、MAC、Radio、RSSI、位置、匹配状态、两侧收光和历史；所有状态与匹配结论来自 Python Query Service。旧 `/ac-management/mesh-links` 只做兼容重定向，底层 AC Mesh-Link API 保留为 deprecated 契约。
+
 `RailTransitBaseDataView.vue` 是基础资料唯一入口，默认锁定并通过 revision + Application Service 单事务维护站点、区间、轨旁 AP、车载 MR 和轨旁 AP 规划。规划组件位于 `components/rail-transit/base-data/`；旧独立规划路由只做兼容重定向，不得恢复重复页面或导航。
 
 基础资料、Online MR、Mesh 原始回显和通信日志均消费共享面板、状态和代码 Token；图表配色只从 `theme/echarts.ts` 读取。轨旁 AP 业务页首次加载才使用整表遮罩，后续刷新保留上一次成功数据；接口简称和光衰中文展示只是 presentation，导出通过 Task/Artifact 和 Runtime Adapter 保存。

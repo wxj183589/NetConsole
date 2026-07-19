@@ -27,6 +27,12 @@ describe('Web route ownership', () => {
   it('keeps legacy AC and toolbox redirects', () => {
     expect(routes.find((route) => route.path === 'ac-management')?.redirect).toEqual({ name: 'ac-fit-aps' })
     expect(routes.find((route) => route.path === 'ac-management/optical')?.redirect).toEqual({ name: 'ac-fit-aps' })
+    const meshRedirect = routes.find((route) => route.path === 'ac-management/mesh-links')?.redirect
+    const monitorRedirect = routes.find((route) => route.path === 'ac/mesh-link-monitor')?.redirect
+    expect(typeof meshRedirect).toBe('function')
+    expect(typeof monitorRedirect).toBe('function')
+    expect((meshRedirect as (to: { query: Record<string, string> }) => object)({ query: { query: '01' } })).toEqual({ name: 'rail-train-online', query: { query: '01' } })
+    expect((monitorRedirect as (to: { query: Record<string, string> }) => object)({ query: {} })).toEqual({ name: 'rail-train-online', query: {} })
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
     expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
       name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },

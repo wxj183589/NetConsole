@@ -389,9 +389,9 @@ class WirelessDashboardQueryService:
             severity = "critical" if ap.optical_status == "critical" else "warning"
             add(f"optical-{ap.id}", severity, "optical", f"{ap.name} 光衰异常", f"光衰状态：{ap.optical_status}；接入端口：{ap.switch_interface or '无数据'}。", "/ac-management", entity_id=ap.id, updated_at=ap.updated_at)
         if mesh.stale_mrs:
-            add("mesh-stale", "warning", "mesh_link", "Mesh-Link 快照过期", f"已有状态中 {mesh.stale_mrs} 台 MR 数据过期。", "/ac-management/mesh-links", updated_at=mesh.updated_at)
+            add("mesh-stale", "warning", "mesh_link", "Mesh-Link 快照过期", f"已有状态中 {mesh.stale_mrs} 台 MR 数据过期。", "/rail-transit/train-online", updated_at=mesh.updated_at)
         if mesh.offline_mrs:
-            add("mesh-offline", "warning", "mesh_link", "车载 MR 离线", f"已有状态中 {mesh.offline_mrs} 台 MR 离线。", "/ac-management/mesh-links", updated_at=mesh.updated_at)
+            add("mesh-offline", "warning", "mesh_link", "车载 MR 离线", f"已有状态中 {mesh.offline_mrs} 台 MR 离线。", "/rail-transit/train-online", updated_at=mesh.updated_at)
         for train in trains.items:
             if train.communication_status in {"critical", "warning", "stale"}:
                 severity = "critical" if train.communication_status == "critical" else "warning"
