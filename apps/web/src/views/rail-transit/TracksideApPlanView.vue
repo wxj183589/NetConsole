@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import {
   exportTracksideApPlan, getTracksideApPlan, getTracksideApTask,
@@ -14,6 +15,7 @@ import type { TracksideApPlanPreview, TracksideApPlanPreviewRow, TracksideApPlan
 
 const storageKey = 'netconsole.trackside-ap-plan.last-task'
 const router = useRouter()
+const { confirm } = useConfirm()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const rows = ref<TracksideApPlanRow[]>([])
 const selectedRows = ref<TracksideApPlanRow[]>([])
@@ -57,8 +59,7 @@ function markDirty(): void { dirty.value = true }
 
 async function loadPlan(force = false): Promise<void> {
   if (dirty.value && !force) {
-    try { await ElMessageBox.confirm('刷新会丢弃尚未保存的轨旁 AP 规划修改，是否继续？', '未保存修改', { type: 'warning' }) }
-    catch { return }
+    if (!await confirm({ type: 'WARNING', title: '未保存修改', message: '刷新会丢弃尚未保存的轨旁 AP 规划修改，是否继续？', confirmText: '放弃修改并刷新' })) return
   }
   loading.value = true; error.value = ''
   try { rows.value = (await getTracksideApPlan()).items; dirty.value = false; selectedRows.value = [] }
@@ -94,8 +95,7 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
   finally { loading.value = false }
 }
 async function savePlan(): Promise<void> {
-  try { await ElMessageBox.confirm(`确认用当前 ${rows.value.length} 行替换轨旁 AP 规划并持久化？`, '保存确认', { type: 'warning' }) }
-  catch { return }
+  if (!await confirm({ type: 'DANGER', title: '保存确认', message: `确认用当前 ${rows.value.length} 行替换轨旁 AP 规划并持久化？`, confirmText: '确认保存规划' })) return
   renumber()
   await startTask(() => saveTracksideApPlan(rows.value), '轨旁 AP 规划保存启动失败')
 }

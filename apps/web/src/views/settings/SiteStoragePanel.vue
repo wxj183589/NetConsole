@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { activateSite, createSite, exportSite, getDataRoot, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, validateDataRoot, type DataRootSnapshot, type SiteRecord } from '../../api/siteStorage'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 const sites = ref<SiteRecord[]>([])
 const root = ref<DataRootSnapshot | null>(null)
@@ -12,6 +13,7 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
+const { confirm: confirmAction } = useConfirm()
 
 onMounted(() => { if (desktopOnly) void reload() })
 
@@ -36,7 +38,7 @@ async function newSite(): Promise<void> {
 }
 
 async function switchSite(site: SiteRecord): Promise<void> {
-  if (site.active || !(await confirm(`切换到“${site.display_name}”并重启本地 Backend？`))) return
+  if (site.active || !(await confirmAction({ type: 'WARNING', title: '切换当前局点', message: `切换到“${site.display_name}”并重启本地 Backend？`, confirmText: '确认切换局点' }))) return
   busy.value = true
   try {
     await activateSite(site.site_id)
@@ -95,7 +97,7 @@ async function moveCurrentSite(): Promise<void> {
 }
 
 async function restoreDefaultRoot(): Promise<void> {
-  if (!root.value || root.value.data_root === root.value.default_data_root || !(await confirm('迁移全部数据并恢复默认数据根？'))) return
+  if (!root.value || root.value.data_root === root.value.default_data_root || !(await confirmAction({ type: 'DANGER', title: '恢复默认数据根', message: '迁移全部数据并恢复默认数据根？', confirmText: '确认迁移并恢复' }))) return
   busy.value = true
   try { const task = await migrateDataRoot(root.value.default_data_root); await openTask(task.task_id); const completed = await waitForTask(task.task_id); if (completed === 'COMPLETED') { const result = await getPlatformAdapter().restartBackend({ dataRoot: root.value.default_data_root }); if (!result.success) throw new Error(result.error || 'Backend 重启失败'); ElMessage.success('默认数据根已恢复') } else if (completed) throw new Error(`迁移任务状态：${completed}`) }
   catch (cause) { showError(cause, '恢复默认数据根失败') }
@@ -126,7 +128,6 @@ async function prompt(message: string, title: string, inputValue = ''): Promise<
   try { const result = await ElMessageBox.prompt(message, title, { inputValue, inputPattern: /.+/, inputErrorMessage: '不能为空', confirmButtonText: '确定', cancelButtonText: '取消' }); return result.value.trim() }
   catch { return '' }
 }
-async function confirm(message: string): Promise<boolean> { try { await ElMessageBox.confirm(message, '确认操作', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }); return true } catch { return false } }
 function showError(cause: unknown, fallback: string): void { error.value = cause instanceof Error && cause.message ? cause.message : fallback; ElMessage.error(error.value) }
 function formatBytes(value: number): string { if (!Number.isFinite(value) || value <= 0) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
 </script>

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 import { isFeatureEnabled } from '../../features'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import {
   cancelMaintenanceTask,
   clearLogs,
@@ -32,6 +33,7 @@ import {
 } from '../../api/systemMaintenance'
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const { confirm } = useConfirm()
 const activeTab = ref('logs')
 const loading = ref(false)
 const logs = ref<LogEntry[]>([])
@@ -100,7 +102,7 @@ async function loadLogs(reset = false): Promise<void> {
 
 async function confirmClearLogs(): Promise<void> {
   try {
-    await ElMessageBox.confirm('只清空日志中心记录，不删除采集数据、原始日志或报告。', '清空日志', { type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '清空日志', message: '只清空日志中心记录，不删除采集数据、原始日志或报告。', confirmText: '确认清空日志' })) return
     const result = await clearLogs()
     ElMessage.success(result.message)
     await loadLogs(true)
@@ -183,11 +185,12 @@ async function confirmCleanup(): Promise<void> {
     .map((item) => item.title)
     .join('、')
   try {
-    await ElMessageBox.confirm(
-      `将重新扫描并清理“${selectedNames}”中超过 ${retentionDays.value} 天的文件。后台任务、导入预览和取消文件不会删除。`,
-      '确认安全清理',
-      { type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消' },
-    )
+    if (!await confirm({
+      type: 'DESTRUCTIVE',
+      title: '确认安全清理',
+      message: `将重新扫描并清理“${selectedNames}”中超过 ${retentionDays.value} 天的文件。后台任务、导入预览和取消文件不会删除。`,
+      confirmText: '确认清理',
+    })) return
     applyTaskResult(await startCleanup({
       mode: 'clean',
       retention_days: retentionDays.value,

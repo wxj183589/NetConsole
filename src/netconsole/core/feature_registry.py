@@ -65,7 +65,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.config_collection_save_force", "设备保存配置（Web）", "web.config_collection", "action"),
     FeatureItem("web.config_collection_export", "配置报告导出（Web）", "web.config_collection", "action"),
     FeatureItem("web.config_collection_open_directory", "打开配置结果目录（Web）", "web.config_collection", "action"),
-    FeatureItem("web.file_management", "文件管理（Web）", "module.file_management", "page"),
+    FeatureItem("web.file_management", "设备文件下载（Web）", "module.file_management", "page"),
     FeatureItem("web.file_management_download", "文件下载（Web）", "web.file_management", "action"),
     FeatureItem("web.file_management_local_write", "本地下载目录写操作（Web）", "web.file_management", "action"),
     FeatureItem("web.file_management_remote", "设备文件浏览与下载（Web）", "web.file_management", "action", status=FeatureStatus.DEVELOPMENT),

@@ -20,6 +20,7 @@ from netconsole.models.api.file_management import (
     FileDownloadTaskDTO,
     FileManagementStatusDTO,
     FileRemoteDeviceDTO,
+    HostKeyTrustRequestDTO,
     LocalDirectoryCreateRequestDTO,
     LocalFilePageDTO,
     ManagedFilePageDTO,
@@ -30,6 +31,7 @@ from netconsole.services.file_management_service import (
     FileManagementError,
     FileReferenceNotFound,
 )
+from netconsole.services.host_key_trust_service import HostKeyTrustError
 from netconsole.services.file_contract import artifact_media_type
 
 
@@ -146,6 +148,48 @@ def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, si
 )
 def disconnect_device(request: Request, connection_id: str, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(lambda: _service(request).disconnect_device(_site_id(request, site_id), connection_id))
+
+
+@router.post(
+    "/host-keys/trust-once",
+    response_model=FileConnectionDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
+def trust_host_key_once(
+    request: Request,
+    payload: HostKeyTrustRequestDTO,
+    site_id: str = Query(default="", max_length=100),
+) -> FileConnectionDTO:
+    return _remote_call(
+        lambda: _service(request).trust_host_key(
+            _site_id(request, site_id),
+            payload.challenge_id,
+            persist=False,
+            allow_sftp_setup=payload.allow_sftp_setup,
+        )
+    )
+
+
+@router.post(
+    "/host-keys/trust",
+    response_model=FileConnectionDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
+def trust_host_key(
+    request: Request,
+    payload: HostKeyTrustRequestDTO,
+    site_id: str = Query(default="", max_length=100),
+) -> FileConnectionDTO:
+    return _remote_call(
+        lambda: _service(request).trust_host_key(
+            _site_id(request, site_id),
+            payload.challenge_id,
+            persist=True,
+            allow_sftp_setup=payload.allow_sftp_setup,
+        )
+    )
 
 
 @router.get(
@@ -340,6 +384,11 @@ def execute_desktop_action(
 def _remote_call(callback):
     try:
         return _call(callback)
+    except HostKeyTrustError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": str(exc), "details": exc.details},
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 

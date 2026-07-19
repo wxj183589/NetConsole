@@ -38,6 +38,7 @@ vi.mock('../../api/configCollection', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
+vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('element-plus')>()
   return {
@@ -48,7 +49,6 @@ vi.mock('element-plus', async (importOriginal) => {
       success: vi.fn(),
       warning: vi.fn(),
     },
-    ElMessageBox: { confirm: confirmDialog },
   }
 })
 
@@ -132,7 +132,7 @@ describe('ConfigCollectionView mounted workflow', () => {
     vi.clearAllMocks()
     Object.defineProperty(document, 'hidden', { configurable: true, value: false })
     Element.prototype.scrollIntoView = vi.fn()
-    confirmDialog.mockResolvedValue('confirm')
+    confirmDialog.mockResolvedValue(true)
     downloadBackendResource.mockResolvedValue({ status: 'saved' })
     api.configArtifactDownloadRequest.mockImplementation((artifactId, suggestedName) => ({ artifactId, suggestedName }))
     api.listConfigDevices.mockResolvedValue({
@@ -194,11 +194,12 @@ describe('ConfigCollectionView mounted workflow', () => {
     await button(wrapper, '保存配置').trigger('click')
     await flushPromises()
     expect(api.previewSaveForce).toHaveBeenCalledWith([deviceA.id])
-    expect(confirmDialog).toHaveBeenCalledWith(
-      expect.stringContaining('固定执行 save force'),
-      '确认保存配置',
-      { type: 'warning' },
-    )
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'DANGER',
+      title: '确认保存配置',
+      confirmText: '确认保存配置',
+      message: expect.stringContaining('固定执行 save force'),
+    }))
     expect(api.confirmSaveForce).toHaveBeenCalledTimes(1)
 
     api.listConfigTasks.mockResolvedValue([
@@ -214,11 +215,12 @@ describe('ConfigCollectionView mounted workflow', () => {
     await flushPromises()
 
     expect(api.issueSnapshotDelete).toHaveBeenCalledWith([snapshotA.id])
-    expect(confirmDialog).toHaveBeenCalledWith(
-      expect.stringContaining('确认'),
-      '删除快照',
-      { type: 'warning' },
-    )
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'DESTRUCTIVE',
+      title: '删除快照',
+      confirmText: '确认删除快照',
+      message: expect.stringContaining('确认'),
+    }))
     expect(api.confirmSnapshotDelete).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })

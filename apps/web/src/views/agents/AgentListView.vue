@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import { CirclePlus, CopyDocument, Edit, Link, Refresh, Search, View } from '@element-plus/icons-vue'
 
 import {
@@ -31,6 +32,7 @@ import type {
 type AgentToolRow = AgentToolStatus & { name: string }
 
 const store = useAgentStore()
+const { confirm } = useConfirm()
 const search = ref('')
 const statusFilter = ref<AgentStatus | ''>('')
 const enabledFilter = ref<'' | 'enabled' | 'disabled'>('')
@@ -289,7 +291,7 @@ async function toggle(agent: AgentItem): Promise<void> {
 
 async function archive(agent: AgentItem): Promise<void> {
   try {
-    await ElMessageBox.confirm(`归档 Agent“${agent.name}”？历史任务不会被删除。`, '归档 Agent', { type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '归档 Agent', message: `归档 Agent“${agent.name}”？历史任务不会被删除。`, confirmText: '确认归档 Agent' })) return
     await store.archive(agent.agent_id)
     ElMessage.success('Agent 已归档')
   } catch (cause) {

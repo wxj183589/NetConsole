@@ -40,10 +40,10 @@ vi.mock('../../platform/runtime', () => ({
   downloadBackendResource,
   getPlatformAdapter: () => ({ openExternalUrl: vi.fn() }),
 }))
+vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => ({
   ...await importOriginal<typeof import('element-plus')>(),
   ElMessage: messages,
-  ElMessageBox: { confirm: confirmDialog },
 }))
 
 import SystemMaintenanceView from './SystemMaintenanceView.vue'
@@ -144,7 +144,7 @@ describe('SystemMaintenanceView mounted workflow', () => {
       apiPath: '/api/system-maintenance/artifacts/open_source_txt/artifact-1',
       suggestedName: 'open_source_notices.txt',
     })
-    confirmDialog.mockResolvedValue('confirm')
+    confirmDialog.mockResolvedValue(true)
     downloadBackendResource.mockResolvedValue({ status: 'saved' })
   })
 
@@ -159,11 +159,12 @@ describe('SystemMaintenanceView mounted workflow', () => {
     await button(wrapper, '清理所选项目').trigger('click')
     await flushPromises()
 
-    expect(confirmDialog).toHaveBeenCalledWith(
-      expect.stringContaining('超过 3 天'),
-      '确认安全清理',
-      { type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消' },
-    )
+    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'DESTRUCTIVE',
+      title: '确认安全清理',
+      message: expect.stringContaining('超过 3 天'),
+      confirmText: '确认清理',
+    }))
     expect(api.startCleanup).toHaveBeenNthCalledWith(2, {
       mode: 'clean',
       retention_days: 3,
@@ -175,7 +176,7 @@ describe('SystemMaintenanceView mounted workflow', () => {
 
   it.each(['cancel', 'close'])('does not submit cleanup when confirmation returns %s', async (reason) => {
     api.recoverMaintenanceTasks.mockResolvedValue([task({ action: 'cleanup_scan', cleanup_items: cleanupItems })])
-    confirmDialog.mockRejectedValue(reason)
+    confirmDialog.mockResolvedValue(false)
     const wrapper = await mountView()
 
     await button(wrapper, '清理所选项目').trigger('click')

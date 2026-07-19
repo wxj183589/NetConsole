@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { useConfirm } from './feedback/useConfirm'
 
 import {
   getOnlineMrAgentCapabilities,
@@ -19,6 +20,7 @@ import type {
 } from '../types/onlineMrAgentControl'
 
 const props = defineProps<{ siteId: string; mr: OnlineMrAgentControlMr }>()
+const { confirm } = useConfirm()
 const enabled = ref(false)
 const loading = ref(false)
 const starting = ref(false)
@@ -84,7 +86,7 @@ async function start(): Promise<void> {
   if (!canStart.value) return
   starting.value = true; error.value = ''
   try {
-    await ElMessageBox.confirm(`确认由所选 Agent 启动 ${props.mr.train_name} ${props.mr.mr_role} 的 Online MR 采集？`, '启动 Agent 采集', { confirmButtonText: '启动', cancelButtonText: '取消', type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '启动 Agent 采集', message: `确认由所选 Agent 启动 ${props.mr.train_name} ${props.mr.mr_role} 的 Online MR 采集？`, confirmText: '启动' })) return
     operation.value = await startOnlineMrAgent(payload())
     ElMessage.success('Agent 采集任务已创建')
   } catch (cause) { if (cause !== 'cancel' && cause !== 'close') error.value = cause instanceof Error ? cause.message : '启动失败' }
@@ -94,7 +96,7 @@ async function stop(): Promise<void> {
   if (!canStop.value || !operation.value) return
   stopping.value = true; error.value = ''
   try {
-    await ElMessageBox.confirm('仅发送正常停止；Controller 将等待 Agent 打包、下载并导入。确认继续？', '正常停止 Agent 采集', { confirmButtonText: '正常停止', cancelButtonText: '取消', type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '正常停止 Agent 采集', message: '仅发送正常停止；Controller 将等待 Agent 打包、下载并导入。确认继续？', confirmText: '正常停止' })) return
     operation.value = await stopOnlineMrAgent(operation.value.operation_id)
     ElMessage.success('已发送正常停止请求')
   } catch (cause) { if (cause !== 'cancel' && cause !== 'close') error.value = cause instanceof Error ? cause.message : '停止失败' }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
@@ -8,6 +8,7 @@ import NcStatusTag from '../../components/NcStatusTag.vue'
 import TcpPortTestPanel from '../../components/network-tools/TcpPortTestPanel.vue'
 import ExecutionTargetSelect from '../../components/traffic/ExecutionTargetSelect.vue'
 import TrafficBandwidthChart from '../../components/traffic/TrafficBandwidthChart.vue'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import TrafficLogViewer from '../../components/traffic/TrafficLogViewer.vue'
 import TrafficRealtimeChart from '../../components/traffic/TrafficRealtimeChart.vue'
 import TrafficRunHistory from '../../components/traffic/TrafficRunHistory.vue'
@@ -16,6 +17,7 @@ import type { TrafficExecutionTargetRequest, TrafficRun } from '../../types/traf
 
 const store = useTrafficStore()
 const router = useRouter()
+const { confirm } = useConfirm()
 const activeTab = ref('fping')
 const serverForm = reactive({ target: 'LOCAL', bind_ip: '', port: 5201, interval_seconds: 1, one_off: false })
 const clientForm = reactive({
@@ -127,7 +129,7 @@ async function selectRun(run: TrafficRun): Promise<void> {
 
 async function cancelRun(run: TrafficRun): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确认停止流量任务 ${run.traffic_run_id}？`, '停止流量任务', { type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '停止流量任务', message: `确认停止流量任务 ${run.traffic_run_id}？`, confirmText: '确认停止任务' })) return
     await store.requestCancel(run.traffic_run_id)
     ElMessage.success('已提交停止请求')
   } catch (cause) {

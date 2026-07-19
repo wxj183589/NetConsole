@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { useConfirm } from './feedback/useConfirm'
 
 import { forceStopOnlineMrControl, getOnlineMrControlOperation, getOnlineMrControlStatus, recoverOnlineMrControl, startOnlineMrControl, stopOnlineMrControl } from '../api/onlineMrControl'
 import type { OnlineMrControlMr, OnlineMrControlOperation, OnlineMrStartConfig } from '../types/onlineMrControl'
 
 const props = defineProps<{ siteId: string; mr: OnlineMrControlMr }>()
+const { confirm } = useConfirm()
 const enabled = ref(false)
 const loading = ref(false)
 const starting = ref(false)
@@ -62,7 +64,7 @@ async function start(): Promise<void> {
   starting.value = true
   error.value = ''
   try {
-    await ElMessageBox.confirm(`确认从本机启动 ${props.mr.train_name} ${props.mr.mr_role} 的 Online MR 采集？`, '启动本地采集', { confirmButtonText: '启动', cancelButtonText: '取消', type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '启动本地采集', message: `确认从本机启动 ${props.mr.train_name} ${props.mr.mr_role} 的 Online MR 采集？`, confirmText: '启动' })) return
     operation.value = await startOnlineMrControl(payload())
     ElMessage.success('已创建本地采集任务，正在等待会话启动')
   } catch (cause) {
@@ -74,7 +76,7 @@ async function stop(): Promise<void> {
   stopping.value = true
   error.value = ''
   try {
-    await ElMessageBox.confirm('正常停止将等待 Traffic flush、采集器关闭和原子打包。确认继续？', '正常停止', { confirmButtonText: '停止并落盘', cancelButtonText: '取消', type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '正常停止', message: '正常停止将等待 Traffic flush、采集器关闭和原子打包。确认继续？', confirmText: '停止并落盘' })) return
     operation.value = await stopOnlineMrControl(operation.value.operation_id)
     ElMessage.success('本地采集已完成正常停止')
   } catch (cause) {
@@ -86,7 +88,7 @@ async function forceStop(): Promise<void> {
   forceStopping.value = true
   error.value = ''
   try {
-    await ElMessageBox.confirm('强制停止可能无法完成全部 writer flush；系统会保留原始会话并标记为 partial。仅在正常停止无响应时继续。', '强制停止本地采集', { confirmButtonText: '确认强制停止', cancelButtonText: '取消', type: 'error' })
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '强制停止本地采集', message: '强制停止可能无法完成全部 writer flush；系统会保留原始会话并标记为 partial。仅在正常停止无响应时继续。', confirmText: '确认强制停止' })) return
     operation.value = await forceStopOnlineMrControl(operation.value.operation_id)
     ElMessage.warning('采集已强制停止；请检查数据完整性与原始会话')
   } catch (cause) {

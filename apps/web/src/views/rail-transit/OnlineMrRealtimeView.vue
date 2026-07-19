@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { addOnlineMrNote, listOnlineMrNotes } from '../../api/onlineMr'
@@ -21,6 +22,7 @@ import type { MrCommunicationStatus } from '../../types/trainCommunication'
 const store = useOnlineMrStore()
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const expanded = ref('')
 const rawTab = ref('mesh_link')
 const fpingSource = ref('fping_summary')
@@ -158,11 +160,7 @@ async function addNote(): Promise<void> {
   const sessionId = store.selected.session_id
   noteLoading.value = true
   try {
-    await ElMessageBox.confirm(
-      `确认把备注写入会话 ${sessionId}？`,
-      '记录采集备注',
-      { confirmButtonText: '确认记录', cancelButtonText: '取消', type: 'warning' },
-    )
+    if (!await confirm({ type: 'WARNING', title: '记录采集备注', message: `确认把备注写入会话 ${sessionId}？`, confirmText: '确认记录' })) return
     const saved = await addOnlineMrNote(sessionId, noteText.value.trim())
     if (store.selected?.session_id !== sessionId) return
     notes.value.push(saved)
@@ -211,11 +209,7 @@ async function startParse(forceReparse: boolean): Promise<void> {
   parseLoading.value = true
   try {
     if (forceReparse) {
-      await ElMessageBox.confirm(
-        '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？',
-        '强制重新解析',
-        { confirmButtonText: '重新解析', cancelButtonText: '取消', type: 'warning' },
-      )
+      if (!await confirm({ type: 'WARNING', title: '强制重新解析', message: '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？', confirmText: '重新解析' })) return
     }
     rememberParseTask(await parseOnlineMrSession(sessionId, forceReparse))
     pollParseTask()

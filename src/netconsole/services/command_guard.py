@@ -133,6 +133,13 @@ SAFE_FILE_MANAGEMENT_COMMANDS = {
     "dir flash:/diagfile/",
 }
 
+SAFE_SFTP_ENABLE_COMMANDS = {
+    "system-view",
+    "sftp server enable",
+    "return",
+    "quit",
+}
+
 SAFE_ENABLE_AP_CONSOLE_COMMANDS = {
     "screen-length disable",
     "system-view",
@@ -163,6 +170,7 @@ CONTEXT_COMMANDS = {
     "config_lifecycle": SAFE_CONFIG_LIFECYCLE_COMMANDS,
     "diagnostic_download": SAFE_DIAGNOSTIC_DOWNLOAD_COMMANDS,
     "file_management": SAFE_FILE_MANAGEMENT_COMMANDS,
+    "device.sftp.enable": SAFE_SFTP_ENABLE_COMMANDS,
     "ac_enable_ap_console": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
     "ac_persist_auto_ap": SAFE_PERSIST_AUTO_AP_COMMANDS,
     "ac_enable_ap_remote_login": SAFE_ENABLE_AP_CONSOLE_COMMANDS,
@@ -170,6 +178,7 @@ CONTEXT_COMMANDS = {
 
 PROFILE_MANAGED_OPERATIONS = {
     "device_collect": "device.inventory.collect",
+    "sftp_enable": "device.sftp.enable",
 }
 PROFILE_OPERATION_COMMAND_SEQUENCES = {
     "device.inventory.collect": DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE,
@@ -245,6 +254,8 @@ def command_reject_reason(command: str, context: str) -> str | None:
     allowed = CONTEXT_COMMANDS.get(context)
     if allowed is None:
         return f"unknown command context: {context}"
+    if context == "device.sftp.enable" and normalized.startswith("ssh user "):
+        return None
     if normalized not in allowed:
         return f"command is not in whitelist for context: {context}"
     return None

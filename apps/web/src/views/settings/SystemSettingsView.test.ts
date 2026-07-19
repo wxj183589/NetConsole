@@ -3,7 +3,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/systemSettings'
@@ -26,6 +26,8 @@ const settingsBridge = {
   executeSettingsAction: vi.fn(async () => ({ success: true })),
 }
 vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => settingsBridge }))
+const confirmAction = vi.hoisted(() => vi.fn())
+vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmAction }) }))
 
 function snapshot(): SystemSettingsSnapshot {
   const values = {
@@ -57,6 +59,7 @@ async function change(wrapper: VueWrapper, id: string, value: string): Promise<v
 
 beforeEach(() => {
   vi.clearAllMocks(); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
+  confirmAction.mockResolvedValue(true)
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
@@ -76,7 +79,7 @@ describe('SystemSettingsView mounted behavior', () => {
     expect(currentAppLocale()).toBe('zh_CN')
 
     await change(wrapper, 'language', 'en_US')
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    confirmAction.mockResolvedValueOnce(true)
     await router.push('/other')
     expect(router.currentRoute.value.path).toBe('/other')
     expect(currentAppLocale()).toBe('zh_CN')
@@ -101,7 +104,7 @@ describe('SystemSettingsView mounted behavior', () => {
 
   it('requires confirmation before feature preview and applies the real preview response', async () => {
     const { wrapper } = await mounted()
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.previewFeatureSettings).mockResolvedValueOnce({ ...featureData, preview_active: true })
     await wrapper.find('[data-testid="preview-features"]').trigger('click'); await flushPromises()
     expect(api.previewFeatureSettings).toHaveBeenCalledWith(featureData.items)
@@ -114,7 +117,7 @@ describe('SystemSettingsView mounted behavior', () => {
     await change(wrapper, 'theme', 'dark')
     const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
     feature.vm.$emit('update:modelValue', false); await nextTick()
-    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce(new Error('cancel'))
+    confirmAction.mockResolvedValueOnce(false)
 
     await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
 
@@ -128,7 +131,7 @@ describe('SystemSettingsView mounted behavior', () => {
     await change(wrapper, 'theme', 'dark')
     const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
     feature.vm.$emit('update:modelValue', false); await nextTick()
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockRejectedValueOnce(new Error('profile write failed'))
 
     await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
@@ -144,7 +147,7 @@ describe('SystemSettingsView mounted behavior', () => {
     await change(wrapper, 'theme', 'dark')
     const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
     feature.vm.$emit('update:modelValue', false); await nextTick()
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
     vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('settings conflict'))
 
@@ -161,7 +164,7 @@ describe('SystemSettingsView mounted behavior', () => {
     await change(wrapper, 'theme', 'dark')
     const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
     feature.vm.$emit('update:modelValue', false); await nextTick()
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce(undefined as never)
+    confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
     vi.mocked(loadWebFeatures).mockRejectedValueOnce(new Error('gate refresh failed'))
 

@@ -53,6 +53,11 @@ from netconsole.services.file_transfer_service import (
     parent_remote_path,
     safe_device_name,
 )
+from netconsole.services.host_key_trust_service import (
+    HostKeyDetails,
+    HostKeyTrustError,
+    HostKeyTrustService,
+)
 from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
@@ -154,6 +159,17 @@ class _RemoteSession:
     lock: threading.RLock
 
 
+@dataclass(frozen=True)
+class _PendingHostKey:
+    site_id: str
+    device_id: str
+    host: str
+    port: int
+    key: object
+    details: HostKeyDetails
+    expires_at: datetime
+
+
 DeviceResolver = Callable[[str, str], Device | None]
 TransferServiceFactory = Callable[..., FileTransferService]
 
@@ -183,6 +199,8 @@ class FileManagementApplicationService:
         self._desktop_action_service = desktop_action_service
         self._sessions: dict[str, _RemoteSession] = {}
         self._sessions_lock = threading.RLock()
+        self._pending_host_keys: dict[str, _PendingHostKey] = {}
+        self._pending_host_keys_lock = threading.RLock()
         self._local_entries: dict[str, _LocalEntry] = {}
         self._local_entry_ids: dict[tuple[str, str, str], str] = {}
         self._local_entries_lock = threading.RLock()
@@ -236,6 +254,8 @@ class FileManagementApplicationService:
         with self._sessions_lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
+        with self._pending_host_keys_lock:
+            self._pending_host_keys.clear()
         for session in sessions:
             try:
                 session.transfer.disconnect()
@@ -399,19 +419,71 @@ class FileManagementApplicationService:
             if (device.device_uuid or device.id) and device.primary_address and bool(device.ssh_enabled)
         ]
 
-    def connect_device(self, site_id: str, device_id: str, *, allow_sftp_setup: bool = False) -> FileConnectionDTO:
+    def connect_device(
+        self,
+        site_id: str,
+        device_id: str,
+        *,
+        allow_sftp_setup: bool = False,
+        trust_host_key_once: bool = False,
+    ) -> FileConnectionDTO:
         site = self._site_id(site_id)
         device = self._resolve_device(site, device_id)
         device_key = str(device.device_uuid or device_id)
         self._close_device_sessions(site, device_key)
-        transfer = self._transfer_factory(
-            site,
-            self.paths,
-            allow_remote_setup=bool(allow_sftp_setup),
-            strict_host_keys=True,
-        )
+        try:
+            transfer = self._transfer_factory(
+                site,
+                self.paths,
+                allow_remote_setup=bool(allow_sftp_setup),
+                strict_host_keys=True,
+                host_key_trust=HostKeyTrustService(self.paths),
+                trust_host_key_once=trust_host_key_once,
+            )
+        except TypeError as exc:
+            # 保留 Fake/第三方传输适配器的旧构造契约；正式 FileTransferService 使用上方安全参数。
+            if "host_key_trust" not in str(exc) and "trust_host_key_once" not in str(exc):
+                raise
+            transfer = self._transfer_factory(
+                site,
+                self.paths,
+                allow_remote_setup=bool(allow_sftp_setup),
+                strict_host_keys=True,
+            )
         try:
             root_path = normalize_remote_path(transfer.connect(device))
+        except HostKeyTrustError as exc:
+            try:
+                transfer.disconnect()
+            except Exception:
+                pass
+            if exc.code != "DEVICE_FILE_HOST_KEY_UNKNOWN":
+                raise
+            challenge_id = f"hk1_{uuid4().hex}"
+            details = HostKeyDetails(
+                host=str(exc.details.get("host") or device.primary_address or ""),
+                port=int(exc.details.get("port") or device.ssh_port or 22),
+                algorithm=str(exc.details.get("algorithm") or ""),
+                fingerprint_sha256=str(exc.details.get("fingerprint_sha256") or ""),
+            )
+            # The key object remains process-local; it is never serialized to API or disk.
+            key = getattr(exc, "key", None)
+            if key is None:
+                raise
+            with self._pending_host_keys_lock:
+                self._pending_host_keys[challenge_id] = _PendingHostKey(
+                    site_id=site,
+                    device_id=device_key,
+                    host=details.host,
+                    port=details.port,
+                    key=key,
+                    details=details,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            raise HostKeyTrustError(
+                str(exc),
+                {**details.as_dict(), "challenge_id": challenge_id, "device_id": device_key, "device_name": str(device.name or "")},
+            ) from exc
         except Exception as exc:
             try:
                 transfer.disconnect()
@@ -436,6 +508,31 @@ class FileManagementApplicationService:
         )
         self._register_session(session)
         return self._connection_dto(session, "已连接")
+
+    def trust_host_key(
+        self,
+        site_id: str,
+        challenge_id: str,
+        *,
+        persist: bool,
+        allow_sftp_setup: bool = False,
+    ) -> FileConnectionDTO:
+        site = self._site_id(site_id)
+        value = str(challenge_id or "").strip()
+        if not re.fullmatch(r"hk1_[0-9a-f]{32}", value):
+            raise FileReferenceNotFound("主机密钥确认已失效")
+        with self._pending_host_keys_lock:
+            pending = self._pending_host_keys.pop(value, None)
+        if pending is None or pending.site_id != site or pending.expires_at <= datetime.now(UTC):
+            raise FileReferenceNotFound("主机密钥确认已失效，请重新连接设备")
+        if persist:
+            HostKeyTrustService(self.paths).trust(pending.host, pending.port, pending.key)
+        return self.connect_device(
+            site,
+            pending.device_id,
+            allow_sftp_setup=allow_sftp_setup,
+            trust_host_key_once=True,
+        )
 
     def disconnect_device(self, site_id: str, connection_id: str) -> FileConnectionDTO:
         session = self._session(site_id, connection_id)

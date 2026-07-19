@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -25,6 +26,7 @@ import type {
 
 const store = useRailTransitBaseDataStore()
 const router = useRouter()
+const { confirm } = useConfirm()
 const activeTab = ref('overview')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
@@ -221,9 +223,7 @@ async function handleApply(): Promise<void> {
 
 async function handleRollback(operationId: string): Promise<void> {
   try {
-    await ElMessageBox.confirm('仅当数据库未发生后续变化时才能回滚。确认回滚该次导入？', '回滚确认', {
-      type: 'warning', confirmButtonText: '确认回滚', cancelButtonText: '取消',
-    })
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '回滚确认', message: '仅当数据库未发生后续变化时才能回滚。确认回滚该次导入？', confirmText: '确认回滚' })) return
     await store.rollbackImport(operationId)
     await store.manualRefresh()
     ElMessage.success('导入操作已回滚')

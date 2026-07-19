@@ -112,6 +112,20 @@ export interface FileConnection {
   message: string
 }
 
+export interface HostKeyChallenge {
+  code: 'DEVICE_FILE_HOST_KEY_UNKNOWN' | 'DEVICE_FILE_HOST_KEY_MISMATCH' | string
+  message: string
+  details: {
+    challenge_id?: string
+    device_id?: string
+    device_name?: string
+    host?: string
+    port?: number
+    algorithm?: string
+    fingerprint_sha256?: string
+  }
+}
+
 export interface FileRemoteDevice {
   device_id: string
   name: string

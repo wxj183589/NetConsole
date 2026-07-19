@@ -18,6 +18,15 @@ from netconsole.services.job_center.job_context import BackgroundTaskCancelled
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text  # noqa: F401
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
+from netconsole.services.host_key_trust_service import (
+    HostKeyMismatchError,
+    HostKeyTrustService,
+    HostKeyTrustError,
+)
+from netconsole.services.sftp_command_profile_service import (
+    SftpCommandProfileError,
+    resolve_sftp_enable_commands,
+)
 from netconsole.utils.text_encoding import decode_bytes_with_fallback, clean_h3c_device_text
 
 
@@ -41,21 +50,21 @@ class TransferVerificationFailed(RuntimeError):
 
 
 def build_h3c_sftp_enable_commands(username: str) -> list[str]:
-    user = str(username or "").strip()
-    if not user:
-        raise ValueError("username is required")
-    return [
-        "system-view",
-        "sftp server enable",
-        f"ssh user {user} service-type all authentication-type any",
-        "return",
-        "quit",
-    ]
+    return list(resolve_sftp_enable_commands(
+        vendor="H3C",
+        role="switch",
+        platform="comware",
+        software_version="V7",
+        username=username,
+    ))
 
 
 def build_sftp_enable_commands(vendor: str | None, username: str) -> list[str]:
     if str(vendor or "").strip().casefold() == "h3c":
-        return build_h3c_sftp_enable_commands(username)
+        try:
+            return build_h3c_sftp_enable_commands(username)
+        except SftpCommandProfileError:
+            return []
     return []
 
 
@@ -93,11 +102,15 @@ class FileTransferService:
         *,
         allow_remote_setup: bool = True,
         strict_host_keys: bool = False,
+        host_key_trust: HostKeyTrustService | None = None,
+        trust_host_key_once: bool = False,
     ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
         self.allow_remote_setup = bool(allow_remote_setup)
         self.strict_host_keys = bool(strict_host_keys)
+        self.host_key_trust = host_key_trust or HostKeyTrustService(self.paths)
+        self.trust_host_key_once = bool(trust_host_key_once)
         self._client = None
         self._sftp = None
         self._device: Device | None = None
@@ -175,6 +188,8 @@ class FileTransferService:
                 self.disconnect()
                 if tunnel_session is not None:
                     tunnel_session.close()
+                if isinstance(exc, HostKeyTrustError):
+                    raise
                 last_error = self._friendly_connect_error(exc, device)
                 app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
         raise RuntimeError(last_error or "SFTP connection failed.")
@@ -183,9 +198,30 @@ class FileTransferService:
         import paramiko
 
         client = paramiko.SSHClient()
+        checked_host = str(key_host or target.host)
+        checked_port = int(key_port or target.port or 22)
         if self.strict_host_keys:
-            client.load_system_host_keys()
-            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+            if not hasattr(paramiko, "MissingHostKeyPolicy"):
+                # 仅兼容旧测试替身；真实 Paramiko 走下方 NetConsole 管理的 known_hosts。
+                client.load_system_host_keys()
+                client.set_missing_host_key_policy(paramiko.RejectPolicy())
+                return self._connect_client(client, target, sock=None)
+            if self.host_key_trust.path.is_file():
+                client.load_host_keys(str(self.host_key_trust.path))
+
+            trust = self.host_key_trust
+            class _ManagedHostKeyPolicy(getattr(paramiko, "MissingHostKeyPolicy", object)):
+                def missing_host_key(self, host_client, _hostname, key):
+                    if self_outer.trust_host_key_once:
+                        host_client._host_keys.add(host_key_name(checked_host, checked_port), key.get_name(), key)
+                        return
+                    trust.verify(checked_host, checked_port, key)
+
+            # Keep the policy instance alive through connect and avoid accepting unknown keys silently.
+            self_outer = self
+            from netconsole.services.host_key_trust_service import host_key_name
+
+            client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
         else:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         sock = None
@@ -208,11 +244,43 @@ class FileTransferService:
                 allow_agent=False,
                 sock=sock,
             )
+        except paramiko.BadHostKeyException as exc:
+            if sock is not None:
+                sock.close()
+            client.close()
+            current_key = getattr(exc, "got_key", None)
+            details = (
+                self.host_key_trust.inspect(checked_host, checked_port, current_key).as_dict()
+                if current_key is not None
+                else {"host": checked_host, "port": checked_port}
+            )
+            raise HostKeyMismatchError("设备主机密钥已变更，连接已阻止。", details) from exc
+        except HostKeyTrustError:
+            if sock is not None:
+                sock.close()
+            client.close()
+            raise
         except Exception:
             if sock is not None:
                 sock.close()
             client.close()
             raise
+        return client
+
+    @staticmethod
+    def _connect_client(client, target, *, sock=None):
+        client.connect(
+            hostname=target.host,
+            port=target.port,
+            username=target.username,
+            password=target.password,
+            timeout=20,
+            banner_timeout=20,
+            auth_timeout=20,
+            look_for_keys=False,
+            allow_agent=False,
+            sock=sock,
+        )
         return client
 
     def _ensure_active_ssh_client(
@@ -265,10 +333,23 @@ class FileTransferService:
         self._run_sftp_enable_commands(client, build_h3c_sftp_enable_commands(username))
 
     def _enable_sftp_for_target(self, client, device: Device, username: str, progress_callback: SftpProgressCallback | None = None) -> None:
-        commands = build_sftp_enable_commands(device.device_vendor, username)
-        if not commands:
+        try:
+            if not self.strict_host_keys:
+                commands = build_sftp_enable_commands(device.device_vendor, username)
+                if not commands:
+                    raise SftpCommandProfileError("未找到旧版兼容 Profile")
+            else:
+                commands = resolve_sftp_enable_commands(
+                    vendor=str(device.device_vendor or ""),
+                    role="switch" if str(device.device_type or "").casefold() in {"sw", "switch"} else str(device.device_type or ""),
+                    platform=str(getattr(device, "platform", "comware") or "comware"),
+                    software_version=str(getattr(device, "software_version", "") or ""),
+                    username=username,
+                    paths=self.paths,
+                )
+        except SftpCommandProfileError as exc:
             vendor = str(device.device_vendor or "Unknown")
-            raise RuntimeError(f"SSH login succeeded, but vendor {vendor} is not adapted for automatic SFTP enabling. Please enable SFTP manually.")
+            raise RuntimeError(f"SSH login succeeded, but vendor {vendor} is not adapted for automatic SFTP enabling: {exc}") from exc
         self._emit_progress(progress_callback, "file_management.status.sftp_enabling")
         app_logger.log_info("SFTP_AUTO_ENABLE_STARTED", f"device={device.name}, vendor={device.device_vendor}")
         try:

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
-import { ElMessageBox } from 'element-plus'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import { isFeatureEnabled } from '../../features'
 import {
@@ -45,6 +45,7 @@ import {
 } from './configDiff'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const emptyPage: ConfigDevicePage = { items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }
 const emptyDiffSummary: ConfigDiffSummary = { added: 0, removed: 0, modified: 0 }
 const devicePage = ref<ConfigDevicePage>(emptyPage)
@@ -227,7 +228,7 @@ async function saveSelected(): Promise<void> {
   }
   try {
     const preview = await previewSaveForce(selectedDevices.value.map((device) => device.id))
-    await ElMessageBox.confirm(`${preview.summary}\n${preview.action_plan.join('；')}`, '确认保存配置', { type: 'warning' })
+    if (!await confirm({ type: 'DANGER', title: '确认保存配置', message: `${preview.summary}\n${preview.action_plan.join('；')}`, confirmText: '确认保存配置' })) return
     const task = await confirmSaveForce(preview)
     addTaskReferences([task])
     focusedTaskId.value = task.id
@@ -320,7 +321,7 @@ async function deleteSelectedSnapshots(): Promise<void> {
   try {
     const deletedIds = new Set(selectedSnapshots.value.map((snapshot) => snapshot.id))
     const preview = await issueSnapshotDelete([...deletedIds])
-    await ElMessageBox.confirm(preview.summary, '删除快照', { type: 'warning' })
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '删除快照', message: preview.summary, confirmText: '确认删除快照' })) return
     const task = await confirmSnapshotDelete(preview)
     addTaskReferences([task])
     focusedTaskId.value = task.id

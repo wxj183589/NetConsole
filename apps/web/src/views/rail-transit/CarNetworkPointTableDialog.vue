@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import {
   exportCarNetworkPointTable,
@@ -16,6 +17,7 @@ import type { CarNetworkPointPreview, CarNetworkPointRow, RailTransitTask } from
 
 const props = defineProps<{ modelValue: boolean }>()
 const router = useRouter()
+const { confirm } = useConfirm()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
 const storageKey = 'netconsole.car-network-point-table.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -114,8 +116,7 @@ function ensureMapping(): void {
 
 async function loadPointTable(force = false): Promise<void> {
   if (dirty.value && !force) {
-    try { await ElMessageBox.confirm('重新加载会丢弃未保存的点表修改，是否继续？', '未保存修改', { type: 'warning' }) }
-    catch { return }
+    if (!await confirm({ type: 'WARNING', title: '未保存修改', message: '重新加载会丢弃未保存的点表修改，是否继续？', confirmText: '放弃修改并重新加载' })) return
   }
   loading.value = true; error.value = ''
   try {
@@ -159,21 +160,18 @@ async function startTask(factory: () => Promise<RailTransitTask>, fallback: stri
   finally { loading.value = false }
 }
 async function save(confirmText = `确认保存当前 ${rows.value.length} 行点表与全局规则？`): Promise<void> {
-  try { await ElMessageBox.confirm(confirmText, '点表写入确认', { type: 'warning' }) }
-  catch { return }
+  if (!await confirm({ type: 'DANGER', title: '点表写入确认', message: confirmText, confirmText: '确认写入点表' })) return
   globalConfig.value.point_table_locked = locked.value
   await startTask(() => saveCarNetworkPointTable(rows.value, globalConfig.value), '车内通信点表保存启动失败')
 }
 async function toggleLock(): Promise<void> {
   const next = !locked.value
-  try { await ElMessageBox.confirm(next ? '锁定后须先解锁才能修改点表，确认锁定并保存？' : '确认解锁点表并持久化？', next ? '锁定点表' : '解锁点表', { type: 'warning' }) }
-  catch { return }
+  if (!await confirm({ type: 'WARNING', title: next ? '锁定点表' : '解锁点表', message: next ? '锁定后须先解锁才能修改点表，确认锁定并保存？' : '确认解锁点表并持久化？', confirmText: next ? '确认锁定并保存' : '确认解锁并保存' })) return
   locked.value = next; globalConfig.value.point_table_locked = next
   await startTask(() => saveCarNetworkPointTable(rows.value, globalConfig.value), '点表锁定状态保存失败')
 }
 async function generate(): Promise<void> {
-  try { await ElMessageBox.confirm('确认从现有设备管理数据重新生成点表预览？当前编辑区不会立即持久化。', '从设备生成', { type: 'warning' }) }
-  catch { return }
+  if (!await confirm({ type: 'WARNING', title: '从设备生成', message: '确认从现有设备管理数据重新生成点表预览？当前编辑区不会立即持久化。', confirmText: '确认生成预览' })) return
   await startTask(() => generateCarNetworkPointTable(rows.value, globalConfig.value), '从设备管理生成点表失败')
 }
 async function chooseImport(event: Event): Promise<void> {
@@ -206,8 +204,7 @@ async function recoverTasks(): Promise<void> {
 }
 async function closeDialog(): Promise<void> {
   if (dirty.value) {
-    try { await ElMessageBox.confirm('关闭会丢弃未保存的点表修改，是否继续？', '未保存修改', { type: 'warning' }) }
-    catch { return }
+    if (!await confirm({ type: 'WARNING', title: '未保存修改', message: '关闭会丢弃未保存的点表修改，是否继续？', confirmText: '放弃修改并关闭' })) return
   }
   visible.value = false
 }

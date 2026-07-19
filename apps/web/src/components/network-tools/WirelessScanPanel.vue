@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { useConfirm } from '../feedback/useConfirm'
 
 import {
   cancelWirelessTask,
@@ -24,6 +25,7 @@ import type { NetworkToolTask, WirelessAdapter, WirelessProject, WirelessScanRun
 import type { TaskItem } from '../../types/task'
 
 const taskStore = useTaskStore()
+const { confirm } = useConfirm()
 const adapters = ref<WirelessAdapter[]>([])
 const projects = ref<WirelessProject[]>([])
 const runs = ref<WirelessScanRun[]>([])
@@ -149,7 +151,7 @@ async function deleteProject(): Promise<void> {
   const project = projects.value.find((item) => item.project_id === form.project_id)
   if (!project) return
   try {
-    await ElMessageBox.confirm(`确认删除项目“${project.name}”？已有扫描历史会保留项目快照。`, '删除无线扫描项目', { type: 'warning' })
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '删除无线扫描项目', message: `确认删除项目“${project.name}”？已有扫描历史会保留项目快照。`, confirmText: '确认删除项目' })) return
     await deleteWirelessProject(project.project_id)
     projects.value = projects.value.filter((item) => item.project_id !== project.project_id)
     form.project_id = ''

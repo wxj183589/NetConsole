@@ -17,7 +17,7 @@ describe('Web navigation registry', () => {
       'AC 管理',
       '轨道交通',
       '配置采集中心',
-      '文件管理',
+      '设备文件下载',
       '网络工具',
       '任务中心',
       'Agent 管理',

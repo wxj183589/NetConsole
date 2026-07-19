@@ -328,6 +328,16 @@ class PathResolver:
     def route_profiles_path(self) -> Path:
         return self.shared_runtime_dir / "route_profiles.json"
 
+    @property
+    def global_security_dir(self) -> Path:
+        """跨局点安全材料目录；不随单个局点包导出。"""
+
+        return self.data_dir / "global" / "security"
+
+    @property
+    def global_known_hosts_path(self) -> Path:
+        return self.global_security_dir / "known_hosts"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         ensure_runtime_dir(site_path)

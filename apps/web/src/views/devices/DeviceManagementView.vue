@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
@@ -38,6 +38,7 @@ import {
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type {
@@ -80,6 +81,7 @@ interface TableSelectionController<Row> {
 
 const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
 const router = useRouter()
+const { confirm } = useConfirm()
 const taskStore = useTaskStore()
 const loading = ref(false)
 const error = ref('')
@@ -724,11 +726,7 @@ async function duplicateSelected(): Promise<void> {
 async function deleteRows(deviceUuids: string[]): Promise<void> {
   if (!deviceUuids.length) return
   try {
-    await ElMessageBox.confirm(
-      `确认删除 ${deviceUuids.length} 台设备？删除后设备将从当前局点数据库移除。`,
-      '删除设备',
-      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
-    )
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '删除设备', message: `确认删除 ${deviceUuids.length} 台设备？删除后设备将从当前局点数据库移除。`, confirmText: '确认删除' })) return
     const token = await issueDeviceDeleteToken(deviceUuids)
     await deleteDevices(deviceUuids, token.confirmation_token)
     selectedUuids.value = []
@@ -746,11 +744,7 @@ async function duplicateRow(row: DeviceListItem): Promise<void> {
 
 async function duplicateByUuid(deviceUuid: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      '将复制当前设备及其已配置凭据，并生成新的设备 UUID。是否继续？',
-      '复制设备',
-      { confirmButtonText: '确认复制', cancelButtonText: '取消', type: 'warning' },
-    )
+    if (!await confirm({ type: 'WARNING', title: '复制设备', message: '将复制当前设备及其已配置凭据，并生成新的设备 UUID。是否继续？', confirmText: '确认复制' })) return
     await duplicateDevice(deviceUuid)
     ElMessage.success('设备已复制')
     await loadDevices(true)
@@ -805,7 +799,12 @@ async function renameGroup(groupId: number, currentName: string): Promise<void> 
 }
 
 async function removeGroup(groupId: number, name: string): Promise<void> {
-  if (!window.confirm(`确认删除分组“${name}”？设备将变为未分组。`)) return
+  if (!await confirm({
+    type: 'DESTRUCTIVE',
+    title: '确认删除设备分组',
+    message: `删除分组“${name}”后，组内设备将变为未分组。`,
+    confirmText: '确认删除分组',
+  })) return
   try {
     await deleteDeviceGroup(groupId)
     if (filters.group === String(groupId)) filters.group = ''
@@ -886,11 +885,7 @@ function currentExportFilters(includeCredentials = false): DeviceExportRequest {
 async function exportCsv(includeCredentials = false): Promise<void> {
   try {
     if (includeCredentials) {
-      await ElMessageBox.confirm(
-        '导出文件将包含设备登录凭据。请仅保存到受控目录并妥善保管，是否继续？',
-        '导出含凭据的 CSV',
-        { confirmButtonText: '确认导出', cancelButtonText: '取消', type: 'warning' },
-      )
+      if (!await confirm({ type: 'SECURITY', title: '导出含凭据的 CSV', message: '导出文件将包含设备登录凭据。请仅保存到受控目录并妥善保管，是否继续？', confirmText: '确认导出', acknowledgementText: '我已确认导出目录受控并会妥善保管文件', requireAcknowledgement: true })) return
     }
     await presentTasks(
       [await startDeviceCsvExport(currentExportFilters(includeCredentials))],
@@ -1069,18 +1064,28 @@ async function chooseTerminalExecutable(terminalType: 'securecrt' | 'putty' | 'x
 
 async function saveTerminalSettings(): Promise<void> {
   terminalSettingsLoading.value = true
+  const previousPassPassword = terminalSettings.pass_password
   try {
     if (terminalSettings.pass_password) {
-      await ElMessageBox.confirm(
-        '启用后密码可能出现在外部终端进程参数中。确认仅在受控本机使用？',
-        '传递终端密码',
-        { confirmButtonText: '确认启用', cancelButtonText: '取消', type: 'warning' },
-      )
+      const accepted = await confirm({
+        type: 'SECURITY',
+        title: '启用终端密码传递？',
+        message: '启用后，NetConsole 可能会将设备登录密码作为外部终端启动参数传递。',
+        detail: '该参数可能被本机进程查看，仅建议在受控电脑中使用。设置不会写入任务、日志或 API 响应。',
+        confirmText: '确认启用',
+        acknowledgementText: '我已了解密码可能出现在外部程序启动参数中',
+        requireAcknowledgement: true,
+      })
+      if (!accepted) {
+        terminalSettings.pass_password = previousPassPassword
+        return
+      }
     }
     Object.assign(terminalSettings, await updateExternalTerminalSettings({ ...terminalSettings }))
     terminalSettingsVisible.value = false
     ElMessage.success('外部终端配置已保存')
   } catch (cause) {
+    terminalSettings.pass_password = previousPassPassword
     if (cause === 'cancel' || cause === 'close') return
     ElMessage.error(errorMessage(cause, '外部终端配置保存失败'))
   } finally {
@@ -1121,11 +1126,7 @@ async function launchTerminalTargets(): Promise<void> {
   try {
     let confirmationToken = ''
     if (terminalTargetUuids.value.length > 20) {
-      await ElMessageBox.confirm(
-        `将打开 ${terminalTargetUuids.value.length} 台设备的外部终端，是否继续？`,
-        '批量打开外部终端',
-        { confirmButtonText: '继续', cancelButtonText: '取消', type: 'warning' },
-      )
+      if (!await confirm({ type: 'WARNING', title: '批量打开外部终端', message: `将打开 ${terminalTargetUuids.value.length} 台设备的外部终端，是否继续？`, confirmText: '确认打开终端' })) return
       confirmationToken = (
         await issueExternalTerminalConfirmation(
           terminalTargetUuids.value,

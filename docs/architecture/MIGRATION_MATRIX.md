@@ -39,7 +39,7 @@
 | AC 管理 / FIT-AP | `HIDDEN_PENDING_MIGRATION` | `PARTIAL / REAL_DEVICE_PENDING` | `/ac-management/*`、AC Service/API/Vue | FIT-AP 已合并光衰入口、拓扑默认排序、LLDP 站点建议和 Mesh 两侧收光；真实 AC、危险动作与导出验收待完成 |
 | 轨道交通/Online MR/MESH | `HIDDEN_PENDING_MIGRATION` | `PARTIAL` | `/rail-transit/*`、Rail/Online MR/MESH 永久层 | 轨旁 AP 业务已接正式多 Sheet Export/Artifact 与保留数据刷新；真实列车、MR、Agent、停止恢复、报告与异常链验收待完成 |
 | 配置采集中心 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/config-center`、Config Service/API/Vue | 真实设备保存、双栏比较、Artifact 人工验收 |
-| 文件管理 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/file-manager`、File Service/API/Vue/Bridge | 真实 SFTP、队列恢复、打开/保存动作验收 |
+| 设备文件下载 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/device-files`（旧 `/file-manager`、`/file-management` 仅重定向）、File Service/API/Vue/Bridge | 真实 SFTP、队列恢复、打开/保存动作验收 |
 | 网络工具 / Traffic / 无线扫描 | `MIGRATED` | `PARTIAL` | `/network-tools/*`、Network/Traffic Service/API/WS/Vue | 本地与 Agent iPerf/fping、无线扫描现场验收 |
 | Task Center/Agent | `MIGRATED` | `PARTIAL` | `/tasks`、`/agents`、共享 Task/Agent Service | 多 Agent/现场与 Electron 子窗口人工验收 |
 | 命令说明 / 日志中心 / 系统设置 | `MIGRATED` | `PARTIAL / IMPLEMENTED_UNVERIFIED` | 对应 API/Vue 与白名单 Desktop Action | 本机工具、路径动作、日志清理和设置人工验收 |

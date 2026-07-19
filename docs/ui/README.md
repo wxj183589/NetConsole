@@ -7,5 +7,6 @@
 - [Design Token](DESIGN_TOKENS.md)
 - [响应式布局](RESPONSIVE_LAYOUT.md)
 - [视觉测试](VISUAL_TESTING.md)
+- [全局确认对话框](CONFIRMATION_DIALOGS.md)
 
 当前登记的 87 张标准表格均已使用统一组件并通过 Guard，`table-layout-baseline.json` 不再保留旧表债务。后续新增表格仍必须直接使用 `NcDataTable` 并登记清单；截图、DPI/缩放和人工验收未执行前，不得把自动测试写成全局视觉验收完成。

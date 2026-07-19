@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Refresh, View } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
@@ -18,6 +19,7 @@ const store = useAcManagementStore()
 const taskStore = useTaskStore()
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const activeTab = ref('aps')
 const detailVisible = ref(false)
 const configVisible = ref(false)
@@ -197,11 +199,7 @@ async function deleteSelectedAps(): Promise<void> {
   const apIds = [...selectedApIds.value]
   if (!apIds.length) return
   try {
-    await ElMessageBox.confirm(
-      `确认从当前 AC 资源库删除选中的 ${apIds.length} 个 FIT-AP 及其关联光衰/元数据？`,
-      '批量删除 FIT-AP',
-      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
-    )
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '批量删除 FIT-AP', message: `确认从当前 AC 资源库删除选中的 ${apIds.length} 个 FIT-AP 及其关联光衰/元数据？`, confirmText: '确认删除' })) return
   } catch {
     return
   }

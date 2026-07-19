@@ -21,7 +21,7 @@ import {
 const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
 
 export class ApiRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code = '', readonly details: Record<string, unknown> = {}) {
     super(message)
     this.name = 'ApiRequestError'
   }
@@ -40,16 +40,21 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   })
   if (!response.ok) {
     let message = `请求失败 (${response.status})`
+    let code = ''
+    let details: Record<string, unknown> = {}
     try {
       const body = (await response.json()) as {
-        detail?: string | { message?: string }
+        detail?: string | { code?: string; message?: string; details?: Record<string, unknown> }
         error?: { message?: string }
       }
-      message = typeof body.detail === 'string' ? body.detail : body.detail?.message || body.error?.message || message
+      const detail = typeof body.detail === 'string' ? null : body.detail
+      message = typeof body.detail === 'string' ? body.detail : detail?.message || body.error?.message || message
+      code = detail?.code || ''
+      details = detail?.details || {}
     } catch {
       // 保留稳定的 HTTP 状态错误。
     }
-    throw new ApiRequestError(message, response.status)
+    throw new ApiRequestError(message, response.status, code, details)
   }
   return (await response.json()) as T
 }

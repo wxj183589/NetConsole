@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 import {
   getFeatureSettings, getSystemSettings, previewFeatureSettings, reloadSystemSettings,
@@ -13,6 +13,7 @@ import { getPlatformAdapter } from '../../platform/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { applySystemAppearance } from '../../settings/appearance'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import type { FeatureSetting, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
@@ -21,6 +22,7 @@ const emptyValues: SystemSettingsValues = {
   terminal_type: 'securecrt', terminal_paths: { putty: '', securecrt: '', xshell: '' },
   securecrt_sessions_root: '', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8',
 }
+const { confirm } = useConfirm()
 const snapshot = ref<SystemSettingsSnapshot | null>(null)
 const baseline = ref<SystemSettingsValues | null>(null)
 const form = reactive<SystemSettingsValues>(cloneValues(emptyValues))
@@ -48,7 +50,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload)
 onBeforeRouteLeave(async () => {
   if (!anyDirty.value) return true
   try {
-    await ElMessageBox.confirm('放弃未保存的设置并离开？', '设置尚未保存', { type: 'warning', confirmButtonText: '放弃并离开', cancelButtonText: '留在此页' })
+    if (!await confirm({ type: 'WARNING', title: '设置尚未保存', message: '放弃未保存的设置并离开？', confirmText: '放弃并离开' })) return false
     cancelChanges()
     return true
   } catch { return false }
@@ -174,8 +176,7 @@ async function restoreFeatures(): Promise<void> {
   } catch (cause) { showError(cause, '功能开关恢复失败') }
 }
 async function confirmAction(text: string): Promise<boolean> {
-  try { await ElMessageBox.confirm(text, '确认操作', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }); return true }
-  catch { return false }
+  return confirm({ type: 'WARNING', title: '确认操作', message: text, confirmText: '确认操作' })
 }
 function showError(cause: unknown, fallback: string): void { error.value = message(cause, fallback); ElMessage.error(error.value) }
 function message(cause: unknown, fallback: string): string { return cause instanceof Error && cause.message ? cause.message : fallback }

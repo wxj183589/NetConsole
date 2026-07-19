@@ -33,7 +33,7 @@
 | 交换机基础采集 | 设备详情、轨旁 AP 光诊断 | 交换机 | CLI | 配置中心和轨旁 AP 原始回显 | `h3c_collect_service.py`、`trackside_optical_collection.py`、H3C parser |
 | 交换机配置采集 | 配置采集中心 | 交换机 | CLI | `files/config_center/raw_logs`、配置快照 | `config_lifecycle_service.py` |
 | 交换机诊断信息 | 设备管理诊断下载 | 交换机 | CLI | 诊断下载文本 | `diagnostic_download_service.py` |
-| 交换机文件管理 | 文件管理 | 交换机 | CLI、SFTP/SCP | 文件管理队列和下载目录 | `file_transfer_service.py` |
+| 交换机文件下载 | 设备文件下载 | 交换机 | CLI、SFTP/SCP | 文件下载队列和本地下载目录 | `file_transfer_service.py` |
 | 交换机连通性检测 | 车内通信检测 | 交换机 / MR | CLI | 车内通信检测结果 | `car_network_diagnostic.py` |
 | 无线 AC 管理 | AC 管理 | 无线 AC | CLI | 轨旁 AP 原始回显 | `h3c_ac_collect_service.py`、AC parser |
 | FIT-AP / MR / Mesh | AC 管理、轨道交通 | FIT-AP / MR | CLI | online_mr raw logs、轨旁 AP raw logs | `online_mr_collector.py`、`vehicle_mr_online.py` |
@@ -87,8 +87,8 @@ AC、MR、配置、诊断和文件管理命令尚未迁入统一 Profile，仍�
 | 配置保存 | `save force` | 无 | 登录设备 | 保存配置 | `config_write` | 第二批待确认 |
 | 诊断信息 | `display diagnostic-information` | 无 | `screen-length disable` | 诊断信息 | `interactive` | 第二批待确认 |
 | 诊断交互 | `n` | 交互输入 | `display diagnostic-information` | 诊断命令确认输入 | `interactive` | 第二批待确认 |
-| 文件管理 | `dir flash:/` | 无 | 登录设备 | 查看 flash 根目录 | `read_only` | 第二批待确认 |
-| 文件管理 | `dir flash:/diagfile/` | 无 | 登录设备 | 查看诊断文件目录 | `read_only` | 第二批待确认 |
+| 设备文件下载 | `dir flash:/` | 无 | 登录设备 | 查看 flash 根目录 | `read_only` | 第二批待确认 |
+| 设备文件下载 | `dir flash:/diagfile/` | 无 | 登录设备 | 查看诊断文件目录 | `read_only` | 第二批待确认 |
 | 连通性检测 | `ping <ip>` | 目标 IP | 登录设备 | CLI ping | `read_only` | 第二批待确认 |
 | 连通性检测 | `ping -c <count> <ip>` | 次数、目标 IP | 登录设备 | 指定次数 CLI ping | `read_only` | 第二批待确认 |
 

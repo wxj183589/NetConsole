@@ -19,7 +19,9 @@ import {
   prepareFileDesktopAction,
   retryFileDownload,
   startRemoteFileDownloadBatch,
+  trustDeviceHostKey,
 } from '../../api/fileManagement'
+import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
@@ -42,8 +44,10 @@ import {
   summarizeDownloadBatches,
 } from './fileManagementModel'
 import { createFileManagementTranslator } from './fileManagementI18n'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 const t = createFileManagementTranslator()
+const { confirm, confirmChoice } = useConfirm()
 
 const router = useRouter()
 const siteId = ref('')
@@ -227,11 +231,14 @@ async function connectDevice(): Promise<void> {
   if (!selectedDeviceId.value) return
   try {
     if (allowSftpSetup.value) {
-      await ElMessageBox.confirm(
-        '设备未启用 SFTP 时将执行 Qt 同等的 H3C SFTP 配置命令。请确认你有设备写入权限。',
-        '允许设备侧启用 SFTP',
-        { type: 'warning', confirmButtonText: '确认并连接', cancelButtonText: '取消' },
-      )
+      const accepted = await confirm({
+        type: 'DANGER',
+        title: '确认启用设备 SFTP',
+        message: '连接失败且设备版本化 Command Profile 明确支持时，NetConsole 可能执行受控的设备写操作。',
+        detail: '请确认你拥有设备写入权限；未识别厂商或版本不会执行命令。',
+        confirmText: '确认启用并连接',
+      })
+      if (!accepted) return
     }
   } catch { return }
   remoteLoading.value = true
@@ -241,7 +248,33 @@ async function connectDevice(): Promise<void> {
     connection.value = await connectDeviceFiles(selectedDeviceId.value, siteId.value, allowSftpSetup.value)
     await loadRemote(connection.value.root_entry_id, 1)
   } catch (reason) {
-    remoteError.value = messageOf(reason, '设备文件连接失败')
+    if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_HOST_KEY_UNKNOWN') {
+      const details = reason.details
+      const challengeId = String(details.challenge_id || '')
+      const choice = await confirmChoice({
+        type: 'SECURITY',
+        title: '首次连接：确认设备主机密钥',
+        message: `设备：${String(details.device_name || selectedDevice.value?.name || '当前设备')}\n地址：${String(details.host || selectedDevice.value?.address || '')}:${String(details.port || 22)}\n密钥算法：${String(details.algorithm || '未知')}\nSHA256 指纹：${String(details.fingerprint_sha256 || '未知')}`,
+        detail: '首次连接时请确认该指纹确实属于目标设备。信任错误的主机密钥可能导致连接到错误设备。',
+        confirmText: '仅本次信任',
+        secondaryText: '信任并保存',
+        acknowledgementText: '我已核对该设备指纹',
+        requireAcknowledgement: true,
+      })
+      if (choice !== 'cancel' && challengeId) {
+        try {
+          connection.value = await trustDeviceHostKey(challengeId, choice === 'secondary', siteId.value, allowSftpSetup.value)
+          await loadRemote(connection.value.root_entry_id, 1)
+          return
+        } catch (trustError) {
+          remoteError.value = messageOf(trustError, '主机密钥信任失败')
+        }
+      } else {
+        remoteError.value = '已取消主机密钥信任，连接未建立。'
+      }
+    } else {
+      remoteError.value = messageOf(reason, '设备文件连接失败')
+    }
     connection.value = null
     remotePage.value = null
   } finally {
@@ -438,12 +471,12 @@ function messageOf(reason: unknown, fallback: string): string {
 </script>
 
 <template>
-  <section class="file-management-page" v-loading="loading">
+  <section class="device-file-downloads-page" v-loading="loading">
     <header class="page-heading">
       <div>
         <p class="eyebrow">LOCAL / DEVICE FILES</p>
-        <h1>文件管理</h1>
-        <p>本地下载目录与设备 SFTP 双栏管理；设备侧保持只读，仅迁移 Qt 已验证的下载能力。</p>
+        <h1>设备文件下载</h1>
+        <p>通过受控 SFTP 浏览设备文件并下载到本地。设备侧保持只读，不支持上传、删除、重命名或远程创建目录。</p>
       </div>
       <el-button :loading="loading" @click="refreshAll">{{ t('refreshAll') }}</el-button>
     </header>
@@ -499,7 +532,7 @@ function messageOf(reason: unknown, fallback: string): string {
       </article>
 
       <article v-if="isFeatureEnabled('web.file_management_remote')" class="content-card pane">
-        <div class="section-heading"><h2>设备</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
+        <div class="section-heading"><h2>设备文件（只读）</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
         <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon />
         <div class="toolbar">
           <el-button :disabled="!connection || !remotePage || remotePage.current_entry_id === connection.root_entry_id" @click="loadRemote(remotePage?.parent_entry_id, 1)">{{ t('up') }}</el-button>

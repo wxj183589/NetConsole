@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import {
   applyAcExtension,
@@ -40,6 +40,7 @@ const error = ref('')
 const loading = ref(false)
 const taskBusy = ref(false)
 const router = useRouter()
+const { confirm } = useConfirm()
 let pollTimer: number | undefined
 
 const extensionColumns: NcTableColumn<AcExtension>[] = [
@@ -136,7 +137,7 @@ async function chooseFile(event: Event): Promise<void> {
 async function applyExtension(): Promise<void> {
   if (!extensionPreview.value) return
   try {
-    await ElMessageBox.confirm('确认把当前预览写入 AP 扩展资料？该操作会记录审计并可按审计记录回滚。', '确认导入', { type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '确认导入 AP 扩展资料', message: '确认把当前预览写入 AP 扩展资料？该操作会记录审计并可按审计记录回滚。', confirmText: '确认导入' })) return
   } catch {
     return
   }
@@ -157,7 +158,7 @@ async function applyExtension(): Promise<void> {
 async function rollbackExtension(): Promise<void> {
   if (!lastAuditId.value) return
   try {
-    await ElMessageBox.confirm('确认回滚最近一次 AP 扩展导入？', '确认回滚', { type: 'warning' })
+    if (!await confirm({ type: 'WARNING', title: '确认回滚 AP 扩展导入', message: '确认回滚最近一次 AP 扩展导入？', confirmText: '确认回滚' })) return
   } catch {
     return
   }
@@ -216,11 +217,12 @@ async function createPlan(): Promise<void> {
 async function confirmPlan(): Promise<void> {
   if (!actionPlan.value) return
   try {
-    await ElMessageBox.confirm(
-      `确认对所选 AC 执行以下固定命令？\n\n${actionPlan.value.command_summary.join('\n')}`,
-      '确认 AC 写操作',
-      { type: 'warning', confirmButtonText: '确认执行', cancelButtonText: '取消' },
-    )
+    if (!await confirm({
+      type: 'DANGER',
+      title: '确认 AC 写操作',
+      message: `确认对所选 AC 执行以下固定命令？\n\n${actionPlan.value.command_summary.join('\n')}`,
+      confirmText: '确认执行',
+    })) return
   } catch {
     return
   }

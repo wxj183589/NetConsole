@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useConfirm } from '../../components/feedback/useConfirm'
 
 import {
   exportVehicleMrHistory,
@@ -34,6 +35,7 @@ import type {
 } from '../../types/vehicleMrOnline'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const storageKey = 'netconsole.vehicle-mr-online.last-task'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const loading = ref(false)
@@ -205,8 +207,7 @@ async function openMappings(): Promise<void> { await loadMappings(); mappingVisi
 function addMapping(): void { mappings.value.push({ id: null, enabled: true, train_display_name: '', train_id: '', train_no: '', tc1_peer_name: '', tc2_peer_name: '', online_policy: 'auto', remark: '', created_at: '', updated_at: '' }) }
 function deleteMapping(index: number): void { mappings.value.splice(index, 1) }
 async function saveMappings(): Promise<void> {
-  try { await ElMessageBox.confirm(`确认用当前 ${mappings.value.length} 行替换列车 MR 映射并持久化？`, '保存映射确认', { type: 'warning' }) }
-  catch { return }
+  if (!await confirm({ type: 'DANGER', title: '保存映射确认', message: `确认用当前 ${mappings.value.length} 行替换列车 MR 映射并持久化？`, confirmText: '确认保存映射' })) return
   await startTask(() => saveVehicleMrMappings(mappings.value), '列车 MR 映射保存失败'); mappingVisible.value = false
 }
 async function chooseMappingImport(event: Event): Promise<void> {

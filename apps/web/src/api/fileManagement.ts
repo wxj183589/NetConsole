@@ -50,6 +50,19 @@ export function connectDeviceFiles(deviceId: string, siteId = '', allowSftpSetup
   })
 }
 
+export function trustDeviceHostKey(
+  challengeId: string,
+  persist: boolean,
+  siteId = '',
+  allowSftpSetup = false,
+): Promise<FileConnection> {
+  const path = persist ? `${root}/host-keys/trust` : `${root}/host-keys/trust-once`
+  return apiRequest(path + qs({ site_id: siteId }), {
+    method: 'POST',
+    body: JSON.stringify({ challenge_id: challengeId, allow_sftp_setup: allowSftpSetup }),
+  })
+}
+
 export function disconnectDeviceFiles(connectionId: string, siteId = ''): Promise<FileConnection> {
   return apiRequest(`${root}/connections/${encodeURIComponent(connectionId)}${qs({ site_id: siteId })}`, { method: 'DELETE' })
 }

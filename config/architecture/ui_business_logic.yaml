@@ -36,5 +36,6 @@
   {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"pollParseTask","classification":"FALSE_POSITIVE","reason":"轮询 Backend Task 状态。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"startParse","classification":"FALSE_POSITIVE","reason":"发起 Backend 解析任务。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"recoverParse","classification":"FALSE_POSITIVE","reason":"恢复 Backend 任务状态绑定。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"mergeType","classification":"DISPLAY_ONLY","reason":"将导入合并类型映射为展示文本。","test":"tests/architecture/test_architecture_guards.py"}
+  {"path":"apps/web/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"mergeType","classification":"DISPLAY_ONLY","reason":"将导入合并类型映射为展示文本。","test":"tests/architecture/test_architecture_guards.py"},
+  {"path":"apps/web/src/components/feedback/useConfirm.ts","symbol":"resolveConfirm","classification":"DISPLAY_ONLY","reason":"解析统一确认服务的用户选择并完成 Promise 收敛，不执行业务操作。","test":"tests/architecture/test_architecture_guards.py"}
 ]
