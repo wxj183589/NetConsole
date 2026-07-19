@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.database import Database
+from netconsole.backend.api.main import _current_site_name
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -33,6 +35,35 @@ def test_site_creation_uses_stable_id_and_chinese_display_name(tmp_path: Path) -
     assert created["display_name"] == "宁波地铁12号线"
     assert (service.paths.sites_dir / "ningbo-line-12" / "db" / "devices.db").is_file()
     assert not any((service.paths.sites_dir / ".staging").glob("*"))
+
+
+def test_legacy_chinese_site_directory_is_discovered_and_switchable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = _paths(tmp_path)
+    legacy_name = "宁波地铁12号线"
+    legacy_root = paths.sites_dir / legacy_name
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    (legacy_root / "site_meta.json").write_text(
+        json.dumps({"display_name": legacy_name, "created_at": "2026-07-01T00:00:00"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    service = SiteApplicationService(paths)
+    first = next(item for item in service.list_sites() if item["display_name"] == legacy_name)
+    second = next(item for item in service.list_sites() if item["display_name"] == legacy_name)
+
+    assert str(first["site_id"]).startswith("legacy-")
+    assert first["site_id"] == second["site_id"]
+    assert Path(str(first["path"])) == legacy_root.resolve()
+    assert json.loads(service.registry.path.read_text(encoding="utf-8"))["sites"]
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", str(first["site_id"]))
+    assert _current_site_name(paths) == legacy_name
+
+    switched = service.switch_site(str(first["site_id"]))
+
+    assert switched["site_id"] == first["site_id"]
+    assert json.loads(paths.app_config_path.read_text(encoding="utf-8"))["current_site"] == legacy_name
+    assert paths.site_db_path(legacy_name).is_file()
 
 
 @pytest.mark.parametrize("value", ["../bad", "a.b", "a b", "a/b", "_"])
@@ -156,3 +187,29 @@ def test_import_as_new_site_is_staged_and_registered(tmp_path: Path) -> None:
     assert result["requires_credentials"] is True
     assert target_sites.get_site("imported-site")["display_name"] == "导入局点"
     assert target_paths.site_db_path("imported-site").is_file()
+
+
+def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    target_paths = _paths(tmp_path / "target")
+    legacy_name = "宁波地铁12号线"
+    target_paths.ensure_site_dirs(legacy_name)
+    Database(target_paths.site_db_path(legacy_name)).initialize()
+    target_sites = SiteApplicationService(target_paths)
+    legacy = next(item for item in target_sites.list_sites() if item["display_name"] == legacy_name)
+
+    result = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        replace_site_id=str(legacy["site_id"]),
+        display_name="替换后的局点",
+    )
+
+    assert result["backup_created"] is True
+    assert target_paths.site_db_path(legacy_name).is_file()
+    assert not (target_paths.sites_dir / str(legacy["site_id"])).exists()
+    assert target_sites.get_site(str(legacy["site_id"]))["display_name"] == "替换后的局点"

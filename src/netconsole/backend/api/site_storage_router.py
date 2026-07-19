@@ -195,7 +195,7 @@ def _submit(request: Request, task_type: str, params: dict[str, object]) -> Site
             task_type=task_type,
             params={
                 **params,
-                "site_name": _sites(request).active_site_id(),
+                "site_name": _sites(request).active_site_directory_name(),
                 "task_name": {
                     "site_export": "导出局点",
                     "site_migration": "迁移单个局点",

@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 
@@ -33,6 +34,25 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     activated = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
     assert activated.status_code == 200, activated.text
     assert activated.json()["restart_required"] is True
+
+
+def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    legacy_name = "宁波地铁12号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+
+    listed = client.get("/api/v1/sites")
+
+    assert listed.status_code == 200, listed.text
+    legacy = next(item for item in listed.json() if item["display_name"] == legacy_name)
+    assert legacy["site_id"].startswith("legacy-")
+
+    activated = client.post(f"/api/v1/sites/{legacy['site_id']}/activate", json={"confirmed": True})
+
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["site_id"] == legacy["site_id"]
 
 
 def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ def site_export(context: JobContext) -> dict[str, object]:
     destination = str(context.params.get("destination_path") or "")
     if not destination:
         record = sites.registry.get(str(context.params.get("site_id") or ""))
-        destination = str(context.paths.site_files_dir(record.site_id) / "exports" / f"{record.site_id}.ncsite")
+        destination = str(record.root_path / "files" / "exports" / f"{record.site_id}.ncsite")
     result = SitePackageService(context.paths, sites).export_site(
         str(context.params.get("site_id") or ""), Path(destination), check_cancel=context.check_cancelled
     )

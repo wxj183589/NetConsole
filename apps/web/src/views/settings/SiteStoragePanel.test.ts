@@ -37,6 +37,21 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
   })
 
+  it('renders every legacy site returned by the registry API', async () => {
+    vi.mocked(api.listSites).mockResolvedValue([
+      { site_id: 'demo', display_name: '演示局点', path: 'C:\\data\\sites\\demo', created_at: '', updated_at: '', remark: '', active: true, size_bytes: 1024 },
+      { site_id: 'legacy-dfd356e96ea0', display_name: '宁波地铁12号线', path: 'C:\\data\\sites\\宁波地铁12号线', created_at: '', updated_at: '', remark: '', active: false, size_bytes: 2048 },
+    ])
+    vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo' })
+
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('宁波地铁12号线')
+    expect(wrapper.text()).toContain('legacy-dfd356e96ea0')
+    expect(wrapper.text()).toContain('2 个局点')
+  })
+
   it('creates a site only after collecting display name and stable id', async () => {
     vi.spyOn(ElMessageBox, 'prompt')
       .mockResolvedValueOnce({ value: '宁波地铁12号线' } as never)

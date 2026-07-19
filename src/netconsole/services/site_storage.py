@@ -167,25 +167,43 @@ class SiteRegistryRepository:
                     )
             except SiteStorageError:
                 continue
-        # Keep old site directories readable while the registry is introduced.
+        discovered = False
         self.paths.sites_dir.mkdir(parents=True, exist_ok=True)
+        used_names = {item.display_name.casefold() for item in records.values()}
         for root in self.paths.sites_dir.iterdir():
-            if not root.is_dir() or root.name.startswith("."):
+            if not root.is_dir() or root.is_symlink() or root.name.startswith("."):
+                continue
+            resolved_root = root.resolve()
+            if resolved_root.parent != self.paths.sites_dir.resolve():
+                continue
+            database = resolved_root / "db" / "devices.db"
+            if not database.is_file() or database.is_symlink():
                 continue
             try:
-                site_id = validate_site_id(root.name.casefold())
+                site_id = self._legacy_site_id(root.name, records)
+                metadata = SiteManager(self.paths).load_site_metadata(root.name)
+                display_name = self._legacy_display_name(root.name, metadata, used_names)
             except SiteStorageError:
                 continue
-            if site_id not in records:
-                metadata = SiteManager(self.paths).load_site_metadata(root.name)
-                records[site_id] = SiteRecord(
-                    site_id=site_id,
-                    display_name=validate_display_name(str(metadata.get("display_name") or root.name)),
-                    root_path=root,
-                    created_at=str(metadata.get("created_at") or ""),
-                    updated_at=str(metadata.get("updated_at") or ""),
-                    remark=str(metadata.get("remark") or ""),
-                )
+            if any(item.root_path.resolve() == resolved_root for item in records.values()):
+                continue
+            records[site_id] = SiteRecord(
+                site_id=site_id,
+                display_name=display_name,
+                root_path=resolved_root,
+                created_at=str(metadata.get("created_at") or ""),
+                updated_at=str(metadata.get("updated_at") or ""),
+                remark=str(metadata.get("remark") or ""),
+            )
+            used_names.add(display_name.casefold())
+            discovered = True
+        if discovered and self._can_persist_discovery():
+            now = _now()
+            _atomic_json(self.path, {
+                "schema_version": 1,
+                "updated_at": now,
+                "sites": [self._serialize(item) for item in records.values()],
+            })
         return sorted(records.values(), key=lambda item: (item.site_id != DEFAULT_SITE, item.display_name.casefold()))
 
     def get(self, site_id: str) -> SiteRecord:
@@ -194,6 +212,22 @@ class SiteRegistryRepository:
             if record.site_id == wanted:
                 return record
         raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
+
+    def get_by_directory_name(self, directory_name: str) -> SiteRecord:
+        wanted = str(directory_name or "").strip().casefold()
+        for record in self.list():
+            if record.root_path.name.casefold() == wanted:
+                return record
+        raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
+
+    def directory_name(self, site_id: str) -> str:
+        return self.get(site_id).root_path.name
+
+    def resolve_directory_name(self, site_ref: str) -> str:
+        try:
+            return self.directory_name(site_ref)
+        except SiteStorageError:
+            return self.get_by_directory_name(site_ref).root_path.name
 
     def register(self, record: SiteRecord) -> SiteRecord:
         site_id = validate_site_id(record.site_id)
@@ -218,6 +252,42 @@ class SiteRegistryRepository:
         except (OSError, json.JSONDecodeError):
             return {"schema_version": 1, "sites": []}
         return value if isinstance(value, dict) else {"schema_version": 1, "sites": []}
+
+    def _can_persist_discovery(self) -> bool:
+        if not self.path.exists():
+            return True
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return isinstance(value, dict)
+
+    def _legacy_site_id(self, directory_name: str, records: dict[str, SiteRecord]) -> str:
+        try:
+            candidate = validate_site_id(directory_name.casefold())
+        except SiteStorageError:
+            digest = hashlib.sha256(directory_name.encode("utf-8")).hexdigest()
+            candidate = f"legacy-{digest[:12]}"
+        if candidate not in records:
+            return candidate
+        digest = hashlib.sha256(directory_name.encode("utf-8")).hexdigest()
+        for length in (16, 24, 32, 40, 64):
+            candidate = f"legacy-{digest[:length]}"
+            if candidate not in records:
+                return candidate
+        raise SiteStorageError("SITE_REGISTRY_CONFLICT", "历史局点标识发生冲突")
+
+    @staticmethod
+    def _legacy_display_name(directory_name: str, metadata: dict[str, object], used_names: set[str]) -> str:
+        candidate = str(metadata.get("display_name") or directory_name)
+        try:
+            display_name = validate_display_name(candidate)
+        except SiteStorageError:
+            display_name = validate_display_name(directory_name)
+        if display_name.casefold() not in used_names:
+            return display_name
+        suffix = f"（{directory_name}）"
+        return validate_display_name(f"{display_name[: max(1, 128 - len(suffix))]}{suffix}")
 
     def _serialize(self, item: SiteRecord) -> dict[str, object]:
         try:
@@ -258,12 +328,15 @@ class SiteApplicationService:
     def active_site_id(self) -> str:
         selected = self.manager.get_current_site()
         try:
-            return self.registry.get(selected).site_id
+            return self.registry.get_by_directory_name(selected).site_id
         except SiteStorageError:
             return selected
 
     def get_active_site(self) -> dict[str, object]:
         return self.get_site(self.active_site_id())
+
+    def active_site_directory_name(self) -> str:
+        return self.registry.directory_name(self.active_site_id())
 
     def create_site(self, site_id: str, display_name: str, *, remark: str = "", activate: bool = False) -> dict[str, object]:
         site_id = validate_site_id(site_id)
@@ -306,12 +379,13 @@ class SiteApplicationService:
             self._ensure_no_active_tasks(site_id)
             record = self.registry.get(site_id)
             previous = self.active_site_id()
+            previous_directory = self.registry.resolve_directory_name(previous)
             try:
-                self.manager.switch_site(record.site_id)
+                self.manager.switch_site(record.root_path.name)
                 return {**record.to_public(), "active": True, "previous_site_id": previous, "restart_required": True}
             except Exception as exc:
                 try:
-                    self.manager.switch_site(previous)
+                    self.manager.switch_site(previous_directory)
                 except Exception:
                     pass
                 raise SiteStorageError("SITE_SWITCH_BLOCKED", "局点切换失败，已恢复原局点") from exc
@@ -351,7 +425,7 @@ class SiteApplicationService:
         service = self.task_service
         if service is None:
             return
-        repository = getattr(service, "repository", lambda _site: None)(site_id)
+        repository = getattr(service, "repository", lambda _site: None)(self.registry.directory_name(site_id))
         if repository is None:
             return
         active = repository.list(statuses={TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING})
@@ -522,7 +596,8 @@ class SitePackageService:
         original_id = validate_site_id(str(info["site_id"]))
         wanted_id = validate_site_id(site_id or replace_site_id or original_id)
         name = validate_display_name(display_name or str(info["site_name"]) or wanted_id)
-        target = self.paths.sites_dir / wanted_id
+        replacement = self.sites.registry.get(replace_site_id) if replace_site_id else None
+        target = replacement.root_path if replacement is not None else self.paths.sites_dir / wanted_id
         backup: Path | None = None
         published = False
         staging = self.paths.temp_dir / "site-import-staging" / uuid.uuid4().hex

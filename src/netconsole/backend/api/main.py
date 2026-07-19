@@ -78,7 +78,13 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
-from netconsole.services.site_storage import DataRootApplicationService, SiteApplicationService, SitePackageService
+from netconsole.services.site_storage import (
+    DataRootApplicationService,
+    SiteApplicationService,
+    SitePackageService,
+    SiteRegistryRepository,
+    SiteStorageError,
+)
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -646,7 +652,11 @@ def _current_site_name(paths: PathResolver) -> str:
         candidate = os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or (
             payload.get("current_site") if isinstance(payload, dict) else None
         )
-        selected = SiteManager(paths).validate_site_name(str(candidate or "demo"))
+        selected = str(candidate or "demo")
+        try:
+            selected = SiteRegistryRepository(paths).resolve_directory_name(selected)
+        except SiteStorageError:
+            selected = SiteManager(paths).validate_site_name(selected)
         return selected if paths.site_dir(selected).is_dir() else "demo"
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return "demo"
