@@ -9,9 +9,12 @@ describe('trackside AP planning base-data tab', () => {
       'recoverTracksideApTasks', "openTaskWindow({ module: 'rail'",
       '新增', '删除', '导入并预览', '导出规划', '导出模板',
       '重复时覆盖', '重复时跳过', '重复时报错', '未保存修改',
-      'web.rail_trackside_ap_plan_write', 'web.rail_trackside_ap_plan_export',
+      'web.rail_trackside_ap_plan_export',
     ]) expect(source).toContain(contract)
     expect(source).toContain("emit('change'")
+    expect(source).toContain('const canWrite = computed(() => !props.locked && !props.saving)')
+    expect(source).toContain('v-if="canWrite"')
+    expect(source).not.toContain("isFeatureEnabled('web.rail_trackside_ap_plan_write')")
     expect(source).toContain('rows.value.map((row) => ({ ...row }))')
     expect(source).not.toContain('structuredClone(rows.value)')
     expect(source).toContain("route-key=\"/rail-transit/base-data\"")

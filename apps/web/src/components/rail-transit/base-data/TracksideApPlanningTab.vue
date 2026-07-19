@@ -55,7 +55,8 @@ const previewColumns: NcTableColumn<TracksideApPlanPreviewRow>[] = [
   { key: 'key', label: '站点', valueType: 'name' },
   { key: 'message', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
 ]
-const canWrite = computed(() => !props.locked && !props.saving && isFeatureEnabled('web.rail_trackside_ap_plan_write'))
+// 基础资料页的编辑会话已经由父页面和后端 write guard 授权，规划表不再维护第二个写入开关。
+const canWrite = computed(() => !props.locked && !props.saving)
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
@@ -180,13 +181,13 @@ onBeforeUnmount(stopPolling)
       <span class="dirty">{{ dirty ? '有未保存修改' : `已加载 ${rows.length} 行` }}</span>
     </div>
     <NcDataTable v-loading="loading" table-id="rail-base-trackside-ap-planning" route-key="/rail-transit/base-data" :data="rows" :columns="planColumns" border height="calc(100vh - 390px)" empty-text="暂无轨旁 AP 规划，可解锁后新增或导入" @selection-change="(value: TracksideApPlanRow[]) => selectedRows = value">
-      <template #cell-station_name="{ row }"><el-input v-model="row.station_name" :disabled="!canWrite" @input="publishDirty" /></template>
-      <template #cell-ap_count="{ row }"><el-input-number v-model="row.ap_count" :disabled="!canWrite" :min="0" controls-position="right" @change="publishDirty" /></template>
-      <template #cell-ap_start_address="{ row }"><el-input v-model="row.ap_start_address" :disabled="!canWrite" @input="publishDirty" /></template>
-      <template #cell-mask_length="{ row }"><el-input-number v-model="row.mask_length" :disabled="!canWrite" :min="0" :max="32" controls-position="right" @change="publishDirty" /></template>
-      <template #cell-ap_gateway="{ row }"><el-input v-model="row.ap_gateway" :disabled="!canWrite" @input="publishDirty" /></template>
-      <template #cell-ap_management_vlans="{ row }"><el-input v-model="row.ap_management_vlans" :disabled="!canWrite" @input="publishDirty" /></template>
-      <template #cell-remark="{ row }"><el-input v-model="row.remark" :disabled="!canWrite" @input="publishDirty" /></template>
+      <template #cell-station_name="{ row }"><el-input v-if="canWrite" v-model="row.station_name" @input="publishDirty" /><span v-else>{{ row.station_name || '--' }}</span></template>
+      <template #cell-ap_count="{ row }"><el-input-number v-if="canWrite" v-model="row.ap_count" :min="0" controls-position="right" @change="publishDirty" /><span v-else>{{ row.ap_count }}</span></template>
+      <template #cell-ap_start_address="{ row }"><el-input v-if="canWrite" v-model="row.ap_start_address" @input="publishDirty" /><span v-else>{{ row.ap_start_address || '--' }}</span></template>
+      <template #cell-mask_length="{ row }"><el-input-number v-if="canWrite" v-model="row.mask_length" :min="0" :max="32" controls-position="right" @change="publishDirty" /><span v-else>{{ row.mask_length ?? '--' }}</span></template>
+      <template #cell-ap_gateway="{ row }"><el-input v-if="canWrite" v-model="row.ap_gateway" @input="publishDirty" /><span v-else>{{ row.ap_gateway || '--' }}</span></template>
+      <template #cell-ap_management_vlans="{ row }"><el-input v-if="canWrite" v-model="row.ap_management_vlans" @input="publishDirty" /><span v-else>{{ row.ap_management_vlans || '--' }}</span></template>
+      <template #cell-remark="{ row }"><el-input v-if="canWrite" v-model="row.remark" @input="publishDirty" /><span v-else>{{ row.remark || '--' }}</span></template>
     </NcDataTable>
     <el-alert v-if="task" :title="`${task.status} · ${task.message || task.task_id}`" :type="task.error_message ? 'error' : 'info'" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert>
     <el-dialog v-model="previewVisible" title="导入预览" width="900px" destroy-on-close>

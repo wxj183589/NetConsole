@@ -33,12 +33,21 @@ const route = useRoute()
 const router = useRouter()
 const { confirm, confirmChoice } = useConfirm()
 type BaseDataEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED'
+interface BaseDataDraft {
+  stations: Station[]
+  sections: Section[]
+  aps: TracksideAp[]
+  mrs: VehicleMr[]
+}
 const editState = ref<BaseDataEditState>('LOCKED')
 const pendingChanges = ref<Record<string, BaseDataChange>>({})
 const baselines = new Map<string, Record<string, unknown>>()
+const serverSnapshot = ref<BaseDataDraft | null>(null)
+const editingDraft = ref<BaseDataDraft | null>(null)
 const planningRows = ref<TracksideApPlanRow[]>([])
 const planningDirty = ref(false)
 const saveIssues = ref<BaseDataValidationIssue[]>([])
+const fieldErrors = ref<Record<string, string>>({})
 const planningTab = ref<{ reload: (force?: boolean) => Promise<boolean> } | null>(null)
 const allowedTabs = new Set(['overview', 'stations', 'trackside-ap', 'trackside-ap-planning', 'trains', 'quality', 'import-preview', 'import-audit', 'relations'])
 const activeTab = computed({
@@ -47,6 +56,11 @@ const activeTab = computed({
 })
 const locked = computed(() => editState.value === 'LOCKED')
 const saving = computed(() => editState.value === 'VALIDATING' || editState.value === 'SAVING')
+const editing = computed(() => !locked.value)
+const stationRows = computed(() => editingDraft.value?.stations ?? store.stations)
+const sectionRows = computed(() => editingDraft.value?.sections ?? store.sections)
+const apRows = computed(() => editingDraft.value?.aps ?? store.aps)
+const mrRows = computed(() => editingDraft.value?.mrs ?? store.mrs)
 const dirty = computed(() => Object.keys(pendingChanges.value).length > 0 || planningDirty.value)
 const canUnlock = computed(() => Boolean(store.editSession?.can_write))
 const locationTab = ref('stations')
@@ -266,6 +280,9 @@ async function loadConsistentEditSnapshot() {
 function lockClean(): void {
   editState.value = 'LOCKED'
   baselines.clear()
+  fieldErrors.value = {}
+  serverSnapshot.value = null
+  editingDraft.value = null
   store.startPolling()
 }
 
@@ -288,8 +305,11 @@ async function discardChanges(): Promise<void> {
   pendingChanges.value = {}
   planningDirty.value = false
   saveIssues.value = []
+  fieldErrors.value = {}
   editState.value = 'LOCKED'
   baselines.clear()
+  serverSnapshot.value = null
+  editingDraft.value = null
   await Promise.all([
     store.manualRefresh(),
     store.refreshEditSession(),
@@ -306,11 +326,14 @@ async function refreshPage(): Promise<void> {
       store.refreshEditSession(),
       planningTab.value?.reload(true),
     ])
+    if (!locked.value) captureBaselines()
   } catch (cause) { ElMessage.error(message(cause, '基础资料刷新失败')) }
 }
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
-  return next === current || !saving.value
+  if (next === current) return true
+  if (saving.value) return false
+  return !dirty.value || confirmUnsavedChanges()
 }
 
 async function saveAllChanges(): Promise<boolean> {
@@ -321,10 +344,12 @@ async function saveAllChanges(): Promise<boolean> {
   }
   editState.value = 'VALIDATING'
   saveIssues.value = []
+  fieldErrors.value = {}
   try {
     const validation = await store.validateChanges(changes)
     if (!validation.valid) {
       saveIssues.value = validation.issues
+      setFieldErrors(changes, validation.issues)
       editState.value = 'SAVE_FAILED'
       ElMessage.error(validation.issues[0]?.message || '基础资料校验失败')
       return false
@@ -334,9 +359,12 @@ async function saveAllChanges(): Promise<boolean> {
     pendingChanges.value = {}
     planningDirty.value = false
     saveIssues.value = []
+    fieldErrors.value = {}
     baselines.clear()
     await Promise.all([store.manualRefresh(), planningTab.value?.reload(true)])
     editState.value = 'LOCKED'
+    serverSnapshot.value = null
+    editingDraft.value = null
     store.startPolling()
     ElMessage.success(`基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}`)
     return true
@@ -347,12 +375,34 @@ async function saveAllChanges(): Promise<boolean> {
   }
 }
 
+async function cancelEditing(): Promise<void> {
+  if (!dirty.value) {
+    lockClean()
+    return
+  }
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '放弃基础资料修改',
+    message: '当前新增、修改和删除记录都尚未保存。确认放弃并恢复最近一次服务端数据？',
+    confirmText: '放弃修改',
+  })
+  if (accepted) await discardChanges()
+}
+
 function captureBaselines(): void {
   baselines.clear()
-  for (const row of store.stations) baselines.set(changeKey('station', row.id), stationValues(row))
-  for (const row of store.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
-  for (const row of store.aps) baselines.set(changeKey('trackside_ap', row.id), apValues(row))
-  for (const row of store.mrs) baselines.set(changeKey('vehicle_mr', row.id), mrValues(row))
+  const snapshot: BaseDataDraft = {
+    stations: structuredClone(store.stations),
+    sections: structuredClone(store.sections),
+    aps: structuredClone(store.aps),
+    mrs: structuredClone(store.mrs),
+  }
+  serverSnapshot.value = snapshot
+  editingDraft.value = structuredClone(serverSnapshot.value)
+  for (const row of serverSnapshot.value.stations) baselines.set(changeKey('station', row.id), stationValues(row))
+  for (const row of serverSnapshot.value.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
+  for (const row of serverSnapshot.value.aps) baselines.set(changeKey('trackside_ap', row.id), apValues(row))
+  for (const row of serverSnapshot.value.mrs) baselines.set(changeKey('vehicle_mr', row.id), mrValues(row))
 }
 
 function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): void {
@@ -368,6 +418,7 @@ function markMr(row: VehicleMr): void { recordChange('vehicle_mr', row.id, mrVal
 
 function recordChange(entityType: BaseDataChange['entity_type'], entityId: string, values: Record<string, unknown>): void {
   if (locked.value) return
+  clearFieldErrors(entityType, entityId)
   const key = changeKey(entityType, entityId)
   const baseline = baselines.get(key)
   if (!baseline) {
@@ -382,40 +433,96 @@ function recordChange(entityType: BaseDataChange['entity_type'], entityId: strin
   updateEditState()
 }
 
+function fieldError(entityType: BaseDataChange['entity_type'], entityId: string, fieldName: string): string | undefined {
+  return fieldErrors.value[`${changeKey(entityType, entityId)}:${fieldName}`]
+}
+
+function setFieldErrors(changes: BaseDataChange[], issues: BaseDataValidationIssue[]): void {
+  const next: Record<string, string> = {}
+  for (const issue of issues) {
+    const change = changes[issue.change_index]
+    if (change && issue.field_name) next[`${changeKey(change.entity_type, change.entity_id || `index:${issue.change_index}`)}:${issue.field_name}`] = issue.message
+  }
+  fieldErrors.value = next
+}
+
+function clearFieldErrors(entityType: BaseDataChange['entity_type'], entityId: string): void {
+  const prefix = `${changeKey(entityType, entityId)}:`
+  const next = Object.fromEntries(Object.entries(fieldErrors.value).filter(([key]) => !key.startsWith(prefix)))
+  fieldErrors.value = next
+}
+
 async function deleteEntity(entityType: BaseDataChange['entity_type'], row: Station | Section | TracksideAp | VehicleMr): Promise<void> {
   if (locked.value) return
-  const accepted = await confirm({ type: 'DANGER', title: '标记删除', message: '该数据将在点击“保存”后删除；存在业务引用时后端会拒绝。是否继续？', confirmText: '标记删除' })
-  if (!accepted) return
   const key = changeKey(entityType, row.id)
   if (row.id.startsWith('new:')) {
     delete pendingChanges.value[key]
-  } else {
-    const baseline = baselines.get(key) || valuesFor(entityType, row)
-    pendingChanges.value[key] = { entity_type: entityType, action: 'delete', entity_id: row.id, values: withOriginalIdentity(entityType, baseline, baseline) }
+    baselines.delete(key)
+    removeDraftRow(entityType, row.id)
+    pendingChanges.value = { ...pendingChanges.value }
+    updateEditState()
+    return
   }
-  if (entityType === 'station') store.stations = store.stations.filter((item) => item.id !== row.id)
-  else if (entityType === 'section') store.sections = store.sections.filter((item) => item.id !== row.id)
-  else if (entityType === 'trackside_ap') store.aps = store.aps.filter((item) => item.id !== row.id)
-  else store.mrs = store.mrs.filter((item) => item.id !== row.id)
+  const accepted = await confirm({ type: 'DANGER', title: '标记删除', message: '该数据将在点击“保存”后删除；存在业务引用时后端会拒绝。是否继续？', confirmText: '标记删除' })
+  if (!accepted) return
+  const baseline = baselines.get(key) || valuesFor(entityType, row)
+  pendingChanges.value[key] = { entity_type: entityType, action: 'delete', entity_id: row.id, values: withOriginalIdentity(entityType, baseline, baseline) }
+  pendingChanges.value = { ...pendingChanges.value }
+  updateEditState()
+}
+
+function removeDraftRow(entityType: BaseDataChange['entity_type'], entityId: string): void {
+  if (!editingDraft.value) return
+  if (entityType === 'station') editingDraft.value.stations = editingDraft.value.stations.filter((item) => item.id !== entityId)
+  else if (entityType === 'section') editingDraft.value.sections = editingDraft.value.sections.filter((item) => item.id !== entityId)
+  else if (entityType === 'trackside_ap') editingDraft.value.aps = editingDraft.value.aps.filter((item) => item.id !== entityId)
+  else editingDraft.value.mrs = editingDraft.value.mrs.filter((item) => item.id !== entityId)
+}
+
+function isPendingDelete(entityType: BaseDataChange['entity_type'], entityId: string): boolean {
+  return pendingChanges.value[changeKey(entityType, entityId)]?.action === 'delete'
+}
+
+function canEditRow(entityType: BaseDataChange['entity_type'], entityId: string): boolean {
+  return editing.value && !saving.value && !isPendingDelete(entityType, entityId)
+}
+
+function undoDelete(entityType: BaseDataChange['entity_type'], row: Station | Section | TracksideAp | VehicleMr): void {
+  const key = changeKey(entityType, row.id)
+  if (!isPendingDelete(entityType, row.id)) return
+  const values = valuesFor(entityType, row)
+  const baseline = baselines.get(key)
+  if (baseline && JSON.stringify(values) !== JSON.stringify(baseline)) {
+    pendingChanges.value[key] = {
+      entity_type: entityType,
+      action: 'update',
+      entity_id: row.id,
+      values: withOriginalIdentity(entityType, values, baseline),
+    }
+  } else delete pendingChanges.value[key]
   pendingChanges.value = { ...pendingChanges.value }
   updateEditState()
 }
 
 function addStation(): void {
-  const row: Station = { id: temporaryId(), name: '', code: '', line_name: store.summary?.line_name || '', sort_order: store.stations.length + 1, ap_count: 0, section_count: 0, mileage_min: null, mileage_max: null, remark: '' }
-  store.stations.push(row); markStation(row)
+  if (!editingDraft.value) return
+  const row: Station = { id: temporaryId(), name: '', code: '', line_name: store.summary?.line_name || '', sort_order: editingDraft.value.stations.length + 1, ap_count: 0, section_count: 0, mileage_min: null, mileage_max: null, remark: '' }
+  editingDraft.value.stations.push(row); markStation(row)
 }
 function addSection(): void {
+  if (!editingDraft.value) return
   const row: Section = { id: temporaryId(), name: '', start_station: '', end_station: '', line_side: '', ap_count: 0, mileage_min: null, mileage_max: null, remark: '' }
-  store.sections.push(row); markSection(row)
+  editingDraft.value.sections.push(row); markSection(row)
 }
 function addAp(): void {
+  if (!editingDraft.value) return
   const row: TracksideAp = { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
-  store.aps.push(row); markAp(row)
+  editingDraft.value.aps.push(row); markAp(row)
 }
 function addMr(): void {
+  if (!editingDraft.value) return
   const row: VehicleMr = { id: temporaryId(), device_id: null, name: '', train_id: '', train_no: '', role: '', management_ip: '', station: '', mac: '', protocol: 'SSH', port: 22, remark: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '' }
-  store.mrs.push(row); markMr(row)
+  editingDraft.value.mrs.push(row); markMr(row)
 }
 
 function updateEditState(): void {
@@ -558,6 +665,7 @@ function formatBytes(value: number): string {
         <el-tag v-if="dirty" type="warning">未保存修改</el-tag>
         <el-button :icon="Refresh" :loading="store.loading" :disabled="saving" @click="refreshPage">刷新</el-button>
         <el-button :type="locked ? 'primary' : 'warning'" :disabled="saving || (locked && !canUnlock)" @click="toggleLock">{{ locked ? '解锁' : '锁定' }}</el-button>
+        <el-button v-if="editing" :disabled="saving" @click="cancelEditing">取消修改</el-button>
         <el-button type="primary" :loading="saving" :disabled="locked || !dirty" @click="saveAllChanges">保存</el-button>
       </div>
     </div>
@@ -586,24 +694,24 @@ function formatBytes(value: number): string {
           <el-tabs v-model="locationTab" type="card">
             <el-tab-pane label="站点" name="stations">
               <div class="edit-toolbar"><el-button :disabled="locked || saving" @click="addStation">新增站点</el-button></div>
-              <NcDataTable table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="store.stations" :columns="stationEditColumns" height="calc(100vh - 410px)" empty-text="暂无站点资料">
-                <template #cell-sort_order="{ row }"><el-input-number v-if="!locked" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order }}</span></template>
-                <template #cell-name="{ row }"><el-input v-if="!locked" v-model="row.name" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
-                <template #cell-code="{ row }"><el-input v-if="!locked" v-model="row.code" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
-                <template #cell-line_name="{ row }"><el-input v-if="!locked" v-model="row.line_name" @input="markStation(row)" /><span v-else>{{ display(row.line_name) }}</span></template>
-                <template #cell-remark="{ row }"><el-input v-if="!locked" v-model="row.remark" @input="markStation(row)" /><span v-else>{{ display(row.remark) }}</span></template>
-                <template #cell-edit_actions="{ row }"><el-button link type="danger" :disabled="locked" @click="deleteEntity('station', row)">删除</el-button></template>
+              <NcDataTable table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" height="calc(100vh - 410px)" empty-text="暂无站点资料">
+                <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id)" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order }}</span></template>
+                <template #cell-name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('station', row.id, 'name') }" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
+                <template #cell-code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.code" :class="{ 'field-error': fieldError('station', row.id, 'code') }" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
+                <template #cell-line_name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.line_name" @input="markStation(row)" /><span v-else>{{ display(row.line_name) }}</span></template>
+                <template #cell-remark="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.remark" @input="markStation(row)" /><span v-else>{{ display(row.remark) }}</span></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">移除</el-button><template v-if="isPendingDelete('station', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('station', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('station', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
             <el-tab-pane label="区间" name="sections">
               <div class="edit-toolbar"><el-button :disabled="locked || saving" @click="addSection">新增区间</el-button></div>
-              <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="store.sections" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
-                <template #cell-name="{ row }"><el-input v-if="!locked" v-model="row.name" @input="markSection(row)" /><span v-else>{{ display(row.name) }}</span></template>
-                <template #cell-start_station="{ row }"><el-input v-if="!locked" v-model="row.start_station" @input="markSection(row)" /><span v-else>{{ display(row.start_station) }}</span></template>
-                <template #cell-end_station="{ row }"><el-input v-if="!locked" v-model="row.end_station" @input="markSection(row)" /><span v-else>{{ display(row.end_station) }}</span></template>
-                <template #cell-line_side="{ row }"><el-input v-if="!locked" v-model="row.line_side" @input="markSection(row)" /><span v-else>{{ display(row.line_side) }}</span></template>
-                <template #cell-remark="{ row }"><el-input v-if="!locked" v-model="row.remark" @input="markSection(row)" /><span v-else>{{ display(row.remark) }}</span></template>
-                <template #cell-edit_actions="{ row }"><el-button link type="danger" :disabled="locked" @click="deleteEntity('section', row)">删除</el-button></template>
+              <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
+                <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSection(row)" /><span v-else>{{ display(row.name) }}</span></template>
+                <template #cell-start_station="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.start_station" @input="markSection(row)" /><span v-else>{{ display(row.start_station) }}</span></template>
+                <template #cell-end_station="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.end_station" @input="markSection(row)" /><span v-else>{{ display(row.end_station) }}</span></template>
+                <template #cell-line_side="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.line_side" @input="markSection(row)" /><span v-else>{{ display(row.line_side) }}</span></template>
+                <template #cell-remark="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.remark" @input="markSection(row)" /><span v-else>{{ display(row.remark) }}</span></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('section', row)">删除</el-button></template>
               </NcDataTable>
             </el-tab-pane>
           </el-tabs>
@@ -619,21 +727,21 @@ function formatBytes(value: number): string {
             <el-button type="primary" :disabled="!locked" @click="store.applyApFilters">应用筛选</el-button>
             <el-button :disabled="locked || saving" @click="addAp">新增轨旁 AP</el-button>
           </div>
-          <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="store.aps" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
-            <template #cell-name="{ row }"><el-input v-if="!locked" v-model="row.name" @input="markAp(row)" /><span v-else>{{ row.name || row.point_code || '--' }}</span></template>
-            <template #cell-point_code="{ row }"><el-input v-if="!locked" v-model="row.point_code" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
-            <template #cell-mac="{ row }"><el-input v-if="!locked" v-model="row.mac" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
-            <template #cell-station="{ row }"><el-input v-if="!locked" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
-            <template #cell-section="{ row }"><el-input v-if="!locked" v-model="row.section" @input="markAp(row)" /><span v-else>{{ display(row.section) }}</span></template>
-            <template #cell-mileage="{ row }"><el-input v-if="!locked" v-model="row.mileage.raw" @input="markAp(row)" /><span v-else>{{ row.mileage.normalized || row.mileage.raw || '--' }}</span></template>
-            <template #cell-line_side="{ row }"><el-input v-if="!locked" v-model="row.line_side" @input="markAp(row)" /><span v-else>{{ display(row.line_side) }}</span></template>
-            <template #cell-direction="{ row }"><el-input v-if="!locked" v-model="row.direction" @input="markAp(row)" /><span v-else>{{ display(row.direction) }}</span></template>
-            <template #cell-remark="{ row }"><el-input v-if="!locked" v-model="row.remark" @input="markAp(row)" /><span v-else>{{ display(row.remark) }}</span></template>
+          <NcDataTable table-id="rail-base-trackside-aps" route-key="/rail-transit/base-data" :data="apRows" :columns="apColumns" height="calc(100vh - 430px)" empty-text="暂无轨旁 AP 扩展资料">
+            <template #cell-name="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'name') }" @input="markAp(row)" /><span v-else>{{ row.name || row.point_code || '--' }}</span></template>
+            <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
+            <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
+            <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
+            <template #cell-section="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.section" @input="markAp(row)" /><span v-else>{{ display(row.section) }}</span></template>
+            <template #cell-mileage="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mileage.raw" @input="markAp(row)" /><span v-else>{{ row.mileage.normalized || row.mileage.raw || '--' }}</span></template>
+            <template #cell-line_side="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.line_side" @input="markAp(row)" /><span v-else>{{ display(row.line_side) }}</span></template>
+            <template #cell-direction="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.direction" @input="markAp(row)" /><span v-else>{{ display(row.direction) }}</span></template>
+            <template #cell-remark="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.remark" @input="markAp(row)" /><span v-else>{{ display(row.remark) }}</span></template>
             <template #cell-fit_ap_status="{ row }"><el-tag :type="stateType(row.runtime.fit_ap_status)">{{ row.runtime.fit_ap_status }}</el-tag></template>
             <template #cell-mesh_related_name="{ row }">{{ display(row.runtime.mesh_related_name) }}</template>
             <template #cell-optical_status="{ row }"><el-tag :type="stateType(row.runtime.optical_status)">{{ row.runtime.optical_status }}</el-tag></template>
             <template #cell-issues="{ row }"><el-tag v-if="row.issue_count" :type="issueType(row.highest_issue_severity)">{{ row.issue_count }}</el-tag><span v-else>--</span></template>
-            <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-button link type="primary" @click="openApMesh(row)">Mesh-Link</el-button><el-button v-if="!locked" link type="danger" @click="deleteEntity('trackside_ap', row)">删除</el-button></template>
+            <template #cell-actions="{ row }"><el-button link type="primary" @click="openApAc(row)">FIT-AP</el-button><el-button link type="primary" @click="openApMesh(row)">Mesh-Link</el-button><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('trackside_ap', row)">移除</el-button><template v-if="isPendingDelete('trackside_ap', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('trackside_ap', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('trackside_ap', row)">删除</el-button></template>
           </NcDataTable>
           <el-pagination background :disabled="!locked" layout="total, prev, pager, next, sizes" :total="store.apTotal" :current-page="store.apFilters.page" :page-size="store.apFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setApPage" @size-change="(size: number) => { store.apFilters.page_size = size; store.applyApFilters() }" />
         </el-tab-pane>
@@ -657,15 +765,15 @@ function formatBytes(value: number): string {
                 <el-button type="primary" :disabled="!locked" @click="store.applyMrFilters">应用筛选</el-button>
                 <el-button :disabled="locked || saving" @click="addMr">新增车载 MR</el-button>
               </div>
-              <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="store.mrs" :columns="mrEditColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
-                <template #cell-name="{ row }"><el-input v-if="!locked" v-model="row.name" @input="markMr(row)" /><span v-else>{{ display(row.name) }}</span></template>
-                <template #cell-management_ip="{ row }"><el-input v-if="!locked" v-model="row.management_ip" @input="markMr(row)" /><span v-else>{{ display(row.management_ip) }}</span></template>
-                <template #cell-mac="{ row }"><el-input v-if="!locked" v-model="row.mac" @input="markMr(row)" /><span v-else>{{ display(row.mac) }}</span></template>
-                <template #cell-connection="{ row }"><div v-if="!locked" class="connection-editor"><el-select v-model="row.protocol" @change="markMr(row)"><el-option label="SSH" value="SSH" /><el-option label="Telnet" value="TELNET" /></el-select><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" @change="markMr(row)" /></div><span v-else>{{ display(row.protocol) }} / {{ display(row.port) }}</span></template>
-                <template #cell-remark="{ row }"><el-input v-if="!locked" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>
+              <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="mrRows" :columns="mrEditColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
+                <template #cell-name="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'name') }" @input="markMr(row)" /><span v-else>{{ display(row.name) }}</span></template>
+                <template #cell-management_ip="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.management_ip" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'management_ip') }" @input="markMr(row)" /><span v-else>{{ display(row.management_ip) }}</span></template>
+                <template #cell-mac="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.mac" @input="markMr(row)" /><span v-else>{{ display(row.mac) }}</span></template>
+                <template #cell-connection="{ row }"><div v-if="canEditRow('vehicle_mr', row.id)" class="connection-editor"><el-select v-model="row.protocol" @change="markMr(row)"><el-option label="SSH" value="SSH" /><el-option label="Telnet" value="TELNET" /></el-select><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" @change="markMr(row)" /></div><span v-else>{{ display(row.protocol) }} / {{ display(row.port) }}</span></template>
+                <template #cell-remark="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-mesh_status="{ row }"><el-tag :type="stateType(row.runtime.mesh_status)">{{ row.runtime.mesh_status }}</el-tag></template>
                 <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
-                <template #cell-edit_actions="{ row }"><el-button link type="danger" :disabled="locked" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
               </NcDataTable>
               <el-pagination background :disabled="!locked" layout="total, prev, pager, next, sizes" :total="store.mrTotal" :current-page="store.mrFilters.page" :page-size="store.mrFilters.page_size" :page-sizes="[20, 50, 100, 200]" @current-change="store.setMrPage" @size-change="(size: number) => { store.mrFilters.page_size = size; store.applyMrFilters() }" />
             </el-tab-pane>
@@ -782,6 +890,7 @@ function formatBytes(value: number): string {
 .operation-table, .change-table { margin-top: 16px; }
 .issue-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .row-issues { display: flex; flex-wrap: wrap; gap: 5px; }
+.field-error :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--nc-danger) inset; }
 @media (max-width: 1360px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
   .filter-bar { grid-template-columns: repeat(3, 1fr); }
