@@ -38,3 +38,32 @@ def test_tool_path_rejects_directory_and_symlink(tmp_path: Path) -> None:
         pytest.skip("当前环境不允许创建符号链接")
     with pytest.raises(SettingsToolPathError, match="符号链接"):
         validate_settings_tool_path("ipop", link)
+
+
+@pytest.mark.parametrize("name", ["putty.exe", "PuTTY.exe", "putty64.exe", "PuTTY64.exe", "PUTTY64.EXE"])
+def test_putty_accepts_32_and_64_bit_executable_names_case_insensitively(tmp_path: Path, name: str) -> None:
+    executable = tmp_path / name
+    executable.write_bytes(b"MZ")
+
+    assert validate_settings_tool_path("putty", executable) == executable.resolve()
+
+
+@pytest.mark.parametrize("name", ["puttygen.exe", "plink.exe", "psftp.exe", "putty.exe.bak", "putty.bat"])
+def test_putty_rejects_other_programs_and_disguised_files(tmp_path: Path, name: str) -> None:
+    executable = tmp_path / name
+    executable.write_bytes(b"MZ")
+
+    with pytest.raises(SettingsToolPathError, match="putty.exe 或 putty64.exe"):
+        validate_settings_tool_path("putty", executable)
+
+
+@pytest.mark.parametrize(
+    ("terminal_type", "name"),
+    [("putty", "SecureCRT.exe"), ("securecrt", "PuTTY64.exe"), ("xshell", "putty.exe")],
+)
+def test_terminal_type_rejects_another_terminal_executable(tmp_path: Path, terminal_type: str, name: str) -> None:
+    executable = tmp_path / name
+    executable.write_bytes(b"MZ")
+
+    with pytest.raises(SettingsToolPathError, match="类型不匹配"):
+        validate_settings_tool_path(terminal_type, executable)

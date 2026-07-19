@@ -358,11 +358,13 @@ def test_winscp_tunnel_starts_process_before_success(monkeypatch):
     assert calls[-3:] == ["waited", "unregistered", "closed"]
 
 
-def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):
+def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(tmp_path: Path):
     settings = FakeSettings()
+    securecrt = tmp_path / "SecureCRT.exe"
+    securecrt.write_bytes(b"MZ")
     settings.values.update(
         {
-            "external_terminal/securecrt_path": r"C:\Tools\SecureCRT.exe",
+            "external_terminal/securecrt_path": str(securecrt),
             "external_terminal/mobaxterm_path": r"C:\Tools\MobaXterm.exe",
             "external_terminal/cmd_path": r"C:\Windows\System32\cmd.exe",
             "external_terminal/powershell_path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
@@ -370,11 +372,6 @@ def test_external_terminal_configs_ignore_mobaxterm_and_cmd_paths(monkeypatch):
             "external_terminal/legacy_ssh_extended_compatibility": True,
         }
     )
-    monkeypatch.setattr(
-        "netconsole.services.external_terminal.Path.is_file",
-        lambda self: str(self).endswith("SecureCRT.exe"),
-    )
-
     configs = available_external_terminal_configs(settings)
 
     assert [config.terminal_type for config in configs] == ["securecrt"]

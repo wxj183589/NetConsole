@@ -12,6 +12,7 @@ from urllib.parse import quote
 from netconsole.models.device import Device
 from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, prepared_connection_target, sanitize_sensitive_text
+from netconsole.services.settings_tool_validation import SettingsToolPathError, validate_settings_tool_path
 
 
 class ExternalTerminalType:
@@ -74,8 +75,13 @@ def available_external_terminal_configs(settings: SettingsLike) -> list[External
     include_password = bool(settings.get_value("external_terminal/pass_password", False))
     for terminal_type, key in TERMINAL_SETTING_KEYS.items():
         path = str(settings.get_value(key, "") or "").strip()
-        if path and Path(path).is_file():
-            configs.append(ExternalTerminalConfig(terminal_type=terminal_type, exe_path=path, include_password=include_password))
+        if not path:
+            continue
+        try:
+            validated_path = validate_settings_tool_path(terminal_type, path)
+        except SettingsToolPathError:
+            continue
+        configs.append(ExternalTerminalConfig(terminal_type=terminal_type, exe_path=str(validated_path), include_password=include_password))
     return configs
 
 

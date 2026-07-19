@@ -18,6 +18,7 @@
 
 ### Electron 功能对等
 
+- 修复系统设置工具路径按钮在窄窗口和缩放场景下重叠的问题，统一为可换行的独立按钮组和字段级反馈；PuTTY 白名单新增大小写不敏感的 `putty64.exe`，同时保留 `putty.exe`，Electron Main、Python 保存和真实启动点继续拒绝其他程序。
 - 统一任务窗口完成取消竞态、终态收敛、日志脱敏、Artifact 授权、受管下载、打开文件与定位目录闭环；任务子窗口保持单实例并可在加载失败或崩溃后安全重建，关闭窗口不停止后台任务。
 - 设备管理完成真实 CRUD、凭据保持/替换/清除三态、导入预览、诊断与设备导出 Artifact、统一任务摘要以及 SecureCRT/Xshell/PuTTY 严格白名单桌面契约；真实设备连接和外部终端点击仍待现场验收。
 - 新增设备快速详情抽屉与 `/devices/:deviceId` 完整详情页，共用 Device Detail Application/Query Service、分页 DTO/API 和 Vue presentation；开页只读最近快照、页签懒加载，刷新通过 Task Center 的 `device.inventory.collect`。当前命令执行只允许可执行 Profile 匹配的 H3C/Comware 交换机，H3C AC/MR 仅关联现有业务查询，Huawei/ZTE 与未知或未验证平台失败关闭。设备详情不提供独立 Health 契约；LLDP 公开 DTO/页面移除邻居能力和型号；接口移除入/出速率、错误统计及最后变化；光模块移除采集状态和阈值来源，正常状态不展示原因，异常原因继续中文显示并按后端严重性使用语义告警色；关联业务公开契约移除重复的 AC/AP、交换机、光模块严重性及 MR 会话字段。完整页按剩余视口高度伸展，抽屉继续限制独立滚动高度。被删除的公开字段不保留 DTO/TypeScript/API 别名或双读兼容；存储层本轮未改 schema，仍按各业务的现行事实字段读写。定向自动测试已通过，Electron 视觉交互和真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。

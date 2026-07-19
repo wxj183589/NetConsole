@@ -2551,7 +2551,7 @@ def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_execut
     assert settings.json()["securecrt_path"].endswith("SecureCRT.exe")
 
     xshell = tmp_path / "Xshell.exe"
-    putty = tmp_path / "putty.exe"
+    putty = tmp_path / "PuTTY64.exe"
     xshell.write_bytes(b"fake executable")
     putty.write_bytes(b"fake executable")
     updated = client.put(
@@ -2571,7 +2571,7 @@ def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_execut
     assert isinstance(desktop_adapter, _FakeDesktopAdapter)
     for terminal_type, expected_name in (
         ("xshell", "Xshell.exe"),
-        ("putty", "putty.exe"),
+        ("putty", "PuTTY64.exe"),
     ):
         launched = client.post(
             f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
@@ -2589,7 +2589,7 @@ def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_execut
         json={**updated.json(), "securecrt_path": str(command_interpreter)},
     )
     assert rejected.status_code == 422
-    assert "文件名不匹配" in rejected.text
+    assert "请选择 SecureCRT.exe" in rejected.text
 
     service.desktop_action_service.runtime_mode = RuntimeMode.SERVER
     assert (

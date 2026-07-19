@@ -6,4 +6,6 @@
 
 主要入口为 `SystemSettingsView.vue`；修改设置项时更新 Feature/i18n、API DTO 与测试，确认敏感配置不回显。
 
+工具程序路径统一使用 `components/settings/NcExecutablePathField.vue`。输入框与“选择 / 清空 / 试启动”位于独立网格列，窄窗口时按钮组换行；页面不得再把多个动作塞入 `el-input` append。终端文件名只用于即时交互提示，安全校验仍由 Electron Main 与 Python Service 的固定白名单执行。PuTTY 接受大小写不敏感的 `putty.exe` 和 `putty64.exe`。
+
 主题和强调色只写入现有系统设置 API。页面预览通过 `settings/appearance.ts` 使用共享主题运行时，不得新增 Pinia/localStorage 主题副本；页面文字和边框消费语义 Token。

@@ -102,6 +102,7 @@ from netconsole.services.netmiko_connection import (
     extract_sysname_from_prompt,
     sanitize_sensitive_text,
 )
+from netconsole.services.settings_tool_validation import validate_settings_tool_path
 from netconsole.services.job_center.worker_protocol import parse_event_line
 from netconsole.utils.natural_sort import natural_text_key
 
@@ -952,23 +953,7 @@ class DeviceManagementWebService:
         raw_value = str(value or "").strip()
         if not raw_value:
             return ""
-        raw = Path(raw_value)
-        expected_names = {
-            "securecrt": {"securecrt.exe"},
-            "xshell": {"xshell.exe"},
-            "putty": {"putty.exe"},
-        }
-        if not raw.is_absolute() or str(raw).startswith("\\\\"):
-            raise ValueError("外部终端路径必须是本机绝对路径")
-        try:
-            resolved = raw.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ValueError("外部终端程序不存在") from exc
-        if raw.is_symlink() or not resolved.is_file():
-            raise ValueError("外部终端路径必须指向普通程序文件")
-        if resolved.name.casefold() not in expected_names[terminal_type]:
-            raise ValueError(f"{terminal_type} 程序文件名不匹配")
-        return str(resolved)
+        return str(validate_settings_tool_path(terminal_type, raw_value))
 
     def start_csv_export(self, payload: DeviceExportRequestDTO) -> DeviceTaskReferenceDTO:
         site = self.current_site_id()

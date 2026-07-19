@@ -57,6 +57,34 @@ export type SettingsDirectoryId = 'securecrt_sessions_root'
 export type SettingsActionId = 'open_settings_config' | 'open_current_site' | 'launch_ipop'
 export type SettingsThemeColor = '#0078D4' | '#2563EB' | '#0891B2' | '#16A34A'
 
+export interface SettingsToolDefinition {
+  displayName: string
+  fieldLabel: string
+  filterName: string
+  executableNames: readonly string[]
+}
+
+export const SETTINGS_TOOL_DEFINITIONS: Record<SettingsToolId, SettingsToolDefinition> = {
+  iperf3: { displayName: 'iperf3', fieldLabel: 'iperf3.exe', filterName: 'iperf3.exe', executableNames: ['iperf3.exe'] },
+  fping: { displayName: 'fping', fieldLabel: 'fping.exe', filterName: 'fping.exe', executableNames: ['fping.exe', 'Fping_v3.exe'] },
+  ipop: { displayName: 'IPOP', fieldLabel: 'IPOP.exe', filterName: 'IPOP.exe', executableNames: ['IPOP.EXE'] },
+  securecrt: { displayName: 'SecureCRT', fieldLabel: 'SecureCRT.exe', filterName: 'SecureCRT', executableNames: ['SecureCRT.exe'] },
+  xshell: { displayName: 'Xshell', fieldLabel: 'Xshell.exe', filterName: 'Xshell', executableNames: ['Xshell.exe'] },
+  putty: { displayName: 'PuTTY', fieldLabel: 'PuTTY.exe / PuTTY64.exe', filterName: 'PuTTY', executableNames: ['putty.exe', 'putty64.exe'] },
+}
+
+export function settingsToolNameMatches(toolId: SettingsToolId, path: string): boolean {
+  if (!path.trim()) return true
+  const executableName = path.trim().split(/[\\/]/).pop()?.toLowerCase() ?? ''
+  return SETTINGS_TOOL_DEFINITIONS[toolId].executableNames.some((name) => name.toLowerCase() === executableName)
+}
+
+export function settingsToolMismatchMessage(toolId: SettingsToolId): string {
+  if (toolId === 'putty') return '所选程序与 PuTTY 类型不匹配。请选择 putty.exe 或 putty64.exe。'
+  const definition = SETTINGS_TOOL_DEFINITIONS[toolId]
+  return `所选程序与 ${definition.displayName} 类型不匹配。请选择 ${definition.executableNames.join(' 或 ')}。`
+}
+
 export interface SettingsPathResult { cancelled: boolean; path?: string }
 export interface SettingsColorResult { cancelled: boolean; color?: SettingsThemeColor }
 

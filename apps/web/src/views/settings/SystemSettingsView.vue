@@ -2,6 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import {
+  SETTINGS_TOOL_DEFINITIONS,
+  settingsToolMismatchMessage,
+  settingsToolNameMatches,
+  type SettingsToolId,
+} from '../../../../desktop_electron/src/shared/bridge'
 
 import {
   getFeatureSettings, getSystemSettings, previewFeatureSettings, reloadSystemSettings,
@@ -16,6 +22,7 @@ import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { FeatureSetting, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
+import NcExecutablePathField from '../../components/settings/NcExecutablePathField.vue'
 
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
@@ -32,9 +39,19 @@ const featurePreview = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const featuresDirty = computed(() => JSON.stringify(features.value) !== featureBaseline.value)
 const anyDirty = computed(() => dirty.value || featuresDirty.value)
+const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
+  iperf3: toolPathError('iperf3', form.iperf_path),
+  fping: toolPathError('fping', form.fping_path),
+  ipop: toolPathError('ipop', form.ipop_path),
+  securecrt: toolPathError('securecrt', form.terminal_paths.securecrt),
+  xshell: toolPathError('xshell', form.terminal_paths.xshell),
+  putty: toolPathError('putty', form.terminal_paths.putty),
+}))
+const hasBlockingPathError = computed(() => Object.values(pathErrors.value).some(Boolean))
 const featureSwitchAvailable = computed(() => isFeatureEnabled('web.feature_switch'))
 const featureColumns: NcTableColumn<FeatureSetting>[] = [
   { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description' },
@@ -96,7 +113,10 @@ async function save(): Promise<void> {
     } else if (featureSaved) {
       error.value = `功能开关已保存，但系统设置保存失败：${message(cause, '未知错误')}`
       ElMessage.error(error.value)
-    } else showError(cause, saveStage === 'feature_profile' ? '功能开关保存失败，系统设置未保存' : '系统设置保存失败')
+    } else {
+      assignToolError(cause)
+      showError(cause, saveStage === 'feature_profile' ? '功能开关保存失败，系统设置未保存' : '系统设置保存失败')
+    }
   } finally { saving.value = false }
 }
 
@@ -116,21 +136,44 @@ async function loadFeatureSettings(): Promise<void> {
 }
 
 function acceptSnapshot(value: SystemSettingsSnapshot): void {
-  snapshot.value = value; baseline.value = cloneValues(value.values); Object.assign(form, cloneValues(value.values)); previewAppearance()
+  snapshot.value = value; baseline.value = cloneValues(value.values); Object.assign(form, cloneValues(value.values)); clearToolErrors(); previewAppearance()
 }
-function resetDefaults(): void { if (snapshot.value) { Object.assign(form, cloneValues(snapshot.value.defaults)); previewAppearance() } }
-function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); previewAppearance(); if (featureBaseline.value) features.value = JSON.parse(featureBaseline.value) as FeatureSetting[] }
+function resetDefaults(): void { if (snapshot.value) { Object.assign(form, cloneValues(snapshot.value.defaults)); clearToolErrors(); previewAppearance() } }
+function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); clearToolErrors(); previewAppearance(); if (featureBaseline.value) features.value = JSON.parse(featureBaseline.value) as FeatureSetting[] }
 function previewAppearance(): void { applySystemAppearance(form) }
 function restoreAppearance(): void { if (baseline.value) applySystemAppearance(baseline.value) }
 function cloneValues(value: SystemSettingsValues): SystemSettingsValues { return { ...value, terminal_paths: { ...value.terminal_paths } } }
 function beforeUnload(event: BeforeUnloadEvent): void { if (anyDirty.value) { event.preventDefault(); event.returnValue = '' } }
 
-async function selectTool(toolId: 'iperf3' | 'fping' | 'ipop' | 'securecrt' | 'xshell' | 'putty', field?: 'iperf_path' | 'fping_path' | 'ipop_path'): Promise<void> {
+async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_path' | 'ipop_path'): Promise<void> {
   try {
     const result = await getPlatformAdapter().selectSettingsTool(toolId)
     if (result.cancelled || !result.path) return
     if (field) form[field] = result.path; else form.terminal_paths[form.terminal_type] = result.path
-  } catch (cause) { showError(cause, '工具路径选择失败') }
+    clearToolError(toolId)
+  } catch (cause) {
+    runtimeToolErrors[toolId] = message(cause, '工具路径选择失败')
+    showError(cause, '工具路径选择失败')
+  }
+}
+function toolPathError(toolId: SettingsToolId, value: string): string {
+  if (runtimeToolErrors[toolId]) return runtimeToolErrors[toolId] ?? ''
+  return settingsToolNameMatches(toolId, value) ? '' : settingsToolMismatchMessage(toolId)
+}
+function toolPathSuccess(toolId: SettingsToolId, value: string): string {
+  return value && !pathErrors.value[toolId] ? `已识别为 ${SETTINGS_TOOL_DEFINITIONS[toolId].displayName} 程序` : ''
+}
+function clearToolError(toolId: SettingsToolId): void { delete runtimeToolErrors[toolId]; error.value = '' }
+function clearToolErrors(): void { for (const toolId of Object.keys(runtimeToolErrors) as SettingsToolId[]) delete runtimeToolErrors[toolId] }
+function assignToolError(cause: unknown): void {
+  const detail = message(cause, '')
+  const normalized = detail.toLowerCase()
+  for (const [toolId, definition] of Object.entries(SETTINGS_TOOL_DEFINITIONS) as [SettingsToolId, typeof SETTINGS_TOOL_DEFINITIONS[SettingsToolId]][]) {
+    if (normalized.includes(toolId) || normalized.includes(definition.displayName.toLowerCase())) {
+      runtimeToolErrors[toolId] = detail
+      return
+    }
+  }
 }
 async function selectSessions(): Promise<void> {
   try {
@@ -157,7 +200,7 @@ async function launchIpop(): Promise<void> {
   if (dirty.value) {
     saving.value = true
     try { acceptSnapshot(await saveSystemSettings(cloneValues(form), snapshot.value.version)) }
-    catch (cause) { restoreAppearance(); showError(cause, '保存当前设置失败，未启动 IPOP'); return }
+    catch (cause) { restoreAppearance(); assignToolError(cause); showError(cause, '保存当前设置失败，未启动 IPOP'); return }
     finally { saving.value = false }
   }
   await nativeAction('launch_ipop')
@@ -192,7 +235,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
         <el-button data-testid="cancel" :disabled="!anyDirty" @click="cancelChanges">{{ t('settings.cancel', '取消修改') }}</el-button>
         <el-button data-testid="reload" @click="reload">{{ t('settings.reload', '重载') }}</el-button>
         <el-button data-testid="open-settings-config" @click="nativeAction('open_settings_config')">打开配置目录</el-button>
-        <el-button data-testid="save" type="primary" :loading="saving" :disabled="!anyDirty" @click="save">{{ t('settings.save', '保存') }}</el-button>
+        <el-button data-testid="save" type="primary" :loading="saving" :disabled="!anyDirty || hasBlockingPathError" @click="save">{{ t('settings.save', '保存') }}</el-button>
       </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -209,16 +252,16 @@ function message(cause: unknown, fallback: string): string { return cause instan
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
       <el-form label-position="top">
-        <el-form-item label="iperf3.exe"><el-input v-model="form.iperf_path" readonly><template #append><el-button @click="selectTool('iperf3','iperf_path')">选择</el-button><el-button @click="form.iperf_path=''">清空</el-button></template></el-input></el-form-item>
-        <el-form-item label="Fping_v3.exe"><el-input v-model="form.fping_path" readonly><template #append><el-button @click="selectTool('fping','fping_path')">选择</el-button><el-button @click="form.fping_path=''">清空</el-button></template></el-input></el-form-item>
-        <el-form-item label="IPOP.EXE"><el-input v-model="form.ipop_path" readonly><template #append><el-button data-testid="select-ipop" @click="selectTool('ipop','ipop_path')">选择</el-button><el-button @click="form.ipop_path=''">清空</el-button><el-button data-testid="launch-ipop" @click="launchIpop">试启动</el-button></template></el-input></el-form-item>
+        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.iperf3.fieldLabel"><NcExecutablePathField v-model="form.iperf_path" :error="pathErrors.iperf3" :success="toolPathSuccess('iperf3', form.iperf_path)" @select="selectTool('iperf3','iperf_path')" @clear="clearToolError('iperf3')" /></el-form-item>
+        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.fping.fieldLabel"><NcExecutablePathField v-model="form.fping_path" :error="pathErrors.fping" :success="toolPathSuccess('fping', form.fping_path)" @select="selectTool('fping','fping_path')" @clear="clearToolError('fping')" /></el-form-item>
+        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.ipop.fieldLabel"><NcExecutablePathField v-model="form.ipop_path" testable select-test-id="select-ipop" test-test-id="launch-ipop" :loading="saving" :error="pathErrors.ipop" :success="toolPathSuccess('ipop', form.ipop_path)" @select="selectTool('ipop','ipop_path')" @clear="clearToolError('ipop')" @test="launchIpop" /></el-form-item>
       </el-form>
     </section>
 
     <section class="settings-band"><h2>{{ t('settings.terminal', '外部终端') }}</h2>
       <el-form class="settings-grid" label-position="top">
         <el-form-item label="终端类型"><el-select v-model="form.terminal_type" data-testid="terminal-type"><el-option label="SecureCRT" value="securecrt"/><el-option label="Xshell" value="xshell"/><el-option label="PuTTY" value="putty"/></el-select></el-form-item>
-        <el-form-item class="wide" label="终端程序路径"><el-input v-model="form.terminal_paths[form.terminal_type]" readonly data-testid="terminal-path"><template #append><el-button @click="selectTool(form.terminal_type)">选择</el-button><el-button @click="form.terminal_paths[form.terminal_type]=''">清空</el-button></template></el-input></el-form-item>
+        <el-form-item class="wide" :label="SETTINGS_TOOL_DEFINITIONS[form.terminal_type].fieldLabel"><NcExecutablePathField v-model="form.terminal_paths[form.terminal_type]" data-testid="terminal-path" select-test-id="select-terminal-tool" clear-test-id="clear-terminal-tool" :error="pathErrors[form.terminal_type]" :success="toolPathSuccess(form.terminal_type, form.terminal_paths[form.terminal_type])" @select="selectTool(form.terminal_type)" @clear="clearToolError(form.terminal_type)" /></el-form-item>
         <el-form-item class="wide" label="SecureCRT 会话根目录"><el-input v-model="form.securecrt_sessions_root" readonly><template #append><el-button data-testid="select-sessions" @click="selectSessions">选择</el-button></template></el-input></el-form-item>
         <el-form-item label="默认 SSH 端口"><el-input-number v-model="form.ssh_port" :min="1" :max="65535"/></el-form-item>
         <el-form-item label="默认 Telnet 端口"><el-input-number v-model="form.telnet_port" :min="1" :max="65535"/></el-form-item>

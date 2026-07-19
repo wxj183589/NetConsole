@@ -102,6 +102,32 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('accepts PuTTY64.exe and shows field-level executable feedback', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'terminal-type', 'putty')
+    settingsBridge.selectSettingsTool.mockResolvedValueOnce({ cancelled: false, path: 'D:\\PuTTY\\PuTTY64.exe' })
+
+    await wrapper.find('[data-testid="select-terminal-tool"]').trigger('click'); await flushPromises()
+
+    const pathInput = wrapper.findAllComponents({ name: 'ElInput' })[3]!
+    expect(pathInput.props('modelValue')).toBe('D:\\PuTTY\\PuTTY64.exe')
+    expect(wrapper.text()).toContain('已识别为 PuTTY 程序')
+    expect(wrapper.text()).not.toContain('所选程序与 PuTTY 类型不匹配')
+    wrapper.unmount()
+  })
+
+  it('blocks save and keeps a PuTTY executable mismatch beside the field', async () => {
+    const { wrapper } = await mounted()
+    await change(wrapper, 'terminal-type', 'putty')
+    const field = wrapper.findAllComponents({ name: 'NcExecutablePathField' })[3]!
+
+    field.vm.$emit('update:modelValue', 'D:\\PuTTY\\plink.exe'); await nextTick()
+
+    expect(wrapper.text()).toContain('所选程序与 PuTTY 类型不匹配。请选择 putty.exe 或 putty64.exe。')
+    expect(wrapper.find('[data-testid="save"]').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('requires confirmation before feature preview and applies the real preview response', async () => {
     const { wrapper } = await mounted()
     confirmAction.mockResolvedValueOnce(true)

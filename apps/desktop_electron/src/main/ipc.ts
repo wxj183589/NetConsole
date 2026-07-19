@@ -1,7 +1,13 @@
-import { basename, isAbsolute } from 'node:path'
+import { isAbsolute } from 'node:path'
 
 import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
-import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
+import {
+  DESKTOP_HANDLED_CHANNELS,
+  DESKTOP_IPC,
+  DESKTOP_SESSION_HEADER,
+  SETTINGS_TOOL_DEFINITIONS,
+  settingsToolNameMatches,
+} from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
   validateExternalUrl,
@@ -165,13 +171,13 @@ export function registerDesktopIpc(
     DESKTOP_IPC.selectSettingsTool,
     trusted(async (value, event) => {
       const toolId = validateSettingsToolId(value)
-      const fileNames = SETTINGS_TOOL_NAMES[toolId]
+      const definition = SETTINGS_TOOL_DEFINITIONS[toolId]
       const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
-        properties: ['openFile'], filters: [{ name: fileNames[0], extensions: ['exe'] }],
+        properties: ['openFile'], filters: [{ name: definition.filterName, extensions: ['exe'] }],
       })
       const selected = result.canceled ? undefined : result.filePaths[0]
       if (!selected) return { cancelled: true }
-      if (!isAbsolute(selected) || !fileNames.some((name) => name.toLowerCase() === basename(selected).toLowerCase())) {
+      if (!isAbsolute(selected) || !settingsToolNameMatches(toolId, selected)) {
         throw new Error('settings tool selection does not match tool id')
       }
       return { cancelled: false, path: selected }
@@ -333,10 +339,6 @@ function hasThemeBackground(value: unknown): value is ThemeWindowLike {
     && typeof (value as { setBackgroundColor?: unknown }).setBackgroundColor === 'function'
 }
 
-const SETTINGS_TOOL_NAMES = {
-  iperf3: ['iperf3.exe'], fping: ['Fping_v3.exe', 'fping.exe'], ipop: ['IPOP.EXE'],
-  securecrt: ['SecureCRT.exe'], xshell: ['Xshell.exe'], putty: ['putty.exe'],
-} as const
 const SETTINGS_COLORS: readonly SettingsThemeColor[] = ['#0078D4', '#2563EB', '#0891B2', '#16A34A']
 
 function safeActionError(cause: unknown): string {

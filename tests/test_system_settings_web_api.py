@@ -57,7 +57,7 @@ def test_default_desktop_profile_reaches_settings_and_round_trips(tmp_path: Path
             "terminal_paths": {
                 "securecrt": _exe(tmp_path, "SecureCRT.exe"),
                 "xshell": _exe(tmp_path, "Xshell.exe"),
-                "putty": _exe(tmp_path, "putty.exe"),
+                "putty": _exe(tmp_path, "PuTTY64.exe"),
             },
             "securecrt_sessions_root": str(tmp_path.resolve()),
             "ssh_port": 2222,
@@ -73,7 +73,7 @@ def test_default_desktop_profile_reaches_settings_and_round_trips(tmp_path: Path
     persisted = json.loads(paths.settings_path.read_text(encoding="utf-8"))
     assert persisted["external_terminal/xshell_path"].endswith("Xshell.exe")
     assert persisted["external_terminal/securecrt_path"].endswith("SecureCRT.exe")
-    assert persisted["external_terminal/putty_path"].endswith("putty.exe")
+    assert persisted["external_terminal/putty_path"].endswith("PuTTY64.exe")
 
 
 def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None:

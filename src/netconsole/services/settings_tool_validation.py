@@ -12,7 +12,16 @@ TOOL_EXECUTABLE_NAMES: dict[SettingsToolId, tuple[str, ...]] = {
     "ipop": ("IPOP.EXE",),
     "securecrt": ("SecureCRT.exe",),
     "xshell": ("Xshell.exe",),
-    "putty": ("putty.exe",),
+    "putty": ("putty.exe", "putty64.exe"),
+}
+
+TOOL_DISPLAY_NAMES: dict[SettingsToolId, str] = {
+    "iperf3": "iperf3",
+    "fping": "fping",
+    "ipop": "IPOP",
+    "securecrt": "SecureCRT",
+    "xshell": "Xshell",
+    "putty": "PuTTY",
 }
 
 
@@ -26,20 +35,31 @@ def validate_settings_tool_path(tool_id: SettingsToolId, value: str | Path) -> P
     if expected_names is None:
         raise SettingsToolPathError("不支持的工具标识")
     path = Path(str(value).strip().strip('"').strip("'"))
-    if not path.is_absolute():
-        raise SettingsToolPathError(f"{tool_id} 路径必须是绝对路径")
+    display_name = TOOL_DISPLAY_NAMES[tool_id]
+    if not path.is_absolute() or str(path).startswith("\\\\"):
+        raise SettingsToolPathError(f"{display_name} 路径必须是本机绝对路径")
     if path.name.casefold() not in {name.casefold() for name in expected_names} or path.suffix.casefold() != ".exe":
-        raise SettingsToolPathError(f"{tool_id} 必须选择 {' / '.join(expected_names)}")
+        if tool_id == "putty":
+            raise SettingsToolPathError("所选程序与 PuTTY 类型不匹配。请选择 putty.exe 或 putty64.exe。")
+        raise SettingsToolPathError(
+            f"所选程序与 {display_name} 类型不匹配。请选择 {' 或 '.join(expected_names)}。"
+        )
     try:
         if path.is_symlink():
-            raise SettingsToolPathError(f"{tool_id} 路径不能是符号链接")
+            raise SettingsToolPathError(f"{display_name} 路径不能是符号链接")
         if not path.exists():
-            raise SettingsToolPathError(f"{tool_id} 文件不存在")
+            raise SettingsToolPathError(f"{display_name} 文件不存在")
         if not path.is_file():
-            raise SettingsToolPathError(f"{tool_id} 路径必须是普通文件")
+            raise SettingsToolPathError(f"{display_name} 路径必须是普通文件")
         return path.resolve(strict=True)
     except OSError as exc:
-        raise SettingsToolPathError(f"{tool_id} 路径不可访问：{exc}") from exc
+        raise SettingsToolPathError(f"{display_name} 路径不可访问：{exc}") from exc
 
 
-__all__ = ["SettingsToolId", "SettingsToolPathError", "TOOL_EXECUTABLE_NAMES", "validate_settings_tool_path"]
+__all__ = [
+    "SettingsToolId",
+    "SettingsToolPathError",
+    "TOOL_DISPLAY_NAMES",
+    "TOOL_EXECUTABLE_NAMES",
+    "validate_settings_tool_path",
+]
