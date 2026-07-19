@@ -1,85 +1,85 @@
 # 表格与字段展示清单
 
-本清单由 `scripts/ui/export_table_inventory.py` 生成。`BLOCKED` 表示已登记但尚未迁移的旧表，不表示功能故障。
+本清单由 `scripts/ui/export_table_inventory.py` 生成。`COMPLIANT` 表示已使用公共列宽测量与可视区填充；`BLOCKED` 表示已登记但尚未迁移的旧表，不表示功能故障。
 
-| 路由 | 页面 | 表格 ID | 当前组件 | 表头/内容居中 | 自动列宽 | 表头最小宽度 | 整改状态 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1021` | `device-detail-capabilities` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1052` | `device-detail-sections` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1081` | `device-detail-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:341` | `network-toolbox-calculator-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:366` | `network-toolbox-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:370` | `network-toolbox-probe-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:401` | `wireless-scan-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:405` | `wireless-scan-runs` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:412` | `wireless-scan-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:181` | `rail-base-trackside-ap-planning` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:194` | `rail-base-trackside-ap-plan-import-preview` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/network-tools/traffic` | `apps/web/src/components/traffic/TrafficRunHistory.vue:54` | `traffic-run-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:443` | `ac-fit-ap-resources` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:482` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:540` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:573` | `ac-fit-ap-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:263` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:355` | `agent-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:423` | `agent-tool-status` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:430` | `agent-remote-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/agents` | `apps/web/src/views/agents/AgentListView.vue:439` | `agent-remote-packages` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/command-reference` | `apps/web/src/views/command-reference/CommandReferenceView.vue:313` | `command-reference-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:585` | `config-devices` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:611` | `config-snapshots` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1250` | `device-list` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1411` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:515` | `file-local-entries` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:546` | `file-remote-entries` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:578` | `file-download-queue` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/tasks` | `apps/web/src/views/job-center/JobCenterView.vue:238` | `job-center-tasks` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:150` | `car-network-diagnostic-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:159` | `car-network-diagnostic-result` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkPointTableDialog.vue:248` | `car-network-point-table` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkPointTableDialog.vue:258` | `car-network-point-table-import-preview` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:350` | `mesh-analysis-task-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:365` | `mesh-analysis-sessions` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:387` | `mesh-analysis-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:391` | `mesh-analysis-timeline` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:393` | `mesh-analysis-switch-events` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:397` | `mesh-analysis-channel-busy` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:399` | `mesh-analysis-anomalies` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:401` | `mesh-analysis-ap-statistics` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:403` | `mesh-analysis-traffic-alignment` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:406` | `mesh-analysis-artifacts` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:407` | `mesh-analysis-sources` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:146` | `online-mr-analysis-metrics` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:147` | `online-mr-analysis-timeline` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:357` | `online-mr-collectors` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:439` | `online-mr-notes` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:589` | `rail-base-stations` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:600` | `rail-base-sections` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:622` | `rail-base-trackside-aps` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:648` | `rail-base-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:660` | `rail-base-vehicle-mrs` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:685` | `rail-base-quality-groups` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:686` | `rail-base-quality-issues` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:712` | `rail-base-merge-plan` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:714` | `rail-base-merge-field-diffs` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:730` | `rail-base-import-operations` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:739` | `rail-base-import-changes` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:743` | `rail-base-relations` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:191` | `rail-wireless-dashboard-mesh-links` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:199` | `rail-wireless-dashboard-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:210` | `rail-wireless-dashboard-alerts` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:217` | `rail-wireless-dashboard-freshness` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:231` | `rail-wireless-dashboard-agents` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:182` | `trackside-ap-business` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:200` | `trackside-ap-business-task-result` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:295` | `rail-vehicle-mr-online-trains` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:305` | `rail-vehicle-mr-online-task-results` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:334` | `rail-vehicle-mr-online-history` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:336` | `rail-vehicle-mr-online-mappings` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:337` | `rail-vehicle-mr-online-mapping-preview` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/system-settings` | `apps/web/src/views/settings/SystemSettingsView.vue:230` | `system-feature-settings` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:356` | `system-log-entries` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:365` | `system-cleanup-items` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
-| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:377` | `system-open-source-components` | `NcDataTable` | 是 | 是 | 是 | MIGRATED |
+| 路由 | 页面 | 表格 ID | 当前组件 | 表头/内容居中 | 自动列宽 | 可视区填充 | 拉伸策略 | 整改状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1021` | `device-detail-capabilities` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1052` | `device-detail-sections` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/devices/:deviceId` | `apps/web/src/components/device-detail/DeviceDetailPanel.vue:1081` | `device-detail-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:341` | `network-toolbox-calculator-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:366` | `network-toolbox-tasks` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/NetworkToolboxPanel.vue:370` | `network-toolbox-probe-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:401` | `wireless-scan-tasks` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:405` | `wireless-scan-runs` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools` | `apps/web/src/components/network-tools/WirelessScanPanel.vue:412` | `wireless-scan-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:181` | `rail-base-trackside-ap-planning` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/components/rail-transit/base-data/TracksideApPlanningTab.vue:194` | `rail-base-trackside-ap-plan-import-preview` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/network-tools/traffic` | `apps/web/src/components/traffic/TrafficRunHistory.vue:54` | `traffic-run-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:443` | `ac-fit-ap-resources` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:482` | `ac-config-snapshots` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:540` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/ac-management` | `apps/web/src/views/ac-management/AcManagementView.vue:573` | `ac-fit-ap-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/ac-management/parity` | `apps/web/src/views/ac-management/AcWebParityView.vue:263` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:355` | `agent-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:423` | `agent-tool-status` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:430` | `agent-remote-tasks` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/agents` | `apps/web/src/views/agents/AgentListView.vue:439` | `agent-remote-packages` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/command-reference` | `apps/web/src/views/command-reference/CommandReferenceView.vue:313` | `command-reference-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:585` | `config-devices` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/config-collection` | `apps/web/src/views/config-collection/ConfigCollectionView.vue:611` | `config-snapshots` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1251` | `device-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/devices` | `apps/web/src/views/devices/DeviceManagementView.vue:1412` | `device-omnipeek-export` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:515` | `file-local-entries` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:546` | `file-remote-entries` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/file-management` | `apps/web/src/views/file-management/FileManagementView.vue:578` | `file-download-queue` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/tasks` | `apps/web/src/views/job-center/JobCenterView.vue:238` | `job-center-tasks` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:150` | `car-network-diagnostic-trains` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkDiagnosticView.vue:159` | `car-network-diagnostic-result` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkPointTableDialog.vue:248` | `car-network-point-table` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/car-network-diagnostic` | `apps/web/src/views/rail-transit/CarNetworkPointTableDialog.vue:258` | `car-network-point-table-import-preview` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:350` | `mesh-analysis-task-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:365` | `mesh-analysis-sessions` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:387` | `mesh-analysis-links` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:391` | `mesh-analysis-timeline` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:393` | `mesh-analysis-switch-events` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:397` | `mesh-analysis-channel-busy` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:399` | `mesh-analysis-anomalies` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:401` | `mesh-analysis-ap-statistics` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:403` | `mesh-analysis-traffic-alignment` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:406` | `mesh-analysis-artifacts` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/mesh-analysis` | `apps/web/src/views/rail-transit/MeshAnalysisView.vue:407` | `mesh-analysis-sources` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:146` | `online-mr-analysis-metrics` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:147` | `online-mr-analysis-timeline` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:357` | `online-mr-collectors` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:439` | `online-mr-notes` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:589` | `rail-base-stations` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:600` | `rail-base-sections` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:622` | `rail-base-trackside-aps` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:648` | `rail-base-trains` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:660` | `rail-base-vehicle-mrs` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:685` | `rail-base-quality-groups` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:686` | `rail-base-quality-issues` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:712` | `rail-base-merge-plan` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:714` | `rail-base-merge-field-diffs` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:730` | `rail-base-import-operations` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:739` | `rail-base-import-changes` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:743` | `rail-base-relations` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:191` | `rail-wireless-dashboard-mesh-links` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:199` | `rail-wireless-dashboard-trains` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:210` | `rail-wireless-dashboard-alerts` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:217` | `rail-wireless-dashboard-freshness` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/wireless-dashboard` | `apps/web/src/views/rail-transit/RailTransitWirelessDashboardView.vue:231` | `rail-wireless-dashboard-agents` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:182` | `trackside-ap-business` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/trackside-ap-business` | `apps/web/src/views/rail-transit/TracksideApBusinessView.vue:200` | `trackside-ap-business-task-result` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:295` | `rail-vehicle-mr-online-trains` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:305` | `rail-vehicle-mr-online-task-results` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:334` | `rail-vehicle-mr-online-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:336` | `rail-vehicle-mr-online-mappings` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/train-online` | `apps/web/src/views/rail-transit/VehicleMrOnlineView.vue:337` | `rail-vehicle-mr-online-mapping-preview` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/system-settings` | `apps/web/src/views/settings/SystemSettingsView.vue:230` | `system-feature-settings` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:356` | `system-log-entries` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:365` | `system-cleanup-items` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/logs` | `apps/web/src/views/system/SystemMaintenanceView.vue:377` | `system-open-source-components` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 
 总计：77 张已迁移，0 张待迁移。

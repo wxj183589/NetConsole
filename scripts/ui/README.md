@@ -6,8 +6,8 @@
 
 - `export_table_inventory.py`：扫描 Vue 表格并生成 `docs/ui/TABLE_INVENTORY.md`。`--write-baseline` 只用于建立或显式更新旧表基线，不能在普通检查中自动执行。
 - `check_table_contracts.py`：阻止新增未登记的直接 `el-table`，要求 `NcDataTable` 使用稳定 `table-id` 和 `route-key`，并检查精确例外。
-- `check_column_definitions.py`：阻止迁移文件继续散写 Element Plus 列、`header-align` 或 `measureText()`。
-- `check_table_alignment.py`：阻止迁移文件通过 CSS 覆盖表格对齐。
+- `check_column_definitions.py`：阻止迁移文件继续散写 Element Plus 列、`header-align`、`measureText()`、公共列宽调用或按列数平均分配。
+- `check_table_alignment.py`：阻止迁移文件通过 CSS 覆盖表格对齐，或把标准表格限制为小于可视区的百分比宽度。
 - `check_hardcoded_column_widths.py`：阻止迁移文件散写固定 Element Plus 列宽。
 - `table_guard.py`：共享扫描、基线、例外和清单实现。
 

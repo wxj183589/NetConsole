@@ -1,6 +1,8 @@
 import { t } from '../../i18n/runtime'
 
 export type NcColumnWidthMode = 'auto' | 'fixed' | 'content' | 'header'
+export type NcColumnStretchMode = 'none' | 'normal' | 'priority' | 'fill'
+export type NcTableEmptySpaceStrategy = 'stretch' | 'center' | 'fill-last'
 
 export type NcColumnValueType =
   | 'selection'
@@ -37,6 +39,8 @@ export interface NcTableColumn<Row extends object = Record<string, unknown>> {
   width?: number
   minWidth?: number
   maxWidth?: number
+  stretch?: NcColumnStretchMode
+  stretchWeight?: number
   sortable?: boolean | 'custom'
   filterable?: boolean
   fixed?: 'left' | 'right' | boolean
@@ -59,6 +63,8 @@ export interface ResolvedNcTableColumn<Row extends object = Record<string, unkno
   align: NcTableAlignment
   headerAlign: NcTableAlignment
   widthMode: NcColumnWidthMode
+  stretch: NcColumnStretchMode
+  stretchWeight: number
   visible: boolean
   hideable: boolean
   showOverflowTooltip: boolean
@@ -73,6 +79,8 @@ export function normalizeNcTableColumn<Row extends object>(
   if (align === 'left' && !column.alignmentReason && !['description', 'error'].includes(valueType)) {
     throw new Error(`表格列 ${column.key} 左对齐时必须声明 alignmentReason`)
   }
+  const stretch = column.stretch ?? defaultStretchMode(valueType)
+  const defaultWeight = stretch === 'priority' ? 3 : stretch === 'none' ? 0 : 1
   return {
     ...column,
     prop: column.prop ?? column.key,
@@ -80,11 +88,19 @@ export function normalizeNcTableColumn<Row extends object>(
     align,
     headerAlign: column.headerAlign ?? 'center',
     widthMode: column.widthMode ?? (column.width == null ? 'auto' : 'fixed'),
+    stretch,
+    stretchWeight: stretch === 'none' ? 0 : Math.max(0.1, column.stretchWeight ?? defaultWeight),
     visible: column.visible ?? true,
     fixed: column.fixed === true ? 'left' : column.fixed ?? (valueType === 'actions' ? 'right' : undefined),
     hideable: column.hideable ?? (!column.type && valueType !== 'actions'),
     showOverflowTooltip: column.showOverflowTooltip ?? !column.type,
   }
+}
+
+function defaultStretchMode(valueType: NcColumnValueType): NcColumnStretchMode {
+  if (['name', 'description', 'error'].includes(valueType)) return 'priority'
+  if (['text', 'ip'].includes(valueType)) return 'normal'
+  return 'none'
 }
 
 export function displayTableValue(value: unknown): string {

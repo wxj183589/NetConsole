@@ -8,6 +8,7 @@ import {
   normalizeNcTableColumn,
   readTableCellValue,
   safeNcTableColumnAttrs,
+  type NcTableEmptySpaceStrategy,
   type NcTableColumn,
   type ResolvedNcTableColumn,
 } from './NcTableColumn'
@@ -39,6 +40,7 @@ const props = withDefaults(defineProps<{
   compact?: boolean
   showColumnSettings?: boolean
   sampleLimit?: number
+  emptySpaceStrategy?: NcTableEmptySpaceStrategy
 }>(), {
   data: () => [],
   userKey: 'local-user',
@@ -52,6 +54,7 @@ const props = withDefaults(defineProps<{
   compact: false,
   showColumnSettings: true,
   sampleLimit: 200,
+  emptySpaceStrategy: 'stretch',
 })
 
 const emit = defineEmits<{
@@ -60,6 +63,8 @@ const emit = defineEmits<{
 
 const tableRef = ref()
 const containerRef = ref<HTMLElement>()
+const scrollRef = ref<HTMLElement>()
+const availableWidth = ref(0)
 const displayRevision = ref(0)
 const bodyFont = ref('400 14px "Microsoft YaHei UI", sans-serif')
 const headerFont = ref('600 14px "Microsoft YaHei UI", sans-serif')
@@ -118,10 +123,21 @@ const { widths, recalculate, schedule } = useAutoColumnWidth({
   columns: sizingColumns,
   rows,
   manualWidths,
+  availableWidth,
+  emptySpaceStrategy: props.emptySpaceStrategy,
   revision: displayRevision,
   sampleLimit: props.sampleLimit,
   bodyFont,
   headerFont,
+})
+const resolvedTableWidth = computed(() => Object.values(widths.value).reduce((total, width) => total + width, 0))
+const tableStyle = computed(() => {
+  if (!availableWidth.value || !resolvedTableWidth.value) return { width: '100%' }
+  const centered = resolvedTableWidth.value < availableWidth.value
+  return {
+    width: `${resolvedTableWidth.value}px`,
+    marginInline: centered ? 'auto' : '0',
+  }
 })
 
 const settingColumns = computed<NcColumnSettingItem[]>(() => resolvedColumns.value.map((column) => ({
@@ -244,7 +260,13 @@ function refreshFonts(): void {
   headerFont.value = `600 ${size} ${family}`
 }
 
+function updateAvailableWidth(): void {
+  const nextWidth = Math.max(0, Math.floor(scrollRef.value?.clientWidth ?? 0))
+  if (nextWidth !== availableWidth.value) availableWidth.value = nextWidth
+}
+
 function handleViewportChange(): void {
+  updateAvailableWidth()
   refreshFonts()
   clearTextMeasurementCache()
   displayRevision.value += 1
@@ -255,6 +277,8 @@ onMounted(() => {
   const rootElement = typeof document === 'undefined' ? undefined : document.documentElement
   if (!rootElement) return
   refreshFonts()
+  updateAvailableWidth()
+  recalculate()
   rootObserver = new MutationObserver((records) => {
     const languageChanged = records.some((record) => record.attributeName === 'lang')
     if (languageChanged && !props.language) currentLanguage.value = documentLanguage()
@@ -264,9 +288,9 @@ onMounted(() => {
   void document.fonts?.ready.then(() => {
     handleViewportChange()
   })
-  if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
+  if (typeof ResizeObserver !== 'undefined' && scrollRef.value) {
     resizeObserver = new ResizeObserver(handleViewportChange)
-    resizeObserver.observe(containerRef.value)
+    resizeObserver.observe(scrollRef.value)
   }
   window.addEventListener?.('resize', handleViewportChange)
 })
@@ -277,7 +301,7 @@ onBeforeUnmount(() => {
   window.removeEventListener?.('resize', handleViewportChange)
 })
 
-defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, toggleRowSelection })
+defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetLayout, autoFit, clearSelection, toggleRowSelection })
 </script>
 
 <template>
@@ -294,7 +318,7 @@ defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, togg
         @autofit="autoFit"
       />
     </div>
-    <div class="nc-data-table__scroll">
+    <div ref="scrollRef" class="nc-data-table__scroll">
       <el-table
         ref="tableRef"
         v-bind="$attrs"
@@ -306,6 +330,7 @@ defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, togg
         :stripe="stripe"
         :border="border"
         :fit="true"
+        :style="tableStyle"
         @header-dragend="handleHeaderDragEnd"
       >
         <template v-for="column in visibleColumns" :key="column.key">
@@ -359,10 +384,10 @@ defineExpose({ tableRef, recalculate, resetLayout, autoFit, clearSelection, togg
 </template>
 
 <style scoped>
-.nc-data-table { min-width: 0; width: 100%; overflow: hidden; }
-.nc-data-table__tools { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; padding: 0 0 8px; }
-.nc-data-table__scroll { min-width: 0; overflow: auto; }
-.nc-data-table :deep(.el-table) { min-width: 100%; color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }
+.nc-data-table { display: flex; flex-direction: column; min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+.nc-data-table__tools { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; padding: 0 0 8px; }
+.nc-data-table__scroll { flex: 1; min-width: 0; overflow: auto; }
+.nc-data-table :deep(.el-table) { color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }
 .nc-data-table :deep(.el-table__header th.el-table__cell) { height: var(--nc-table-row-height); padding: 0; background: var(--nc-table-header-bg); color: var(--nc-text-secondary); font-weight: 600; text-align: center; }
 .nc-data-table :deep(.el-table__body td.el-table__cell) { height: var(--nc-table-row-height); padding: 0; vertical-align: middle; }
 .nc-data-table :deep(.el-table__body tr:hover > td.el-table__cell) { background: var(--nc-table-hover-bg); }

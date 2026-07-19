@@ -26,7 +26,7 @@
 
 ### 桌面与发布
 
-- 建立并完成全局表格与字段展示契约：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `finalWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。当前清单登记的 77 张标准表格均已迁移为 `NcDataTable + NcTableColumn`，旧表基线为 0，四个 UI Guard 和受影响页面定向测试通过；公共表格 Playwright 夹具已通过 3 种窗口与 3 种缩放的 9 组截图和 DOM 断言。真实业务页截图基线、中英文/浅深主题组合及 Electron 人工视觉验收仍待执行，不能据此宣称人工视觉验收完成。
+- 建立并完成全局表格与字段展示契约：新增强类型 `NcDataTable`、真实文本测量、字段类型宽度基线、稳定抽样、防抖、跨页宽度保持、手工列宽和按用户/路由/表格/语言隔离的视图偏好；强制 `baseWidth >= headerRequiredWidth`，容器不足时使用表格内部横向滚动。容器更宽时按 `priority/normal/fill` 和最大宽度分配剩余空间，状态、时间、操作与固定列保持边界，全部列达到最大值后列组居中；`ResizeObserver` 负责侧栏、窗口、抽屉、字体和语言变化后的重算。设备管理已显式配置站点、系统名、分组和地址的业务权重，固定名称列继续按内容基线计算。当前清单登记的 77 张标准表格均继承公共策略，旧表基线为 0，UI Guard 阻止页面自行测宽、平均分配或限制百分比宽度；真实业务页截图基线、中英文/浅深主题组合及 Electron 人工视觉验收仍待执行，不能据此宣称人工视觉验收完成。
 - 统一 Vue/Electron 全局主题：浅色、深色和跟随系统现在同时驱动侧栏、顶部栏、内容区、Element Plus 浮层与 ECharts，不再默认固定深色侧栏；系统设置仍是唯一持久化来源。Renderer 只通过严格单向 IPC 报告解析后的 `light|dark`，Electron Main 只映射预定义窗口背景，不能接收任意颜色或窗口参数。历史页面状态色已收口到语义 Token；Guard 已收窄 `--nc-text-primary` 被误判为状态色的规则并增加单元测试。Electron 多尺寸/多缩放人工视觉验收仍为 `PENDING`，自动测试不代表视觉通过。
 - 将 Windows x64 iPerf3 运行包升级并固定为用户提供的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`，补齐发行来源、四文件 SHA-256、GPLv3/LGPLv3/链接例外及 Cygwin 3.6.7-1 对应源码方案；fping 5.5/Cygwin 3.6.9-1 同步归档实际 ICMP 兼容补丁、构建配方、完整许可证与精确对应源码。Electron 与 Agent 打包复制前后只校验并复制仓库本地白名单工具，拒绝联网补齐、同名替换、来源篡改和额外文件；旧 3.20 来源不匹配文件不再保留。
 - 新增 `pnpm dev:codex` 本机受控调试链：Electron Main 继续持有唯一 FastAPI 生命周期，Vite/FastAPI 固定绑定 `127.0.0.1:5173/8000`，每次启动生成短期 Session 与系统临时数据根；浏览器 Vue 可复用正式 REST、WebSocket 和下载契约。新增鉴权、回环限定且路径脱敏的 `/api/dev/runtime-status`；生产 Electron 不注册该接口、不接受固定开发端口，也不暴露令牌、OpenAPI 或 DevTools。

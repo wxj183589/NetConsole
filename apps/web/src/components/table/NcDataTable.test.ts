@@ -62,6 +62,39 @@ describe('NcDataTable', () => {
     wrapper.unmount()
   })
 
+  it('distributes business columns to the measured scroll viewport', async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() { return this.classList.contains('nc-data-table__scroll') ? 600 : 0 },
+    })
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'device-list-fill',
+        routeKey: '/devices',
+        showColumnSettings: false,
+        data: [{ name: 'AP01', group: '默认', status: '在线' }],
+        columns: [
+          { key: 'name', label: '设备名称', valueType: 'name' },
+          { key: 'group', label: '分组', valueType: 'text' },
+          { key: 'status', label: '状态', valueType: 'status' },
+        ],
+      },
+      global,
+    })
+    try {
+      await wrapper.vm.$nextTick()
+      const totalWidth = wrapper.findAll('.el-table-column-stub')
+        .reduce((total, column) => total + Number(column.attributes('data-width')), 0)
+      expect(totalWidth).toBe(600)
+      expect(wrapper.get('.el-table-stub').attributes('style')).toContain('width: 600px')
+    } finally {
+      wrapper.unmount()
+      if (original) Object.defineProperty(HTMLElement.prototype, 'clientWidth', original)
+      else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+    }
+  })
+
   it('clamps manual drag width and persists it in the isolated layout key', async () => {
     const wrapper = mount(NcDataTable, {
       props: {

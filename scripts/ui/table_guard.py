@@ -12,6 +12,11 @@ WEB_SOURCE = Path("apps/web/src")
 BASELINE_PATH = Path("config/architecture/table-layout-baseline.json")
 EXCEPTIONS_PATH = Path("config/architecture/table-layout-exceptions.yaml")
 INVENTORY_PATH = Path("docs/ui/TABLE_INVENTORY.md")
+SHARED_TABLE_PATHS = (
+    Path("apps/web/src/components/table/NcTableColumn.ts"),
+    Path("apps/web/src/components/table/useAutoColumnWidth.ts"),
+    Path("apps/web/src/components/table/NcDataTable.vue"),
+)
 
 DIRECT_TABLE_RE = re.compile(r"<el-table(?!-)(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
 DATA_TABLE_RE = re.compile(r"<NcDataTable\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
@@ -185,6 +190,23 @@ def check_table_contracts(root: Path = PROJECT_ROOT) -> list[str]:
             errors.append(f"NcDataTable 缺少静态 route-key: {table.path}:{table.line}")
         if not table.columns_bound:
             errors.append(f"NcDataTable 必须绑定统一 columns 列定义: {table.path}:{table.line}")
+    shared_sources = {
+        path: (root / path).read_text(encoding="utf-8")
+        for path in SHARED_TABLE_PATHS
+        if (root / path).exists()
+    }
+    required_contracts = {
+        SHARED_TABLE_PATHS[0]: ("NcColumnStretchMode", "stretchWeight"),
+        SHARED_TABLE_PATHS[1]: ("distributeColumnWidths", "availableWidth"),
+        SHARED_TABLE_PATHS[2]: ("ResizeObserver", "resolvedTableWidth"),
+    }
+    for path, tokens in required_contracts.items():
+        source = shared_sources.get(path)
+        if source is None:
+            continue
+        for token in tokens:
+            if token not in source:
+                errors.append(f"共享表格缺少可视区填充契约 {token}: {path.as_posix()}")
     errors.extend(validate_exceptions(root))
     return errors
 
@@ -203,6 +225,14 @@ def check_column_definitions(root: Path = PROJECT_ROOT) -> list[str]:
             (r"<el-table-column\b", "迁移文件仍直接声明 el-table-column"),
             (r"\bheader-align\s*=", "迁移文件仍散写 header-align"),
             (r"\bmeasureText\s*\(", "迁移文件仍自行实现 measureText"),
+            (
+                r"\b(?:useAutoColumnWidth|calculateTableColumnWidths|distributeColumnWidths)\b",
+                "迁移文件不得自行调用公共列宽算法",
+            ),
+            (
+                r"\b(?:containerWidth|clientWidth|offsetWidth)\b[^\n;]*\bcolumns\.length\b|\bcolumns\.length\b[^\n;]*\b(?:containerWidth|clientWidth|offsetWidth)\b",
+                "迁移文件不得按容器宽度平均分配列宽",
+            ),
         ):
             if re.search(pattern, source):
                 errors.append(f"{message}: {relative}")
@@ -216,6 +246,11 @@ def check_table_alignment(root: Path = PROJECT_ROOT) -> list[str]:
         relative = path.relative_to(root).as_posix()
         if re.search(r"\.el-table[^{}]*\{[^}]*\btext-align\s*:", source, re.DOTALL):
             errors.append(f"迁移文件不得用 CSS 覆盖表格对齐: {relative}")
+        for match in re.finditer(r"\.(?:el-table|nc-data-table)[^{}]*\{(?P<body>[^}]*)\}", source, re.DOTALL):
+            for width in re.finditer(r"(?P<property>max-width|width)\s*:\s*(?P<value>[0-9.]+)%", match.group("body")):
+                if width.group("property") == "max-width" or float(width.group("value")) != 100:
+                    errors.append(f"迁移文件不得限制表格百分比宽度: {relative}")
+                    break
     return errors
 
 
@@ -234,17 +269,18 @@ def inventory_markdown(root: Path = PROJECT_ROOT) -> str:
     rows = [
         "# 表格与字段展示清单",
         "",
-        "本清单由 `scripts/ui/export_table_inventory.py` 生成。`BLOCKED` 表示已登记但尚未迁移的旧表，不表示功能故障。",
+        "本清单由 `scripts/ui/export_table_inventory.py` 生成。`COMPLIANT` 表示已使用公共列宽测量与可视区填充；`BLOCKED` 表示已登记但尚未迁移的旧表，不表示功能故障。",
         "",
-        "| 路由 | 页面 | 表格 ID | 当前组件 | 表头/内容居中 | 自动列宽 | 表头最小宽度 | 整改状态 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 路由 | 页面 | 表格 ID | 当前组件 | 表头/内容居中 | 自动列宽 | 可视区填充 | 拉伸策略 | 整改状态 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for table in [*managed, *direct]:
         compliant = table.component == "NcDataTable"
         rows.append(
             f"| `{table.route_key or '—'}` | `{table.path}:{table.line}` | `{table.table_id or '—'}` "
             f"| `{table.component}` | {'是' if compliant else '否'} | {'是' if compliant else '否'} "
-            f"| {'是' if compliant else '否'} | {'MIGRATED' if compliant else 'BLOCKED'} |"
+            f"| {'是' if compliant else '否'} | {'公共推导' if compliant else '无'} "
+            f"| {'COMPLIANT' if compliant else 'BLOCKED'} |"
         )
     rows.extend(("", f"总计：{len(managed)} 张已迁移，{len(direct)} 张待迁移。", ""))
     return "\n".join(rows)

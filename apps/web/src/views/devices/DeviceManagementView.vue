@@ -147,22 +147,23 @@ const filters = reactive({
   page_size: 50,
 })
 const deviceColumns: NcTableColumn<DeviceListItem>[] = [
-  { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false },
-  { key: 'name', label: '名称', valueType: 'name', fixed: 'left' },
-  { key: 'group_name', label: '分组', valueType: 'text' },
-  { key: 'system_name', label: '系统名', valueType: 'name' },
-  { key: 'station', label: '站点', valueType: 'text' },
-  { key: 'primary_address', label: '主地址', valueType: 'ip' },
-  { key: 'backup_address', label: '备用地址', valueType: 'ip' },
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false, stretch: 'none' },
+  { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
+  { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
+  { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
+  { key: 'station', label: '站点', valueType: 'text', stretch: 'priority' },
+  { key: 'primary_address', label: '主地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'backup_address', label: '备用地址', valueType: 'ip', stretch: 'normal' },
   {
     key: 'login_protocol',
     label: '登录协议',
     valueType: 'text',
+    stretch: 'none',
     displayValue: (row) => [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '—',
   },
-  { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
-  { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'] },
+  { key: 'updated_at', label: '更新时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'], stretch: 'none' },
 ]
 const omniPeekColumns: NcTableColumn<DeviceOmniPeekPreviewItem>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false, columnAttrs: { reserveSelection: true } },

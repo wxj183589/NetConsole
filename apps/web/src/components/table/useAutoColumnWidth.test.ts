@@ -4,6 +4,7 @@ import type { NcTableColumn } from './NcTableColumn'
 import {
   calculateHeaderRequiredWidth,
   calculateTableColumnWidths,
+  distributeColumnWidths,
   stableTableSample,
 } from './useAutoColumnWidth'
 
@@ -88,5 +89,87 @@ describe('automatic table column widths', () => {
     const width = calculateTableColumnWidths({ columns: [column], rows: [], measure }).actions
     expect(width).toBeGreaterThan(180)
     expect(width).toBeLessThanOrEqual(320)
+  })
+
+  it('fills a wider viewport by weighted business columns', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'name', label: '名称', valueType: 'name', maxWidth: 300 },
+      { key: 'group', label: '分组', valueType: 'text', maxWidth: 200 },
+      { key: 'status', label: '状态', valueType: 'status', maxWidth: 100 },
+    ]
+    const widths = distributeColumnWidths({
+      columns,
+      baseWidths: { name: 100, group: 100, status: 100 },
+      availableWidth: 500,
+    })
+    expect(Object.values(widths).reduce((total, width) => total + width, 0)).toBe(500)
+    expect(widths.name - 100).toBeGreaterThan(widths.group - 100)
+    expect(widths.status).toBe(100)
+  })
+
+  it('keeps base widths for equal or narrower viewports to enable horizontal scrolling', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'name', label: '名称', valueType: 'name' },
+      { key: 'status', label: '状态', valueType: 'status' },
+    ]
+    const baseWidths = { name: 180, status: 120 }
+    expect(distributeColumnWidths({ columns, baseWidths, availableWidth: 300 })).toEqual(baseWidths)
+    expect(distributeColumnWidths({ columns, baseWidths, availableWidth: 240 })).toEqual(baseWidths)
+  })
+
+  it('redistributes space after a priority column reaches its maximum', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'name', label: '名称', valueType: 'name', maxWidth: 120 },
+      { key: 'group', label: '分组', valueType: 'text', maxWidth: 300 },
+      { key: 'status', label: '状态', valueType: 'status' },
+    ]
+    const widths = distributeColumnWidths({
+      columns,
+      baseWidths: { name: 100, group: 100, status: 100 },
+      availableWidth: 500,
+    })
+    expect(widths.name).toBe(120)
+    expect(widths.group).toBe(280)
+    expect(widths.status).toBe(100)
+  })
+
+  it('uses a fill column without stretching manual, hidden or fixed columns', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'name', label: '名称', valueType: 'name', fixed: 'left' },
+      { key: 'description', label: '说明', valueType: 'description', stretch: 'fill', maxWidth: 400 },
+      { key: 'status', label: '状态', valueType: 'status', visible: false },
+    ]
+    const widths = distributeColumnWidths({
+      columns,
+      baseWidths: { name: 120, description: 100, status: 100 },
+      availableWidth: 400,
+      manualWidths: { name: 120 },
+    })
+    expect(widths).toEqual({ name: 120, description: 280 })
+  })
+
+  it('leaves bounded columns unchanged when no column may stretch', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'status', label: '状态', valueType: 'status' },
+      { key: 'time', label: '时间', valueType: 'datetime' },
+    ]
+    expect(distributeColumnWidths({
+      columns,
+      baseWidths: { status: 100, time: 180 },
+      availableWidth: 800,
+    })).toEqual({ status: 100, time: 180 })
+  })
+
+  it('supports bounded fill-last without widening every short column', () => {
+    const columns: NcTableColumn<Row>[] = [
+      { key: 'name', label: '名称', valueType: 'name', maxWidth: 300 },
+      { key: 'group', label: '分组', valueType: 'text', maxWidth: 180 },
+    ]
+    expect(distributeColumnWidths({
+      columns,
+      baseWidths: { name: 100, group: 100 },
+      availableWidth: 500,
+      emptySpaceStrategy: 'fill-last',
+    })).toEqual({ name: 100, group: 180 })
   })
 })

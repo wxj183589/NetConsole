@@ -5,6 +5,7 @@ import {
   displayTableValue,
   normalizeNcTableColumn,
   readTableCellValue,
+  type NcTableEmptySpaceStrategy,
   type NcTableColumn,
   type ResolvedNcTableColumn,
 } from './NcTableColumn'
@@ -22,6 +23,14 @@ export interface CalculateColumnWidthsOptions<Row extends object> extends Column
   manualWidths?: Readonly<Record<string, number>>
   previousWidths?: Readonly<Record<string, number>>
   sampleLimit?: number
+}
+
+export interface DistributeColumnWidthsOptions<Row extends object> {
+  columns: readonly NcTableColumn<Row>[]
+  baseWidths: Readonly<Record<string, number>>
+  availableWidth: number
+  manualWidths?: Readonly<Record<string, number>>
+  emptySpaceStrategy?: NcTableEmptySpaceStrategy
 }
 
 const HEADER_HORIZONTAL_PADDING = 32
@@ -104,10 +113,76 @@ export function calculateTableColumnWidths<Row extends object>(
   return widths
 }
 
+function effectiveMaximum<Row extends object>(column: ResolvedNcTableColumn<Row>, width: number): number {
+  const preset = getColumnWidthPreset(column.valueType)
+  return Math.max(width, column.maxWidth ?? preset.maxWidth)
+}
+
+function distributeWeighted<Row extends object>(
+  columns: readonly ResolvedNcTableColumn<Row>[],
+  widths: Record<string, number>,
+  maximums: Readonly<Record<string, number>>,
+  remainingWidth: number,
+): number {
+  let remaining = remainingWidth
+  while (remaining > 0) {
+    const active = columns.filter((column) => widths[column.key] < maximums[column.key])
+    if (!active.length) break
+    const totalWeight = active.reduce((total, column) => total + column.stretchWeight, 0)
+    let distributed = 0
+    for (const column of active) {
+      const room = maximums[column.key] - widths[column.key]
+      const share = Math.max(1, Math.floor(remaining * column.stretchWeight / totalWeight))
+      const amount = Math.min(room, share, remaining - distributed)
+      widths[column.key] += amount
+      distributed += amount
+      if (distributed >= remaining) break
+    }
+    if (distributed <= 0) break
+    remaining -= distributed
+  }
+  return remaining
+}
+
+export function distributeColumnWidths<Row extends object>(
+  options: DistributeColumnWidthsOptions<Row>,
+): Record<string, number> {
+  const columns = options.columns.map(normalizeNcTableColumn).filter((column) => column.visible)
+  const widths = Object.fromEntries(columns.map((column) => [column.key, options.baseWidths[column.key] ?? 0]))
+  const availableWidth = Math.max(0, Math.floor(options.availableWidth))
+  const total = Object.values(widths).reduce((sum, width) => sum + width, 0)
+  if (!availableWidth || total >= availableWidth || options.emptySpaceStrategy === 'center') return widths
+
+  const maximums = Object.fromEntries(columns.map((column) => [
+    column.key,
+    effectiveMaximum(column, widths[column.key]),
+  ]))
+  const canStretch = (column: ResolvedNcTableColumn<Row>): boolean => (
+    column.stretch !== 'none'
+    && column.widthMode !== 'fixed'
+    && column.fixed !== 'left'
+    && column.fixed !== 'right'
+    && options.manualWidths?.[column.key] == null
+  )
+  const weighted = columns.filter((column) => canStretch(column) && column.stretch !== 'fill')
+  const fill = columns.filter((column) => canStretch(column) && column.stretch === 'fill')
+  let remaining = availableWidth - total
+  if (options.emptySpaceStrategy === 'fill-last') {
+    const fallback = [...columns].reverse().find(canStretch)
+    if (fallback) distributeWeighted([fallback], widths, maximums, remaining)
+    return widths
+  }
+  remaining = distributeWeighted(weighted, widths, maximums, remaining)
+  distributeWeighted(fill, widths, maximums, remaining)
+  return widths
+}
+
 export interface UseAutoColumnWidthOptions<Row extends object> {
   columns: Ref<readonly NcTableColumn<Row>[]>
   rows: Ref<readonly Row[]>
   manualWidths: Ref<Record<string, number>>
+  availableWidth?: Ref<number>
+  emptySpaceStrategy?: NcTableEmptySpaceStrategy
   revision?: Ref<number>
   debounceMs?: number
   sampleLimit?: number
@@ -119,21 +194,29 @@ export interface UseAutoColumnWidthOptions<Row extends object> {
 export function useAutoColumnWidth<Row extends object>(
   options: UseAutoColumnWidthOptions<Row>,
 ) {
+  const baseWidths = ref<Record<string, number>>({})
   const widths = ref<Record<string, number>>({})
   let timer: ReturnType<typeof setTimeout> | undefined
 
   const recalculate = (resetHistory = false): void => {
     if (timer) clearTimeout(timer)
-    if (resetHistory) widths.value = {}
-    widths.value = calculateTableColumnWidths({
+    if (resetHistory) baseWidths.value = {}
+    baseWidths.value = calculateTableColumnWidths({
       columns: options.columns.value,
       rows: options.rows.value,
       manualWidths: options.manualWidths.value,
-      previousWidths: resetHistory ? {} : widths.value,
+      previousWidths: resetHistory ? {} : baseWidths.value,
       bodyFont: isRef(options.bodyFont) ? options.bodyFont.value : options.bodyFont,
       headerFont: isRef(options.headerFont) ? options.headerFont.value : options.headerFont,
       measure: options.measure,
       sampleLimit: options.sampleLimit,
+    })
+    widths.value = distributeColumnWidths({
+      columns: options.columns.value,
+      baseWidths: baseWidths.value,
+      availableWidth: options.availableWidth?.value ?? 0,
+      manualWidths: options.manualWidths.value,
+      emptySpaceStrategy: options.emptySpaceStrategy,
     })
   }
 
@@ -146,6 +229,7 @@ export function useAutoColumnWidth<Row extends object>(
     options.columns,
     options.rows,
     options.manualWidths,
+    ...(options.availableWidth ? [options.availableWidth] : []),
     ...(options.revision ? [options.revision] : []),
     ...(isRef(options.bodyFont) ? [options.bodyFont] : []),
     ...(isRef(options.headerFont) ? [options.headerFont] : []),
@@ -156,5 +240,5 @@ export function useAutoColumnWidth<Row extends object>(
   onMounted(() => recalculate())
   onBeforeUnmount(() => { if (timer) clearTimeout(timer) })
 
-  return { widths, recalculate, schedule }
+  return { widths, baseWidths, recalculate, schedule }
 }

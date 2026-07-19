@@ -71,6 +71,11 @@ describe('Device Management Web view', () => {
     expect(source).toContain(':columns="omniPeekColumns"')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
+    expect(source).toContain("key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority'")
+    expect(source).toContain("key: 'station', label: '站点', valueType: 'text', stretch: 'priority'")
+    expect(source).toContain("key: 'updated_at', label: '更新时间', valueType: 'datetime', stretch: 'none'")
+    expect(source).toContain("key: 'actions', label: '操作', valueType: 'actions'")
+    expect(source).toContain("stretch: 'none'")
   })
 
   it('uses safe file upload and controlled server exports', () => {

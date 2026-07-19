@@ -9,12 +9,23 @@ describe('NcTableColumn', () => {
     expect(column.align).toBe('center')
     expect(column.headerAlign).toBe('center')
     expect(column.showOverflowTooltip).toBe(true)
+    expect(column.stretch).toBe('priority')
+    expect(column.stretchWeight).toBe(3)
   })
 
   it('keeps action columns visible and fixed on the right by default', () => {
     const column = normalizeNcTableColumn({ key: 'actions', label: '操作', valueType: 'actions' })
     expect(column.fixed).toBe('right')
     expect(column.hideable).toBe(false)
+    expect(column.stretch).toBe('none')
+    expect(column.stretchWeight).toBe(0)
+  })
+
+  it('infers stretch only for suitable business text columns', () => {
+    expect(normalizeNcTableColumn({ key: 'site', label: '站点', valueType: 'text' }).stretch).toBe('normal')
+    expect(normalizeNcTableColumn({ key: 'ip', label: '地址', valueType: 'ip' }).stretch).toBe('normal')
+    expect(normalizeNcTableColumn({ key: 'status', label: '状态', valueType: 'status' }).stretch).toBe('none')
+    expect(normalizeNcTableColumn({ key: 'time', label: '时间', valueType: 'datetime' }).stretch).toBe('none')
   })
 
   it('requires a reason for non-standard left alignment', () => {
