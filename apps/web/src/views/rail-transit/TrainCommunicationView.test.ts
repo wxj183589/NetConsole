@@ -10,6 +10,9 @@ describe('固定车载通信拓扑页面', () => {
     expect(source).toContain('getTrainCommunicationCheck')
     expect(source).toContain('立即检测')
     expect(source).toContain('TC1 / TC2')
+    expect(source).toContain('CarNetworkPointTableDialog')
+    expect(source).toContain('检测点表未配置')
+    expect(source).toContain("topology.value?.point_table_status === 'configured'")
   })
 
   it('不嵌入综合无线指标或 Online MR 控制', () => {

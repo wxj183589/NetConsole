@@ -188,7 +188,7 @@ def recover_car_network_diagnostics(request: Request) -> list[RailTransitTaskDTO
 @router.get(
     "/point-table",
     response_model=CarNetworkPointTableDTO,
-    dependencies=[Depends(require_feature("web.rail_car_network_diagnostic"))],
+    dependencies=[Depends(require_feature("web.train_communication_monitoring"))],
 )
 def point_table(request: Request) -> CarNetworkPointTableDTO:
     try:
@@ -261,6 +261,7 @@ def save_point_table(
             overwrite_custom=payload.overwrite_custom,
             explicit_confirmation=payload.explicit_confirmation,
             audit=payload.audit,
+            revision=payload.revision,
         )
     except RailTransitWebError as exc:
         _raise_application_error(exc)
@@ -497,6 +498,7 @@ def _raise_application_error(exc: RailTransitWebError) -> None:
     status_code = {
         "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
+        "TRAIN_COMMUNICATION_REVISION_CONFLICT": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

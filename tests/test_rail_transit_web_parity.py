@@ -48,6 +48,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
 
 RAIL_FEATURE_IDS = (
     "web.rail_car_network_diagnostic",
+    "web.train_communication_monitoring",
     "web.online_mr_report_export",
     "web.online_mr_parse",
     "online_mr.collection_notes",
@@ -100,6 +101,26 @@ def _point_table_csv(rows: list[dict[str, object]]) -> bytes:
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue().encode("utf-8-sig")
+
+
+def _save_complete_point_table(paths: PathResolver, train_id: str) -> None:
+    CarNetworkPointTableStore(paths, "demo").save(
+        [
+            CarNetworkNode(
+                train_id,
+                node_name,
+                "SERVER" if node_name.endswith("SRV") else "SW" if node_name.endswith("SW") else "MR",
+                train_no=train_id,
+                display_name=f"{train_id}车",
+                device_id=node_name,
+                primary_address=f"10.0.0.{index}",
+            )
+            for index, node_name in enumerate(
+                ("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV"),
+                1,
+            )
+        ]
+    )
 
 
 def _online_mr_session(
@@ -196,6 +217,18 @@ def test_point_table_preview_transform_save_and_task_window_blocker(
         rows=[row.model_dump() for row in preview.result_rows],
         global_config={},
     )
+    with pytest.raises(RailTransitWebError) as revision_conflict:
+        service.start_car_network_point_table_save(
+            "demo",
+            rows=[row.model_dump() for row in transformed.rows],
+            global_config=transformed.global_config,
+            overwrite_custom=False,
+            explicit_confirmation=True,
+            audit={"source": "test"},
+            revision="stale-revision",
+        )
+    assert revision_conflict.value.code == "TRAIN_COMMUNICATION_REVISION_CONFLICT"
+
     started = service.start_car_network_point_table_save(
         "demo",
         rows=[row.model_dump() for row in transformed.rows],
@@ -251,6 +284,10 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             "/api/rail-transit/train-communication/point-table/save",
             json={"rows": [], "global_config": {}, "explicit_confirmation": True},
         )
+        stale_point_save = client.post(
+            "/api/rail-transit/train-communication/point-table/save",
+            json={"rows": [], "global_config": {}, "explicit_confirmation": True, "revision": "stale-revision"},
+        )
         plan = client.get("/api/rail-transit/trackside-ap-business/plan")
         plan_save = client.post(
             "/api/rail-transit/trackside-ap-business/plan/save",
@@ -263,6 +300,8 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
 
     assert point_table.status_code == 200
     assert point_save.status_code == 202
+    assert stale_point_save.status_code == 409
+    assert stale_point_save.json()["detail"]["code"] == "TRAIN_COMMUNICATION_REVISION_CONFLICT"
     assert (
         normal.jobs[point_save.json()["task_id"]].task_type
         == "car_network_save_point_table"
@@ -703,6 +742,7 @@ def test_rail_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None
 def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, _normal, _export, tasks = _service(paths)
+    _save_complete_point_table(paths, "列车01")
     started = service.start_car_network_diagnostic("demo", train_id="列车01")
     assert _normal.jobs[started.task_id].task_type == "car_network_diagnostic"
     assert _normal.jobs[started.task_id].params["train_id"] == "列车01"
@@ -848,6 +888,7 @@ def test_task_recovery_is_scoped_to_allowed_owner_source_and_type(
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     service, normal, _export, tasks = _service(paths)
+    _save_complete_point_table(paths, "train-1")
     started = service.start_car_network_diagnostic("demo", train_id="train-1")
     snapshot = tasks.repository("demo").get(started.task_id)
     assert snapshot is not None

@@ -37,6 +37,7 @@ export interface CarNetworkPointTable {
   rows: CarNetworkPointRow[]
   global_config: Record<string, unknown>
   locked: boolean
+  revision: string
 }
 
 export interface CarNetworkPointPreviewRow {

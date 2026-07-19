@@ -36,6 +36,10 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 ## 4. 新功能登记流程
 
+### 在线列车车地通信检测
+
+正式页面使用 `web.train_communication_monitoring`。点表维护、点表导出和检测执行作为该页面的动作能力登记，不再依赖已隐藏的历史 `web.rail_car_network_diagnostic` 页面 Feature。历史页面保留为迁移事实记录，不进入正式导航。
+
 1. 在 Registry 中选择稳定 key，声明父模块、默认值、版本/edition 策略和 internal 属性。
 2. 页面、Tab、动作或按钮使用同一个 key；隐藏与禁用语义必须明确。
 3. 若能力需要后台任务，登记 task type 和对应 handler；若产生用户文件，登记 Export Process 类型。

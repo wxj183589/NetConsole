@@ -1,5 +1,7 @@
 # 在线列车车地通信检测
 
+点表、固定拓扑、VRRP、跨 TC 和迁移事实源的详细说明见 [专题文档目录](rail-transit/train-communication/README.md)。
+
 ## 定位
 
 `/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面只展示列车选择、TC1/TC2 两端固定六节点、节点和链路状态、VRRP、跨 TC 通信、刷新与“立即检测”。

@@ -203,6 +203,10 @@ class TrainCommunicationTopologyDTO(ApiModel):
     train_name: str
     train_status: TopologyStatus = "not_detected"
     checked_at: str | None = None
+    point_table_status: Literal["configured", "missing", "invalid"] = "missing"
+    point_table_message: str = "检测点表未配置"
+    point_table_revision: str = ""
+    point_table_missing_nodes: list[str] = Field(default_factory=list)
     tc1_nodes: list[TrainCommunicationTopologyNodeDTO] = Field(default_factory=list)
     tc2_nodes: list[TrainCommunicationTopologyNodeDTO] = Field(default_factory=list)
     links: list[TrainCommunicationTopologyLinkDTO] = Field(default_factory=list)

@@ -48,6 +48,7 @@ class CarNetworkPointTableDTO(ApiModel):
     rows: list[CarNetworkPointRowDTO] = Field(default_factory=list)
     global_config: dict[str, object] = Field(default_factory=dict)
     locked: bool = False
+    revision: str = ""
 
 
 class CarNetworkPointPreviewRowDTO(ApiModel):
@@ -77,6 +78,7 @@ class CarNetworkPointTableWriteRequestDTO(ApiModel):
     overwrite_custom: bool = False
     explicit_confirmation: bool = False
     audit: dict[str, str] = Field(default_factory=dict)
+    revision: str = "missing"
 
 
 class CarNetworkPointTableTransformRequestDTO(ApiModel):

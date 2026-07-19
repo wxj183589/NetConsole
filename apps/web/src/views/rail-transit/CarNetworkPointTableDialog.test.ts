@@ -13,6 +13,7 @@ describe('car network point table dialog', () => {
       '重复时覆盖', '重复时跳过', '重复时报错', '锁定并保存', '解锁并保存',
       'web.rail_car_network_point_table_write', 'web.rail_car_network_point_table_export',
     ]) expect(source).toContain(contract)
+    expect(source).toContain('revision.value')
     expect(source).not.toContain('cancelCarNetworkPointTableTask')
     expect(source).toContain('const pointTableColumns: NcTableColumn<CarNetworkPointRow>[]')
     expect(source).toContain('table-id="car-network-point-table"')

@@ -2,6 +2,12 @@
 
 本文档集以当前生产代码、测试和构建脚本为事实来源。代码行为变化后，应在同一改动中更新对应 Markdown；若文档与代码冲突，以代码和测试为准并修正文档。
 
+## 本次专题
+
+- [在线列车车地通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
+- [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
+- [检测任务流程](rail-transit/train-communication/CHECK_WORKFLOW.md)
+
 ## 核心文档
 
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |

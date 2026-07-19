@@ -185,8 +185,9 @@ def test_fixed_topology_keeps_unconfigured_nodes_and_undetected_cross_end(tmp_pa
     assert topology.tc1_nodes[0].device_id == "1"
     assert topology.tc2_nodes[0].device_id == "2"
     assert all(item.status == "not_configured" for item in [topology.tc1_nodes[1], topology.tc1_nodes[2], topology.tc2_nodes[1], topology.tc2_nodes[2]])
-    assert topology.vrrp.status == "not_detected"
-    assert topology.cross_end.status == "not_detected"
+    assert topology.point_table_status == "missing"
+    assert topology.vrrp.status == "not_configured"
+    assert topology.cross_end.status == "not_configured"
     assert topology.train_status == "not_configured"
 
 
@@ -247,6 +248,25 @@ def test_fixed_topology_reads_point_table_and_latest_diagnostic_result(tmp_path:
     assert topology.cross_end.status == "abnormal"
     assert topology.cross_end.message == "TC1-SRV 无法访问 TC2-SRV"
     assert topology.checked_at == "2026-07-19T10:01:00Z"
+
+
+def test_fixed_topology_treats_ip_only_server_as_undetected(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    CarNetworkPointTableStore(service.paths, "demo").save(
+        [
+            CarNetworkNode("01", name, "SERVER" if name.endswith("SRV") else "SW" if name.endswith("SW") else "MR", train_no="01", display_name="01车", device_id="" if name.endswith("SRV") else name, primary_address=f"10.0.0.{index}")
+            for index, name in enumerate(("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV"), 1)
+        ]
+    )
+
+    topology = service.get_train_topology("demo", "01")
+
+    assert topology is not None
+    assert topology.point_table_status == "configured"
+    server = next(item for item in topology.tc1_nodes if item.node_id == "TC1-SRV")
+    assert server.device_id is None
+    assert server.ip_address == "10.0.0.3"
+    assert server.status == "not_detected"
 
 
 def test_service_has_no_qt_application_or_mutation_dependency() -> None:

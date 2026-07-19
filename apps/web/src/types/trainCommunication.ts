@@ -46,6 +46,7 @@ export interface TrainCommunicationTopologyLink {
 }
 export interface TrainCommunicationTopology {
   train_id: string; train_name: string; train_status: TopologyStatus; checked_at: string | null
+  point_table_status: 'configured' | 'missing' | 'invalid'; point_table_message: string; point_table_revision: string; point_table_missing_nodes: string[]
   tc1_nodes: TrainCommunicationTopologyNode[]; tc2_nodes: TrainCommunicationTopologyNode[]
   links: TrainCommunicationTopologyLink[]
   vrrp: { status: TopologyStatus; master_side: 'TC1' | 'TC2' | null; virtual_ip: string | null; master_device: string | null; backup_device: string | null; message: string; updated_at: string | null }

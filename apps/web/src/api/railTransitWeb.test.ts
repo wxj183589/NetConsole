@@ -84,7 +84,7 @@ describe('rail transit Web parity API client', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await getCarNetworkPointTable()
-    await saveCarNetworkPointTable([], {})
+    await saveCarNetworkPointTable([], {}, false, 'revision-1')
     await generateCarNetworkPointTable([], {})
     await exportCarNetworkPointTable('xlsx')
     await cancelCarNetworkPointTableTask('task-4')
@@ -99,5 +99,6 @@ describe('rail transit Web parity API client', () => {
       '/api/rail-transit/train-communication/point-table/tasks/recover',
     ])
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).explicit_confirmation).toBe(true)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).revision).toBe('revision-1')
   })
 })

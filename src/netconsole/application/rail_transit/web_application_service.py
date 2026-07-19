@@ -68,6 +68,11 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     read_point_table_file,
 )
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
+from netconsole.services.rail_transit.train_communication_point_table_service import (
+    POINT_TABLE_INVALID,
+    POINT_TABLE_MISSING,
+    TrainCommunicationPointTableService,
+)
 from netconsole.services.trackside_ap_plan_io import (
     TRACKSIDE_PLAN_COLUMNS,
     TRACKSIDE_PLAN_COLUMN_WIDTHS,
@@ -290,6 +295,7 @@ class RailTransitWebApplicationService:
             rows=[self._point_row(node) for node in CarNetworkPointTableStore(self.paths, site_id).load()],
             global_config=config,
             locked=bool(config.get("point_table_locked", False)),
+            revision=TrainCommunicationPointTableService(self.paths).revision(site_id),
         )
 
     def preview_car_network_point_table(
@@ -412,6 +418,7 @@ class RailTransitWebApplicationService:
         overwrite_custom: bool,
         explicit_confirmation: bool,
         audit: dict[str, str] | None = None,
+        revision: str = "",
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         if not explicit_confirmation:
@@ -419,6 +426,9 @@ class RailTransitWebApplicationService:
         nodes = self._point_nodes(rows)
         config = merge_global_config(global_config)
         current = self.get_car_network_point_table(site_id)
+        expected_revision = str(revision or "").strip()
+        if expected_revision and expected_revision != current.revision:
+            raise RailTransitWebError("TRAIN_COMMUNICATION_REVISION_CONFLICT", "点表已被其他操作修改，请重新加载")
         if current.locked and bool(config.get("point_table_locked", False)):
             if [row.model_dump() for row in current.rows] != [self._point_row(node).model_dump() for node in nodes]:
                 raise RailTransitWebError("POINT_TABLE_LOCKED", "当前点表已锁定，不能修改行数据")
@@ -431,6 +441,7 @@ class RailTransitWebApplicationService:
                 "overwrite_custom": bool(overwrite_custom),
                 "audit": {str(key): str(value) for key, value in (audit or {}).items()},
                 "explicit_confirmation": True,
+                "revision": current.revision,
             },
         )
 
@@ -705,7 +716,20 @@ class RailTransitWebApplicationService:
         selected_train = str(train_id or "").strip()
         if not selected_train:
             raise RailTransitWebError("TRAIN_REQUIRED", "请选择要检测的列车")
-        return self._start_task(self._site(site_id), "car_network_diagnostic", {"train_id": selected_train})
+        site_id = self._site(site_id)
+        trains = RailTransitBaseDataQueryService(self.paths).list_trains(site_id, page=1, page_size=200).items
+        train = next((item for item in trains if selected_train in {item.id, item.train_no, item.name}), None)
+        inspection = TrainCommunicationPointTableService(self.paths).inspect(
+            site_id,
+            selected_train,
+            train_no=train.train_no if train is not None else "",
+            display_name=train.name if train is not None else "",
+        )
+        if inspection.status == POINT_TABLE_MISSING:
+            raise RailTransitWebError("TRAIN_COMMUNICATION_POINT_TABLE_MISSING", inspection.message)
+        if inspection.status == POINT_TABLE_INVALID:
+            raise RailTransitWebError("TRAIN_COMMUNICATION_POINT_TABLE_INVALID", inspection.message)
+        return self._start_task(site_id, "car_network_diagnostic", {"train_id": selected_train})
 
     def get_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         task = self.get_task(site_id, task_id)

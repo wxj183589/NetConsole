@@ -75,6 +75,7 @@ const previewColumns: NcTableColumn<CarNetworkPointPreview['rows'][number]>[] = 
 const visible = computed({ get: () => props.modelValue, set: (value) => emit('update:modelValue', value) })
 const rows = ref<CarNetworkPointRow[]>([])
 const globalConfig = ref<Record<string, unknown>>({})
+const revision = ref('')
 const locked = ref(false)
 const selectedRows = ref<CarNetworkPointRow[]>([])
 const trainFilter = ref('')
@@ -120,7 +121,7 @@ async function loadPointTable(force = false): Promise<void> {
   }
   loading.value = true; error.value = ''
   try {
-    const value = await getCarNetworkPointTable(); rows.value = value.rows; globalConfig.value = value.global_config; locked.value = value.locked
+    const value = await getCarNetworkPointTable(); rows.value = value.rows; globalConfig.value = value.global_config; revision.value = value.revision; locked.value = value.locked
     ensureMapping(); dirty.value = false; selectedRows.value = []
   } catch (reason) { error.value = failure(reason, '车内通信点表加载失败') }
   finally { loading.value = false }
@@ -162,7 +163,7 @@ async function startTask(factory: () => Promise<RailTransitTask>, fallback: stri
 async function save(confirmText = `确认保存当前 ${rows.value.length} 行点表与全局规则？`): Promise<void> {
   if (!await confirm({ type: 'DANGER', title: '点表写入确认', message: confirmText, confirmText: '确认写入点表' })) return
   globalConfig.value.point_table_locked = locked.value
-  await startTask(() => saveCarNetworkPointTable(rows.value, globalConfig.value), '车内通信点表保存启动失败')
+  await startTask(() => saveCarNetworkPointTable(rows.value, globalConfig.value, false, revision.value), '车内通信点表保存启动失败')
 }
 async function toggleLock(): Promise<void> {
   const next = !locked.value

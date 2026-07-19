@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { getTrainCommunicationCheck, getTrainCommunicationSummary, getTrainCommunicationTopology, listTrainCommunications, startTrainCommunicationCheck } from '../../api/trainCommunication'
+import {
+  getTrainCommunicationCheck,
+  getTrainCommunicationSummary,
+  getTrainCommunicationTopology,
+  listTrainCommunications,
+  startTrainCommunicationCheck,
+} from '../../api/trainCommunication'
 import FixedTrainTopology from '../../components/train-communication/FixedTrainTopology.vue'
+import { isFeatureEnabled } from '../../features'
 import type { TrainCommunicationRow, TrainCommunicationTopology, TopologyStatus } from '../../types/trainCommunication'
+import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
 
 const router = useRouter()
 const trainOptions = ref<TrainCommunicationRow[]>([])
@@ -19,19 +27,40 @@ const checkMessage = ref('')
 const checkFailed = ref(false)
 const refreshInterval = ref(0)
 const lastUpdatedAt = ref('')
+const pointTableVisible = ref(false)
 let refreshTimer: number | null = null
 let checkTimer: number | null = null
 let checkRunId = 0
 let disposed = false
 
 const statusLabels: Record<TopologyStatus, string> = {
-  normal: '正常', abnormal: '异常', checking: '检测中', stale: '数据过期', not_detected: '未检测', not_configured: '未配置',
+  normal: '正常',
+  abnormal: '异常',
+  checking: '检测中',
+  stale: '数据过期',
+  not_detected: '未检测',
+  not_configured: '未配置',
 }
 
+const pointTableStatusLabel = computed(() => {
+  if (!topology.value) return ''
+  return topology.value.point_table_status === 'configured'
+    ? '检测点表已配置'
+    : topology.value.point_table_status === 'invalid'
+      ? '检测点表不完整'
+      : '检测点表未配置'
+})
+const pointTableAlertType = computed(() => topology.value?.point_table_status === 'invalid' ? 'error' : 'warning')
+const canStart = computed(() => Boolean(
+  selectedTrainId.value
+  && topology.value?.point_table_status === 'configured'
+  && !checking.value
+  && isFeatureEnabled('web.rail_car_network_diagnostic_execute')
+  && isFeatureEnabled('web.rail_task_control'),
+))
+
 function statusLabel(status: TopologyStatus): string { return statusLabels[status] || '未检测' }
-function formatTime(value: string | null | undefined): string {
-  return value ? value.replace('T', ' ').replace(/\+00:00$/, '') : '未检测'
-}
+function formatTime(value: string | null | undefined): string { return value ? value.replace('T', ' ').replace(/\+00:00$/, '') : '未检测' }
 
 async function loadTrainOptions(): Promise<void> {
   try {
@@ -105,7 +134,7 @@ function scheduleCheck(taskId: string): void {
 }
 
 async function runCheck(): Promise<void> {
-  if (!selectedTrainId.value || checking.value) return
+  if (!canStart.value) return
   checking.value = true
   checkRunId += 1
   checkFailed.value = false
@@ -152,10 +181,24 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
         <h1>在线列车车地通信检测</h1>
         <p>固定展示 TC1 / TC2 两端车载通信拓扑、节点状态、VRRP 和跨 TC 通信状态。</p>
       </div>
-      <el-tag type="info">固定六节点</el-tag>
+      <div class="heading-actions">
+        <el-tag type="info">固定六节点</el-tag>
+        <el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_write')" @click="pointTableVisible = true">点表管理</el-button>
+      </div>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
+    <el-alert
+      v-if="topology && topology.point_table_status !== 'configured'"
+      :title="pointTableStatusLabel"
+      :description="[topology.point_table_message, topology.point_table_missing_nodes.length ? `缺少节点：${topology.point_table_missing_nodes.join('、')}` : ''].filter(Boolean).join('；')"
+      :type="pointTableAlertType"
+      show-icon
+      :closable="false"
+    >
+      <el-button link type="primary" @click="pointTableVisible = true">配置点表</el-button>
+    </el-alert>
+
     <section class="control-bar" aria-label="车内通信检测控制">
       <el-select v-model="selectedTrainId" filterable clearable placeholder="选择列车" class="train-select">
         <el-option v-for="train in trainOptions" :key="train.train_id" :label="`${train.train_no} / ${train.train_name}`" :value="train.train_id" />
@@ -163,7 +206,7 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
       <span class="site-label">当前局点：{{ siteId || '未配置' }}</span>
       <el-tag type="info">状态：{{ topology ? statusLabel(topology.train_status) : '未检测' }}</el-tag>
       <el-button :loading="loading" @click="loadTopology">刷新</el-button>
-      <el-button type="primary" :loading="checking" :disabled="!selectedTrainId" @click="runCheck">立即检测</el-button>
+      <el-button type="primary" :loading="checking" :disabled="!canStart" @click="runCheck">立即检测</el-button>
       <el-select v-model="refreshInterval" class="refresh-select" aria-label="自动刷新间隔">
         <el-option :value="0" label="自动刷新：关闭" />
         <el-option :value="10" label="自动刷新：10 秒" />
@@ -180,12 +223,14 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
       <span v-for="status in (['normal', 'abnormal', 'checking', 'stale', 'not_detected', 'not_configured'] as TopologyStatus[])" :key="status"><i :class="`legend-dot ${status}`"></i>{{ statusLabel(status) }}</span>
       <span v-if="lastCheckTaskId" class="task-reference">检测任务：{{ lastCheckTaskId }}</span>
     </section>
+    <CarNetworkPointTableDialog v-model="pointTableVisible" />
   </section>
 </template>
 
 <style scoped>
 .communication-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.heading-actions { display: flex; align-items: center; gap: 10px; }
 .page-heading h1 { margin: 3px 0 6px; }
 .page-heading p { margin: 0; color: var(--el-text-color-secondary); }
 .eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .06em; }
@@ -201,5 +246,5 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
 .legend-dot.checking { background: var(--el-color-primary); }
 .legend-dot.stale { background: var(--el-color-warning); }
 .task-reference { margin-left: auto; }
-@media (max-width: 700px) { .page-heading { flex-direction: column; } .train-select, .refresh-select { width: 100%; } .updated-label, .task-reference { margin-left: 0; } }
+@media (max-width: 700px) { .page-heading { flex-direction: column; } .heading-actions, .train-select, .refresh-select { width: 100%; } .updated-label, .task-reference { margin-left: 0; } }
 </style>

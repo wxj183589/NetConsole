@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-import json
 from typing import Any, Iterable
 
 from netconsole.core.paths import PathResolver
@@ -34,7 +33,11 @@ from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
-from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode, node_from_mapping
+from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode
+from netconsole.services.rail_transit.train_communication_point_table_service import (
+    POINT_TABLE_CONFIGURED,
+    TrainCommunicationPointTableService,
+)
 
 
 ACTIVE_SESSION_STATES = {
@@ -69,6 +72,7 @@ class TrainCommunicationQueryService:
         mesh_query: AcMeshLinkQueryService | None = None,
         online_mr_query: OnlineMrQueryService | None = None,
         job_query: JobCenterQueryService | None = None,
+        point_table_service: TrainCommunicationPointTableService | None = None,
         now_provider=None,
     ) -> None:
         self.paths = paths
@@ -76,6 +80,7 @@ class TrainCommunicationQueryService:
         self.mesh_query = mesh_query or AcMeshLinkQueryService(paths)
         self.online_mr_query = online_mr_query or OnlineMrQueryService(paths)
         self.job_query = job_query or JobCenterQueryService(paths)
+        self.point_table_service = point_table_service or TrainCommunicationPointTableService(paths)
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
 
     def current_site_id(self) -> str:
@@ -198,7 +203,13 @@ class TrainCommunicationQueryService:
             for item in self.base_query.list_mrs(site_id, page=1, page_size=200).items
             if item.train_id in identifiers or item.train_no in identifiers
         ]
-        point_by_name = {item.normalized_name: item for item in point_nodes}
+        inspection = self.point_table_service.inspect(
+            site_id,
+            canonical_train_id,
+            train_no=base_train.train_no if base_train is not None else point_nodes[0].train_no,
+            display_name=base_train.name if base_train is not None else point_nodes[0].display_name,
+        )
+        point_by_name = {item.normalized_name: item for item in inspection.nodes}
         result, checked_at = self._latest_diagnostic_result(site_id, identifiers)
         result_nodes = result.get("nodes") if isinstance(result.get("nodes"), dict) else {}
 
@@ -217,7 +228,7 @@ class TrainCommunicationQueryService:
                 point.ip_vehicle if point else "",
                 mr.management_ip if mr else "",
             )
-            configured = bool(device_id)
+            configured = point is not None and self.point_table_service.has_endpoint(point)
             raw_status = str(result_nodes.get(node_id) or "")
             status = self._topology_status(raw_status) if configured and result else "not_detected" if configured else "not_configured"
             message = "未配置" if status == "not_configured" else "未检测" if status == "not_detected" else "检测异常" if status == "abnormal" else ""
@@ -241,6 +252,9 @@ class TrainCommunicationQueryService:
         vrrp_status = self._topology_status(str(vrrp_payload.get("status") or "")) if result else "not_detected"
         cross_payload = result.get("cross_tc_ping") if isinstance(result.get("cross_tc_ping"), dict) else {}
         cross_status = self._topology_status(str(cross_payload.get("status") or "")) if result else "not_detected"
+        if inspection.status != POINT_TABLE_CONFIGURED:
+            vrrp_status = "not_configured"
+            cross_status = "not_configured"
         if result and cross_status == "not_detected":
             cross_values = result.get("cross_train") if isinstance(result.get("cross_train"), dict) else {}
             cross_status = self._combined_topology_status([str(value) for value in cross_values.values()])
@@ -262,6 +276,10 @@ class TrainCommunicationQueryService:
             train_name=train_name,
             train_status=train_status,
             checked_at=checked_at,
+            point_table_status=inspection.status,
+            point_table_message=inspection.message,
+            point_table_revision=inspection.revision,
+            point_table_missing_nodes=list(inspection.missing_nodes),
             tc1_nodes=tc1_nodes,
             tc2_nodes=tc2_nodes,
             links=links,
@@ -279,14 +297,7 @@ class TrainCommunicationQueryService:
         )
 
     def _point_table_nodes(self, site_id: str) -> list[CarNetworkNode]:
-        path = self.paths.car_network_diagnostic_parsed_dir(site_id) / "point_table.json"
-        if not path.is_file() or path.is_symlink():
-            return []
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return []
-        return [node_from_mapping(item) for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+        return self.point_table_service.read_nodes(site_id)
 
     def _latest_diagnostic_result(self, site_id: str, identifiers: set[str]) -> tuple[dict[str, Any], str | None]:
         rows = self.job_query.list_task_results(

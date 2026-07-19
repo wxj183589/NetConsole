@@ -121,6 +121,16 @@ files/rail_transit/
    └─ outputs/
 ```
 
+### 5.1 车内通信点表
+
+在线列车车地通信检测的点表按局点保存于：
+
+```text
+files/rail_transit/car_network/parsed/point_table.json
+```
+
+该文件由 `TrainCommunicationPointTableService` 读取并计算 revision。点表属于业务配置，不写入仓库；编辑、导入、导出和保存任务沿用现有 Task Center/Artifact 目录。具体字段和校验见 [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)。
+
 MR/Mesh 目录型 `mesh.sqlite` 可能只承担目录/入口职责；单文件明细数据库以 `source_files.parsed_db_path` 为准。页面、图表和报告按源文件查询时必须解析到对应明细库。
 
 Online MR 会话结构：

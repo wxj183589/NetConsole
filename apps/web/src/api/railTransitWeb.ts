@@ -52,10 +52,10 @@ export function transformCarNetworkPointTable(
 }
 
 export function saveCarNetworkPointTable(
-  rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>, overwriteCustom = false,
+  rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>, overwriteCustom = false, revision = '',
 ): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`${trainRoot}/point-table/save`, {
-    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig, overwrite_custom: overwriteCustom, explicit_confirmation: true, audit: { source: 'electron-point-table' } }),
+    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig, overwrite_custom: overwriteCustom, explicit_confirmation: true, audit: { source: 'electron-point-table' }, revision }),
   })
 }
 
