@@ -8,10 +8,6 @@ export interface CommunicationMetric {
   latest_value: number | null; average_value: number | null; maximum_value: number | null
   threshold_value: number | null; updated_at: string | null
 }
-export interface CommunicationRawSource { name: string; label: string; session_id: string; exists: boolean; size_bytes: number; modified_at: string | null; message: string }
-export interface CommunicationPackage { session_id: string; package_name: string; package_reference: string; executor: string; agent_id: string | null; import_status: string; data_integrity: string; collected_at: string | null }
-export interface CommunicationTask { id: string; type: string; name: string; status: string; progress: number; executor: string; source: string; started_at: string; ended_at: string; updated_at: string; error_summary: string }
-
 export interface MrCommunicationStatus {
   train_id: string; train_name: string; mr_id: string; mr_name: string; mr_role: string
   device_id: string | number | null; management_ip: string; mac: string
@@ -34,15 +30,27 @@ export interface TrainCommunicationRow {
   warning_count: number; last_updated_at: string | null
 }
 export interface TrainCommunicationPage { items: TrainCommunicationRow[]; total: number; page: number; page_size: number }
-export interface TrainCommunicationDetail { train: TrainCommunicationRow; site_id: string; sources: CommunicationDataSource[]; warnings: CommunicationWarning[] }
 export interface TrainCommunicationSummary {
   site_id: string; registered_trains: number; registered_mrs: number; normal_trains: number
   warning_trains: number; critical_trains: number; stale_trains: number; unknown_trains: number
   current_mesh_links: number; active_online_mr_sessions: number; agent_imported_sessions: number
   latest_updated_at: string | null
 }
-export interface MrCommunicationDetail { mr: MrCommunicationStatus; collectors: Record<string, unknown>[]; raw_sources: CommunicationRawSource[]; tasks: CommunicationTask[]; packages: CommunicationPackage[] }
-
+export type TopologyStatus = 'normal' | 'abnormal' | 'not_detected' | 'not_configured' | 'checking' | 'stale'
+export interface TrainCommunicationTopologyNode {
+  node_id: string; side: 'TC1' | 'TC2'; role: 'MR' | 'SWITCH' | 'SERVER'
+  name: string; device_id: string | null; ip_address: string | null; status: TopologyStatus; message: string; updated_at: string | null
+}
+export interface TrainCommunicationTopologyLink {
+  link_id: string; source: string; target: string; label: string; status: TopologyStatus; message: string
+}
+export interface TrainCommunicationTopology {
+  train_id: string; train_name: string; train_status: TopologyStatus; checked_at: string | null
+  tc1_nodes: TrainCommunicationTopologyNode[]; tc2_nodes: TrainCommunicationTopologyNode[]
+  links: TrainCommunicationTopologyLink[]
+  vrrp: { status: TopologyStatus; master_side: 'TC1' | 'TC2' | null; virtual_ip: string | null; master_device: string | null; backup_device: string | null; message: string; updated_at: string | null }
+  cross_end: { status: TopologyStatus; message: string; updated_at: string | null }
+}
 export interface TrainCommunicationFilters {
   train?: string; mr_role?: string; communication_status?: string; mesh_link_status?: string
   station?: string; section?: string; line_side?: string; executor?: string; data_source?: string

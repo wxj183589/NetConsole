@@ -67,7 +67,7 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - AC 管理通过 GET-only `/api/ac-management` 和 SQLite `mode=ro + query_only` 展示现有 AC/FIT-AP、Radio 1/2、LLDP、光衰及配置快照；不连接设备、不采集、不下发命令，配置文件仅通过受控 snapshot ID 分块读取；
 - AC Mesh-Link 查询仍使用 GET-only 接口并按 30 秒 fresh/5 分钟 stale 边界保守展示 MR 状态；唯一 `POST /api/ac-management/mesh-links/refresh` 只接受 AC 标识和 switch-history 布尔开关，通过 Task Center Worker 执行固定只读命令。WebHost 不持有设备凭据、不接受命令文本；旧采集没有 raw 时明确显示不可用；
 - 轨道交通基础资料通过 SQLite `mode=ro + query_only` 展示站点/区间派生视图、AP 点位、列车/MR、关联状态和按实体分组的质量问题；导入预览不保存上传原文件。5C-6B 的 apply/审计/rollback API 受 `web.rail_transit_base_data_write`、环境开关、局点范围、预览有效期和数据库哈希共同保护，默认配置不显示应用按钮，真实局点写入仍未授权；
-- 在线列车通信检测按列车分开显示 MR-CT/MR-TC，并聚合 Mesh-Link、Online MR、fping/iPerf、Task 和采集包；聚合与 raw tail 保持只读，MR 详情的独立控制区只向 `OnlineMrApplicationService` 提交严格业务 DTO。页面隐藏或卸载只停止轮询，不停止采集；
+- 在线列车通信检测只展示 TC1/TC2 固定六节点、节点链路、VRRP 和跨 TC 状态；刷新只读取拓扑，“立即检测”只向既有车内通信诊断 Application Service 提交列车 ID。页面不承载 Mesh-Link、Online MR、fping/iPerf、Agent、轨旁 AP 或光衰入口；卸载只停止页面轮询，不停止后台任务；
 - Mesh 原始日志分析以 `mode=ro + query_only` 读取既有单来源分析数据库，后端分页链路、降采样 RSSI/空口、复用正式短时/乒乓规则并列出现有报告；不创建 Task、不调用 parser 写入模式、不生成或删除报告，文件访问不接受路径参数；
 - 轨道交通无线综合看板通过既有 Query Service 聚合基础设施、列车通信、任务、Agent 缓存和 Mesh 分析摘要；全部接口为 GET-only，告警不增加业务阈值，页面只跳转到已有详情入口；
 - WebHost 只在独立 AGENT 页签开放已登记 Profile 的远程 MR start/status/normal stop，不开放远端包删除、强停、任意命令、任意 URL 或 Agent 配置修改；Application Service 的单 Agent 执行闭环见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)；

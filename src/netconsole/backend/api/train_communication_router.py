@@ -26,6 +26,7 @@ from netconsole.models.api.train_communication import (
     TrainCommunicationDetailDTO,
     TrainCommunicationPageDTO,
     TrainCommunicationSummaryDTO,
+    TrainCommunicationTopologyDTO,
 )
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
 
@@ -382,6 +383,55 @@ def train_detail(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="列车不存在")
     return result
+
+
+@router.get(
+    "/trains/{train_id}/topology",
+    response_model=TrainCommunicationTopologyDTO,
+    summary="获取列车固定通信拓扑",
+    responses={404: {"description": "列车不存在"}},
+)
+def train_topology(
+    request: Request,
+    train_id: str,
+    site_id: str = Query(default="", max_length=100),
+) -> TrainCommunicationTopologyDTO:
+    result = _query(lambda: _service(request).get_train_topology(_site_id(request, site_id), train_id))
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="列车不存在")
+    return result
+
+
+@router.post(
+    "/trains/{train_id}/checks",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="提交车内通信检测任务",
+    responses={404: {"description": "功能未启用或列车不存在"}, 503: {"description": "轨交应用服务不可用"}},
+    dependencies=[
+        Depends(require_feature("web.rail_car_network_diagnostic_execute")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def start_train_communication_check(request: Request, train_id: str) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_car_network_diagnostic(_site_id(request, ""), train_id=train_id)
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
+
+
+@router.get(
+    "/checks/{task_id}",
+    response_model=RailTransitTaskDTO,
+    summary="查询车内通信检测任务",
+    responses={404: {"description": "功能未启用或任务不存在"}},
+    dependencies=[Depends(require_feature("web.rail_task_control"))],
+)
+def train_communication_check(request: Request, task_id: str) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).get_car_network_diagnostic(_site_id(request, ""), task_id)
+    except RailTransitWebError as exc:
+        _raise_application_error(exc)
 
 
 @router.get("/mrs/{mr_id}", response_model=MrCommunicationDetailDTO)

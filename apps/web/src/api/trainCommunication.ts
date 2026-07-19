@@ -1,17 +1,19 @@
 import { apiRequest } from './client'
 import type {
-  CommunicationPackage,
-  CommunicationRawSource,
-  CommunicationTask,
-  MrCommunicationDetail,
-  MrCommunicationStatus,
-  TrainCommunicationDetail,
   TrainCommunicationFilters,
   TrainCommunicationPage,
   TrainCommunicationSummary,
+  TrainCommunicationTopology,
 } from '../types/trainCommunication'
 
 const root = '/api/rail-transit/train-communication'
+type TrainCommunicationTask = {
+  task_id: string
+  status: string
+  action: string
+  message: string
+  error_message?: string
+}
 
 function queryString(values: object): string {
   const query = new URLSearchParams()
@@ -24,9 +26,6 @@ function queryString(values: object): string {
 
 export const getTrainCommunicationSummary = (): Promise<TrainCommunicationSummary> => apiRequest(`${root}/summary`)
 export const listTrainCommunications = (filters: TrainCommunicationFilters): Promise<TrainCommunicationPage> => apiRequest(`${root}/trains${queryString(filters)}`)
-export const getTrainCommunication = (id: string): Promise<TrainCommunicationDetail> => apiRequest(`${root}/trains/${encodeURIComponent(id)}`)
-export const getMrCommunication = (id: string): Promise<MrCommunicationDetail> => apiRequest(`${root}/mrs/${encodeURIComponent(id)}`)
-export const getMrCommunicationPreview = (id: string): Promise<MrCommunicationStatus> => apiRequest(`${root}/mrs/${encodeURIComponent(id)}/preview`)
-export const listMrRawSources = (id: string): Promise<CommunicationRawSource[]> => apiRequest(`${root}/mrs/${encodeURIComponent(id)}/raw-sources`)
-export const listMrTasks = (id: string): Promise<CommunicationTask[]> => apiRequest(`${root}/mrs/${encodeURIComponent(id)}/tasks`)
-export const listMrPackages = (id: string): Promise<CommunicationPackage[]> => apiRequest(`${root}/mrs/${encodeURIComponent(id)}/packages`)
+export const getTrainCommunicationTopology = (id: string): Promise<TrainCommunicationTopology> => apiRequest(`${root}/trains/${encodeURIComponent(id)}/topology`)
+export const startTrainCommunicationCheck = (id: string): Promise<TrainCommunicationTask> => apiRequest(`${root}/trains/${encodeURIComponent(id)}/checks`, { method: 'POST' })
+export const getTrainCommunicationCheck = (taskId: string): Promise<TrainCommunicationTask> => apiRequest(`${root}/checks/${encodeURIComponent(taskId)}`)

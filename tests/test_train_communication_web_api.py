@@ -18,7 +18,9 @@ from netconsole.models.api.train_communication import (
     TrainCommunicationPageDTO,
     TrainCommunicationRowDTO,
     TrainCommunicationSummaryDTO,
+    TrainCommunicationTopologyDTO,
 )
+from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 
 
 class _ApiService:
@@ -50,6 +52,10 @@ class _ApiService:
         )
 
     @classmethod
+    def get_train_topology(cls, _site_id: str, train_id: str):
+        return TrainCommunicationTopologyDTO(train_id=train_id, train_name="01车") if train_id == "01" else None
+
+    @classmethod
     def get_mr_detail(cls, _site_id: str, mr_id: str):
         return MrCommunicationDetailDTO(mr=cls.mr) if mr_id == "mr-1" else None
 
@@ -70,6 +76,16 @@ class _ApiService:
         return []
 
 
+class _ApplicationService:
+    @staticmethod
+    def start_car_network_diagnostic(_site_id: str, *, train_id: str = "") -> RailTransitTaskDTO:
+        return RailTransitTaskDTO(task_id="task-1", status="RUNNING", action="car_network_diagnostic", message=train_id)
+
+    @staticmethod
+    def get_car_network_diagnostic(_site_id: str, task_id: str) -> RailTransitTaskDTO:
+        return RailTransitTaskDTO(task_id=task_id, status="COMPLETED", action="car_network_diagnostic")
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -80,6 +96,7 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     app.state.train_communication_query_service = _ApiService()
+    app.state.rail_transit_web_application_service = _ApplicationService()
     protected = [
         tmp_path / name
         for name in ("devices.db", "tasks.db", "mesh.db", "session_meta.json")
@@ -93,6 +110,7 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
             "/api/rail-transit/train-communication/summary",
             "/api/rail-transit/train-communication/trains",
             "/api/rail-transit/train-communication/trains/01",
+            "/api/rail-transit/train-communication/trains/01/topology",
             "/api/rail-transit/train-communication/mrs/mr-1",
             "/api/rail-transit/train-communication/mrs/mr-1/preview",
             "/api/rail-transit/train-communication/mrs/mr-1/raw-sources",
@@ -115,6 +133,7 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
     assert write_routes
     assert {route.path for route in write_routes} == {
         "/rail-transit/train-communication/trains/{train_id}/diagnostics",
+        "/rail-transit/train-communication/trains/{train_id}/checks",
         "/rail-transit/train-communication/diagnostics/{task_id}/cancel",
         "/rail-transit/train-communication/diagnostics/recover",
         "/rail-transit/train-communication/point-table/import/preview",
@@ -126,6 +145,41 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
         "/rail-transit/train-communication/point-table/tasks/recover",
     }
     assert not any("delete" in route.path for route in routes)
+
+
+def test_topology_and_check_routes_use_query_and_application_services(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.train_communication_query_service = _ApiService()
+    app.state.rail_transit_web_application_service = _ApplicationService()
+    for feature_id in (
+        "web.rail_car_network_diagnostic",
+        "web.rail_car_network_diagnostic_execute",
+        "web.rail_task_control",
+    ):
+        app.state.feature_gate.features[feature_id] = {
+            "visible": True,
+            "enabled": True,
+            "client_package": True,
+            "internal_only": False,
+        }
+
+    with TestClient(app) as client:
+        topology = client.get("/api/rail-transit/train-communication/trains/01/topology")
+        missing = client.get("/api/rail-transit/train-communication/trains/missing/topology")
+        started = client.post("/api/rail-transit/train-communication/trains/01/checks")
+        completed = client.get("/api/rail-transit/train-communication/checks/task-1")
+
+    assert topology.status_code == 200
+    assert topology.json()["train_name"] == "01车"
+    assert missing.status_code == 404
+    assert started.status_code == 202
+    assert started.json()["action"] == "car_network_diagnostic"
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "COMPLETED"
+    payload = topology.text + started.text + completed.text
+    assert "password" not in payload.casefold()
+    assert "token" not in payload.casefold()
 
 
 def test_missing_iperf_raw_tail_returns_chinese_empty_state(tmp_path: Path) -> None:

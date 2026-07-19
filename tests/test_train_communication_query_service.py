@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from netconsole.core.paths import PathResolver
+from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_state import TaskState
 from netconsole.models.api.ac_mesh_link import AcMeshLinkSummaryDTO, AcMeshMrPageDTO, AcMeshMrStatusDTO
 from netconsole.models.api.job_center import JobCenterTaskDTO
 from netconsole.models.api.online_mr import (
@@ -14,6 +16,9 @@ from netconsole.models.api.online_mr import (
 )
 from netconsole.models.api.rail_transit_base_data import TrainDTO, TrainPageDTO, VehicleMrDTO, VehicleMrDetailDTO, VehicleMrPageDTO
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
+from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services.job_center.query_service import JobCenterQueryService
+from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode, CarNetworkPointTableStore
 
 
 class _BaseQuery:
@@ -101,6 +106,10 @@ class _JobQuery:
     def list_tasks(*_args, **_kwargs) -> list[JobCenterTaskDTO]:
         return [JobCenterTaskDTO(id="task-1", type="online_mr_collection", name="Online MR", status="RUNNING", session_id="local-active", device_id="1", mr_name="列车01-MR-CT")]
 
+    @staticmethod
+    def list_task_results(*_args, **_kwargs) -> list[tuple[dict[str, object], str]]:
+        return []
+
 
 def _service(tmp_path: Path) -> tuple[TrainCommunicationQueryService, _OnlineQuery]:
     online = _OnlineQuery()
@@ -163,6 +172,81 @@ def test_missing_raw_source_is_a_readonly_empty_state(tmp_path: Path) -> None:
 
     assert rows[0].exists is False
     assert rows[0].message == "文件不存在或尚未生成"
+
+
+def test_fixed_topology_keeps_unconfigured_nodes_and_undetected_cross_end(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+
+    topology = service.get_train_topology("demo", "01")
+
+    assert topology is not None
+    assert [item.node_id for item in topology.tc1_nodes] == ["TC1-MR", "TC1-SW", "TC1-SRV"]
+    assert [item.node_id for item in topology.tc2_nodes] == ["TC2-MR", "TC2-SW", "TC2-SRV"]
+    assert topology.tc1_nodes[0].device_id == "1"
+    assert topology.tc2_nodes[0].device_id == "2"
+    assert all(item.status == "not_configured" for item in [topology.tc1_nodes[1], topology.tc1_nodes[2], topology.tc2_nodes[1], topology.tc2_nodes[2]])
+    assert topology.vrrp.status == "not_detected"
+    assert topology.cross_end.status == "not_detected"
+    assert topology.train_status == "not_configured"
+
+
+def test_fixed_topology_does_not_mark_an_empty_train_normal(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    service.base_query.mrs = []  # type: ignore[attr-defined]
+
+    topology = service.get_train_topology("demo", "01")
+
+    assert topology is not None
+    assert topology.train_status == "not_configured"
+    assert all(item.status == "not_configured" for item in [*topology.tc1_nodes, *topology.tc2_nodes])
+
+
+def test_fixed_topology_reads_point_table_and_latest_diagnostic_result(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    paths = service.paths
+    service.job_query = JobCenterQueryService(paths)
+    CarNetworkPointTableStore(paths, "demo").save(
+        [
+            CarNetworkNode("01", "TC1-MR", "MR", train_no="01", display_name="01车", device_id="1", device_name="列车01-MR-CT", primary_address="10.0.0.1"),
+            CarNetworkNode("01", "TC1-SW", "SW", train_no="01", display_name="01车", device_id="3", device_name="TC1交换机", primary_address="10.0.0.3", vrrp_ip="10.0.0.254"),
+            CarNetworkNode("01", "TC1-SRV", "Server", train_no="01", display_name="01车", device_id="4", device_name="TC1服务器", primary_address="10.0.0.4"),
+            CarNetworkNode("01", "TC2-MR", "MR", train_no="01", display_name="01车", device_id="2", device_name="列车01-MR-TC", primary_address="10.0.0.2"),
+            CarNetworkNode("01", "TC2-SW", "SW", train_no="01", display_name="01车", device_id="5", device_name="TC2交换机", primary_address="10.0.0.5", vrrp_ip="10.0.0.254"),
+            CarNetworkNode("01", "TC2-SRV", "Server", train_no="01", display_name="01车", device_id="6", device_name="TC2服务器", primary_address="10.0.0.6"),
+        ]
+    )
+    TaskRepository(paths.site_tasks_db_path("demo")).save(
+        TaskSnapshot(
+            task_id="diagnostic-1",
+            task_type="car_network_diagnostic",
+            task_name="车内通信检测",
+            status=TaskState.COMPLETED,
+            created_time="2026-07-19T10:00:00Z",
+            updated_time="2026-07-19T10:01:00Z",
+            finished_time="2026-07-19T10:01:00Z",
+            site_name="demo",
+            result={
+                "train_id": "01",
+                "train_no": "01",
+                "display_name": "01车",
+                "nodes": {"TC1-MR": "ok", "TC1-SW": "ok", "TC1-SRV": "ok", "TC2-MR": "ok", "TC2-SW": "ok", "TC2-SRV": "fail"},
+                "vrrp": {"status": "ok", "ip": "10.0.0.254"},
+                "cross_tc_ping": {"status": "fail", "note": "TC1-SRV 无法访问 TC2-SRV"},
+            },
+        )
+    )
+
+    topology = service.get_train_topology("demo", "01")
+
+    assert topology is not None
+    assert topology.tc1_nodes[1].name == "TC1交换机"
+    assert topology.tc1_nodes[1].status == "normal"
+    assert topology.tc2_nodes[2].status == "abnormal"
+    assert topology.vrrp.status == "normal"
+    assert topology.vrrp.virtual_ip == "10.0.0.254"
+    assert topology.cross_end.status == "abnormal"
+    assert topology.cross_end.message == "TC1-SRV 无法访问 TC2-SRV"
+    assert topology.checked_at == "2026-07-19T10:01:00Z"
 
 
 def test_service_has_no_qt_application_or_mutation_dependency() -> None:

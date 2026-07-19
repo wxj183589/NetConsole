@@ -120,6 +120,41 @@ class JobCenterQueryService:
             ).fetchone()
         return self._task_from_row(dict(row), include_result=True) if row is not None else None
 
+    def list_task_results(
+        self,
+        site_id: str,
+        *,
+        task_type: str,
+        status: str = "COMPLETED",
+        limit: int = 50,
+    ) -> list[tuple[dict[str, Any], str]]:
+        """Return internal structured results without exposing them through Web DTOs."""
+        db_path = self._db_path(site_id)
+        if not db_path.is_file():
+            return []
+        with closing(self._connect(db_path)) as conn:
+            if not self._table_exists(conn, "task_snapshots"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT result_json, updated_time
+                FROM task_snapshots
+                WHERE task_type = ? AND status = ? AND site_name = ?
+                ORDER BY updated_time DESC
+                LIMIT ?
+                """,
+                (
+                    str(task_type),
+                    str(status).upper(),
+                    self._validated_site_id(site_id),
+                    max(1, min(int(limit), 200)),
+                ),
+            ).fetchall()
+        return [
+            (self._json_object(row["result_json"]), str(row["updated_time"] or ""))
+            for row in rows
+        ]
+
     def get_summary(self, site_id: str) -> JobCenterSummaryDTO:
         tasks = self.list_tasks(site_id, limit=1000)
         return JobCenterSummaryDTO(
@@ -156,8 +191,11 @@ class JobCenterQueryService:
         return JobCenterLogTailDTO(task_id=task_id, lines=lines, message="" if lines else "暂无日志")
 
     def _db_path(self, site_id: str) -> Path:
-        selected = SiteManager(self.paths).validate_site_name(str(site_id or "demo"))
+        selected = self._validated_site_id(site_id)
         return self.paths.site_tasks_db_path(selected)
+
+    def _validated_site_id(self, site_id: str) -> str:
+        return SiteManager(self.paths).validate_site_name(str(site_id or "demo"))
 
     @staticmethod
     def _connect(db_path: Path) -> sqlite3.Connection:

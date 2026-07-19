@@ -2,66 +2,64 @@
 
 ## 定位
 
-阶段 5C-7A 在 `/rail-transit/train-communication` 增加统一展示页，Feature key 为 `web.train_communication_monitoring`。页面主体按正式列车分别只读展示 MR-CT 与 MR-TC，并聚合轨旁 AP、Mesh-Link、Online MR、fping、iPerf、任务与采集包；车载 MR 不是普通 WLAN 客户端。阶段 5C-10A 增加 `web.online_mr_local_control`，阶段 5B-13B 增加 `web.online_mr_agent_control`；两者在 MR 详情中使用独立 LOCAL/AGENT 页签，不改变其他聚合查询的只读边界。
+`/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面只展示列车选择、TC1/TC2 两端固定六节点、节点和链路状态、VRRP、跨 TC 通信、刷新与“立即检测”。
 
-本页用于现场通信状态与数据定位；真实采集控制和分析交付分别进入独立“车载 MR 实时收集”和“车载 MR 收集分析”页面。Desktop 安全条件与对应开关满足时，LOCAL 控制通过 Application Service 创建 Task、启动、正常停止、强制停止和重启恢复；页面不连接 AC、不修改基础资料、快照或既有 Session raw。
+固定节点为：
 
-## 数据来源和优先级
+```text
+TC1-MR -> TC1-SW -> TC1-SRV
+             |
+          VRRP / 跨 TC
+             |
+TC2-MR -> TC2-SW -> TC2-SRV
+```
 
-| 数据 | 首选来源 | 安全回退 | 缺失处理 |
-| --- | --- | --- | --- |
-| 列车、MR 静态身份 | 当前局点 `devices.db` 正式基础资料 | 无 | 不从临时包名推测 |
-| Mesh-Link 与 Peer AP | 最新 AC Mesh-Link 快照 | 过期快照明确标记 `stale`；再用 Session 轻量预览 | 返回 `unknown` |
-| 站点、区间、里程、方向 | 快照已精确关联的正式 AP 扩展资料 | Session `display_context` 仅作采集上下文 | 不按名称猜测 |
-| 采集状态 | 活动 Online MR Session | 最近终态 Session、Agent 已导入 Session | `no_data` |
-| fping/iPerf | 活动 Session 的受控 `view/*.json` | 已落盘最终摘要或包内已导入事实 | 显示“无数据” |
-| 任务 | 当前局点 `tasks.db` 只读 Query Service | 无 | 空列表 |
-| 原始片段 | 当前 Session 的受控 raw-tail 白名单 | 无 | 中文空状态，不返回 500 |
+轨旁 AP、RSSI、fping、丢包、iPerf、光衰、Online MR、Agent 和 Mesh-Link 属于各自独立页面，不在本页聚合、筛选或控制。底层业务模块和历史数据不因此删除。
 
-AC 快照与 Online MR 预览的 Peer 名称或 MAC 不一致时返回 `source_conflict` warning，继续展示优先级更高的 AC 事实，不静默覆盖。所有返回引用均为稳定 ID 或局点内相对引用，不返回密码、Token 或主机绝对路径。
+## 状态契约
 
-## 状态
+Python `TrainCommunicationQueryService` 返回稳定状态，Vue 只映射中文和语义颜色：
 
-- `normal`：至少一条新鲜在线 Mesh-Link，且既有来源未报告告警；
-- `warning`：单端 MR 离线、数据部分完整、光衰告警、已有指标告警或来源冲突；
-- `critical`：全部已登记 MR 失联，当前关联 AP 离线、采集失败或已有来源报告严重状态；
-- `stale`：只能取得过期数据；
-- `unknown`：没有足够事实。
+| 状态 | 页面文本 | 含义 |
+| --- | --- | --- |
+| `normal` | 正常 | 已有事实明确正常 |
+| `abnormal` | 异常 | 已有事实明确异常 |
+| `checking` | 检测中 | 车内通信检测任务运行中 |
+| `stale` | 数据过期 | 最近事实已经过期 |
+| `not_detected` | 未检测 | 已配置但没有可用检测结果 |
+| `not_configured` | 未配置 | 当前基础资料未建立对应节点关联 |
 
-聚合层只使用已有状态与阈值，不新增 RSSI、丢包或带宽业务判定标准。CT/TC 连接不同 AP 时分别显示，不合并为单一虚假值。
+缺失值不能显示为 `unknown`、`no_data`、`-` 或数值 `0`。当前基础资料能够明确关联 CT/TC 车载 MR；交换机、服务器、VRRP 和跨端检测没有明确事实时，必须返回“未配置”或“未检测”，不得按名称、地址或前端规则猜测。
+
+## 检测任务
+
+“立即检测”复用现有 `RailTransitWebApplicationService.start_car_network_diagnostic()` 和 `car_network_diagnostic` Task：
+
+- Router 只校验 Feature、局点和业务 ID，再调用 Application Service；
+- 页面轮询现有任务状态，终态后重新读取拓扑；
+- 页面卸载或切换列车时清理轮询，不停止后台任务；
+- 本入口不启动 Online MR、不启动持续 fping/iPerf、不采集轨旁 AP，也不接受命令、凭据或路径。
 
 ## API
 
-以下接口全部为 GET-only：
-
 ```text
-GET /api/rail-transit/train-communication/summary
-GET /api/rail-transit/train-communication/trains
-GET /api/rail-transit/train-communication/trains/{train_id}
-GET /api/rail-transit/train-communication/mrs/{mr_id}
-GET /api/rail-transit/train-communication/mrs/{mr_id}/preview
-GET /api/rail-transit/train-communication/mrs/{mr_id}/raw-sources
-GET /api/rail-transit/train-communication/mrs/{mr_id}/tasks
-GET /api/rail-transit/train-communication/mrs/{mr_id}/packages
+GET  /api/rail-transit/train-communication/summary
+GET  /api/rail-transit/train-communication/trains
+GET  /api/rail-transit/train-communication/trains/{train_id}/topology
+POST /api/rail-transit/train-communication/trains/{train_id}/checks
+GET  /api/rail-transit/train-communication/checks/{task_id}
 ```
 
-受控 raw 内容继续调用 Online MR 的 `/api/online-mr/sessions/{session_id}/raw-tail`。逻辑名称固定为 Mesh-Link、空口、fping 样本/汇总/原始输出、iPerf Client、切换历史和 Collector 输出；前端不能提交文件路径。
+`summary` 和 `trains` 只为当前局点及列车选择提供来源。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用，但不再驱动本页 UI。
 
-## 动态刷新
+## 刷新与导航
 
-- 有活动会话时总览/列表每 2 秒、选中 MR 约 1.5 秒刷新；无活动会话时均为 10 秒；
-- 原始片段只在折叠面板展开时每秒读取当前 Tab 的 tail；
-- 同类请求未完成时不重入；页面隐藏、抽屉关闭或组件卸载后停止相应定时器；
-- 连续失败三次后保留最后一次成功数据，提示失败并降频至 15 秒。
+- 手工刷新只重新读取拓扑快照；
+- 自动刷新可关闭，或设置为 10、30、60 秒；
+- 同一页面只维护一个自动刷新定时器和一个检测任务轮询定时器；
+- 点击已有 `device_id` 的节点跳转到 `/devices/{device_id}`，复用设备详情；未配置节点不创建虚假详情；
+- 页面卸载时清理全部定时器。
 
-后端一次批量读取正式 MR、列车、Mesh-Link、Session 和 Task 索引，再在内存精确关联。原始文件只读取尾部，不加载全量历史 raw。
+## 验收边界
 
-## 当前边界
-
-- LOCAL 启停、强停和恢复统一由 `OnlineMrApplicationService` 承担；正式 Electron Runtime 显式启用 LOCAL 控制，Browser/Server 诊断宿主默认关闭；
-- 5B-13B 的 AGENT 页签只允许选择已登记 Profile 和正式 MR，通过同一个 Application Service 进行 start/status/normal stop；包下载/导入由 Executor 自动收敛；
-- 本页不做正式 Mesh 离线分析、报告、Excel 导出、删除或写操作；已有正式分析结果通过独立的 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md) 查看。
-- 本页的列表和摘要可被 [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只读复用；综合看板继续保持 CT/TC 独立，不重新计算通信状态或阈值。
-- Web 控制只在显式启用、Desktop、严格 `127.0.0.1` 和当前短期会话 Cookie 同时满足时可用；正式 Electron Runtime 显式启用，其他宿主可用 `ONLINE_MR_WEB_CONTROL_ENABLED=1` 开启；请求不接受凭据、命令、Agent URL 或路径，详见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
-- 独立 Agent 执行器还要求 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1`，仅供 Application Service 使用；安全条件、恢复和 package 收敛见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)。
-- 5C-10A-B 与 5B-13A-A 真实设备验收在列车下电期间继续冻结；回环 Fake 验收见 [Online MR Agent Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md)。
+自动测试覆盖固定六节点、状态映射、空状态、API DTO、任务路由和定时器清理。交换机/服务器拓扑关联、VRRP、跨 TC 实际检测及真实设备通信仍需点表事实源和现场验收；完成前不得把“未配置/未检测”提升为正常。

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -158,6 +158,58 @@ class TrainCommunicationSummaryDTO(ApiModel):
     latest_updated_at: str | None = None
 
 
+TopologyStatus = Literal["normal", "abnormal", "not_detected", "not_configured", "checking", "stale"]
+
+
+class TrainCommunicationTopologyNodeDTO(ApiModel):
+    node_id: str
+    side: Literal["TC1", "TC2"]
+    role: Literal["MR", "SWITCH", "SERVER"]
+    name: str = ""
+    device_id: str | None = None
+    ip_address: str | None = None
+    status: TopologyStatus = "not_configured"
+    message: str = ""
+    updated_at: str | None = None
+
+
+class TrainCommunicationTopologyLinkDTO(ApiModel):
+    link_id: str
+    source: str
+    target: str
+    label: str
+    status: TopologyStatus = "not_detected"
+    message: str = ""
+
+
+class TrainCommunicationVrrpDTO(ApiModel):
+    status: TopologyStatus = "not_detected"
+    master_side: Literal["TC1", "TC2"] | None = None
+    virtual_ip: str | None = None
+    master_device: str | None = None
+    backup_device: str | None = None
+    message: str = ""
+    updated_at: str | None = None
+
+
+class TrainCommunicationCrossEndDTO(ApiModel):
+    status: TopologyStatus = "not_detected"
+    message: str = ""
+    updated_at: str | None = None
+
+
+class TrainCommunicationTopologyDTO(ApiModel):
+    train_id: str
+    train_name: str
+    train_status: TopologyStatus = "not_detected"
+    checked_at: str | None = None
+    tc1_nodes: list[TrainCommunicationTopologyNodeDTO] = Field(default_factory=list)
+    tc2_nodes: list[TrainCommunicationTopologyNodeDTO] = Field(default_factory=list)
+    links: list[TrainCommunicationTopologyLinkDTO] = Field(default_factory=list)
+    vrrp: TrainCommunicationVrrpDTO = Field(default_factory=TrainCommunicationVrrpDTO)
+    cross_end: TrainCommunicationCrossEndDTO = Field(default_factory=TrainCommunicationCrossEndDTO)
+
+
 class MrCommunicationDetailDTO(ApiModel):
     mr: MrCommunicationStatusDTO
     collectors: list[dict[str, Any]] = Field(default_factory=list)
@@ -179,4 +231,9 @@ __all__ = [
     "TrainCommunicationPageDTO",
     "TrainCommunicationRowDTO",
     "TrainCommunicationSummaryDTO",
+    "TrainCommunicationTopologyDTO",
+    "TrainCommunicationTopologyLinkDTO",
+    "TrainCommunicationTopologyNodeDTO",
+    "TrainCommunicationVrrpDTO",
+    "TrainCommunicationCrossEndDTO",
 ]

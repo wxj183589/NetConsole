@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+import json
 from typing import Any, Iterable
 
 from netconsole.core.paths import PathResolver
@@ -22,12 +23,18 @@ from netconsole.models.api.train_communication import (
     TrainCommunicationPageDTO,
     TrainCommunicationRowDTO,
     TrainCommunicationSummaryDTO,
+    TrainCommunicationTopologyDTO,
+    TrainCommunicationTopologyLinkDTO,
+    TrainCommunicationTopologyNodeDTO,
+    TrainCommunicationVrrpDTO,
+    TrainCommunicationCrossEndDTO,
 )
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.errors import OnlineMrQueryError
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode, node_from_mapping
 
 
 ACTIVE_SESSION_STATES = {
@@ -168,6 +175,161 @@ class TrainCommunicationQueryService:
             sources=self._unique_sources(source for mr in row.mrs for source in mr.data_sources),
             warnings=[warning for mr in row.mrs for warning in mr.warnings],
         )
+
+    def get_train_topology(self, site_id: str, train_id: str) -> TrainCommunicationTopologyDTO | None:
+        base_trains = self.base_query.list_trains(site_id, page=1, page_size=200).items
+        base_train = next((item for item in base_trains if train_id in {item.id, item.train_no, item.name}), None)
+        identifiers = {train_id}
+        if base_train is not None:
+            identifiers.update({base_train.id, base_train.train_no, base_train.name})
+        point_nodes = [
+            item
+            for item in self._point_table_nodes(site_id)
+            if {item.train_id, item.train_no, item.display_name} & identifiers
+        ]
+        if base_train is None and not point_nodes:
+            return None
+
+        canonical_train_id = base_train.id if base_train is not None else point_nodes[0].train_id
+        train_name = base_train.name if base_train is not None else point_nodes[0].display_name or canonical_train_id
+        identifiers.add(canonical_train_id)
+        base_mrs = [
+            item
+            for item in self.base_query.list_mrs(site_id, page=1, page_size=200).items
+            if item.train_id in identifiers or item.train_no in identifiers
+        ]
+        point_by_name = {item.normalized_name: item for item in point_nodes}
+        result, checked_at = self._latest_diagnostic_result(site_id, identifiers)
+        result_nodes = result.get("nodes") if isinstance(result.get("nodes"), dict) else {}
+
+        def fallback_mr(node_id: str) -> VehicleMrDTO | None:
+            roles = {"TC1-MR": {"CT", "TC1"}, "TC2-MR": {"TC", "TC2", "CW"}}[node_id]
+            return next((item for item in base_mrs if item.role.upper() in roles), None)
+
+        def topology_node(node_id: str, side: str, role: str) -> TrainCommunicationTopologyNodeDTO:
+            point = point_by_name.get(node_id)
+            mr = fallback_mr(node_id) if role == "MR" else None
+            device_id = point.device_id if point and point.device_id else str(mr.device_id) if mr and mr.device_id else None
+            name = point.device_name if point and point.device_name else mr.name if mr else point.node_name if point else ""
+            ip_address = self._first_present(
+                point.primary_address if point else "",
+                point.ssh_host if point else "",
+                point.ip_vehicle if point else "",
+                mr.management_ip if mr else "",
+            )
+            configured = bool(device_id)
+            raw_status = str(result_nodes.get(node_id) or "")
+            status = self._topology_status(raw_status) if configured and result else "not_detected" if configured else "not_configured"
+            message = "未配置" if status == "not_configured" else "未检测" if status == "not_detected" else "检测异常" if status == "abnormal" else ""
+            return TrainCommunicationTopologyNodeDTO(
+                node_id=node_id,
+                side=side,  # type: ignore[arg-type]
+                role=role,  # type: ignore[arg-type]
+                name=name,
+                device_id=device_id,
+                ip_address=ip_address or None,
+                status=status,  # type: ignore[arg-type]
+                message=message,
+                updated_at=checked_at if result else None,
+            )
+
+        tc1_nodes = [topology_node("TC1-MR", "TC1", "MR"), topology_node("TC1-SW", "TC1", "SWITCH"), topology_node("TC1-SRV", "TC1", "SERVER")]
+        tc2_nodes = [topology_node("TC2-MR", "TC2", "MR"), topology_node("TC2-SW", "TC2", "SWITCH"), topology_node("TC2-SRV", "TC2", "SERVER")]
+        nodes = {item.node_id: item for item in [*tc1_nodes, *tc2_nodes]}
+
+        vrrp_payload = result.get("vrrp") if isinstance(result.get("vrrp"), dict) else {}
+        vrrp_status = self._topology_status(str(vrrp_payload.get("status") or "")) if result else "not_detected"
+        cross_payload = result.get("cross_tc_ping") if isinstance(result.get("cross_tc_ping"), dict) else {}
+        cross_status = self._topology_status(str(cross_payload.get("status") or "")) if result else "not_detected"
+        if result and cross_status == "not_detected":
+            cross_values = result.get("cross_train") if isinstance(result.get("cross_train"), dict) else {}
+            cross_status = self._combined_topology_status([str(value) for value in cross_values.values()])
+
+        def link(link_id: str, source: str, target: str, label: str) -> TrainCommunicationTopologyLinkDTO:
+            status = vrrp_status if link_id == "tc1-sw-tc2-sw" else self._combined_topology_status([nodes[source].status, nodes[target].status])
+            return TrainCommunicationTopologyLinkDTO(link_id=link_id, source=source, target=target, label=label, status=status)
+
+        links = [
+            link("tc1-mr-sw", "TC1-MR", "TC1-SW", "TC1-MR ↔ TC1-SW"),
+            link("tc1-sw-srv", "TC1-SW", "TC1-SRV", "TC1-SW ↔ TC1-SRV"),
+            link("tc2-mr-sw", "TC2-MR", "TC2-SW", "TC2-MR ↔ TC2-SW"),
+            link("tc2-sw-srv", "TC2-SW", "TC2-SRV", "TC2-SW ↔ TC2-SRV"),
+            link("tc1-sw-tc2-sw", "TC1-SW", "TC2-SW", "VRRP"),
+        ]
+        train_status = self._combined_topology_status([item.status for item in [*tc1_nodes, *tc2_nodes]])
+        return TrainCommunicationTopologyDTO(
+            train_id=canonical_train_id,
+            train_name=train_name,
+            train_status=train_status,
+            checked_at=checked_at,
+            tc1_nodes=tc1_nodes,
+            tc2_nodes=tc2_nodes,
+            links=links,
+            vrrp=TrainCommunicationVrrpDTO(
+                status=vrrp_status,
+                virtual_ip=str(vrrp_payload.get("ip") or "") or None,
+                message="未检测" if vrrp_status == "not_detected" else "检测异常" if vrrp_status == "abnormal" else "",
+                updated_at=checked_at,
+            ),
+            cross_end=TrainCommunicationCrossEndDTO(
+                status=cross_status,
+                message=str(cross_payload.get("note") or cross_payload.get("message") or "") or ("未检测" if cross_status == "not_detected" else "检测异常" if cross_status == "abnormal" else ""),
+                updated_at=checked_at,
+            ),
+        )
+
+    def _point_table_nodes(self, site_id: str) -> list[CarNetworkNode]:
+        path = self.paths.car_network_diagnostic_parsed_dir(site_id) / "point_table.json"
+        if not path.is_file() or path.is_symlink():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return []
+        return [node_from_mapping(item) for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+    def _latest_diagnostic_result(self, site_id: str, identifiers: set[str]) -> tuple[dict[str, Any], str | None]:
+        rows = self.job_query.list_task_results(
+            site_id,
+            task_type="car_network_diagnostic",
+            status="COMPLETED",
+            limit=50,
+        )
+        for payload, updated_at in rows:
+            result_ids = {str(payload.get(key) or "") for key in ("train_id", "train_no", "display_name")}
+            if result_ids & identifiers:
+                return payload, str(updated_at or "") or None
+        return {}, None
+
+    @classmethod
+    def _combined_topology_status(cls, values: Iterable[str]) -> str:
+        statuses = [cls._topology_status(value) for value in values]
+        if "abnormal" in statuses:
+            return "abnormal"
+        if "stale" in statuses:
+            return "stale"
+        if "not_configured" in statuses:
+            return "not_configured"
+        if "not_detected" in statuses or not statuses:
+            return "not_detected"
+        return "normal"
+
+    @staticmethod
+    def _topology_status(value: str) -> str:
+        normalized = str(value or "").strip().casefold()
+        if normalized in {"ok", "normal", "online", "reachable", "success"}:
+            return "normal"
+        if normalized in {"fail", "failed", "partial_fail", "unstable", "abnormal", "offline", "error", "timeout", "loss"}:
+            return "abnormal"
+        if normalized == "stale":
+            return "stale"
+        if normalized == "not_configured":
+            return "not_configured"
+        return "not_detected"
+
+    @staticmethod
+    def _first_present(*values: str) -> str:
+        return next((str(value) for value in values if str(value or "").strip()), "")
 
     def get_mr_detail(self, site_id: str, mr_id: str) -> MrCommunicationDetailDTO | None:
         mr = self._find_mr(site_id, mr_id)

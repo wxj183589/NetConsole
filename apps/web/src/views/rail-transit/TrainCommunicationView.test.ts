@@ -2,45 +2,24 @@ import { describe, expect, it } from 'vitest'
 
 import source from './TrainCommunicationView.vue?raw'
 
-describe('train communication Online MR control integration', () => {
-  it('keeps control in selected formal MR and separates LOCAL from AGENT', () => {
-    expect(source).toContain("import OnlineMrLocalControl")
-    expect(source).toContain("import OnlineMrAgentControlPanel")
-    expect(source).toContain('<OnlineMrLocalControl')
-    expect(source).toContain('<OnlineMrAgentControlPanel')
-    expect(source).toContain('LOCAL 本地执行')
-    expect(source).toContain('AGENT 远程执行')
-    expect(source).toContain('store.selectedMr')
-    expect(source).toContain(':site-id="store.summary?.site_id')
-    expect(source).toContain(':mr="store.selectedMr.mr"')
+describe('固定车载通信拓扑页面', () => {
+  it('使用固定拓扑和现有车内通信任务 API', () => {
+    expect(source).toContain('FixedTrainTopology')
+    expect(source).toContain('getTrainCommunicationTopology')
+    expect(source).toContain('startTrainCommunicationCheck')
+    expect(source).toContain('getTrainCommunicationCheck')
+    expect(source).toContain('立即检测')
+    expect(source).toContain('TC1 / TC2')
   })
 
-  it('keeps LOCAL and AGENT execution in explicit tabs', () => {
-    expect(source).toContain('LOCAL 本地执行')
-    expect(source).toContain('AGENT 远程执行')
-    expect(source).not.toMatch(/READ ONLY|只读|迁移/)
+  it('不嵌入综合无线指标或 Online MR 控制', () => {
+    expect(source).not.toMatch(/OnlineMrLocalControl|OnlineMrAgentControlPanel|RSSI|fping|丢包|iPerf|光衰|轨旁 AP|NcDataTable|Mesh-Link|Agent/)
+    expect(source).not.toMatch(/unknown|no_data/)
   })
 
-  it('keeps the Qt communication indicators visible without migration copy', () => {
-    expect(source).toContain('MR-CT')
-    expect(source).toContain('MR-TC')
-    expect(source).toContain('RSSI')
-    expect(source).toContain('fping')
-    expect(source).toContain('丢包')
-    expect(source).toContain('iPerf')
-    expect(source).toContain('仅光衰异常')
-    expect(source).not.toMatch(/READ ONLY|只读|迁移/)
-  })
-
-  it('uses typed shared data tables for the train and MR detail tables', () => {
-    expect(source).toContain("import NcDataTable")
-    expect(source).toContain('NcTableColumn<TrainCommunicationRow>')
-    expect(source.match(/<NcDataTable\b/g)).toHaveLength(4)
-    expect(source).toContain('table-id="rail-train-communication-trains"')
-    expect(source).toContain('table-id="rail-train-communication-collectors"')
-    expect(source).toContain('table-id="rail-train-communication-tasks"')
-    expect(source).toContain('table-id="rail-train-communication-packages"')
-    expect(source).toContain("alignmentReason: 'long-text'")
-    expect(source).not.toContain('<el-table')
+  it('卸载时清理刷新和检测任务定时器', () => {
+    expect(source).toContain('onBeforeUnmount')
+    expect(source).toContain("clearTimer('refresh')")
+    expect(source).toContain("clearTimer('check')")
   })
 })
