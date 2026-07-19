@@ -9,6 +9,55 @@ from netconsole.models.api.common import ApiModel
 
 IssueSeverity = Literal["error", "warning", "info"]
 MergeResult = Literal["CREATE", "UPDATE", "UNCHANGED", "SKIP", "CONFLICT", "NEEDS_CONFIRMATION"]
+BaseDataEntityType = Literal["station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
+BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
+
+
+class BaseDataEditSessionDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    loaded_at: str
+    can_write: bool = False
+    write_scope: str = "real"
+
+
+class BaseDataChangeDTO(ApiModel):
+    entity_type: BaseDataEntityType
+    action: BaseDataChangeAction
+    entity_id: str = ""
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class BaseDataValidationIssueDTO(ApiModel):
+    change_index: int
+    code: str
+    message: str
+    field_name: str = ""
+    blocking: bool = True
+
+
+class BaseDataValidateRequestDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    changes: list[BaseDataChangeDTO] = Field(default_factory=list, max_length=2000)
+
+
+class BaseDataValidationResultDTO(ApiModel):
+    valid: bool
+    issues: list[BaseDataValidationIssueDTO] = Field(default_factory=list)
+
+
+class BaseDataSaveRequestDTO(BaseDataValidateRequestDTO):
+    explicit_confirmation: bool = False
+
+
+class BaseDataSaveResultDTO(ApiModel):
+    revision: str
+    created_count: int = 0
+    updated_count: int = 0
+    deleted_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    validation_issues: list[BaseDataValidationIssueDTO] = Field(default_factory=list)
 
 
 class MileageDTO(ApiModel):
@@ -151,6 +200,8 @@ class TracksideApDTO(ApiModel):
     runtime: RelatedRuntimeStatusDTO = Field(default_factory=RelatedRuntimeStatusDTO)
     issue_count: int = 0
     highest_issue_severity: str = ""
+    record_kind: str = "ap"
+    base_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TracksideApDetailDTO(ApiModel):
@@ -166,6 +217,7 @@ class VehicleMrDTO(ApiModel):
     train_no: str = ""
     role: str = ""
     management_ip: str = ""
+    station: str = ""
     mac: str = ""
     protocol: str = ""
     port: int | None = None

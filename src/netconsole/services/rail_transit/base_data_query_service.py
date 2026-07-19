@@ -49,6 +49,7 @@ T = TypeVar("T")
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2, "": 3}
 _AP_FIELDS = (
     "id",
+    "belong_type",
     "line_name",
     "system_type",
     "network_domain",
@@ -69,6 +70,7 @@ _AP_FIELDS = (
     "updated_at",
     "section_start_station",
     "section_end_station",
+    "raw_payload_json",
 )
 _DEVICE_FIELDS = (
     "id",
@@ -449,6 +451,8 @@ class RailTransitBaseDataQueryService:
             ac = ac_by_mac.get(mac_key) or ac_by_name.get(name.casefold())
             links = links_by_ap.get(mac_key) or links_by_ap.get(name.casefold()) or []
             parsed = self._mileage(row.get("mileage_text"), row.get("mileage_m"))
+            record_kind = str(row.get("belong_type") or "")
+            base_metadata = self._base_metadata(row.get("raw_payload_json"))
             radios = []
             if ac:
                 radios = [
@@ -494,6 +498,8 @@ class RailTransitBaseDataQueryService:
                     source_row=self._int_or_none(row.get("source_row")),
                     updated_at=str(row.get("updated_at") or ""),
                     runtime=runtime,
+                    record_kind=record_kind,
+                    base_metadata=base_metadata,
                 )
             )
         return result
@@ -556,6 +562,7 @@ class RailTransitBaseDataQueryService:
                     train_no=identity.train_no,
                     role="TC" if identity.car_end == "CW" else identity.car_end,
                     management_ip=str(row.get("primary_address") or ""),
+                    station=str(row.get("station") or ""),
                     mac=self._display_mac(row.get("mac_address")),
                     protocol=str(row.get("protocol") or ""),
                     port=self._int_or_none(row.get("port")),
@@ -685,6 +692,11 @@ class RailTransitBaseDataQueryService:
         names.update(ap.section_end_station for ap in aps if ap.section_end_station)
         result = []
         for index, name in enumerate(sorted(names, key=self._natural_key), 1):
+            metadata_row = next(
+                (ap for ap in aps if ap.record_kind == "__base_station__" and ap.station == name),
+                None,
+            )
+            metadata = metadata_row.base_metadata if metadata_row else {}
             related = [ap for ap in aps if ap.station == name and self._is_ap_record(ap)]
             section_names = {
                 ap.section
@@ -696,12 +708,14 @@ class RailTransitBaseDataQueryService:
                 StationDTO(
                     id=self._derived_id("station", name),
                     name=name,
-                    line_name=next((ap.line_name for ap in related if ap.line_name), ""),
-                    sort_order=index,
+                    code=str(metadata.get("code") or ""),
+                    line_name=(metadata_row.line_name if metadata_row else "") or next((ap.line_name for ap in related if ap.line_name), ""),
+                    sort_order=int(metadata.get("sort_order") or index),
                     ap_count=len(related),
                     section_count=len(section_names),
                     mileage_min=min(mileages, default=None),
                     mileage_max=max(mileages, default=None),
+                    remark=str(metadata.get("remark") or (metadata_row.remark if metadata_row else "")),
                 )
             )
         return result
@@ -714,6 +728,8 @@ class RailTransitBaseDataQueryService:
         result = []
         for key, rows in grouped.items():
             name, start, end, line_side = key
+            metadata_row = next((ap for ap in rows if ap.record_kind == "__base_section__"), None)
+            metadata = metadata_row.base_metadata if metadata_row else {}
             ap_rows = [ap for ap in rows if self._is_ap_record(ap)]
             mileages = [ap.mileage.meters for ap in ap_rows if ap.mileage.meters is not None]
             result.append(
@@ -726,6 +742,7 @@ class RailTransitBaseDataQueryService:
                     ap_count=len(ap_rows),
                     mileage_min=min(mileages, default=None),
                     mileage_max=max(mileages, default=None),
+                    remark=str(metadata.get("remark") or (metadata_row.remark if metadata_row else "")),
                 )
             )
         return result
@@ -861,7 +878,17 @@ class RailTransitBaseDataQueryService:
 
     @classmethod
     def _is_ap_record(cls, item: TracksideApDTO) -> bool:
+        if item.record_kind in {"__base_station__", "__base_section__"}:
+            return False
         return bool(item.name or item.mac or item.point_code.strip() not in {"", "-"})
+
+    @staticmethod
+    def _base_metadata(value: Any) -> dict[str, Any]:
+        try:
+            payload = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     @staticmethod
     def _derived_id(prefix: str, *parts: str) -> str:

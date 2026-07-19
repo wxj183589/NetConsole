@@ -34,7 +34,7 @@ def test_router_delegates_import_policy_without_guard_or_source_policy_access() 
     assert "import_policy_rows" not in router_source
 
 
-def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_path: Path) -> None:
+def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     app = create_app(
         RuntimeMode.SERVER,
@@ -100,6 +100,8 @@ def test_base_data_api_is_read_only_except_preview_and_redacts_credentials(tmp_p
         "/api/rail-transit/base-data/import-preview",
         "/api/rail-transit/base-data/import-apply",
         "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
+        "/api/rail-transit/base-data/validate",
+        "/api/rail-transit/base-data/changes",
     }
     assert not any(method in {"PUT", "PATCH", "DELETE"} for _path, method in routes)
     assert responses[8].json()["write_enabled"] is False

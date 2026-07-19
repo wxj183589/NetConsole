@@ -21,7 +21,7 @@ from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO, AcRefreshRequestDTO
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
-from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many, fit_ap_metadata_import
 from netconsole.services.job_center.handlers.device_jobs import fit_ap_metadata_save
@@ -35,7 +35,6 @@ from netconsole.services.rail_transit.import_preview_service import RailTransitI
 
 AC_FEATURE_IDS = (
     "web.ac_extensions",
-    "web.ac_trackside_ap_plan",
     "web.ac_extensions_preview",
     "web.ac_extensions_apply",
     "web.ac_extensions_rollback",
@@ -115,7 +114,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient
     return TestClient(app), service
 
 
-def test_real_repository_rows_map_to_strict_dtos_and_default_unified_mode(
+def test_real_repository_rows_map_to_strict_extension_dtos_without_duplicate_plan_api(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, service = _client(tmp_path, monkeypatch)
@@ -130,11 +129,6 @@ def test_real_repository_rows_map_to_strict_dtos_and_default_unified_mode(
             "source_file": "fixture.xlsx",
         }
     )
-    repository.replace_trackside_ap_plan_rows(
-        TRACKSIDE_AP_PLAN_MODE,
-        [{"station_name": "车站A", "ap_count": 8, "ap_start_address": "10.1.0.1", "mask_length": 24}],
-    )
-
     with client:
         extensions = client.get("/api/ac-management/extensions")
         trackside = client.get("/api/ac-management/trackside-plan")
@@ -142,9 +136,7 @@ def test_real_repository_rows_map_to_strict_dtos_and_default_unified_mode(
     assert extensions.status_code == 200
     assert extensions.json()["items"][0]["ap_name"] == "AP-Real"
     assert "source_file" not in extensions.json()["items"][0]
-    assert trackside.status_code == 200
-    assert trackside.json()["mode"] == TRACKSIDE_AP_PLAN_MODE
-    assert trackside.json()["items"][0]["ap_start_address"] == "10.1.0.1"
+    assert trackside.status_code == 404
 
 
 def test_extension_import_is_durable_idempotent_atomic_and_conflict_aware(tmp_path: Path) -> None:

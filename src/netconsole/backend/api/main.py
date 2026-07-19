@@ -67,6 +67,7 @@ from netconsole.services.online_mr.web_control_service import OnlineMrWebControl
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
+from netconsole.application.rail_transit.base_data_application_service import RailTransitBaseDataApplicationService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
@@ -489,9 +490,18 @@ def create_app(
     )
     if rail_base_data_write_feature_enabled is None:
         rail_base_data_write_feature_enabled = feature_gate.is_enabled(WRITE_FEATURE_ID)
+    rail_base_data_write_guard = BaseDataWriteGuard(
+        paths,
+        feature_enabled=rail_base_data_write_feature_enabled,
+    )
     app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(
         paths,
-        guard=BaseDataWriteGuard(paths, feature_enabled=rail_base_data_write_feature_enabled),
+        guard=rail_base_data_write_guard,
+    )
+    app.state.rail_transit_base_data_application_service = RailTransitBaseDataApplicationService(
+        paths,
+        app.state.rail_transit_base_data_query_service,
+        rail_base_data_write_guard,
     )
     app.state.rail_transit_import_preview_service = RailTransitImportPreviewService(
         app.state.rail_transit_base_data_query_service,

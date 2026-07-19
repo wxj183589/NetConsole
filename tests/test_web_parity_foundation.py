@@ -247,11 +247,6 @@ def test_wave2_features_are_released_while_unimplemented_features_stay_hidden(
     assert gate.is_enabled("web.feature_switch") is True
     assert gate.is_in_client_package("web.feature_switch") is False
 
-    for feature_id in ("web.ac_trackside_ap_plan",):
-        assert gate.is_visible(feature_id) is False
-        assert gate.is_enabled(feature_id) is False
-        assert gate.is_in_client_package(feature_id) is False
-
     for feature_id in ("web.command_reference", "web.logs"):
         assert gate.is_visible(feature_id) is True
         assert gate.is_enabled(feature_id) is True

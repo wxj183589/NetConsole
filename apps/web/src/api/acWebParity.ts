@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcTracksidePlanPage, AcWebTask } from '../types/acWebParity'
+import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcWebTask } from '../types/acWebParity'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
@@ -13,10 +13,6 @@ function query(values: Record<string, string | number | undefined>): string {
 
 export function listAcExtensions(page = 1, pageSize = 50, search = ''): Promise<AcExtensionPage> {
   return apiRequest<AcExtensionPage>(`${root}/extensions${query({ page, page_size: pageSize, search })}`)
-}
-
-export function listAcTracksidePlan(): Promise<AcTracksidePlanPage> {
-  return apiRequest<AcTracksidePlanPage>(`${root}/trackside-plan`)
 }
 
 export function previewAcExtension(file: File): Promise<AcExtensionPreview> {
@@ -43,7 +39,7 @@ export function rollbackAcExtension(auditId: string): Promise<{ audit_id: string
   })
 }
 
-export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'trackside-plan' | 'trackside-business', acId = ''): Promise<AcWebTask> {
+export function startAcLocalRebuild(kind: 'ac' | 'fit-ap' | 'optical' | 'trackside-business', acId = ''): Promise<AcWebTask> {
   const path = kind === 'trackside-business' ? `${root}/trackside-business/local-rebuild` : `${root}/local-rebuild/${kind}`
   return apiRequest<AcWebTask>(path, { method: 'POST', body: JSON.stringify({ ac_id: acId }) })
 }

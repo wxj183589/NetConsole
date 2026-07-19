@@ -1,8 +1,10 @@
-# 轨道交通基础资料 Web 边界
+# 轨道交通基础资料维护边界
 
 ## 当前状态
 
-阶段 5C-6 增加 `/rail-transit/base-data` 页面，Feature key 为 `web.rail_transit_base_data`。阶段 5C-6A 增加问题分组和合并预览；阶段 5C-6B 增加由 `web.rail_transit_base_data_write`、环境开关和目标范围共同保护的受控写入闭环。默认配置仍是只读，宁波地铁 12 号线等真实局点当前未获得写入授权。页面复用现有 Python Core 和当前局点数据，不建立第二套基础资料数据库。
+`/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；只有 `web.rail_transit_base_data_write`、环境开关和目标范围全部授权后才允许解锁。宁波地铁 12 号线等未授权真实局点仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
+
+原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。
 
 ```text
 devices.db
@@ -14,10 +16,22 @@ devices.db
 RailTransitBaseDataQueryService（mode=ro + query_only）
         |
         v
-FastAPI GET + Vue 只读页面
+RailTransitBaseDataApplicationService
+        |
+        v
+revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 ```
 
-站点和区间当前不是独立持久化实体，而是由 `ap_extension_points` 派生的只读视图。查询不得初始化 schema、执行 migration、更新时间戳或写缓存。
+站点和区间仍不是独立主表，而是由 `ap_extension_points` 派生。人工新增或补充编码、顺序和备注时写入带 `__base_station__` / `__base_section__` 标识的位置辅助行；这些行不会进入轨旁 AP 列表。查询不得初始化 schema、执行 migration、更新时间戳或写缓存。
+
+## 编辑会话
+
+- 页面初始状态为 `LOCKED`，解锁后停止轮询，避免服务端刷新覆盖编辑区。
+- 编辑会话记录 `site_id`、`base_revision` 和 `loaded_at`；`base_revision` 是当前 SQLite 逻辑内容 SHA-256。
+- 修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
+- revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。
+- 锁定、刷新、顶层页签切换、离开路由和关闭窗口均保护未保存修改；全局确认框提供取消、放弃并锁定、保存并锁定。
+- 保存失败保留编辑区和 dirty 状态；成功后刷新服务端事实并自动锁定。
 
 ## 领域模型
 
@@ -59,7 +73,7 @@ MAC 比较支持 `xxxx-xxxx-xxxx`、冒号、两位连字符和 12 位纯十六�
 
 ## API
 
-查询接口均为 GET：
+查询和编辑会话接口：
 
 ```text
 GET /api/rail-transit/base-data/summary
@@ -75,7 +89,17 @@ GET /api/rail-transit/base-data/issues
 GET /api/rail-transit/base-data/issues/groups
 GET /api/rail-transit/base-data/import-policies
 GET /api/rail-transit/base-data/relations
+GET /api/rail-transit/base-data/revision
 ```
+
+普通维护接口：
+
+```text
+POST /api/rail-transit/base-data/validate
+POST /api/rail-transit/base-data/changes
+```
+
+`changes` 只接受强类型实体动作、`base_revision`、局点和明确确认；凭据、Token、Community、数据库路径、表名和 SQL 均被拒绝。站点、区间、轨旁 AP、车载 MR 和统一规划在同一数据库事务内写入，任何一步失败完整回滚。
 
 预览接口：
 
@@ -111,7 +135,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 
 ## 受控写入
 
-`RailTransitBaseDataImportService` 只复用 `ap_extension_points`，不新增主数据库或 schema。FastAPI 和 Vue 已具备受控入口，但默认隐藏应用按钮。后端必须同时通过以下开关：
+普通维护由 `RailTransitBaseDataApplicationService` 编排，受控导入仍由 `RailTransitBaseDataImportService` 编排；两者复用同一 `RailTransitBaseDataRepository` 和写入 Guard，不新增主数据库。页面默认锁定，后端必须同时通过以下开关：
 
 ```text
 Feature Registry: web.rail_transit_base_data_write
@@ -123,7 +147,15 @@ RAIL_TRANSIT_BASE_DATA_ROLLBACK_ENABLED=1     # 回滚独立开关
 
 副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
 
-一次写入固定满足：
+普通维护一次保存固定满足：
+
+1. 页面持有的 `base_revision` 与当前数据库一致；
+2. 站点/区间引用、AP MAC、里程、MR 名称/IP/端口和规划 IP/VLAN 校验通过；
+3. 在一个 `BEGIN IMMEDIATE` 事务内按站点/区间、AP/MR、规划顺序写入；
+4. 任一实体失败时完整回滚并保留前端修改；
+5. 返回新 revision 和新增、更新、删除数量。
+
+受控导入一次写入固定满足：
 
 1. 合并预览未过期、数据库逻辑 SHA-256 未变化、无阻断项或待确认项；
 2. 调用方显式确认且安全开关为 `1`；
@@ -139,17 +171,18 @@ RAIL_TRANSIT_BASE_DATA_ROLLBACK_ENABLED=1     # 回滚独立开关
 
 - 总览 30 秒、AP/MR/关联运行态 15 秒、站点/区间/数据质量 60 秒。
 - 页面隐藏或卸载时停止全部计时器；同类请求未结束时不重复发起。
+- 页面解锁期间停止轮询并禁用分页/筛选刷新；保存、放弃或重新锁定后恢复。
 - 连续失败 3 次后保留最后成功数据并把后续刷新降为 120 秒。
 - AP、MR 和问题使用后端分页；AC、Mesh-Link、Online MR 关联按批次读取，禁止逐行查询。
 
 副本验收使用 `python -m scripts.maintenance.test_rail_transit_base_data_apply`。脚本复制 `devices.db` 后才预览、应用和可选回滚，并在结束时核对源库 SHA-256 与 mtime；目标副本已存在、目标与源目录重叠或缺少副本开关时直接拒绝。
 
-## 当前未开放
+## 当前限制
 
-- 真实局点写入授权、批量自由修改、删除和数据库覆盖；
+- 真实局点写入仍需明确授权；站点/区间存在 AP 引用时不能删除，车载 MR 存在 Online MR 历史时不能直接删除；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
 - AP Identity 生产接管；
 - 离线分析和正式报告 Web 化。
 
-宁波地铁 12 号线真实库继续只读；验收仅允许先复制到隔离目录后对副本执行 apply/rollback。源库前后 `devices.db` SHA-256/mtime、`tasks.db` Task 数和正式导入目录必须不变。
+宁波地铁 12 号线真实库在未启用正式局点授权前继续锁定；验收优先复制到隔离目录后执行保存、导入和回滚。源库前后 `devices.db` SHA-256/mtime、`tasks.db` Task 数和正式导入目录必须不变。

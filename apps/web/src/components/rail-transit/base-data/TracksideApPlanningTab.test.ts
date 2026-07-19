@@ -1,0 +1,20 @@
+import { describe, expect, it } from 'vitest'
+
+import source from './TracksideApPlanningTab.vue?raw'
+
+describe('trackside AP planning base-data tab', () => {
+  it('reuses plan import/export and delegates persistence to the parent transaction', () => {
+    for (const contract of [
+      'getTracksideApPlan', 'previewTracksideApPlan', 'exportTracksideApPlan',
+      'recoverTracksideApTasks', "openTaskWindow({ module: 'rail'",
+      '新增', '删除', '导入并预览', '导出规划', '导出模板',
+      '重复时覆盖', '重复时跳过', '重复时报错', '未保存修改',
+      'web.rail_trackside_ap_plan_write', 'web.rail_trackside_ap_plan_export',
+    ]) expect(source).toContain(contract)
+    expect(source).toContain("emit('change'")
+    expect(source).toContain("route-key=\"/rail-transit/base-data\"")
+    expect(source).not.toContain('saveTracksideApPlan')
+    expect(source).not.toContain('<el-table')
+    expect(source).not.toContain('<el-table-column')
+  })
+})

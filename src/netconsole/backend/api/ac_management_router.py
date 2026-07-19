@@ -29,7 +29,6 @@ from netconsole.models.api.ac_management import (
     AcFitApMetadataSaveRequestDTO,
     AcLocalRebuildRequestDTO,
     AcRefreshRequestDTO,
-    AcTracksidePlanPageDTO,
     AcWebTaskDTO,
 )
 from netconsole.application.ac.web_application_service import AcWebActionError, AcWebApplicationService
@@ -260,18 +259,6 @@ def optical(
     optical_status: str = Query(default="", max_length=30),
 ) -> AcApPageDTO:
     return _query(lambda: _service(request).list_aps(_site_id(request), ac_id=ac_id, page=page, page_size=page_size, query=query, optical_status=optical_status))
-
-
-@router.get(
-    "/trackside-plan",
-    response_model=AcTracksidePlanPageDTO,
-    dependencies=[Depends(require_feature("web.ac_trackside_ap_plan"))],
-)
-def trackside_plan(
-    request: Request,
-    mode: str = Query(default="unified", max_length=30),
-) -> AcTracksidePlanPageDTO:
-    return _query(lambda: _web_service(request).list_trackside_plan(_web_site_id(request), mode))
 
 
 @router.get(

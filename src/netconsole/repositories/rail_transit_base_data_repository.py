@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
@@ -37,6 +39,14 @@ AP_MERGE_FIELDS = (
 
 
 class RailTransitBaseDataRollbackConflict(RuntimeError):
+    pass
+
+
+class RailTransitBaseDataRevisionConflict(RuntimeError):
+    pass
+
+
+class RailTransitBaseDataConstraintError(RuntimeError):
     pass
 
 
@@ -95,6 +105,50 @@ class RailTransitBaseDataRepository:
             raise
         finally:
             connection.close()
+
+    def apply_base_data_changes(
+        self,
+        site_id: str,
+        expected_revision: str,
+        changes: Iterable[Mapping[str, Any]],
+    ) -> dict[str, int | str]:
+        path = self._database_path(site_id)
+        connection = sqlite3.connect(path, timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        configure_sqlite_connection(connection, foreign_keys=True)
+        counts = {"created_count": 0, "updated_count": 0, "deleted_count": 0}
+        try:
+            self._require_table(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            if self._connection_hash(connection) != expected_revision:
+                raise RailTransitBaseDataRevisionConflict("base data revision changed")
+            for change in changes:
+                entity_type = str(change.get("entity_type") or "")
+                action = str(change.get("action") or "")
+                values = dict(change.get("values") or {})
+                if entity_type == "station":
+                    self._apply_station_change(connection, site_id, action, values)
+                elif entity_type == "section":
+                    self._apply_section_change(connection, site_id, action, values)
+                elif entity_type == "trackside_ap":
+                    self._apply_ap_change(connection, site_id, action, change.get("entity_id"), values)
+                elif entity_type == "vehicle_mr":
+                    self._apply_mr_change(connection, action, change.get("entity_id"), values)
+                elif entity_type == "trackside_ap_plan":
+                    self._replace_trackside_ap_plan(connection, values.get("rows") or [])
+                else:
+                    raise ValueError("unsupported base data entity")
+                key = {"create": "created_count", "update": "updated_count", "delete": "deleted_count", "replace": "updated_count"}.get(action)
+                if key:
+                    counts[key] += 1
+            self._assert_integrity(connection)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return {**counts, "revision": self.database_hash(site_id)}
 
     def rollback_changes(self, site_id: str, changes: Iterable[Mapping[str, Any]]) -> None:
         path = self._database_path(site_id)
@@ -172,6 +226,289 @@ class RailTransitBaseDataRepository:
         )
         return {"kind": "update", "entity_id": f"ap:{entity_id}", "old_values": old_values, "new_values": values}
 
+    def _apply_station_change(
+        self,
+        connection: sqlite3.Connection,
+        site_id: str,
+        action: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        old_name = str(values.get("old_name") or values.get("name") or "").strip()
+        name = str(values.get("name") or "").strip()
+        if action == "delete":
+            if self._station_reference_count(connection, old_name):
+                raise RailTransitBaseDataConstraintError("站点仍被轨旁 AP 或区间引用")
+            connection.execute(
+                "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
+                (old_name,),
+            )
+            return
+        if action == "update" and old_name != name:
+            now = self._now()
+            connection.execute(
+                "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
+                (old_name,),
+            )
+            connection.execute("UPDATE ap_extension_points SET station_name = ?, updated_at = ? WHERE station_name = ?", (name, now, old_name))
+            connection.execute("UPDATE ap_extension_points SET section_start_station = ?, updated_at = ? WHERE section_start_station = ?", (name, now, old_name))
+            connection.execute("UPDATE ap_extension_points SET section_end_station = ?, updated_at = ? WHERE section_end_station = ?", (name, now, old_name))
+            connection.execute("UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?", (name, now, old_name))
+        self._replace_metadata_row(connection, site_id, "station", old_name, values)
+
+    def _apply_section_change(
+        self,
+        connection: sqlite3.Connection,
+        site_id: str,
+        action: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        old_name = str(values.get("old_name") or values.get("name") or "").strip()
+        old_start = str(values.get("old_start_station") or values.get("start_station") or "").strip()
+        old_end = str(values.get("old_end_station") or values.get("end_station") or "").strip()
+        old_side = str(values.get("old_line_side") or values.get("line_side") or "").strip()
+        if action == "delete":
+            if self._section_reference_count(connection, old_name, old_start, old_end, old_side):
+                raise RailTransitBaseDataConstraintError("区间仍被轨旁 AP 引用")
+            connection.execute(
+                """
+                DELETE FROM ap_extension_points
+                WHERE belong_type = '__base_section__' AND section_name = ?
+                  AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+                """,
+                (old_name, old_start, old_end, old_side),
+            )
+            return
+        if action == "update":
+            connection.execute(
+                """
+                DELETE FROM ap_extension_points
+                WHERE belong_type = '__base_section__' AND section_name = ?
+                  AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+                """,
+                (old_name, old_start, old_end, old_side),
+            )
+            connection.execute(
+                """
+                UPDATE ap_extension_points
+                SET section_name = ?, section_start_station = ?, section_end_station = ?, line_side = ?, updated_at = ?
+                WHERE section_name = ? AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+                """,
+                (
+                    str(values.get("name") or "").strip(),
+                    str(values.get("start_station") or "").strip(),
+                    str(values.get("end_station") or "").strip(),
+                    str(values.get("line_side") or "").strip(),
+                    self._now(),
+                    old_name,
+                    old_start,
+                    old_end,
+                    old_side,
+                ),
+            )
+        self._replace_metadata_row(connection, site_id, "section", old_name, values)
+
+    def _replace_metadata_row(
+        self,
+        connection: sqlite3.Connection,
+        site_id: str,
+        kind: str,
+        old_name: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        marker = f"__base_{kind}__"
+        name_field = "station_name" if kind == "station" else "section_name"
+        connection.execute(
+            f"DELETE FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ?",
+            (marker, old_name),
+        )
+        now = self._now()
+        metadata = {
+            key: values.get(key)
+            for key in ("code", "sort_order", "remark")
+            if values.get(key) not in (None, "")
+        }
+        payload = {
+            "site_id": site_id,
+            "belong_type": marker,
+            "station_name": str(values.get("name") or "").strip() if kind == "station" else "",
+            "section_name": str(values.get("name") or "").strip() if kind == "section" else "",
+            "section_start_station": str(values.get("start_station") or "").strip(),
+            "section_end_station": str(values.get("end_station") or "").strip(),
+            "line_side": str(values.get("line_side") or "").strip(),
+            "line_name": str(values.get("line_name") or "").strip(),
+            "ap_point_code": "-",
+            "remark": str(values.get("remark") or "").strip(),
+            "source_file": "manual-base-data",
+            "raw_payload_json": json.dumps(metadata, ensure_ascii=False),
+            "created_at": now,
+            "updated_at": now,
+        }
+        columns = list(payload)
+        connection.execute(
+            f"INSERT INTO ap_extension_points ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+            [payload[column] for column in columns],
+        )
+
+    def _apply_ap_change(
+        self,
+        connection: sqlite3.Connection,
+        site_id: str,
+        action: str,
+        entity_id: Any,
+        raw_values: Mapping[str, Any],
+    ) -> None:
+        if action == "delete":
+            cursor = connection.execute("DELETE FROM ap_extension_points WHERE id = ?", (self._numeric_id(entity_id),))
+            if cursor.rowcount != 1:
+                raise RailTransitBaseDataConstraintError("轨旁 AP 不存在")
+            return
+        values = self._manual_ap_values(raw_values)
+        values.update(site_id=site_id, updated_at=self._now())
+        if action == "create":
+            values.setdefault("belong_type", "station" if values.get("station_name") else "section")
+            values["created_at"] = values["updated_at"]
+            columns = list(values)
+            connection.execute(
+                f"INSERT INTO ap_extension_points ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [values[column] for column in columns],
+            )
+            return
+        entity_id = self._numeric_id(entity_id)
+        assignments = ", ".join(f'"{field}" = ?' for field in values)
+        cursor = connection.execute(
+            f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
+            [*values.values(), entity_id],
+        )
+        if cursor.rowcount != 1:
+            raise RailTransitBaseDataConstraintError("轨旁 AP 不存在")
+
+    def _apply_mr_change(
+        self,
+        connection: sqlite3.Connection,
+        action: str,
+        entity_id: Any,
+        values: Mapping[str, Any],
+    ) -> None:
+        safe = {
+            "name": str(values.get("name") or "").strip(),
+            "station": str(values.get("station") or "").strip(),
+            "mac_address": str(values.get("mac_address") or "").strip(),
+            "primary_address": str(values.get("primary_address") or "").strip(),
+            "protocol": str(values.get("protocol") or "SSH").upper(),
+            "port": int(values.get("port") or 22),
+            "remark": str(values.get("remark") or "").strip(),
+            "updated_at": self._now(),
+        }
+        if safe["protocol"] == "SSH":
+            safe.update(ssh_enabled=1, ssh_port=safe["port"])
+        else:
+            safe.update(telnet_enabled=1, telnet_port=safe["port"])
+        if action == "delete":
+            cursor = connection.execute("DELETE FROM devices WHERE device_uuid = ?", (str(entity_id or ""),))
+            if cursor.rowcount != 1:
+                raise RailTransitBaseDataConstraintError("车载 MR 不存在")
+            return
+        if action == "create":
+            group = connection.execute(
+                "SELECT id FROM device_groups WHERE name LIKE '%车载-MR%' ORDER BY id LIMIT 1"
+            ).fetchone()
+            if group is None:
+                raise RailTransitBaseDataConstraintError("当前局点缺少车载-MR设备分组")
+            safe.update(
+                device_uuid=str(uuid4()),
+                group_id=int(group[0]),
+                device_vendor="H3C",
+                device_type="MR",
+                created_at=safe["updated_at"],
+            )
+            columns = list(safe)
+            connection.execute(
+                f"INSERT INTO devices ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [safe[column] for column in columns],
+            )
+            return
+        assignments = ", ".join(f'"{field}" = ?' for field in safe)
+        cursor = connection.execute(
+            f"UPDATE devices SET {assignments} WHERE device_uuid = ?",
+            [*safe.values(), str(entity_id or "")],
+        )
+        if cursor.rowcount != 1:
+            raise RailTransitBaseDataConstraintError("车载 MR 不存在")
+
+    def _replace_trackside_ap_plan(self, connection: sqlite3.Connection, rows: Iterable[Mapping[str, Any]]) -> None:
+        now = self._now()
+        connection.execute("DELETE FROM ac_trackside_ap_plan WHERE mode = 'unified'")
+        fields = (
+            "mode", "station_name", "ap_count", "ap_start_address", "mask_length",
+            "ap_gateway", "ap_management_vlans", "remark", "sort_order", "created_at", "updated_at",
+        )
+        for index, row in enumerate(rows):
+            payload = {
+                "mode": "unified",
+                "station_name": str(row.get("station_name") or "").strip(),
+                "ap_count": int(row.get("ap_count") or 0),
+                "ap_start_address": str(row.get("ap_start_address") or "").strip(),
+                "mask_length": row.get("mask_length"),
+                "ap_gateway": str(row.get("ap_gateway") or "").strip(),
+                "ap_management_vlans": str(row.get("ap_management_vlans") or "").strip(),
+                "remark": str(row.get("remark") or "").strip(),
+                "sort_order": index,
+                "created_at": now,
+                "updated_at": now,
+            }
+            connection.execute(
+                f"INSERT INTO ac_trackside_ap_plan ({', '.join(fields)}) VALUES ({', '.join('?' for _ in fields)})",
+                [payload[field] for field in fields],
+            )
+
+    @classmethod
+    def _manual_ap_values(cls, raw: Mapping[str, Any]) -> dict[str, Any]:
+        values = cls._safe_values(raw)
+        values["remark"] = str(raw.get("remark") or "").strip()
+        if "belong_type" in raw:
+            values["belong_type"] = str(raw.get("belong_type") or "").strip()
+        return values
+
+    @staticmethod
+    def _station_reference_count(connection: sqlite3.Connection, name: str) -> int:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) FROM ap_extension_points
+            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+              AND (station_name = ? OR section_start_station = ? OR section_end_station = ?)
+            """,
+            (name, name, name),
+        ).fetchone()
+        return int(row[0] if row else 0)
+
+    @staticmethod
+    def _section_reference_count(
+        connection: sqlite3.Connection,
+        name: str,
+        start: str,
+        end: str,
+        line_side: str,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) FROM ap_extension_points
+            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+              AND section_name = ? AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+            """,
+            (name, start, end, line_side),
+        ).fetchone()
+        return int(row[0] if row else 0)
+
+    @staticmethod
+    def _connection_hash(connection: sqlite3.Connection) -> str:
+        return hashlib.sha256(connection.serialize()).hexdigest()
+
+    @staticmethod
+    def _now() -> str:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).isoformat()
+
     @staticmethod
     def _safe_values(raw: Mapping[str, Any]) -> dict[str, Any]:
         values = {field: raw.get(field) for field in AP_MERGE_FIELDS if field in raw}
@@ -234,5 +571,7 @@ class RailTransitBaseDataRepository:
 __all__ = [
     "AP_MERGE_FIELDS",
     "RailTransitBaseDataRepository",
+    "RailTransitBaseDataConstraintError",
+    "RailTransitBaseDataRevisionConflict",
     "RailTransitBaseDataRollbackConflict",
 ]

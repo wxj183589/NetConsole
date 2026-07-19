@@ -216,26 +216,6 @@ class AcExtensionPageDTO(ApiModel):
     page_size: int = 50
 
 
-class AcTracksidePlanDTO(ApiModel):
-    station_name: str
-    ap_count: int = 0
-    ap_start_address: str = ""
-    mask_length: int = 0
-    ap_gateway: str = ""
-    ap_management_vlans: str = ""
-    remark: str = ""
-    sort_order: int = 0
-    mode: str = "unified"
-    created_at: str = ""
-    updated_at: str = ""
-
-
-class AcTracksidePlanPageDTO(ApiModel):
-    items: list[AcTracksidePlanDTO] = Field(default_factory=list)
-    total: int = 0
-    mode: str = "unified"
-
-
 class AcWebTaskDTO(ApiModel):
     task_id: str
     status: str = "PENDING"
@@ -366,7 +346,5 @@ __all__ = [
     "AcFitApMetadataSaveRequestDTO",
     "AcLocalRebuildRequestDTO",
     "AcRefreshRequestDTO",
-    "AcTracksidePlanDTO",
-    "AcTracksidePlanPageDTO",
     "AcWebTaskDTO",
 ]

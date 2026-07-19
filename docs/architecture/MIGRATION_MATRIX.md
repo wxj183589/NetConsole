@@ -37,9 +37,9 @@
 | 设备管理 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/network/devices`、Device Service/API/Vue | Electron 人工、真实设备连接和导入导出验收 |
 | 设备详情（快速抽屉 + 完整页） | `MIGRATED` | `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING` | 设备列表快速抽屉与 `/devices/:deviceId` 共用 Device Detail Application/Query Service、DTO/API/Vue | 定向 Python/Vue/架构验证已通过；Electron 视觉/交互及真实设备采集仍待验收；全量门禁因用户 CPU 限制延后 |
 | AC 管理 / FIT-AP | `HIDDEN_PENDING_MIGRATION` | `PARTIAL / REAL_DEVICE_PENDING` | `/ac-management/*`、AC Service/API/Vue | FIT-AP 已合并光衰入口、拓扑默认排序、LLDP 站点建议和 Mesh 两侧收光；真实 AC、危险动作与导出验收待完成 |
-| 轨道交通/Online MR/MESH | `HIDDEN_PENDING_MIGRATION` | `PARTIAL` | `/rail-transit/*`、Rail/Online MR/MESH 永久层 | 在线列车通信已收口为 TC1/TC2 固定六节点拓扑并复用车内诊断 Task；SW/SRV 关联、VRRP、跨 TC 及真实列车/MR/Agent/报告仍待现场验收。轨旁 AP、Online MR 和 MESH 保持独立业务页 |
+| 轨道交通/Online MR/MESH | `HIDDEN_PENDING_MIGRATION` | `PARTIAL` | `/rail-transit/*`、Rail/Online MR/MESH 永久层 | 基础资料已成为默认锁定的站点/区间/AP/MR/规划统一维护入口，使用 revision 与单事务保存；旧规划路由仅重定向。在线列车通信已收口为 TC1/TC2 固定六节点拓扑并复用车内诊断 Task；真实局点写入、SW/SRV 关联、VRRP、跨 TC 及真实列车/MR/Agent/报告仍待现场验收 |
 | 配置采集中心 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/config-center`、Config Service/API/Vue | 真实设备保存、双栏比较、Artifact 人工验收 |
-| 设备文件下载 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/device-files`（旧 `/file-manager`、`/file-management` 仅重定向）、File Service/API/Vue/Bridge | 真实 SFTP、队列恢复、打开/保存动作验收 |
+| 设备文件下载（原文件管理） | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` | `/device-files`（旧 `/file-manager`、`/file-management` 仅重定向）、File Service/API/Vue/Bridge | 真实 SFTP、队列恢复、打开/保存动作验收 |
 | 网络工具 / Traffic / 无线扫描 | `MIGRATED` | `PARTIAL` | `/network-tools/*`、Network/Traffic Service/API/WS/Vue | 本地与 Agent iPerf/fping、无线扫描现场验收 |
 | Task Center/Agent | `MIGRATED` | `PARTIAL` | `/tasks`、`/agents`、共享 Task/Agent Service | 多 Agent/现场与 Electron 子窗口人工验收 |
 | 命令说明 / 日志中心 / 系统设置 | `MIGRATED` | `PARTIAL / IMPLEMENTED_UNVERIFIED` | 对应 API/Vue 与白名单 Desktop Action | 本机工具、路径动作、日志清理和设置人工验收 |

@@ -1,5 +1,9 @@
 import { apiRequest } from './client'
 import type {
+  BaseDataChange,
+  BaseDataEditSession,
+  BaseDataSaveResult,
+  BaseDataValidationResult,
   DataQualityIssue,
   DataQualityEntityGroupPage,
   ImportApplyResult,
@@ -31,6 +35,9 @@ function queryString(values: PageQuery = {}): string {
 }
 
 export const getRailTransitSummary = (): Promise<RailTransitSummary> => apiRequest(`${root}/summary`)
+export const getRailTransitBaseDataEditSession = (): Promise<BaseDataEditSession> => apiRequest(`${root}/revision`)
+export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })
+export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
 export const listStations = (values: PageQuery = {}): Promise<Page<Station>> => apiRequest(`${root}/stations${queryString(values)}`)
 export const listSections = (values: PageQuery = {}): Promise<Page<Section>> => apiRequest(`${root}/sections${queryString(values)}`)
 export const listTracksideAps = (values: PageQuery = {}): Promise<Page<TracksideAp>> => apiRequest(`${root}/aps${queryString(values)}`)

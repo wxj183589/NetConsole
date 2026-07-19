@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useRailTransitBaseDataStore } from './railTransitBaseData'
 import {
   applyRailTransitImport,
+  getRailTransitBaseDataEditSession,
   getRailTransitImportPolicies,
   getRailTransitSummary,
   listRailTransitImportChanges,
@@ -17,10 +18,13 @@ import {
   listVehicleMrs,
   previewRailTransitImport,
   rollbackRailTransitImport,
+  saveRailTransitBaseDataChanges,
+  validateRailTransitBaseDataChanges,
 } from '../api/railTransitBaseData'
 
 vi.mock('../api/railTransitBaseData', () => ({
   applyRailTransitImport: vi.fn(),
+  getRailTransitBaseDataEditSession: vi.fn(),
   getRailTransitImportPolicies: vi.fn(),
   getRailTransitSummary: vi.fn(),
   listRailTransitImportChanges: vi.fn(),
@@ -34,6 +38,8 @@ vi.mock('../api/railTransitBaseData', () => ({
   listVehicleMrs: vi.fn(),
   previewRailTransitImport: vi.fn(),
   rollbackRailTransitImport: vi.fn(),
+  saveRailTransitBaseDataChanges: vi.fn(),
+  validateRailTransitBaseDataChanges: vi.fn(),
 }))
 
 const emptyPage = { items: [], total: 0, page: 1, page_size: 50 }
@@ -59,10 +65,15 @@ describe('Rail Transit base data polling store', () => {
       real_write_authorized: false, rollback_enabled: false, write_scope: 'real',
       identity_boundaries: {}, items: [],
     })
+    vi.mocked(getRailTransitBaseDataEditSession).mockReset().mockResolvedValue({
+      site_id: 'demo', base_revision: 'a'.repeat(64), loaded_at: '', can_write: false, write_scope: 'real',
+    })
     vi.mocked(listRailTransitImportOperations).mockReset().mockResolvedValue([])
     vi.mocked(listRailTransitImportChanges).mockReset().mockResolvedValue([])
     vi.mocked(applyRailTransitImport).mockReset()
     vi.mocked(rollbackRailTransitImport).mockReset()
+    vi.mocked(saveRailTransitBaseDataChanges).mockReset()
+    vi.mocked(validateRailTransitBaseDataChanges).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout })
   })
 
@@ -96,6 +107,7 @@ describe('Rail Transit base data polling store', () => {
     expect(store.canApplyImport()).toBe(false)
     expect('deleteAp' in store).toBe(false)
     expect('updateDevice' in store).toBe(false)
+    expect(store.editSession?.can_write).toBe(false)
     vi.useRealTimers()
   })
 

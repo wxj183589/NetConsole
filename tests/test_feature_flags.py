@@ -51,6 +51,8 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.config_collection"].parent_id == "module.config_collection"
     assert FEATURE_BY_ID["web.file_management"].parent_id == "module.file_management"
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
+    assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].parent_id == "web.rail_transit_base_data"
+    assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].item_type == "tab"
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
     form_test = FEATURE_BY_ID["web.device_form_connection_test"]
     assert form_test.parent_id == "web.device_management"

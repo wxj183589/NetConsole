@@ -28,6 +28,9 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'ac-management')?.redirect).toEqual({ name: 'ac-fit-aps' })
     expect(routes.find((route) => route.path === 'ac-management/optical')?.redirect).toEqual({ name: 'ac-fit-aps' })
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
+    expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
+      name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },
+    })
   })
 
   it('registers the standalone device detail route with list navigation context', () => {

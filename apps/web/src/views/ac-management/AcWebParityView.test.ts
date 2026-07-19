@@ -24,7 +24,7 @@ describe('AC Web parity controlled view', () => {
     expect(source).toContain('AC 动作审计')
     expect(source).toContain('localStorage')
     expect(source).toContain('onBeforeUnmount')
-    expect(source).toContain('listAcTracksidePlan')
+    expect(source).not.toContain('listAcTracksidePlan')
     expect(source).toContain('本地重算只读取当前数据库与缓存，不连接真实 AC')
     for (const featureId of [
       'web.ac_extensions_preview',
@@ -45,9 +45,9 @@ describe('AC Web parity controlled view', () => {
     expect(source).not.toContain('downloadBackendResource')
   })
 
-  it('uses the shared table contract for extension data and trackside planning', () => {
+  it('uses the shared table contract for extension data without duplicating trackside planning', () => {
     expect(source).toContain('table-id="ac-extension-records"')
-    expect(source).toContain('table-id="ac-trackside-plan"')
+    expect(source).not.toContain('table-id="ac-trackside-plan"')
     expect(source).not.toContain('<el-table')
   })
 })

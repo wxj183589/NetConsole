@@ -3,10 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 
 from netconsole.backend.api.error_mapping import map_api_errors
+from netconsole.application.rail_transit.base_data_application_service import (
+    RailTransitBaseDataApplicationError,
+    RailTransitBaseDataApplicationService,
+)
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
     DataQualityIssuePageDTO,
+    BaseDataEditSessionDTO,
+    BaseDataSaveRequestDTO,
+    BaseDataSaveResultDTO,
+    BaseDataValidateRequestDTO,
+    BaseDataValidationResultDTO,
     ImportPreviewResultDTO,
     ImportApplyRequestDTO,
     ImportApplyResultDTO,
@@ -51,6 +60,10 @@ def _import_service(request: Request) -> RailTransitBaseDataImportService:
     return request.app.state.rail_transit_base_data_import_service
 
 
+def _application_service(request: Request) -> RailTransitBaseDataApplicationService:
+    return request.app.state.rail_transit_base_data_application_service
+
+
 def _site_id(request: Request, supplied: str) -> str:
     value = supplied or _service(request).current_site_id()
     try:
@@ -62,6 +75,49 @@ def _site_id(request: Request, supplied: str) -> str:
 @router.get("/summary", response_model=RailTransitSummaryDTO)
 def summary(request: Request, site_id: str = Query(default="", max_length=100)) -> RailTransitSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request, site_id)))
+
+
+@router.get("/revision", response_model=BaseDataEditSessionDTO, summary="获取基础资料编辑会话")
+def revision(request: Request, site_id: str = Query(default="", max_length=100)) -> BaseDataEditSessionDTO:
+    return _query(lambda: _application_service(request).get_edit_session(_site_id(request, site_id)))
+
+
+@router.post(
+    "/validate",
+    response_model=BaseDataValidationResultDTO,
+    summary="校验基础资料修改",
+    responses={422: {"description": "请求 DTO 无效"}},
+)
+def validate_changes(request: Request, payload: BaseDataValidateRequestDTO) -> BaseDataValidationResultDTO:
+    result, _normalized = _application_service(request).validate_changes(
+        _site_id(request, payload.site_id),
+        payload.base_revision,
+        payload.changes,
+    )
+    return result
+
+
+@router.post(
+    "/changes",
+    response_model=BaseDataSaveResultDTO,
+    summary="事务保存基础资料修改",
+    responses={
+        403: {"description": "当前局点写入未授权"},
+        409: {"description": "revision 或引用关系冲突"},
+        422: {"description": "字段或业务校验失败"},
+        503: {"description": "数据库事务暂时不可用"},
+    },
+)
+def save_changes(request: Request, payload: BaseDataSaveRequestDTO) -> BaseDataSaveResultDTO:
+    try:
+        return _application_service(request).save_changes(
+            _site_id(request, payload.site_id),
+            payload.base_revision,
+            payload.changes,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitBaseDataApplicationError as exc:
+        _raise_application_error(exc)
 
 
 @router.get("/stations", response_model=StationPageDTO)
@@ -348,6 +404,22 @@ def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) ->
         "BASE_DATA_ROLLBACK_CONFLICT",
     }:
         status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+def _raise_application_error(exc: RailTransitBaseDataApplicationError) -> None:
+    if exc.code in {
+        "BASE_DATA_WRITE_DISABLED",
+        "BASE_DATA_COPY_WRITE_NOT_AUTHORIZED",
+        "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED",
+    }:
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.code in {"BASE_DATA_REVISION_CONFLICT", "BASE_DATA_REFERENCE_CONFLICT"}:
+        status_code = status.HTTP_409_CONFLICT
+    elif exc.code == "BASE_DATA_TRANSACTION_FAILED":
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc

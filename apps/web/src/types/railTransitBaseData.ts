@@ -17,6 +17,46 @@ export interface RuntimeStatus {
   updated_at: string
 }
 
+export type BaseDataEntityType = 'station' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
+export type BaseDataChangeAction = 'create' | 'update' | 'delete' | 'replace'
+
+export interface BaseDataEditSession {
+  site_id: string
+  base_revision: string
+  loaded_at: string
+  can_write: boolean
+  write_scope: 'copy_validation' | 'real'
+}
+
+export interface BaseDataChange {
+  entity_type: BaseDataEntityType
+  action: BaseDataChangeAction
+  entity_id?: string
+  values: Record<string, unknown>
+}
+
+export interface BaseDataValidationIssue {
+  change_index: number
+  code: string
+  message: string
+  field_name: string
+  blocking: boolean
+}
+
+export interface BaseDataValidationResult {
+  valid: boolean
+  issues: BaseDataValidationIssue[]
+}
+
+export interface BaseDataSaveResult {
+  revision: string
+  created_count: number
+  updated_count: number
+  deleted_count: number
+  warnings: string[]
+  validation_issues: BaseDataValidationIssue[]
+}
+
 export interface DataQualityIssue {
   severity: 'error' | 'warning' | 'info'
   code: string
@@ -134,6 +174,8 @@ export interface TracksideAp {
   runtime: RuntimeStatus
   issue_count: number
   highest_issue_severity: string
+  record_kind: string
+  base_metadata: Record<string, unknown>
 }
 
 export interface VehicleMr {
@@ -144,6 +186,7 @@ export interface VehicleMr {
   train_no: string
   role: string
   management_ip: string
+  station: string
   mac: string
   protocol: string
   port: number | null

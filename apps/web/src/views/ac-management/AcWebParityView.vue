@@ -13,7 +13,6 @@ import {
   getAcActionPlan,
   getAcWebTask,
   listAcExtensions,
-  listAcTracksidePlan,
   previewAcExtension,
   recoverAcWebTasks,
   rollbackAcExtension,
@@ -22,13 +21,12 @@ import {
 import { isFeatureEnabled } from '../../features'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
-import type { AcActionAudit, AcActionPlan, AcExtension, AcExtensionPreview, AcTracksidePlan, AcWebTask } from '../../types/acWebParity'
+import type { AcActionAudit, AcActionPlan, AcExtension, AcExtensionPreview, AcWebTask } from '../../types/acWebParity'
 
 const taskStorageKey = 'netconsole.ac-web.last-task'
 const actionPlanStorageKey = 'netconsole.ac-web.action-plan'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const extensions = ref<AcExtension[]>([])
-const tracksidePlan = ref<AcTracksidePlan[]>([])
 const extensionPreview = ref<AcExtensionPreview | null>(null)
 const lastAuditId = ref('')
 const actionPlan = ref<AcActionPlan | null>(null)
@@ -49,16 +47,6 @@ const extensionColumns: NcTableColumn<AcExtension>[] = [
   { key: 'station_name', label: '站点', valueType: 'text' },
   { key: 'section_name', label: '区间', valueType: 'text' },
   { key: 'match_status', label: '匹配', valueType: 'status' },
-]
-
-const planColumns: NcTableColumn<AcTracksidePlan>[] = [
-  { key: 'station_name', label: '站点', valueType: 'text' },
-  { key: 'ap_count', label: 'AP 数', valueType: 'number' },
-  { key: 'ap_start_address', label: '起始地址', valueType: 'ip' },
-  { key: 'mask_length', label: '掩码', valueType: 'number' },
-  { key: 'ap_gateway', label: '网关', valueType: 'ip' },
-  { key: 'ap_management_vlans', label: '管理 VLAN', valueType: 'text' },
-  { key: 'remark', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'description' },
 ]
 
 function message(cause: unknown, fallback: string): string {
@@ -95,7 +83,6 @@ async function loadData(): Promise<void> {
   error.value = ''
   try {
     extensions.value = isFeatureEnabled('web.ac_extensions') ? (await listAcExtensions()).items : []
-    tracksidePlan.value = isFeatureEnabled('web.ac_trackside_ap_plan') ? (await listAcTracksidePlan()).items : []
   } catch (cause) {
     error.value = message(cause, 'AC 本地资料加载失败')
   } finally {
@@ -275,7 +262,6 @@ onBeforeUnmount(stopPolling)
       <el-card shadow="never"><template #header>AP 扩展导入预览 / 回滚</template><input type="file" accept=".csv,.xlsx" :disabled="!isFeatureEnabled('web.ac_extensions_preview')" @change="chooseFile"><el-alert v-if="extensionPreview" class="preview" type="info" :title="`${extensionPreview.file_name} · ${extensionPreview.row_count} 行 · 摘要 ${extensionPreview.preview_digest}`" :closable="false" /><div class="actions"><el-button type="primary" :loading="taskBusy" :disabled="!extensionPreview || !isFeatureEnabled('web.ac_extensions_apply')" @click="applyExtension">确认写入</el-button><el-button :loading="taskBusy" :disabled="!lastAuditId || !isFeatureEnabled('web.ac_extensions_rollback')" @click="rollbackExtension">回滚最近导入</el-button></div></el-card>
       <el-card shadow="never"><template #header>AP 扩展信息（{{ extensions.length }}）</template><NcDataTable table-id="ac-extension-records" route-key="/ac-management/parity" :data="extensions" :columns="extensionColumns" :height="320" empty-text="暂无 AP 扩展信息" /></el-card>
     </div>
-    <el-card v-if="isFeatureEnabled('web.ac_trackside_ap_plan')" shadow="never"><template #header>轨旁 AP 规划（{{ tracksidePlan.length }}）</template><NcDataTable table-id="ac-trackside-plan" route-key="/ac-management/parity" :data="tracksidePlan" :columns="planColumns" :height="320" empty-text="暂无轨旁 AP 规划" /></el-card>
   </section>
 </template>
 

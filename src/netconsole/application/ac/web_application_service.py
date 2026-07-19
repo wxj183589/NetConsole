@@ -24,8 +24,6 @@ from netconsole.models.api.ac_management import (
     AcExtensionPageDTO,
     AcExtensionPreviewDTO,
     AcExtensionRollbackResultDTO,
-    AcTracksidePlanDTO,
-    AcTracksidePlanPageDTO,
     AcWebTaskDTO,
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
@@ -123,28 +121,6 @@ class AcWebApplicationService:
         page_size = max(1, min(int(page_size), 200))
         start = (page - 1) * page_size
         return AcExtensionPageDTO(items=items[start : start + page_size], total=len(items), page=page, page_size=page_size)
-
-    def list_trackside_plan(self, site_id: str, mode: str = TRACKSIDE_AP_PLAN_MODE) -> AcTracksidePlanPageDTO:
-        site_id = self._site(site_id)
-        mode = str(mode or TRACKSIDE_AP_PLAN_MODE)
-        rows = self._repository(site_id).list_trackside_ap_plan(mode)
-        items = [
-            AcTracksidePlanDTO(
-                mode=str(row.get("mode") or TRACKSIDE_AP_PLAN_MODE),
-                station_name=str(row.get("station_name") or ""),
-                ap_count=int(row.get("ap_count") or 0),
-                ap_start_address=str(row.get("ap_start_address") or ""),
-                mask_length=int(row.get("mask_length") or 0),
-                ap_gateway=str(row.get("ap_gateway") or ""),
-                ap_management_vlans=str(row.get("ap_management_vlans") or ""),
-                remark=str(row.get("remark") or ""),
-                sort_order=int(row.get("sort_order") or 0),
-                created_at=str(row.get("created_at") or ""),
-                updated_at=str(row.get("updated_at") or ""),
-            )
-            for row in rows
-        ]
-        return AcTracksidePlanPageDTO(items=items, total=len(items), mode=mode)
 
     def start_local_rebuild(
         self,

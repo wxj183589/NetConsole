@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import {
   applyRailTransitImport,
+  getRailTransitBaseDataEditSession,
   getRailTransitSummary,
   getRailTransitImportPolicies,
   listRailTransitImportChanges,
@@ -16,8 +17,14 @@ import {
   listVehicleMrs,
   previewRailTransitImport,
   rollbackRailTransitImport,
+  saveRailTransitBaseDataChanges,
+  validateRailTransitBaseDataChanges,
 } from '../api/railTransitBaseData'
 import type {
+  BaseDataChange,
+  BaseDataEditSession,
+  BaseDataSaveResult,
+  BaseDataValidationResult,
   DataQualityIssue,
   DataQualityEntityGroup,
   ImportChange,
@@ -36,6 +43,7 @@ import type {
 
 export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data', () => {
   const summary = ref<RailTransitSummary | null>(null)
+  const editSession = ref<BaseDataEditSession | null>(null)
   const stations = ref<Station[]>([])
   const sections = ref<Section[]>([])
   const aps = ref<TracksideAp[]>([])
@@ -144,12 +152,40 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   }
 
   async function refreshImportGovernance(): Promise<void> {
-    const [policies, operations] = await Promise.all([
+    const [policies, operations, session] = await Promise.all([
       getRailTransitImportPolicies(),
       listRailTransitImportOperations(),
+      getRailTransitBaseDataEditSession(),
     ])
     importPolicies.value = policies
     importOperations.value = operations
+    editSession.value = session
+  }
+
+  async function refreshEditSession(): Promise<BaseDataEditSession> {
+    editSession.value = await getRailTransitBaseDataEditSession()
+    return editSession.value
+  }
+
+  async function validateChanges(changes: BaseDataChange[]): Promise<BaseDataValidationResult> {
+    if (!editSession.value) await refreshEditSession()
+    return validateRailTransitBaseDataChanges({
+      site_id: editSession.value!.site_id,
+      base_revision: editSession.value!.base_revision,
+      changes,
+    })
+  }
+
+  async function saveChanges(changes: BaseDataChange[]): Promise<BaseDataSaveResult> {
+    if (!editSession.value) await refreshEditSession()
+    const result = await saveRailTransitBaseDataChanges({
+      site_id: editSession.value!.site_id,
+      base_revision: editSession.value!.base_revision,
+      changes,
+      explicit_confirmation: true,
+    })
+    editSession.value = { ...editSession.value!, base_revision: result.revision, loaded_at: new Date().toISOString() }
+    return result
   }
 
   function canApplyImport(): boolean {
@@ -228,12 +264,12 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   }
 
   return {
-    summary, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
+    summary, editSession, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
     apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, importPolicies,
     importOperations, importChanges, selectedOperationId, selectedFileName,
     loading, previewLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
     refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport,
-    refreshImportGovernance, canApplyImport, applyImport, selectImportOperation, rollbackImport,
+    refreshImportGovernance, refreshEditSession, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,
   }
