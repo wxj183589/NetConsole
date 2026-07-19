@@ -66,11 +66,13 @@ describe('DeviceDetailPanel', () => {
     expect(source).toContain('displayInterfaceName')
     expect(source).toContain("key === 'severity_reason' && isNormalSeverity(context?.severity)")
     expect(source).toContain("normalizedValue === 'normal' || normalizedValue === '正常'")
-    expect(source).toContain("['alarm', 'critical', 'no_light', 'no_module', 'link_abnormal', 'link_down', 'offline'].includes(severity)")
-    expect(source).toContain("['warning', 'notice', 'not_collected', 'skipped'].includes(severity)")
+    expect(source).toContain("['alarm', 'critical', 'no_light', 'link_abnormal', 'link_down'].includes(severity)")
+    expect(source).toContain("['warning', 'notice'].includes(severity)")
     expect(source).toContain("no_module: '无光模块'")
-    expect(source).toContain('color: var(--nc-danger)')
-    expect(source).toContain('color: var(--nc-warning)')
+    expect(source).toContain("return ['business-optical-status', opticalToneClass(row.status)]")
+    expect(source).toContain('.optical-tone-danger { color: var(--nc-danger)')
+    expect(source).toContain('.optical-tone-warning { color: var(--nc-warning)')
+    expect(source).toContain('.optical-tone-neutral { color: var(--el-text-color-secondary)')
     expect(source).not.toContain("['连接器', 'connector_type'], ['状态', 'status']")
     const businessColumns = source
       .split("business: [")[1]

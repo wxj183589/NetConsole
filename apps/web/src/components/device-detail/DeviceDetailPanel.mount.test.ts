@@ -75,6 +75,7 @@ const tabsStub = defineComponent({
       h('button', { 'data-testid': 'tab-interfaces', onClick: () => { emit('update:modelValue', 'interfaces'); emit('tab-change', 'interfaces') } }, '接口'),
       h('button', { 'data-testid': 'tab-optical', onClick: () => { emit('update:modelValue', 'optical'); emit('tab-change', 'optical') } }, '光模块'),
       h('button', { 'data-testid': 'tab-lldp', onClick: () => { emit('update:modelValue', 'lldp'); emit('tab-change', 'lldp') } }, 'LLDP'),
+      h('button', { 'data-testid': 'tab-business', onClick: () => { emit('update:modelValue', 'business'); emit('tab-change', 'business') } }, '关联业务'),
       slots.default?.(),
     ])
   },
@@ -189,12 +190,13 @@ describe('DeviceDetailPanel mounted interactions', () => {
         return Promise.resolve({
           items: [
             { interface_name: 'GE1/0/1', severity: 'normal', severity_reason: 'RX power is above maintenance normal line', rx_power: -8 },
-            { interface_name: 'GE1/0/2', severity: 'notice', severity_reason: 'Optical module is not present', rx_power: -18 },
+            { interface_name: 'GE1/0/2', severity: 'notice', severity_reason: 'RX power is below maintenance normal line', rx_power: -18 },
             { interface_name: 'GE1/0/3', severity: 'alarm', severity_reason: 'RX power below alarm low threshold', rx_power: -28 },
             { interface_name: 'GE1/0/4', severity: 'critical', severity_reason: 'Vendor raw reason', rx_power: -30 },
             { interface_name: 'GE1/0/5', severity: '正常', severity_reason: 'Port is DOWN', rx_power: -7 },
+            { interface_name: 'GE1/0/6', severity: 'no_module', severity_reason: 'Optical module is not present', rx_power: null },
           ],
-          total: 5, page: 1, page_size: 50, total_pages: 1,
+          total: 6, page: 1, page_size: 50, total_pages: 1,
           source: { available: true, source: 'snapshot', collected_at: '', reason: null },
         })
       }
@@ -235,15 +237,48 @@ describe('DeviceDetailPanel mounted interactions', () => {
     expect(wrapper.text()).not.toContain('端口已断开')
     expect(wrapper.text()).not.toContain('Port is DOWN')
     const rxPowerCells = wrapper.findAll('.optical-rx-power')
-    expect(rxPowerCells).toHaveLength(5)
-    expect(rxPowerCells[0].classes()).not.toContain('is-warning')
-    expect(rxPowerCells[0].classes()).not.toContain('is-danger')
-    expect(rxPowerCells[1].classes()).toContain('is-warning')
-    expect(rxPowerCells[2].classes()).toContain('is-danger')
-    expect(rxPowerCells[3].classes()).toContain('is-danger')
-    expect(rxPowerCells[4].classes()).not.toContain('is-warning')
-    expect(rxPowerCells[4].classes()).not.toContain('is-danger')
+    expect(rxPowerCells).toHaveLength(6)
+    expect(rxPowerCells[0].classes()).toContain('optical-tone-normal')
+    expect(rxPowerCells[1].classes()).toContain('optical-tone-warning')
+    expect(rxPowerCells[2].classes()).toContain('optical-tone-danger')
+    expect(rxPowerCells[3].classes()).toContain('optical-tone-danger')
+    expect(rxPowerCells[4].classes()).toContain('optical-tone-normal')
+    expect(rxPowerCells[5].classes()).toContain('optical-tone-neutral')
+    expect(rxPowerCells[5].classes()).not.toContain('optical-tone-danger')
 
+    wrapper.unmount()
+  })
+
+  it('colors trackside optical anomalies in business relations and keeps no-module neutral', async () => {
+    mocks.getDeviceDetailSection.mockImplementation((_deviceUuid, section) => Promise.resolve(section === 'business'
+      ? {
+          items: [
+            { association_type: 'trackside_ap', association_id: 'alarm', status: 'alarm', name: 'AP-01', trackside_ap: {} },
+            { association_type: 'trackside_ap', association_id: 'warning', status: 'warning', name: 'AP-02', trackside_ap: {} },
+            { association_type: 'trackside_ap', association_id: 'normal', status: 'normal', name: 'AP-03', trackside_ap: {} },
+            { association_type: 'trackside_ap', association_id: 'no-module', status: 'no_module', name: null, trackside_ap: {} },
+          ],
+          total: 4, page: 1, page_size: 50, total_pages: 1,
+          source: { available: true, source: 'snapshot', collected_at: '', reason: null },
+        }
+      : {
+          items: [], total: 0, page: 1, page_size: 50, total_pages: 1,
+          source: { available: true, source: 'snapshot', collected_at: '', reason: null },
+        }))
+    const wrapper = await renderPanel()
+
+    await wrapper.get('[data-testid="tab-business"]').trigger('click')
+    await flushPromises()
+
+    const statusCells = wrapper.findAll('.business-optical-status')
+    expect(statusCells).toHaveLength(4)
+    expect(statusCells[0].text()).toBe('告警')
+    expect(statusCells[0].classes()).toContain('optical-tone-danger')
+    expect(statusCells[1].classes()).toContain('optical-tone-warning')
+    expect(statusCells[2].classes()).toContain('optical-tone-normal')
+    expect(statusCells[3].text()).toBe('无光模块')
+    expect(statusCells[3].classes()).toContain('optical-tone-neutral')
+    expect(statusCells[3].classes()).not.toContain('optical-tone-danger')
     wrapper.unmount()
   })
 

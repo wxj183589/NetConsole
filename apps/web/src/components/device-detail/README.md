@@ -29,6 +29,8 @@
 
 配置快照比较、Artifact 下载、受控打开和任务窗口跳转复用现有 config-collection API、统一下载桥接和 Task Center，不复制配置采集业务规则。概览、接口、光模块和 LLDP 的数据来源分别标记为 `devices.db.latest_snapshot`、`devices.db.interfaces.latest_snapshot`、`devices.db.transceivers.latest_snapshot` 和 `devices.db.lldp.latest_snapshot`；LLDP 只展示本地接口、邻居系统名/MAC/接口/IP、关联状态和采集时间等白名单字段。关联业务公开契约不返回重复的 AC ID/名称/IP、AP 型号/状态、交换机/接口、光模块严重性及 MR 会话/阶段/耗时/任务字段；历史 Repository 数据不因此删除。CPU/内存只展示 overview 返回的基础摘要。
 
+光模块和轨旁 AP 关联业务只消费 Python 返回的严重性，不在 Vue 计算阈值。`alarm/critical/no_light/link_abnormal/link_down` 使用危险色，`warning/notice` 使用警告色，`normal` 使用正常色；`no_module` 表示端口未安装光模块，属于中性状态，不计作光衰异常，也不得把缺失功率占位符显示为红色。
+
 历史 Repository 行也必须经过后端 DTO 白名单映射，组件不得从任意原始对象透传到表格、历史详情或导出。
 
 命令执行状态只消费后端返回的 `command_profile.executable`。当前通用刷新仅允许已验证边界内的 H3C/Comware 交换机 Profile；H3C AC/MR 只读关联各自业务 Query Service，Huawei、ZTE、未知或未验证 Profile 不得由组件回退执行 H3C 命令。

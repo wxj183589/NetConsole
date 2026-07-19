@@ -196,7 +196,7 @@ const columnsBySection: Record<Exclude<DeviceDetailSection, 'overview'>, NcTable
   business: [
     detailColumn('业务对象', 'name', 'name', { fixed: 'left' }),
     detailColumn('类型', 'association_type'),
-    detailColumn('状态', 'status', 'status'),
+    detailColumn('状态', 'status', 'status', { displayValue: (row) => businessStatusText(row) }),
     detailColumn('关联标识', 'association_id', 'text'),
     detailColumn('本地接口', 'local_interface', 'port'),
     detailColumn('邻居地址', 'peer_address', 'ip'),
@@ -874,16 +874,26 @@ function isNormalSeverity(value: unknown): boolean {
   return normalizedValue === 'normal' || normalizedValue === '正常'
 }
 
+function opticalToneClass(value: unknown): string {
+  const severity = String(value ?? '').trim().toLowerCase()
+  if (['alarm', 'critical', 'no_light', 'link_abnormal', 'link_down'].includes(severity)) return 'optical-tone-danger'
+  if (['warning', 'notice'].includes(severity)) return 'optical-tone-warning'
+  if (severity === 'normal' || severity === '正常') return 'optical-tone-normal'
+  return 'optical-tone-neutral'
+}
+
+function businessStatusText(row: DeviceDetailRecord): string {
+  return formatEnumeratedValue(row.association_type === 'trackside_ap' ? 'severity' : 'status', row.status, row)
+}
+
+function businessStatusClass(section: DeviceDetailSection, row: DeviceDetailRecord): string[] {
+  if (section !== 'business' || row.association_type !== 'trackside_ap') return []
+  return ['business-optical-status', opticalToneClass(row.status)]
+}
+
 function opticalRxPowerClass(section: DeviceDetailSection, key: string, row: DeviceDetailRecord): string[] {
   if (section !== 'optical' || key !== 'rx_power') return []
-  const severity = String(row.severity ?? '').trim().toLowerCase()
-  if (['alarm', 'critical', 'no_light', 'no_module', 'link_abnormal', 'link_down', 'offline'].includes(severity)) {
-    return ['optical-rx-power', 'is-danger']
-  }
-  if (['warning', 'notice', 'not_collected', 'skipped'].includes(severity)) {
-    return ['optical-rx-power', 'is-warning']
-  }
-  return ['optical-rx-power']
+  return ['optical-rx-power', opticalToneClass(row.severity)]
 }
 
 function formatTime(value: string | null | undefined): string {
@@ -1061,6 +1071,8 @@ function errorMessage(cause: unknown, fallback: string): string {
                 empty-text="暂无数据"
               >
                 <template #cell-selection="{ row }"><el-checkbox :model-value="configurationSelection.includes(Number(row.snapshot_id))" @change="(checked: boolean) => toggleConfigurationSelection(Number(row.snapshot_id), checked)" /></template>
+                <template #cell-severity="{ row, columnDefinition }"><span :class="['optical-severity', opticalToneClass(row.severity)]">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
+                <template #cell-status="{ row, columnDefinition }"><span :class="businessStatusClass(section, row)">{{ section === 'business' ? businessStatusText(row) : formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
                 <template #cell-rx_power="{ row, columnDefinition }"><span :class="opticalRxPowerClass(section, columnDefinition.key, row)">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
                 <template #cell-actions="{ row }">
                   <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
@@ -1114,8 +1126,10 @@ function errorMessage(cause: unknown, fallback: string): string {
 .section-toolbar .el-input { width: min(320px, 100%); }
 .section-toolbar .el-select { width: 150px; }
 .metadata-row, .section-metadata { margin: 10px 0; color: var(--el-text-color-secondary); font-size: 12px; }
-.optical-rx-power.is-danger { color: var(--nc-danger); font-weight: 600; }
-.optical-rx-power.is-warning { color: var(--nc-warning); font-weight: 600; }
+.optical-tone-danger { color: var(--nc-danger); font-weight: 600; }
+.optical-tone-warning { color: var(--nc-warning); font-weight: 600; }
+.optical-tone-normal { color: var(--nc-success); }
+.optical-tone-neutral { color: var(--el-text-color-secondary); font-weight: 400; }
 .device-detail-panel :deep(.el-pagination) { justify-content: flex-end; padding: 14px 0 0; }
 .record-detail { max-height: 60vh; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--el-fill-color-light); border-radius: 6px; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; }
 @media (max-width: 760px) {
