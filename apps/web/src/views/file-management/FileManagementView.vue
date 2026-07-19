@@ -68,6 +68,9 @@ const selectedDeviceId = ref('')
 const deviceSearch = ref('')
 const deviceGroup = ref('')
 const allowSftpSetup = ref(false)
+const sftpSetupConfirmed = ref(false)
+const sftpSetupConfirmationPending = ref(false)
+const sftpSetupTaskId = ref('')
 const connection = ref<FileConnection | null>(null)
 const remotePage = ref<RemoteFilePage | null>(null)
 const remoteLoading = ref(false)
@@ -117,10 +120,18 @@ const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
   { key: 'message', label: '信息', valueType: 'description', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '保存', '打开', '所在目录'] },
 ]
+const SFTP_SETUP_SUCCESS_MESSAGE = '已在设备侧启用 SFTP，并完成重新连接。'
+const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
+  DEVICE_FILE_SFTP_UNAVAILABLE: '设备 SFTP 未启用。请开启“SFTP 未启用时，允许自动配置并重连”后重试。',
+  DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED: '当前设备厂商或版本不支持自动启用 SFTP，未执行设备配置。',
+  DEVICE_FILE_SFTP_ENABLE_PENDING: '启用设备 SFTP 的受控任务仍在运行，请稍候后从任务中心查看结果。',
+  DEVICE_FILE_SFTP_ENABLE_FAILED: '设备 SFTP 自动启用失败。请查看任务日志，并检查设备权限和 Command Profile。',
+  DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED: '设备侧 SFTP 已启用，但重新连接失败。请查看任务，并检查 SFTP 服务和网络连通性。',
+}
 
-function openTaskWindow(): void {
-  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'files' })
-  else void router.push({ name: 'tasks', query: { module: 'files' } })
+function openTaskWindow(taskId = ''): void {
+  if (window.netconsoleDesktop) void window.netconsoleDesktop.openTaskWindow({ module: 'files', ...(taskId ? { taskId } : {}) })
+  else void router.push({ name: 'tasks', query: { module: 'files', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 onMounted(() => void initialize())
@@ -227,26 +238,43 @@ async function prepareLocalOpen(): Promise<void> {
   await showDesktopDependency('open_local', { local_entry_id: localPage.value.current_entry_id })
 }
 
+async function confirmSftpSetup(enabled: boolean): Promise<void> {
+  if (!enabled || sftpSetupConfirmed.value) return
+  sftpSetupConfirmationPending.value = true
+  try {
+    const accepted = await confirm({
+      type: 'DANGER',
+      title: '确认允许自动配置 SFTP',
+      message: 'SFTP 未启用时，NetConsole 将通过版本化 Command Profile 执行受控设备配置并重新连接。',
+      detail: '请确认你拥有设备配置权限。远程文件始终只读，不会上传、删除、重命名或创建远程目录。',
+      confirmText: '允许自动配置',
+    })
+    if (accepted) sftpSetupConfirmed.value = true
+    else allowSftpSetup.value = false
+  } catch {
+    allowSftpSetup.value = false
+  } finally {
+    sftpSetupConfirmationPending.value = false
+  }
+}
+
+function applySftpConnectionError(reason: ApiRequestError, fallback: string): void {
+  const taskId = reason.details.task_id
+  sftpSetupTaskId.value = typeof taskId === 'string' ? taskId : ''
+  remoteError.value = SFTP_CONNECTION_ERROR_MESSAGES[reason.code] || messageOf(reason, fallback)
+}
+
 async function connectDevice(): Promise<void> {
   if (!selectedDeviceId.value) return
-  try {
-    if (allowSftpSetup.value) {
-      const accepted = await confirm({
-        type: 'DANGER',
-        title: '确认启用设备 SFTP',
-        message: '连接失败且设备版本化 Command Profile 明确支持时，NetConsole 可能执行受控的设备写操作。',
-        detail: '请确认你拥有设备写入权限；未识别厂商或版本不会执行命令。',
-        confirmText: '确认启用并连接',
-      })
-      if (!accepted) return
-    }
-  } catch { return }
+  if (allowSftpSetup.value && (!sftpSetupConfirmed.value || sftpSetupConfirmationPending.value)) return
   remoteLoading.value = true
   remoteError.value = ''
+  sftpSetupTaskId.value = ''
   try {
     await disconnectDevice()
     connection.value = await connectDeviceFiles(selectedDeviceId.value, siteId.value, allowSftpSetup.value)
     await loadRemote(connection.value.root_entry_id, 1)
+    if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
   } catch (reason) {
     if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_HOST_KEY_UNKNOWN') {
       const details = reason.details
@@ -265,16 +293,18 @@ async function connectDevice(): Promise<void> {
         try {
           connection.value = await trustDeviceHostKey(challengeId, choice === 'secondary', siteId.value, allowSftpSetup.value)
           await loadRemote(connection.value.root_entry_id, 1)
+          if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
           return
         } catch (trustError) {
-          remoteError.value = messageOf(trustError, '主机密钥信任失败')
+          if (trustError instanceof ApiRequestError && trustError.code in SFTP_CONNECTION_ERROR_MESSAGES) {
+            applySftpConnectionError(trustError, '主机密钥信任失败')
+          } else remoteError.value = messageOf(trustError, '主机密钥信任失败')
         }
       } else {
         remoteError.value = '已取消主机密钥信任，连接未建立。'
       }
-    } else {
-      remoteError.value = messageOf(reason, '设备文件连接失败')
-    }
+    } else if (reason instanceof ApiRequestError && reason.code in SFTP_CONNECTION_ERROR_MESSAGES) applySftpConnectionError(reason, '设备文件连接失败')
+    else remoteError.value = messageOf(reason, '设备文件连接失败')
     connection.value = null
     remotePage.value = null
   } finally {
@@ -494,8 +524,8 @@ function messageOf(reason: unknown, fallback: string): string {
       </el-select>
       <span>{{ selectedDevice ? `当前设备：${selectedDevice.name}` : '当前为局点下载根目录' }}</span>
       <template v-if="isFeatureEnabled('web.file_management_remote')">
-        <el-checkbox v-model="allowSftpSetup">必要时允许设备侧启用 SFTP</el-checkbox>
-        <el-button type="primary" :disabled="!selectedDeviceId || !!connection" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
+        <el-checkbox v-model="allowSftpSetup" :disabled="sftpSetupConfirmationPending || !!connection" @change="confirmSftpSetup">SFTP 未启用时，允许自动配置并重连</el-checkbox>
+        <el-button type="primary" :disabled="!selectedDeviceId || !!connection || sftpSetupConfirmationPending || (allowSftpSetup && !sftpSetupConfirmed)" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
         <el-button :disabled="!connection" @click="disconnectDevice">{{ t('disconnect') }}</el-button>
         <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :title="winscpMessage" :disabled="!selectedDeviceId || !winscpAvailable" @click="prepareWinscp">{{ t('winscp') }}</el-button>
       </template>
@@ -533,7 +563,7 @@ function messageOf(reason: unknown, fallback: string): string {
 
       <article v-if="isFeatureEnabled('web.file_management_remote')" class="content-card pane">
         <div class="section-heading"><h2>设备文件（只读）</h2><span>{{ connection ? `${connection.device_name} · ${remotePage?.current_label || '根目录'}` : '未连接' }}</span></div>
-        <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon />
+        <el-alert v-if="remoteError" :title="remoteError" type="error" :closable="false" show-icon><el-button v-if="sftpSetupTaskId" link type="primary" @click="openTaskWindow(sftpSetupTaskId)">查看自动配置任务</el-button></el-alert>
         <div class="toolbar">
           <el-button :disabled="!connection || !remotePage || remotePage.current_entry_id === connection.root_entry_id" @click="loadRemote(remotePage?.parent_entry_id, 1)">{{ t('up') }}</el-button>
           <el-button :disabled="!connection" @click="loadRemote(connection?.root_entry_id, 1)">{{ t('root') }}</el-button>

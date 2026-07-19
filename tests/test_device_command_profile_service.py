@@ -12,14 +12,17 @@ from netconsole.models.device import Device
 from netconsole.models.device_detail import identify_device_platform
 from netconsole.services.device_command_profile_service import (
     DEVICE_INVENTORY_OPERATION_ID,
+    DEVICE_SFTP_ENABLE_OPERATION_ID,
     DeviceCommandProfileError,
     DeviceCommandProfileNotFound,
     device_command_profile_path,
     default_device_inventory_profile,
     load_device_command_profiles,
     resolve_device_command_profile,
+    bind_device_sftp_enable_commands,
     resolve_device_inventory_profile,
     resolve_device_operation_profile,
+    resolve_device_sftp_enable_profile,
 )
 from scripts.maintenance.audit_commands import (
     load_device_profile_commands,
@@ -137,6 +140,104 @@ def test_device_resolution_only_accepts_h3c_switch() -> None:
         resolve_device_inventory_profile(
             h3c_switch, platform_facts=conflicting_facts
         )
+
+
+def test_unified_loader_exposes_exact_v7_sftp_profiles_for_supported_roles() -> None:
+    profiles = load_device_command_profiles()
+    sftp = [profile for profile in profiles if profile.operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID]
+
+    assert len(sftp) == 3
+    assert {profile.selector.role for profile in sftp} == {"switch", "wireless_controller", "mobile_router"}
+    assert all(profile.selector.software_version == "V7" for profile in sftp)
+    assert all(profile.risk == "controlled_write" for profile in sftp)
+    assert all(profile.compatibility == "fixture_verified" for profile in sftp)
+    assert all(profile.real_device_status == "real_device_pending" for profile in sftp)
+    assert all(profile.commands[2] == "ssh user {username} service-type all authentication-type any" for profile in sftp)
+
+
+@pytest.mark.parametrize("device_type", ("SW", "AC", "MR"))
+def test_sftp_operation_resolves_supported_h3c_roles_only(device_type: str) -> None:
+    device = Device(name="device", device_vendor="H3C", device_type=device_type)
+    profile = resolve_device_sftp_enable_profile(device, software_version="Comware V7")
+    dispatched = resolve_device_operation_profile(
+        device,
+        DEVICE_SFTP_ENABLE_OPERATION_ID,
+        software_version="Comware V7",
+    )
+
+    assert profile.operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID
+    assert profile.selector.software_version == "V7"
+    assert profile.risk == "controlled_write"
+    assert dispatched.profile_id == profile.profile_id
+
+
+def test_sftp_binding_is_strict_and_rechecks_command_guard() -> None:
+    profile = resolve_device_sftp_enable_profile(
+        Device(name="SW", device_vendor="H3C", device_type="SW"),
+        software_version="V7",
+    )
+
+    assert bind_device_sftp_enable_commands(profile, username="netconsole-admin") == (
+        "system-view",
+        "sftp server enable",
+        "ssh user netconsole-admin service-type all authentication-type any",
+        "return",
+        "quit",
+    )
+    for username in ("", "admin root", "admin;save", "admin\nuser", "admin{user}", "用户名"):
+        with pytest.raises(DeviceCommandProfileError, match="用户名"):
+            bind_device_sftp_enable_commands(profile, username=username)
+
+
+def test_sftp_binding_revalidates_the_rendered_sequence(monkeypatch) -> None:
+    profile = resolve_device_sftp_enable_profile(
+        Device(name="SW", device_vendor="H3C", device_type="SW"),
+        software_version="V7",
+    )
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    monkeypatch.setattr(
+        device_command_profile_service.command_guard,
+        "validate_command_list",
+        lambda commands, context: calls.append((tuple(commands), context)),
+    )
+
+    commands = bind_device_sftp_enable_commands(profile, username="admin")
+
+    assert calls == [(commands, DEVICE_SFTP_ENABLE_OPERATION_ID)]
+
+
+def test_sftp_resolution_has_no_generic_version_fallback() -> None:
+    with pytest.raises(DeviceCommandProfileNotFound):
+        resolve_device_sftp_enable_profile(
+            Device(name="SW", device_vendor="H3C", device_type="SW"),
+            software_version="Comware V9",
+        )
+
+
+def test_controlled_write_profile_rejects_wildcard_and_template_drift(tmp_path: Path) -> None:
+    payload = json.loads(RESOURCE_PATH.read_text(encoding="utf-8"))
+    sftp = next(
+        profile
+        for profile in payload["profiles"]
+        if profile["operation_id"] == DEVICE_SFTP_ENABLE_OPERATION_ID
+    )
+    sftp["selector"]["software_version"] = "*"
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    target = resources / RESOURCE_PATH.name
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
+
+    with pytest.raises(DeviceCommandProfileError, match="controlled_write Profile 不允许通配版本"):
+        load_device_command_profiles(paths)
+
+    sftp["selector"]["software_version"] = "V7"
+    sftp["steps"][2]["command"] = "ssh user {username} service-type sftp authentication-type any"
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(DeviceCommandProfileError, match="step 契约不完整"):
+        load_device_command_profiles(paths)
 
 
 def test_device_remark_cannot_select_an_exact_software_profile(tmp_path: Path) -> None:

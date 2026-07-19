@@ -9,6 +9,7 @@ import {
   retryFileDownload,
   startRemoteFileDownloadBatch,
 } from '../../api/fileManagement'
+import source from './FileManagementView.vue?raw'
 
 describe('file management API contract', () => {
   it('uses opaque dual-pane references and one batch request', async () => {
@@ -52,5 +53,28 @@ describe('file management API contract', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body).toEqual({ device_id: 'device-1' })
     expect(JSON.stringify(body)).not.toMatch(/password|argv|path/i)
+  })
+
+  it('requires one in-session confirmation before allowing controlled SFTP setup', () => {
+    expect(source).toContain('SFTP 未启用时，允许自动配置并重连')
+    expect(source).toContain('@change="confirmSftpSetup"')
+    expect(source).toContain('const sftpSetupConfirmed = ref(false)')
+    expect(source).toContain('if (accepted) sftpSetupConfirmed.value = true')
+    expect(source).toContain('else allowSftpSetup.value = false')
+    expect(source).not.toContain('localStorage.setItem(\'netconsole.file-management.sftp')
+  })
+
+  it('maps stable SFTP setup errors and exposes an existing task id', () => {
+    for (const code of [
+      'DEVICE_FILE_SFTP_UNAVAILABLE',
+      'DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED',
+      'DEVICE_FILE_SFTP_ENABLE_PENDING',
+      'DEVICE_FILE_SFTP_ENABLE_FAILED',
+      'DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED',
+    ]) expect(source).toContain(code)
+    expect(source).toContain('reason.details.task_id')
+    expect(source).toContain('openTaskWindow(sftpSetupTaskId)')
+    expect(source).toContain('const SFTP_SETUP_SUCCESS_MESSAGE = \'已在设备侧启用 SFTP，并完成重新连接。\'')
+    expect(source).toContain('ElMessage.success(connection.value.message)')
   })
 })

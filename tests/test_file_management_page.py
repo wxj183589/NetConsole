@@ -8,11 +8,11 @@ from netconsole.models.device import Device
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
-    build_sftp_enable_commands,
+    SftpUnavailableError,
 )
 
 
-def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(
+def test_file_transfer_reports_sftp_unavailable_without_running_device_write_commands(
     tmp_path, monkeypatch
 ):
     import netconsole.services.file_transfer_service as service_module
@@ -95,33 +95,12 @@ def test_file_transfer_connect_falls_back_to_tunnel_and_enables_h3c_sftp(
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
 
-    root = service.connect(device)
-    service.disconnect()
-
-    assert root == "flash:/"
-    assert connect_hosts == ["10.0.0.1", "10.0.1.1", "127.0.0.1", "127.0.0.1"]
-    assert shell_commands == [
-        "system-view",
-        "sftp server enable",
-        "ssh user admin service-type all authentication-type any",
-        "return",
-        "quit",
-    ]
-    assert "tunnel" in closed
+    with pytest.raises(SftpUnavailableError, match="未启用 SFTP"):
+        service.connect(device)
+    assert shell_commands == []
 
 
-def test_sftp_enable_command_builder_uses_vendor_and_username():
-    assert build_sftp_enable_commands("H3C", "ops") == [
-        "system-view",
-        "sftp server enable",
-        "ssh user ops service-type all authentication-type any",
-        "return",
-        "quit",
-    ]
-    assert build_sftp_enable_commands("Cisco", "ops") == []
-
-
-def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_continues(
+def test_file_transfer_does_not_invoke_shell_when_another_sftp_target_is_available(
     tmp_path, monkeypatch
 ):
     connect_hosts: list[str] = []
@@ -191,7 +170,7 @@ def test_file_transfer_does_not_run_h3c_commands_for_unsupported_vendor_and_cont
     assert shell_commands == []
 
 
-def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(
+def test_file_transfer_reports_sftp_unavailable_without_invoking_shell(
     tmp_path, monkeypatch
 ):
     import netconsole.services.file_transfer_service as service_module
@@ -244,11 +223,7 @@ def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(
             return FakeTransport(self.index != 1)
 
         def open_sftp(self):
-            if self.index == 1:
-                raise RuntimeError("SSH session not active")
-            if self.index == 2:
-                raise RuntimeError("sftp disabled")
-            return FakeSftp()
+            raise RuntimeError("sftp subsystem disabled")
 
         def invoke_shell(self):
             invoked_on_clients.append(self.index)
@@ -275,22 +250,15 @@ def test_file_transfer_reconnects_before_enable_when_transport_is_inactive(
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
 
-    root = service.connect(device)
-    service.disconnect()
+    with pytest.raises(SftpUnavailableError, match="未启用 SFTP"):
+        service.connect(device)
 
-    assert root == "flash:/"
-    assert connect_hosts == ["10.0.0.1", "10.0.0.1", "10.0.0.1"]
-    assert invoked_on_clients == [2]
-    assert shell_commands == [
-        "system-view",
-        "sftp server enable",
-        "ssh user admin service-type all authentication-type any",
-        "return",
-        "quit",
-    ]
+    assert connect_hosts == ["10.0.0.1"]
+    assert invoked_on_clients == []
+    assert shell_commands == []
 
 
-def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
+def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(
     tmp_path, monkeypatch
 ):
     class FakeSSHClient:
@@ -331,9 +299,7 @@ def test_file_transfer_reports_huawei_as_unsupported_without_session_not_active(
     with pytest.raises(RuntimeError) as excinfo:
         service.connect(device)
 
-    message = str(excinfo.value)
-    assert "vendor Huawei is not adapted" in message
-    assert "SSH session not active" not in message
+    assert "SSH 登录成功" in str(excinfo.value)
 
 
 def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode(

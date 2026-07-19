@@ -141,6 +141,60 @@
           "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_lldp_neighbor_information_verbose.txt"}
         }
       ]
+    },
+    {
+      "operation_id": "device.sftp.enable",
+      "profile_id": "h3c.comware.switch.v7.sftp-enable.v1",
+      "profile_version": 1,
+      "selector": {"vendor": "H3C", "role": "switch", "platform": "comware", "software_version": "V7"},
+      "compatibility": "fixture_verified",
+      "risk": "controlled_write",
+      "parser_contract": "raw.passthrough.v1",
+      "dto_contract": "netconsole.device-operation.v1",
+      "verification": {"fixture_versions": ["7.1.070"], "real_device_status": "REAL_DEVICE_PENDING"},
+      "steps": [
+        {"order": 10, "step_id": "sftp.mode.enter", "command": "system-view", "selector": "sftp.mode.enter", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 20, "step_id": "sftp.server.enable", "command": "sftp server enable", "selector": "sftp.server.enable", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 30, "step_id": "sftp.user.bind", "command": "ssh user {username} service-type all authentication-type any", "selector": "sftp.user.bind", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 40, "step_id": "sftp.mode.return", "command": "return", "selector": "sftp.mode.return", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 50, "step_id": "session.quit", "command": "quit", "selector": "session.quit", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}}
+      ]
+    },
+    {
+      "operation_id": "device.sftp.enable",
+      "profile_id": "h3c.comware.wireless_controller.v7.sftp-enable.v1",
+      "profile_version": 1,
+      "selector": {"vendor": "H3C", "role": "wireless_controller", "platform": "comware", "software_version": "V7"},
+      "compatibility": "fixture_verified",
+      "risk": "controlled_write",
+      "parser_contract": "raw.passthrough.v1",
+      "dto_contract": "netconsole.device-operation.v1",
+      "verification": {"fixture_versions": ["7.1.070"], "real_device_status": "REAL_DEVICE_PENDING"},
+      "steps": [
+        {"order": 10, "step_id": "sftp.mode.enter", "command": "system-view", "selector": "sftp.mode.enter", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 20, "step_id": "sftp.server.enable", "command": "sftp server enable", "selector": "sftp.server.enable", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 30, "step_id": "sftp.user.bind", "command": "ssh user {username} service-type all authentication-type any", "selector": "sftp.user.bind", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 40, "step_id": "sftp.mode.return", "command": "return", "selector": "sftp.mode.return", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 50, "step_id": "session.quit", "command": "quit", "selector": "session.quit", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}}
+      ]
+    },
+    {
+      "operation_id": "device.sftp.enable",
+      "profile_id": "h3c.comware.mobile_router.v7.sftp-enable.v1",
+      "profile_version": 1,
+      "selector": {"vendor": "H3C", "role": "mobile_router", "platform": "comware", "software_version": "V7"},
+      "compatibility": "fixture_verified",
+      "risk": "controlled_write",
+      "parser_contract": "raw.passthrough.v1",
+      "dto_contract": "netconsole.device-operation.v1",
+      "verification": {"fixture_versions": ["7.1.070"], "real_device_status": "REAL_DEVICE_PENDING"},
+      "steps": [
+        {"order": 10, "step_id": "sftp.mode.enter", "command": "system-view", "selector": "sftp.mode.enter", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 20, "step_id": "sftp.server.enable", "command": "sftp server enable", "selector": "sftp.server.enable", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 30, "step_id": "sftp.user.bind", "command": "ssh user {username} service-type all authentication-type any", "selector": "sftp.user.bind", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 40, "step_id": "sftp.mode.return", "command": "return", "selector": "sftp.mode.return", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}},
+        {"order": 50, "step_id": "session.quit", "command": "quit", "selector": "session.quit", "parser_contract": "raw.passthrough.v1", "dto_contract": "none.v1", "risk": {"level": "controlled_write", "guard_context": "device.sftp.enable"}, "verification": {"status": "fixture_verified", "evidence": "tests/test_device_command_profile_service.py"}}
+      ]
     }
   ]
 }

@@ -27,6 +27,7 @@ from netconsole.models.api.file_management import (
     RemoteFilePageDTO,
 )
 from netconsole.services.file_management_service import (
+    DeviceFileSftpError,
     FileManagementApplicationService,
     FileManagementError,
     FileReferenceNotFound,
@@ -388,6 +389,24 @@ def _remote_call(callback):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": exc.code, "message": str(exc), "details": exc.details},
+        ) from exc
+    except DeviceFileSftpError as exc:
+        conflict_codes = {
+            "DEVICE_FILE_SFTP_UNAVAILABLE",
+            "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
+            "DEVICE_FILE_SFTP_ENABLE_PENDING",
+        }
+        raise HTTPException(
+            status_code=(
+                status.HTTP_409_CONFLICT
+                if exc.code in conflict_codes
+                else status.HTTP_502_BAD_GATEWAY
+            ),
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "details": {"task_id": exc.task_id} if exc.task_id else {},
+            },
         ) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc

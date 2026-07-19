@@ -42,7 +42,8 @@
 
 ## 版本化生产 Profile
 
-当前仅有 `device.inventory.collect` 完成首批 Profile 接管：
+当前版本化命令目录登记两个稳定 Operation。`device.inventory.collect` 为只读详情采集，
+`device.sftp.enable` 为独立的受控配置写操作：
 
 | 字段 | 当前值 |
 | --- | --- |
@@ -56,9 +57,25 @@
 | 样例证据 | Comware `7.1.070` fixture |
 | 真实设备状态 | `REAL_DEVICE_PENDING` |
 
+`device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
+风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
+
+```text
+system-view
+sftp server enable
+ssh user {username} service-type all authentication-type any
+return
+quit
+```
+
+该操作只允许在用户明确授权、SSH 登录成功且明确确认 SFTP 子系统不可用后，通过
+`Application Service -> DeviceOperationService -> Task Center -> Command Profile` 提交。
+Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失败关闭，不猜测命令、不提供兼容 fallback。
+
 每个 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行，继续保持 `screen-length disable` 和原有 11 条采集命令的原文、顺序、单命令失败后继续语义；parser 改用稳定 selector 取回显，raw 输入和结构化行为不变。未知厂商、设备角色或平台失败关闭；Huawei/ZTE 不回退到 H3C。未知软件版本只可使用明确标记的只读 generic Profile，不能据此宣称 V5/V9 已验收。
 
-AC、MR、配置、诊断和文件管理命令尚未迁入统一 Profile，仍属于 E10 发布阻塞清单。不得用本切片状态替代后续逐域迁移。
+除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未迁入统一 Profile，
+仍属于后续命令平台治理范围。不得用本切片状态替代逐域迁移和真实设备验收。
 
 命令审计对经正式 loader 验证的 Profile 只做完整规范化字符串相等，不使用前缀匹配。旧 `H3CAdapter/H3CConnection/H3CCommandProfile` 没有生产调用且依赖用户备注猜测版本，已连同未验证的 `display transceiver`、`display interface all` 分支删除；后续只有在取得真实样本、Parser 契约和设备验收后，才允许通过新版本 Profile 重新引入对应命令。
 
@@ -92,7 +109,7 @@ AC、MR、配置、诊断和文件管理命令尚未迁入统一 Profile，仍�
 | 连通性检测 | `ping <ip>` | 目标 IP | 登录设备 | CLI ping | `read_only` | 第二批待确认 |
 | 连通性检测 | `ping -c <count> <ip>` | 次数、目标 IP | 登录设备 | 指定次数 CLI ping | `read_only` | 第二批待确认 |
 
-补充交换机相关命令还包括 `system-view`、`sftp server enable`、`ssh user <username> service-type all authentication-type any`、`return`、`quit`，主要用于文件管理的 SFTP 准备或通用 CLI 收尾。其中 SFTP 启用和用户服务类型命令属于 `config_write`。
+补充设备命令还包括 `system-view`、`sftp server enable`、`ssh user <username> service-type all authentication-type any`、`return`、`quit`，仅用于 `device.sftp.enable` 的固定 Profile 顺序。其中 SFTP 启用和用户服务类型命令属于 `config_write`，命令说明页和只读文件浏览器不得直接执行。
 
 ## 非 CLI 接口说明
 

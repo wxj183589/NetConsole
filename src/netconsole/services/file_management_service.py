@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+from time import monotonic, sleep
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,7 @@ from netconsole.services.config_lifecycle_service import safe_artifact_display_n
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
+    SftpUnavailableError,
     auto_rename_path,
     file_sha256,
     is_within_remote_root,
@@ -61,12 +63,15 @@ from netconsole.services.host_key_trust_service import (
 from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
+from netconsole.services.netmiko_connection import sanitize_sensitive_text
 
 if TYPE_CHECKING:
     from netconsole.application.desktop import DesktopActionService
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
     from netconsole.services.job_center.task_application_service import TaskApplicationService
+    from netconsole.services.device_operation_service import DeviceOperationService
 
 
 FILE_REF_RE = re.compile(r"^fm1_[0-9a-f]{32}$")
@@ -103,6 +108,15 @@ class FileManagementError(ValueError):
 
 class FileReferenceNotFound(FileManagementError):
     pass
+
+
+class DeviceFileSftpError(RuntimeError):
+    """设备文件连接的稳定错误契约；不携带命令、凭据或服务端路径。"""
+
+    def __init__(self, code: str, message: str, *, task_id: str = "") -> None:
+        self.code = code
+        self.task_id = str(task_id or "")
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -188,6 +202,7 @@ class FileManagementApplicationService:
         transfer_factory: TransferServiceFactory = FileTransferService,
         mesh_auto_import_enabled: bool = True,
         desktop_action_service: DesktopActionService | None = None,
+        device_operation_service: DeviceOperationService | None = None,
     ) -> None:
         self.paths = paths
         self.site_name = str(site_name or "demo")
@@ -197,6 +212,7 @@ class FileManagementApplicationService:
         self._transfer_factory = transfer_factory
         self._mesh_auto_import_enabled = bool(mesh_auto_import_enabled)
         self._desktop_action_service = desktop_action_service
+        self._device_operation_service = device_operation_service
         self._sessions: dict[str, _RemoteSession] = {}
         self._sessions_lock = threading.RLock()
         self._pending_host_keys: dict[str, _PendingHostKey] = {}
@@ -431,27 +447,33 @@ class FileManagementApplicationService:
         device = self._resolve_device(site, device_id)
         device_key = str(device.device_uuid or device_id)
         self._close_device_sessions(site, device_key)
-        try:
-            transfer = self._transfer_factory(
-                site,
-                self.paths,
-                allow_remote_setup=bool(allow_sftp_setup),
-                strict_host_keys=True,
-                host_key_trust=HostKeyTrustService(self.paths),
-                trust_host_key_once=trust_host_key_once,
-            )
-        except TypeError as exc:
-            # 保留 Fake/第三方传输适配器的旧构造契约；正式 FileTransferService 使用上方安全参数。
-            if "host_key_trust" not in str(exc) and "trust_host_key_once" not in str(exc):
-                raise
-            transfer = self._transfer_factory(
-                site,
-                self.paths,
-                allow_remote_setup=bool(allow_sftp_setup),
-                strict_host_keys=True,
-            )
+        transfer = self._new_transfer(
+            site,
+            trust_host_key_once=trust_host_key_once,
+        )
+        auto_enabled = False
         try:
             root_path = normalize_remote_path(transfer.connect(device))
+        except SftpUnavailableError as exc:
+            try:
+                transfer.disconnect()
+            except Exception:
+                pass
+            if not allow_sftp_setup:
+                raise DeviceFileSftpError(
+                    SftpUnavailableError.code,
+                    "设备当前未启用 SFTP。可勾选“SFTP 未启用时，允许自动配置并重连”后重新连接。",
+                ) from exc
+            task_id = self._enable_device_sftp(site, device)
+            auto_enabled = True
+            transfer = self._new_transfer(site, trust_host_key_once=trust_host_key_once)
+            transfer, root_path = self._reconnect_after_sftp_enable(
+                site,
+                device,
+                transfer,
+                task_id=task_id,
+                trust_host_key_once=trust_host_key_once,
+            )
         except HostKeyTrustError as exc:
             try:
                 transfer.disconnect()
@@ -507,7 +529,125 @@ class FileManagementApplicationService:
             lock=threading.RLock(),
         )
         self._register_session(session)
-        return self._connection_dto(session, "已连接")
+        return self._connection_dto(
+            session,
+            "已在设备侧启用 SFTP，并完成重新连接。" if auto_enabled else "已连接",
+        )
+
+    def _new_transfer(self, site: str, *, trust_host_key_once: bool = False) -> FileTransferService:
+        """创建只读 SFTP Transport；自动配置不属于 Transport 构造契约。"""
+
+        return self._transfer_factory(
+            site,
+            self.paths,
+            strict_host_keys=True,
+            host_key_trust=HostKeyTrustService(self.paths),
+            trust_host_key_once=trust_host_key_once,
+        )
+
+    def _enable_device_sftp(self, site: str, device: Device) -> str:
+        service = self._device_operation_service
+        if service is None:
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
+                "当前设备未接入受控 SFTP 自动配置能力，请确认设备型号和软件版本。",
+            )
+        try:
+            task = service.start(
+                str(device.device_uuid or device.id or ""),
+                "device.sftp.enable",
+                idempotency_key=f"file-sftp:{uuid4().hex}",
+            )
+        except (KeyError, ValueError) as exc:
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
+                "当前设备版本暂无已验证的自动启用 SFTP 命令。请确认设备型号和软件版本，或在设备侧手动启用。",
+            ) from exc
+        except Exception as exc:
+            detail = redact_web_task_text(sanitize_sensitive_text(str(exc), device))
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_FAILED",
+                f"自动启用 SFTP 任务启动失败：{detail[:240] or '未知错误'}",
+            ) from exc
+        task_id = str(task.task_id or "")
+        if not task_id:
+            raise DeviceFileSftpError("DEVICE_FILE_SFTP_ENABLE_FAILED", "自动启用 SFTP 任务未能创建。")
+        if not self._wait_for_task(site, task_id, timeout_seconds=15.0):
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_PENDING",
+                "正在执行启用设备 SFTP 任务，请稍候后从任务中心查看结果。",
+                task_id=task_id,
+            )
+        snapshot = self._task_snapshot(site, task_id)
+        if snapshot is None or snapshot.status is not TaskState.COMPLETED:
+            detail = redact_web_task_text(
+                sanitize_sensitive_text(
+                    str(getattr(snapshot, "error_message", "") or getattr(snapshot, "message", "") or "命令执行失败"),
+                    device,
+                )
+            )
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_FAILED",
+                f"自动启用 SFTP 失败：{detail[:240]}",
+                task_id=task_id,
+            )
+        return task_id
+
+    def _reconnect_after_sftp_enable(
+        self,
+        site: str,
+        device: Device,
+        transfer: FileTransferService,
+        *,
+        task_id: str,
+        trust_host_key_once: bool,
+    ) -> tuple[FileTransferService, str]:
+        last_error: Exception | None = None
+        for attempt in range(4):
+            try:
+                return transfer, normalize_remote_path(transfer.connect(device))
+            except SftpUnavailableError as exc:
+                last_error = exc
+                transfer.disconnect()
+                if attempt < 3:
+                    sleep(1.0)
+                    transfer = self._new_transfer(
+                        site,
+                        trust_host_key_once=trust_host_key_once,
+                    )
+            except Exception as exc:
+                last_error = exc
+                transfer.disconnect()
+                break
+        raise DeviceFileSftpError(
+            "DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED",
+            "设备侧 SFTP 已执行启用，但重新连接设备文件服务失败，请稍后重试。",
+            task_id=task_id,
+        ) from last_error
+
+    def _task_snapshot(self, site: str, task_id: str) -> TaskSnapshot | None:
+        if self.task_service is None:
+            return None
+        return self.task_service.repository(site).get(task_id)
+
+    def _wait_for_task(self, site: str, task_id: str, *, timeout_seconds: float) -> bool:
+        deadline = monotonic() + max(0.1, float(timeout_seconds))
+        wait = getattr(self.process_adapter, "wait", None)
+        if callable(wait):
+            wait(task_id, max(0.0, deadline - monotonic()))
+        while monotonic() < deadline:
+            snapshot = self._task_snapshot(site, task_id)
+            if snapshot is not None and snapshot.status in TERMINAL_DOWNLOAD_STATES:
+                return True
+            sleep(0.1)
+        snapshot = self._task_snapshot(site, task_id)
+        return snapshot is not None and snapshot.status in TERMINAL_DOWNLOAD_STATES
+
+    def cancel_sftp_enable_task(self, site_id: str, task_id: str) -> bool:
+        service = self._device_operation_service
+        if service is None:
+            return False
+        return service.cancel(task_id, site=self._site_id(site_id))
 
     def trust_host_key(
         self,
@@ -1222,7 +1362,7 @@ class FileManagementApplicationService:
             modified_time=str(context.params.get("remote_modified_at") or "") or None,
             category=category,
         )
-        transfer = FileTransferService(site, context.paths, allow_remote_setup=False, strict_host_keys=True)
+        transfer = FileTransferService(site, context.paths, strict_host_keys=True)
 
         class _JobCancelToken:
             def is_cancelled(self) -> bool:

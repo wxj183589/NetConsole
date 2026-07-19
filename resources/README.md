@@ -10,7 +10,10 @@
 
 ## 主要入口
 
-命令资源为 `command_reference.json`/`device_command_profiles.json`，Mesh 规则为 `mesh_quality_rules.json`，运行工具来源位于 `tools/`。
+命令资源为 `command_reference.json`/`device_command_profiles.json`，后者是正式执行的唯一 Profile 事实源。
+`device.sftp.enable` 属于 `controlled_write`，必须由 Application Service、DeviceOperationService 和
+Task Center 组成的受控链路调用；资源本身不是 Renderer、命令说明页或文件浏览器的执行白名单。
+Mesh 规则为 `mesh_quality_rules.json`，运行工具来源位于 `tools/`。
 
 ## 依赖关系
 

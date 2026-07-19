@@ -273,6 +273,7 @@ def create_app(
         site_name=site_name,
         mesh_auto_import_enabled=feature_gate.is_enabled("file.mesh_auto_import"),
         desktop_action_service=desktop_action_service,
+        device_operation_service=device_operation_service,
     )
     owns_online_mr_application_service = (
         online_mr_application_service is None

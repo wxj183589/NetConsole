@@ -124,6 +124,9 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
             request.app.state.config_collection_service.cancel_task(task.site_name, task_id)
         elif task.owner == "web_file_management" and task.type == "file_management_download":
             request.app.state.file_management_service.cancel_download(task.site_name, task_id)
+        elif task.owner == "web_file_management" and task.type == "device_sftp_enable":
+            if not request.app.state.file_management_service.cancel_sftp_enable_task(task.site_name, task_id):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="SFTP 自动配置任务已结束或不在当前进程")
         elif task.owner == AC_WEB_OWNER:
             request.app.state.ac_web_application_service.cancel_task(task.site_name, task_id)
         elif task.owner == RAIL_WEB_OWNER:

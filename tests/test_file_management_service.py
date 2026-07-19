@@ -22,7 +22,13 @@ from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.file_transfer_service import FileTransferService, RemoteDeviceFile, file_sha256, normalize_remote_path
+from netconsole.services.file_transfer_service import (
+    FileTransferService,
+    RemoteDeviceFile,
+    SftpUnavailableError,
+    file_sha256,
+    normalize_remote_path,
+)
 from netconsole.services.file_management_service import (
     FileManagementApplicationService,
     FileReferenceNotFound,
@@ -448,11 +454,20 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         }
         instances: list["FakeTransfer"] = []
 
-        def __init__(self, site_name, fake_paths, *, allow_remote_setup=True, strict_host_keys=False):
+        def __init__(
+            self,
+            site_name,
+            fake_paths,
+            *,
+            strict_host_keys=False,
+            host_key_trust=None,
+            trust_host_key_once=False,
+        ):
             self.site_name = site_name
             self.paths = fake_paths
-            self.allow_remote_setup = allow_remote_setup
             self.strict_host_keys = strict_host_keys
+            self.host_key_trust = host_key_trust
+            self.trust_host_key_once = trust_host_key_once
             self.connected = False
             self.disconnect_calls = 0
             self.root_path = "flash:/"
@@ -539,7 +554,6 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         assert connected.status_code == 201
         connection_id = connected.json()["connection_id"]
         assert "flash:/" not in connected.text
-        assert FakeTransfer.instances[-1].allow_remote_setup is False
         assert FakeTransfer.instances[-1].strict_host_keys is True
 
         reconnected = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device_a.device_uuid})
@@ -767,10 +781,92 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     with TestClient(_app(service, remote_enabled=True)) as client:
         response = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device.device_uuid})
 
-    assert response.status_code == 502
-    assert "只读" in response.json()["detail"]
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_UNAVAILABLE"
+    assert "允许自动配置并重连" in response.json()["detail"]["message"]
     assert commands == []
     assert host_key_events[:2] == ["loaded", "reject"]
+
+
+def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="MR-auto-sftp",
+        device_vendor="H3C",
+        device_type="MR",
+        primary_address="192.0.2.31",
+        ssh_enabled=1,
+        ssh_username="ops",
+        ssh_password="secret",
+    )
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    operation_calls: list[tuple[str, str]] = []
+
+    class FakeDeviceOperationService:
+        def start(self, device_uuid: str, operation_id: str, **_kwargs):
+            operation_calls.append((device_uuid, operation_id))
+            task_id = "device-sftp-enable-test"
+            task_service.repository("demo").save(
+                TaskSnapshot(
+                    task_id=task_id,
+                task_type="device_sftp_enable",
+                task_name="启用设备 SFTP",
+                status=TaskState.COMPLETED,
+                created_time="2026-07-19T00:00:00Z",
+                updated_time="2026-07-19T00:00:00Z",
+                owner="web_file_management",
+                    source="local",
+                    site_name="demo",
+                    device=device_uuid,
+                )
+            )
+            return SimpleNamespace(task_id=task_id, status="COMPLETED")
+
+        def cancel(self, _task_id: str, *, site: str) -> bool:
+            return site == "demo"
+
+    class FakeProcessAdapter:
+        @staticmethod
+        def wait(_task_id: str, _timeout: float) -> bool:
+            return True
+
+    class FakeTransfer:
+        instances: list["FakeTransfer"] = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.index = len(self.instances)
+            self.instances.append(self)
+
+        def connect(self, _device):
+            if self.index == 0:
+                raise SftpUnavailableError()
+            return "flash:/"
+
+        def disconnect(self):
+            pass
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=FakeProcessAdapter(),
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+        device_operation_service=FakeDeviceOperationService(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        response = client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": device.device_uuid, "allow_sftp_setup": True},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["message"] == "已在设备侧启用 SFTP，并完成重新连接。"
+    assert operation_calls == [(device.device_uuid, "device.sftp.enable")]
+    assert len(FakeTransfer.instances) == 2
 
 
 def test_desktop_action_contract_is_opaque_one_time_and_never_contains_password(tmp_path: Path) -> None:
@@ -903,7 +999,7 @@ def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monke
 
 def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
-    transfer = FileTransferService("demo", paths, allow_remote_setup=False)
+    transfer = FileTransferService("demo", paths)
     target = paths.file_downloads_root("demo") / "cancelled.bin"
 
     class FakeSftp:

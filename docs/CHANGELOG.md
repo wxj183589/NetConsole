@@ -30,7 +30,7 @@
 - AC 管理下独立 Mesh-Link 在线监控已合并到“轨道交通 / 列车在线情况”：每列车一行聚合 CT/TC 两端 MR、当前轨旁 AP、MAC、Radio、RSSI、站点/区间/里程、方向、匹配状态、两侧收光和更新时间；综合状态、数据过期和匹配结论由 Python Query Service 返回。旧页面、Store、导航和页面 API Client 已删除，旧 URL 重定向；Parser、Repository、历史快照、raw、Query Service 和受控 `ac_mesh_link_refresh` Task 保留，底层旧 API 标记 deprecated。
 - 在线列车车地通信检测收口为 TC1/TC2 固定六节点拓扑状态页，只保留节点/链路、VRRP、跨 TC、刷新和车内通信诊断 Task；移除本页的轨旁 AP、RSSI、fping/iPerf、光衰、Online MR、Agent、Mesh-Link 及综合统计入口。缺少 SW/SRV 关联或检测事实时明确显示“未配置/未检测”，不由 Vue 猜测正常状态；独立底层业务模块不删除。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。
-- 设备文件下载完成 Qt 历史 SFTP 行为取证、主备地址/凭据复用、受控命令 Profile 和设备侧只读边界；新增应用内主机密钥首次信任/仅本次信任/密钥变更阻止、数据根下原子 known_hosts、结构化错误和下载页兼容重定向。全局确认统一收口到 `NcConfirmDialog/useConfirm`，外部终端密码传递使用 `SECURITY` 确认；真实 SFTP、主机密钥和桌面动作仍待现场验收。
+- 设备文件下载完成 Qt 历史 SFTP 行为取证、主备地址/凭据复用、受控命令 Profile 和设备侧只读边界；新增应用内主机密钥首次信任/仅本次信任/密钥变更阻止、数据根下原子 known_hosts、结构化错误和下载页兼容重定向。SFTP 自动启用固定为独立 `config_write` 操作，仅在用户授权、SSH 登录成功、明确确认子系统不可用且命中 H3C Comware V7 精确 Profile 时进入统一任务链；交换机、无线 AC 和车载 MR 均保持 `REAL_DEVICE_PENDING`，Huawei/ZTE/未知版本失败关闭。全局确认统一收口到 `NcConfirmDialog/useConfirm`，外部终端密码传递使用 `SECURITY` 确认；自动启用、真实 SFTP、主机密钥和桌面动作仍待现场验收。
 - 网络工具完成 Ping/fping/TCP、持续探测增量结果、iPerf、无线扫描分页/状态/详情和安全导出；命令参考完成实时搜索、共享任务窗口导出和取消收敛。
 - 系统设置整合主题、语言、工具路径、中央功能 profile、预览和原子保存；应用日志与安全维护完成日志展示、脱敏、受控清理、取消、日志/许可证导出及 Artifact 闭环，不再保留第二套独立功能开关页面。
 
@@ -49,7 +49,7 @@
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
 - SNMP Center、通用 MIB/OID 字典、版本化 MIB 归档、Trap/Poll/拓扑、通用查询与批量采集，以及无线勘测/热力图链已从活动产品、源码资源、Job/Export、依赖和发布内容中删除；Pillow 与 pysnmp 不再作为产品依赖。设备管理只保留 SNMP v1/v2c 只读连接测试和基础识别，网络工具无线扫描独立保留。
 - E1 回收无调用的 `apps/desktop` Qt WebShell、包标记、`src/netconsole/ui` 与 Qt-only 运行测试；历史行为统一由 Git 和最终迁移矩阵追溯。
-- E10B 建立九个公开架构门和统一入口，覆盖分层、禁用依赖、Direct SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块与迁移映射。Direct SQL 已对 61 个文件精确分类且 `VIOLATION=0`；限时例外已由 42 条收敛为 38 条（Python 分层 14、孤儿候选 24、状态色 0），`check_ui_business_logic.py` 当前为 0 finding / 0 waived；目录门建立时 139 个维护目录 README 0 缺失。命令 Profile 当前仍只接管 `device.inventory.collect`，E11 命令平台、E12 API v1 以及 Electron/真实设备验收均不因本项提前完成。
+- E10B 建立九个公开架构门和统一入口，覆盖分层、禁用依赖、Direct SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块与迁移映射。Direct SQL 已对 61 个文件精确分类且 `VIOLATION=0`；限时例外已由 42 条收敛为 38 条（Python 分层 14、孤儿候选 24、状态色 0），`check_ui_business_logic.py` 当前为 0 finding / 0 waived；目录门建立时 139 个维护目录 README 0 缺失。命令目录已登记 `device.inventory.collect` 和 `device.sftp.enable` 两个稳定 Operation；SFTP 自动启用已进入统一任务链，但 E11 命令平台、E12 API v1 以及 Electron/真实设备验收均不因本项提前完成。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
 - Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品。Qt 源码、运行时、入口、测试环境和发布链已经删除，历史行为仅通过 Git 与最终迁移矩阵追溯，不得恢复为回退入口。
 - 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](development/electron-parity-wave2.md)。

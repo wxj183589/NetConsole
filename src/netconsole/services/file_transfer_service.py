@@ -23,11 +23,7 @@ from netconsole.services.host_key_trust_service import (
     HostKeyTrustService,
     HostKeyTrustError,
 )
-from netconsole.services.sftp_command_profile_service import (
-    SftpCommandProfileError,
-    resolve_sftp_enable_commands,
-)
-from netconsole.utils.text_encoding import decode_bytes_with_fallback, clean_h3c_device_text
+from netconsole.utils.text_encoding import clean_h3c_device_text
 
 
 FILE_MANAGEMENT_CONTEXT = "file_management"
@@ -41,31 +37,21 @@ DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不
 SftpProgressCallback = Callable[[str], None]
 
 
+class SftpUnavailableError(RuntimeError):
+    """SSH 已建立，但设备明确拒绝 SFTP 子系统请求。"""
+
+    code = "DEVICE_FILE_SFTP_UNAVAILABLE"
+
+    def __init__(self, message: str = "设备当前未启用 SFTP") -> None:
+        super().__init__(message)
+
+
 class TransferCancelled(RuntimeError):
     pass
 
 
 class TransferVerificationFailed(RuntimeError):
     pass
-
-
-def build_h3c_sftp_enable_commands(username: str) -> list[str]:
-    return list(resolve_sftp_enable_commands(
-        vendor="H3C",
-        role="switch",
-        platform="comware",
-        software_version="V7",
-        username=username,
-    ))
-
-
-def build_sftp_enable_commands(vendor: str | None, username: str) -> list[str]:
-    if str(vendor or "").strip().casefold() == "h3c":
-        try:
-            return build_h3c_sftp_enable_commands(username)
-        except SftpCommandProfileError:
-            return []
-    return []
 
 
 @dataclass(frozen=True)
@@ -100,14 +86,12 @@ class FileTransferService:
         site_name: str,
         paths: PathResolver | None = None,
         *,
-        allow_remote_setup: bool = True,
         strict_host_keys: bool = False,
         host_key_trust: HostKeyTrustService | None = None,
         trust_host_key_once: bool = False,
     ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
-        self.allow_remote_setup = bool(allow_remote_setup)
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust or HostKeyTrustService(self.paths)
         self.trust_host_key_once = bool(trust_host_key_once)
@@ -124,6 +108,7 @@ class FileTransferService:
         if not targets:
             raise RuntimeError("SFTP requires SSH connection settings.")
         last_error = ""
+        unavailable_error: SftpUnavailableError | None = None
 
         for target in targets:
             tunnel_session: TunnelSession | None = None
@@ -157,33 +142,20 @@ class FileTransferService:
                 try:
                     self._sftp = client.open_sftp()
                 except Exception as sftp_exc:
-                    if not self.allow_remote_setup:
-                        raise RuntimeError("SFTP 未启用；Web 文件管理为只读连接，不会自动配置设备，请先在设备侧启用 SFTP。") from sftp_exc
-                    self._emit_progress(progress_callback, "file_management.status.sftp_failed_trying_ssh")
-                    app_logger.log_warning(
-                        "SFTP_INITIAL_OPEN_FAILED",
-                        f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, error={sanitize_sensitive_text(str(sftp_exc), device)}",
-                    )
-                    client = self._ensure_active_ssh_client(
-                        client,
-                        prepared,
-                        progress_callback,
-                        key_host=target.host,
-                        key_port=target.port,
-                    )
-                    self._client = client
-                    self._enable_sftp_for_target(client, device, prepared.username, progress_callback)
-                    self._emit_progress(progress_callback, "file_management.status.sftp_reconnecting")
-                    self._close_client(client)
-                    self._client = None
-                    client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
-                    self._client = client
-                    self._sftp = client.open_sftp()
+                    if not self._is_sftp_unavailable_error(sftp_exc):
+                        raise
+                    raise SftpUnavailableError() from sftp_exc
                 self._device = device
                 self._root_path = self.detect_remote_root()
                 self._current_path = self._root_path
                 app_logger.log_info("SFTP_CONNECTED", f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, root={self._root_path}")
                 return self._root_path
+            except SftpUnavailableError as exc:
+                self.disconnect()
+                if tunnel_session is not None:
+                    tunnel_session.close()
+                unavailable_error = exc
+                last_error = str(exc)
             except Exception as exc:
                 self.disconnect()
                 if tunnel_session is not None:
@@ -192,6 +164,8 @@ class FileTransferService:
                     raise
                 last_error = self._friendly_connect_error(exc, device)
                 app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
+        if unavailable_error is not None:
+            raise unavailable_error
         raise RuntimeError(last_error or "SFTP connection failed.")
 
     def _connect_ssh_client(self, target, *, key_host: str = "", key_port: int = 0):
@@ -283,114 +257,32 @@ class FileTransferService:
         )
         return client
 
-    def _ensure_active_ssh_client(
-        self,
-        client,
-        target,
-        progress_callback: SftpProgressCallback | None = None,
-        *,
-        key_host: str = "",
-        key_port: int = 0,
-    ):
-        if self._is_ssh_transport_active(client):
-            return client
-        self._emit_progress(progress_callback, "file_management.status.ssh_session_reconnecting")
-        self._close_client(client)
-        return self._connect_ssh_client(target, key_host=key_host, key_port=key_port)
-
-    @staticmethod
-    def _is_ssh_transport_active(client) -> bool:
-        get_transport = getattr(client, "get_transport", None)
-        if not callable(get_transport):
-            return True
-        transport = get_transport()
-        return bool(transport is not None and transport.is_active())
-
-    @staticmethod
-    def _close_client(client) -> None:
-        try:
-            client.close()
-        except Exception:
-            pass
-
     @staticmethod
     def _friendly_connect_error(exc: Exception, device: Device) -> str:
         message = sanitize_sensitive_text(str(exc), device)
         lowered = message.casefold()
         if "ssh session not active" in lowered or "session not active" in lowered:
-            return "SSH login succeeded, but the SSH session became inactive before SFTP could be enabled. Please check the device SSH/SFTP service configuration."
-        if "not adapted for automatic sftp enabling" in lowered:
-            return message
-        if "automatic sftp enabling failed" in lowered:
-            return message
+            return "SSH 登录成功，但会话在建立 SFTP 前已失效。请检查设备 SSH/SFTP 服务状态。"
         if "not found in known_hosts" in lowered or "server" in lowered and "not found" in lowered:
-            return "SFTP 主机密钥未受信任；请先由管理员核验并写入 Windows 用户 known_hosts。"
+            return "SFTP 主机密钥未受信任；请先核验并写入 NetConsole known_hosts。"
         if "host key for server" in lowered and "does not match" in lowered:
             return "SFTP 主机密钥与 known_hosts 不一致，已拒绝连接。"
         return message
 
-    def _enable_h3c_sftp(self, client, username: str) -> None:
-        self._run_sftp_enable_commands(client, build_h3c_sftp_enable_commands(username))
-
-    def _enable_sftp_for_target(self, client, device: Device, username: str, progress_callback: SftpProgressCallback | None = None) -> None:
-        try:
-            if not self.strict_host_keys:
-                commands = build_sftp_enable_commands(device.device_vendor, username)
-                if not commands:
-                    raise SftpCommandProfileError("未找到旧版兼容 Profile")
-            else:
-                commands = resolve_sftp_enable_commands(
-                    vendor=str(device.device_vendor or ""),
-                    role="switch" if str(device.device_type or "").casefold() in {"sw", "switch"} else str(device.device_type or ""),
-                    platform=str(getattr(device, "platform", "comware") or "comware"),
-                    software_version=str(getattr(device, "software_version", "") or ""),
-                    username=username,
-                    paths=self.paths,
-                )
-        except SftpCommandProfileError as exc:
-            vendor = str(device.device_vendor or "Unknown")
-            raise RuntimeError(f"SSH login succeeded, but vendor {vendor} is not adapted for automatic SFTP enabling: {exc}") from exc
-        self._emit_progress(progress_callback, "file_management.status.sftp_enabling")
-        app_logger.log_info("SFTP_AUTO_ENABLE_STARTED", f"device={device.name}, vendor={device.device_vendor}")
-        try:
-            self._run_sftp_enable_commands(client, commands)
-        except Exception as exc:
-            message = sanitize_sensitive_text(str(exc), device)
-            raise RuntimeError(f"SSH login succeeded, but automatic SFTP enabling failed. Please verify device command support or enable SFTP manually. Detail: {message}") from exc
-        app_logger.log_info("SFTP_AUTO_ENABLE_FINISHED", f"device={device.name}, vendor={device.device_vendor}")
-
-    def _run_sftp_enable_commands(self, client, commands: list[str]) -> None:
-        if not self._is_ssh_transport_active(client):
-            raise RuntimeError("SSH session is not active before enabling SFTP.")
-        shell = client.invoke_shell()
-        try:
-            self._read_shell_output(shell, timeout=2)
-            for command in commands:
-                shell.send(command + "\n")
-                self._read_shell_output(shell, timeout=2)
-        finally:
-            try:
-                shell.close()
-            except Exception:
-                pass
-
     @staticmethod
-    def _read_shell_output(shell, timeout: float = 2.0) -> str:
-        output: list[str] = []
-        deadline = monotonic() + timeout
-        idle_deadline = monotonic() + min(0.2, timeout)
-        while monotonic() < deadline and monotonic() < idle_deadline:
-            recv_ready = getattr(shell, "recv_ready", None)
-            if callable(recv_ready) and recv_ready():
-                data = shell.recv(65535)
-                if isinstance(data, bytes):
-                    output.append(decode_bytes_with_fallback(data).text)
-                else:
-                    output.append(str(data))
-                idle_deadline = monotonic() + 0.2
-                continue
-            sleep(0.05)
-        return "".join(output)
+    def _is_sftp_unavailable_error(exc: BaseException) -> bool:
+        """仅识别明确的 SFTP 子系统拒绝，避免网络/认证错误触发写操作。"""
+
+        name = exc.__class__.__name__.casefold()
+        text = str(exc or "").casefold()
+        if name == "channelexception" and any(
+            marker in text for marker in ("administratively prohibited", "open failed", "unknown channel type")
+        ):
+            return True
+        return (
+            "sftp" in text
+            and any(marker in text for marker in ("disabled", "not enabled", "not found", "subsystem", "unavailable"))
+        )
 
     @staticmethod
     def _emit_progress(progress_callback: SftpProgressCallback | None, status_key: str) -> None:

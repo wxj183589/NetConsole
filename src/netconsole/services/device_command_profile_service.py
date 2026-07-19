@@ -19,8 +19,10 @@ from netconsole.services import command_guard
 PROFILE_SCHEMA_VERSION = "2026.07.device-command-profiles.v1"
 PROFILE_FILENAME = "device_command_profiles.json"
 DEVICE_INVENTORY_OPERATION_ID = "device.inventory.collect"
-STABLE_DEVICE_OPERATION_IDS = frozenset({DEVICE_INVENTORY_OPERATION_ID})
+DEVICE_SFTP_ENABLE_OPERATION_ID = "device.sftp.enable"
+STABLE_DEVICE_OPERATION_IDS = frozenset({DEVICE_INVENTORY_OPERATION_ID, DEVICE_SFTP_ENABLE_OPERATION_ID})
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+_DEVICE_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _STEP_SELECTOR_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 _PROFILE_SELECTOR_KEYS = frozenset({"vendor", "role", "platform", "software_version"})
@@ -52,6 +54,7 @@ _STEP_KEYS = frozenset(
     }
 )
 _COMPATIBILITY_LEVELS = frozenset({"fixture_verified", "generic_read_only"})
+_PROFILE_RISK_LEVELS = frozenset({"read_only", "controlled_write"})
 _VERIFICATION_STATUSES = frozenset({"fixture_verified", "behavior_preservation_only"})
 _DEVICE_INVENTORY_STEP_CONTRACT = (
     ("terminal.pagination.disable", "session.pagination"),
@@ -66,6 +69,13 @@ _DEVICE_INVENTORY_STEP_CONTRACT = (
     ("device.transceiver-diagnostics.collect", "inventory.transceiver_diagnosis"),
     ("device.lldp-summary.collect", "inventory.lldp_list"),
     ("device.lldp-detail.collect", "inventory.lldp_verbose"),
+)
+_DEVICE_SFTP_STEP_CONTRACT = (
+    ("sftp.mode.enter", "system-view", "sftp.mode.enter"),
+    ("sftp.server.enable", "sftp server enable", "sftp.server.enable"),
+    ("sftp.user.bind", "ssh user {username} service-type all authentication-type any", "sftp.user.bind"),
+    ("sftp.mode.return", "return", "sftp.mode.return"),
+    ("session.quit", "quit", "session.quit"),
 )
 
 
@@ -275,12 +285,78 @@ def resolve_device_operation_profile(
         raise DeviceCommandProfileNotFound(
             f"设备操作未注册稳定命令 Profile: operation={normalized}"
         )
+    if normalized == DEVICE_SFTP_ENABLE_OPERATION_ID:
+        return resolve_device_sftp_enable_profile(
+            device,
+            software_version=software_version,
+            platform_facts=platform_facts,
+            paths=paths,
+        )
     return resolve_device_inventory_profile(
         device,
         software_version=software_version,
         platform_facts=platform_facts,
         paths=paths,
     )
+
+
+def resolve_device_sftp_enable_profile(
+    device: Device,
+    *,
+    software_version: str | None = None,
+    platform_facts: DevicePlatformFacts | None = None,
+    paths: PathResolver | None = None,
+) -> DeviceCommandProfile:
+    facts = platform_facts or identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=software_version,
+    )
+    vendor = str(facts.vendor or "").strip()
+    role = str(facts.role or "").strip().casefold()
+    platform = str(facts.platform or "").strip().casefold()
+    if vendor.casefold() != "h3c":
+        raise DeviceCommandProfileNotFound(
+            f"SFTP 启用仅支持 H3C: vendor={vendor or 'unknown'}"
+        )
+    if role not in {"switch", "wireless_controller", "mobile_router"}:
+        raise DeviceCommandProfileNotFound(
+            f"SFTP 启用不支持设备角色: role={role or 'unknown'}"
+        )
+    if platform != "comware":
+        raise DeviceCommandProfileNotFound(
+            f"SFTP 启用仅支持 Comware 平台: platform={platform or 'unknown'}"
+        )
+    return resolve_device_command_profile(
+        operation_id=DEVICE_SFTP_ENABLE_OPERATION_ID,
+        vendor=vendor,
+        role=role,
+        platform=platform,
+        software_version=facts.software_version,
+        paths=paths,
+    )
+
+
+def bind_device_sftp_enable_commands(
+    profile: DeviceCommandProfile,
+    *,
+    username: str,
+) -> tuple[str, ...]:
+    if profile.operation_id != DEVICE_SFTP_ENABLE_OPERATION_ID:
+        raise DeviceCommandProfileError("绑定用户名需要 device.sftp.enable Profile")
+    if profile.risk != "controlled_write" or profile.selector.software_version == "*":
+        raise DeviceCommandProfileError("SFTP 启用 Profile 必须是精确版本 controlled_write")
+    if not isinstance(username, str) or not _DEVICE_USERNAME_PATTERN.fullmatch(username):
+        raise DeviceCommandProfileError("SFTP 用户名必须是 1-64 位 ASCII 字母、数字、点、下划线或短横线")
+    expected = tuple(command.replace("{username}", username) for _step_id, command, _selector in _DEVICE_SFTP_STEP_CONTRACT)
+    template = profile.commands
+    if template != tuple(command for _step_id, command, _selector in _DEVICE_SFTP_STEP_CONTRACT):
+        raise DeviceCommandProfileError("SFTP 启用 Profile 命令模板不符合固定顺序")
+    try:
+        command_guard.validate_command_list(expected, DEVICE_SFTP_ENABLE_OPERATION_ID)
+    except command_guard.CommandRejected as exc:
+        raise DeviceCommandProfileError(f"SFTP 启用命令绑定后未通过 Guard: {exc}") from exc
+    return expected
 
 
 def device_operation_capability(
@@ -360,6 +436,11 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
     compatibility = _normalize_identifier(row.get("compatibility"), "compatibility")
     if compatibility not in _COMPATIBILITY_LEVELS:
         raise DeviceCommandProfileError(f"{profile_id}: compatibility 非法")
+    risk = _normalize_identifier(row.get("risk"), "risk")
+    if risk not in _PROFILE_RISK_LEVELS:
+        raise DeviceCommandProfileError(f"{profile_id}: risk 不受支持")
+    if selector.software_version == "*" and risk == "controlled_write":
+        raise DeviceCommandProfileError(f"{profile_id}: controlled_write Profile 不允许通配版本")
     if selector.software_version == "*" and compatibility != "generic_read_only":
         raise DeviceCommandProfileError(
             f"{profile_id}: generic Profile 必须声明 generic_read_only"
@@ -368,9 +449,8 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
         raise DeviceCommandProfileError(
             f"{profile_id}: generic_read_only Profile 必须使用通配版本"
         )
-    risk = _normalize_identifier(row.get("risk"), "risk")
-    if risk != "read_only":
-        raise DeviceCommandProfileError(f"{profile_id}: 当前目录仅允许 read_only Profile")
+    if risk == "controlled_write" and operation_id != DEVICE_SFTP_ENABLE_OPERATION_ID:
+        raise DeviceCommandProfileError(f"{profile_id}: 当前仅允许 SFTP controlled_write Profile")
     parser_contract = _normalize_identifier(row.get("parser_contract"), "parser_contract")
     dto_contract = _normalize_identifier(row.get("dto_contract"), "dto_contract")
     verification = row.get("verification")
@@ -402,7 +482,7 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
     step_rows = row.get("steps")
     if not isinstance(step_rows, list) or not step_rows:
         raise DeviceCommandProfileError(f"{profile_id}: steps 必须是非空数组")
-    steps = tuple(_parse_step(operation_id, profile_id, item) for item in step_rows)
+    steps = tuple(_parse_step(operation_id, profile_id, risk, item) for item in step_rows)
     return DeviceCommandProfile(
         operation_id=operation_id,
         profile_id=profile_id,
@@ -421,6 +501,7 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
 def _parse_step(
     operation_id: str,
     profile_id: str,
+    profile_risk: str,
     row: object,
 ) -> DeviceCommandStep:
     if not isinstance(row, dict):
@@ -450,7 +531,7 @@ def _parse_step(
     guard_context = _normalize_identifier(
         risk.get("guard_context"), "step.risk.guard_context"
     )
-    if risk_level != "read_only" or guard_context != operation_id:
+    if risk_level != profile_risk or guard_context != operation_id:
         raise DeviceCommandProfileError(f"{profile_id}/{step_id}: risk 契约非法")
     reason = command_guard.command_reject_reason(command, guard_context)
     if reason:
@@ -525,6 +606,14 @@ def _validate_catalog(profiles: tuple[DeviceCommandProfile, ...]) -> None:
                 raise DeviceCommandProfileError(
                     f"{profile.profile_id}: device.inventory.collect step 契约不完整或顺序错误"
                 )
+        elif profile.operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID:
+            actual_contract = tuple(
+                (step.step_id, step.command, step.selector) for step in profile.steps
+            )
+            if actual_contract != _DEVICE_SFTP_STEP_CONTRACT:
+                raise DeviceCommandProfileError(
+                    f"{profile.profile_id}: device.sftp.enable step 契约不完整或顺序错误"
+                )
 
 
 def _device_role(device_type: str | None) -> str:
@@ -585,3 +674,22 @@ def _unique_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise DeviceCommandProfileError(f"命令 Profile JSON 含重复键: {key}")
         result[key] = value
     return result
+
+
+__all__ = [
+    "DEVICE_INVENTORY_OPERATION_ID",
+    "DEVICE_SFTP_ENABLE_OPERATION_ID",
+    "DeviceCommandProfile",
+    "DeviceCommandProfileError",
+    "DeviceCommandProfileNotFound",
+    "bind_device_sftp_enable_commands",
+    "bind_submitted_device_inventory_profile",
+    "default_device_inventory_profile",
+    "device_command_profile_path",
+    "device_operation_capability",
+    "load_device_command_profiles",
+    "resolve_device_command_profile",
+    "resolve_device_inventory_profile",
+    "resolve_device_operation_profile",
+    "resolve_device_sftp_enable_profile",
+]

@@ -9,7 +9,6 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.connection_manager import ConnectionManager
 from netconsole.services.device_import_export import DeviceImportExportService
-from netconsole.services.file_transfer_service import build_h3c_sftp_enable_commands
 from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import build_netmiko_params, connection_targets, prepared_connection_target, test_device_connection
 from netconsole.services.ssh_tunnel import TunnelManager
@@ -213,8 +212,6 @@ def test_tunnel_target_prepares_local_netmiko_endpoint(monkeypatch):
     assert params["host"] == "127.0.0.1"
     assert params["port"] == 10022
     assert closed == [True]
-
-
 def test_tunnel_manager_binds_auto_local_port_and_closes(monkeypatch):
     bound: list[tuple[str, int]] = []
     closed: list[str] = []
@@ -359,21 +356,3 @@ def test_test_device_connection_uses_tunnel_after_direct_failures(monkeypatch):
     assert result.method == "tunnel1"
     assert calls == ["10.0.0.1", "10.0.1.1", "127.0.0.1"]
     assert closed == [True]
-
-
-def test_h3c_sftp_enable_commands_use_current_username_only():
-    commands = build_h3c_sftp_enable_commands("admin")
-
-    assert commands == [
-        "system-view",
-        "sftp server enable",
-        "ssh user admin service-type all authentication-type any",
-        "return",
-        "quit",
-    ]
-    assert all("password" not in command.lower() for command in commands)
-
-
-def test_h3c_sftp_enable_commands_require_username():
-    with pytest.raises(ValueError):
-        build_h3c_sftp_enable_commands("")
