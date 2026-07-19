@@ -77,6 +77,7 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.site_storage import DataRootApplicationService, SiteApplicationService, SitePackageService
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -210,6 +211,9 @@ def create_app(
         )
     feature_gate = FeatureGate(paths.app_root)
     web_process_adapter = LocalProcessAdapter(task_service)
+    site_application_service = SiteApplicationService(paths, task_service)
+    data_root_application_service = DataRootApplicationService(paths, site_application_service)
+    site_package_service = SitePackageService(paths, site_application_service)
     web_export_adapter = WebExportProcessAdapter(task_service)
     web_artifact_store = WebArtifactStore(paths, task_service)
     system_maintenance_service = SystemMaintenanceApplicationService(
@@ -398,6 +402,10 @@ def create_app(
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
+    app.state.site_application_service = site_application_service
+    app.state.data_root_application_service = data_root_application_service
+    app.state.site_package_service = site_package_service
+    app.state.site_process_adapter = web_process_adapter
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service
     app.state.feature_gate = feature_gate
@@ -622,7 +630,9 @@ def create_app(
 def _current_site_name(paths: PathResolver) -> str:
     try:
         payload = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
-        candidate = payload.get("current_site") if isinstance(payload, dict) else None
+        candidate = os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or (
+            payload.get("current_site") if isinstance(payload, dict) else None
+        )
         selected = SiteManager(paths).validate_site_name(str(candidate or "demo"))
         return selected if paths.site_dir(selected).is_dir() else "demo"
     except (OSError, ValueError, KeyError, json.JSONDecodeError):

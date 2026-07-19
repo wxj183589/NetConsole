@@ -60,6 +60,11 @@ export type SettingsThemeColor = '#0078D4' | '#2563EB' | '#0891B2' | '#16A34A'
 export interface SettingsPathResult { cancelled: boolean; path?: string }
 export interface SettingsColorResult { cancelled: boolean; color?: SettingsThemeColor }
 
+export interface SiteStorageRestartRequest {
+  dataRoot?: string
+  activeSiteId?: string
+}
+
 export interface BackendDownloadRequest {
   apiPath: string
   query?: Record<string, string>
@@ -103,6 +108,10 @@ export interface NetConsoleDesktopBridge {
   selectSettingsDirectory(directoryId: SettingsDirectoryId): Promise<SettingsPathResult>
   selectSettingsColor(): Promise<SettingsColorResult>
   executeSettingsAction(actionId: SettingsActionId): Promise<NativeActionResult>
+  selectDataRootDirectory(): Promise<SettingsPathResult>
+  selectSitePackage(): Promise<SettingsPathResult>
+  selectSiteExportDestination(suggestedName: string): Promise<SettingsPathResult>
+  restartBackend(request: SiteStorageRestartRequest): Promise<NativeActionResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   executeFileDesktopAction(actionRef: string): Promise<NativeActionResult>
@@ -125,6 +134,10 @@ export const DESKTOP_IPC = Object.freeze({
   selectSettingsDirectory: 'netconsole:desktop:select-settings-directory',
   selectSettingsColor: 'netconsole:desktop:select-settings-color',
   executeSettingsAction: 'netconsole:desktop:execute-settings-action',
+  selectDataRootDirectory: 'netconsole:desktop:select-data-root-directory',
+  selectSitePackage: 'netconsole:desktop:select-site-package',
+  selectSiteExportDestination: 'netconsole:desktop:select-site-export-destination',
+  restartBackend: 'netconsole:desktop:restart-backend',
   chooseSavePath: 'netconsole:desktop:choose-save-path',
   downloadBackendResource: 'netconsole:desktop:download-backend-resource',
   executeFileDesktopAction: 'netconsole:desktop:execute-file-action',
@@ -149,6 +162,10 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.selectSettingsDirectory,
   DESKTOP_IPC.selectSettingsColor,
   DESKTOP_IPC.executeSettingsAction,
+  DESKTOP_IPC.selectDataRootDirectory,
+  DESKTOP_IPC.selectSitePackage,
+  DESKTOP_IPC.selectSiteExportDestination,
+  DESKTOP_IPC.restartBackend,
   DESKTOP_IPC.chooseSavePath,
   DESKTOP_IPC.downloadBackendResource,
   DESKTOP_IPC.executeFileDesktopAction,

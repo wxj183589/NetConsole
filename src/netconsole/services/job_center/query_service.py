@@ -48,6 +48,7 @@ from netconsole.services.network_tools.job_handlers import (
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
+from netconsole.services.job_center.handlers.site_jobs import SITE_STORAGE_OWNER, SITE_STORAGE_TASK_TYPES
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -274,6 +275,8 @@ class JobCenterQueryService:
             return "command-reference"
         if owner == SYSTEM_MAINTENANCE_WEB_OWNER:
             return "logs"
+        if owner == SITE_STORAGE_OWNER and task_type in SITE_STORAGE_TASK_TYPES:
+            return "logs"
         return "other"
 
     def _cancel_capability(
@@ -313,6 +316,8 @@ class JobCenterQueryService:
         if owner == COMMAND_REFERENCE_WEB_OWNER and task_type == COMMAND_REFERENCE_EXPORT_TASK:
             return True, ""
         if owner == SYSTEM_MAINTENANCE_WEB_OWNER and task_type in SYSTEM_MAINTENANCE_TASK_TYPES:
+            return True, ""
+        if owner == SITE_STORAGE_OWNER and task_type in SITE_STORAGE_TASK_TYPES:
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 

@@ -6,6 +6,8 @@ NetConsole 当前正式桌面产品只有 Electron。Electron Main/Preload 承�
 
 Qt/PySide6/QFluentWidgets 源码、入口、运行依赖和发布链已经删除。历史行为只通过 Git 与[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)追踪，不能恢复 Qt 入口规避未完成业务。
 
+局点与数据存储遵循 `Vue -> /api/v1 -> Site/DataRoot Application Service -> PathResolver/Repository`。复制、SQLite、压缩和完整性校验只在 Python Worker 中执行；Electron Main 只维护 `bootstrap.json`、原生选择器和 Backend 生命周期。详见 [局点与数据存储](storage/README.md)。
+
 ## 启动链
 
 ```mermaid

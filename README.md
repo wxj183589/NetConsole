@@ -4,6 +4,8 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 
 当前版本：`v1.3.9`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
+局点、新建/切换、全局数据根迁移、备份恢复和 `.ncsite` 导入导出由 Python Core 统一管理，Electron 设置页只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
+
 ## 仓库地址
 
 | 仓库 | Git 推送地址 | 浏览器地址 |

@@ -69,6 +69,22 @@ class PathResolver:
         return self.runtime_dir / "logs"
 
     @property
+    def bootstrap_dir(self) -> Path:
+        return self.data_root / "bootstrap"
+
+    @property
+    def temp_dir(self) -> Path:
+        return self.data_root / "temp"
+
+    @property
+    def archive_dir(self) -> Path:
+        return self.data_root / "archive"
+
+    @property
+    def migrations_dir(self) -> Path:
+        return self.data_root / "migrations"
+
+    @property
     def app_log_path(self) -> Path:
         return self.logs_dir / "app.log"
 
@@ -338,6 +354,10 @@ class PathResolver:
             self.config_dir,
             self.sites_dir,
             self.logs_dir,
+            self.bootstrap_dir,
+            self.temp_dir,
+            self.archive_dir,
+            self.migrations_dir,
         )
         for path in runtime_paths:
             ensure_runtime_dir(path)

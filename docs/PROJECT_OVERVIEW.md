@@ -2,6 +2,8 @@
 
 > 本文描述当前 Electron-only 产品。正式桌面入口以 [README](../README.md)、[Electron Desktop](ELECTRON_DESKTOP.md) 和 [当前架构](ARCHITECTURE.md) 为准；Qt 历史行为只通过 Git 与[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)追溯。
 
+系统设置包含局点 Registry、全局数据根、迁移、备份恢复和 `.ncsite` 导入导出。正式逻辑位于 Python Core，Electron Main 不承载数据迁移；设计与安全边界见 [局点与数据存储](storage/README.md)。
+
 ## 项目定位
 
 NetConsole 是面向网络设备运维的 Windows 本地桌面工具。当前重点服务以下场景：

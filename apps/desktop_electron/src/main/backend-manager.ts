@@ -2,7 +2,7 @@ import { spawn as spawnChild } from 'node:child_process'
 import type { SpawnOptionsWithoutStdio } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { delimiter } from 'node:path'
+import { delimiter, isAbsolute } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 
 import {
@@ -37,6 +37,7 @@ export interface PythonBackendManagerOptions {
   argumentsPrefix: string[]
   projectRoot: string
   dataRoot: string
+  activeSiteId?: string
   runtimeMode: 'desktop-development' | 'desktop-packaged'
   pythonPath?: string
   rendererOrigin?: string
@@ -143,6 +144,16 @@ export class PythonBackendManager {
     return this.stopPromise
   }
 
+  configureStorage(dataRoot: string, activeSiteId: string): void {
+    if (this.child?.exitCode === null || this.state !== 'stopped') {
+      throw new Error('Python backend must be stopped before storage reconfiguration')
+    }
+    if (!isAbsolute(dataRoot) || /[\u0000-\u001f]/.test(dataRoot)) throw new TypeError('dataRoot is invalid')
+    if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(activeSiteId)) throw new TypeError('activeSiteId is invalid')
+    this.options.dataRoot = dataRoot
+    this.options.activeSiteId = activeSiteId
+  }
+
   private async startInternal(): Promise<BackendRuntimeInfo> {
     this.startupFailure = undefined
     this.error = undefined
@@ -175,6 +186,7 @@ export class PythonBackendManager {
       ...this.options.environment,
       PYTHONUNBUFFERED: '1',
       NETCONSOLE_DATA_ROOT: this.options.dataRoot,
+      NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId ?? 'demo',
       NETCONSOLE_RUNTIME_MODE: this.options.runtimeMode,
     }
     if (this.options.pythonPath) {

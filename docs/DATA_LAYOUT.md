@@ -2,6 +2,8 @@
 
 ## 1. 路径原则
 
+当前局点 Registry、全局数据根迁移和 `.ncsite` 包的正式约束见 [存储文档](storage/README.md)。标准持久布局增加 `bootstrap/`、`archive/`、`migrations/` 和受控 `temp/`；`data/config/site_registry.json` 是局点列表唯一事实源。
+
 `src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development\`，打包态为 `%LOCALAPPDATA%\NetConsole\`；两者都不得写入仓库或安装目录。测试、工具或嵌入场景可通过显式构造参数覆盖，但 Electron Main 会拒绝位于项目/安装目录内的 `NETCONSOLE_DATA_ROOT`。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
 
 仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。

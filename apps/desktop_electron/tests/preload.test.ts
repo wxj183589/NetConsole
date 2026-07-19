@@ -30,11 +30,15 @@ describe('preload bridge', () => {
       'openPath',
       'openTaskWindow',
       'reportRendererReady',
+      'restartBackend',
+      'selectDataRootDirectory',
       'selectDirectory',
       'selectFile',
       'selectSettingsColor',
       'selectSettingsDirectory',
       'selectSettingsTool',
+      'selectSiteExportDestination',
+      'selectSitePackage',
       'showItemInFolder',
     ])
     expect('ipcRenderer' in bridge).toBe(false)
@@ -72,6 +76,7 @@ describe('preload bridge', () => {
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
+    expect(() => bridge.restartBackend({ dataRoot: 'relative' })).toThrow('dataRoot must be absolute')
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 })

@@ -12,6 +12,7 @@ import {
   validateSelectFileOptions,
   validateTaskWindowContext,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
+  validateSiteStorageRestartRequest,
 } from '../shared/validation'
 
 export interface IpcRendererLike {
@@ -45,6 +46,15 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
     executeSettingsAction: (actionId) => ipcRenderer.invoke(
       DESKTOP_IPC.executeSettingsAction, validateSettingsActionId(actionId),
     ) as ReturnType<NetConsoleDesktopBridge['executeSettingsAction']>,
+    selectDataRootDirectory: () => ipcRenderer.invoke(DESKTOP_IPC.selectDataRootDirectory) as ReturnType<NetConsoleDesktopBridge['selectDataRootDirectory']>,
+    selectSitePackage: () => ipcRenderer.invoke(DESKTOP_IPC.selectSitePackage) as ReturnType<NetConsoleDesktopBridge['selectSitePackage']>,
+    selectSiteExportDestination: (suggestedName) => ipcRenderer.invoke(
+      DESKTOP_IPC.selectSiteExportDestination,
+      validateChooseSavePathOptions({ suggestedName, filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }] }).suggestedName,
+    ) as ReturnType<NetConsoleDesktopBridge['selectSiteExportDestination']>,
+    restartBackend: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.restartBackend, validateSiteStorageRestartRequest(request),
+    ) as ReturnType<NetConsoleDesktopBridge['restartBackend']>,
     chooseSavePath: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.chooseSavePath,
       validateChooseSavePathOptions(options),

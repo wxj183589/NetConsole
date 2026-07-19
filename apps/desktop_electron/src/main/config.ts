@@ -17,6 +17,7 @@ export function resolveDesktopBackgroundColor(theme: DesktopResolvedTheme): stri
 export interface DesktopConfig {
   projectRoot: string
   dataRoot: string
+  activeSiteId: string
   runtimeMode: 'desktop-development' | 'desktop-packaged'
   backendExecutable: string
   backendArgumentsPrefix: string[]
@@ -31,6 +32,8 @@ export interface DesktopConfigInput {
   appPath: string
   resourcesPath: string
   userDataPath?: string
+  bootstrapDataRoot?: string
+  bootstrapActiveSiteId?: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   fileExists?: (path: string) => boolean
@@ -60,6 +63,7 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   return {
     projectRoot,
     dataRoot,
+    activeSiteId: normalizeActiveSiteId(input.bootstrapActiveSiteId),
     runtimeMode: input.isPackaged ? 'desktop-packaged' : 'desktop-development',
     backendExecutable,
     backendArgumentsPrefix: input.isPackaged
@@ -77,7 +81,7 @@ function resolveDesktopDataRoot(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): string {
-  const override = env.NETCONSOLE_DATA_ROOT?.trim()
+  const override = env.NETCONSOLE_DATA_ROOT?.trim() || input.bootstrapDataRoot?.trim()
   let candidate: string
   if (override) {
     candidate = resolveDeveloperPath(override, '', 'NETCONSOLE_DATA_ROOT')
@@ -95,6 +99,12 @@ function resolveDesktopDataRoot(
   if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {
     throw new Error('Electron data root must not be inside the project or installation directory')
   }
+  return candidate
+}
+
+function normalizeActiveSiteId(value: string | undefined): string {
+  const candidate = value?.trim() || 'demo'
+  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(candidate)) return 'demo'
   return candidate
 }
 

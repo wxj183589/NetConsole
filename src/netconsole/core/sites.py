@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,8 +182,12 @@ class SiteManager:
             "schema_version": 1,
         }
         payload.setdefault("created_at", now)
-        with (root_path / "site_meta.json").open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        temporary = root_path / f".site_meta.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, root_path / "site_meta.json")
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def ensure_app_config(self) -> dict[str, object]:
         self.ensure_demo_site()
@@ -211,8 +217,12 @@ class SiteManager:
 
     def _save_config(self, config: dict[str, object]) -> None:
         self.paths.config_dir.mkdir(parents=True, exist_ok=True)
-        with self.paths.app_config_path.open("w", encoding="utf-8") as file:
-            json.dump(config, file, ensure_ascii=False, indent=2)
+        temporary = self.paths.app_config_path.with_name(f".{self.paths.app_config_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, self.paths.app_config_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _normalize_recent_sites(self, value: object, current_site: str) -> list[str]:
         recent_sites = [current_site]

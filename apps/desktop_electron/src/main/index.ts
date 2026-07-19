@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererHostReport } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererHostReport, type SiteStorageRestartRequest } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
+import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
@@ -52,6 +53,9 @@ let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
 let codexTemporaryDataRoot: string | undefined
+let bootstrapStore: DesktopBootstrapStore | undefined
+let desktopDataRoot = ''
+let desktopActiveSiteId = 'demo'
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
 const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
 const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
@@ -83,12 +87,18 @@ if (hasSingleInstanceLock) {
 
 async function startDesktop(): Promise<void> {
   codexTemporaryDataRoot = resolveCodexTemporaryDataRoot()
+  bootstrapStore = new DesktopBootstrapStore(app.getPath('userData'))
+  const bootstrap = bootstrapStore.load()
   const config = loadDesktopConfig({
     isPackaged: app.isPackaged,
     appPath: app.getAppPath(),
     resourcesPath: process.resourcesPath,
     userDataPath: app.getPath('userData'),
+    bootstrapDataRoot: bootstrap.data_root,
+    bootstrapActiveSiteId: bootstrap.active_site_id,
   })
+  desktopDataRoot = config.dataRoot
+  desktopActiveSiteId = config.activeSiteId
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
   startupTimeline = new StartupTimeline(logger, startupStartedAt)
   startupTimeline.mark('electron.app_ready')
@@ -97,6 +107,7 @@ async function startDesktop(): Promise<void> {
     argumentsPrefix: config.backendArgumentsPrefix,
     projectRoot: config.projectRoot,
     dataRoot: config.dataRoot,
+    activeSiteId: config.activeSiteId,
     runtimeMode: config.runtimeMode,
     pythonPath: config.backendPythonPath,
     rendererOrigin: config.rendererOrigin,
@@ -121,6 +132,7 @@ async function startDesktop(): Promise<void> {
     window: mainWindow,
     windowForEvent: (event) => BrowserWindow.fromWebContents(event.sender as Electron.WebContents) ?? mainWindow,
     openTaskWindow,
+    restartBackend: restartManagedBackend,
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
@@ -172,6 +184,7 @@ async function startDesktop(): Promise<void> {
       secure: false,
       path: cookiePath,
     })
+    bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
     rememberManagedRendererTarget(mainWindow, rendererUrl)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
@@ -261,6 +274,47 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
   windowRetryNavigations.set(window, retryNavigation)
   window.once('closed', () => displayGate.dispose())
   return window
+}
+
+async function restartManagedBackend(update: SiteStorageRestartRequest): Promise<void> {
+  if (!backend || !mainWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
+  const previousRoot = desktopDataRoot
+  const previousSite = desktopActiveSiteId
+  const nextRoot = update.dataRoot ?? previousRoot
+  const nextSite = update.activeSiteId ?? previousSite
+  await backend.stop()
+  backend.configureStorage(nextRoot, nextSite)
+  try {
+    const runtime = await backend.start()
+    desktopDataRoot = nextRoot
+    desktopActiveSiteId = nextSite
+    bootstrapStore.save({ schema_version: 1, data_root: nextRoot, active_site_id: nextSite })
+    const backendOrigin = new URL(runtime.baseUrl).origin
+    connectionOrigins.add(backendOrigin)
+    const cookiePath = desktopSessionCookiePath(rendererDevelopment)
+    await mainWindow.webContents.session.cookies.set({
+      url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
+      name: DESKTOP_SESSION_COOKIE,
+      value: runtime.apiToken,
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: false,
+      path: cookiePath,
+    })
+    if (!rendererDevelopment) {
+      rendererUrl = runtime.baseUrl
+      rendererOrigins.clear()
+      rendererOrigins.add(backendOrigin)
+    }
+    rememberManagedRendererTarget(mainWindow, rendererUrl)
+    armRendererThemeDisplay(mainWindow)
+    await mainWindow.loadURL(rendererUrl)
+  } catch (cause) {
+    await backend.stop()
+    backend.configureStorage(previousRoot, previousSite)
+    await backend.start()
+    throw cause
+  }
 }
 
 function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): void {

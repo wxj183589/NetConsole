@@ -11,6 +11,7 @@ import type {
   SelectFileOptions,
   SelectFileResult,
   SettingsActionId, SettingsColorResult, SettingsDirectoryId, SettingsPathResult, SettingsToolId,
+  SiteStorageRestartRequest,
   TaskWindowContext,
   RendererReadyReport,
 } from '../../../desktop_electron/src/shared/bridge'
@@ -28,6 +29,10 @@ export interface PlatformAdapter {
   selectSettingsDirectory(directoryId: SettingsDirectoryId): Promise<SettingsPathResult>
   selectSettingsColor(): Promise<SettingsColorResult>
   executeSettingsAction(actionId: SettingsActionId): Promise<NativeActionResult>
+  selectDataRootDirectory(): Promise<SettingsPathResult>
+  selectSitePackage(): Promise<SettingsPathResult>
+  selectSiteExportDestination(suggestedName: string): Promise<SettingsPathResult>
+  restartBackend(request: SiteStorageRestartRequest): Promise<NativeActionResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>

@@ -2,6 +2,8 @@
 
 NetConsole v1.3.9 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
+安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。发布 smoke 必须确认 Backend 从 bootstrap 指定的数据根启动，且仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
+
 ## 依赖安装
 
 目标环境是 Windows 11、CPython 3.13。依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：

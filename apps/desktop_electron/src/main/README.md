@@ -14,6 +14,7 @@ Main 不执行设备命令、数据库查询、Parser、报告或业务状态机
 - `backend-manager.ts`：受管 Backend 启停和健康检查。
 - `ipc.ts`、`security.ts`：白名单 IPC 和发信方校验。
 - `config.ts`：开发/生产配置与加载期背景色镜像。
+- `bootstrap.ts`：在 Electron userData 中原子保存数据根和当前局点，不保存凭据。
 - `renderer-theme-display-gate.ts`：持久化主题解析、超时和 Renderer 失败的有界显示门。
 
 ## 依赖关系
@@ -23,6 +24,8 @@ Main 依赖 `../shared/` 的强类型 DTO，与 Vue 仅通过 preload bridge 通
 ## 数据与状态
 
 临时会话令牌只存在于进程和受控临时通道，不写日志、URL、SQLite 或仓库。主题持久化属于 Python/FastAPI 系统设置。
+
+局点/数据根 IPC 只允许原生目录、`.ncsite` 和导出路径选择，以及停稳后的 Backend 存储重配置；复制、SQLite、压缩、解压和校验仍由 Python Worker 执行。
 
 ## 测试
 

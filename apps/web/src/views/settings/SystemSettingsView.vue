@@ -14,6 +14,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { applySystemAppearance } from '../../settings/appearance'
 import type { FeatureSetting, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
+import SiteStoragePanel from './SiteStoragePanel.vue'
 
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
@@ -203,10 +204,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </el-form>
     </section>
 
-    <section class="settings-band"><h2>{{ t('settings.site', '当前局点') }}</h2>
-      <dl class="site-facts"><div><dt>局点名称</dt><dd>{{ snapshot?.current_site_name }}</dd></div><div><dt>局点路径</dt><dd>{{ snapshot?.current_site_path }}</dd></div></dl>
-      <div class="inline-actions"><el-button data-testid="open-current-site" @click="nativeAction('open_current_site')">打开局点目录</el-button></div>
-    </section>
+    <SiteStoragePanel />
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
       <el-form label-position="top">

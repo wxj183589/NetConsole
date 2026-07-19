@@ -1,6 +1,6 @@
 import { basename, isAbsolute } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererHostReport, SettingsThemeColor, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC, DESKTOP_SESSION_HEADER } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
@@ -9,6 +9,8 @@ import {
   validateRendererReadyReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateBridgePath,
+  validateSiteStorageRestartRequest,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
@@ -68,6 +70,7 @@ export interface DesktopIpcDependencies {
   window: unknown
   windowForEvent?: (event: IpcEventLike) => unknown
   openTaskWindow?: (value: TaskWindowContext) => Promise<void> | void
+  restartBackend?: (value: SiteStorageRestartRequest) => Promise<void>
   appInfo: AppInfo
   backend: BackendLike
   pathRegistry?: GrantedPathRegistry
@@ -200,6 +203,45 @@ export function registerDesktopIpc(
     trusted((value) => executeSettingsAction(
       dependencies.backend, validateSettingsActionId(value), dependencies.fetchImpl ?? fetch, dependencies.logger,
     )),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectDataRootDirectory,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, { properties: ['openDirectory'] })
+      const selected = result.canceled ? undefined : result.filePaths[0]
+      return { cancelled: !selected, ...(selected ? { path: validateBridgePath(selected) } : {}) }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectSitePackage,
+    trusted(async (_value, event) => {
+      const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
+        properties: ['openFile'], filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }],
+      })
+      const selected = result.canceled ? undefined : result.filePaths[0]
+      return { cancelled: !selected, ...(selected ? { path: validateBridgePath(selected) } : {}) }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.selectSiteExportDestination,
+    trusted(async (value, event) => {
+      const suggestedName = validateChooseSavePathOptions({ suggestedName: value, filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }] }).suggestedName
+      const result = await dependencies.dialog.showSaveDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
+        defaultPath: suggestedName, filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }],
+      })
+      return { cancelled: result.canceled || !result.filePath, ...(!result.canceled && result.filePath ? { path: validateBridgePath(result.filePath) } : {}) }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.restartBackend,
+    trusted(async (value) => {
+      try {
+        await dependencies.restartBackend?.(validateSiteStorageRestartRequest(value))
+        return { success: true }
+      } catch {
+        return { success: false, error: '本地 Backend 重启失败，请检查日志后重试。' }
+      }
+    }),
   )
   dependencies.ipcMain.handle(
     DESKTOP_IPC.chooseSavePath,

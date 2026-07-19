@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from netconsole.backend.api.main import create_app
+from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_mode import RuntimeMode
+
+
+TOKEN = "site-storage-session-token-123456"
+
+
+def _client(tmp_path: Path) -> TestClient:
+    app_root = tmp_path / "app"
+    paths = PathResolver(app_root=app_root, data_root=tmp_path / "data")
+    app = create_app(RuntimeMode.DESKTOP, paths=paths, desktop_session_token=TOKEN, api_documentation_enabled=True)
+    return TestClient(app, base_url="http://127.0.0.1", headers={"X-NetConsole-Session": TOKEN})
+
+
+def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    created = client.post(
+        "/api/v1/sites",
+        json={"site_id": "line-12", "display_name": "宁波地铁12号线", "activate": False},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["site_id"] == "line-12"
+    assert any(item["site_id"] == "line-12" for item in client.get("/api/v1/sites").json())
+
+    activated = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["restart_required"] is True
+
+
+def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"})
+    client.app.state.task_service.create_external_task(
+        task_id="running-task",
+        task_type="test",
+        task_name="运行任务",
+        source="external",
+        site_name="line-12",
+    )
+
+    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
+
+
+def test_data_root_validation_returns_safe_error_and_snapshot(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    snapshot = client.get("/api/v1/storage/data-root")
+    assert snapshot.status_code == 200
+    assert snapshot.json()["active_site_id"]
+
+    unsafe = client.post("/api/v1/storage/data-root/validate", json={"path": str(tmp_path / "app" / "nested")})
+    assert unsafe.status_code == 422
+    assert unsafe.json()["detail"]["code"] == "DATA_ROOT_UNSAFE_LOCATION"
+
+
+def test_site_package_inspect_does_not_write_on_invalid_package(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    package = tmp_path / "invalid.ncsite"
+    package.write_bytes(b"not a zip")
+
+    response = client.post("/api/v1/sites/import/inspect", json={"package_path": str(package)})
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SITE_IMPORT_INVALID_PACKAGE"
+
+
+def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    schema = client.get("/openapi.json")
+    assert schema.status_code == 200
+    paths = schema.json()["paths"]
+    assert "/api/v1/sites" in paths
+    assert "/api/v1/storage/data-root/migrate" in paths
+    assert "site-and-storage" in paths["/api/v1/sites"]["get"]["tags"]
+
+
+def test_site_storage_tasks_are_visible_as_cancellable_in_job_center(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.app.state.task_service.create_external_task(
+        task_id="site-export-task",
+        task_type="site_export",
+        task_name="导出局点",
+        source="local",
+        owner="site-storage",
+        site_name="demo",
+    )
+
+    task = client.get("/api/job-center/tasks/site-export-task")
+
+    assert task.status_code == 200
+    assert task.json()["cancellable"] is True

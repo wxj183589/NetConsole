@@ -31,6 +31,7 @@
 | [导出进程规范](export_process_policy.md) | Export Process、临时文件、取消和 writer 约束 | 报告/导出开发 | `services/export`、`export_worker.py`、export UI helper | 导出类型、协议或文件提交策略变化 |
 | [重构地图](REFACTOR_MAP.md) | 当前接管状态、遗留入口和下一步 | 架构维护者 | Registry、domain handlers、生产调用点 | 任务迁移、兼容层或 legacy 收口 |
 | [数据与路径](DATA_LAYOUT.md) | 全局/局点/会话/运行时目录和清理边界 | Repository/存储开发 | `core/paths.py`、cleanup、disk manager | 路径、数据库或清理策略变化 |
+| [局点与数据存储](storage/README.md) | 局点 Registry、数据根迁移、备份恢复和 `.ncsite` 包 | Storage/Core/Desktop 开发 | `services/site_storage.py`、Electron bootstrap、`/api/v1` | 局点、数据根、迁移或包格式变化 |
 | [仓库目录规范](development/repository-layout.md) | 根目录白名单、应用边界、运行数据和新增文件检查 | 所有开发/维护人员 | `AGENTS.md`、实际目录和构建脚本 | 顶层布局、目录职责或迁移映射变化 |
 | [测试基线](TEST_BASELINE.md) | 定向测试、测试数据隔离和合并前全量门槛 | 所有开发/维护人员 | pytest、Vitest、Ruff、构建与文档检查 | 测试隔离、执行顺序或最终门槛变化 |
 | [Web 双轨迁移第一批更新记录](development/web-migration-wave-1.md) | 当前并行任务、提交、验证、延期项和合并门槛 | Web 迁移指挥与集成 | 独立工作树提交、测试和集成分支 | 第一批任务状态、测试或范围变化 |
