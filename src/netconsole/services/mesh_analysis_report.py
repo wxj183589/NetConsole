@@ -7,10 +7,11 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, median
-from typing import Callable
+from typing import Callable, Mapping
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c, normalize_link_state
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.models.mesh_analysis_params import DEFAULT_MESH_ANALYSIS_PARAMS, MeshAnalysisParams, normalize_mesh_analysis_params
+from netconsole.repositories.mesh_mr_repository import DERIVED_ANALYSIS_VERSION, MIN_NORMAL_ACTIVE_SAMPLE_COUNT, PARSER_VERSION, MeshMrRepository
 from netconsole.services.mesh_chart_payload import build_chart_payload
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 from netconsole.services.mesh_quality_analysis import (
@@ -26,6 +27,8 @@ from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLoca
 ProgressCallback = Callable[[int, str], None]
 CancelCallback = Callable[[], bool]
 _REPORT_METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
+MESH_REPORT_RULE_VERSION = "qt_business_v1"
+_CURRENT_VALUE_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -51,8 +54,12 @@ class MeshReportOptions:
     switch_target_window_seconds: int = 5
     flap_window_seconds: int = 30
     main_link_switch_time_ms: int = 2500
+    short_link_tolerance_ms: int = 500
     pingpong_tolerance_ms: int = 500
     pingpong_return_window_ms: int | None = None
+    merge_same_physical_ap_dual_radio: bool = True
+    include_log_boundary_segments: bool = False
+    sample_interval_ms: int | None = None
     short_active_segment_seconds: float = 2.0
     include_raw_evidence: bool = True
     include_all_link_details: bool = False
@@ -88,6 +95,7 @@ class MeshAnalysisReportModel:
     generated_at: datetime
     options: MeshReportOptions
     overview: dict[str, object] = field(default_factory=dict)
+    analysis_parameters: list[dict[str, object]] = field(default_factory=list)
     switch_sequence: list[dict[str, object]] = field(default_factory=list)
     active_segments: list[dict[str, object]] = field(default_factory=list)
     flap_events: list[dict[str, object]] = field(default_factory=list)
@@ -101,14 +109,12 @@ class MeshAnalysisReportModel:
     source_files: list[dict[str, object]] = field(default_factory=list)
     score_rows: list[dict[str, object]] = field(default_factory=list)
     sample_quality: list[dict[str, object]] = field(default_factory=list)
-    peer_ranking: list[dict[str, object]] = field(default_factory=list)
     switch_events: list[dict[str, object]] = field(default_factory=list)
     anomaly_events: list[dict[str, object]] = field(default_factory=list)
     no_backup_risks: list[dict[str, object]] = field(default_factory=list)
     busy_analysis: list[dict[str, object]] = field(default_factory=list)
     link_rebuild_events: list[dict[str, object]] = field(default_factory=list)
     raw_evidence: list[dict[str, object]] = field(default_factory=list)
-    all_link_details: list[dict[str, object]] = field(default_factory=list)
     active_build_order: list[dict[str, object]] = field(default_factory=list)
     link_details: list[dict[str, object]] = field(default_factory=list)
     active_path_rssi: list[dict[str, object]] = field(default_factory=list)
@@ -147,6 +153,7 @@ class MeshAnalysisReportService:
         self._raise_if_cancelled(should_cancel)
 
         rules = self._rules_from_options(options)
+        analysis_parameters = build_analysis_parameter_rows(options, source_files, rules, links)
         quality_report = build_quality_report(
             links,
             source_files,
@@ -156,7 +163,7 @@ class MeshAnalysisReportService:
             options.data_source_type,
             rules,
             include_raw_evidence=options.include_raw_evidence,
-            include_all_link_details=options.include_all_link_details,
+            include_all_link_details=False,
             include_parse_issues=options.include_parse_issues,
             include_busy_analysis=options.include_busy_analysis,
             threshold_template_key=options.threshold_template_key,
@@ -236,6 +243,7 @@ class MeshAnalysisReportService:
             generated_at=datetime.now(),
             options=options,
             overview=overview,
+            analysis_parameters=analysis_parameters,
             switch_sequence=switch_sequence,
             flap_events=flap_events,
             link_establishment_order=link_establishment_order,
@@ -249,14 +257,12 @@ class MeshAnalysisReportService:
             score_rows=quality_report.score_rows,
             sample_quality=quality_report.sample_quality,
             active_segments=quality_report.active_segments or active_segments,
-            peer_ranking=quality_report.peer_ranking,
             switch_events=quality_report.switch_events,
             anomaly_events=quality_report.anomaly_events,
             no_backup_risks=quality_report.no_backup_risks,
             busy_analysis=quality_report.busy_analysis,
             link_rebuild_events=quality_report.link_rebuild_events,
             raw_evidence=quality_report.raw_evidence,
-            all_link_details=quality_report.all_link_details,
             active_build_order=active_build_order,
             link_details=links,
             active_path_rssi=active_path_rssi,
@@ -377,6 +383,10 @@ class MeshAnalysisReportService:
             selected = sources[0]
         if selected is None:
             return options
+        options = with_report_analysis_params(
+            options,
+            resolve_report_analysis_params(options, selected.get("analysis_params_json")),
+        )
         parsed_db_path = Path(str(selected.get("parsed_db_path") or ""))
         if parsed_db_path.exists():
             self._active_db_path = parsed_db_path
@@ -387,6 +397,237 @@ class MeshAnalysisReportService:
     def _raise_if_cancelled(should_cancel: CancelCallback) -> None:
         if should_cancel():
             raise MeshReportCancelled()
+
+
+def resolve_report_analysis_params(
+    options: MeshReportOptions,
+    source_snapshot: object | None,
+) -> MeshAnalysisParams:
+    merged = DEFAULT_MESH_ANALYSIS_PARAMS.to_dict()
+    for candidate in (
+        _mapping(options.site_analysis_params),
+        _mapping(source_snapshot),
+        _mapping(options.analysis_params_override),
+    ):
+        merged.update(candidate)
+    return normalize_mesh_analysis_params(merged)
+
+
+def with_report_analysis_params(options: MeshReportOptions, params: MeshAnalysisParams) -> MeshReportOptions:
+    return replace(
+        options,
+        short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
+        main_link_switch_time_ms=params.main_link_switch_time_ms,
+        short_link_tolerance_ms=params.short_link_tolerance_ms,
+        pingpong_tolerance_ms=params.pingpong_tolerance_ms,
+        pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
+        flap_window_seconds=max(1, int(round(params.effective_pingpong_return_window_ms / 1000.0))),
+        merge_same_physical_ap_dual_radio=params.merge_same_physical_ap_dual_radio,
+        include_log_boundary_segments=params.include_log_boundary_segments,
+        sample_interval_ms=params.sample_interval_ms,
+        business_type=params.service_type,
+        working_mode=params.wifi_type,
+    )
+
+
+def build_analysis_parameter_rows(
+    options: MeshReportOptions,
+    source_files: list[dict[str, object]],
+    rules: MeshQualityRules,
+    links: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    override = _mapping(options.analysis_params_override)
+    option_defaults = MeshReportOptions()
+    for key in (
+        "rssi_excellent_threshold",
+        "rssi_good_threshold",
+        "rssi_warning_threshold",
+        "rssi_bad_threshold",
+        "backup_available_threshold",
+        "backup_strong_threshold",
+        "busy_warning_threshold",
+        "busy_bad_threshold",
+        "no_backup_min_seconds",
+        "weak_active_min_seconds",
+        "bandwidth",
+        "ap_spacing",
+        "threshold_template_key",
+    ):
+        value = getattr(options, key)
+        if value != getattr(option_defaults, key):
+            override.setdefault(key, value)
+    source = _mapping(source_files[0].get("analysis_params_json")) if source_files else {}
+    site = _mapping(options.site_analysis_params)
+    defaults = DEFAULT_MESH_ANALYSIS_PARAMS.to_dict()
+    params = resolve_report_analysis_params(options, source)
+    template = get_threshold_template(options.threshold_template_key)
+    estimated_interval_ms = _report_sample_interval_ms(links, params.sample_interval_ms)
+    continuous_gap_ms = (
+        int(round(min(max((estimated_interval_ms or 1000) * 5, 5000), 60000)))
+        if estimated_interval_ms is not None
+        else None
+    )
+
+    rows: list[dict[str, object]] = []
+
+    def add(
+        category: str,
+        name: str,
+        key: str,
+        unit: str,
+        effective: object,
+        meaning: str,
+        *,
+        default_value: object = None,
+        current_value: object = _CURRENT_VALUE_UNSET,
+        source_key: str | None = None,
+        remark: str = "",
+    ) -> None:
+        candidate_key = source_key or key
+        candidate_default = defaults.get(candidate_key) if default_value is None and candidate_key in defaults else default_value
+        chosen, origin = _parameter_choice(candidate_key, override, source, site, candidate_default)
+        rows.append(
+            {
+                "category": category,
+                "parameter_name": name,
+                "current_value": chosen if current_value is _CURRENT_VALUE_UNSET else current_value,
+                "unit": unit,
+                "effective_value": effective,
+                "meaning": meaning,
+                "parameter_source": origin,
+                "report_override": override.get(candidate_key) if candidate_key in override else None,
+                "source_snapshot": source.get(candidate_key) if candidate_key in source else None,
+                "site_config": site.get(candidate_key) if candidate_key in site else None,
+                "global_default": candidate_default,
+                "remark": remark,
+            }
+        )
+
+    add("主链路与切换", "主链路切换基准时间", "main_link_switch_time_ms", "ms", params.main_link_switch_time_ms, "主链路正常切换的基准时间")
+    add("主链路与切换", "短时判定容差", "short_link_tolerance_ms", "ms", params.short_link_tolerance_ms, "从切换基准中扣除的短时容差")
+    add(
+        "主链路与切换",
+        "实际短时建链阈值",
+        "main_link_switch_time_ms",
+        "ms",
+        params.short_link_threshold_ms,
+        "持续时间低于此值判定为短时建链",
+        current_value=None,
+        remark="max(主链路切换基准时间 - 短时判定容差, 0)",
+    )
+    rows[-1]["parameter_source"] = _higher_priority_source(
+        rows[-1]["parameter_source"],
+        _parameter_choice("short_link_tolerance_ms", override, source, site, defaults["short_link_tolerance_ms"])[1],
+    )
+    add("主链路与切换", "乒乓判定容差", "pingpong_tolerance_ms", "ms", params.pingpong_tolerance_ms, "区分异常、临界和普通回切")
+    add(
+        "主链路与切换",
+        "乒乓返回窗口",
+        "pingpong_return_window_ms",
+        "ms",
+        params.effective_pingpong_return_window_ms,
+        "A-B-A 返回事件的最大有效窗口",
+        remark="未配置时按业务下限和 3 x (切换基准 + 乒乓容差)计算",
+    )
+    add("主链路与切换", "同物理 AP 双射频合并", "merge_same_physical_ap_dual_radio", "", params.merge_same_physical_ap_dual_radio, "同一物理 AP 的双射频切换是否合并")
+    add("主链路与切换", "日志边界区段是否纳入异常", "include_log_boundary_segments", "", params.include_log_boundary_segments, "首尾边界区段是否参与异常判定")
+    add(
+        "主链路与切换",
+        "估算/配置采样间隔",
+        "sample_interval_ms",
+        "ms",
+        estimated_interval_ms,
+        "主链路区段持续时间与连续性判断使用的采样间隔",
+        remark="优先使用配置值；未配置时按当前来源有效采样时间估算",
+    )
+    add(
+        "主链路与切换",
+        "主链路连续间隙阈值",
+        "sample_interval_ms",
+        "ms",
+        continuous_gap_ms,
+        "超过该间隙时断开主链路区段",
+        current_value=None,
+        remark="min(max(5 x 采样间隔, 5000), 60000)",
+    )
+    add(
+        "主链路与切换",
+        "正常区段最小采样点数",
+        "min_normal_sample_count",
+        "个",
+        MIN_NORMAL_ACTIVE_SAMPLE_COUNT,
+        "持续时间正常但采样点偏少时用于诊断",
+        default_value=MIN_NORMAL_ACTIVE_SAMPLE_COUNT,
+    )
+
+    threshold_rows = (
+        ("RSSI 阈值", "RSSI 优", "rssi_excellent_threshold", "原始值", rules.rssi_excellent_threshold, "达到或高于该值判定为优"),
+        ("RSSI 阈值", "RSSI 良", "rssi_good_threshold", "原始值", rules.rssi_good_threshold, "达到或高于该值判定为良"),
+        ("RSSI 阈值", "RSSI 警告", "rssi_warning_threshold", "原始值", rules.rssi_warning_threshold, "低于良好线时进入警告区间"),
+        ("RSSI 阈值", "RSSI 差", "rssi_bad_threshold", "原始值", rules.rssi_bad_threshold, "低于该值判定为差"),
+        ("RSSI 阈值", "备份链路可用阈值", "backup_available_threshold", "原始值", rules.backup_available_threshold, "备份链路达到该值视为可用"),
+        ("RSSI 阈值", "强备份链路阈值", "backup_strong_threshold", "原始值", rules.backup_strong_threshold, "备份链路达到该值视为强备份"),
+        ("RSSI 阈值", "弱主链路持续时间", "weak_active_min_seconds", "s", rules.weak_active_min_seconds, "弱主链路持续达到该时长后记录异常"),
+        ("空口负载阈值", "Busy 警告阈值", "busy_warning_threshold", "%", rules.busy_warning_threshold, "Tx/Rx Busy 达到该值进入警告"),
+        ("空口负载阈值", "Busy 差阈值", "busy_bad_threshold", "%", rules.busy_bad_threshold, "Tx/Rx Busy 达到该值判定为差"),
+        ("空口负载阈值", "无备份链路最短持续时间", "no_backup_min_seconds", "s", rules.no_backup_min_seconds, "无可用备份持续达到该时长后记录风险"),
+    )
+    for category, name, key, unit, value, meaning in threshold_rows:
+        add(category, name, key, unit, value, meaning, default_value=getattr(option_defaults, key))
+
+    add("项目和环境", "业务类型", "service_type", "", params.service_type, "当前报告使用的业务类型")
+    add("项目和环境", "WiFi 类型", "wifi_type", "", params.wifi_type, "当前报告使用的无线制式")
+    add("项目和环境", "频宽", "bandwidth", "", options.bandwidth, "报告评估场景的信道频宽", default_value=option_defaults.bandwidth)
+    add("项目和环境", "典型 AP 间隔", "ap_spacing", "", options.ap_spacing, "报告评估场景的典型 AP 间隔", default_value=option_defaults.ap_spacing)
+    add("项目和环境", "质量模板名称", "threshold_template_key", "", template.label, "质量阈值模板", default_value=option_defaults.threshold_template_key)
+    add("项目和环境", "质量模板版本", "threshold_template_version", "", None, "质量模板的独立版本标识", default_value=None, remark="当前模板未提供独立版本字段")
+    add("项目和环境", "Parser 版本", "parser_version", "", PARSER_VERSION, "MESH compact 数据解析版本", default_value=PARSER_VERSION)
+    add("项目和环境", "Derived analysis 版本", "derived_analysis_version", "", DERIVED_ANALYSIS_VERSION, "主链路派生分析版本", default_value=DERIVED_ANALYSIS_VERSION)
+    add("项目和环境", "报告规则版本", "report_rule_version", "", MESH_REPORT_RULE_VERSION, "综合分析报告结构和规则版本", default_value=MESH_REPORT_RULE_VERSION)
+    return rows
+
+
+_SOURCE_PRIORITY = {"global_default": 0, "site_config": 1, "source_snapshot": 2, "report_override": 3}
+
+
+def _higher_priority_source(left: object, right: object) -> str:
+    left_text = str(left or "global_default")
+    right_text = str(right or "global_default")
+    return left_text if _SOURCE_PRIORITY.get(left_text, 0) >= _SOURCE_PRIORITY.get(right_text, 0) else right_text
+
+
+def _parameter_choice(
+    key: str,
+    override: Mapping[str, object],
+    source: Mapping[str, object],
+    site: Mapping[str, object],
+    default: object,
+) -> tuple[object, str]:
+    for values, source_name in (
+        (override, "report_override"),
+        (source, "source_snapshot"),
+        (site, "site_config"),
+    ):
+        if key in values:
+            return values[key], source_name
+    return default, "global_default"
+
+
+def _mapping(value: object | None) -> dict[str, object]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _report_sample_interval_ms(rows: list[dict[str, object]], configured_ms: int | None) -> int | None:
+    if configured_ms is not None:
+        return int(configured_ms)
+    intervals = _sample_interval_by_scope(rows).values()
+    values = [interval for interval in intervals if interval > 0]
+    return int(round(median(values) * 1000)) if values else None
 
 
 def build_active_segments(rows: list[dict[str, object]]) -> list[dict[str, object]]:

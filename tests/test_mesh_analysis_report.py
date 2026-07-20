@@ -13,6 +13,7 @@ from netconsole.services.mesh_analysis_report import (
     MeshAnalysisReportService,
     MeshReportOptions,
     build_active_anomalies,
+    build_analysis_parameter_rows,
     build_active_segments,
     build_channel_busy_statistics,
     build_link_establishment_order,
@@ -23,7 +24,7 @@ from netconsole.services.mesh_analysis_report import (
     _active_path_report_rows,
 )
 from netconsole.services.mesh_chart_payload import build_chart_payload
-from netconsole.services.mesh_link_detail_export import active_build_order_row_values, link_detail_row_values
+from netconsole.services.mesh_link_detail_export import active_build_order_row_values
 from netconsole.services.mesh_report_process import _analysis_params_for_report
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.core.paths import PathResolver
@@ -296,7 +297,7 @@ def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_tex
     path = MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx")
     workbook = load_workbook(path)
     assert workbook.sheetnames == [definition[0] for definition in SHEET_DEFINITIONS]
-    assert [cell.value for cell in workbook["切换事件分析"][1]][:4] == [
+    assert [cell.value for cell in workbook["主链路切换分析"][1]][:4] == [
         REPORT_FIELD_LABELS["sequence"],
         REPORT_FIELD_LABELS["radio"],
         REPORT_FIELD_LABELS["switch_time"],
@@ -348,31 +349,35 @@ def test_formal_report_reuses_repository_results_and_exports_fixed_active_series
 
     report_path = MeshAnalysisExcelReportExporter().export(model, tmp_path / "formal-report.xlsx")
     workbook = load_workbook(report_path)
-    assert {
-        "主链路建链顺序",
-        "链路明细",
-        "全部 ACTIVE 主链路 RSSI",
-        "单 AP 经过时段统计",
-        "全部 ACTIVE 空口负载",
-        "切换事件分析",
-        "异常事件分析",
-    } <= set(workbook.sheetnames)
-    link_headers = [cell.value for cell in workbook["链路明细"][1]]
-    assert {"采样标识", "MR 接收信号", "Peer 接收信号", "L_TxBusy", "P_RxBusy"} <= set(link_headers)
-    assert [cell.value for cell in workbook["链路明细"][2]] == [
-        None if value == "" else value for value in link_detail_row_values(model.link_details[0])
-    ]
+    expected_business_sheets = [definition[0] for definition in SHEET_DEFINITIONS]
+    assert workbook.sheetnames[: len(expected_business_sheets)] == expected_business_sheets
+    assert {"链路明细", "全量链路明细", "Peer质量排名", "AP统计"}.isdisjoint(workbook.sheetnames)
+    assert all(workbook[name].sheet_state == "hidden" for name in workbook.sheetnames[len(expected_business_sheets) :])
     build_sheet = workbook["主链路建链顺序"]
     assert [cell.value for cell in build_sheet[2]] == [
         None if value == "" else value for value in active_build_order_row_values(model.active_build_order[0])
     ]
-    busy_sheet = workbook["全部 ACTIVE 空口负载"]
+    busy_sheet = workbook["空口负载分析"]
     busy_headers = [cell.value for cell in busy_sheet[1]]
     busy_values = dict(zip(busy_headers, (cell.value for cell in busy_sheet[2])))
     assert "CtlBusy" not in " ".join(str(value) for value in busy_headers)
     assert busy_values["MR侧 TxBusy"] == model.active_path_busy[0]["local_tx_busy"]
-    assert len(workbook["全部 ACTIVE 主链路 RSSI"]._charts[0].series) == 2
-    assert len(workbook["全部 ACTIVE 空口负载"]._charts[0].series) == 2
+    assert len(workbook["全部 ACTIVE RSSI 分析"]._charts[0].series) == 2
+    assert len(workbook["空口负载分析"]._charts[0].series) == 2
+
+    parameter_sheet = workbook["分析参数与阈值"]
+    assert str(parameter_sheet.merged_cells) == "A1:L1"
+    assert parameter_sheet.freeze_panes == "A3"
+    assert parameter_sheet.auto_filter.ref.startswith("A2:L")
+    parameter_headers = [cell.value for cell in parameter_sheet[2]]
+    parameter_rows = {
+        row[1].value: dict(zip(parameter_headers, (cell.value for cell in row)))
+        for row in parameter_sheet.iter_rows(min_row=3)
+    }
+    assert parameter_rows["主链路切换基准时间"]["参数来源"] == "source_snapshot"
+    assert parameter_rows["实际短时建链阈值"]["计算后有效值"] == 2000
+    assert parameter_rows["同物理 AP 双射频合并"]["当前值"] == "是"
+    assert parameter_rows["乒乓返回窗口"]["Source 快照值"] == "未配置"
 
 
 def test_report_peer_busy_keeps_same_millisecond_timestamp_tags_isolated():
@@ -498,15 +503,15 @@ def test_empty_active_series_does_not_create_embedded_chart(tmp_path: Path):
 
     workbook = load_workbook(MeshAnalysisExcelReportExporter().export(model, tmp_path / "empty-chart.xlsx"))
 
-    assert workbook["全部 ACTIVE 主链路 RSSI"]._charts == []
-    assert workbook["全部 ACTIVE 空口负载"]._charts == []
+    assert workbook["全部 ACTIVE RSSI 分析"]._charts == []
+    assert workbook["空口负载分析"]._charts == []
     assert "_ACTIVE_RSSI图表数据" not in workbook.sheetnames
     assert "_ACTIVE_BUSY图表数据" not in workbook.sheetnames
 
 
 def test_report_analysis_params_keep_override_source_site_default_priority():
-    source = {"analysis_params_json": '{"main_link_switch_time_ms":2222}'}
-    site = {"main_link_switch_time_ms": 3333}
+    source = {"analysis_params_json": '{"main_link_switch_time_ms":2222,"short_link_tolerance_ms":444}'}
+    site = {"main_link_switch_time_ms": 3333, "pingpong_tolerance_ms": 777}
 
     assert _analysis_params_for_report(MeshReportOptions(site_analysis_params=site), source).main_link_switch_time_ms == 2222
     assert (
@@ -519,8 +524,48 @@ def test_report_analysis_params_keep_override_source_site_default_priority():
         ).main_link_switch_time_ms
         == 1111
     )
+    resolved = _analysis_params_for_report(
+        MeshReportOptions(
+            analysis_params_override={"main_link_switch_time_ms": 1111},
+            site_analysis_params=site,
+        ),
+        source,
+    )
+    assert resolved.short_link_tolerance_ms == 444
+    assert resolved.pingpong_tolerance_ms == 777
     assert _analysis_params_for_report(MeshReportOptions(site_analysis_params=site), {}).main_link_switch_time_ms == 3333
     assert _analysis_params_for_report(MeshReportOptions(), {}).main_link_switch_time_ms == 2500
+
+
+def test_analysis_parameter_rows_show_each_candidate_and_final_source():
+    options = MeshReportOptions(
+        analysis_params_override={"main_link_switch_time_ms": 1111},
+        site_analysis_params={"pingpong_tolerance_ms": 777},
+        rssi_excellent_threshold=43,
+    )
+    source_files = [
+        {
+            "analysis_params_json": (
+                '{"main_link_switch_time_ms":2222,"short_link_tolerance_ms":444,'
+                '"merge_same_physical_ap_dual_radio":false}'
+            )
+        }
+    ]
+    rows = build_analysis_parameter_rows(options, source_files, MeshQualityRules(rssi_excellent_threshold=43), [])
+    by_name = {str(row["parameter_name"]): row for row in rows}
+
+    switch = by_name["主链路切换基准时间"]
+    assert switch["effective_value"] == 1111
+    assert switch["parameter_source"] == "report_override"
+    assert switch["report_override"] == 1111
+    assert switch["source_snapshot"] == 2222
+    assert switch["site_config"] is None
+    assert switch["global_default"] == 2500
+    assert by_name["短时判定容差"]["parameter_source"] == "source_snapshot"
+    assert by_name["乒乓判定容差"]["parameter_source"] == "site_config"
+    assert by_name["RSSI 优"]["parameter_source"] == "report_override"
+    assert by_name["RSSI 良"]["parameter_source"] == "global_default"
+    assert by_name["同物理 AP 双射频合并"]["effective_value"] is False
 
 
 def test_report_and_page_share_ap_location_snapshot_values(tmp_path: Path):
@@ -588,7 +633,7 @@ def test_excel_report_emits_row_progress_for_large_sheets(tmp_path):
         report_name="14CW-01",
         generated_at=datetime.now(),
         options=MeshReportOptions(),
-        sample_quality=rows,
+        raw_evidence=rows,
     )
     stages: list[str] = []
 

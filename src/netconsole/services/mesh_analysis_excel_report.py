@@ -14,9 +14,7 @@ from netconsole.services.mesh_analysis_report import MeshAnalysisReportModel
 from netconsole.services.mesh_chart_payload import preserve_extrema_indices, render_indices
 from netconsole.services.mesh_link_detail_export import (
     ACTIVE_BUILD_ORDER_COLUMNS,
-    LINK_DETAIL_COLUMNS,
     active_build_order_row_values,
-    link_detail_row_values,
 )
 
 
@@ -497,45 +495,29 @@ VALUE_TRANSLATIONS.update(
     }
 )
 
-SHEET_DEFINITIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("报告总览", ("key", "value"), "overview"),
-    ("质量评分", ("dimension", "weight", "score", "diagnosis"), "score_rows"),
-    ("原始文件清单", ("original_filename", "archived_filename", "file_size", "sha256", "encoding", "is_gzip", "first_sample_time", "last_sample_time", "lines_read", "records_parsed", "records_skipped", "duplicate_records", "issue_count", "parse_status", "error_message"), "source_files"),
-    ("采样点质量统计", ("sample_time", "radio", "total_peer_count", "active_peer_count", "active_peer_mac", "active_mr_rssi", "active_peer_rssi", "standby_peer_count", "available_backup_count", "strong_backup_count", "best_backup_peer_mac", "best_backup_rssi", "backup_judgment_reason", "active_tx_busy", "active_rx_busy", "max_tx_busy", "max_rx_busy", "link_count", "active_establish_time", "active_duration_time", "source_file", "source_line_number", "quality_level", "quality_score", "quality_reasons", "fping_loss_rate"), "sample_quality"),
-    ("Active主链路区段", ("sequence", "radio", "active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_site", "peer_radio", "start_time", "end_time", "duration_seconds", "sample_count", "first_mr_rssi", "last_mr_rssi", "avg_mr_rssi", "min_mr_rssi", "p10_mr_rssi", "max_mr_rssi", "rssi_jitter", "avg_peer_rssi", "min_peer_rssi", "avg_tx_busy", "max_tx_busy", "avg_rx_busy", "max_rx_busy", "available_backup_ratio", "strong_backup_ratio", "no_backup_seconds", "weak_rssi_seconds", "busy_seconds", "link_count_delta_count", "duration_reset_count", "establish_reset_count", "segment_quality_score", "segment_level", "segment_problem_tags", "source_files"), "active_segments"),
-    ("Peer质量排名", ("radio", "peer_mac", "peer_ap_name", "peer_ap_mac", "peer_site", "peer_radio", "first_seen_time", "last_seen_time", "seen_sample_count", "active_sample_count", "standby_sample_count", "active_segment_count", "switch_in_count", "switch_out_count", "active_total_seconds", "active_total_ratio", "avg_active_rssi", "min_active_rssi", "p10_active_rssi", "max_active_rssi", "rssi_jitter", "weak_active_seconds", "no_backup_when_active_seconds", "avg_tx_busy", "max_tx_busy", "avg_rx_busy", "max_rx_busy", "link_rebuild_count", "short_segment_count", "flap_related_count", "peer_quality_score", "problem_tags", "suggestion"), "peer_ranking"),
-    ("切换事件分析", ("sequence", "radio", "switch_time", "from_peer", "from_peer_ap_name", "to_peer", "to_peer_ap_name", "previous_segment_duration", "new_segment_duration", "from_last_rssi", "from_avg_rssi_before_switch", "to_first_rssi", "to_avg_rssi_after_switch", "best_backup_peer_before_switch", "best_backup_rssi_before_switch", "tx_busy_before_switch", "rx_busy_before_switch", "tx_busy_after_switch", "rx_busy_after_switch", "switch_type", "is_ap_return_event", "is_pingpong_abnormal", "pingpong_type", "pingpong_group_id", "pingpong_return_duration_ms", "middle_ap_dwell_ms", "previous_ap", "middle_ap", "return_ap", "pingpong_judgment_reason", "severity", "diagnosis", "suggestion", "evidence_id"), "switch_events"),
-    ("异常事件分析", ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "event_type", "severity", "active_peer", "peer_ap_name", "active_rssi_min", "active_rssi_avg", "backup_count_min", "tx_busy_max", "rx_busy_max", "source_file", "source_line_number_start", "source_line_number_end", "diagnosis", "suggestion", "evidence_id"), "anomaly_events"),
-    ("无备份链路风险", ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "active_peer", "standby_peer_count_min", "backup_count_min", "best_backup_peer_mac", "best_backup_rssi", "diagnosis", "suggestion", "evidence_id"), "no_backup_risks"),
-    ("空口繁忙度分析", ("radio", "peer_mac", "peer_ap_name", "sample_count", "avg_tx_busy", "max_tx_busy", "p90_tx_busy", "avg_rx_busy", "max_rx_busy", "p90_rx_busy", "busy_warning_seconds", "busy_bad_seconds", "busy_ratio", "busy_level", "diagnosis"), "busy_analysis"),
-    ("链路重建计数异常", ("sequence", "event_time", "radio", "peer_mac", "peer_ap_name", "previous_link_cnt", "current_link_cnt", "previous_duration_time", "current_duration_time", "previous_establish_time", "current_establish_time", "rebuild_type", "severity", "diagnosis", "source_file", "source_line_number", "raw_line"), "link_rebuild_events"),
-    ("原始证据片段", ("evidence_id", "related_sheet", "related_sequence", "related_event_type", "radio", "sample_time", "source_file", "source_line_number", "link_state", "peer_mac", "peer_ap_name", "mr_rssi", "peer_rssi", "tx_busy", "rx_busy", "link_cnt", "establish_time", "duration_time", "raw_line"), "raw_evidence"),
-    ("解析问题", ("issue_sequence", "source_file", "source_line_number", "issue_type", "severity", "message", "raw_line"), "parse_issues"),
-)
-
-ALL_LINK_COLUMNS: tuple[str, ...] = (
-    "sample_time",
-    "radio",
-    "link_state",
-    "peer_mac_display",
-    "peer_ap_name",
-    "peer_ap_mac",
-    "peer_site",
-    "peer_radio",
-    "establish_time",
-    "duration_time",
-    "link_cnt",
-    "mr_rssi",
-    "peer_rssi",
-    "tx_busy",
-    "rx_busy",
-    "source_file",
-    "source_line_number",
-    "raw_line",
-)
+OVERVIEW_FIELDS = ("key", "value")
+DATA_QUALITY_FIELDS = ("dimension", "weight", "score", "diagnosis")
+SOURCE_FILE_FIELDS = ("original_filename", "archived_filename", "file_size", "sha256", "encoding", "is_gzip", "first_sample_time", "last_sample_time", "lines_read", "records_parsed", "records_skipped", "duplicate_records", "issue_count", "parse_status", "error_message")
+SWITCH_EVENT_FIELDS = ("sequence", "radio", "switch_time", "from_peer", "from_peer_ap_name", "to_peer", "to_peer_ap_name", "previous_segment_duration", "new_segment_duration", "from_last_rssi", "from_avg_rssi_before_switch", "to_first_rssi", "to_avg_rssi_after_switch", "best_backup_peer_before_switch", "best_backup_rssi_before_switch", "tx_busy_before_switch", "rx_busy_before_switch", "tx_busy_after_switch", "rx_busy_after_switch", "switch_type", "is_ap_return_event", "is_pingpong_abnormal", "pingpong_type", "pingpong_group_id", "pingpong_return_duration_ms", "middle_ap_dwell_ms", "previous_ap", "middle_ap", "return_ap", "pingpong_judgment_reason", "severity", "diagnosis", "suggestion", "evidence_id")
+NO_BACKUP_RISK_FIELDS = ("event_sequence", "event_time_start", "event_time_end", "duration_seconds", "radio", "active_peer", "standby_peer_count_min", "backup_count_min", "best_backup_peer_mac", "best_backup_rssi", "diagnosis", "suggestion", "evidence_id")
+RAW_EVIDENCE_FIELDS = ("evidence_id", "related_sheet", "related_sequence", "related_event_type", "radio", "sample_time", "source_file", "source_line_number", "link_state", "peer_mac", "peer_ap_name", "mr_rssi", "peer_rssi", "tx_busy", "rx_busy", "link_cnt", "establish_time", "duration_time", "raw_line")
+PARSE_ISSUE_FIELDS = ("issue_sequence", "source_file", "source_line_number", "issue_type", "severity", "message", "raw_line")
 
 ACTIVE_BUILD_ORDER_FIELDS = tuple(field for _label, field in ACTIVE_BUILD_ORDER_COLUMNS)
-LINK_DETAIL_FIELDS = tuple(field for _label, field in LINK_DETAIL_COLUMNS)
+ANALYSIS_PARAMETER_FIELDS = (
+    "category",
+    "parameter_name",
+    "current_value",
+    "unit",
+    "effective_value",
+    "meaning",
+    "parameter_source",
+    "report_override",
+    "source_snapshot",
+    "site_config",
+    "global_default",
+    "remark",
+)
 ACTIVE_PATH_RSSI_FIELDS = (
     "sequence",
     "sample_time",
@@ -599,11 +581,22 @@ ACTIVE_PATH_BUSY_FIELDS = (
     "source_file",
 )
 ACTIVE_BUILD_ORDER_LABELS = {field: label for label, field in ACTIVE_BUILD_ORDER_COLUMNS}
-LINK_DETAIL_LABELS = {field: label for label, field in LINK_DETAIL_COLUMNS}
 
-REPORT_FIELD_LABELS.update({field: label for label, field in (*ACTIVE_BUILD_ORDER_COLUMNS, *LINK_DETAIL_COLUMNS)})
+REPORT_FIELD_LABELS.update({field: label for label, field in ACTIVE_BUILD_ORDER_COLUMNS})
 REPORT_FIELD_LABELS.update(
     {
+        "category": "分类",
+        "parameter_name": "参数名称",
+        "current_value": "当前值",
+        "unit": "单位",
+        "effective_value": "计算后有效值",
+        "meaning": "判定含义",
+        "parameter_source": "参数来源",
+        "report_override": "本次临时覆盖",
+        "source_snapshot": "Source 快照值",
+        "site_config": "当前局点值",
+        "global_default": "全局默认值",
+        "remark": "备注",
         "visit_sequence": "第几次经过",
         "build_start_time": "建链开始时间",
         "build_end_time": "建链结束时间",
@@ -661,12 +654,9 @@ MAC_FIELDS = {"active_peer_mac", "peer_mac", "peer_mac_display", "peer_ap_mac", 
 LARGE_SHEET_ATTRS = {
     "sample_quality",
     "raw_evidence",
-    "all_link_details",
-    "link_details",
     "active_build_order",
     "active_path_rssi",
     "active_path_busy",
-    "peer_ranking",
     "anomaly_events",
     "switch_events",
 }
@@ -687,50 +677,43 @@ RSSI_STAT_FIELDS = {
 SHEET_DEFINITIONS = tuple(
     (sheet_name, fields, attr_name)
     for sheet_name, fields, attr_name in (
-        ("报告总览", SHEET_DEFINITIONS[0][1], "overview"),
-        ("质量评分", SHEET_DEFINITIONS[1][1], "score_rows"),
-        ("原始文件清单", SHEET_DEFINITIONS[2][1], "source_files"),
-        ("采样点质量统计", SHEET_DEFINITIONS[3][1], "sample_quality"),
+        ("报告总览", OVERVIEW_FIELDS, "overview"),
+        ("分析参数与阈值", ANALYSIS_PARAMETER_FIELDS, "analysis_parameters"),
+        ("原始文件清单", SOURCE_FILE_FIELDS, "source_files"),
+        ("数据质量总览", DATA_QUALITY_FIELDS, "score_rows"),
         ("主链路建链顺序", ACTIVE_BUILD_ORDER_FIELDS, "active_build_order"),
-        ("链路明细", LINK_DETAIL_FIELDS, "link_details"),
-        ("全部 ACTIVE 主链路 RSSI", ACTIVE_PATH_RSSI_FIELDS, "active_path_rssi"),
-        ("单 AP 经过时段统计", PEER_VISIT_FIELDS, "peer_visit_statistics"),
-        ("全部 ACTIVE 空口负载", ACTIVE_PATH_BUSY_FIELDS, "active_path_busy"),
-        ("Peer质量排名", SHEET_DEFINITIONS[5][1], "peer_ranking"),
-        ("切换事件分析", SHEET_DEFINITIONS[6][1], "switch_events"),
-        ("异常事件分析", SHEET_DEFINITIONS[7][1], "anomaly_events"),
-        ("无备份链路风险", SHEET_DEFINITIONS[8][1], "no_backup_risks"),
-        ("空口繁忙度分析", SHEET_DEFINITIONS[9][1], "busy_analysis"),
-        ("链路重建计数异常", SHEET_DEFINITIONS[10][1], "link_rebuild_events"),
-        ("原始证据片段", SHEET_DEFINITIONS[11][1], "raw_evidence"),
-        ("解析问题", SHEET_DEFINITIONS[12][1], "parse_issues"),
+        ("主链路切换分析", SWITCH_EVENT_FIELDS, "switch_events"),
+        ("全部 ACTIVE RSSI 分析", ACTIVE_PATH_RSSI_FIELDS, "active_path_rssi"),
+        ("单 AP 分时段统计", PEER_VISIT_FIELDS, "peer_visit_statistics"),
+        ("空口负载分析", ACTIVE_PATH_BUSY_FIELDS, "active_path_busy"),
+        ("无备份链路风险", NO_BACKUP_RISK_FIELDS, "no_backup_risks"),
+        ("解析问题", PARSE_ISSUE_FIELDS, "parse_issues"),
+        ("原始证据", RAW_EVIDENCE_FIELDS, "raw_evidence"),
     )
 )
 
 STAGE_BY_ATTR = {
     "overview": "excel_overview",
+    "analysis_parameters": "excel_analysis_parameters",
     "sample_quality": "excel_sample_quality",
     "active_segments": "excel_active_segments",
     "active_build_order": "excel_active_build_order",
-    "link_details": "excel_link_details",
     "active_path_rssi": "excel_active_path_rssi",
     "peer_visit_statistics": "excel_peer_visit_statistics",
     "active_path_busy": "excel_active_path_busy",
-    "peer_ranking": "excel_peer_ranking",
     "raw_evidence": "excel_raw_evidence",
 }
 
 EMPTY_SHEET_MESSAGES = {
+    "analysis_parameters": "未生成分析参数与阈值。",
     "score_rows": "当前数据不足，未生成质量评分。",
     "source_files": "未找到源文件清单。",
     "sample_quality": "未生成采样点质量统计。",
     "active_segments": "未生成 Active 主链路区段。",
     "active_build_order": "未生成主链路建链顺序。",
-    "link_details": "未找到链路明细。",
     "active_path_rssi": "未找到唯一 ACTIVE 主链路 RSSI 数据。",
     "peer_visit_statistics": "未找到单 AP 经过时段。",
     "active_path_busy": "未找到唯一 ACTIVE 主链路空口负载数据。",
-    "peer_ranking": "未生成 Peer 质量排名。",
     "switch_events": "未发现切换事件。",
     "anomaly_events": "未发现异常事件。",
     "no_backup_risks": "未发现无备份链路风险。",
@@ -738,7 +721,6 @@ EMPTY_SHEET_MESSAGES = {
     "link_rebuild_events": "未发现链路重建计数异常。",
     "raw_evidence": "当前报告没有需要附带的原始证据片段。",
     "parse_issues": EMPTY_PARSE_ISSUES_TEXT,
-    "all_link_details": "未导出全量链路明细；请确认报告设置和解析结果。",
 }
 
 
@@ -756,18 +738,19 @@ class MeshAnalysisExcelReportExporter:
         should_cancel = should_cancel or (lambda: False)
         workbook = Workbook(write_only=True)
         workbook._mesh_report_options = model.options
-        total_sheets = len(SHEET_DEFINITIONS) + (1 if getattr(model.options, "include_all_link_details", False) else 0)
+        total_sheets = len(SHEET_DEFINITIONS)
         written = 0
+        pending_charts: list[tuple[object, list[dict[str, object]] | list[tuple[object, ...]], str]] = []
         for sheet_name, fields, attr_name in SHEET_DEFINITIONS:
             _raise_if_cancelled(should_cancel)
             progress(90 + int(written / max(total_sheets, 1) * 8), STAGE_BY_ATTR.get(attr_name, f"excel_{attr_name}"))
             rows = self._rows_for(model, attr_name)
-            self._write_sheet(workbook, sheet_name, fields, rows, attr_name, should_cancel, progress)
+            sheet = self._write_sheet(workbook, sheet_name, fields, rows, attr_name, should_cancel, progress)
+            if attr_name in {"active_path_rssi", "active_path_busy"}:
+                pending_charts.append((sheet, rows, attr_name))
             written += 1
-        if getattr(model.options, "include_all_link_details", False):
-            _raise_if_cancelled(should_cancel)
-            progress(98, "excel_all_link_details")
-            self._write_sheet(workbook, "全量链路明细", ALL_LINK_COLUMNS, getattr(model, "all_link_details", []), "all_link_details", should_cancel, progress)
+        for sheet, rows, attr_name in pending_charts:
+            _add_active_path_chart(workbook, sheet, rows, attr_name)
         progress(99, "excel_save")
         workbook.save(path)
         return path
@@ -781,10 +764,12 @@ class MeshAnalysisExcelReportExporter:
         attr_name: str,
         should_cancel: CancelCallback,
         progress: ProgressCallback,
-    ) -> None:
+    ):
         field_list = list(fields)
         sheet = workbook.create_sheet(sheet_name)
-        sheet.freeze_panes = "A2"
+        is_parameter_sheet = attr_name == "analysis_parameters"
+        header_row = 2 if is_parameter_sheet else 1
+        sheet.freeze_panes = "A3" if is_parameter_sheet else "A2"
         scan_limit = int(getattr(getattr(workbook, "_mesh_report_options", None), "autofit_scan_limit", 2000) or 2000)
         width_tracker = _WidthTracker(field_list, scan_limit=scan_limit if attr_name in LARGE_SHEET_ATTRS else 100000)
         width_tracker.feed([_field_label(field, attr_name) for field in field_list])
@@ -792,10 +777,14 @@ class MeshAnalysisExcelReportExporter:
             rows = [{"issue_sequence": 1, "issue_type": "N/A", "severity": "INFO", "message": EMPTY_PARSE_ISSUES_TEXT}]
         elif not rows:
             rows = [{field_list[0]: EMPTY_SHEET_MESSAGES.get(attr_name, f"{sheet_name}暂无可用数据。")}] if field_list else []
-        sheet.auto_filter.ref = f"A1:{get_column_letter(len(field_list))}{max(len(rows) + 1, 1)}"
+        last_row = len(rows) + header_row
+        sheet.auto_filter.ref = f"A{header_row}:{get_column_letter(len(field_list))}{max(last_row, header_row)}"
         for index, row in enumerate(rows[: width_tracker.scan_limit], 1):
             width_tracker.feed(self._row_values(field_list, row, attr_name, index))
         width_tracker.apply(sheet)
+        if is_parameter_sheet:
+            sheet.merged_cells.add(f"A1:{get_column_letter(len(field_list))}1")
+            sheet.append([_title_cell(sheet, "分析参数与阈值"), *[None] * (len(field_list) - 1)])
         sheet.append([_header_cell(sheet, _field_label(field, attr_name)) for field in field_list])
         total_rows = len(rows)
         for index, row in enumerate(rows, 1):
@@ -803,26 +792,21 @@ class MeshAnalysisExcelReportExporter:
                 _raise_if_cancelled(should_cancel)
                 progress(95, f"excel_sheet_rows:{sheet_name}:{index}:{total_rows}")
             values = self._row_values(field_list, row, attr_name, index)
-            sheet.append(values)
-        if total_rows:
-            _add_active_path_chart(workbook, sheet, rows, attr_name)
+            sheet.append(_parameter_row_cells(sheet, field_list, values) if is_parameter_sheet else values)
+        return sheet
 
     def _row_values(self, fields: list[str], row: dict[str, object] | tuple[object, ...], attr_name: str, index: int) -> list[object]:
         if isinstance(row, tuple):
             return [translate_report_value(field, value) for field, value in zip(fields, row)]
         materialized = dict(row)
-        if attr_name == "link_details":
-            return link_detail_row_values(materialized)
         if attr_name == "active_build_order":
             return active_build_order_row_values(materialized)
         if attr_name == "parse_issues":
             materialized.setdefault("issue_sequence", index)
             if "source_line_number" not in materialized and "line_number" in materialized:
                 materialized["source_line_number"] = materialized.get("line_number")
-        if attr_name in {"all_link_details", "link_details"}:
-            materialized.setdefault("duration_time", materialized.get("duration_seconds"))
-            materialized.setdefault("link_cnt", materialized.get("link_count"))
-            materialized.setdefault("source_file", materialized.get("archived_filename"))
+        if attr_name == "analysis_parameters":
+            return [_parameter_display_value(field, materialized.get(field)) for field in fields]
         return [translate_report_value(field, materialized.get(field)) for field in fields]
 
     def _rows_for(self, model: MeshAnalysisReportModel, attr_name: str) -> list[dict[str, object]] | list[tuple[object, ...]]:
@@ -848,8 +832,6 @@ def translate_report_value(field_name: str, value: object) -> object:
 
 
 def _field_label(field: str, attr_name: str) -> str:
-    if attr_name == "link_details":
-        return LINK_DETAIL_LABELS.get(field, REPORT_FIELD_LABELS.get(field, field))
     if attr_name == "active_build_order":
         return ACTIVE_BUILD_ORDER_LABELS.get(field, REPORT_FIELD_LABELS.get(field, field))
     return REPORT_FIELD_LABELS.get(field, field)
@@ -935,6 +917,55 @@ def _header_cell(sheet, value: str) -> WriteOnlyCell:
     cell.font = Font(bold=True, color="FFFFFF")
     cell.alignment = Alignment(horizontal="center", vertical="center")
     return cell
+
+
+def _title_cell(sheet, value: str) -> WriteOnlyCell:
+    cell = WriteOnlyCell(sheet, value=value)
+    cell.fill = PatternFill("solid", fgColor="17365D")
+    cell.font = Font(bold=True, color="FFFFFF", size=14)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    return cell
+
+
+_PARAMETER_CATEGORY_COLORS = {
+    "主链路与切换": "D9EAF7",
+    "RSSI 阈值": "E2F0D9",
+    "空口负载阈值": "FFF2CC",
+    "项目和环境": "E4DFEC",
+}
+_PARAMETER_SOURCE_COLORS = {
+    "report_override": "F4B183",
+    "source_snapshot": "A9D18E",
+    "site_config": "9DC3E6",
+    "global_default": "D9E1F2",
+}
+
+
+def _parameter_row_cells(sheet, fields: list[str], values: list[object]) -> list[WriteOnlyCell]:
+    category = str(values[0] or "")
+    source = str(values[6] or "")
+    category_fill = PatternFill("solid", fgColor=_PARAMETER_CATEGORY_COLORS.get(category, "FFFFFF"))
+    source_fill = PatternFill("solid", fgColor=_PARAMETER_SOURCE_COLORS.get(source, "FFFFFF"))
+    result: list[WriteOnlyCell] = []
+    for field, value in zip(fields, values):
+        cell = WriteOnlyCell(sheet, value=value)
+        cell.alignment = Alignment(vertical="top", wrap_text=field in {"meaning", "remark"})
+        if field == "category":
+            cell.fill = category_fill
+            cell.font = Font(bold=True)
+        elif field == "parameter_source":
+            cell.fill = source_fill
+            cell.font = Font(bold=True)
+        result.append(cell)
+    return result
+
+
+def _parameter_display_value(field: str, value: object) -> object:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if value is None or value == "":
+        return "未配置" if field != "unit" else ""
+    return value
 
 
 class _WidthTracker:
