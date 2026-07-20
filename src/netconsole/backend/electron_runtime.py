@@ -62,6 +62,8 @@ def build_app(options: ElectronRuntimeOptions, session_token: str) -> FastAPI:
     app = create_app(
         RuntimeMode.DESKTOP,
         desktop_session_token=session_token,
+        rail_base_data_write_feature_enabled=True,
+        rail_base_data_desktop_write_enabled=True,
         online_mr_web_control_enabled=True,
         api_documentation_enabled=options.development,
         development_api_enabled=options.development,

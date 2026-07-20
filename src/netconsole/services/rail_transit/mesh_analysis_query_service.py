@@ -14,8 +14,6 @@ from typing import Any
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
-    MeshAlignmentDTO,
-    MeshAlignmentPointDTO,
     MeshAnalysisSessionDTO,
     MeshAnalysisSessionDetailDTO,
     MeshAnalysisSessionPageDTO,
@@ -27,12 +25,16 @@ from netconsole.models.api.mesh_analysis import (
     MeshApStatisticsPageDTO,
     MeshChannelBusyDTO,
     MeshChannelBusyPageDTO,
+    MeshCounterDeltaPageDTO,
+    MeshCounterDeltaPointDTO,
     MeshDataSourceDTO,
     MeshLinkDetailDTO,
     MeshLinkPageDTO,
     MeshProfileDTO,
     MeshLinkTimelineDTO,
     MeshRawTailDTO,
+    MeshRatePageDTO,
+    MeshRatePointDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
     MeshRssiPointDTO,
@@ -41,10 +43,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshSwitchEventPageDTO,
     MeshTimelineDTO,
 )
-from netconsole.models.api.online_mr import OnlineMrDownsampleMode, OnlineMrMetricType
 from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
-from netconsole.services.online_mr.errors import OnlineMrQueryError
-from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
@@ -99,11 +98,9 @@ class MeshAnalysisQueryService:
         paths: PathResolver,
         *,
         base_query: RailTransitBaseDataQueryService | None = None,
-        online_mr_query: OnlineMrQueryService | None = None,
     ) -> None:
         self.paths = paths
         self.base_query = base_query or RailTransitBaseDataQueryService(paths)
-        self.online_mr_query = online_mr_query or OnlineMrQueryService(paths)
 
     def current_site_id(self) -> str:
         try:
@@ -568,6 +565,141 @@ class MeshAnalysisQueryService:
         ]
         return MeshChannelBusyPageDTO(items=items, total=total, downsampled=step > 1)
 
+    def get_rate_series(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        time_from: str = "",
+        time_to: str = "",
+        max_points: int = 1_000,
+    ) -> MeshRatePageDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshRatePageDTO()
+        max_points = min(max(int(max_points), 10), 2_000)
+        clauses = ["(local_rate_raw IS NOT NULL OR peer_rate_raw IS NOT NULL)"]
+        values: list[Any] = []
+        time_clauses, time_values = self._time_clauses("sample_time", "sample_time", time_from, time_to)
+        clauses.extend(time_clauses)
+        values.extend(time_values)
+        where = "WHERE " + " AND ".join(clauses)
+        with closing(self._connect_readonly(context.detail_db)) as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links {where}", values).fetchone()[0] or 0)
+            step = max(1, (total + max_points - 1) // max_points)
+            rows = conn.execute(
+                f"""
+                WITH ordered AS (
+                    SELECT sample_time, radio, peer_ap_name,
+                           COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw) AS peer_ap_mac,
+                           local_rate_raw, peer_rate_raw,
+                           ROW_NUMBER() OVER (ORDER BY sample_time, timestamp_tag, id) AS rn
+                    FROM mesh_links {where}
+                )
+                SELECT * FROM ordered
+                WHERE ((rn - 1) % ?) = 0
+                ORDER BY sample_time, rn
+                LIMIT ?
+                """,
+                (*values, step, max_points),
+            ).fetchall()
+        items = [
+            MeshRatePointDTO(
+                timestamp=str(row["sample_time"]),
+                local_radio=row["radio"],
+                peer_ap_name=str(row["peer_ap_name"] or "") or None,
+                peer_ap_mac=str(row["peer_ap_mac"] or "") or None,
+                local_rate_raw=self._number(row["local_rate_raw"]),
+                peer_rate_raw=self._number(row["peer_rate_raw"]),
+            )
+            for row in rows
+        ]
+        return MeshRatePageDTO(items=items, total=total, downsampled=step > 1)
+
+    def get_counter_deltas(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        time_from: str = "",
+        time_to: str = "",
+        max_points: int = 1_000,
+    ) -> MeshCounterDeltaPageDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshCounterDeltaPageDTO()
+        max_points = min(max(int(max_points), 10), 2_000)
+        time_clauses, time_values = self._time_clauses("sample_time", "sample_time", time_from, time_to)
+        time_where = " AND ".join(time_clauses) if time_clauses else "1"
+        counter_cte = f"""
+            WITH ordered AS (
+                SELECT id, source_file_id, sample_time, timestamp_tag, radio, peer_ap_name,
+                       COALESCE(NULLIF(peer_ap_mac, ''), peer_mac_normalized, peer_mac_raw) AS peer_ap_mac,
+                       local_retry, peer_retry, local_err, peer_err,
+                       LAG(local_retry) OVER sample_partition AS previous_local_retry,
+                       LAG(peer_retry) OVER sample_partition AS previous_peer_retry,
+                       LAG(local_err) OVER sample_partition AS previous_local_err,
+                       LAG(peer_err) OVER sample_partition AS previous_peer_err
+                FROM mesh_links
+                WINDOW sample_partition AS (
+                    PARTITION BY source_file_id, radio,
+                        COALESCE(NULLIF(session_id, ''), NULLIF(peer_mac_normalized, ''), peer_mac_raw, '')
+                    ORDER BY sample_time, timestamp_tag, id
+                )
+            ), deltas AS (
+                SELECT *,
+                       CASE WHEN local_retry IS NULL OR previous_local_retry IS NULL
+                                      OR local_retry < previous_local_retry
+                            THEN NULL ELSE local_retry - previous_local_retry END AS local_retry_delta,
+                       CASE WHEN peer_retry IS NULL OR previous_peer_retry IS NULL
+                                      OR peer_retry < previous_peer_retry
+                            THEN NULL ELSE peer_retry - previous_peer_retry END AS peer_retry_delta,
+                       CASE WHEN local_err IS NULL OR previous_local_err IS NULL
+                                      OR local_err < previous_local_err
+                            THEN NULL ELSE local_err - previous_local_err END AS local_error_delta,
+                       CASE WHEN peer_err IS NULL OR previous_peer_err IS NULL
+                                      OR peer_err < previous_peer_err
+                            THEN NULL ELSE peer_err - previous_peer_err END AS peer_error_delta
+                FROM ordered
+            ), filtered AS (
+                SELECT * FROM deltas
+                WHERE {time_where}
+                  AND (local_retry_delta IS NOT NULL OR peer_retry_delta IS NOT NULL
+                       OR local_error_delta IS NOT NULL OR peer_error_delta IS NOT NULL)
+            )
+        """
+        with closing(self._connect_readonly(context.detail_db)) as conn:
+            total = int(conn.execute(counter_cte + " SELECT COUNT(*) FROM filtered", time_values).fetchone()[0] or 0)
+            step = max(1, (total + max_points - 1) // max_points)
+            rows = conn.execute(
+                counter_cte
+                + """
+                , numbered AS (
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY sample_time, timestamp_tag, id) AS rn
+                    FROM filtered
+                )
+                SELECT * FROM numbered
+                WHERE ((rn - 1) % ?) = 0
+                ORDER BY sample_time, rn
+                LIMIT ?
+                """,
+                (*time_values, step, max_points),
+            ).fetchall()
+        items = [
+            MeshCounterDeltaPointDTO(
+                timestamp=str(row["sample_time"]),
+                local_radio=row["radio"],
+                peer_ap_name=str(row["peer_ap_name"] or "") or None,
+                peer_ap_mac=str(row["peer_ap_mac"] or "") or None,
+                local_retry_delta=int(row["local_retry_delta"]) if row["local_retry_delta"] is not None else None,
+                peer_retry_delta=int(row["peer_retry_delta"]) if row["peer_retry_delta"] is not None else None,
+                local_error_delta=int(row["local_error_delta"]) if row["local_error_delta"] is not None else None,
+                peer_error_delta=int(row["peer_error_delta"]) if row["peer_error_delta"] is not None else None,
+            )
+            for row in rows
+        ]
+        return MeshCounterDeltaPageDTO(items=items, total=total, downsampled=step > 1)
+
     def list_anomalies(
         self,
         site_id: str,
@@ -734,64 +866,6 @@ class MeshAnalysisQueryService:
         start = (current - 1) * size
         return MeshApStatisticsPageDTO(items=items[start : start + size], total=len(items), page=current, page_size=size)
 
-    def get_alignment(self, site_id: str, session_id: str, *, max_points: int = 1_000) -> MeshAlignmentDTO:
-        context = self._context(site_id, session_id)
-        associated = self._associated_online_session(context)
-        if associated is None:
-            return MeshAlignmentDTO(message="没有与该离线来源时间重叠的 Online MR 结构化会话。")
-        try:
-            series = self.online_mr_query.query_metrics(
-                site_id,
-                associated.session_id,
-                [OnlineMrMetricType.PING_RTT, OnlineMrMetricType.PING_LOSS, OnlineMrMetricType.IPERF_BITRATE],
-                start_time=str(context.source.get("first_sample_time") or "") or None,
-                end_time=str(context.source.get("last_sample_time") or "") or None,
-                limit=min(max(int(max_points), 10), 2_000),
-                downsample=OnlineMrDownsampleMode.LATEST_PER_BUCKET,
-                bucket_seconds=1,
-            )
-        except (OnlineMrQueryError, OSError, ValueError, sqlite3.Error):
-            return MeshAlignmentDTO(associated_online_mr_session_id=associated.session_id, message="关联会话存在，但结构化流量指标不可读取。")
-        buckets: dict[str, dict[str, Any]] = {}
-        for item in series:
-            for point in item.points:
-                if not point.timestamp:
-                    continue
-                key = point.timestamp[:19]
-                bucket = buckets.setdefault(key, {"timestamp": point.timestamp})
-                if item.metric_type == OnlineMrMetricType.PING_RTT:
-                    bucket["fping_rtt_ms"] = point.value
-                elif item.metric_type == OnlineMrMetricType.PING_LOSS:
-                    bucket["fping_loss_percent"] = point.value
-                elif item.metric_type == OnlineMrMetricType.IPERF_BITRATE:
-                    bucket["iperf_mbps"] = point.value
-        if context.detail_db is not None and buckets:
-            first, last = min(buckets), max(buckets)
-            with closing(self._connect_readonly(context.detail_db)) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT sample_time, peer_ap_name, peer_mac_normalized, local_rssi_db, peer_site
-                    FROM active_points WHERE sample_time >= ? AND sample_time <= ?
-                    ORDER BY sample_time LIMIT 5000
-                    """,
-                    (first, last + "\uffff"),
-                ).fetchall()
-            for row in rows:
-                key = str(row["sample_time"])[:19]
-                if key in buckets:
-                    buckets[key].update(
-                        peer_ap_name=str(row["peer_ap_name"] or "") or None,
-                        peer_ap_mac=str(row["peer_mac_normalized"] or "") or None,
-                        rssi=self._number(row["local_rssi_db"]),
-                        station=str(row["peer_site"] or "") or None,
-                    )
-        return MeshAlignmentDTO(
-            associated_online_mr_session_id=associated.session_id,
-            transient=True,
-            items=[MeshAlignmentPointDTO(**buckets[key]) for key in sorted(buckets)],
-            message="只读对齐结果，不保存为正式分析结果。",
-        )
-
     def list_report_artifacts(self, site_id: str, session_id: str) -> list[MeshReportArtifactDTO]:
         return [item.dto for item in self._artifact_candidates(self._context(site_id, session_id))]
 
@@ -925,7 +999,6 @@ class MeshAnalysisQueryService:
     def _session_dto(self, context: _SessionContext) -> MeshAnalysisSessionDTO:
         stats = self._stats(context)
         train_name, role = self._mr_identity(context.mr_name)
-        associated = self._associated_online_session(context)
         return MeshAnalysisSessionDTO(
             session_id=context.session_id,
             site_id=context.site_id,
@@ -941,8 +1014,6 @@ class MeshAnalysisQueryService:
             data_integrity="complete" if context.detail_db and stats["warnings"] == 0 else "partial",
             analysis_status=str(context.source.get("parse_status") or "unknown"),
             warning_count=stats["warnings"],
-            associated_online_mr_session_id=associated.session_id if associated else None,
-            task_id=associated.controller_task_id if associated else None,
             report_count=len([item for item in self._artifact_candidates(context) if item.dto.artifact_type != "raw_mesh_log"]),
             first_sample_time=str(context.source.get("first_sample_time") or "") or None,
             last_sample_time=str(context.source.get("last_sample_time") or "") or None,
@@ -1026,17 +1097,6 @@ class MeshAnalysisQueryService:
                 )
             ]
         return tuple(_active_build_order_rows_from_points(rows))
-
-    def _associated_online_session(self, context: _SessionContext):
-        first = self._parse_time(context.source.get("first_sample_time"))
-        last = self._parse_time(context.source.get("last_sample_time"))
-        if first is None or last is None:
-            return None
-        for row in self.online_mr_query.list_sessions(context.site_id, mr_name=context.mr_name, limit=500):
-            started = self._parse_time(row.started_at)
-            if started and first <= started <= last:
-                return row
-        return None
 
     def _artifact_candidates(self, context: _SessionContext) -> list[_ArtifactCandidate]:
         rows: list[tuple[str, Path]] = []

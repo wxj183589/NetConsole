@@ -16,7 +16,12 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
-from netconsole.models.api.online_mr import OnlineMrDownsampleMode, OnlineMrManualNoteDTO, OnlineMrMetricType
+from netconsole.models.api.online_mr import (
+    OnlineMrDownsampleMode,
+    OnlineMrManualNoteDTO,
+    OnlineMrMetricType,
+    OnlineMrSwitchRssiSource,
+)
 from netconsole.models.api.rail_transit_web import (
     CarNetworkPointPreviewDTO,
     CarNetworkPointPreviewRowDTO,
@@ -101,6 +106,7 @@ class RailTransitWebApplicationService:
 
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
+        "mesh_bundle_import": "MESH ZIP 批量导入分析",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -112,7 +118,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_online_collection_start": "列车在线连续采集",
         "online_mr_parse": "Online MR 会话解析",
     }
-    _UPLOAD_SUFFIXES = {".log", ".txt"}
+    _UPLOAD_SUFFIXES = (".log", ".txt", ".log.gz", ".txt.gz")
     _TABLE_SUFFIXES = {".xlsx", ".csv"}
     _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
     _ALLOWED_TASK_TYPES = {
@@ -197,9 +203,10 @@ class RailTransitWebApplicationService:
         total_size = 0
         try:
             for index, (file_name, source) in enumerate(uploads, 1):
-                suffix = Path(str(file_name or "")).suffix.casefold()
-                if suffix not in self._UPLOAD_SUFFIXES:
-                    raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT 文件")
+                upload_name = str(file_name or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+                if not upload_name.endswith(self._UPLOAD_SUFFIXES):
+                    raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT/GZ 文件")
+                suffix = next((item for item in self._UPLOAD_SUFFIXES if upload_name.endswith(item)), Path(upload_name).suffix)
                 target = staging / f"{index:03d}-{uuid4().hex}{suffix}"
                 file_size = 0
                 with target.open("xb") as handle:
@@ -1174,6 +1181,52 @@ class RailTransitWebApplicationService:
             bucket_seconds=bucket_seconds,
         )
 
+    def query_metric_page(
+        self,
+        site_id: str,
+        session_id: str,
+        metric_types: list[str],
+        *,
+        start_time: str = "",
+        end_time: str = "",
+        limit: int = 1_000,
+        offset: int = 0,
+        downsample: str = OnlineMrDownsampleMode.NONE.value,
+        bucket_seconds: int = 1,
+    ):
+        return self.query_service.query_metric_page(
+            self._site(site_id),
+            session_id,
+            [OnlineMrMetricType(value) for value in metric_types],
+            start_time=start_time or None,
+            end_time=end_time or None,
+            limit=limit,
+            offset=offset,
+            downsample=downsample,
+            bucket_seconds=bucket_seconds,
+        )
+
+    def query_switch_rssi_windows(
+        self,
+        site_id: str,
+        session_id: str,
+        source: str,
+        *,
+        start_time: str = "",
+        end_time: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ):
+        return self.query_service.query_switch_rssi_windows(
+            self._site(site_id),
+            session_id,
+            OnlineMrSwitchRssiSource(source),
+            start_time=start_time or None,
+            end_time=end_time or None,
+            limit=limit,
+            offset=offset,
+        )
+
     def query_timeline(self, site_id: str, session_id: str, *, limit: int = 500, offset: int = 0):
         return self.query_service.query_timeline(self._site(site_id), session_id, limit=limit, offset=offset)
 
@@ -1294,6 +1347,7 @@ class RailTransitWebApplicationService:
         summary: dict[str, object] = {}
         for key in (
             "count", "row_count", "train_count", "success_count", "failed_count",
+            "imported_count", "duplicate_count", "parsed_record_count", "member_count",
             "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
         ):
             value = result.get(key)
@@ -1441,8 +1495,8 @@ class RailTransitWebApplicationService:
             candidate = path.resolve()
             if candidate.parent != staging or not candidate.is_file():
                 raise RailTransitWebError("FILE_PATH_INVALID", "MESH 上传文件路径无效")
-            if candidate.suffix.casefold() not in self._UPLOAD_SUFFIXES:
-                raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT 文件")
+            if not candidate.name.casefold().endswith(self._UPLOAD_SUFFIXES):
+                raise RailTransitWebError("FILE_TYPE_INVALID", "MESH 导入仅支持 LOG/TXT/GZ 文件")
             result.append(candidate)
         return result
 

@@ -8,9 +8,10 @@ import {
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
-import type { MeshRssiPoint } from '../../types/meshAnalysis'
+import type { MeshChannelBusy } from '../../types/meshAnalysis'
+import { buildMeshBusySeries } from './chartSeries'
 
-const props = defineProps<{ points: MeshRssiPoint[] }>()
+const props = defineProps<{ points: MeshChannelBusy[] }>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: { setOption: (option: unknown) => void; resize: () => void; dispose: () => void } | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -18,18 +19,11 @@ let unsubscribeTheme: (() => void) | null = null
 
 onMounted(async () => {
   const [core, charts, components, renderers] = await Promise.all([
-    import('echarts/core'),
-    import('echarts/charts'),
-    import('echarts/components'),
-    import('echarts/renderers'),
+    import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
   ])
   core.use([
-    charts.LineChart,
-    components.GridComponent,
-    components.LegendComponent,
-    components.TooltipComponent,
-    components.DataZoomComponent,
-    renderers.CanvasRenderer,
+    charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
+    components.DataZoomComponent, renderers.CanvasRenderer,
   ])
   await nextTick()
   if (!container.value) return
@@ -55,77 +49,43 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => props.points, () => {
-  render()
-  void nextTick(resize)
-}, { deep: true })
+watch(() => props.points, () => { render(); void nextTick(resize) }, { deep: true })
 
-function resize(): void {
-  chart?.resize()
-}
-
-function seriesName(point: MeshRssiPoint): string {
-  const peer = point.peer_ap_name || point.peer_ap_mac || 'AP 未知'
-  return `${peer} · Radio ${point.local_radio ?? '—'}`
-}
+function resize(): void { chart?.resize() }
 
 function render(): void {
   if (!chart) return
   const theme = readNetConsoleChartTokens()
   const axisStyle = createNetConsoleAxisStyle(theme)
-  const groups = new Map<string, MeshRssiPoint[]>()
-  for (const point of props.points) {
-    const key = seriesName(point)
-    const values = groups.get(key) || []
-    values.push(point)
-    groups.set(key, values)
-  }
-  const palette = theme.series.length ? theme.series : [theme.primary, theme.warning, theme.info, theme.danger]
+  const series = buildMeshBusySeries(props.points)
   chart.setOption({
     animation: false,
-    color: palette,
+    color: [theme.primary, theme.info, theme.warning, theme.danger, ...theme.series],
     textStyle: { color: theme.text },
     tooltip: {
       trigger: 'axis',
       ...createNetConsoleTooltipStyle(theme),
       formatter: (rawParams: unknown) => {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-        const first = params[0] as { data?: { meta?: MeshRssiPoint }; axisValue?: string } | undefined
+        const first = params[0] as { axisValue?: string; data?: { meta?: MeshChannelBusy } } | undefined
         const meta = first?.data?.meta
         const lines = [`时间：${meta?.timestamp || first?.axisValue || '—'}`]
-        for (const item of params as Array<{ seriesName?: string; data?: { value?: [string, number | null]; meta?: MeshRssiPoint } }>) {
-          const point = item.data?.meta
-          lines.push(`${item.seriesName || 'RSSI'}：${point?.value == null ? '—' : point.value}`)
+        for (const item of params as Array<{ seriesName?: string; data?: { value?: [string, number | null] } }>) {
+          lines.push(`${item.seriesName || 'Busy'}：${item.data?.value?.[1] == null ? '—' : `${item.data.value[1]}%`}`)
         }
-        if (meta) {
-          lines.push(`Peer AP：${meta.peer_ap_name || '—'}`)
-          lines.push(`Peer MAC：${meta.peer_ap_mac || '—'}`)
-          lines.push(`Radio：${meta.local_radio ?? '—'}`)
-        }
+        if (meta) lines.push(`Peer AP：${meta.peer_ap_name || '—'}`, `Radio：${meta.local_radio ?? '—'}`)
         return lines.join('<br>')
       },
     },
     legend: { type: 'scroll', bottom: 4, textStyle: { color: theme.textSecondary } },
     grid: { left: 54, right: 22, top: 24, bottom: 74, containLabel: true },
     xAxis: { type: 'time', ...axisStyle },
-    yAxis: {
-      type: 'value',
-      name: 'RSSI',
-      nameTextStyle: { color: theme.textSecondary },
-      min: 'dataMin',
-      ...axisStyle,
-    },
+    yAxis: { type: 'value', name: 'Busy (%)', min: 0, max: 100, nameTextStyle: { color: theme.textSecondary }, ...axisStyle },
     dataZoom: [
       { type: 'inside', filterMode: 'none' },
       { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
     ],
-    series: [...groups.entries()].map(([name, points]) => ({
-      name,
-      type: 'line',
-      showSymbol: false,
-      connectNulls: false,
-      data: points.map((point) => ({ value: [point.timestamp, point.value], meta: point })),
-    })),
+    series: series.map((item) => ({ name: item.name, type: 'line', showSymbol: false, connectNulls: false, data: item.data })),
   })
 }
 </script>
@@ -133,7 +93,7 @@ function render(): void {
 <template>
   <div class="chart-shell">
     <div ref="container" class="chart"></div>
-    <el-empty v-if="!points.length" class="empty" description="暂无 RSSI 数据" :image-size="60" />
+    <el-empty v-if="!points.length" class="empty" description="暂无 TxBusy / RxBusy 数据" :image-size="60" />
   </div>
 </template>
 

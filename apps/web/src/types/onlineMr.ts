@@ -96,3 +96,66 @@ export interface OnlineMrManualNote {
   title: string
   payload: Record<string, unknown>
 }
+
+export interface OnlineMrMetricPoint {
+  timestamp: string | null
+  value: number | null
+  text_value: string | null
+  dimensions: Record<string, unknown>
+}
+
+export interface OnlineMrMetricSeries {
+  metric_type: string
+  series_key: string
+  unit: string
+  points: OnlineMrMetricPoint[]
+  summary: { count: number; minimum: number | null; maximum: number | null; average: number | null }
+}
+
+export interface OnlineMrMetricPage {
+  series: OnlineMrMetricSeries[]
+  limit: number
+  offset: number
+  page_size_per_metric: number
+  next_offset: number
+  returned_points: number
+  has_more: boolean
+}
+
+export type OnlineMrSwitchRssiSource = 'history' | 'realtime'
+
+export interface OnlineMrSwitchRssiWindow {
+  event_id: string
+  source: OnlineMrSwitchRssiSource
+  event_time: string | null
+  radio: number | null
+  reason: string
+  old_peer_name: string
+  old_peer_mac: string
+  old_rssi_dbm: number | null
+  new_peer_name: string
+  new_peer_mac: string
+  new_rssi_dbm: number | null
+  raw_file: string
+  raw_line_start: number | null
+  raw_line_end: number | null
+}
+
+export interface OnlineMrSwitchRssiPage {
+  items: OnlineMrSwitchRssiWindow[]
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface OnlineMrTimelineEvent {
+  event_id: string
+  session_id: string
+  local_time: string | null
+  device_time: string | null
+  source: string
+  event_type: string
+  severity: string | null
+  title: string
+  payload: Record<string, unknown>
+}

@@ -34,6 +34,12 @@ const router = useRouter()
 const { confirm, confirmChoice } = useConfirm()
 type BaseDataEditState = 'LOCKED' | 'UNLOCKED_CLEAN' | 'UNLOCKED_DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED'
 interface BaseDataDraft {
+  metadata: {
+    line_name: string
+    system_type: string
+    network_domain: string
+    remark: string
+  }
   stations: Station[]
   sections: Section[]
   aps: TracksideAp[]
@@ -392,6 +398,12 @@ async function cancelEditing(): Promise<void> {
 function captureBaselines(): void {
   baselines.clear()
   const snapshot: BaseDataDraft = {
+    metadata: {
+      line_name: store.summary?.line_name || '',
+      system_type: store.summary?.project_type || '',
+      network_domain: store.summary?.network_type || 'default',
+      remark: store.summary?.remark || '',
+    },
     stations: structuredClone(store.stations),
     sections: structuredClone(store.sections),
     aps: structuredClone(store.aps),
@@ -399,6 +411,7 @@ function captureBaselines(): void {
   }
   serverSnapshot.value = snapshot
   editingDraft.value = structuredClone(serverSnapshot.value)
+  baselines.set(changeKey('site_metadata', 'current'), metadataValues(snapshot.metadata))
   for (const row of serverSnapshot.value.stations) baselines.set(changeKey('station', row.id), stationValues(row))
   for (const row of serverSnapshot.value.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
   for (const row of serverSnapshot.value.aps) baselines.set(changeKey('trackside_ap', row.id), apValues(row))
@@ -409,6 +422,11 @@ function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): voi
   planningRows.value = rows
   planningDirty.value = changed
   updateEditState()
+}
+
+function markMetadata(): void {
+  if (!editingDraft.value || locked.value) return
+  recordChange('site_metadata', 'current', metadataValues(editingDraft.value.metadata))
 }
 
 function markStation(row: Station): void { recordChange('station', row.id, stationValues(row)) }
@@ -534,6 +552,14 @@ function stationValues(row: Station): Record<string, unknown> { return { name: r
 function sectionValues(row: Section): Record<string, unknown> { return { name: row.name, start_station: row.start_station, end_station: row.end_station, line_side: row.line_side, remark: row.remark } }
 function apValues(row: TracksideAp): Record<string, unknown> { return { line_name: row.line_name, name: row.name, point_code: row.point_code, mac: row.mac, station: row.station, section: row.section, section_start_station: row.section_start_station, section_end_station: row.section_end_station, mileage: row.mileage.raw, line_side: row.line_side, direction: row.direction, remark: row.remark } }
 function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
+function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unknown> {
+  return {
+    line_name: metadata.line_name,
+    system_type: metadata.system_type,
+    network_domain: metadata.network_domain,
+    remark: metadata.remark,
+  }
+}
 function valuesFor(type: BaseDataChange['entity_type'], row: Station | Section | TracksideAp | VehicleMr): Record<string, unknown> {
   if (type === 'station') return stationValues(row as Station)
   if (type === 'section') return sectionValues(row as Section)
@@ -684,8 +710,56 @@ function formatBytes(value: number): string {
           </div>
           <el-descriptions :column="3" border class="meta-block">
             <el-descriptions-item label="局点 ID">{{ store.summary?.site_id || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="网络类型">{{ store.summary?.network_type || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="线路名称">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.line_name"
+                maxlength="200"
+                show-word-limit
+                placeholder="请输入线路名称"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.line_name || '--' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="项目类型">
+              <el-select
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.system_type"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="请选择或输入项目类型"
+                @change="markMetadata"
+              >
+                <el-option label="PIS" value="PIS" />
+                <el-option label="信号" value="信号" />
+                <el-option label="综合监控" value="综合监控" />
+                <el-option label="其他" value="其他" />
+              </el-select>
+              <span v-else>{{ store.summary?.project_type || '--' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="网络类型">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.network_domain"
+                maxlength="100"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.network_type || '--' }}</span>
+            </el-descriptions-item>
             <el-descriptions-item label="数据更新时间">{{ store.summary?.updated_at || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="备注" :span="2">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.remark"
+                type="textarea"
+                :rows="2"
+                maxlength="1000"
+                show-word-limit
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.remark || '--' }}</span>
+            </el-descriptions-item>
             <el-descriptions-item label="说明" :span="3">{{ store.summary?.message || '--' }}</el-descriptions-item>
           </el-descriptions>
         </el-tab-pane>

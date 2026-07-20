@@ -31,7 +31,7 @@ from netconsole.parsers.mesh_log_parser import MeshLogParser
 
 
 SUPPORTED_SUFFIXES = (".log", ".txt", ".gz")
-PARSER_VERSION = "meshlog_compact_v2_single_log"
+PARSER_VERSION = "meshlog_compact_v3_tagged_samples"
 COUNTER_KEYS = (
     "local_tx",
     "peer_tx",
@@ -46,6 +46,13 @@ COUNTER_KEYS = (
     "local_tx_mul_join",
     "peer_rx_mul_join",
 )
+
+
+def _timestamp_tag_sort_key(value: str | None) -> tuple[int, int | str]:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return (0, int(text))
+    return (1, text)
 
 
 class MeshLogAnalysisService:
@@ -139,7 +146,18 @@ def merge_and_deduplicate(records: list[MeshLogRecord]) -> tuple[list[MeshLogRec
     seen: set[str] = set()
     merged: list[MeshLogRecord] = []
     duplicate_count_by_file: dict[str, int] = defaultdict(int)
-    for record in sorted(records, key=lambda item: (item.source_label, item.sample_time, item.radio, item.peer_mac_normalized or item.peer_mac_raw, item.source_file, item.source_line_number)):
+    for record in sorted(
+        records,
+        key=lambda item: (
+            item.source_label,
+            item.sample_time,
+            _timestamp_tag_sort_key(item.timestamp_tag),
+            item.radio,
+            item.peer_mac_normalized or item.peer_mac_raw,
+            item.source_file,
+            item.source_line_number,
+        ),
+    ):
         if record.duplicate_hash in seen:
             duplicate_count_by_file[record.source_file] += 1
             continue
@@ -150,23 +168,26 @@ def merge_and_deduplicate(records: list[MeshLogRecord]) -> tuple[list[MeshLogRec
 
 def analyze_active_events(records: list[MeshLogRecord]) -> list[MeshSwitchEvent]:
     events: list[MeshSwitchEvent] = []
-    by_sample: dict[tuple[str, int, datetime], list[MeshLogRecord]] = defaultdict(list)
+    by_sample: dict[tuple[str, int, datetime, str], list[MeshLogRecord]] = defaultdict(list)
     for record in records:
-        by_sample[(record.source_label, record.radio, record.sample_time)].append(record)
-    active_by_group: dict[tuple[str, int], list[tuple[datetime, MeshLogRecord | None]]] = defaultdict(list)
-    for (source_label, radio, sample_time), rows in sorted(by_sample.items(), key=lambda item: (item[0][0], item[0][1], item[0][2])):
+        by_sample[(record.source_label, record.radio, record.sample_time, record.timestamp_tag or "")].append(record)
+    active_by_group: dict[tuple[str, int], list[tuple[datetime, str, MeshLogRecord | None]]] = defaultdict(list)
+    for (source_label, radio, sample_time, timestamp_tag), rows in sorted(
+        by_sample.items(),
+        key=lambda item: (item[0][0], item[0][1], item[0][2], _timestamp_tag_sort_key(item[0][3])),
+    ):
         active_rows = [row for row in rows if row.link_state == LINK_STATE_ACTIVE]
         if len(active_rows) == 1:
-            active_by_group[(source_label, radio)].append((sample_time, active_rows[0]))
+            active_by_group[(source_label, radio)].append((sample_time, timestamp_tag, active_rows[0]))
         elif len(active_rows) == 0:
             events.append(MeshSwitchEvent(EVENT_NO_ACTIVE, source_label, radio, current_sample_time=sample_time, source_file=rows[0].source_file, source_line_number=rows[0].source_line_number))
-            active_by_group[(source_label, radio)].append((sample_time, None))
+            active_by_group[(source_label, radio)].append((sample_time, timestamp_tag, None))
         else:
             events.append(MeshSwitchEvent(EVENT_MULTI_ACTIVE, source_label, radio, current_sample_time=sample_time, source_file=active_rows[0].source_file, source_line_number=active_rows[0].source_line_number))
-            active_by_group[(source_label, radio)].append((sample_time, None))
+            active_by_group[(source_label, radio)].append((sample_time, timestamp_tag, None))
     for (source_label, radio), samples in active_by_group.items():
         previous: tuple[datetime, MeshLogRecord] | None = None
-        for sample_time, active in sorted(samples, key=lambda item: item[0]):
+        for sample_time, _timestamp_tag, active in sorted(samples, key=lambda item: (item[0], _timestamp_tag_sort_key(item[1]))):
             if active is None:
                 previous = None
                 continue
@@ -177,7 +198,17 @@ def analyze_active_events(records: list[MeshLogRecord]) -> list[MeshSwitchEvent]
 
 
 def enrich_sessions_deltas_and_events(records: list[MeshLogRecord]) -> tuple[list[MeshLogRecord], list[MeshSwitchEvent]]:
-    sorted_records = sorted(records, key=lambda item: (item.radio, item.peer_mac_normalized or item.peer_mac_raw, item.establish_time or datetime.min, item.sample_time))
+    sorted_records = sorted(
+        records,
+        key=lambda item: (
+            item.radio,
+            item.peer_mac_normalized or item.peer_mac_raw,
+            item.establish_time or datetime.min,
+            item.sample_time,
+            _timestamp_tag_sort_key(item.timestamp_tag),
+            item.source_line_number,
+        ),
+    )
     events: list[MeshSwitchEvent] = []
     previous_by_session: dict[str, MeshLogRecord] = {}
     seen_peer_sessions: set[tuple[int, str]] = set()

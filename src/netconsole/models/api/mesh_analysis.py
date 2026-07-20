@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -30,6 +30,49 @@ class MeshProfileCreateRequestDTO(ApiModel):
     display_name: str = Field(min_length=1, max_length=200)
     linked_mr_id: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=1000)
+
+
+class MeshBundleProfileCandidateDTO(ApiModel):
+    profile_id: str
+    display_name: str
+
+
+class MeshBundleMemberPreviewDTO(ApiModel):
+    member_id: str
+    original_name: str
+    safe_name: str
+    size_bytes: int
+    sha256: str
+    train_number: str = ""
+    role: str = ""
+    match_status: Literal["matched", "unmatched", "ambiguous"]
+    selected_profile_id: str = ""
+    selected_profile_name: str = ""
+    candidates: list[MeshBundleProfileCandidateDTO] = Field(default_factory=list)
+
+
+class MeshBundlePreviewDTO(ApiModel):
+    preview_id: str
+    file_name: str
+    archive_sha256: str
+    archive_size_bytes: int
+    member_count: int
+    duplicate_archive: bool = False
+    expires_at: str
+    items: list[MeshBundleMemberPreviewDTO] = Field(default_factory=list)
+
+
+class MeshBundleMappingDTO(ApiModel):
+    member_id: str = Field(min_length=1, max_length=255)
+    train_number: str = Field(min_length=1, max_length=20, pattern=r"^\d{1,3}$")
+    role: Literal["CT", "CW"]
+    profile_id: str = Field(min_length=1, max_length=200)
+
+
+class MeshBundleImportRequestDTO(ApiModel):
+    preview_id: str = Field(min_length=16, max_length=100)
+    mappings: list[MeshBundleMappingDTO] = Field(min_length=1, max_length=200)
+    explicit_confirmation: bool = False
 
 
 class MeshAnalysisSummaryDTO(ApiModel):
@@ -69,8 +112,6 @@ class MeshAnalysisSessionDTO(ApiModel):
     data_integrity: str = "unknown"
     analysis_status: str = "unknown"
     warning_count: int = 0
-    associated_online_mr_session_id: str | None = None
-    task_id: str | None = None
     report_count: int = 0
     first_sample_time: str | None = None
     last_sample_time: str | None = None
@@ -231,6 +272,38 @@ class MeshChannelBusyPageDTO(ApiModel):
     downsampled: bool = False
 
 
+class MeshRatePointDTO(ApiModel):
+    timestamp: str
+    local_radio: int | None = None
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    local_rate_raw: float | None = None
+    peer_rate_raw: float | None = None
+
+
+class MeshRatePageDTO(ApiModel):
+    items: list[MeshRatePointDTO] = Field(default_factory=list)
+    total: int = 0
+    downsampled: bool = False
+
+
+class MeshCounterDeltaPointDTO(ApiModel):
+    timestamp: str
+    local_radio: int | None = None
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    local_retry_delta: int | None = None
+    peer_retry_delta: int | None = None
+    local_error_delta: int | None = None
+    peer_error_delta: int | None = None
+
+
+class MeshCounterDeltaPageDTO(ApiModel):
+    items: list[MeshCounterDeltaPointDTO] = Field(default_factory=list)
+    total: int = 0
+    downsampled: bool = False
+
+
 class MeshAnomalyDTO(ApiModel):
     anomaly_id: str
     severity: str
@@ -289,26 +362,6 @@ class MeshReportArtifactDTO(ApiModel):
     status: str = "available"
     source: str = "existing_file"
     downloadable: bool = True
-
-
-class MeshAlignmentPointDTO(ApiModel):
-    timestamp: str
-    peer_ap_name: str | None = None
-    peer_ap_mac: str | None = None
-    rssi: float | None = None
-    fping_rtt_ms: float | None = None
-    fping_loss_percent: float | None = None
-    iperf_mbps: float | None = None
-    switch_event: str | None = None
-    station: str | None = None
-    section: str | None = None
-
-
-class MeshAlignmentDTO(ApiModel):
-    associated_online_mr_session_id: str | None = None
-    transient: bool = False
-    items: list[MeshAlignmentPointDTO] = Field(default_factory=list)
-    message: str = ""
 
 
 class MeshRawTailDTO(ApiModel):

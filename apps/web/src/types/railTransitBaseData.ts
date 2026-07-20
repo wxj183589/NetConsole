@@ -17,7 +17,7 @@ export interface RuntimeStatus {
   updated_at: string
 }
 
-export type BaseDataEntityType = 'station' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
+export type BaseDataEntityType = 'site_metadata' | 'station' | 'section' | 'trackside_ap' | 'vehicle_mr' | 'trackside_ap_plan'
 export type BaseDataChangeAction = 'create' | 'update' | 'delete' | 'replace'
 
 export interface BaseDataEditSession {

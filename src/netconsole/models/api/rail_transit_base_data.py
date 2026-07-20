@@ -9,7 +9,7 @@ from netconsole.models.api.common import ApiModel
 
 IssueSeverity = Literal["error", "warning", "info"]
 MergeResult = Literal["CREATE", "UPDATE", "UNCHANGED", "SKIP", "CONFLICT", "NEEDS_CONFIRMATION"]
-BaseDataEntityType = Literal["station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
+BaseDataEntityType = Literal["site_metadata", "station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
 BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
 
 

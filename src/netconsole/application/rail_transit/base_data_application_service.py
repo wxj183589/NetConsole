@@ -15,6 +15,7 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataValidationResultDTO,
 )
 from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataCompensationError,
     RailTransitBaseDataConstraintError,
     RailTransitBaseDataRepository,
     RailTransitBaseDataRevisionConflict,
@@ -60,7 +61,7 @@ class RailTransitBaseDataApplicationService:
         can_write = status.copy_write_authorized if status.scope == "copy_validation" else status.real_write_authorized
         return BaseDataEditSessionDTO(
             site_id=site_id,
-            base_revision=self.repository.database_hash(site_id),
+            base_revision=self.repository.base_data_revision(site_id),
             loaded_at=datetime.now(timezone.utc).isoformat(),
             can_write=can_write,
             write_scope=status.scope,
@@ -74,7 +75,7 @@ class RailTransitBaseDataApplicationService:
     ) -> tuple[BaseDataValidationResultDTO, list[dict[str, Any]]]:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
         issues: list[BaseDataValidationIssueDTO] = []
-        if self.repository.database_hash(site_id) != base_revision:
+        if self.repository.base_data_revision(site_id) != base_revision:
             issues.append(self._issue(0, "BASE_DATA_REVISION_CONFLICT", "基础资料已被其他操作更新，请重新加载"))
         normalized: list[dict[str, Any]] = []
         for index, change in enumerate(changes):
@@ -112,11 +113,16 @@ class RailTransitBaseDataApplicationService:
                 "BASE_DATA_REVISION_CONFLICT",
                 "基础资料已被其他操作更新，请重新加载",
             ) from exc
+        except RailTransitBaseDataCompensationError as exc:
+            raise RailTransitBaseDataApplicationError(
+                "BASE_DATA_COMPENSATION_FAILED",
+                "基础资料保存失败，metadata 补偿恢复也未完成；请停止继续编辑并从备份核对数据",
+            ) from exc
         except RailTransitBaseDataConstraintError as exc:
             raise RailTransitBaseDataApplicationError("BASE_DATA_REFERENCE_CONFLICT", str(exc)) from exc
         except sqlite3.IntegrityError as exc:
             raise RailTransitBaseDataApplicationError("BASE_DATA_REFERENCE_CONFLICT", "基础资料唯一性或引用关系冲突") from exc
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError) as exc:
             raise RailTransitBaseDataApplicationError("BASE_DATA_TRANSACTION_FAILED", "基础资料事务保存失败并已回滚") from exc
         return BaseDataSaveResultDTO(
             revision=str(result["revision"]),
@@ -132,6 +138,7 @@ class RailTransitBaseDataApplicationService:
         entity_type = change.entity_type
         action = change.action
         allowed_actions = {
+            "site_metadata": {"update"},
             "station": {"create", "update", "delete"},
             "section": {"create", "update", "delete"},
             "trackside_ap": {"create", "update", "delete"},
@@ -140,7 +147,9 @@ class RailTransitBaseDataApplicationService:
         }
         if action not in allowed_actions[entity_type]:
             raise ValueError("基础资料动作不受支持")
-        if entity_type == "station":
+        if entity_type == "site_metadata":
+            values = self._site_metadata_values(raw)
+        elif entity_type == "station":
             values = self._station_values(raw, action)
         elif entity_type == "section":
             values = self._section_values(raw, action)
@@ -164,6 +173,21 @@ class RailTransitBaseDataApplicationService:
             "action": action,
             "entity_id": change.entity_id,
             "values": values,
+        }
+
+    @staticmethod
+    def _site_metadata_values(raw: Mapping[str, Any]) -> dict[str, Any]:
+        line_name = str(raw.get("line_name") or "").strip()
+        system_type = str(raw.get("system_type") or "").strip()
+        if not line_name:
+            raise ValueError("线路名称不能为空")
+        if not system_type:
+            raise ValueError("项目类型不能为空")
+        return {
+            "line_name": line_name[:200],
+            "system_type": system_type[:100],
+            "network_domain": str(raw.get("network_domain") or "default").strip()[:100],
+            "remark": str(raw.get("remark") or "").strip()[:1000],
         }
 
     @staticmethod
@@ -287,6 +311,8 @@ class RailTransitBaseDataApplicationService:
         }
         for index, change in enumerate(changes):
             values = change["values"]
+            if change["entity_type"] == "site_metadata":
+                continue
             if change["entity_type"] == "station":
                 old_name = values.get("old_name")
                 if change["action"] == "delete":

@@ -10,6 +10,7 @@ from netconsole.models.api.common import ApiResponse
 from netconsole.models.api.online_mr import (
     OnlineMrCollectorStatusDTO,
     OnlineMrArtifactDTO,
+    OnlineMrMetricPageDTO,
     OnlineMrMetricSeriesDTO,
     OnlineMrManualNoteDTO,
     OnlineMrRawFileDTO,
@@ -17,6 +18,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrRealtimePreviewDTO,
     OnlineMrSessionDetailDTO,
     OnlineMrSessionSummaryDTO,
+    OnlineMrSwitchRssiPageDTO,
     OnlineMrTimelineEventDTO,
 )
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
@@ -116,6 +118,63 @@ def metrics(
             limit=limit,
             downsample=downsample,
             bucket_seconds=bucket_seconds,
+        )
+    except (RailTransitWebError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return ApiResponse(data=data)
+
+
+@router.get("/sessions/{session_id}/metric-page", response_model=ApiResponse[OnlineMrMetricPageDTO])
+def metric_page(
+    request: Request,
+    session_id: str,
+    metric_types: str = Query(default="rssi", max_length=300),
+    start_time: str = Query(default="", max_length=40),
+    end_time: str = Query(default="", max_length=40),
+    limit: int = Query(default=1_000, ge=1, le=2_000),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    downsample: str = Query(default="NONE", pattern="^(NONE|BUCKET_AVG|MIN_MAX|LATEST_PER_BUCKET)$"),
+    bucket_seconds: int = Query(default=1, ge=1, le=86_400),
+) -> ApiResponse[OnlineMrMetricPageDTO]:
+    try:
+        data = _rail_service(request).query_metric_page(
+            _facade(request).current_site_id(),
+            session_id,
+            [value.strip() for value in metric_types.split(",") if value.strip()],
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+            downsample=downsample,
+            bucket_seconds=bucket_seconds,
+        )
+    except (RailTransitWebError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return ApiResponse(data=data)
+
+
+@router.get(
+    "/sessions/{session_id}/switch-rssi-windows",
+    response_model=ApiResponse[OnlineMrSwitchRssiPageDTO],
+)
+def switch_rssi_windows(
+    request: Request,
+    session_id: str,
+    source: str = Query(pattern="^(history|realtime)$"),
+    start_time: str = Query(default="", max_length=40),
+    end_time: str = Query(default="", max_length=40),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+) -> ApiResponse[OnlineMrSwitchRssiPageDTO]:
+    try:
+        data = _rail_service(request).query_switch_rssi_windows(
+            _facade(request).current_site_id(),
+            session_id,
+            source,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
         )
     except (RailTransitWebError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

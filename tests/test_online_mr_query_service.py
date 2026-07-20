@@ -75,6 +75,23 @@ def _metric_database(path: Path) -> None:
             CREATE TABLE iperf_intervals (
                 id INTEGER PRIMARY KEY, run_id TEXT, collector_time TEXT, bitrate_mbps REAL
             );
+            CREATE TABLE radio_statistics_samples (
+                id INTEGER PRIMARY KEY, collector_time TEXT, device_clock TEXT, radio INTEGER,
+                metric_name TEXT, metric_value REAL, metric_unit TEXT,
+                raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            );
+            CREATE TABLE switch_history_events (
+                id INTEGER PRIMARY KEY, event_time_local TEXT, event_time_device TEXT,
+                snapshot_collector_time TEXT, radio INTEGER, old_peer_name TEXT, old_peer_mac TEXT,
+                old_rssi REAL, new_peer_name TEXT, new_peer_mac TEXT, new_rssi REAL,
+                switch_reason_text TEXT, raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            );
+            CREATE TABLE switch_realtime_events (
+                id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER,
+                old_peer_name TEXT, old_peer_mac TEXT, old_rssi REAL,
+                new_peer_name TEXT, new_peer_mac TEXT, new_rssi REAL,
+                switch_reason_text TEXT, raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            );
             CREATE TABLE analysis_events (
                 id INTEGER PRIMARY KEY, collector_time TEXT, event_type TEXT, severity TEXT,
                 summary_text TEXT, details_json TEXT
@@ -87,6 +104,21 @@ def _metric_database(path: Path) -> None:
                 (1, "2026-07-13 10:00:00", None, 1, -60, "AP-1", "", "aa"),
                 (2, "2026-07-13 10:00:01", None, 2, -70, "AP-2", "", "bb"),
             ],
+        )
+        conn.executemany(
+            "INSERT INTO radio_statistics_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-07-13 10:00:00", "10:00:00", 1, "TxFrameAllCnt", 120, "frame", "raw/ap_radio_statistics_raw.log", 10, 20),
+                (2, "2026-07-13 10:00:01", "10:00:01", 1, "TxRetryFrmCnt", None, "frame", "raw/ap_radio_statistics_raw.log", 21, 30),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO switch_history_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-07-13 10:01:00", "2026-07-13 10:01:00", None, 1, "AP-OLD-H", "aa", -81, "AP-NEW-H", "bb", -55, "history", "raw/switch_history_latest.log", 31, 32),
+        )
+        conn.execute(
+            "INSERT INTO switch_realtime_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-07-13 10:02:00", 2, "AP-OLD-R", "cc", -77, "AP-NEW-R", "dd", -49, "realtime", "raw/terminal_monitor_raw.log", 41, 42),
         )
         conn.executemany(
             "INSERT INTO channel_busy_records VALUES (?, ?, ?, ?, ?, ?)",
@@ -264,6 +296,87 @@ def test_metrics_preserve_ping_targets_radios_and_timeout_semantics(tmp_path: Pa
     assert all(point.value != 0 for row in rows for point in row.points if point.value is not None)
 
 
+def test_metric_page_returns_real_radio_statistics_units_evidence_and_pagination(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "radio-statistics")
+    _metric_database(session / "parsed" / "online_diagnosis.sqlite")
+
+    first = service.query_metric_page(
+        "site-a",
+        "radio-statistics",
+        [OnlineMrMetricType.RADIO_STATISTICS],
+        limit=1,
+    )
+    second = service.query_metric_page(
+        "site-a",
+        "radio-statistics",
+        [OnlineMrMetricType.RADIO_STATISTICS],
+        limit=1,
+        offset=1,
+    )
+
+    assert first.has_more is True
+    assert first.returned_points == 1
+    assert first.series[0].unit == "frame"
+    assert first.series[0].points[0].value == 120
+    assert first.series[0].points[0].dimensions["raw_file"] == "raw/ap_radio_statistics_raw.log"
+    assert second.has_more is False
+    assert second.series[0].points[0].value is None
+    assert second.series[0].points[0].dimensions["metric_name"] == "TxRetryFrmCnt"
+
+
+def test_multi_metric_page_caps_total_points_and_advances_shared_offset(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "multi-metric-page")
+    _metric_database(session / "parsed" / "online_diagnosis.sqlite")
+
+    page = service.query_metric_page(
+        "site-a",
+        "multi-metric-page",
+        [OnlineMrMetricType.RSSI, OnlineMrMetricType.CTL_BUSY],
+        limit=3,
+    )
+
+    assert page.page_size_per_metric == 1
+    assert page.next_offset == 1
+    assert page.returned_points <= page.limit
+    assert page.has_more is True
+    legacy = service.query_metrics(
+        "site-a",
+        "multi-metric-page",
+        [OnlineMrMetricType.RSSI, OnlineMrMetricType.CTL_BUSY],
+        limit=2,
+    )
+    assert sum(len(row.points) for row in legacy if row.metric_type == OnlineMrMetricType.RSSI) == 2
+    assert sum(len(row.points) for row in legacy if row.metric_type == OnlineMrMetricType.CTL_BUSY) == 2
+    with pytest.raises(OnlineMrQueryError, match="不能小于指标数量"):
+        service.query_metric_page(
+            "site-a",
+            "multi-metric-page",
+            [OnlineMrMetricType.RSSI, OnlineMrMetricType.CTL_BUSY],
+            limit=1,
+        )
+
+
+def test_switch_rssi_windows_are_source_specific_and_keep_raw_evidence(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "switch-rssi")
+    _metric_database(session / "parsed" / "online_diagnosis.sqlite")
+
+    history = service.query_switch_rssi_windows("site-a", "switch-rssi", "history")
+    realtime = service.query_switch_rssi_windows("site-a", "switch-rssi", "realtime")
+
+    assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in history.items] == [(-81, -55)]
+    assert history.items[0].raw_file == "raw/switch_history_latest.log"
+    assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in realtime.items] == [(-77, -49)]
+    assert realtime.items[0].raw_file == "raw/terminal_monitor_raw.log"
+    assert {-60, -70}.isdisjoint({history.items[0].old_rssi_dbm, history.items[0].new_rssi_dbm})
+    assert {row.source for row in service.query_timeline("site-a", "switch-rssi")} == {
+        "switch_history",
+        "switch_realtime",
+    }
+
+
 def test_metrics_support_old_missing_schema_and_deterministic_downsample(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session = _session(service, "old-db")
@@ -316,6 +429,25 @@ def test_notes_and_timeline_keep_missing_device_time_as_none(tmp_path: Path) -> 
     assert len(notes) == 1
     assert notes[0].device_time is None
     assert timeline[0].title == "现场备注"
+
+
+def test_timeline_pagination_bounds_each_database_source(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "timeline-page")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE analysis_events (id INTEGER PRIMARY KEY, collector_time TEXT, event_type TEXT, severity TEXT, summary_text TEXT, details_json TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO analysis_events VALUES (?, ?, 'diagnosis', 'info', ?, '{}')",
+            [(index, f"2026-07-13 10:00:{index:02d}", f"event-{index}") for index in range(1, 6)],
+        )
+
+    assert [row.title for row in service.query_timeline("site-a", "timeline-page", limit=2, offset=2)] == [
+        "event-3",
+        "event-4",
+    ]
 
 
 def test_query_service_has_no_qt_dependency() -> None:

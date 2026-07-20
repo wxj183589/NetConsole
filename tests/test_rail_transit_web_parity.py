@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from mesh_analysis_test_support import (
     EmptyBaseQuery,
-    EmptyOnlineQuery,
     create_mesh_analysis_fixture,
 )
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
@@ -355,6 +354,23 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
     cancelled = service.cancel_task("demo", started.task_id)
     assert cancelled.status == "CANCELLED"
     assert not staging.exists()
+
+
+def test_mesh_upload_staging_accepts_gzip_logs_and_preserves_parser_suffix(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, _tasks = _service(paths)
+
+    staging, uploads = service.stage_mesh_uploads(
+        "demo",
+        [("MR-01-meshlog.log.gz", io.BytesIO(b"gzip fixture"))],
+    )
+
+    assert len(uploads) == 1
+    assert uploads[0].name.endswith(".log.gz")
+    assert service._validated_staged_files("demo", staging, uploads) == uploads
+    service.discard_mesh_staging("demo", staging)
 
 
 def test_mesh_upload_rejects_type_symlink_and_site_escape_without_leaks(
@@ -819,7 +835,7 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     )
     paths.ensure_site_dirs("demo")
     mesh_query = MeshAnalysisQueryService(
-        paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery()
+        paths, base_query=EmptyBaseQuery()
     )
     service, _normal, export, _tasks = _service(paths, mesh_query)
 
@@ -858,7 +874,7 @@ def test_mesh_report_worker_reuses_existing_process_pipeline(tmp_path: Path) -> 
     )
     session_id = f"{profile.mr_id}:{source_id}"
     mesh_query = MeshAnalysisQueryService(
-        paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery()
+        paths, base_query=EmptyBaseQuery()
     )
     service, _normal, _fake_export, tasks = _service(paths, mesh_query)
     adapter = WebExportProcessAdapter(tasks)

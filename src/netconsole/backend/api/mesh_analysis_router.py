@@ -1,28 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
+from netconsole.application.rail_transit.mesh_bundle_application_service import (
+    MeshBundleApplicationError,
+    MeshBundleApplicationService,
+)
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
-    MeshAlignmentDTO,
     MeshAnalysisSessionDetailDTO,
     MeshAnalysisSessionPageDTO,
     MeshAnalysisSummaryDTO,
     MeshAnomalyPageDTO,
     MeshApStatisticsPageDTO,
+    MeshBundleImportRequestDTO,
+    MeshBundlePreviewDTO,
     MeshChannelBusyPageDTO,
+    MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
     MeshLinkPageDTO,
     MeshProfileCreateRequestDTO,
     MeshProfileDTO,
     MeshRawTailDTO,
+    MeshRatePageDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
     MeshSwitchEventPageDTO,
@@ -47,6 +55,13 @@ def _rail_service(request: Request) -> RailTransitWebApplicationService:
     return service
 
 
+def _bundle_service(request: Request) -> MeshBundleApplicationService:
+    service = getattr(request.app.state, "mesh_bundle_application_service", None)
+    if service is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MESH ZIP 导入服务未接线")
+    return service
+
+
 def _current_site_id(request: Request) -> str:
     return request.app.state.online_mr_api_facade.current_site_id()
 
@@ -65,6 +80,25 @@ def _query(callback: Callable[[], T]) -> T:
             return callback()
         except MeshAnalysisQueryError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+def _raise_bundle_error(exc: MeshBundleApplicationError) -> None:
+    if exc.code in {"ARCHIVE_TOO_LARGE", "MEMBER_TOO_LARGE", "EXPANDED_SIZE_EXCEEDED"}:
+        status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    elif exc.code == "PREVIEW_NOT_FOUND":
+        status_code = status.HTTP_404_NOT_FOUND
+    elif exc.code == "PREVIEW_EXPIRED":
+        status_code = status.HTTP_410_GONE
+    elif exc.code in {"IMPORT_BUSY", "ARCHIVE_CONFLICT", "PREVIEW_CACHE_FULL"}:
+        status_code = status.HTTP_409_CONFLICT
+    elif exc.code == "JOB_START_FAILED":
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc)},
+    ) from exc
 
 
 @router.get("/summary", response_model=MeshAnalysisSummaryDTO)
@@ -97,6 +131,66 @@ def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> Me
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     return MeshProfileDTO.model_validate(profile, from_attributes=True)
+
+
+@router.post(
+    "/bundles/preview",
+    response_model=MeshBundlePreviewDTO,
+    summary="安全预览 MESH ZIP 并生成映射确认令牌",
+    responses={
+        413: {"description": "ZIP 本体、成员或解压总量超过安全上限"},
+        422: {"description": "ZIP 结构、成员类型、压缩比或文件格式无效"},
+    },
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+async def preview_bundle(
+    request: Request,
+    file: UploadFile = File(...),
+) -> MeshBundlePreviewDTO:
+    try:
+        payload = await asyncio.to_thread(
+            _bundle_service(request).preview_bundle,
+            _current_site_id(request),
+            file_name=file.filename or "",
+            source=file.file,
+        )
+    except MeshBundleApplicationError as exc:
+        _raise_bundle_error(exc)
+    finally:
+        await file.close()
+    return MeshBundlePreviewDTO.model_validate(payload)
+
+
+@router.post(
+    "/bundles/import",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="确认 MESH ZIP 映射并提交独立后台导入任务",
+    responses={
+        404: {"description": "预览令牌不存在"},
+        409: {"description": "导入任务冲突或预览缓存已满"},
+        410: {"description": "预览令牌已过期"},
+        422: {"description": "人工映射不完整或无效"},
+        503: {"description": "Job Center 暂时不可用"},
+    },
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def import_bundle(
+    request: Request,
+    payload: MeshBundleImportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _bundle_service(request).start_import(
+            _current_site_id(request),
+            preview_id=payload.preview_id,
+            mappings=[mapping.model_dump() for mapping in payload.mappings],
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except MeshBundleApplicationError as exc:
+        _raise_bundle_error(exc)
 
 
 @router.get("/sessions", response_model=MeshAnalysisSessionPageDTO)
@@ -236,6 +330,54 @@ def channel_busy(
     return _query(lambda: _service(request).get_channel_busy(_site_id(request, site_id), session_id, time_from=time_from, time_to=time_to, max_points=max_points))
 
 
+@router.get(
+    "/sessions/{session_id}/rate-series",
+    response_model=MeshRatePageDTO,
+    summary="读取 MESH 本端与对端 Rate 原始序列",
+)
+def rate_series(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1_000, ge=10, le=2_000),
+) -> MeshRatePageDTO:
+    return _query(
+        lambda: _service(request).get_rate_series(
+            _site_id(request, site_id),
+            session_id,
+            time_from=time_from,
+            time_to=time_to,
+            max_points=max_points,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/counter-deltas",
+    response_model=MeshCounterDeltaPageDTO,
+    summary="读取 MESH Retry 与 Error 计数器增量",
+)
+def counter_deltas(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1_000, ge=10, le=2_000),
+) -> MeshCounterDeltaPageDTO:
+    return _query(
+        lambda: _service(request).get_counter_deltas(
+            _site_id(request, site_id),
+            session_id,
+            time_from=time_from,
+            time_to=time_to,
+            max_points=max_points,
+        )
+    )
+
+
 @router.get("/sessions/{session_id}/anomalies", response_model=MeshAnomalyPageDTO)
 def anomalies(
     request: Request,
@@ -258,16 +400,6 @@ def ap_statistics(
     page_size: int = Query(default=100, ge=1, le=500),
 ) -> MeshApStatisticsPageDTO:
     return _query(lambda: _service(request).list_ap_statistics(_site_id(request, site_id), session_id, query=query, page=page, page_size=page_size))
-
-
-@router.get("/sessions/{session_id}/alignment", response_model=MeshAlignmentDTO)
-def alignment(
-    request: Request,
-    session_id: str,
-    site_id: str = Query(default="", max_length=100),
-    max_points: int = Query(default=1_000, ge=10, le=2_000),
-) -> MeshAlignmentDTO:
-    return _query(lambda: _service(request).get_alignment(_site_id(request, site_id), session_id, max_points=max_points))
 
 
 @router.get("/sessions/{session_id}/artifacts", response_model=list[MeshReportArtifactDTO])

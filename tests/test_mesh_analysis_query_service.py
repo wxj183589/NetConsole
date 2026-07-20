@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
-from tests.mesh_analysis_test_support import EmptyBaseQuery, EmptyOnlineQuery, create_mesh_analysis_fixture
+from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:
@@ -13,7 +13,7 @@ def _fingerprint(path: Path) -> tuple[int, str]:
 
 def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) -> None:
     paths, session_id, detail, raw, report = create_mesh_analysis_fixture(tmp_path)
-    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery())  # type: ignore[arg-type]
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
     protected = [detail, raw, report]
     before = [_fingerprint(path) for path in protected]
 
@@ -23,6 +23,8 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     switches = service.list_switch_events("demo", session_id)
     rssi = service.get_rssi_statistics("demo", session_id, max_points=10)
     busy = service.get_channel_busy("demo", session_id, max_points=10)
+    rates = service.get_rate_series("demo", session_id, max_points=10)
+    counters = service.get_counter_deltas("demo", session_id, max_points=10)
     anomalies = service.list_anomalies("demo", session_id)
 
     assert summary.active_link_count == 3
@@ -42,13 +44,25 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert busy.items[0].tx_busy == 2
     assert busy.items[0].rx_busy == 78
     assert busy.items[0].ctl_busy is None
+    assert rates.total == 4
+    assert rates.items[1].local_rate_raw == 110
+    assert rates.items[1].peer_rate_raw == 95
+    assert counters.total == 2
+    assert counters.items[0].local_retry_delta == 3
+    assert counters.items[0].peer_retry_delta == 0
+    assert counters.items[0].local_error_delta == 1
+    assert counters.items[0].peer_error_delta == 2
+    assert counters.items[1].local_retry_delta is None
+    assert counters.items[1].peer_retry_delta == 5
+    assert counters.items[1].local_error_delta == 0
+    assert counters.items[1].peer_error_delta is None
     assert anomalies.total >= 4
     assert before == [_fingerprint(path) for path in protected]
 
 
 def test_link_pagination_and_existing_artifact_metadata(tmp_path: Path) -> None:
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
-    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery(), online_mr_query=EmptyOnlineQuery())  # type: ignore[arg-type]
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
 
     page = service.list_link_details("demo", session_id, page=2, page_size=2)
     artifacts = service.list_report_artifacts("demo", session_id)

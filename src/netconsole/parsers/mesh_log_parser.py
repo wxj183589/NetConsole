@@ -379,6 +379,7 @@ def make_duplicate_hash(record: MeshLogRecord) -> str:
         [
             record.source_label,
             record.sample_time.isoformat(timespec="milliseconds"),
+            record.timestamp_tag or "",
             str(record.radio),
             record.link_state,
             record.peer_mac_normalized or "",

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createMeshProfile, listMeshProfiles } from './meshAnalysis'
+import { applyMeshBundleImport, createMeshProfile, getMeshCounterDeltas, getMeshRateSeries, listMeshProfiles, listMeshSwitchEvents, previewMeshBundle } from './meshAnalysis'
 
 describe('Mesh profile API', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -17,5 +17,44 @@ describe('Mesh profile API', () => {
       '/api/rail-transit/mesh-analysis/profiles',
     ])
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ display_name: '列车01-MR-CT', linked_mr_id: 'mr-1', notes: 'fixture' })
+  })
+
+  it('previews ZIP as multipart and applies only preview mappings', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ preview_id: 'preview-token' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ task_id: 'task-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const archive = new File(['zip-bytes'], 'mesh.zip', { type: 'application/zip' })
+
+    await previewMeshBundle(archive)
+    await applyMeshBundleImport({
+      preview_id: 'preview-token',
+      mappings: [{ member_id: '001-ctmeshlog.log', train_number: '01', role: 'CT', profile_id: 'profile-1' }],
+      explicit_confirmation: true,
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/bundles/preview')
+    expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(FormData)
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/rail-transit/mesh-analysis/bundles/import')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      preview_id: 'preview-token',
+      mappings: [{ member_id: '001-ctmeshlog.log', train_number: '01', role: 'CT', profile_id: 'profile-1' }],
+      explicit_confirmation: true,
+    })
+  })
+
+  it('queries Rate, counter deltas and switch events through formal Query APIs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [], total: 0, downsampled: false }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getMeshRateSeries('session/1', { time_from: '2026-07-20T10:00:00.123Z', time_to: '2026-07-20T11:00:00.123Z', max_points: 2000 })
+    await getMeshCounterDeltas('session/1', { max_points: 2000 })
+    await listMeshSwitchEvents('session/1', { page: 1, page_size: 500 })
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/rate-series?time_from=2026-07-20T10%3A00%3A00.123Z&time_to=2026-07-20T11%3A00%3A00.123Z&max_points=2000',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/counter-deltas?max_points=2000',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/switch-events?page=1&page_size=500',
+    ])
   })
 })

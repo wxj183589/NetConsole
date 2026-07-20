@@ -778,17 +778,32 @@ def _physical_ap_key(row: dict[str, object]) -> str:
 
 
 def _group_by_radio_time(rows: list[dict[str, object]]) -> list[tuple[tuple[object, str], list[dict[str, object]]]]:
-    grouped: dict[tuple[object, str], list[dict[str, object]]] = {}
+    grouped: dict[tuple[object, object, str], list[dict[str, object]]] = {}
     for row in rows:
-        grouped.setdefault((row.get("radio"), str(row.get("sample_time") or "")), []).append(row)
-    return sorted(grouped.items(), key=lambda item: (item[0][1], str(item[0][0])))
+        sample_identity = row.get("sample_id") or row.get("timestamp_tag") or str(row.get("sample_time") or "")
+        grouped.setdefault((row.get("radio"), sample_identity, str(row.get("sample_time") or "")), []).append(row)
+    return [
+        ((radio, sample_time), sample_rows)
+        for (radio, _sample_identity, sample_time), sample_rows in sorted(
+            grouped.items(), key=lambda item: (item[0][2], str(item[0][0]), str(item[0][1]))
+        )
+    ]
 
 
 def _group_by_source_radio_time(rows: list[dict[str, object]]) -> list[tuple[tuple[object, object, str], list[dict[str, object]]]]:
-    grouped: dict[tuple[object, object, str], list[dict[str, object]]] = {}
+    grouped: dict[tuple[object, object, object, str], list[dict[str, object]]] = {}
     for row in rows:
-        grouped.setdefault((row.get("source_file_id"), row.get("radio"), str(row.get("sample_time") or "")), []).append(row)
-    return sorted(grouped.items(), key=lambda item: (str(item[0][0]), item[0][2], str(item[0][1])))
+        sample_identity = row.get("sample_id") or row.get("timestamp_tag") or str(row.get("sample_time") or "")
+        grouped.setdefault(
+            (row.get("source_file_id"), row.get("radio"), sample_identity, str(row.get("sample_time") or "")),
+            [],
+        ).append(row)
+    return [
+        ((source_file_id, radio, sample_time), sample_rows)
+        for (source_file_id, radio, _sample_identity, sample_time), sample_rows in sorted(
+            grouped.items(), key=lambda item: (str(item[0][0]), item[0][3], str(item[0][1]), str(item[0][2]))
+        )
+    ]
 
 
 def _peer(row: dict[str, object]) -> str:

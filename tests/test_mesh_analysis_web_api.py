@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -9,7 +11,7 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
-from tests.mesh_analysis_test_support import EmptyBaseQuery, EmptyOnlineQuery, create_mesh_analysis_fixture
+from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:
@@ -22,7 +24,6 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,
         base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
-        online_mr_query=EmptyOnlineQuery(),  # type: ignore[arg-type]
     )
     encoded = quote(session_id, safe="")
     protected = [detail, raw, report]
@@ -38,19 +39,22 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/switch-events?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/rssi?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/channel-busy?site_id=demo&max_points=10",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/rate-series?site_id=demo&max_points=10",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/counter-deltas?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/anomalies?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-statistics?site_id=demo",
-            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/alignment?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources?site_id=demo",
         ]
         responses = [client.get(url) for url in urls]
+        removed_alignment = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/alignment?site_id=demo")
         source_id = responses[-1].json()[0]["source_id"]
         responses.append(client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources/{source_id}/tail?site_id=demo"))
         artifact_id = next(item["artifact_id"] for item in responses[-3].json() if item["artifact_type"] == "analysis_report")
         download = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts/{artifact_id}/download?site_id=demo")
 
     assert all(response.status_code == 200 for response in responses)
+    assert removed_alignment.status_code == 404
     assert download.status_code == 200
     payload = "".join(response.text for response in responses)
     assert str(tmp_path) not in payload
@@ -60,6 +64,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert routes
     post_paths = {route.path for route in routes if route.methods == {"POST"}}
     assert post_paths == {
+        "/rail-transit/mesh-analysis/bundles/import",
+        "/rail-transit/mesh-analysis/bundles/preview",
         "/rail-transit/mesh-analysis/profiles",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
     }
@@ -95,3 +101,42 @@ def test_mesh_profile_api_lists_persisted_profiles_and_creates_real_profile(tmp_
     assert created.json()["display_name"] == "列车02-MR-TC"
     assert created.json()["safe_folder_name"] == "列车02-MR-TC"
     assert {item["display_name"] for item in after.json()} == {"列车01-MR-CT", "列车02-MR-TC"}
+
+
+def test_mesh_bundle_preview_returns_safe_token_without_server_path(tmp_path: Path) -> None:
+    paths, _session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("01CTmeshlog.log", b"preview-only")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/rail-transit/mesh-analysis/bundles/preview",
+            files={"file": ("bundle.zip", archive.getvalue(), "application/zip")},
+        )
+        missing = client.post(
+            "/api/rail-transit/mesh-analysis/bundles/import",
+            json={
+                "preview_id": "0" * 32,
+                "mappings": [
+                    {
+                        "member_id": "01CTmeshlog.log",
+                        "train_number": "01",
+                        "role": "CT",
+                        "profile_id": "missing",
+                    }
+                ],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["preview_id"]) == 32
+    assert payload["items"][0]["original_name"] == "01CTmeshlog.log"
+    assert str(tmp_path) not in response.text
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "PREVIEW_NOT_FOUND"

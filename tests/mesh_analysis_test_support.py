@@ -96,7 +96,9 @@ def _create_detail(path: Path) -> None:
                 peer_mac_normalized TEXT, peer_mac TEXT, peer_ap_name TEXT, peer_ap_mac TEXT,
                 peer_site TEXT, peer_radio_label TEXT, duration_seconds REAL, local_rssi_db INTEGER,
                 local_tx_busy INTEGER, local_rx_busy INTEGER, peer_match_rule TEXT,
-                peer_resolve_source TEXT, peer_radio_mac TEXT
+                peer_resolve_source TEXT, peer_radio_mac TEXT, timestamp_tag TEXT, session_id TEXT,
+                local_rate_raw INTEGER, peer_rate_raw INTEGER, local_retry INTEGER, peer_retry INTEGER,
+                local_err INTEGER, peer_err INTEGER
             );
             CREATE TABLE active_points (
                 id INTEGER PRIMARY KEY, link_id INTEGER, source_file_id INTEGER, radio INTEGER,
@@ -121,10 +123,10 @@ def _create_detail(path: Path) -> None:
             CREATE TABLE rssi_stats (id INTEGER PRIMARY KEY, scope_type TEXT, scope_key TEXT, sample_count INTEGER, avg_rssi REAL, min_rssi INTEGER, max_rssi INTEGER, p10_rssi REAL, p50_rssi REAL, p90_rssi REAL, low_rssi_count INTEGER, severe_low_rssi_count INTEGER);
             CREATE TABLE diagnosis_events (id INTEGER PRIMARY KEY, event_time TEXT, severity TEXT, category TEXT, title TEXT, detail TEXT, evidence TEXT, recommendation TEXT, related_peer_mac TEXT, related_sample_id INTEGER, related_segment_id INTEGER);
             INSERT INTO source_files VALUES (1, 'mesh.log', '');
-            INSERT INTO mesh_links VALUES (1, 1, 1, 1, '2026-07-14 10:00:00.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 42, 2, 78, 'exact', 'mapping', '00000000001f');
-            INSERT INTO mesh_links VALUES (2, 2, 1, 2, '2026-07-14 10:00:01.000', 1, 'ACTIVE', '0000-0000-002f', '00000000002f', '00000000002f', 'AP-02', '000000000020', '区间A-B', 'radio2', 1, NULL, 3, 80, 'exact', 'mapping', '00000000002f');
-            INSERT INTO mesh_links VALUES (3, 3, 1, 3, '2026-07-14 10:00:02.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 43, 2, 77, 'exact', 'mapping', '00000000001f');
-            INSERT INTO mesh_links VALUES (4, 3, 1, 4, '2026-07-14 10:00:02.000', 2, 'STANDBY', '0000-0000-003f', '00000000003f', '00000000003f', 'AP-03', '000000000030', '车站B', 'radio2', 1, 39, 1, 5, 'exact', 'mapping', '00000000003f');
+            INSERT INTO mesh_links VALUES (1, 1, 1, 1, '2026-07-14 10:00:00.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 42, 2, 78, 'exact', 'mapping', '00000000001f', '', 'session-1', 100, 90, 10, 20, 1, 2);
+            INSERT INTO mesh_links VALUES (2, 2, 1, 2, '2026-07-14 10:00:01.000', 1, 'ACTIVE', '0000-0000-002f', '00000000002f', '00000000002f', 'AP-02', '000000000020', '区间A-B', 'radio2', 1, NULL, 3, 80, 'exact', 'mapping', '00000000002f', '', 'session-1', 110, 95, 13, 20, 2, 4);
+            INSERT INTO mesh_links VALUES (3, 3, 1, 3, '2026-07-14 10:00:02.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 43, 2, 77, 'exact', 'mapping', '00000000001f', '', 'session-1', 120, 100, 5, 25, 2, 1);
+            INSERT INTO mesh_links VALUES (4, 3, 1, 4, '2026-07-14 10:00:02.000', 2, 'STANDBY', '0000-0000-003f', '00000000003f', '00000000003f', 'AP-03', '000000000030', '车站B', 'radio2', 1, 39, 1, 5, 'exact', 'mapping', '00000000003f', '', 'session-2', 80, 75, 3, 4, 0, 0);
             INSERT INTO active_points VALUES (1, 1, 1, 1, '2026-07-14 10:00:00.000', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '车站A', 'radio2', 'radio2', '1s', 1, 42, 45, 2, 1, 78, 77);
             INSERT INTO active_points VALUES (2, 2, 1, 1, '2026-07-14 10:00:01.000', '0000-0000-002f', '00000000002f', '00000000002f', 'AP-02', '区间A-B', 'radio2', 'radio2', '1s', 1, NULL, 44, 3, 1, 80, 76);
             INSERT INTO active_points VALUES (3, 3, 1, 1, '2026-07-14 10:00:02.000', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '车站A', 'radio2', 'radio2', '1s', 1, 43, 46, 2, 1, 77, 75);

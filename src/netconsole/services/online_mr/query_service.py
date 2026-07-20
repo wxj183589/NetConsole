@@ -21,6 +21,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrLogLineDTO,
     OnlineMrManualNoteDTO,
     OnlineMrMetricPointDTO,
+    OnlineMrMetricPageDTO,
     OnlineMrMetricSeriesDTO,
     OnlineMrMetricSummaryDTO,
     OnlineMrMetricType,
@@ -29,6 +30,9 @@ from netconsole.models.api.online_mr import (
     OnlineMrRealtimePreviewDTO,
     OnlineMrSessionDetailDTO,
     OnlineMrSessionSummaryDTO,
+    OnlineMrSwitchRssiPageDTO,
+    OnlineMrSwitchRssiSource,
+    OnlineMrSwitchRssiWindowDTO,
     OnlineMrTimelineEventDTO,
 )
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
@@ -444,26 +448,128 @@ class OnlineMrQueryService:
     ) -> list[OnlineMrMetricSeriesDTO]:
         limit, _ = self._pagination(limit, 0)
         mode = OnlineMrDownsampleMode(downsample)
-        if bucket_seconds < 1:
-            raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, "降采样时间桶必须大于 0")
-        session_dir = self._find_session(site_id, session_id)
-        path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        self._validate_bucket_seconds(bucket_seconds)
+        path = self._parsed_database_path(site_id, session_id)
+        requested = self._metric_types(metric_types)
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                series = [
+                    row
+                    for metric in requested
+                    for row in self._query_metric(conn, metric, start_time, end_time, limit)
+                ]
+        except OnlineMrQueryError:
+            raise
+        except sqlite3.Error as exc:
+            raise self._database_error(exc) from exc
+        return [self._downsample(row, mode, bucket_seconds) for row in series]
+
+    def query_metric_page(
+        self,
+        site_id: str,
+        session_id: str,
+        metric_types: Iterable[OnlineMrMetricType | str],
+        *,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 1_000,
+        offset: int = 0,
+        downsample: OnlineMrDownsampleMode | str = OnlineMrDownsampleMode.NONE,
+        bucket_seconds: int = 1,
+    ) -> OnlineMrMetricPageDTO:
+        limit, offset = self._pagination(limit, offset)
+        mode = OnlineMrDownsampleMode(downsample)
+        self._validate_bucket_seconds(bucket_seconds)
+        path = self._parsed_database_path(site_id, session_id)
+        requested = self._metric_types(metric_types)
+        if limit < len(requested):
+            raise OnlineMrQueryError(
+                OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED,
+                "分页条数不能小于指标数量",
+            )
+        page_size_per_metric = max(1, limit // len(requested))
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                pages = [
+                    self._query_metric(conn, metric, start_time, end_time, page_size_per_metric + 1, offset)
+                    for metric in requested
+                ]
+        except OnlineMrQueryError:
+            raise
+        except sqlite3.Error as exc:
+            raise self._database_error(exc) from exc
+        has_more = any(sum(len(row.points) for row in page) > page_size_per_metric for page in pages)
+        series: list[OnlineMrMetricSeriesDTO] = []
+        for page in pages:
+            remaining = page_size_per_metric
+            for row in page:
+                if remaining <= 0:
+                    break
+                points = row.points[:remaining]
+                remaining -= len(points)
+                if points:
+                    series.append(row.model_copy(update={"points": points, "summary": self._metric_summary(points)}))
+        sampled = [self._downsample(row, mode, bucket_seconds) for row in series]
+        return OnlineMrMetricPageDTO(
+            series=sampled,
+            limit=limit,
+            offset=offset,
+            page_size_per_metric=page_size_per_metric,
+            next_offset=offset + page_size_per_metric,
+            returned_points=sum(len(row.points) for row in sampled),
+            has_more=has_more,
+        )
+
+    def _parsed_database_path(self, site_id: str, session_id: str) -> Path:
+        path = self._find_session(site_id, session_id) / "parsed" / "online_diagnosis.sqlite"
         if not path.is_file():
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_NOT_FOUND, "Online MR 解析数据库不存在")
+        return path
+
+    @staticmethod
+    def _metric_types(metric_types: Iterable[OnlineMrMetricType | str]) -> list[OnlineMrMetricType]:
         requested: list[OnlineMrMetricType] = []
         for item in metric_types:
             try:
                 requested.append(OnlineMrMetricType(item))
             except ValueError as exc:
                 raise OnlineMrQueryError(OnlineMrQueryErrorCode.METRIC_UNSUPPORTED, "不支持的 Online MR 指标") from exc
+        requested = list(dict.fromkeys(requested))
+        if not requested:
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.METRIC_UNSUPPORTED, "至少选择一个 Online MR 指标")
+        return requested
+
+    @staticmethod
+    def _validate_bucket_seconds(bucket_seconds: int) -> None:
+        if bucket_seconds < 1:
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, "降采样时间桶必须大于 0")
+
+    def query_switch_rssi_windows(
+        self,
+        site_id: str,
+        session_id: str,
+        source: OnlineMrSwitchRssiSource | str,
+        *,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> OnlineMrSwitchRssiPageDTO:
+        limit, offset = self._pagination(limit, offset)
+        source = OnlineMrSwitchRssiSource(source)
+        session_dir = self._find_session(site_id, session_id)
+        path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not path.is_file():
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_NOT_FOUND, "Online MR 解析数据库不存在")
         try:
             with closing(self._connect_readonly(path)) as conn:
-                series = [row for metric in requested for row in self._query_metric(conn, metric, start_time, end_time, limit)]
+                rows = self._query_switch_rows(conn, source, start_time, end_time, limit + 1, offset)
         except OnlineMrQueryError:
             raise
         except sqlite3.Error as exc:
             raise self._database_error(exc) from exc
-        return [self._downsample(row, mode, bucket_seconds) for row in series]
+        items = rows[:limit]
+        return OnlineMrSwitchRssiPageDTO(items=items, limit=limit, offset=offset, has_more=len(rows) > limit)
 
     def list_notes(self, site_id: str, session_id: str, *, limit: int = 200, offset: int = 0) -> list[OnlineMrManualNoteDTO]:
         limit, offset = self._pagination(limit, offset)
@@ -499,14 +605,15 @@ class OnlineMrQueryService:
 
     def query_timeline(self, site_id: str, session_id: str, *, limit: int = 500, offset: int = 0) -> list[OnlineMrTimelineEventDTO]:
         limit, offset = self._pagination(limit, offset)
-        notes = self.list_notes(site_id, session_id, limit=MAX_QUERY_LIMIT)
+        fetch_limit = min(MAX_QUERY_LIMIT, offset + limit)
+        notes = self.list_notes(site_id, session_id, limit=fetch_limit)
         rows = [OnlineMrTimelineEventDTO(**note.model_dump()) for note in notes]
         session_dir = self._find_session(site_id, session_id)
         path = session_dir / "parsed" / "online_diagnosis.sqlite"
         if path.is_file():
             try:
                 with closing(self._connect_readonly(path)) as conn:
-                    rows.extend(self._database_timeline(conn, session_id))
+                    rows.extend(self._database_timeline(conn, session_id, fetch_limit))
             except OnlineMrQueryError:
                 raise
             except sqlite3.Error as exc:
@@ -670,20 +777,22 @@ class OnlineMrQueryService:
         start_time: str | None,
         end_time: str | None,
         limit: int,
+        offset: int = 0,
     ) -> list[OnlineMrMetricSeriesDTO]:
         specs = {
-            OnlineMrMetricType.RSSI: ("main_link_samples", "mr_rssi", ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), None),
-            OnlineMrMetricType.MAIN_LINK: ("main_link_samples", None, ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), "resolved_peer_name"),
-            OnlineMrMetricType.CTL_BUSY: ("channel_busy_records", "ctl_busy", ("device_time", "device_clock"), ("radio",), None),
-            OnlineMrMetricType.TX_BUSY: ("channel_busy_records", "tx_busy", ("device_time", "device_clock"), ("radio",), None),
-            OnlineMrMetricType.RX_BUSY: ("channel_busy_records", "rx_busy", ("device_time", "device_clock"), ("radio",), None),
-            OnlineMrMetricType.INTERFACE_IN_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None),
-            OnlineMrMetricType.INTERFACE_OUT_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None),
-            OnlineMrMetricType.PING_RTT: ("fping_samples", "latency_ms", ("device_aligned_time", "collector_time", "local_time"), ("target_ip", "target_name"), None),
-            OnlineMrMetricType.PING_LOSS: ("fping_1s_summary", "loss_percent", ("device_bucket_time", "bucket_time", "local_bucket_time"), ("target_ip", "target_name"), None),
-            OnlineMrMetricType.IPERF_BITRATE: ("iperf_intervals", "bitrate_mbps", ("device_interval_center_time", "device_aligned_time", "interval_center_time", "collector_time"), ("run_id",), None),
+            OnlineMrMetricType.RSSI: ("main_link_samples", "mr_rssi", ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), None, "dBm"),
+            OnlineMrMetricType.MAIN_LINK: ("main_link_samples", None, ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), "resolved_peer_name", ""),
+            OnlineMrMetricType.CTL_BUSY: ("channel_busy_records", "ctl_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
+            OnlineMrMetricType.TX_BUSY: ("channel_busy_records", "tx_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
+            OnlineMrMetricType.RX_BUSY: ("channel_busy_records", "rx_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
+            OnlineMrMetricType.INTERFACE_IN_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None, "pps"),
+            OnlineMrMetricType.INTERFACE_OUT_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None, "pps"),
+            OnlineMrMetricType.PING_RTT: ("fping_samples", "latency_ms", ("device_aligned_time", "collector_time", "local_time"), ("target_ip", "target_name"), None, "ms"),
+            OnlineMrMetricType.PING_LOSS: ("fping_1s_summary", "loss_percent", ("device_bucket_time", "bucket_time", "local_bucket_time"), ("target_ip", "target_name"), None, "%"),
+            OnlineMrMetricType.IPERF_BITRATE: ("iperf_intervals", "bitrate_mbps", ("device_interval_center_time", "device_aligned_time", "interval_center_time", "collector_time"), ("run_id",), None, "Mbps"),
+            OnlineMrMetricType.RADIO_STATISTICS: ("radio_statistics_samples", "metric_value", ("collector_time", "device_clock"), ("radio", "metric_name", "metric_unit"), "metric_name", ""),
         }
-        table, value_column, time_candidates, dimensions, text_column = specs[metric]
+        table, value_column, time_candidates, dimensions, text_column, unit = specs[metric]
         columns = self._table_columns(conn, table)
         if not columns:
             return []
@@ -698,7 +807,8 @@ class OnlineMrQueryService:
         selects = [f"{time_expr} AS metric_time"]
         selects.append(f"{value_column} AS metric_value" if value_column else "NULL AS metric_value")
         selects.append(f"{text_column} AS text_value" if text_column else "NULL AS text_value")
-        selects.extend(f"{name} AS dim_{name}" for name in available_dimensions)
+        evidence_dimensions = [name for name in ("raw_file", "raw_line_start", "raw_line_end") if name in columns]
+        selects.extend(f"{name} AS dim_{name}" for name in (*available_dimensions, *evidence_dimensions))
         where = [f"{time_expr} IS NOT NULL"]
         params: list[Any] = []
         if metric == OnlineMrMetricType.PING_RTT and "success" in columns:
@@ -714,12 +824,12 @@ class OnlineMrQueryService:
         if end_time:
             where.append(f"{time_expr} <= ?")
             params.append(end_time)
-        params.append(limit)
-        sql = f"SELECT {', '.join(selects)} FROM {table} WHERE {' AND '.join(where)} ORDER BY metric_time, rowid LIMIT ?"
+        params.extend((limit, offset))
+        sql = f"SELECT {', '.join(selects)} FROM {table} WHERE {' AND '.join(where)} ORDER BY metric_time, rowid LIMIT ? OFFSET ?"
         grouped: dict[str, list[OnlineMrMetricPointDTO]] = defaultdict(list)
         for row in conn.execute(sql, params):
-            dimension_values = {name: row[f"dim_{name}"] for name in available_dimensions if row[f"dim_{name}"] not in (None, "")}
-            key = "|".join(f"{name}={dimension_values[name]}" for name in sorted(dimension_values)) or "default"
+            dimension_values = {name: row[f"dim_{name}"] for name in (*available_dimensions, *evidence_dimensions) if row[f"dim_{name}"] not in (None, "")}
+            key = "|".join(f"{name}={dimension_values[name]}" for name in sorted(available_dimensions) if name in dimension_values) or "default"
             value = row["metric_value"]
             grouped[key].append(
                 OnlineMrMetricPointDTO(
@@ -729,16 +839,99 @@ class OnlineMrQueryService:
                     dimensions=dimension_values,
                 )
             )
-        return [OnlineMrMetricSeriesDTO(metric_type=metric, series_key=key, points=points, summary=self._metric_summary(points)) for key, points in grouped.items()]
+        return [
+            OnlineMrMetricSeriesDTO(
+                metric_type=metric,
+                series_key=key,
+                unit=unit or str(points[0].dimensions.get("metric_unit") or ""),
+                points=points,
+                summary=self._metric_summary(points),
+            )
+            for key, points in grouped.items()
+        ]
+
+    def _query_switch_rows(
+        self,
+        conn: sqlite3.Connection,
+        source: OnlineMrSwitchRssiSource,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[OnlineMrSwitchRssiWindowDTO]:
+        table = "switch_history_events" if source == OnlineMrSwitchRssiSource.HISTORY else "switch_realtime_events"
+        columns = self._table_columns(conn, table)
+        if not columns:
+            return []
+        required = {
+            "id", "radio", "old_peer_name", "old_peer_mac", "old_rssi",
+            "new_peer_name", "new_peer_mac", "new_rssi", "switch_reason_text",
+            "raw_file", "raw_line_start", "raw_line_end",
+        }
+        if not required.issubset(columns):
+            return []
+        time_candidates = (
+            ("event_time_local", "event_time_device", "snapshot_collector_time")
+            if source == OnlineMrSwitchRssiSource.HISTORY
+            else ("device_time",)
+        )
+        available_times = [name for name in time_candidates if name in columns]
+        if not available_times:
+            return []
+        time_parts = [f"NULLIF({name}, '')" for name in available_times]
+        time_expr = time_parts[0] if len(time_parts) == 1 else f"COALESCE({', '.join(time_parts)})"
+        where = [f"{time_expr} IS NOT NULL"]
+        params: list[Any] = []
+        if start_time:
+            where.append(f"{time_expr} >= ?")
+            params.append(start_time)
+        if end_time:
+            where.append(f"{time_expr} <= ?")
+            params.append(end_time)
+        params.extend((limit, offset))
+        rows = conn.execute(
+            f"SELECT id, {time_expr} AS event_time, radio, old_peer_name, old_peer_mac, old_rssi, "
+            "new_peer_name, new_peer_mac, new_rssi, switch_reason_text, raw_file, raw_line_start, raw_line_end "
+            f"FROM {table} WHERE {' AND '.join(where)} ORDER BY event_time, id LIMIT ? OFFSET ?",
+            params,
+        )
+        return [
+            OnlineMrSwitchRssiWindowDTO(
+                event_id=f"{source.value}-{row['id']}",
+                source=source,
+                event_time=self._text_or_none(row["event_time"]),
+                radio=int(row["radio"]) if row["radio"] is not None else None,
+                reason=str(row["switch_reason_text"] or "主链路切换"),
+                old_peer_name=str(row["old_peer_name"] or ""),
+                old_peer_mac=str(row["old_peer_mac"] or ""),
+                old_rssi_dbm=float(row["old_rssi"]) if row["old_rssi"] is not None else None,
+                new_peer_name=str(row["new_peer_name"] or ""),
+                new_peer_mac=str(row["new_peer_mac"] or ""),
+                new_rssi_dbm=float(row["new_rssi"]) if row["new_rssi"] is not None else None,
+                raw_file=str(row["raw_file"] or ""),
+                raw_line_start=int(row["raw_line_start"]) if row["raw_line_start"] is not None else None,
+                raw_line_end=int(row["raw_line_end"]) if row["raw_line_end"] is not None else None,
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
-    def _database_timeline(self, conn: sqlite3.Connection, session_id: str) -> list[OnlineMrTimelineEventDTO]:
+    def _database_timeline(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        fetch_limit: int,
+    ) -> list[OnlineMrTimelineEventDTO]:
         rows: list[OnlineMrTimelineEventDTO] = []
         if self._table_columns(conn, "analysis_events"):
-            for row in conn.execute("SELECT id, collector_time, event_type, severity, summary_text, details_json FROM analysis_events ORDER BY collector_time"):
+            for row in conn.execute(
+                "SELECT id, collector_time, event_type, severity, summary_text, details_json "
+                "FROM analysis_events ORDER BY collector_time LIMIT ?",
+                (fetch_limit,),
+            ):
                 rows.append(
                     OnlineMrTimelineEventDTO(
                         event_id=f"analysis-{row['id']}",
@@ -752,7 +945,11 @@ class OnlineMrQueryService:
                     )
                 )
         if self._table_columns(conn, "switch_history_events"):
-            for row in conn.execute("SELECT id, event_time_local, event_time_device, radio, old_peer_name, new_peer_name, switch_reason_text FROM switch_history_events ORDER BY event_time_local, event_time_device"):
+            for row in conn.execute(
+                "SELECT id, event_time_local, event_time_device, radio, old_peer_name, new_peer_name, switch_reason_text "
+                "FROM switch_history_events ORDER BY event_time_local, event_time_device LIMIT ?",
+                (fetch_limit,),
+            ):
                 rows.append(
                     OnlineMrTimelineEventDTO(
                         event_id=f"switch-{row['id']}",
@@ -763,6 +960,36 @@ class OnlineMrQueryService:
                         event_type="link_switch",
                         title=str(row["switch_reason_text"] or "主链路切换"),
                         payload={"radio": row["radio"], "old_peer_name": row["old_peer_name"], "new_peer_name": row["new_peer_name"]},
+                    )
+                )
+        if self._table_columns(conn, "switch_realtime_events"):
+            for row in conn.execute(
+                "SELECT id, device_time, radio, old_peer_name, old_peer_mac, old_rssi, "
+                "new_peer_name, new_peer_mac, new_rssi, switch_reason_text, "
+                "raw_file, raw_line_start, raw_line_end FROM switch_realtime_events "
+                "ORDER BY device_time LIMIT ?",
+                (fetch_limit,),
+            ):
+                rows.append(
+                    OnlineMrTimelineEventDTO(
+                        event_id=f"switch-realtime-{row['id']}",
+                        session_id=session_id,
+                        device_time=self._text_or_none(row["device_time"]),
+                        source="switch_realtime",
+                        event_type="link_switch",
+                        title=str(row["switch_reason_text"] or "实时主链路切换"),
+                        payload={
+                            "radio": row["radio"],
+                            "old_peer_name": row["old_peer_name"],
+                            "old_peer_mac": row["old_peer_mac"],
+                            "old_rssi_dbm": row["old_rssi"],
+                            "new_peer_name": row["new_peer_name"],
+                            "new_peer_mac": row["new_peer_mac"],
+                            "new_rssi_dbm": row["new_rssi"],
+                            "raw_file": row["raw_file"],
+                            "raw_line_start": row["raw_line_start"],
+                            "raw_line_end": row["raw_line_end"],
+                        },
                     )
                 )
         return rows

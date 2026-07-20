@@ -3,13 +3,18 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
+import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
+import MeshCounterDeltaChart from '../../components/mesh-analysis/MeshCounterDeltaChart.vue'
+import MeshRateChart from '../../components/mesh-analysis/MeshRateChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
+import MeshSwitchRssiChart from '../../components/mesh-analysis/MeshSwitchRssiChart.vue'
+import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
-  createMeshProfile, getMeshAlignment, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
-  getMeshRssi, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
-  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest,
+  applyMeshBundleImport, createMeshProfile, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
+  getMeshCounterDeltas, getMeshRssi, getMeshRateSeries, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
+  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshBundle,
 } from '../../api/meshAnalysis'
 import { listVehicleMrs } from '../../api/railTransitBaseData'
 import {
@@ -17,8 +22,8 @@ import {
 } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
-  MeshAlignment, MeshAlignmentPoint, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact,
-  MeshChannelBusy, MeshLinkDetail, MeshProfile, MeshRawSource, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent, MeshTimelineItem,
+  MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
+  MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshProfile, MeshRatePage, MeshRawSource, MeshRawTail, MeshRssi, MeshSessionDetail, MeshSwitchEvent, MeshTimelineItem,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -38,10 +43,11 @@ const timeline = ref<MeshTimelineItem[]>([])
 const switches = ref<MeshSwitchEvent[]>([])
 const rssi = ref<MeshRssi | null>(null)
 const channelBusy = ref<MeshChannelBusy[]>([])
+const rateSeries = ref<MeshRatePage>({ items: [], total: 0, downsampled: false })
+const counterDeltas = ref<MeshCounterDeltaPage>({ items: [], total: 0, downsampled: false })
 const anomalies = ref<MeshAnomaly[]>([])
 const anomalyTotal = ref(0)
 const apStatistics = ref<MeshApStatistics[]>([])
-const alignment = ref<MeshAlignment | null>(null)
 const artifacts = ref<MeshArtifact[]>([])
 const rawTail = ref<MeshRawTail | null>(null)
 const profiles = ref<MeshProfile[]>([])
@@ -57,6 +63,10 @@ const taskLoading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
 const activeTab = ref('links')
+const warningsExpanded = ref(false)
+const bundlePreview = ref<MeshBundlePreview | null>(null)
+const bundleMappings = reactive<Record<string, MeshBundleMapping & { confirmed: boolean }>>({})
+const bundlePreviewLoading = ref(false)
 const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -72,13 +82,31 @@ const cards = computed(() => summary.value ? [
   ['乒乓切换', summary.value.pingpong_count], ['未匹配 AP', summary.value.unmatched_ap_count],
 ] : [])
 const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+const bundleCanApply = computed(() => Boolean(
+  bundlePreview.value
+  && bundlePreview.value.items.length > 0
+  && Object.values(bundleMappings).length === bundlePreview.value.items.length
+  && Object.values(bundleMappings).every((mapping) => mapping.confirmed && mapping.member_id && mapping.train_number.trim() && mapping.role && mapping.profile_id),
+))
+const bundleValidationMessage = computed(() => {
+  if (!bundlePreview.value) return 'ZIP 尚未预览。'
+  const unresolved = bundlePreview.value.items.filter((item) => {
+    const mapping = bundleMappings[item.safe_name]
+    return !mapping?.confirmed || !mapping.train_number.trim() || !mapping.role || !mapping.profile_id
+  })
+  return unresolved.length ? `还有 ${unresolved.length} 个成员未完成列车号、端位、Profile 和人工确认。` : '所有成员已确认，可提交分析 Job。'
+})
+const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => row.timestamp))
+const timelineTimeGroups = computed(() => buildMeshTimeGroupClasses(timeline.value, (row) => row.start_time))
+const switchTimeGroups = computed(() => buildMeshTimeGroupClasses(switches.value, (row) => row.timestamp))
+const busyTimeGroups = computed(() => buildMeshTimeGroupClasses(channelBusy.value, (row) => row.timestamp))
 type TaskResultRow = { name: string; value: string }
 const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
   { key: 'name', label: '结果项', minWidth: 220 },
   { key: 'value', label: '值', align: 'left', alignmentReason: 'long-text', minWidth: 240 },
 ]
 const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
-  { key: 'analysis_time', label: '分析时间', valueType: 'datetime', width: 175 },
+  { key: 'analysis_time', label: '分析时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'train_name', label: '列车', minWidth: 100 },
   { key: 'mr_name', label: 'MR', valueType: 'name', minWidth: 145 },
   { key: 'mr_role', label: '角色', width: 70 },
@@ -93,7 +121,7 @@ const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
   { key: 'actions', label: '操作', valueType: 'actions', width: 90, fixed: 'right', hideable: false },
 ]
 const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185, fixed: 'left' },
+  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215, fixed: 'left' },
   { key: 'local_radio', label: 'Mesh Radio', valueType: 'number', width: 105 },
   { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 160 },
   { key: 'peer_ap_mac', label: 'Peer MAC', valueType: 'mac', width: 145 },
@@ -109,8 +137,8 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'warning', label: '数据告警', valueType: 'error', minWidth: 150, alignmentReason: 'long-text' },
 ]
 const timelineColumns: NcTableColumn<MeshTimelineItem>[] = [
-  { key: 'start_time', label: '开始', valueType: 'datetime', width: 185 },
-  { key: 'end_time', label: '结束', valueType: 'datetime', width: 185 },
+  { key: 'start_time', label: '开始', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
+  { key: 'end_time', label: '结束', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'duration_seconds', label: '持续(s)', valueType: 'duration', width: 100 },
   { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 160 },
   { key: 'peer_ap_mac', label: 'Peer MAC', valueType: 'mac', width: 145 },
@@ -119,7 +147,7 @@ const timelineColumns: NcTableColumn<MeshTimelineItem>[] = [
   { key: 'section', label: '区间', minWidth: 150 },
 ]
 const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
+  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'event_type', label: '事件', width: 130 },
   { key: 'from_ap_name', label: '原 AP', valueType: 'name', minWidth: 150 },
   { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
@@ -130,7 +158,7 @@ const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
   { key: 'station', label: '站点', width: 130 },
 ]
 const busyColumns: NcTableColumn<MeshChannelBusy>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
+  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80 },
   { key: 'ctl_busy', label: 'CtlBusy', valueType: 'percentage', width: 95, displayValue: (row) => display(row.ctl_busy) },
   { key: 'tx_busy', label: 'TxBusy', valueType: 'percentage', width: 95, displayValue: (row) => display(row.tx_busy) },
@@ -160,20 +188,11 @@ const apStatisticColumns: NcTableColumn<MeshApStatistics>[] = [
   { key: 'rssi', label: '平均 / 最小 RSSI', width: 150, displayValue: (row) => `${display(row.avg_rssi)} / ${display(row.min_rssi)}` },
   { key: 'match_status', label: '匹配', valueType: 'status', width: 90 },
 ]
-const alignmentColumns: NcTableColumn<MeshAlignmentPoint>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', width: 185 },
-  { key: 'peer_ap_name', label: 'Peer AP', valueType: 'name', minWidth: 150 },
-  { key: 'rssi', label: 'RSSI', valueType: 'number', width: 90, displayValue: (row) => display(row.rssi) },
-  { key: 'fping_rtt_ms', label: 'fping RTT', valueType: 'duration', width: 110, displayValue: (row) => display(row.fping_rtt_ms, ' ms') },
-  { key: 'fping_loss_percent', label: '丢包', valueType: 'percentage', width: 95, displayValue: (row) => display(row.fping_loss_percent, '%') },
-  { key: 'iperf_mbps', label: 'iPerf', valueType: 'rate', width: 110, displayValue: (row) => display(row.iperf_mbps, ' Mbps') },
-  { key: 'station', label: '站点', width: 130 },
-]
 const artifactColumns: NcTableColumn<MeshArtifact>[] = [
   { key: 'artifact_type', label: '类型', width: 140 },
   { key: 'name', label: '文件名', align: 'left', alignmentReason: 'path', minWidth: 260 },
   { key: 'size_bytes', label: '大小', valueType: 'number', width: 110, displayValue: (row) => formatBytes(row.size_bytes) },
-  { key: 'modified_at', label: '生成时间', valueType: 'datetime', width: 175 },
+  { key: 'modified_at', label: '生成时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'actions', label: '操作', valueType: 'actions', width: 90, hideable: false },
 ]
 const sourceColumns: NcTableColumn<MeshRawSource>[] = [
@@ -219,9 +238,10 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
   rawTail.value = null
   try {
     const id = row.session_id
-    const [detail, linkPage, timelineData, switchPage, rssiData, busyData, anomalyPage, apPage, alignmentData, artifactRows] = await Promise.all([
-      getMeshAnalysisSession(id), listMeshLinks(id, linkFilters), getMeshTimeline(id), listMeshSwitchEvents(id), getMeshRssi(id),
-      getMeshChannelBusy(id), listMeshAnomalies(id), listMeshApStatistics(id), getMeshAlignment(id), listMeshArtifacts(id),
+    const [detail, linkPage, timelineData, switchPage, rssiData, busyData, rateData, counterData, anomalyPage, apPage, artifactRows] = await Promise.all([
+      getMeshAnalysisSession(id), listMeshLinks(id, linkFilters), getMeshTimeline(id), listMeshSwitchEvents(id, { page: 1, page_size: 500 }), getMeshRssi(id),
+      getMeshChannelBusy(id), getMeshRateSeries(id, { max_points: 2_000 }), getMeshCounterDeltas(id, { max_points: 2_000 }),
+      listMeshAnomalies(id), listMeshApStatistics(id), listMeshArtifacts(id),
     ])
     selected.value = detail
     links.value = linkPage.items; linkTotal.value = linkPage.total
@@ -229,9 +249,10 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
     switches.value = switchPage.items
     rssi.value = rssiData
     channelBusy.value = busyData.items
+    rateSeries.value = rateData
+    counterDeltas.value = counterData
     anomalies.value = anomalyPage.items; anomalyTotal.value = anomalyPage.total
     apStatistics.value = apPage.items
-    alignment.value = alignmentData
     artifacts.value = artifactRows
     error.value = ''
   } catch (reason) { error.value = reason instanceof Error ? reason.message : '分析详情加载失败' }
@@ -284,15 +305,52 @@ async function createProfile(): Promise<void> {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH MR profile 创建失败' }
   finally { taskLoading.value = false }
 }
+function isSafeRelativePath(value: string): boolean {
+  const normalized = value.replaceAll('\\', '/')
+  return !normalized.startsWith('/') && !/^[A-Za-z]:\//.test(normalized) && !normalized.split('/').includes('..')
+}
 function chooseFiles(event: Event): void {
-  selectedFiles.value = Array.from((event.target as HTMLInputElement).files || []).filter((file) => ['.log', '.txt'].some((suffix) => file.name.toLowerCase().endsWith(suffix)))
+  const files = Array.from((event.target as HTMLInputElement).files || [])
+  selectedFiles.value = files.filter((file) => {
+    const name = file.name.toLowerCase()
+    const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || name
+    return ['.zip', '.log', '.txt', '.gz'].some((suffix) => name.endsWith(suffix)) && isSafeRelativePath(relative)
+  })
+  bundlePreview.value = null
+  for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
+  const archive = selectedFiles.value.find((file) => file.name.toLowerCase().endsWith('.zip'))
+  if (archive) void previewBundle(archive)
+}
+async function previewBundle(file: File): Promise<void> {
+  bundlePreviewLoading.value = true
+  error.value = ''
+  try {
+    const preview = await previewMeshBundle(file)
+    bundlePreview.value = preview
+    for (const item of preview.items) {
+      const firstCandidate = item.selected_profile_id || item.candidates[0]?.profile_id || ''
+      bundleMappings[item.safe_name] = {
+        member_id: item.safe_name,
+        train_number: item.train_number,
+        role: item.role === 'CT' || item.role === 'CW' ? item.role : 'CT',
+        profile_id: firstCandidate,
+        confirmed: item.match_status === 'matched' && Boolean(firstCandidate) && Boolean(item.train_number) && Boolean(item.role),
+      }
+    }
+  } catch (reason) {
+    bundlePreview.value = null
+    error.value = reason instanceof Error ? reason.message : 'MESH ZIP 预览失败'
+  } finally { bundlePreviewLoading.value = false }
+}
+function profileCandidates(item: MeshBundlePreview['items'][number]): Array<{ profile_id: string; display_name: string }> {
+  return item.candidates.length ? item.candidates : profiles.value.map((profile) => ({ profile_id: profile.mr_id, display_name: profile.display_name }))
 }
 function rememberTask(value: RailTransitTask | null): void { task.value = value; if (value) localStorage.setItem(taskStorageKey, value.task_id); else localStorage.removeItem(taskStorageKey) }
 function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskTimer = null }
 async function afterTask(): Promise<void> {
   if (task.value?.status !== 'COMPLETED') return
   await refreshOverview()
-  if (task.value.action === 'mesh_log_import') await loadProfiles()
+  if (['mesh_log_import', 'mesh_bundle_import'].includes(task.value.action)) await loadProfiles()
   if (selected.value) artifacts.value = await listMeshArtifacts(selected.value.session.session_id)
 }
 function pollTask(): void {
@@ -314,6 +372,16 @@ function startImport(): void {
   void startTask(() => importMeshAnalysis(selectedFiles.value, { mr_id: selectedProfileId.value }), 'MESH 原始日志导入启动失败')
   importVisible.value = false
 }
+function startBundleImport(): void {
+  if (!bundlePreview.value || !bundleCanApply.value) return
+  const payload: MeshBundleImportRequest = {
+    preview_id: bundlePreview.value.preview_id,
+    mappings: Object.values(bundleMappings).map(({ confirmed: _confirmed, ...mapping }) => mapping),
+    explicit_confirmation: true,
+  }
+  void startTask(() => applyMeshBundleImport(payload), 'MESH ZIP 导入启动失败')
+  importVisible.value = false
+}
 function generateReport(): void {
   if (!selected.value) return
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id), 'MESH 分析报告生成启动失败')
@@ -322,7 +390,7 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_analysis_report'].includes(item.action)) || null)
+    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_analysis_report'].includes(item.action)) || null)
     pollTask()
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务恢复失败' }
 }
@@ -337,6 +405,11 @@ function openTaskWindow(taskId = task.value?.task_id || ''): void {
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
 function formatBytes(value: number): string { if (!value) return '0 B'; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB` }
 function severityType(value: string): 'error' | 'warning' | 'info' { return value === 'error' || value === 'critical' ? 'error' : value === 'warning' ? 'warning' : 'info' }
+function linkRowClass(params: { row: MeshLinkDetail }): string { return linkTimeGroups.value.get(params.row) || '' }
+function timelineRowClass(params: { row: MeshTimelineItem }): string { return timelineTimeGroups.value.get(params.row) || '' }
+function switchRowClass(params: { row: MeshSwitchEvent }): string { return switchTimeGroups.value.get(params.row) || '' }
+function busyRowClass(params: { row: MeshChannelBusy }): string { return busyTimeGroups.value.get(params.row) || '' }
+function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-role-active' : value === 'STANDBY' ? 'mesh-role-standby' : '' }
 </script>
 
 <template>
@@ -349,7 +422,36 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
 
     <div v-if="task" class="content-card task-card"><div class="detail-heading"><div><h2>MESH 处理结果 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><NcDataTable v-if="taskRows.length" table-id="mesh-analysis-task-results" route-key="/rail-transit/mesh-analysis" :preference-scope="task.task_id" :data="taskRows" :columns="taskResultColumns" max-height="220" /><el-alert title="停止、日志、恢复与生成报告下载统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow()">打开任务窗口</el-button></el-alert></div>
 
-    <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(880px, 96vw)"><el-form label-position="top"><el-form-item label="MESH MR profile"><el-select v-model="selectedProfileId" filterable placeholder="选择 profile" style="width:100%"><el-option v-for="profile in profiles" :key="profile.mr_id" :label="`${profile.display_name} · ${profile.source_file_count} 文件`" :value="profile.mr_id" /></el-select></el-form-item><el-form-item label="选择原始日志"><div class="jump-actions"><el-button @click="fileInput?.click()">选择 LOG/TXT 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div><input ref="fileInput" class="hidden-input" type="file" multiple accept=".log,.txt" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles"></el-form-item><el-divider content-position="left">创建新 profile</el-divider><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建 profile</el-button></el-form><template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selectedProfileId || !selectedFiles.length" @click="startImport">开始导入分析</el-button></template></el-dialog>
+    <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(1180px, 96vw)">
+      <el-form label-position="top">
+        <el-form-item label="选择原始日志或 ZIP">
+          <div class="jump-actions"><el-button @click="fileInput?.click()">选择 ZIP / LOG / GZ 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div>
+          <input ref="fileInput" class="hidden-input" type="file" multiple accept=".zip,.log,.txt,.gz" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles">
+        </el-form-item>
+        <el-alert v-if="bundlePreviewLoading" title="正在预览 ZIP 成员和 Profile 候选…" type="info" :closable="false" show-icon />
+        <template v-if="bundlePreview">
+          <el-divider content-position="left">ZIP 成员映射</el-divider>
+          <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
+          <div class="bundle-table-wrap">
+            <table class="bundle-table"><thead><tr><th>成员</th><th>列车号</th><th>端位</th><th>Profile 候选</th><th>状态</th><th>确认</th></tr></thead><tbody>
+              <tr v-for="item in bundlePreview.items" :key="item.safe_name">
+                <td><strong>{{ item.safe_name }}</strong><small>{{ item.size_bytes }} B · {{ item.sha256.slice(0, 12) }}…</small></td>
+                <td><el-input v-model="bundleMappings[item.safe_name].train_number" size="small" @input="bundleMappings[item.safe_name].confirmed = false" /></td>
+                <td><el-select v-model="bundleMappings[item.safe_name].role" size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select></td>
+                <td><el-select v-model="bundleMappings[item.safe_name].profile_id" filterable size="small" @change="bundleMappings[item.safe_name].confirmed = false"><el-option v-for="candidate in profileCandidates(item)" :key="candidate.profile_id" :label="candidate.display_name" :value="candidate.profile_id" /></el-select></td>
+                <td><el-tag :type="item.match_status === 'matched' ? 'success' : 'warning'">{{ item.match_status }}</el-tag></td>
+                <td><el-checkbox v-model="bundleMappings[item.safe_name].confirmed" :disabled="!bundleMappings[item.safe_name].train_number.trim() || !bundleMappings[item.safe_name].role || !bundleMappings[item.safe_name].profile_id">人工确认</el-checkbox></td>
+              </tr>
+            </tbody></table>
+          </div>
+        </template>
+        <template v-else>
+          <el-form-item label="MESH MR profile"><el-select v-model="selectedProfileId" filterable placeholder="选择 profile" style="width:100%"><el-option v-for="profile in profiles" :key="profile.mr_id" :label="`${profile.display_name} · ${profile.source_file_count} 文件`" :value="profile.mr_id" /></el-select></el-form-item>
+        </template>
+        <el-divider content-position="left">创建新 profile</el-divider><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建 profile</el-button>
+      </el-form>
+      <template #footer><el-button @click="importVisible = false">取消</el-button><el-button v-if="bundlePreview" type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">确认映射并提交 Job</el-button><el-button v-else type="primary" :loading="taskLoading" :disabled="!selectedProfileId || !selectedFiles.length" @click="startImport">开始导入分析</el-button></template>
+    </el-dialog>
 
     <div class="summary-grid">
       <article v-for="card in cards" :key="String(card[0])" class="metric-card"><span>{{ card[0] }}</span><strong>{{ card[1] }}</strong></article>
@@ -376,31 +478,37 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
           <el-button @click="router.push('/rail-transit/train-online')">列车在线情况</el-button>
-          <el-button v-if="selected.session.task_id" @click="openTaskWindow(selected.session.task_id)">任务窗口</el-button>
         </div>
       </div>
-      <el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />
+      <div v-if="selected.warnings.length" class="warning-summary">
+        <el-alert :title="`数据告警 ${selected.warnings.length} 条`" :type="severityType(selected.warnings[0]?.severity || 'warning')" :closable="false" show-icon>
+          <template #default><el-button link type="primary" @click="warningsExpanded = !warningsExpanded">{{ warningsExpanded ? '收起详情' : '查看全部' }}</el-button></template>
+        </el-alert>
+        <div v-if="warningsExpanded" class="warning-list"><el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon /></div>
+      </div>
 
       <el-tabs v-model="activeTab">
         <el-tab-pane label="链路明细" name="links">
           <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
-          <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" border height="430" />
+          <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="430"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination :current-page="linkFilters.page" :page-size="linkFilters.page_size" layout="prev, pager, next" :total="linkTotal" @current-change="reloadLinks" /></div>
         </el-tab-pane>
 
-        <el-tab-pane label="主链路时间线" name="timeline"><NcDataTable table-id="mesh-analysis-timeline" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="timeline" :columns="timelineColumns" border height="430" /></el-tab-pane>
+        <el-tab-pane label="主链路时间线" name="timeline"><NcDataTable table-id="mesh-analysis-timeline" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="timeline" :columns="timelineColumns" :stripe="false" :row-class-name="timelineRowClass" border height="430" /></el-tab-pane>
 
-        <el-tab-pane label="切换事件" name="switches"><NcDataTable table-id="mesh-analysis-switch-events" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="switches" :columns="switchColumns" border height="430" /></el-tab-pane>
+        <el-tab-pane label="切换事件" name="switches"><NcDataTable table-id="mesh-analysis-switch-events" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></el-tab-pane>
 
         <el-tab-pane label="RSSI" name="rssi"><template v-if="rssi"><div class="mini-summary"><span>最近 <strong>{{ display(rssi.statistics.latest_rssi) }}</strong></span><span>最小 <strong>{{ display(rssi.statistics.min_rssi) }}</strong></span><span>平均 <strong>{{ display(rssi.statistics.avg_rssi) }}</strong></span><span>最大 <strong>{{ display(rssi.statistics.max_rssi) }}</strong></span><span>样本 <strong>{{ rssi.statistics.sample_count }}</strong></span><span>缺失 <strong>{{ rssi.statistics.missing_sample_count }}</strong></span></div><MeshRssiChart :points="rssi.points" /><p class="hint">{{ rssi.downsampled ? `已由后端从 ${rssi.total_points} 点降采样` : '展示全部结构化样本' }}；空值保持为空，不用 0 补齐。</p></template></el-tab-pane>
 
-        <el-tab-pane label="空口繁忙度" name="busy"><NcDataTable table-id="mesh-analysis-channel-busy" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="channelBusy" :columns="busyColumns" border height="430" /></el-tab-pane>
+        <el-tab-pane label="TxBusy / RxBusy" name="busy"><MeshChannelBusyChart :points="channelBusy" /><NcDataTable table-id="mesh-analysis-channel-busy" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="channelBusy" :columns="busyColumns" :stripe="false" :row-class-name="busyRowClass" border height="430" /></el-tab-pane>
+
+        <el-tab-pane label="Rate（原始值）" name="rate"><MeshRateChart :points="rateSeries.items" /><p class="hint">{{ rateSeries.downsampled ? `已由后端从 ${rateSeries.total} 点降采样` : `后端返回 ${rateSeries.total} 点` }}；仅展示 Query API 原始值，不猜测单位。</p></el-tab-pane>
+        <el-tab-pane label="Retry / Error 增量" name="retry-error"><MeshCounterDeltaChart :points="counterDeltas.items" /><p class="hint">{{ counterDeltas.downsampled ? `已由后端从 ${counterDeltas.total} 点降采样` : `后端返回 ${counterDeltas.total} 点` }}；增量由后端提供，Vue 不计算。</p></el-tab-pane>
+        <el-tab-pane label="切换前后 RSSI" name="switch-rssi"><MeshSwitchRssiChart :events="switches" /><p class="hint">基于正式切换事件的 before_rssi / after_rssi / timestamp / AP / Radio 字段，以散点展示，不连接为连续趋势。</p></el-tab-pane>
 
         <el-tab-pane :label="`异常摘要 (${anomalyTotal})`" name="anomalies"><NcDataTable table-id="mesh-analysis-anomalies" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="anomalies" :columns="anomalyColumns" border height="430"><template #cell-severity="{ row }"><el-tag :type="severityType(row.severity)">{{ row.severity }}</el-tag></template></NcDataTable></el-tab-pane>
 
         <el-tab-pane label="AP 统计" name="aps"><NcDataTable table-id="mesh-analysis-ap-statistics" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="apStatistics" :columns="apStatisticColumns" border height="430" /></el-tab-pane>
-
-        <el-tab-pane label="fping / iPerf 对齐" name="alignment"><el-alert v-if="alignment?.message" :title="alignment.message" type="info" :closable="false" /><NcDataTable table-id="mesh-analysis-traffic-alignment" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="alignment?.items || []" :columns="alignmentColumns" border height="400" empty-text="暂无可对齐的结构化流量数据" /></el-tab-pane>
 
         <el-tab-pane label="报告与来源" name="artifacts">
           <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
@@ -413,5 +521,5 @@ function severityType(value: string): 'error' | 'warning' | 'info' { return valu
 </template>
 
 <style scoped>
-.mesh-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--el-text-color-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar,.jump-actions,.mini-summary{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:300px}.toolbar .el-select{width:130px}.pagination{padding-top:12px;color:var(--el-text-color-secondary)}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--el-fill-color-light)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}}
+.mesh-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--el-text-color-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar,.jump-actions,.mini-summary{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:300px}.toolbar .el-select{width:130px}.pagination{padding-top:12px;color:var(--el-text-color-secondary)}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--el-fill-color-light)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--el-color-success);font-weight:600}.mesh-role-standby{color:var(--el-color-warning);font-weight:600}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--el-fill-color-blank)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--el-fill-color-light)}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}}
 </style>

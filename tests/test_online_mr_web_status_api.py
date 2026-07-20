@@ -113,3 +113,106 @@ def test_current_session_returns_none_when_only_terminal_sessions_exist(
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "data": None}
+
+
+def test_analysis_api_preserves_metric_paging_units_and_switch_sources(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
+    session = _session(paths)
+    with sqlite3.connect(session / "parsed" / "online_diagnosis.sqlite") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE radio_statistics_samples (
+                id INTEGER PRIMARY KEY, collector_time TEXT, device_clock TEXT, radio INTEGER,
+                metric_name TEXT, metric_value REAL, metric_unit TEXT,
+                raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            );
+            CREATE TABLE switch_history_events (
+                id INTEGER PRIMARY KEY, event_time_local TEXT, event_time_device TEXT,
+                snapshot_collector_time TEXT, radio INTEGER, old_peer_name TEXT, old_peer_mac TEXT,
+                old_rssi REAL, new_peer_name TEXT, new_peer_mac TEXT, new_rssi REAL,
+                switch_reason_text TEXT, raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO radio_statistics_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-07-14 10:00:00", "10:00:00", 1, "TxFrameAllCnt", 10, "frame", "raw/ap_radio_statistics_raw.log", 1, 2),
+                (2, "2026-07-14 10:00:01", "10:00:01", 1, "RxFrameAllCnt", 20, "frame", "raw/ap_radio_statistics_raw.log", 3, 4),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO switch_history_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-07-14 10:01:00", None, None, 1, "AP-A", "aa", -80, "AP-B", "bb", -50, "test", "raw/switch_history_latest.log", 5, 6),
+        )
+
+    with TestClient(app) as client:
+        metric = client.get(
+            "/api/online-mr/sessions/session-1/metric-page",
+            params={
+                "metric_types": "radio_statistics",
+                "start_time": "2026-07-14 10:00:00",
+                "end_time": "2026-07-14 10:00:02",
+                "limit": 1,
+                "offset": 1,
+                "downsample": "NONE",
+                "bucket_seconds": 1,
+            },
+        )
+        switch = client.get(
+            "/api/online-mr/sessions/session-1/switch-rssi-windows",
+            params={"source": "history", "limit": 10, "offset": 0},
+        )
+
+    assert metric.status_code == 200
+    metric_data = metric.json()["data"]
+    assert metric_data["offset"] == 1
+    assert metric_data["page_size_per_metric"] == 1
+    assert metric_data["next_offset"] == 2
+    assert metric_data["series"][0]["unit"] == "frame"
+    assert metric_data["series"][0]["points"][0]["value"] == 20
+    assert switch.status_code == 200
+    assert switch.json()["data"]["items"][0] == {
+        "event_id": "history-1",
+        "source": "history",
+        "event_time": "2026-07-14 10:01:00",
+        "radio": 1,
+        "reason": "test",
+        "old_peer_name": "AP-A",
+        "old_peer_mac": "aa",
+        "old_rssi_dbm": -80.0,
+        "new_peer_name": "AP-B",
+        "new_peer_mac": "bb",
+        "new_rssi_dbm": -50.0,
+        "raw_file": "raw/switch_history_latest.log",
+        "raw_line_start": 5,
+        "raw_line_end": 6,
+    }
+
+
+def test_legacy_metrics_endpoint_still_returns_a_series_list(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
+    session = _session(paths)
+    with sqlite3.connect(session / "parsed" / "online_diagnosis.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE main_link_samples (id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER, mr_rssi REAL, peer_name TEXT)"
+        )
+        conn.execute("INSERT INTO main_link_samples VALUES (1, '2026-07-14 10:00:00', 1, -60, 'AP-1')")
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/online-mr/sessions/session-1/metrics",
+            params={"metric_types": "rssi"},
+        )
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["data"], list)
+    assert response.json()["data"][0]["points"][0]["value"] == -60

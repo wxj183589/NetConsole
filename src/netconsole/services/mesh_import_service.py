@@ -128,7 +128,8 @@ class MeshImportService:
         if not files:
             raise ImportValidationError("未选择导入文件")
         for path in files:
-            if path.suffix.casefold() not in {".log", ".txt"}:
+            name = path.name.casefold()
+            if not (name.endswith(".log") or name.endswith(".txt") or name.endswith(".log.gz") or name.endswith(".txt.gz")):
                 raise ImportValidationError(f"文件类型不匹配：{path.name}")
             if not path.is_file():
                 raise ImportValidationError(f"文件不存在或无法读取：{path}")

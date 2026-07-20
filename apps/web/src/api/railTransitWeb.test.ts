@@ -11,6 +11,7 @@ import {
   getCarNetworkPointTable,
   generateCarNetworkPointTable,
   importMeshAnalysis,
+  queryOnlineMrMetrics,
   queryOnlineMrTimeline,
   recoverCarNetworkDiagnostics,
   recoverCarNetworkPointTableTasks,
@@ -77,6 +78,17 @@ describe('rail transit Web parity API client', () => {
     await queryOnlineMrTimeline('session/1', 300)
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/sessions/session%2F1/timeline?limit=300&offset=0')
+  })
+
+  it('keeps the legacy Online MR metric consumer on the list contract', async () => {
+    const series = [{ metric_type: 'rssi', series_key: 'radio=1', unit: 'dBm', points: [], summary: { count: 0, minimum: null, maximum: null, average: null } }]
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: series }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await queryOnlineMrMetrics('session/1', ['rssi', 'ping_rtt'])
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/sessions/session%2F1/metrics?metric_types=rssi%2Cping_rtt')
+    expect(result).toEqual(series)
   })
 
   it('uses point-table read, write, generation, export and task control endpoints', async () => {

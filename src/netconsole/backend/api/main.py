@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from netconsole.application.ac.web_application_service import AcWebApplicationService
 from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
 from netconsole.application.device_detail import DeviceDetailApplicationService
+from netconsole.application.rail_transit.mesh_bundle_application_service import MeshBundleApplicationService
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
 from netconsole.application.system_maintenance import SystemMaintenanceApplicationService
 from netconsole.application.web_artifacts import WebArtifactStore
@@ -153,6 +154,7 @@ def create_app(
     frontend_dist: Path | None = None,
     desktop_session_token: str | None = None,
     rail_base_data_write_feature_enabled: bool | None = None,
+    rail_base_data_desktop_write_enabled: bool | None = None,
     online_mr_application_service: OnlineMrApplicationService | None = None,
     online_mr_web_control_service: OnlineMrWebControlService | None = None,
     online_mr_web_control_enabled: bool | None = None,
@@ -485,7 +487,6 @@ def create_app(
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,
-        online_mr_query=app.state.online_mr_query_service,
     )
     app.state.wireless_dashboard_query_service = WirelessDashboardQueryService(
         paths,
@@ -500,9 +501,16 @@ def create_app(
     )
     if rail_base_data_write_feature_enabled is None:
         rail_base_data_write_feature_enabled = feature_gate.is_enabled(WRITE_FEATURE_ID)
+    if rail_base_data_desktop_write_enabled is None:
+        rail_base_data_desktop_write_enabled = runtime_mode is RuntimeMode.DESKTOP and bool(desktop_session_token)
     rail_base_data_write_guard = BaseDataWriteGuard(
         paths,
         feature_enabled=rail_base_data_write_feature_enabled,
+        desktop_session_write_enabled=bool(
+            rail_base_data_desktop_write_enabled
+            and runtime_mode is RuntimeMode.DESKTOP
+            and desktop_session_token
+        ),
     )
     app.state.rail_transit_base_data_import_service = RailTransitBaseDataImportService(
         paths,
@@ -534,6 +542,11 @@ def create_app(
         query_service=app.state.online_mr_query_service,
         mesh_query_service=app.state.mesh_analysis_query_service,
         artifact_store=web_artifact_store,
+    )
+    app.state.mesh_bundle_application_service = MeshBundleApplicationService(
+        paths,
+        task_service,
+        web_process_adapter,
     )
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)

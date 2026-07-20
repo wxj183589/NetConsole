@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
+from netconsole.core.sites import SiteManager
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -50,6 +52,10 @@ class RailTransitBaseDataConstraintError(RuntimeError):
     pass
 
 
+class RailTransitBaseDataCompensationError(RuntimeError):
+    pass
+
+
 class RailTransitBaseDataRepository:
     """轨道交通基础资料受控写入边界；调用方负责开关、预览和审计。"""
 
@@ -57,9 +63,20 @@ class RailTransitBaseDataRepository:
         self.paths = paths
 
     def database_hash(self, site_id: str) -> str:
+        """Return the public base-data revision (SQLite plus site metadata)."""
+        return self.base_data_revision(site_id)
+
+    def _sqlite_database_hash(self, site_id: str) -> str:
         path = self._database_path(site_id)
         with self._read_connection(path) as connection:
             return hashlib.sha256(connection.serialize()).hexdigest()
+
+    def base_data_revision(self, site_id: str) -> str:
+        """Return a revision covering both the SQLite facts and site metadata."""
+        database_revision = self._sqlite_database_hash(site_id)
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(f"{database_revision}\n{payload}".encode("utf-8")).hexdigest()
 
     def list_ap_records(self, site_id: str) -> list[dict[str, Any]]:
         path = self._database_path(site_id)
@@ -113,6 +130,17 @@ class RailTransitBaseDataRepository:
         changes: Iterable[Mapping[str, Any]],
     ) -> dict[str, int | str]:
         path = self._database_path(site_id)
+        changes = list(changes)
+        site_manager = SiteManager(self.paths)
+        metadata_path = self._metadata_path(site_id)
+        metadata_backup = metadata_path.read_bytes() if metadata_path.is_file() else None
+        metadata_changes = [
+            dict(change.get("values") or {})
+            for change in changes
+            if str(change.get("entity_type") or "") == "site_metadata"
+        ]
+        current_metadata = site_manager.load_site_metadata(site_id)
+        metadata_applied = False
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         configure_sqlite_connection(connection, foreign_keys=True)
@@ -120,13 +148,16 @@ class RailTransitBaseDataRepository:
         try:
             self._require_table(connection)
             connection.execute("BEGIN IMMEDIATE")
-            if self._connection_hash(connection) != expected_revision:
+            if self.base_data_revision(site_id) != expected_revision:
                 raise RailTransitBaseDataRevisionConflict("base data revision changed")
             for change in changes:
                 entity_type = str(change.get("entity_type") or "")
                 action = str(change.get("action") or "")
                 values = dict(change.get("values") or {})
-                if entity_type == "station":
+                if entity_type == "site_metadata":
+                    if action != "update":
+                        raise ValueError("unsupported site metadata action")
+                elif entity_type == "station":
                     self._apply_station_change(connection, site_id, action, values)
                 elif entity_type == "section":
                     self._apply_section_change(connection, site_id, action, values)
@@ -142,13 +173,25 @@ class RailTransitBaseDataRepository:
                 if key:
                     counts[key] += 1
             self._assert_integrity(connection)
+            if metadata_changes:
+                metadata = dict(current_metadata)
+                metadata.update(metadata_changes[-1])
+                metadata_applied = True
+                site_manager.save_site_metadata(site_id, metadata)
             connection.commit()
-        except Exception:
+        except Exception as original_error:
             connection.rollback()
+            if metadata_applied:
+                try:
+                    self._restore_metadata_file(metadata_path, metadata_backup)
+                except Exception as compensation_error:
+                    error = RailTransitBaseDataCompensationError("site metadata compensation failed")
+                    error.add_note(f"original_error={type(original_error).__name__}")
+                    raise error from compensation_error
             raise
         finally:
             connection.close()
-        return {**counts, "revision": self.database_hash(site_id)}
+        return {**counts, "revision": self.base_data_revision(site_id)}
 
     def rollback_changes(self, site_id: str, changes: Iterable[Mapping[str, Any]]) -> None:
         path = self._database_path(site_id)
@@ -531,6 +574,26 @@ class RailTransitBaseDataRepository:
             raise FileNotFoundError("基础资料数据库不存在")
         return path
 
+    def _metadata_path(self, site_id: str) -> Path:
+        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        site_root = self.paths.site_dir(site_id).resolve()
+        data_root = self.paths.data_root.resolve()
+        if data_root not in site_root.parents:
+            raise ValueError("基础资料局点目录越界")
+        return site_root / "site_meta.json"
+
+    @staticmethod
+    def _restore_metadata_file(path: Path, content: bytes | None) -> None:
+        if content is None:
+            path.unlink(missing_ok=True)
+            return
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.rollback")
+        try:
+            temporary.write_bytes(content)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     @staticmethod
     def _safe_restore_values(raw: Mapping[str, Any]) -> dict[str, Any]:
         allowed = (*AP_MERGE_FIELDS, "site_id", "import_batch_id", "created_at", "updated_at")
@@ -572,6 +635,7 @@ __all__ = [
     "AP_MERGE_FIELDS",
     "RailTransitBaseDataRepository",
     "RailTransitBaseDataConstraintError",
+    "RailTransitBaseDataCompensationError",
     "RailTransitBaseDataRevisionConflict",
     "RailTransitBaseDataRollbackConflict",
 ]

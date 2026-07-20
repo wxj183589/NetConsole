@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pytest
 from matplotlib.dates import date2num
 
 from netconsole.core.database import Database
@@ -14,7 +15,7 @@ from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_A
 from netconsole.parsers import mesh_log_parser
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
@@ -40,6 +41,36 @@ def test_parse_timestamp_and_standy(tmp_path):
     assert records[0].timestamp_tag == "3"
     assert records[0].link_state_raw == "Standy"
     assert records[0].link_state == "STANDBY"
+
+
+def test_same_timestamp_with_different_tags_remains_distinct(tmp_path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    source.write_text(
+        "\n".join(
+            [
+                "[1] 2025/12/03 10:12:33.579 (2)",
+                LINE_A,
+                "[1] 2025/12/03 10:12:33.579 (4)",
+                LINE_A,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    total, rows = repository.query_links(10, 0)
+
+    assert total == 2
+    assert [row["timestamp_tag"] for row in rows] == ["2", "4"]
+    assert len({row["sample_id"] for row in rows}) == 2
+    _, events = repository.query_events(10, 0)
+    assert not [event for event in events if event["event_type"] == EVENT_MULTI_ACTIVE]
+    parsed_db_path = Path(repository.list_source_files()[0]["parsed_db_path"])
+    with sqlite3.connect(parsed_db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 2
 
 
 def test_signal_dbm_calculation():
@@ -159,13 +190,13 @@ def test_mesh_import_creates_compact_schema_without_raw_payload_columns(tmp_path
 
     with sqlite3.connect(repo.path) as conn:
         schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
-        assert schema_version == "meshlog_compact_v2_single_log"
+        assert schema_version == "meshlog_compact_v3_tagged_samples"
         parsed_db_path = Path(conn.execute("SELECT parsed_db_path FROM source_files").fetchone()[0])
         assert parsed_db_path.name.endswith(".mesh.sqlite")
         assert conn.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == 0
     with sqlite3.connect(parsed_db_path) as conn:
         schema_version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
-        assert schema_version == "meshlog_compact_v2_single_log"
+        assert schema_version == "meshlog_compact_v3_tagged_samples"
         table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()}
         assert {"active_points", "active_segments", "switch_events", "rssi_stats", "diagnosis_events"} <= table_names
         forbidden = {"raw_line", "raw_text", "raw_block", "raw_payload", "full_command_output", "debug_text", "metrics_json", "deltas_json", "raw_file"}
@@ -177,26 +208,19 @@ def test_mesh_import_creates_compact_schema_without_raw_payload_columns(tmp_path
         assert conn.execute("SELECT COUNT(*) FROM rssi_stats").fetchone()[0] >= 1
 
 
-def test_mesh_repository_recovers_when_schema_meta_table_is_missing(tmp_path):
+def test_mesh_repository_requires_external_rebuild_for_incompatible_schema(tmp_path):
     db_path = tmp_path / "mesh.sqlite"
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE mesh_links(raw_line TEXT)")
     conn.commit()
     conn.close()
 
-    repo = MeshMrRepository(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.execute("DROP TABLE schema_meta")
-    conn.commit()
-    conn.close()
-
-    assert not repo.needs_derived_analysis_rebuild()
+    with pytest.raises(MeshSchemaRebuildRequired, match="rebuild_mesh_parsed_data"):
+        MeshMrRepository(db_path)
     with sqlite3.connect(db_path) as conn:
-        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
         columns = {row[1] for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()}
-    assert version == "meshlog_compact_v2_single_log"
-    assert "raw_line" not in columns
-    assert list(tmp_path.glob("mesh.sqlite.legacy_*"))
+    assert "raw_line" in columns
+    assert not list(tmp_path.glob("mesh.sqlite.legacy_*"))
 
 
 def test_multiple_mrs_use_isolated_databases(tmp_path):

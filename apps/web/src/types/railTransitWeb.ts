@@ -21,6 +21,7 @@ export interface OnlineMrMetricPoint {
 export interface OnlineMrMetricSeries {
   metric_type: string
   series_key: string
+  unit: string
   points: OnlineMrMetricPoint[]
   summary: { count: number; minimum: number | null; maximum: number | null; average: number | null }
 }

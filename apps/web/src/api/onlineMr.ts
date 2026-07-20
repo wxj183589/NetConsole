@@ -7,6 +7,10 @@ import type {
   OnlineMrRealtimePreview,
   OnlineMrSessionDetail,
   OnlineMrSessionSummary,
+  OnlineMrMetricPage,
+  OnlineMrSwitchRssiPage,
+  OnlineMrSwitchRssiSource,
+  OnlineMrTimelineEvent,
 } from '../types/onlineMr'
 
 interface ApiResponse<T> { ok: boolean; data: T }
@@ -44,6 +48,44 @@ export async function getOnlineMrRawTail(sessionId: string, name: string, tail =
 
 export async function listOnlineMrNotes(sessionId: string): Promise<OnlineMrManualNote[]> {
   return (await apiRequest<ApiResponse<OnlineMrManualNote[]>>(`${root}/${encodeURIComponent(sessionId)}/notes`)).data
+}
+
+export interface OnlineMrMetricQuery {
+  startTime?: string
+  endTime?: string
+  limit?: number
+  offset?: number
+  downsample?: 'NONE' | 'BUCKET_AVG' | 'MIN_MAX' | 'LATEST_PER_BUCKET'
+  bucketSeconds?: number
+}
+
+export async function queryOnlineMrMetrics(sessionId: string, metricTypes: string[], options: OnlineMrMetricQuery = {}): Promise<OnlineMrMetricPage> {
+  const query = new URLSearchParams({ metric_types: metricTypes.join(',') })
+  if (options.startTime) query.set('start_time', options.startTime)
+  if (options.endTime) query.set('end_time', options.endTime)
+  if (options.limit) query.set('limit', String(options.limit))
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  if (options.downsample) query.set('downsample', options.downsample)
+  if (options.bucketSeconds) query.set('bucket_seconds', String(options.bucketSeconds))
+  return (await apiRequest<ApiResponse<OnlineMrMetricPage>>(`${root}/${encodeURIComponent(sessionId)}/metric-page?${query}`)).data
+}
+
+export async function queryOnlineMrSwitchRssiWindows(
+  sessionId: string,
+  source: OnlineMrSwitchRssiSource,
+  options: Pick<OnlineMrMetricQuery, 'startTime' | 'endTime' | 'limit' | 'offset'> = {},
+): Promise<OnlineMrSwitchRssiPage> {
+  const query = new URLSearchParams({ source })
+  if (options.startTime) query.set('start_time', options.startTime)
+  if (options.endTime) query.set('end_time', options.endTime)
+  if (options.limit) query.set('limit', String(options.limit))
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  return (await apiRequest<ApiResponse<OnlineMrSwitchRssiPage>>(`${root}/${encodeURIComponent(sessionId)}/switch-rssi-windows?${query}`)).data
+}
+
+export async function queryOnlineMrTimeline(sessionId: string, limit = 500, offset = 0): Promise<OnlineMrTimelineEvent[]> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  return (await apiRequest<ApiResponse<OnlineMrTimelineEvent[]>>(`${root}/${encodeURIComponent(sessionId)}/timeline?${query}`)).data
 }
 
 export function addOnlineMrNote(sessionId: string, note: string): Promise<OnlineMrManualNote> {

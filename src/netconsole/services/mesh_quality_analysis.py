@@ -1003,11 +1003,20 @@ def _finish_segment(segment: dict[str, object], samples: list[dict[str, object]]
     segment["source_files"] = ", ".join(sorted({str(row.get("archived_filename") or row.get("source_file") or "") for row in row_matches if row.get("archived_filename") or row.get("source_file")}))
 
 
-def _group_by_radio_time(rows: list[dict[str, object]]) -> list[tuple[tuple[object, str], list[dict[str, object]]]]:
-    grouped: dict[tuple[object, object, str], list[dict[str, object]]] = {}
+def _group_by_radio_time(rows: list[dict[str, object]]) -> list[tuple[tuple[object, object, str], list[dict[str, object]]]]:
+    grouped: dict[tuple[object, object, object, str], list[dict[str, object]]] = {}
     for row in rows:
-        grouped.setdefault((row.get("source_file_id"), row.get("radio"), _sample_time_bucket(row.get("sample_time"))), []).append(row)
-    return sorted(grouped.items(), key=lambda item: (str(item[0][0]), item[0][2], str(item[0][1])))
+        sample_identity = row.get("sample_id") or row.get("timestamp_tag") or _sample_time_bucket(row.get("sample_time"))
+        grouped.setdefault(
+            (row.get("source_file_id"), row.get("radio"), sample_identity, _sample_time_bucket(row.get("sample_time"))),
+            [],
+        ).append(row)
+    return [
+        ((source_file_id, radio, sample_time), sample_rows)
+        for (source_file_id, radio, _sample_identity, sample_time), sample_rows in sorted(
+            grouped.items(), key=lambda item: (str(item[0][0]), item[0][3], str(item[0][1]), str(item[0][2]))
+        )
+    ]
 
 
 def _group_by_peer(rows: list[dict[str, object]]) -> dict[tuple[object, str], list[dict[str, object]]]:

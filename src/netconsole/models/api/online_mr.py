@@ -21,6 +21,7 @@ class OnlineMrMetricType(StrEnum):
     PING_LOSS = "ping_loss"
     IPERF_BITRATE = "iperf_bitrate"
     MAIN_LINK = "main_link"
+    RADIO_STATISTICS = "radio_statistics"
 
 
 class OnlineMrDownsampleMode(StrEnum):
@@ -28,6 +29,11 @@ class OnlineMrDownsampleMode(StrEnum):
     BUCKET_AVG = "BUCKET_AVG"
     MIN_MAX = "MIN_MAX"
     LATEST_PER_BUCKET = "LATEST_PER_BUCKET"
+
+
+class OnlineMrSwitchRssiSource(StrEnum):
+    HISTORY = "history"
+    REALTIME = "realtime"
 
 
 class OnlineMrDataIntegrity(StrEnum):
@@ -177,8 +183,43 @@ class OnlineMrMetricSummaryDTO(ApiModel):
 class OnlineMrMetricSeriesDTO(ApiModel):
     metric_type: OnlineMrMetricType
     series_key: str
+    unit: str = ""
     points: list[OnlineMrMetricPointDTO] = Field(default_factory=list)
     summary: OnlineMrMetricSummaryDTO = Field(default_factory=OnlineMrMetricSummaryDTO)
+
+
+class OnlineMrMetricPageDTO(ApiModel):
+    series: list[OnlineMrMetricSeriesDTO] = Field(default_factory=list)
+    limit: int
+    offset: int
+    page_size_per_metric: int
+    next_offset: int
+    returned_points: int = 0
+    has_more: bool = False
+
+
+class OnlineMrSwitchRssiWindowDTO(ApiModel):
+    event_id: str
+    source: OnlineMrSwitchRssiSource
+    event_time: str | None = None
+    radio: int | None = None
+    reason: str = ""
+    old_peer_name: str = ""
+    old_peer_mac: str = ""
+    old_rssi_dbm: float | None = None
+    new_peer_name: str = ""
+    new_peer_mac: str = ""
+    new_rssi_dbm: float | None = None
+    raw_file: str = ""
+    raw_line_start: int | None = None
+    raw_line_end: int | None = None
+
+
+class OnlineMrSwitchRssiPageDTO(ApiModel):
+    items: list[OnlineMrSwitchRssiWindowDTO] = Field(default_factory=list)
+    limit: int
+    offset: int
+    has_more: bool = False
 
 
 class OnlineMrManualNoteDTO(ApiModel):

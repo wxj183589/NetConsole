@@ -44,6 +44,7 @@ class BaseDataWriteGuard:
         write_enabled: bool | None = None,
         copy_write_enabled: bool | None = None,
         real_write_enabled: bool | None = None,
+        desktop_session_write_enabled: bool = False,
         rollback_enabled: bool | None = None,
     ) -> None:
         self.paths = paths
@@ -55,18 +56,22 @@ class BaseDataWriteGuard:
         self.real_write_enabled = (
             _env_enabled(REAL_WRITE_ENABLED_ENV) if real_write_enabled is None else bool(real_write_enabled)
         )
+        self.desktop_session_write_enabled = bool(desktop_session_write_enabled)
         self.rollback_enabled = (
             _env_enabled(ROLLBACK_ENABLED_ENV) if rollback_enabled is None else bool(rollback_enabled)
         )
 
     def status(self, site_id: str) -> BaseDataWriteStatus:
         scope = self._scope(site_id)
-        base = self.feature_enabled and self.write_enabled
+        write_enabled = self.write_enabled or (scope != COPY_SCOPE and self.desktop_session_write_enabled)
+        base = self.feature_enabled and write_enabled
         return BaseDataWriteStatus(
             feature_enabled=self.feature_enabled,
-            write_enabled=self.write_enabled,
+            write_enabled=write_enabled,
             copy_write_authorized=base and scope == COPY_SCOPE and self.copy_write_enabled,
-            real_write_authorized=base and scope != COPY_SCOPE and self.real_write_enabled,
+            real_write_authorized=base
+            and scope != COPY_SCOPE
+            and (self.real_write_enabled or self.desktop_session_write_enabled),
             rollback_enabled=self.rollback_enabled,
             scope=scope,
         )

@@ -31,9 +31,9 @@ from netconsole.repositories.mesh_catalog_repository import dt_text
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 
-SCHEMA_VERSION = "meshlog_compact_v2_single_log"
+SCHEMA_VERSION = "meshlog_compact_v3_tagged_samples"
 SCHEMA_KEY = "schema_" + "version"
-PARSER_VERSION = "meshlog_compact_v2_single_log"
+PARSER_VERSION = "meshlog_compact_v3_tagged_samples"
 DERIVED_ANALYSIS_VERSION = "6"
 DERIVED_ANALYSIS_KEY = "derived_analysis_version"
 MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
@@ -76,16 +76,22 @@ class DeleteParsedDataResult:
     message: str = ""
 
 
+class MeshSchemaRebuildRequired(RuntimeError):
+    pass
+
+
 class MeshMrRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.rebuilt_legacy_path: Path | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     def initialize(self) -> None:
         if self.path.exists() and not self._is_compact_schema(self.path):
-            self.rebuilt_legacy_path = self._archive_legacy_database()
+            raise MeshSchemaRebuildRequired(
+                "MESH 派生数据库版本不兼容；请在 NetConsole 完全退出后运行 "
+                "python -m scripts.maintenance.rebuild_mesh_parsed_data --site <局点> --apply"
+            )
         is_new_database = not self.path.exists()
         with self._connect() as conn:
             initialize_sqlite_wal(conn)
@@ -94,9 +100,9 @@ class MeshMrRepository:
                 PRAGMA foreign_keys = ON;
                 CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_' || 'version', 'meshlog_compact_v2_single_log');
-                INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', 'meshlog_compact_v2_single_log');
-                INSERT OR REPLACE INTO meta(key, value) VALUES ('parser_version', 'meshlog_compact_v2_single_log');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_' || 'version', 'meshlog_compact_v3_tagged_samples');
+                INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', 'meshlog_compact_v3_tagged_samples');
+                INSERT OR REPLACE INTO meta(key, value) VALUES ('parser_version', 'meshlog_compact_v3_tagged_samples');
                 CREATE TABLE IF NOT EXISTS source_files (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     mr_id TEXT NOT NULL,
@@ -139,12 +145,12 @@ class MeshMrRepository:
                     sample_time TEXT NOT NULL,
                     device_time TEXT NULL,
                     sample_time_epoch_ms INTEGER NOT NULL,
-                    timestamp_tag TEXT NULL,
+                    timestamp_tag TEXT NOT NULL DEFAULT '',
                     raw_line_start INTEGER DEFAULT 0,
                     raw_line_end INTEGER DEFAULT 0,
                     raw_offset_start INTEGER DEFAULT 0,
                     raw_offset_end INTEGER DEFAULT 0,
-                    UNIQUE(source_file_id, radio, sample_time)
+                    UNIQUE(source_file_id, radio, sample_time, timestamp_tag)
                 );
                 CREATE TABLE IF NOT EXISTS mesh_sessions (
                     session_id TEXT PRIMARY KEY,
@@ -427,25 +433,6 @@ class MeshMrRepository:
             if conn is not None:
                 conn.close()
 
-    def _archive_legacy_database(self) -> Path:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = self.path.with_name(f"{self.path.name}.legacy_{timestamp}")
-        counter = 1
-        while target.exists():
-            target = self.path.with_name(f"{self.path.name}.legacy_{timestamp}_{counter}")
-            counter += 1
-        self.path.replace(target)
-        for suffix in ("-wal", "-shm"):
-            sidecar = self.path.with_name(self.path.name + suffix)
-            if sidecar.exists():
-                sidecar.replace(target.with_name(target.name + suffix))
-        return target
-
-    def _reset_to_compact_schema(self) -> None:
-        if self.path.exists():
-            self.rebuilt_legacy_path = self._archive_legacy_database()
-        self.initialize()
-
     def _is_index_database(self) -> bool:
         return self.path.name == "mesh.sqlite" and self.path.parent.name != "parsed"
 
@@ -693,13 +680,13 @@ class MeshMrRepository:
             conn.execute("UPDATE source_files SET source_file_order = ? WHERE id = ?", (file_order, source_file_id))
             sample_rows = {}
             for record in records:
-                sample_rows[(source_file_id, record.radio, dt_text(record.sample_time) or "")] = (
+                sample_rows[(source_file_id, record.radio, dt_text(record.sample_time) or "", record.timestamp_tag or "")] = (
                     source_file_id,
                     record.radio,
                     dt_text(record.sample_time),
                     None,
                     record.sample_time_epoch_ms or int(record.sample_time.timestamp() * 1000),
-                    record.timestamp_tag,
+                    record.timestamp_tag or "",
                     record.raw_line_start or record.source_line_number,
                     record.raw_line_end or record.source_line_number,
                     record.raw_offset_start,
@@ -714,19 +701,24 @@ class MeshMrRepository:
                 """,
                 list(sample_rows.values()),
             )
-            sample_ids: dict[tuple[int, int, str], int] = {}
+            sample_ids: dict[tuple[int, int, str, str], int] = {}
             keys = list(sample_rows)
             for start in range(0, len(keys), 400):
                 chunk = keys[start : start + 400]
                 rows = conn.execute(
-                    f"SELECT id, source_file_id, radio, sample_time FROM samples WHERE {' OR '.join('(source_file_id = ? AND radio = ? AND sample_time = ?)' for _ in chunk)}",
+                    f"SELECT id, source_file_id, radio, sample_time, timestamp_tag FROM samples WHERE {' OR '.join('(source_file_id = ? AND radio = ? AND sample_time = ? AND timestamp_tag = ?)' for _ in chunk)}",
                     [value for key in chunk for value in key],
                 ).fetchall()
-                sample_ids.update({(int(row["source_file_id"]), int(row["radio"]), row["sample_time"]): int(row["id"]) for row in rows})
+                sample_ids.update(
+                    {
+                        (int(row["source_file_id"]), int(row["radio"]), row["sample_time"], row["timestamp_tag"]): int(row["id"])
+                        for row in rows
+                    }
+                )
             link_rows = []
             for record in records:
                 sample_time = dt_text(record.sample_time)
-                record.sample_id = sample_ids.get((source_file_id, record.radio, sample_time))
+                record.sample_id = sample_ids.get((source_file_id, record.radio, sample_time, record.timestamp_tag or ""))
                 record.source_file_id = source_file_id
                 record.source_file_order = int(record.source_file_order or file_order)
                 link_rows.append(
@@ -1025,8 +1017,9 @@ class MeshMrRepository:
             total = conn.execute(f"SELECT COUNT(*) AS count FROM mesh_links ml{where}", values).fetchone()["count"]
             rows = conn.execute(
                 f"""
-                SELECT ml.*, sf.archived_filename, sf.archived_path
+                SELECT ml.*, s.timestamp_tag, sf.archived_filename, sf.archived_path
                 FROM mesh_links ml
+                LEFT JOIN samples s ON s.id = ml.sample_id
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
                 ORDER BY ml.record_seq ASC, ml.source_file_order ASC, ml.source_line_number ASC, ml.id ASC
@@ -1035,10 +1028,10 @@ class MeshMrRepository:
                 [*values, limit, offset],
             ).fetchall()
         result: list[dict[str, object]] = []
-        group_indexes: dict[tuple[object, object], int] = {}
+        group_indexes: dict[tuple[object, object, object], int] = {}
         for row in rows:
             data = _with_synthetic_payload(row)
-            key = (data.get("sample_time"), data.get("radio"))
+            key = (data.get("source_file_id"), data.get("sample_id"), data.get("radio"))
             if key not in group_indexes:
                 group_indexes[key] = len(group_indexes)
             data["sample_group_index"] = group_indexes[key]
@@ -1871,11 +1864,10 @@ class MeshMrRepository:
             conn = self._connect()
             row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (DERIVED_ANALYSIS_KEY,)).fetchone()
         except sqlite3.Error:
-            if conn is not None:
-                conn.close()
-                conn = None
-            self._reset_to_compact_schema()
-            return False
+            raise MeshSchemaRebuildRequired(
+                "MESH 派生数据库无法读取；请在 NetConsole 完全退出后运行 "
+                "python -m scripts.maintenance.rebuild_mesh_parsed_data --site <局点> --apply"
+            )
         finally:
             if conn is not None:
                 conn.close()
@@ -2445,7 +2437,7 @@ class MeshMrRepository:
     def _rebuild_active_events(self, conn: sqlite3.Connection, should_cancel, progress, batch_size: int) -> None:
         cursor = conn.execute(
             """
-            SELECT id, source_file_id, source_line_number, radio, sample_time, link_state,
+            SELECT id, sample_id, source_file_id, source_line_number, radio, sample_time, link_state,
                    peer_mac_normalized, peer_mac_raw, local_signal_dbm, peer_signal_dbm,
                    local_rssi_db, peer_rssi_db, local_rate_raw, peer_rate_raw
             FROM mesh_links
@@ -2532,7 +2524,7 @@ class MeshMrRepository:
             for row in rows:
                 if should_cancel and should_cancel():
                     return
-                key = (row["radio"], row["sample_time"])
+                key = (row["radio"], row["sample_id"])
                 if current_key is None:
                     current_key = key
                 if key != current_key:

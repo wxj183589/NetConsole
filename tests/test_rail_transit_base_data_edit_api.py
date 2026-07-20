@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,9 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.sites import SiteManager
 from netconsole.repositories.rail_transit_base_data_repository import (
+    RailTransitBaseDataCompensationError,
     RailTransitBaseDataConstraintError,
     RailTransitBaseDataRepository,
 )
@@ -32,6 +35,20 @@ def _app(paths, tmp_path: Path):
         traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
         rail_base_data_write_feature_enabled=True,
+    )
+
+
+def _desktop_app(paths, tmp_path: Path):
+    return create_app(
+        RuntimeMode.DESKTOP,
+        paths=paths,
+        task_service=object(),  # type: ignore[arg-type]
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+        desktop_session_token="d" * 40,
+        rail_base_data_write_feature_enabled=True,
+        rail_base_data_desktop_write_enabled=True,
     )
 
 
@@ -59,6 +76,74 @@ def test_edit_session_defaults_to_locked_and_rejects_unapproved_write(tmp_path: 
     assert session.json()["can_write"] is False
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "BASE_DATA_WRITE_DISABLED"
+
+
+def test_electron_session_can_update_site_metadata_and_preserve_unknown_fields(tmp_path: Path) -> None:
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    metadata_path = paths.site_dir("demo") / "site_meta.json"
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["custom_owner"] = "保留字段"
+    metadata_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with TestClient(_desktop_app(paths, tmp_path)) as client:
+        session_response = client.post("/__desktop_session", data={"token": "d" * 40}, follow_redirects=False)
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": [{
+                    "entity_type": "site_metadata",
+                    "action": "update",
+                    "entity_id": "current",
+                    "values": {"line_name": "新线路", "system_type": "信号", "network_domain": "default", "remark": "已维护"},
+                }],
+                "explicit_confirmation": True,
+            },
+        )
+        summary = client.get("/api/rail-transit/base-data/summary").json()
+    assert session_response.status_code == 303
+    assert saved.status_code == 200
+    assert summary["line_name"] == "新线路"
+    assert summary["project_type"] == "信号"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["custom_owner"] == "保留字段"
+
+
+def test_server_session_defaults_to_reject_real_site_write(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", raising=False)
+    monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    with TestClient(_app(paths, tmp_path)) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+    assert session["can_write"] is False
+
+
+def test_metadata_compensation_failure_is_not_silently_swallowed(tmp_path: Path, monkeypatch) -> None:
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+    revision = repository.base_data_revision("demo")
+
+    def fail_save(*_args, **_kwargs) -> None:
+        raise OSError("write failed")
+
+    def fail_restore(*_args, **_kwargs) -> None:
+        raise OSError("restore failed")
+
+    monkeypatch.setattr(SiteManager, "save_site_metadata", fail_save)
+    monkeypatch.setattr(repository, "_restore_metadata_file", fail_restore)
+
+    with pytest.raises(RailTransitBaseDataCompensationError, match="compensation failed"):
+        repository.apply_base_data_changes(
+            "demo",
+            revision,
+            [{
+                "entity_type": "site_metadata",
+                "action": "update",
+                "entity_id": "current",
+                "values": {"line_name": "线路", "system_type": "信号"},
+            }],
+        )
 
 
 def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: Path, monkeypatch) -> None:
