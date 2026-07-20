@@ -12,4 +12,4 @@
 
 `OnlineMrAnalysisView.vue` 始终先读取会话 metadata，再按 `database_summary.status` 局部加载 parsed 指标；缺库、旧库和不可读库不能阻止原始日志或采集日志展示。切换会话必须立即清空全部派生展示缓存，并通过请求 generation/AbortController 丢弃迟到响应。Online MR 与离线 MESH 的解析/重建均进入 Job Center，不在 Renderer 或 FastAPI 请求线程同步运行。
 
-`MeshAnalysisView.vue` 按会话和指标区隔离旧 schema；单个损坏派生库不能拖垮概览。`mesh_schema_rebuild` 只从受保护 raw 重建派生 SQLite，先归档旧结果并在失败或取消时恢复；页面不得删除 SQLite 或绕过确认。
+`MeshAnalysisView.vue` 按会话和指标区隔离旧 schema；单个损坏派生库不能拖垮概览。普通导入固定为“显式准备当前局点正式车载 MR → 统一预览 ZIP/LOG/GZ/文件夹 → 自动匹配 CT/CW → 确认导入并分析 → Task 完成后自动打开新来源”，无法匹配时才展开高级内部归属。当前来源重建使用 `mesh_source_rebuild`，raw 缺失但 bundle 可恢复时显示恢复动作；`mesh_schema_rebuild` 仅作为高级 Profile 全量重建。页面不得删除 SQLite 或绕过确认。

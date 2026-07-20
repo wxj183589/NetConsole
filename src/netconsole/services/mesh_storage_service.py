@@ -31,7 +31,13 @@ class MeshStorageService:
         self.paths.ensure_site_dirs(site_name)
         self.catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(site_name))
 
-    def create_mr_profile(self, display_name: str, notes: str = "", linked_device_id: int | None = None) -> MeshMrProfile:
+    def create_mr_profile(
+        self,
+        display_name: str,
+        notes: str = "",
+        linked_device_id: int | None = None,
+        linked_device_uuid: str | None = None,
+    ) -> MeshMrProfile:
         name = display_name.strip()
         if not name:
             raise ValueError("MR name cannot be empty")
@@ -50,6 +56,7 @@ class MeshStorageService:
             safe_folder_name=safe,
             relative_folder_path=f"files/rail_transit/mr_raw_mesh/{safe}",
             linked_device_id=linked_device_id,
+            linked_device_uuid=str(linked_device_uuid or "").strip() or None,
             created_at=now,
             updated_at=now,
             notes=notes,
@@ -63,8 +70,13 @@ class MeshStorageService:
     def ensure_mr_profile_for_device(self, device: Device) -> MeshMrProfile:
         if device.id is None:
             raise ValueError("device id is required for MESH MR profile")
-        existing = self.catalog.get_by_linked_device_id(int(device.id))
+        device_uuid = str(device.device_uuid or "").strip() or None
+        existing = self.catalog.get_by_linked_device_id(int(device.id)) or self.catalog.get_by_linked_device_uuid(device_uuid or "")
         if existing is not None:
+            display_name = _device_display_name(device)
+            if existing.display_name != display_name or existing.linked_device_id != int(device.id) or existing.linked_device_uuid != device_uuid:
+                existing = _replace_profile_identity(existing, display_name, int(device.id), device_uuid)
+                self.catalog.update_profile_identity(existing)
             self.ensure_mr_dirs(existing)
             self.write_mr_json(existing)
             MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, existing.safe_folder_name))
@@ -72,7 +84,7 @@ class MeshStorageService:
         display_name = _device_display_name(device)
         by_name = self.catalog.get_by_display_name(display_name)
         if by_name is not None and by_name.linked_device_id in (None, 0):
-            linked = _replace_profile_link(by_name, int(device.id))
+            linked = _replace_profile_identity(by_name, display_name, int(device.id), device_uuid)
             self.catalog.update_profile_identity(linked)
             self.ensure_mr_dirs(linked)
             self.write_mr_json(linked)
@@ -80,7 +92,10 @@ class MeshStorageService:
             return linked
         if by_name is not None:
             display_name = self._unique_auto_profile_name(display_name, int(device.id))
-        return self.create_mr_profile(display_name, linked_device_id=int(device.id))
+        return self.create_mr_profile(display_name, linked_device_id=int(device.id), linked_device_uuid=device_uuid)
+
+    def ensure_mr_profile_for_asset(self, *, device_id: int, device_uuid: str, display_name: str) -> MeshMrProfile:
+        return self.ensure_mr_profile_for_device(Device(id=device_id, device_uuid=device_uuid, name=display_name))
 
     def _unique_auto_profile_name(self, base_name: str, device_id: int) -> str:
         candidate = f"{base_name}-{device_id}"
@@ -115,6 +130,7 @@ class MeshStorageService:
             "display_name": profile.display_name,
             "safe_folder_name": profile.safe_folder_name,
             "linked_device_id": profile.linked_device_id,
+            "linked_device_uuid": profile.linked_device_uuid,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
             "notes": profile.notes,
@@ -172,13 +188,19 @@ def _device_display_name(device: Device) -> str:
     return value or f"MR-{device.id}"
 
 
-def _replace_profile_link(profile: MeshMrProfile, linked_device_id: int) -> MeshMrProfile:
+def _replace_profile_identity(
+    profile: MeshMrProfile,
+    display_name: str,
+    linked_device_id: int,
+    linked_device_uuid: str | None,
+) -> MeshMrProfile:
     return MeshMrProfile(
         mr_id=profile.mr_id,
-        display_name=profile.display_name,
+        display_name=display_name,
         safe_folder_name=profile.safe_folder_name,
         relative_folder_path=profile.relative_folder_path,
         linked_device_id=linked_device_id,
+        linked_device_uuid=linked_device_uuid,
         earliest_sample_time=profile.earliest_sample_time,
         latest_sample_time=profile.latest_sample_time,
         source_file_count=profile.source_file_count,

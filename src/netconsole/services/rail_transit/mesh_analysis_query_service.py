@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import logging
 import re
@@ -46,6 +47,7 @@ from netconsole.models.api.mesh_analysis import (
 )
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, _active_build_order_rows_from_points
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.mesh_source_locator import MeshSourceLocator
 
 
 _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-9]*)$")
@@ -123,6 +125,7 @@ class MeshAnalysisQueryService:
         if not catalog.is_file():
             return []
         with closing(self._connect_readonly(catalog)) as conn:
+            columns = self._table_columns(conn, "mr_profiles")
             rows = conn.execute("SELECT * FROM mr_profiles ORDER BY display_name COLLATE NOCASE").fetchall()
         return [
             MeshProfileDTO(
@@ -130,6 +133,7 @@ class MeshAnalysisQueryService:
                 display_name=str(row["display_name"]),
                 safe_folder_name=str(row["safe_folder_name"]),
                 linked_device_id=row["linked_device_id"],
+                linked_device_uuid=str(row["linked_device_uuid"] or "") if "linked_device_uuid" in columns else None,
                 source_file_count=int(row["source_file_count"] or 0),
                 sample_count=int(row["sample_count"] or 0),
                 link_record_count=int(row["link_record_count"] or 0),
@@ -897,12 +901,20 @@ class MeshAnalysisQueryService:
 
     def get_raw_source_summary(self, site_id: str, session_id: str) -> list[MeshDataSourceDTO]:
         context = self._context(site_id, session_id)
+        location = MeshSourceLocator(self.paths).locate(site_id, context.source | {"safe_folder_name": context.safe_folder_name, "mr_id": context.mr_id}, context.source)
         if context.raw_path is None:
             return [
                 MeshDataSourceDTO(
                     source_id=self._artifact_id(session_id, "raw", str(context.source.get("archived_filename") or "missing")),
                     source_type="raw_mesh_log",
                     name=str(context.source.get("original_filename") or context.source.get("archived_filename") or "原始日志"),
+                    recoverable=location.recoverable,
+                    recovery_source=location.recovery_source,
+                    missing_reason=location.missing_reason,
+                    rebuild_capability=location.rebuild_capability,
+                    package_name="source.zip" if location.recoverable else "",
+                    package_sha256=location.archive_sha256,
+                    bundle_member_id=location.bundle_member_id,
                 )
             ]
         path = context.raw_path
@@ -916,7 +928,12 @@ class MeshAnalysisQueryService:
                 size_bytes=stat.st_size,
                 modified_at=self._mtime(stat.st_mtime),
                 compressed=path.suffix.lower() == ".gz",
-                tail_available=path.suffix.lower() != ".gz",
+                tail_available=True,
+                rebuild_capability="ready",
+                recovery_source=location.recovery_source,
+                package_name="source.zip" if location.archive_sha256 else "",
+                package_sha256=location.archive_sha256,
+                bundle_member_id=location.bundle_member_id,
             )
         ]
 
@@ -924,15 +941,30 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         if context.raw_path is None or source_id != self._artifact_id(session_id, "raw", context.raw_path.name):
             raise MeshAnalysisQueryError("原始来源不存在")
-        if context.raw_path.suffix.lower() == ".gz":
-            return MeshRawTailDTO(source_id=source_id, message="压缩原始日志只展示 metadata，不在线解压 tail。")
         limit = min(max(int(lines), 1), 200)
-        with context.raw_path.open("rb") as handle:
-            size = handle.seek(0, 2)
-            handle.seek(max(0, size - 256 * 1024))
-            raw = handle.read()
+        if context.raw_path.suffix.lower() == ".gz":
+            raw = self._gzip_tail(context.raw_path, 256 * 1024)
+        else:
+            with context.raw_path.open("rb") as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - 256 * 1024))
+                raw = handle.read()
         text = self._decode_text(raw)
         return MeshRawTailDTO(source_id=source_id, available=True, lines=text.splitlines()[-limit:])
+
+    @staticmethod
+    def _gzip_tail(path: Path, maximum: int) -> bytes:
+        buffer = bytearray()
+        expanded = 0
+        with gzip.open(path, "rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                expanded += len(chunk)
+                if expanded > 64 * 1024 * 1024:
+                    raise MeshAnalysisQueryError("压缩原始日志解压后超过 64 MiB，拒绝在线读取 tail")
+                buffer.extend(chunk)
+                if len(buffer) > maximum:
+                    del buffer[:-maximum]
+        return bytes(buffer)
 
     def _session_rows(self, site_id: str) -> list[_SessionContext]:
         catalog = self.paths.mesh_catalog_path(site_id)
@@ -995,17 +1027,7 @@ class MeshAnalysisQueryService:
             if fallback.is_file() and self._within(fallback, parsed_root):
                 detail = fallback
                 relocated = True
-        raw_root = self.paths.mesh_mr_raw_dir(site_id, safe_name).resolve()
-        raw_path: Path | None = None
-        for value in (source.get("archived_path"), source.get("archived_filename"), source.get("original_filename")):
-            if not value:
-                continue
-            candidate = Path(str(value))
-            if not candidate.is_file() or not self._within(candidate, raw_root):
-                candidate = raw_root / candidate.name
-            if candidate.is_file() and self._within(candidate, raw_root):
-                raw_path = candidate.resolve()
-                break
+        raw_path = MeshSourceLocator(self.paths).locate(site_id, profile, source).raw_path
         return _SessionContext(
             site_id=site_id,
             session_id=f"{profile['mr_id']}:{source['id']}",

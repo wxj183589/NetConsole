@@ -36,6 +36,7 @@ class MeshCatalogRepository:
                     safe_folder_name TEXT NOT NULL UNIQUE,
                     relative_folder_path TEXT NOT NULL,
                     linked_device_id INTEGER NULL,
+                    linked_device_uuid TEXT NULL,
                     earliest_sample_time TEXT NULL,
                     latest_sample_time TEXT NULL,
                     source_file_count INTEGER DEFAULT 0,
@@ -50,17 +51,20 @@ class MeshCatalogRepository:
                 );
                 """
             )
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(mr_profiles)")}
+            if "linked_device_uuid" not in columns:
+                conn.execute("ALTER TABLE mr_profiles ADD COLUMN linked_device_uuid TEXT NULL")
 
     def create_profile(self, profile: MeshMrProfile) -> MeshMrProfile:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO mr_profiles (
-                    mr_id, display_name, safe_folder_name, relative_folder_path, linked_device_id,
+                    mr_id, display_name, safe_folder_name, relative_folder_path, linked_device_id, linked_device_uuid,
                     earliest_sample_time, latest_sample_time, source_file_count, sample_count,
                     link_record_count, session_count, event_count, last_import_at, created_at,
                     updated_at, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 self._profile_values(profile),
             )
@@ -86,13 +90,21 @@ class MeshCatalogRepository:
             row = conn.execute("SELECT * FROM mr_profiles WHERE linked_device_id = ? LIMIT 1", (int(linked_device_id),)).fetchone()
         return self._row_to_profile(row) if row else None
 
+    def get_by_linked_device_uuid(self, linked_device_uuid: str) -> MeshMrProfile | None:
+        value = str(linked_device_uuid or "").strip()
+        if not value:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM mr_profiles WHERE linked_device_uuid = ? LIMIT 1", (value,)).fetchone()
+        return self._row_to_profile(row) if row else None
+
     def update_profile_identity(self, profile: MeshMrProfile) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE mr_profiles
                 SET display_name = ?, safe_folder_name = ?, relative_folder_path = ?,
-                    linked_device_id = ?, updated_at = ?
+                    linked_device_id = ?, linked_device_uuid = ?, updated_at = ?
                 WHERE mr_id = ?
                 """,
                 (
@@ -100,6 +112,7 @@ class MeshCatalogRepository:
                     profile.safe_folder_name,
                     profile.relative_folder_path,
                     profile.linked_device_id,
+                    profile.linked_device_uuid,
                     dt_text(profile.updated_at) or datetime.now().isoformat(sep=" ", timespec="milliseconds"),
                     profile.mr_id,
                 ),
@@ -140,6 +153,7 @@ class MeshCatalogRepository:
             profile.safe_folder_name,
             profile.relative_folder_path,
             profile.linked_device_id,
+            profile.linked_device_uuid,
             dt_text(profile.earliest_sample_time),
             dt_text(profile.latest_sample_time),
             profile.source_file_count,
@@ -160,6 +174,7 @@ class MeshCatalogRepository:
             safe_folder_name=row["safe_folder_name"],
             relative_folder_path=row["relative_folder_path"],
             linked_device_id=row["linked_device_id"],
+            linked_device_uuid=row["linked_device_uuid"] if "linked_device_uuid" in row.keys() else None,
             earliest_sample_time=parse_dt(row["earliest_sample_time"]),
             latest_sample_time=parse_dt(row["latest_sample_time"]),
             source_file_count=row["source_file_count"],

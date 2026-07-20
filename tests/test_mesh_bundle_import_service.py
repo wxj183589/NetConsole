@@ -4,6 +4,7 @@ import json
 import sqlite3
 import stat
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from netconsole.services.mesh_bundle_import_service import (
     MeshBundleImportError,
     MeshBundleImportService,
 )
+from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
 from netconsole.services.mesh_storage_service import MeshStorageService
 
@@ -133,6 +135,25 @@ def test_bundle_profile_mapping_uses_unmatched_contract(tmp_path: Path) -> None:
     ]
 
 
+def test_bundle_profile_mapping_accepts_tc_only_as_legacy_cw_alias(tmp_path: Path) -> None:
+    archive = tmp_path / "mesh.zip"
+    _zip(archive, {"6CWmeshlog.log": b"cw", "6CTmeshlog.log": b"ct"})
+    service = MeshBundleImportService("demo", PathResolver(tmp_path))
+
+    matches = service.match_profiles(
+        service.inspect(archive),
+        [
+            {"mr_id": "legacy-tc", "display_name": "列车06-MR-TC"},
+            {"mr_id": "ct", "display_name": "列车06-MR-CT"},
+        ],
+    )
+
+    assert [(item.member.role, item.profile_id) for item in matches] == [
+        ("CW", "legacy-tc"),
+        ("CT", "ct"),
+    ]
+
+
 def test_preview_uses_safe_token_and_twelve_tmp_path_members(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     storage = MeshStorageService("demo", paths)
@@ -184,6 +205,10 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     assert parsed_path.is_file()
     assert parsed_path.is_relative_to(paths.mesh_mr_parsed_dir("demo", profile.safe_folder_name))
     assert ".staging" not in str(parsed_path)
+    assert source_row["raw_relative_path"].startswith("raw/")
+    assert source_row["parsed_relative_path"].startswith("parsed/")
+    assert source_row["archive_sha256"] == preview["archive_sha256"]
+    assert source_row["bundle_member_id"] == "01CTmeshlog.log"
     with sqlite3.connect(parsed_path) as connection:
         assert connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == SCHEMA_VERSION
     manifest_path = paths.site_mesh_root("demo") / "bundles" / preview["archive_sha256"] / "manifest.json"
@@ -230,3 +255,45 @@ def test_failed_worker_does_not_change_production_or_publish_success_manifest(
     repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     assert repository.summary()["source_file_count"] == 0
     assert not (paths.site_mesh_root("demo") / "bundles" / preview["archive_sha256"]).exists()
+
+
+def test_bundle_import_rebuilds_legacy_index_only_inside_staging(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("01-MR-CT")
+    first = tmp_path / "first.log"
+    first.write_bytes(VALID_LOG)
+    MeshImportService("demo", paths).import_files(profile, [first])
+    index = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    with closing(sqlite3.connect(index)) as connection:
+        connection.execute("UPDATE schema_meta SET value = '1' WHERE key = 'schema_version'")
+        connection.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+        connection.commit()
+    legacy_bytes = index.read_bytes()
+    archive = tmp_path / "bundle.zip"
+    _zip(archive, {"01CTmeshlog.log": VALID_LOG.replace(b"33.579", b"34.579")})
+    service = MeshBundleImportService("demo", paths)
+    with archive.open("rb") as source:
+        preview = service.create_preview(archive.name, source, [profile])
+    mappings = [{"member_id": "01CTmeshlog.log", "train_number": "01", "role": "CT", "profile_id": profile.mr_id}]
+    service.approve_preview(str(preview["preview_id"]), mappings, [profile.mr_id])
+
+    result = service.import_approved_preview(str(preview["preview_id"]), mappings, job_id="legacy-index-import")
+
+    assert result["imported_count"] == 1
+    assert result["parsed_record_count"] >= 1
+    assert index.read_bytes() != legacy_bytes
+    repository = MeshMrRepository(index)
+    source_rows = repository.list_source_files()
+    assert len(source_rows) == 2
+    assert all(Path(str(row["archived_path"])).is_file() for row in source_rows)
+    assert all(str(tmp_path) not in str(row["original_path"]) for row in source_rows)
+    for row in source_rows:
+        detail_path = Path(str(row["parsed_db_path"]))
+        with closing(sqlite3.connect(detail_path)) as connection:
+            detail_source = connection.execute(
+                "SELECT original_path, archived_path FROM source_files"
+            ).fetchone()
+        assert detail_source is not None
+        assert ".staging" not in str(detail_source[0])
+        assert ".staging" not in str(detail_source[1])
+    assert not list(index.parent.glob("*.schema_archive_*"))

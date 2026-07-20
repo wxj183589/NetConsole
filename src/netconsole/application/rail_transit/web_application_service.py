@@ -108,6 +108,7 @@ class RailTransitWebApplicationService:
         "mesh_log_import": "MESH 原始日志导入分析",
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
+        "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -1126,18 +1127,16 @@ class RailTransitWebApplicationService:
         if not explicit_confirmation:
             raise RailTransitWebError("CONFIRMATION_REQUIRED", "重建 MESH 派生数据库前必须显式确认")
         try:
-            context = self.mesh_query_service._context(site_id, session_id)
+            self.mesh_query_service._context(site_id, session_id)
         except MeshAnalysisQueryError as exc:
             raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
-        if context.raw_path is None:
-            raise RailTransitWebError("RAW_DATA_NOT_FOUND", "当前 MESH 会话缺少可用于重建的原始日志")
         return self._start_task(
             site_id,
-            "mesh_schema_rebuild",
+            "mesh_source_rebuild",
             {
-                "mr_id": context.mr_id,
+                "session_id": session_id,
                 "explicit_confirmation": True,
-                "audit": {"source": "electron_mesh_analysis", "action": "rebuild_parsed"},
+                "audit": {"source": "electron_mesh_analysis", "action": "rebuild_source"},
             },
         )
 
@@ -1374,6 +1373,7 @@ class RailTransitWebApplicationService:
         for key in (
             "count", "row_count", "train_count", "success_count", "failed_count",
             "imported_count", "duplicate_count", "parsed_record_count", "member_count",
+            "raw_archived_count", "parsed_source_count",
             "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
         ):
             value = result.get(key)
@@ -1383,6 +1383,9 @@ class RailTransitWebApplicationService:
             value = result.get(key)
             if isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
+        created_session_ids = result.get("created_session_ids")
+        if isinstance(created_session_ids, list) and all(isinstance(item, str) for item in created_session_ids):
+            summary["created_session_ids"] = created_session_ids
         return summary
 
     def _open_artifact(

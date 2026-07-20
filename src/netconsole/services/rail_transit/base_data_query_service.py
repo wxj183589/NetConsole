@@ -560,7 +560,7 @@ class RailTransitBaseDataQueryService:
                     name=str(row.get("name") or ""),
                     train_id=identity.train_id,
                     train_no=identity.train_no,
-                    role="TC" if identity.car_end == "CW" else identity.car_end,
+                    role=identity.car_end,
                     management_ip=str(row.get("primary_address") or ""),
                     station=str(row.get("station") or ""),
                     mac=self._display_mac(row.get("mac_address")),

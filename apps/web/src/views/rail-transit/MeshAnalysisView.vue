@@ -15,12 +15,11 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   applyMeshBundleImport, createMeshProfile, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
   getMeshCounterDeltas, getMeshRssi, getMeshRateSeries, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
-  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshBundle, rebuildMeshAnalysis,
+  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
+  prepareMeshImportContext,
 } from '../../api/meshAnalysis'
 import { listVehicleMrs } from '../../api/railTransitBaseData'
-import {
-  exportMeshAnalysisReport, getRailTransitTask, importMeshAnalysis, recoverRailTransitTasks,
-} from '../../api/railTransitWeb'
+import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
@@ -56,7 +55,10 @@ const rawTail = ref<MeshRawTail | null>(null)
 const profiles = ref<MeshProfile[]>([])
 const baseMrs = ref<VehicleMr[]>([])
 const importVisible = ref(false)
-const selectedProfileId = ref('')
+const importContextLoading = ref(false)
+const importContextError = ref('')
+const profileLoadError = ref('')
+const vehicleMrLoadError = ref('')
 const selectedFiles = ref<File[]>([])
 const newProfileName = ref('')
 const linkedMrId = ref('')
@@ -68,7 +70,7 @@ const folderInput = ref<HTMLInputElement | null>(null)
 const activeTab = ref('links')
 const warningsExpanded = ref(false)
 const bundlePreview = ref<MeshBundlePreview | null>(null)
-const bundleMappings = reactive<Record<string, MeshBundleMapping & { confirmed: boolean }>>({})
+const bundleMappings = reactive<Record<string, Omit<MeshBundleMapping, 'role'> & { role: '' | 'CT' | 'CW'; confirmed: boolean }>>({})
 const bundlePreviewLoading = ref(false)
 const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
@@ -86,6 +88,7 @@ const cards = computed(() => summary.value ? [
   ['乒乓切换', display(summary.value.pingpong_count)], ['未匹配 AP', display(summary.value.unmatched_ap_count)],
 ] : [])
 const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+const selectedSource = computed(() => selected.value?.sources[0] || null)
 const bundleCanApply = computed(() => Boolean(
   bundlePreview.value
   && bundlePreview.value.items.length > 0
@@ -98,7 +101,7 @@ const bundleValidationMessage = computed(() => {
     const mapping = bundleMappings[item.safe_name]
     return !mapping?.confirmed || !mapping.train_number.trim() || !mapping.role || !mapping.profile_id
   })
-  return unresolved.length ? `还有 ${unresolved.length} 个成员未完成列车号、端位、Profile 和人工确认。` : '所有成员已确认，可提交分析 Job。'
+  return unresolved.length ? `还有 ${unresolved.length} 个文件未完成列车号、端位、对应车载 MR 和人工确认。` : '所有文件已确认，可导入并分析。'
 })
 const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => row.timestamp))
 const timelineTimeGroups = computed(() => buildMeshTimeGroupClasses(timeline.value, (row) => row.start_time))
@@ -208,7 +211,7 @@ const sourceColumns: NcTableColumn<MeshRawSource>[] = [
   { key: 'tail', label: '日志片段', valueType: 'actions', width: 110, hideable: false },
 ]
 
-onMounted(async () => { await Promise.all([refreshOverview(), loadProfiles(), recoverTask()]); scheduleRefresh() })
+onMounted(async () => { await Promise.all([refreshOverview(), recoverTask()]); scheduleRefresh() })
 onBeforeUnmount(() => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = null; stopTaskPolling() })
 
 function scheduleRefresh(): void {
@@ -302,21 +305,55 @@ async function downloadArtifact(artifact: MeshArtifact): Promise<void> {
 }
 
 async function loadProfiles(): Promise<void> {
+  profileLoadError.value = ''
+  vehicleMrLoadError.value = ''
+  const loadMeshProfiles = async (): Promise<void> => {
+    try {
+      profiles.value = await listMeshProfiles()
+    } catch (reason) {
+      profileLoadError.value = reason instanceof Error ? reason.message : 'MESH Profile 加载失败'
+    }
+  }
+  const loadVehicleMrs = async (): Promise<void> => {
+    try {
+      const rows: VehicleMr[] = []
+      let page = 1
+      while (true) {
+        const result = await listVehicleMrs({ page, page_size: 200 })
+        rows.push(...result.items)
+        if (rows.length >= result.total || result.items.length === 0) break
+        page += 1
+      }
+      baseMrs.value = rows
+    } catch (reason) {
+      vehicleMrLoadError.value = reason instanceof Error ? reason.message : '当前局点车载 MR 加载失败'
+    }
+  }
+  await Promise.allSettled([loadMeshProfiles(), loadVehicleMrs()])
+}
+async function openImportDialog(): Promise<void> {
+  importVisible.value = true
+  importContextLoading.value = true
+  importContextError.value = ''
+  profileLoadError.value = ''
+  vehicleMrLoadError.value = ''
   try {
-    const [nextProfiles, mrs] = await Promise.all([listMeshProfiles(), listVehicleMrs({ page: 1, page_size: 500 })])
-    profiles.value = nextProfiles
-    baseMrs.value = mrs.items
-    selectedProfileId.value = profiles.value.find((item) => item.mr_id === selectedProfileId.value)?.mr_id || profiles.value[0]?.mr_id || ''
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH MR profile 加载失败' }
+    await prepareMeshImportContext()
+  } catch (reason) {
+    importContextError.value = reason instanceof Error ? reason.message : '车载 MR 与内部 MESH 归属同步失败'
+  } finally {
+    await loadProfiles()
+    importContextLoading.value = false
+  }
 }
 async function createProfile(): Promise<void> {
   if (!newProfileName.value.trim()) return
   taskLoading.value = true; error.value = ''
   try {
     const profile = await createMeshProfile({ display_name: newProfileName.value.trim(), linked_mr_id: linkedMrId.value, notes: profileNotes.value.trim() })
-    await loadProfiles(); selectedProfileId.value = profile.mr_id; newProfileName.value = ''; linkedMrId.value = ''; profileNotes.value = ''
-    ElMessage.success('MESH MR profile 已创建')
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH MR profile 创建失败' }
+    await loadProfiles(); newProfileName.value = ''; linkedMrId.value = ''; profileNotes.value = ''
+    ElMessage.success('内部 MESH 归属已创建')
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : '内部 MESH 归属创建失败' }
   finally { taskLoading.value = false }
 }
 function isSafeRelativePath(value: string): boolean {
@@ -332,21 +369,20 @@ function chooseFiles(event: Event): void {
   })
   bundlePreview.value = null
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
-  const archive = selectedFiles.value.find((file) => file.name.toLowerCase().endsWith('.zip'))
-  if (archive) void previewBundle(archive)
+  if (selectedFiles.value.length) void previewImportFiles()
 }
-async function previewBundle(file: File): Promise<void> {
+async function previewImportFiles(): Promise<void> {
   bundlePreviewLoading.value = true
   error.value = ''
   try {
-    const preview = await previewMeshBundle(file)
+    const preview = await previewMeshImport(selectedFiles.value)
     bundlePreview.value = preview
     for (const item of preview.items) {
       const firstCandidate = item.selected_profile_id || item.candidates[0]?.profile_id || ''
       bundleMappings[item.safe_name] = {
-        member_id: item.safe_name,
+        member_id: item.member_id,
         train_number: item.train_number,
-        role: item.role === 'CT' || item.role === 'CW' ? item.role : 'CT',
+        role: item.role === 'CT' || item.role === 'CW' ? item.role : '',
         profile_id: firstCandidate,
         confirmed: item.match_status === 'matched' && Boolean(firstCandidate) && Boolean(item.train_number) && Boolean(item.role),
       }
@@ -364,11 +400,22 @@ function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskT
 async function afterTask(): Promise<void> {
   if (task.value?.status !== 'COMPLETED') return
   await refreshOverview()
-  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild'].includes(task.value.action)) await loadProfiles()
+  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) await loadProfiles()
+  const created = Array.isArray(task.value.result_summary.created_session_ids)
+    ? task.value.result_summary.created_session_ids.filter((item): item is string => typeof item === 'string')
+    : []
+  const targetId = created[0]
+  if (targetId) {
+    const target = sessions.value.find((item) => item.session_id === targetId) || { session_id: targetId } as MeshAnalysisSession
+    await openSession(target)
+    activeTab.value = 'links'
+    requestAnimationFrame(() => document.querySelector('.detail-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    return
+  }
   if (selected.value) {
     const selectedId = selected.value.session.session_id
     const next = sessions.value.find((item) => item.session_id === selectedId)
-    if (task.value.action === 'mesh_schema_rebuild' && next) await openSession(next)
+    if (['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action) && next) await openSession(next)
     else artifacts.value = await listMeshArtifacts(selectedId)
   }
 }
@@ -386,16 +433,11 @@ async function startTask(factory: () => Promise<RailTransitTask>, fallback: stri
   catch (reason) { error.value = reason instanceof Error ? reason.message : fallback }
   finally { taskLoading.value = false }
 }
-function startImport(): void {
-  if (!selectedProfileId.value || !selectedFiles.value.length) return
-  void startTask(() => importMeshAnalysis(selectedFiles.value, { mr_id: selectedProfileId.value }), 'MESH 原始日志导入启动失败')
-  importVisible.value = false
-}
 function startBundleImport(): void {
   if (!bundlePreview.value || !bundleCanApply.value) return
   const payload: MeshBundleImportRequest = {
     preview_id: bundlePreview.value.preview_id,
-    mappings: Object.values(bundleMappings).map(({ confirmed: _confirmed, ...mapping }) => mapping),
+    mappings: Object.values(bundleMappings).map(({ confirmed: _confirmed, ...mapping }) => ({ ...mapping, role: mapping.role as 'CT' | 'CW' })),
     explicit_confirmation: true,
   }
   void startTask(() => applyMeshBundleImport(payload), 'MESH ZIP 导入启动失败')
@@ -410,7 +452,9 @@ async function rebuildSelected(): Promise<void> {
   const accepted = await confirm({
     type: 'WARNING',
     title: '重建 MESH 解析结果',
-    message: '将从当前 MR 的受保护原始日志重建派生数据库；旧派生结果会先归档，原始日志不会删除。确认继续？',
+    message: selectedSource.value?.rebuild_capability === 'recoverable_from_bundle'
+      ? '当前原始日志将从受保护 ZIP 归档恢复，并仅重新解析当前来源；同 MR 其他日志不会变化。确认继续？'
+      : '将仅从当前原始日志重新生成本来源的结构化结果；同 MR 其他日志不会变化。确认继续？',
     confirmText: '确认重建',
   })
   if (!accepted) return
@@ -420,7 +464,7 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_analysis_report'].includes(item.action)) || null)
+    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report'].includes(item.action)) || null)
     pollTask()
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务恢复失败' }
 }
@@ -445,8 +489,8 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
 <template>
   <section class="mesh-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>独立完成 MR profile、原始日志导入解析、主备链分析、异常汇总、报告与 Artifact 交付。</p></div>
-      <div class="jump-actions"><el-button :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="importVisible = true">导入日志 / 文件夹</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="generateReport">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
+      <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>选择日志后自动匹配当前局点车载 MR，并完成归档、解析、分析和报告交付。</p></div>
+      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="generateReport">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
@@ -454,16 +498,20 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(1180px, 96vw)">
       <el-form label-position="top">
+        <el-alert v-if="importContextError" :title="`导入上下文准备失败：${importContextError}`" type="error" :closable="false" show-icon />
+        <el-alert v-if="profileLoadError" :title="`内部 MESH 归属加载失败：${profileLoadError}`" type="error" :closable="false" show-icon />
+        <el-alert v-if="vehicleMrLoadError" :title="`车载 MR 加载失败：${vehicleMrLoadError}`" type="error" :closable="false" show-icon />
+        <el-alert v-if="!importContextLoading && !vehicleMrLoadError && baseMrs.length === 0" title="当前局点没有可识别的车载 MR，请先在设备管理的“车载-MR”分组登记设备。" type="warning" :closable="false" show-icon />
         <el-form-item label="选择原始日志或 ZIP">
           <div class="jump-actions"><el-button @click="fileInput?.click()">选择 ZIP / LOG / GZ 文件</el-button><el-button @click="folderInput?.click()">选择文件夹</el-button><span>已选择 {{ selectedFiles.length }} 个文件</span></div>
           <input ref="fileInput" class="hidden-input" type="file" multiple accept=".zip,.log,.txt,.gz" @change="chooseFiles"><input ref="folderInput" class="hidden-input" type="file" multiple webkitdirectory @change="chooseFiles">
         </el-form-item>
-        <el-alert v-if="bundlePreviewLoading" title="正在预览 ZIP 成员和 Profile 候选…" type="info" :closable="false" show-icon />
+        <el-alert v-if="bundlePreviewLoading" title="正在识别日志并匹配当前局点车载 MR…" type="info" :closable="false" show-icon />
         <template v-if="bundlePreview">
-          <el-divider content-position="left">ZIP 成员映射</el-divider>
+          <el-divider content-position="left">日志自动映射</el-divider>
           <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
           <div class="bundle-table-wrap">
-            <table class="bundle-table"><thead><tr><th>成员</th><th>列车号</th><th>端位</th><th>Profile 候选</th><th>状态</th><th>确认</th></tr></thead><tbody>
+            <table class="bundle-table"><thead><tr><th>日志文件</th><th>列车号</th><th>端位</th><th>对应车载 MR</th><th>状态</th><th>确认</th></tr></thead><tbody>
               <tr v-for="item in bundlePreview.items" :key="item.safe_name">
                 <td><strong>{{ item.safe_name }}</strong><small>{{ item.size_bytes }} B · {{ item.sha256.slice(0, 12) }}…</small></td>
                 <td><el-input v-model="bundleMappings[item.safe_name].train_number" size="small" @input="bundleMappings[item.safe_name].confirmed = false" /></td>
@@ -475,12 +523,9 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
             </tbody></table>
           </div>
         </template>
-        <template v-else>
-          <el-form-item label="MESH MR profile"><el-select v-model="selectedProfileId" filterable placeholder="选择 profile" style="width:100%"><el-option v-for="profile in profiles" :key="profile.mr_id" :label="`${profile.display_name} · ${profile.source_file_count} 文件`" :value="profile.mr_id" /></el-select></el-form-item>
-        </template>
-        <el-divider content-position="left">创建新 profile</el-divider><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建 profile</el-button>
+        <el-collapse><el-collapse-item title="高级：无法匹配时创建内部归属" name="advanced-profile"><div class="profile-grid"><el-form-item label="显示名称"><el-input v-model="newProfileName" placeholder="例如：列车01-MR-CT" /></el-form-item><el-form-item label="关联基础资料 MR（可选）"><el-select v-model="linkedMrId" clearable filterable><el-option v-for="mr in baseMrs" :key="mr.id" :label="`${mr.train_no} · ${mr.role} · ${mr.name}`" :value="mr.id" /></el-select></el-form-item><el-form-item label="备注"><el-input v-model="profileNotes" /></el-form-item></div><el-button :loading="taskLoading" :disabled="!newProfileName.trim()" @click="createProfile">创建内部归属</el-button></el-collapse-item></el-collapse>
       </el-form>
-      <template #footer><el-button @click="importVisible = false">取消</el-button><el-button v-if="bundlePreview" type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">确认映射并提交 Job</el-button><el-button v-else type="primary" :loading="taskLoading" :disabled="!selectedProfileId || !selectedFiles.length" @click="startImport">开始导入分析</el-button></template>
+      <template #footer><el-button @click="importVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" :disabled="!bundleCanApply" @click="startBundleImport">确认导入并分析</el-button></template>
     </el-dialog>
 
     <div class="summary-grid">
@@ -505,7 +550,7 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
       <div class="detail-heading">
         <div><h2>{{ selected.session.mr_name }}</h2><p>{{ selected.session.original_filename }} · {{ selected.session.first_sample_time }} — {{ selected.session.last_sample_time }}</p></div>
         <div class="jump-actions">
-          <el-button :loading="taskLoading" :disabled="!selected.sources.some((source) => source.exists) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selected.session.parsed_status === 'ready' ? '重新解析' : '重建旧解析结果' }}</el-button>
+          <el-button :loading="taskLoading" :disabled="!selectedSource || ['raw_missing','task_running','unsupported'].includes(selectedSource.rebuild_capability) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selectedSource?.rebuild_capability === 'recoverable_from_bundle' ? '恢复原始日志并重新解析' : selected.session.parsed_status === 'ready' ? '重新解析当前日志' : '升级解析结果' }}</el-button>
           <el-button @click="openTaskWindow()">打开任务窗口</el-button>
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
@@ -518,6 +563,7 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
         </el-alert>
         <div v-if="warningsExpanded" class="warning-list"><el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon /></div>
       </div>
+      <el-alert v-if="selectedSource && !selectedSource.exists" :title="selectedSource.missing_reason" :type="selectedSource.recoverable ? 'warning' : 'error'" :closable="false" show-icon />
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab">

@@ -17,13 +17,17 @@ export interface MeshAnalysisSummary {
 }
 
 export interface MeshProfile {
-  mr_id: string; display_name: string; safe_folder_name: string; linked_device_id: number | null
+  mr_id: string; display_name: string; safe_folder_name: string; linked_device_id: number | null; linked_device_uuid: string | null
   source_file_count: number; sample_count: number; link_record_count: number; session_count: number; event_count: number; notes: string
+}
+
+export interface MeshImportContextPrepare {
+  site_id: string; vehicle_mr_count: number; profile_count: number; created_count: number; updated_count: number
 }
 
 export interface MeshBundleProfileCandidate { profile_id: string; display_name: string }
 export interface MeshBundleMemberPreview {
-  original_name: string; safe_name: string; size_bytes: number; sha256: string
+  member_id: string; original_name: string; safe_name: string; size_bytes: number; sha256: string
   train_number: string; role: string; match_status: 'matched' | 'unmatched' | 'ambiguous'
   selected_profile_id: string; selected_profile_name: string; candidates: MeshBundleProfileCandidate[]
 }
@@ -67,7 +71,12 @@ export interface MeshAnalysisSession {
 
 export interface Page<T> { items: T[]; total: number; page: number; page_size: number }
 export interface MeshWarning { code: string; message: string; severity: string }
-export interface MeshRawSource { source_id: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null; compressed: boolean; tail_available: boolean }
+export interface MeshRawSource {
+  source_id: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null
+  compressed: boolean; tail_available: boolean; recoverable: boolean; recovery_source: string; missing_reason: string
+  rebuild_capability: 'ready' | 'recoverable_from_bundle' | 'raw_missing' | 'task_running' | 'unsupported'
+  package_name: string; package_sha256: string; bundle_member_id: string
+}
 export interface MeshSessionDetail { session: MeshAnalysisSession; warnings: MeshWarning[]; sources: MeshRawSource[] }
 
 export interface MeshLinkDetail {

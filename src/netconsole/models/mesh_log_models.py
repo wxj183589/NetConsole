@@ -63,6 +63,7 @@ class MeshMrProfile:
     safe_folder_name: str
     relative_folder_path: str
     linked_device_id: int | None = None
+    linked_device_uuid: str | None = None
     earliest_sample_time: datetime | None = None
     latest_sample_time: datetime | None = None
     source_file_count: int = 0

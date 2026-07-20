@@ -22,8 +22,10 @@ from uuid import uuid4
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
-from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION
+from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, MeshMrRepository, MeshSchemaRebuildRequired
+from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
 
 
@@ -453,11 +455,13 @@ class MeshBundleImportService:
         if approved != tuple(meta.get("approved_mappings") or ()):
             raise MeshBundleImportError("MAPPING_CHANGED", "MESH ZIP 映射与已确认预览不一致")
         if self.is_archived(manifest.archive_sha256):
+            profiles = self._profiles_for_mappings(approved)
             return {
                 "archive_sha256": manifest.archive_sha256,
                 "member_count": len(manifest.members),
                 "imported_count": 0,
                 "duplicate_count": len(manifest.members),
+                "created_session_ids": self._created_session_ids(profiles, approved, manifest),
                 "idempotent": True,
             }
         lock = self._acquire_import_lock(job_id)
@@ -466,11 +470,13 @@ class MeshBundleImportService:
         try:
             _raise_if_cancelled(should_cancel)
             if self.is_archived(manifest.archive_sha256):
+                profiles = self._profiles_for_mappings(approved)
                 return {
                     "archive_sha256": manifest.archive_sha256,
                     "member_count": len(manifest.members),
                     "imported_count": 0,
                     "duplicate_count": len(manifest.members),
+                    "created_session_ids": self._created_session_ids(profiles, approved, manifest),
                     "idempotent": True,
                 }
             current = self.inspect(archive)
@@ -538,6 +544,7 @@ class MeshBundleImportService:
                 manifest,
                 success_manifest,
             )
+            created_session_ids = self._created_session_ids(profiles, approved, manifest)
             return {
                 "archive_sha256": manifest.archive_sha256,
                 "member_count": len(manifest.members),
@@ -545,6 +552,10 @@ class MeshBundleImportService:
                 "duplicate_count": counts["duplicate_count"],
                 "parsed_record_count": counts["parsed_record_count"],
                 "issue_count": counts["issue_count"],
+                "raw_archived_count": counts["imported_count"],
+                "parsed_source_count": counts["imported_count"],
+                "created_session_ids": created_session_ids,
+                "failed_files": [],
                 "idempotent": False,
             }
         finally:
@@ -559,6 +570,23 @@ class MeshBundleImportService:
         except (OSError, json.JSONDecodeError):
             return False
         return isinstance(value, dict) and value.get("status") == "success" and value.get("archive_sha256") == archive_sha256
+
+    def _created_session_ids(
+        self,
+        profiles: Mapping[str, MeshMrProfile],
+        mappings: tuple[dict[str, object], ...],
+        manifest: MeshBundleManifest,
+    ) -> list[str]:
+        members = {member.member_id: member for member in manifest.members}
+        result: list[str] = []
+        for mapping in mappings:
+            profile = profiles[str(mapping["profile_id"])]
+            member = members[str(mapping["member_id"])]
+            repository = MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
+            source = next((row for row in repository.list_source_files() if str(row.get("sha256") or "") == member.sha256), None)
+            if source is not None:
+                result.append(f"{profile.mr_id}:{int(source['id'])}")
+        return result
 
     def _profiles_for_mappings(
         self,
@@ -603,10 +631,8 @@ class MeshBundleImportService:
             if not source.is_dir():
                 raise MeshBundleImportError("PROFILE_STORAGE_NOT_FOUND", "MESH Profile 数据目录不存在")
             _copy_tree_snapshot(source, target)
-            self._rewrite_snapshot_paths_to_staging(
-                source,
-                target,
-            )
+            if MeshMrRepository._is_compact_schema(target / "mesh.sqlite"):
+                self._rewrite_snapshot_paths_to_staging(source, target)
 
     def _rewrite_snapshot_paths_to_staging(
         self,
@@ -670,7 +696,22 @@ class MeshBundleImportService:
             _raise_if_cancelled(should_cancel)
             profile = profiles[profile_id]
             service = MeshImportService(self.site_name, staging_paths)
-            repository = service.storage.mr_repository(profile)
+            try:
+                repository = service.storage.mr_repository(profile)
+            except MeshSchemaRebuildRequired:
+                legacy_sources = MeshSourceIndexRepository(
+                    staging_paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name)
+                ).list_source_files()
+                MeshParsedRebuildService(staging_paths).rebuild(
+                    self.site_name,
+                    profile.mr_id,
+                    should_cancel=should_cancel,
+                )
+                self._discard_staging_schema_archives(
+                    staging_paths.mesh_mr_root(self.site_name, profile.safe_folder_name)
+                )
+                repository = service.storage.mr_repository(profile)
+                self._restore_rebuilt_provenance(repository, legacy_sources)
             files: list[Path] = []
             for row in rows:
                 member_id = str(row["member_id"])
@@ -704,6 +745,36 @@ class MeshBundleImportService:
                 progress("mesh_bundle_import", completed, total, "MESH ZIP Profile 导入完成")
         return statuses, counts
 
+    @staticmethod
+    def _discard_staging_schema_archives(profile_root: Path) -> None:
+        for archive in profile_root.glob("*.schema_archive_*"):
+            _require_child(archive.resolve(), profile_root.resolve())
+            if archive.is_symlink():
+                raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH staging 归档不能是符号链接")
+            if archive.is_dir():
+                shutil.rmtree(archive)
+            else:
+                archive.unlink()
+
+    @staticmethod
+    def _restore_rebuilt_provenance(
+        repository: MeshMrRepository,
+        legacy_sources: list[dict[str, object]],
+    ) -> None:
+        rebuilt = {str(row.get("sha256") or ""): row for row in repository.list_source_files()}
+        for legacy in legacy_sources:
+            row = rebuilt.get(str(legacy.get("sha256") or ""))
+            if row is None:
+                continue
+            repository.update_source_provenance(
+                int(row["id"]),
+                raw_relative_path=str(row.get("raw_relative_path") or ""),
+                parsed_relative_path=str(row.get("parsed_relative_path") or ""),
+                archive_sha256=str(legacy.get("archive_sha256") or ""),
+                bundle_member_id=str(legacy.get("bundle_member_id") or ""),
+                bundle_member_sha256=str(legacy.get("bundle_member_sha256") or ""),
+            )
+
     def _rewrite_staging_paths(
         self,
         staging_paths: PathResolver,
@@ -712,11 +783,11 @@ class MeshBundleImportService:
         import_hashes: Mapping[str, str],
     ) -> None:
         originals_by_sha: dict[str, str] = {}
+        members_by_sha: dict[str, MeshBundleMember] = {}
         for member in manifest.members:
-            originals_by_sha.setdefault(
-                import_hashes.get(member.member_id, member.sha256),
-                member.original_name,
-            )
+            digest = import_hashes.get(member.member_id, member.sha256)
+            originals_by_sha.setdefault(digest, member.original_name)
+            members_by_sha.setdefault(digest, member)
         stale_root = str(staging_paths.data_root.resolve())
         for profile in profiles.values():
             staging_profile = staging_paths.mesh_mr_root(self.site_name, profile.safe_folder_name).resolve()
@@ -725,7 +796,12 @@ class MeshBundleImportService:
             with closing(sqlite3.connect(index_path)) as connection:
                 connection.row_factory = sqlite3.Row
                 rows = connection.execute(
-                    "SELECT id, sha256, original_path, archived_path, parsed_db_path FROM source_files"
+                    """
+                    SELECT id, sha256, original_path, original_filename, archived_filename,
+                           archived_path, parsed_db_path,
+                           archive_sha256, bundle_member_id, bundle_member_sha256
+                    FROM source_files
+                    """
                 ).fetchall()
                 for row in rows:
                     staging_archived = Path(str(row["archived_path"] or "")).resolve()
@@ -740,23 +816,36 @@ class MeshBundleImportService:
                     final_parsed = final_profile / staging_parsed.relative_to(staging_profile)
                     original_name = originals_by_sha.get(
                         str(row["sha256"] or ""),
-                        str(row["original_path"] or staging_archived.name),
+                        str(row["original_filename"] or row["archived_filename"] or staging_archived.name),
                     )
+                    member = members_by_sha.get(str(row["sha256"] or ""))
+                    raw_relative = final_archived.relative_to(final_profile).as_posix()
+                    parsed_relative = final_parsed.relative_to(final_profile).as_posix()
                     connection.execute(
-                        "UPDATE source_files SET original_path = ?, archived_path = ?, parsed_db_path = ? WHERE id = ?",
-                        (original_name, str(final_archived), str(final_parsed), int(row["id"])),
+                        """
+                        UPDATE source_files
+                        SET original_path = ?, archived_path = ?, parsed_db_path = ?,
+                            raw_relative_path = ?, parsed_relative_path = ?, archive_sha256 = ?,
+                            bundle_member_id = ?, bundle_member_sha256 = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            original_name,
+                            str(final_archived),
+                            str(final_parsed),
+                            raw_relative,
+                            parsed_relative,
+                            manifest.archive_sha256 if member else str(row["archive_sha256"] or ""),
+                            member.member_id if member else str(row["bundle_member_id"] or ""),
+                            member.sha256 if member else str(row["bundle_member_sha256"] or ""),
+                            int(row["id"]),
+                        ),
                     )
                     with closing(sqlite3.connect(staging_parsed)) as detail:
-                        if str(row["sha256"] or "") in originals_by_sha:
-                            detail.execute(
-                                "UPDATE source_files SET original_path = ?, archived_path = ?",
-                                (original_name, str(final_archived)),
-                            )
-                        else:
-                            detail.execute(
-                                "UPDATE source_files SET archived_path = ?",
-                                (str(final_archived),),
-                            )
+                        detail.execute(
+                            "UPDATE source_files SET original_path = ?, archived_path = ?",
+                            (original_name, str(final_archived)),
+                        )
                         detail.execute(
                             "UPDATE parse_issues SET source_file = ? WHERE source_file = ?",
                             (str(final_archived), str(staging_archived)),
@@ -1040,10 +1129,11 @@ def _profile_value(profile: object, key: str) -> object:
 
 def _profile_identity(name: str) -> tuple[str, str] | None:
     compact = re.sub(r"[^0-9A-Za-z]", "", name).casefold()
-    match = re.search(r"(?P<train>\d{1,2})mr(?P<role>ct|cw)$", compact)
+    match = re.search(r"(?P<train>\d{1,2})mr(?P<role>ct|cw|tc)$", compact)
     if not match:
         return None
-    return match.group("train").zfill(2), match.group("role").upper()
+    role = match.group("role").upper()
+    return match.group("train").zfill(2), "CW" if role == "TC" else role
 
 
 def _copy_limited(source: BinaryIO, target: Path, maximum: int) -> int:

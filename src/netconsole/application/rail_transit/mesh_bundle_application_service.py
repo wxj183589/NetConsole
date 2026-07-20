@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import ExitStack
+import sqlite3
+from tempfile import SpooledTemporaryFile
 from typing import BinaryIO
+import zipfile
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
@@ -15,6 +19,8 @@ from netconsole.services.mesh_bundle_import_service import (
     MeshBundleImportError,
     MeshBundleImportService,
 )
+from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
 class MeshBundleApplicationError(ValueError):
@@ -26,16 +32,66 @@ class MeshBundleApplicationError(ValueError):
 class MeshBundleApplicationService:
     _OWNER = "web_rail_transit"
     _TASK_TYPE = "mesh_bundle_import"
+    _MAX_PREVIEW_FILES = 64
+    _MAX_PREVIEW_SOURCE_BYTES = 100 * 1024 * 1024
 
     def __init__(
         self,
         paths: PathResolver,
         task_service: TaskApplicationService,
         process_adapter: LocalProcessAdapter,
+        base_data_query_service: RailTransitBaseDataQueryService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
         self.process_adapter = process_adapter
+        self.base_data_query_service = base_data_query_service or RailTransitBaseDataQueryService(paths)
+
+    def prepare_import_context(self, site_id: str) -> dict[str, object]:
+        site_id = self._site(site_id)
+        try:
+            storage = MeshStorageService(site_id, self.paths)
+            before = {item.mr_id: item for item in storage.catalog.list_profiles()}
+            vehicle_mrs = []
+            page = 1
+            while True:
+                result = self.base_data_query_service.list_mrs(site_id, page=page, page_size=200)
+                vehicle_mrs.extend(result.items)
+                if len(vehicle_mrs) >= result.total or not result.items:
+                    break
+                page += 1
+            for mr in vehicle_mrs:
+                if mr.device_id is None:
+                    continue
+                storage.ensure_mr_profile_for_asset(
+                    device_id=mr.device_id,
+                    device_uuid=mr.id,
+                    display_name=mr.name,
+                )
+            profiles = storage.catalog.list_profiles()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise MeshBundleApplicationError(
+                "MESH_IMPORT_CONTEXT_PREPARE_FAILED",
+                "MESH 导入上下文准备失败",
+            ) from exc
+        created = sum(1 for item in profiles if item.mr_id not in before)
+        updated = sum(
+            1
+            for item in profiles
+            if item.mr_id in before
+            and (
+                item.display_name != before[item.mr_id].display_name
+                or item.linked_device_id != before[item.mr_id].linked_device_id
+                or item.linked_device_uuid != before[item.mr_id].linked_device_uuid
+            )
+        )
+        return {
+            "site_id": site_id,
+            "vehicle_mr_count": len(vehicle_mrs),
+            "profile_count": len(profiles),
+            "created_count": created,
+            "updated_count": updated,
+        }
 
     def preview_bundle(
         self,
@@ -74,6 +130,49 @@ class MeshBundleApplicationService:
             return preview
         except MeshBundleImportError as exc:
             raise MeshBundleApplicationError(exc.code, str(exc)) from exc
+
+    def preview_files(
+        self,
+        site_id: str,
+        files: list[tuple[str, BinaryIO]],
+    ) -> dict[str, object]:
+        if not files or len(files) > self._MAX_PREVIEW_FILES:
+            raise MeshBundleApplicationError("FILE_COUNT_INVALID", "请选择 1 到 64 个 MESH 日志文件")
+        if len(files) == 1 and str(files[0][0]).casefold().endswith(".zip"):
+            return self.preview_bundle(site_id, file_name=files[0][0], source=files[0][1])
+        normalized: list[tuple[str, BinaryIO]] = []
+        seen: set[str] = set()
+        for name, source in files:
+            safe = self._safe_preview_member_name(name)
+            key = safe.casefold()
+            if key in seen:
+                raise MeshBundleApplicationError("DUPLICATE_MEMBER", f"存在重复文件名：{safe}")
+            seen.add(key)
+            normalized.append((safe, source))
+        with ExitStack() as stack:
+            archive = stack.enter_context(SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b"))
+            total = 0
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+                for name, source in normalized:
+                    with bundle.open(name, "w") as target:
+                        while chunk := source.read(1024 * 1024):
+                            total += len(chunk)
+                            if total > self._MAX_PREVIEW_SOURCE_BYTES:
+                                raise MeshBundleApplicationError("SOURCE_SIZE_EXCEEDED", "MESH 日志总大小超过 100 MiB")
+                            target.write(chunk)
+            archive.seek(0)
+            return self.preview_bundle(site_id, file_name="mesh-import.zip", source=archive)
+
+    @staticmethod
+    def _safe_preview_member_name(value: str) -> str:
+        normalized = str(value or "").replace("\\", "/").strip("/")
+        parts = [part for part in normalized.split("/") if part]
+        if not parts or any(part in {".", ".."} for part in parts):
+            raise MeshBundleApplicationError("MEMBER_PATH_INVALID", "MESH 日志相对路径无效")
+        name = "/".join(parts)
+        if not name.casefold().endswith((".log", ".txt", ".log.gz", ".txt.gz")):
+            raise MeshBundleApplicationError("FILE_TYPE_INVALID", f"文件类型不匹配：{name}")
+        return name
 
     def start_import(
         self,

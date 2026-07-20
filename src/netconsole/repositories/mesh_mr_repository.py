@@ -136,7 +136,12 @@ class MeshMrRepository:
                     parsed_deleted_at TEXT DEFAULT '',
                     parsed_delete_error TEXT DEFAULT '',
                     source_file_order INTEGER DEFAULT 0,
-                    analysis_params_json TEXT DEFAULT ''
+                    analysis_params_json TEXT DEFAULT '',
+                    raw_relative_path TEXT DEFAULT '',
+                    parsed_relative_path TEXT DEFAULT '',
+                    archive_sha256 TEXT DEFAULT '',
+                    bundle_member_id TEXT DEFAULT '',
+                    bundle_member_sha256 TEXT DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,6 +391,14 @@ class MeshMrRepository:
                 CREATE VIEW IF NOT EXISTS mesh_events AS SELECT * FROM switch_events;
                 """
             )
+            for column in (
+                "raw_relative_path",
+                "parsed_relative_path",
+                "archive_sha256",
+                "bundle_member_id",
+                "bundle_member_sha256",
+            ):
+                self._ensure_column(conn, "source_files", column, "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_ap_name", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_ap_mac", "TEXT DEFAULT ''")
             self._ensure_column(conn, "mesh_links", "peer_site", "TEXT DEFAULT ''")
@@ -829,6 +842,34 @@ class MeshMrRepository:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM source_files WHERE id = ?", (source_file_id,)).fetchone()
         return dict(row) if row else None
+
+    def update_source_provenance(
+        self,
+        source_file_id: int,
+        *,
+        raw_relative_path: str,
+        parsed_relative_path: str,
+        archive_sha256: str = "",
+        bundle_member_id: str = "",
+        bundle_member_sha256: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE source_files
+                SET raw_relative_path = ?, parsed_relative_path = ?, archive_sha256 = ?,
+                    bundle_member_id = ?, bundle_member_sha256 = ?
+                WHERE id = ?
+                """,
+                (
+                    raw_relative_path,
+                    parsed_relative_path,
+                    archive_sha256,
+                    bundle_member_id,
+                    bundle_member_sha256,
+                    int(source_file_id),
+                ),
+            )
 
     def mark_source_file_deleted(self, source_file_id: int, deleted_at: datetime | None = None) -> None:
         with self._connect() as conn:

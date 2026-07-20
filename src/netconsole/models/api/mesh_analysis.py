@@ -18,6 +18,7 @@ class MeshProfileDTO(ApiModel):
     display_name: str
     safe_folder_name: str
     linked_device_id: int | None = None
+    linked_device_uuid: str | None = None
     source_file_count: int = 0
     sample_count: int = 0
     link_record_count: int = 0
@@ -30,6 +31,14 @@ class MeshProfileCreateRequestDTO(ApiModel):
     display_name: str = Field(min_length=1, max_length=200)
     linked_mr_id: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=1000)
+
+
+class MeshImportContextPrepareDTO(ApiModel):
+    site_id: str
+    vehicle_mr_count: int = 0
+    profile_count: int = 0
+    created_count: int = 0
+    updated_count: int = 0
 
 
 class MeshBundleProfileCandidateDTO(ApiModel):
@@ -142,6 +151,13 @@ class MeshDataSourceDTO(ApiModel):
     modified_at: str | None = None
     compressed: bool = False
     tail_available: bool = False
+    recoverable: bool = False
+    recovery_source: str = ""
+    missing_reason: str = ""
+    rebuild_capability: Literal["ready", "recoverable_from_bundle", "raw_missing", "task_running", "unsupported"] = "raw_missing"
+    package_name: str = ""
+    package_sha256: str = ""
+    bundle_member_id: str = ""
 
 
 class MeshAnalysisSessionDetailDTO(ApiModel):

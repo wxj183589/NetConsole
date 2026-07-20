@@ -12,6 +12,7 @@ from netconsole.application.rail_transit.mesh_bundle_application_service import 
     MeshBundleApplicationService,
 )
 from netconsole.core.paths import PathResolver
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_registry import dispatch_job, registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -25,6 +26,59 @@ def _bundle_bytes() -> bytes:
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("01CTmeshlog.log", b"preview")
     return output.getvalue()
+
+
+class _VehicleMrPages:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+        self.first_name = "列车06-MR-CW"
+
+    def list_mrs(self, _site_id: str, *, page: int, page_size: int) -> VehicleMrPageDTO:
+        self.calls.append((page, page_size))
+        rows = {
+            1: [VehicleMrDTO(id="uuid-06-cw", device_id=6, name=self.first_name, train_no="06", role="CW")],
+            2: [VehicleMrDTO(id="uuid-34-ct", device_id=34, name="列车34-MR-CT", train_no="34", role="CT")],
+        }.get(page, [])
+        return VehicleMrPageDTO(items=rows, total=2, page=page, page_size=page_size)
+
+
+def test_prepare_import_context_is_paged_idempotent_and_keeps_safe_folder_on_rename(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    base_query = _VehicleMrPages()
+    application = MeshBundleApplicationService(
+        paths,
+        tasks,
+        FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        base_query,  # type: ignore[arg-type]
+    )
+
+    first = application.prepare_import_context("demo")
+    storage = MeshStorageService("demo", paths)
+    profiles = storage.catalog.list_profiles()
+    original = next(item for item in profiles if item.linked_device_uuid == "uuid-06-cw")
+
+    assert first == {
+        "site_id": "demo",
+        "vehicle_mr_count": 2,
+        "profile_count": 2,
+        "created_count": 2,
+        "updated_count": 0,
+    }
+    assert base_query.calls == [(1, 200), (2, 200)]
+    assert original.display_name == "列车06-MR-CW"
+
+    base_query.calls.clear()
+    base_query.first_name = "列车06-MR-CW-正式名"
+    second = application.prepare_import_context("demo")
+    renamed = storage.catalog.get_by_linked_device_uuid("uuid-06-cw")
+
+    assert second["created_count"] == 0
+    assert second["updated_count"] == 1
+    assert len(storage.catalog.list_profiles()) == 2
+    assert renamed is not None
+    assert renamed.display_name == "列车06-MR-CW-正式名"
+    assert renamed.safe_folder_name == original.safe_folder_name
 
 
 def test_application_preview_confirmation_and_serializable_job_params(tmp_path: Path) -> None:

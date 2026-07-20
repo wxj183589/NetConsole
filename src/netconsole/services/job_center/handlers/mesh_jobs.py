@@ -4,6 +4,7 @@ from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
+from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
 
 mesh_log_import = legacy_handler(legacy_tasks._mesh_log_import)
 mesh_derived_rebuild = legacy_handler(legacy_tasks._mesh_derived_rebuild)
@@ -19,9 +20,20 @@ def mesh_schema_rebuild(context: JobContext) -> dict[str, object]:
         should_cancel=context.should_cancel,
     )
 
+
+def mesh_source_rebuild(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    return MeshSourceRebuildService(context.paths).rebuild_source(
+        str(context.params.get("site_name") or ""),
+        str(context.params.get("session_id") or ""),
+        progress=context.progress,
+        should_cancel=context.should_cancel,
+    )
+
 HANDLERS = {
     "mesh_log_import": mesh_log_import,
     "mesh_derived_rebuild": mesh_derived_rebuild,
     "mesh_mr_profiles_refresh": mesh_mr_profiles_refresh,
     "mesh_schema_rebuild": mesh_schema_rebuild,
+    "mesh_source_rebuild": mesh_source_rebuild,
 }

@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP 快照、光衰和多 Sheet 业务导出，`mesh_analysis_query_service.py` 和看板服务提供聚合查询。正式轨旁工作簿仍由独立 Export Process 从局点数据库重建，使用临时文件与原子替换，不以 Vue 当前页数据为事实源。
+`base_data_*` 管理基础资料，`vehicle_mr_*`/`car_network_*` 管理车载与通信，`trackside_*` 管理轨旁 AP 快照、光衰和多 Sheet 业务导出，`mesh_analysis_query_service.py` 提供 MESH 只读聚合。MESH 导入、恢复和重建由 ApplicationService/Job 调用 `mesh_bundle_import_service.py`、`mesh_source_rebuild_service.py`；来源级操作只替换当前 detail SQLite，Profile 全量重建是独立高级任务。正式轨旁工作簿仍由独立 Export Process 从局点数据库重建，使用临时文件与原子替换，不以 Vue 当前页数据为事实源。
 
 ## 依赖关系
 

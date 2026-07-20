@@ -47,6 +47,7 @@
 - MESH ZIP 导入增加安全 preview、人工列车/端位/Profile 映射、独立 Job、隔离 Profile/SQLite 解析、Windows 原子目录提交和成功 manifest；真实 12 文件包完成 353,035 条记录解析与重复 SHA 幂等复验，manifest 和公开 DTO 均不暴露临时或服务端绝对路径。动态图新增本端/对端 Rate 原始值、后端计算的 Retry/Error 非负增量及切换前后 RSSI 事件散点，不再保留永久占位图。
 - Online MR 分析页改用真实 Radio Statistics、历史/实时切换 RSSI 事件和按总量封顶的分页指标契约；保留旧 `/metrics` 列表响应，新增分析页专用 `/metric-page`，时间轴查询不再先全量读入。图表卸载时统一释放 ECharts、ResizeObserver、主题订阅和轮询；真实 MR 会话与现场设备时钟对齐仍待验收。
 - 修复局点 Registry 只显示 `demo` 的问题：启动时幂等补登记已有的中文/历史局点目录，生成稳定内部 ID 并保留原目录；切换和 Backend 重启按 Registry 解析真实目录，不重命名、不重建旧局点数据库。
+- 打通 MR 原始 MESH 日志正式导入闭环：导入弹窗从当前局点 VehicleMr 显式幂等准备内部归属，修复 500/200 分页不一致和双数据源互相拖垮；ZIP、LOG/GZ 与文件夹统一安全预览并自动匹配 CT/CW，确认后由 Job 原子归档、解析并返回新 Session。来源保存相对 raw/parsed 与 bundle provenance，主按钮只恢复/重建当前来源；真实 12 文件包复验 353,035 条解析记录、12/12 raw/parsed 与重复 SHA 幂等，宁波 1 号线 06/34 四个 missing 来源从现存 raw 修复为 ready。
 - AC 管理下独立 Mesh-Link 在线监控已合并到“轨道交通 / 列车在线情况”：每列车一行聚合 CT/TC 两端 MR、当前轨旁 AP、MAC、Radio、RSSI、站点/区间/里程、方向、匹配状态、两侧收光和更新时间；综合状态、数据过期和匹配结论由 Python Query Service 返回。旧页面、Store、导航和页面 API Client 已删除，旧 URL 重定向；Parser、Repository、历史快照、raw、Query Service 和受控 `ac_mesh_link_refresh` Task 保留，底层旧 API 标记 deprecated。
 - 在线列车车地通信检测收口为 TC1/TC2 固定六节点拓扑状态页，只保留节点/链路、VRRP、跨 TC、刷新和车内通信诊断 Task；移除本页的轨旁 AP、RSSI、fping/iPerf、光衰、Online MR、Agent、Mesh-Link 及综合统计入口。缺少 SW/SRV 关联或检测事实时明确显示“未配置/未检测”，不由 Vue 猜测正常状态；独立底层业务模块不删除。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。

@@ -23,6 +23,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshApStatisticsPageDTO,
     MeshBundleImportRequestDTO,
     MeshBundlePreviewDTO,
+    MeshImportContextPrepareDTO,
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
@@ -113,6 +114,20 @@ def profiles(request: Request) -> list[MeshProfileDTO]:
 
 
 @router.post(
+    "/import-context/prepare",
+    response_model=MeshImportContextPrepareDTO,
+    summary="根据当前局点正式车载 MR 准备 MESH 导入上下文",
+)
+def prepare_import_context(request: Request) -> MeshImportContextPrepareDTO:
+    try:
+        return MeshImportContextPrepareDTO.model_validate(
+            _bundle_service(request).prepare_import_context(_current_site_id(request))
+        )
+    except MeshBundleApplicationError as exc:
+        _raise_bundle_error(exc)
+
+
+@router.post(
     "/profiles",
     response_model=MeshProfileDTO,
     status_code=status.HTTP_201_CREATED,
@@ -132,6 +147,30 @@ def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> Me
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     return MeshProfileDTO.model_validate(profile, from_attributes=True)
+
+
+@router.post(
+    "/import-preview",
+    response_model=MeshBundlePreviewDTO,
+    summary="统一预览 ZIP、LOG、GZ 或文件夹中的 MESH 日志",
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+async def preview_import(
+    request: Request,
+    files: list[UploadFile] = File(...),
+) -> MeshBundlePreviewDTO:
+    try:
+        payload = await asyncio.to_thread(
+            _bundle_service(request).preview_files,
+            _current_site_id(request),
+            [(file.filename or "", file.file) for file in files],
+        )
+    except MeshBundleApplicationError as exc:
+        _raise_bundle_error(exc)
+    finally:
+        for file in files:
+            await file.close()
+    return MeshBundlePreviewDTO.model_validate(payload)
 
 
 @router.post(

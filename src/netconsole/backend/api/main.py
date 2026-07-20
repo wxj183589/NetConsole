@@ -547,6 +547,7 @@ def create_app(
         paths,
         task_service,
         web_process_adapter,
+        app.state.rail_transit_base_data_query_service,
     )
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)

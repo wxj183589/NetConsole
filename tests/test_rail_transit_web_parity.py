@@ -392,9 +392,9 @@ def test_mesh_rebuild_reuses_job_center_and_requires_confirmation(tmp_path: Path
 
     started = service.start_mesh_rebuild("demo", session_id, explicit_confirmation=True)
 
-    assert started.action == "mesh_schema_rebuild"
-    assert normal.jobs[started.task_id].task_type == "mesh_schema_rebuild"
-    assert normal.jobs[started.task_id].params["mr_id"] == "12345678-1234-1234-1234-123456789abc"
+    assert started.action == "mesh_source_rebuild"
+    assert normal.jobs[started.task_id].task_type == "mesh_source_rebuild"
+    assert normal.jobs[started.task_id].params["session_id"] == session_id
     assert normal.jobs[started.task_id].params["explicit_confirmation"] is True
 
 
