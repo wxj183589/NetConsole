@@ -43,6 +43,9 @@ class AcOpticalDTO(ApiModel):
     optical_severity: str = "no_data"
     raw_status: str = "unknown"
     ap_offline_related: bool = False
+    ap_online_status: str = "unknown"
+    data_freshness: str = "unknown"
+    is_current_anomaly: bool = False
     anomaly_reason: str = ""
     source_switch: str = ""
     source_interface: str = ""
@@ -122,6 +125,8 @@ class AcApDTO(ApiModel):
     lldp_status: str = ""
     optical_status: str = "no_data"
     optical_severity: str = "no_data"
+    optical_data_freshness: str = "unknown"
+    optical_is_current_anomaly: bool = False
     optical_rx_power: str = ""
     updated_at: str = ""
 

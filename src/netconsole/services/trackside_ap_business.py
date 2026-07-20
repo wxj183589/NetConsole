@@ -5,7 +5,13 @@ import re
 from time import perf_counter
 
 from netconsole.core import app_logger
-from netconsole.core.optical_severity_engine import compute_optical_severity, display_optical_status, worse_optical_severity
+from netconsole.core.optical_severity_engine import (
+    classify_optical_freshness,
+    compute_optical_severity,
+    display_optical_status,
+    is_optical_health_abnormal,
+    worse_optical_severity,
+)
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -182,8 +188,10 @@ TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
 TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
-CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
+CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
 CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS = (
+    ("AP 在线状态", "ap_online_status"),
+    ("光衰判定", "judgement"),
     ("异常原因", "reason"),
     ("异常侧", "side"),
     ("异常等级", "level"),
@@ -1309,8 +1317,6 @@ def _trackside_rows_by_switch_interface(rows: list[dict[str, object | None]]) ->
 
 
 def trackside_row_status(row: dict[str, object | None]) -> str:
-    if bool(row.get("is_ap_offline")) or row.get("offline_reason") in {"switch_offline", "ac_idle"}:
-        return "offline"
     switch_status = str(row.get("switch_optical_status") or "")
     ap_status = str(row.get("ap_optical_status") or "") if has_ap_side_optical_data(row) else ""
     return worse_optical_severity(switch_status, ap_status)
@@ -1318,8 +1324,7 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
 
 def is_trackside_optical_abnormal_status(status: object) -> bool:
     """Return whether a trackside optical status belongs in the optical anomaly set."""
-    normalized = _normalized_optical_status(status)
-    return normalized in OPTICAL_TREATMENT_ISSUE_STATUSES or normalized == "critical"
+    return is_optical_health_abnormal(_normalized_optical_status(status))
 
 
 def has_ap_side_optical_data(row: dict[str, object | None]) -> bool:
@@ -2245,13 +2250,11 @@ def _is_ap_offline_abnormal(row: dict[str, object | None]) -> bool:
 def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
-    if _is_ap_offline_abnormal(row):
-        return True
     status = _normalized_optical_status(row.get("ap_optical_status") or row.get("optical_alarm_status") or row.get("alarm_status"))
-    if status in {"notice", "warning", "alarm"}:
+    if is_optical_health_abnormal(status):
         return True
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("ap_rx_power")):
-        return _normalized_optical_status(_compute_ap_optical_status_from_row(row)) in {"notice", "warning", "alarm"}
+        return is_optical_health_abnormal(_compute_ap_optical_status_from_row(row))
     return False
 
 
@@ -2259,7 +2262,7 @@ def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not has_valid_ap_binding(row):
         return False
     status = _normalized_optical_status(row.get("switch_optical_status"))
-    if status in {"notice", "warning", "alarm"}:
+    if is_optical_health_abnormal(status):
         return True
     if status in {"", "unknown"} and _has_valid_rx_power(row.get("switch_rx_power")):
         computed = compute_optical_severity(
@@ -2271,27 +2274,33 @@ def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
                 "port_status": row.get("link_status") or row.get("link"),
             }
         ).severity
-        return computed in {"notice", "warning", "alarm"}
+        return is_optical_health_abnormal(computed)
     return False
 
 
 def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, str]:
-    if _is_ap_offline_abnormal(row):
-        detail = "交换机侧无光，AP侧离线" if is_no_light_optical_row(row) or normalize_link_state(row.get("link_status") or row.get("link")) == "DOWN" else "AP侧离线"
-        return {"reason": "AP离线", "side": "AP侧", "level": "离线", "detail": detail}
+    ap_state = _ap_state(row)
+    ap_online_status = "离线" if _is_ap_offline_abnormal(row) or ap_state == "offline" else "在线" if ap_state == "online" else "未知"
     if _is_ap_side_current_abnormal(row):
-        return {"reason": "AP侧光衰告警", "side": "AP侧", "level": display_optical_status(_normalized_optical_status(row.get("ap_optical_status"))), "detail": ""}
+        status = _normalized_optical_status(row.get("ap_optical_status") or _compute_ap_optical_status_from_row(row))
+        return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "AP侧光衰告警", "side": "AP侧", "level": display_optical_status(status), "detail": ""}
     if _is_switch_side_current_abnormal(row):
-        return {"reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(_normalized_optical_status(row.get("switch_optical_status"))), "detail": ""}
-    return {"reason": "", "side": "", "level": "", "detail": ""}
+        return {"ap_online_status": ap_online_status, "judgement": "异常", "reason": "交换机侧光衰告警", "side": "交换机侧", "level": display_optical_status(_normalized_optical_status(row.get("switch_optical_status"))), "detail": ""}
+    return {"ap_online_status": ap_online_status, "judgement": "", "reason": "", "side": "", "level": "", "detail": ""}
 
 
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
-    if _is_ap_offline_abnormal(row):
-        return True
+    freshness = str(row.get("data_freshness") or "").strip().casefold()
+    if freshness == "stale" or classify_optical_freshness(row.get("updated_at"), row.get("collected_at")) == "stale":
+        return False
     if _is_ap_side_current_abnormal(row):
         return True
     return _is_switch_side_current_abnormal(row)
+
+
+def count_current_optical_abnormal_aps(rows: list[dict[str, object | None]]) -> int:
+    """Count current optical alarms by bound AP identity, not by interface rows."""
+    return len({key for row in rows if is_current_optical_abnormal_row(row) if (key := ap_identity_key(row)) is not None})
 
 
 

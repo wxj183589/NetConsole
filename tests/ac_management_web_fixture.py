@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from netconsole.core.database import Database
@@ -15,7 +16,7 @@ def build_ac_management_fixture(
     db_path = paths.site_db_path("demo")
     database = Database(db_path)
     database.initialize()
-    now = "2026-07-14T12:00:00"
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     with database.connect() as conn:
         conn.executemany(
             """

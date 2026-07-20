@@ -4,10 +4,16 @@ import ipaddress
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from netconsole.core.optical_severity_engine import display_optical_status, worse_optical_severity
+from netconsole.core.optical_severity_engine import (
+    classify_optical_freshness,
+    classify_optical_health,
+    display_optical_status,
+    worse_optical_severity,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.core.sources.ap_source import compute_ap_status
@@ -39,9 +45,6 @@ from netconsole.utils.mileage import format_track_mileage, parse_mileage_to_mete
 from netconsole.utils.natural_sort import natural_text_key
 
 
-_ABNORMAL_OPTICAL = {"notice", "warning", "alarm", "link_abnormal", "link_down", "no_light"}
-_CRITICAL_OPTICAL = {"alarm", "link_abnormal", "link_down", "no_light"}
-_NO_DATA_OPTICAL = {"", "unknown", "not_collected", "skipped", "offline", "no_module"}
 _AP_HISTORY_FIELDS = {
     "radio": (
         "collected_at",
@@ -110,8 +113,14 @@ class _ReadonlyDatabase:
 class AcManagementQueryService:
     """AC 管理 Web 页面的 GET-only 查询边界。"""
 
-    def __init__(self, paths: PathResolver) -> None:
+    def __init__(
+        self,
+        paths: PathResolver,
+        *,
+        now_provider: Callable[[], datetime] | None = None,
+    ) -> None:
         self.paths = paths
+        self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
 
     def current_site_id(self, default: str = "demo") -> str:
         try:
@@ -136,10 +145,13 @@ class AcManagementQueryService:
             unauthenticated = repository.list_fit_ap_unauthenticated(ac_id)
             optical_by_ap = self._optical_index(repository.list_fit_ap_optical(ac_id))
             summary = dict(ac.get("summary") or {})
-            optical_count = 0
+            anomalous_ap_ids: set[str] = set()
             for row in resources:
                 optical = self._optical_for(row, optical_by_ap, context)
-                optical_count += optical.optical_status in {"warning", "critical"}
+                if optical.is_current_anomaly:
+                    identity = self._clean_text(row.get("ap_uuid") or row.get("ap_mac") or row.get("ap_name"))
+                    if identity:
+                        anomalous_ap_ids.add(identity.casefold())
             online = self._int(summary.get("online_aps"), sum(not is_fit_ap_offline(row) for row in resources))
             offline = self._int(summary.get("offline_aps"), sum(is_fit_ap_offline(row) for row in resources))
             total = self._int(summary.get("total_aps"), len(resources))
@@ -165,7 +177,7 @@ class AcManagementQueryService:
                     offline_aps=offline,
                     unauthenticated_aps=len(unauthenticated),
                     radio_total=sum(self._radio_present(row, rid) for row in resources for rid in (1, 2)),
-                    optical_anomalies=optical_count,
+                    optical_anomalies=len(anomalous_ap_ids),
                     updated_at=updated_at,
                 )
             )
@@ -229,6 +241,7 @@ class AcManagementQueryService:
             ac_id=ac_id,
             query=query,
             optical_statuses={"warning", "critical"},
+            current_optical_only=True,
             sort_by="topology",
             sort_order="asc",
         )
@@ -413,6 +426,7 @@ class AcManagementQueryService:
         model: str = "",
         switch: str = "",
         optical_statuses: set[str] | None = None,
+        current_optical_only: bool = False,
         sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> list[AcApDTO]:
@@ -430,6 +444,8 @@ class AcManagementQueryService:
         wanted_optical = {value for value in optical_statuses or set() if value}
         if wanted_optical:
             items = [item for item in items if item.optical_status in wanted_optical]
+        if current_optical_only:
+            items = [item for item in items if item.optical_is_current_anomaly]
         reverse = str(sort_order or "asc").casefold() == "desc"
         items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=reverse)
         return items
@@ -516,6 +532,8 @@ class AcManagementQueryService:
             lldp_status=lldp.match_status,
             optical_status=optical.optical_status,
             optical_severity=optical.optical_severity,
+            optical_data_freshness=optical.data_freshness,
+            optical_is_current_anomaly=optical.is_current_anomaly,
             optical_rx_power=optical.rx_power or optical.switch_rx_power,
             updated_at=self._latest_text(row.get("updated_at"), optical.updated_at, lldp.updated_at),
         )
@@ -580,33 +598,38 @@ class AcManagementQueryService:
                 alarm_low=module.get("rx_low_alarm"),
                 alarm_high=module.get("rx_high_alarm"),
                 warning_low=module.get("rx_low_warning"),
+                module_present=module.get("module_present") if "module_present" in module else module.get("has_module"),
+                no_module=module.get("no_module"),
+                module_status=module.get("module_status") or module.get("status"),
             )
             switch_rx = str(module.get("rx_power") or "")
         else:
             switch_status = compute_switch_status(switch_rx_power=row.get("neighbor_rx_power"))
             switch_rx = str(row.get("neighbor_rx_power") or "")
-        raw_status = worse_optical_severity(switch_status, compute_ap_status(row))
+        ap_status = compute_ap_status(row)
+        raw_status = worse_optical_severity(switch_status, ap_status)
         offline = is_fit_ap_offline(resource)
-        if raw_status in _ABNORMAL_OPTICAL:
-            status = ("critical" if raw_status in _CRITICAL_OPTICAL else "warning") if offline else "unrelated"
-        elif raw_status in _NO_DATA_OPTICAL:
-            status = "no_data"
-        else:
-            status = "normal"
+        status = classify_optical_health(raw_status)
+        freshness = self._optical_freshness(row, module, raw_status, ap_status, switch_status)
+        is_current_anomaly = status in {"warning", "critical"} and freshness == "fresh"
         label = display_optical_status(raw_status)
-        if status == "unrelated":
-            reason = f"检测到{label}，但 AP 未离线，不计入光衰异常"
-        elif status in {"warning", "critical"}:
-            reason = f"AP 离线且光衰状态为{label}"
+        ap_online_status = "offline" if offline else self._online_status(resource)
+        if status in {"warning", "critical"}:
+            reason = f"检测到光功率{label}，已计入{'严重光衰异常' if status == 'critical' else '异常 AP 光衰'}；当前 AP {'离线' if offline else '在线'}。"
         elif status == "normal":
             reason = "光衰结果正常"
         else:
             reason = "无可用光衰数据"
+        if freshness == "stale":
+            reason = f"{reason} 数据已过期，不作为当前实时状态统计。"
         return AcOpticalDTO(
             optical_status=status,
             optical_severity=status,
             raw_status=raw_status,
-            ap_offline_related=offline and status in {"warning", "critical"},
+            ap_offline_related=offline and is_current_anomaly,
+            ap_online_status=ap_online_status,
+            data_freshness=freshness,
+            is_current_anomaly=is_current_anomaly,
             anomaly_reason=reason,
             source_switch=switch_name,
             source_interface=interface,
@@ -620,6 +643,25 @@ class AcManagementQueryService:
             error_summary=str(row.get("error_message") or ""),
             updated_at=self._latest_text(row.get("updated_at"), row.get("collected_at"), module.get("updated_at")),
         )
+
+    def _optical_freshness(
+        self,
+        ap_row: dict[str, object | None],
+        module: dict[str, object],
+        raw_status: str,
+        ap_status: str,
+        switch_status: str,
+    ) -> str:
+        if classify_optical_health(raw_status) == "no_data":
+            return "unknown"
+        timestamps = [ap_row.get("updated_at"), ap_row.get("collected_at")]
+        if raw_status == switch_status:
+            timestamps.extend((module.get("updated_at"), module.get("collected_at")))
+        return classify_optical_freshness(*timestamps, now=self._now())
+
+    def _now(self) -> datetime:
+        now = self._now_provider()
+        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
 
     def _lldp_for(
         self,
@@ -643,6 +685,9 @@ class AcManagementQueryService:
                     alarm_low=module.get("rx_low_alarm"),
                     alarm_high=module.get("rx_high_alarm"),
                     warning_low=module.get("rx_low_warning"),
+                    module_present=module.get("module_present") if "module_present" in module else module.get("has_module"),
+                    no_module=module.get("no_module"),
+                    module_status=module.get("module_status") or module.get("status"),
                 )
             )
         match_status = str(row.get("lldp_match_status") or row.get("link_match_status") or resource.get("lldp_match_status") or "")
@@ -976,7 +1021,7 @@ class AcManagementQueryService:
         if sort_by == "mileage":
             return parse_mileage_to_meters(item.mileage) or -1
         if sort_by in {"optical_status", "optical_value"}:
-            rank = {"no_data": 0, "normal": 1, "unrelated": 2, "warning": 3, "critical": 4}
+            rank = {"no_data": 0, "normal": 1, "warning": 2, "critical": 3}
             return (rank.get(item.optical_status, 0), item.optical_rx_power)
         if sort_by == "updated_at":
             return item.updated_at

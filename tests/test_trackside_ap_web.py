@@ -38,6 +38,8 @@ def _snapshot() -> TracksideApBusinessLoadResult:
                 "device_name": "SW-B",
                 "interface_name": "XGE1/0/2",
                 "switch_optical_status": "warning",
+                "ap_mac": "0011-2233-4456",
+                "ap_name": "AP-B",
                 "ap_side_has_data": False,
             },
             {
@@ -73,6 +75,31 @@ def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, 
     assert page.items[0].optical_severity == "warning"
     assert page.optical_abnormal_count == 1
     assert page.identity_shadow == {"status": "matched"}
+
+
+def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeypatch, tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    snapshot.rows.append(
+        {
+            "site": "站点B",
+            "device_name": "SW-B",
+            "interface_name": "XGE1/0/3",
+            "switch_optical_status": "critical",
+            "ap_mac": "0011-2233-4456",
+            "ap_name": "AP-B",
+            "ap_side_has_data": False,
+        }
+    )
+    monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
+
+    page = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    ).list_rows("demo", optical_anomaly_only=True)
+
+    assert page.total == 2
+    assert page.optical_abnormal_count == 1
 
 
 def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp_path: Path) -> None:

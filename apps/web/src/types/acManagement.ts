@@ -60,6 +60,8 @@ export interface AcAp {
   lldp_status: string
   optical_status: string
   optical_severity: string
+  optical_data_freshness: string
+  optical_is_current_anomaly: boolean
   optical_rx_power: string
   updated_at: string
 }
@@ -103,6 +105,9 @@ export interface AcOptical {
   optical_severity: string
   raw_status: string
   ap_offline_related: boolean
+  ap_online_status: string
+  data_freshness: string
+  is_current_anomaly: boolean
   anomaly_reason: string
   source_switch: string
   source_interface: string

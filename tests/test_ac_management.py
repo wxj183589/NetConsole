@@ -2688,6 +2688,8 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
     assert abnormal_headers == [
         *source_headers,
+        "AP 在线状态",
+        "光衰判定",
         "异常原因",
         "异常侧",
         "异常等级",
@@ -2696,9 +2698,10 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert [
         abnormal_sheet.cell(row=row, column=3).value
         for row in range(2, abnormal_sheet.max_row + 1)
-    ] == ["GE1/0/2", "GE1/0/4"]
+    ] == ["GE1/0/2", "GE1/0/3", "GE1/0/4"]
     reason_column = abnormal_headers.index("异常原因") + 1
-    assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP离线"
+    assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP侧光衰告警"
+    assert abnormal_sheet.cell(row=4, column=reason_column).value == "交换机侧光衰告警"
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
@@ -2751,12 +2754,10 @@ def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_p
 
     sheet = load_workbook(export_path)["当前异常光衰"]
     assert sheet.max_row == 2
-    assert (
-        sheet["A2"].value == "当前无异常光衰（已排除无 AP 绑定或 AP 未离线的无光端口）"
-    )
+    assert sheet["A2"].value == "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
 
 
-def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_light():
+def test_current_optical_abnormal_is_independent_from_ap_online_state():
     assert is_current_optical_abnormal_row(
         {
             "link_status": "DOWN",
@@ -2770,6 +2771,22 @@ def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_li
     )
     assert not is_current_optical_abnormal_row(
         {
+            "ap_mac": "30f5-2787-afc1",
+            "ap_name": "30f5-2787-afc1",
+            "ap_optical_status": "alarm",
+            "updated_at": "2020-01-01T00:00:00+00:00",
+        }
+    )
+    assert not is_current_optical_abnormal_row(
+        {
+            "ap_mac": "30f5-2787-91c1",
+            "ap_name": "30f5-2787-91c1",
+            "ap_optical_status": "offline",
+            "switch_optical_status": "normal",
+        }
+    )
+    assert not is_current_optical_abnormal_row(
+        {
             "link_status": "DOWN",
             "switch_rx_power": "-36.96",
             "switch_optical_status": "no_light",
@@ -2779,7 +2796,7 @@ def test_current_optical_abnormal_includes_ap_offline_but_excludes_unbound_no_li
             "ap_optical_status": "-",
         }
     )
-    assert not is_current_optical_abnormal_row(
+    assert is_current_optical_abnormal_row(
         {
             "link_status": "DOWN",
             "switch_rx_power": "-36.96",

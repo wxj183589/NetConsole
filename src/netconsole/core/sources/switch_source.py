@@ -50,6 +50,9 @@ def compute_switch_status(
     alarm_low: object = None,
     alarm_high: object = None,
     warning_low: object = None,
+    module_present: object = None,
+    no_module: object = None,
+    module_status: object = None,
     lookup: dict[tuple[str, str], dict[str, object | None]] | None = None,
 ) -> str:
     """Compute switch-side optical status real-time from raw data.
@@ -67,6 +70,9 @@ def compute_switch_status(
                 "alarm_low": alarm_low,
                 "alarm_high": alarm_high,
                 "warning_low": warning_low,
+                "module_present": module_present,
+                "no_module": no_module,
+                "module_status": module_status,
                 "device_type": "switch",
             }
         ).severity
@@ -85,6 +91,9 @@ def compute_switch_status(
                         "alarm_low": module.get("rx_low_alarm"),
                         "alarm_high": module.get("rx_high_alarm"),
                         "warning_low": module.get("rx_low_warning"),
+                        "module_present": module.get("module_present") if "module_present" in module else module.get("has_module"),
+                        "no_module": module.get("no_module"),
+                        "module_status": module.get("module_status") or module.get("status"),
                         "device_type": "switch",
                     }
                 ).severity

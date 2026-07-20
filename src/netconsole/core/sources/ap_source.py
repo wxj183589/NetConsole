@@ -24,6 +24,12 @@ def compute_ap_status(
         {
             "ap_rx_power": fit_ap_row.get("rx_power"),
             "ap_port_status": fit_ap_row.get("ap_port_status"),
+            "module_present": fit_ap_row.get("module_present") if "module_present" in fit_ap_row else fit_ap_row.get("has_module"),
+            "no_module": fit_ap_row.get("no_module"),
+            "module_status": fit_ap_row.get("module_status"),
+            "transceiver_status": fit_ap_row.get("transceiver_status"),
+            "optical_alarm_status": fit_ap_row.get("optical_alarm_status"),
+            "status": fit_ap_row.get("status"),
             "alarm_low": fit_ap_row.get("rx_low_alarm"),
             "alarm_high": fit_ap_row.get("rx_high_alarm"),
             "warning_low": fit_ap_row.get("rx_low_warning"),

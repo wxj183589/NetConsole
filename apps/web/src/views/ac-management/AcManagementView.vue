@@ -308,13 +308,24 @@ function statusLabel(value: string): string {
   return { online: '在线', offline: '离线', unauthenticated: '未认证', unknown: '无数据' }[value] || value || '无数据'
 }
 
-function opticalLabel(value: string): string {
-  return { normal: '正常', warning: '告警', critical: '严重', no_data: '无数据', unrelated: '未关联 AP 离线' }[value] || value
+function opticalLabel(value: string, freshness = 'fresh'): string {
+  const label = { normal: '正常', warning: '一般告警', critical: '严重告警', no_data: '无数据' }[value] || value
+  return freshness === 'stale' ? `${label}（数据已过期）` : label
+}
+
+function opticalJudgement(optical: { optical_status: string; data_freshness: string; is_current_anomaly: boolean }): string {
+  if (optical.data_freshness === 'stale') return '数据已过期'
+  if (optical.is_current_anomaly) return '异常'
+  return optical.optical_status === 'no_data' ? '无数据' : '正常'
+}
+
+function opticalFreshnessLabel(value: string): string {
+  return { fresh: '当前有效', stale: '数据已过期', unknown: '采集时间未知' }[value] || value
 }
 
 function statusType(value: string): 'success' | 'warning' | 'danger' | 'info' {
   if (value === 'online' || value === 'normal') return 'success'
-  if (value === 'unauthenticated' || value === 'warning' || value === 'unrelated') return 'warning'
+  if (value === 'unauthenticated' || value === 'warning') return 'warning'
   if (value === 'offline' || value === 'critical') return 'danger'
   return 'info'
 }
@@ -411,8 +422,8 @@ function diffLineClass(line: string): string {
               <el-option label="在线" value="online" /><el-option label="离线" value="offline" /><el-option label="未认证" value="unauthenticated" />
             </el-select>
             <el-select v-model="store.filters.optical_status" clearable placeholder="光衰状态">
-              <el-option label="正常" value="normal" /><el-option label="告警" value="warning" /><el-option label="严重" value="critical" />
-              <el-option label="无数据" value="no_data" /><el-option label="未关联 AP 离线" value="unrelated" />
+              <el-option label="正常" value="normal" /><el-option label="一般告警" value="warning" /><el-option label="严重告警" value="critical" />
+              <el-option label="无数据" value="no_data" />
             </el-select>
             <el-input v-model="store.filters.station" clearable placeholder="归属站点" />
             <el-input v-model="store.filters.section" clearable placeholder="归属区间" />
@@ -452,7 +463,7 @@ function diffLineClass(line: string): string {
           >
             <template #cell-selection="{ row }"><el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" /></template>
             <template #cell-status="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template>
-            <template #cell-optical_status="{ row }"><el-tag :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status) }}</el-tag></template>
+            <template #cell-optical_status="{ row }"><el-tag :type="statusType(row.optical_status)" effect="light">{{ opticalLabel(row.optical_status, row.optical_data_freshness) }}</el-tag></template>
             <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button></template>
           </NcDataTable>
           <div class="pagination-row">
@@ -558,6 +569,10 @@ function diffLineClass(line: string): string {
             <el-descriptions-item label="Rx Power">{{ display(store.selected.optical.rx_power) }}</el-descriptions-item>
             <el-descriptions-item label="交换机 Rx">{{ display(store.selected.optical.switch_rx_power) }}</el-descriptions-item>
             <el-descriptions-item label="阈值状态">{{ display(store.selected.optical.threshold_status) }}</el-descriptions-item>
+            <el-descriptions-item label="AP 在线状态">{{ statusLabel(store.selected.optical.ap_online_status) }}</el-descriptions-item>
+            <el-descriptions-item label="光衰判定">{{ opticalJudgement(store.selected.optical) }}</el-descriptions-item>
+            <el-descriptions-item label="告警等级">{{ opticalLabel(store.selected.optical.optical_status) }}</el-descriptions-item>
+            <el-descriptions-item label="数据状态">{{ opticalFreshnessLabel(store.selected.optical.data_freshness) }}</el-descriptions-item>
             <el-descriptions-item label="温度">{{ display(store.selected.optical.temperature) }}</el-descriptions-item>
             <el-descriptions-item label="电压">{{ display(store.selected.optical.voltage) }}</el-descriptions-item>
             <el-descriptions-item label="偏置电流">{{ display(store.selected.optical.bias_current) }}</el-descriptions-item>

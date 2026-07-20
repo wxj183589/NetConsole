@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 
 DERIVED_WARNING_DELTA_DB = 2.01
@@ -26,6 +27,11 @@ SEVERITY_RANK = {
     "link_down": 5,
     "no_light": 6,
 }
+
+OPTICAL_HEALTH_WARNING_STATUSES = frozenset({"notice", "warning", "alarm"})
+OPTICAL_HEALTH_CRITICAL_STATUSES = frozenset({"critical", "link_abnormal", "link_down", "no_light"})
+OPTICAL_HEALTH_NO_DATA_STATUSES = frozenset({"", "unknown", "not_collected", "skipped", "offline", "no_module"})
+OPTICAL_DATA_STALE_AFTER = timedelta(hours=24)
 
 STATUS_COLORS = {
     "normal": "DCFCE7",
@@ -96,8 +102,7 @@ def compute_optical_severity(record: dict) -> OpticalSeverityResult:
     If warning is missing but alarm exists, warning is derived as alarm + 2.01 dB.
     If AP-side thresholds are missing, a centralized default AP profile is used.
     """
-    module_present = _first_value(record, "module_present", "has_module")
-    if _is_false(module_present) or _is_true(_first_value(record, "no_module")):
+    if is_optical_module_absent(record):
         return OpticalSeverityResult("no_module", "Optical module is not present")
 
     rx_power = _first_float(record, "rx_power", "switch_rx_power", "ap_rx_power")
@@ -162,6 +167,49 @@ def worse_optical_severity(left: str, right: str) -> str:
     return left if SEVERITY_RANK.get(left, 0) >= SEVERITY_RANK.get(right, 0) else right
 
 
+def classify_optical_health(status: object) -> str:
+    """Map collector severity to the shared current optical health contract."""
+    normalized = str(status or "").strip().casefold()
+    if normalized in OPTICAL_HEALTH_CRITICAL_STATUSES:
+        return "critical"
+    if normalized in OPTICAL_HEALTH_WARNING_STATUSES:
+        return "warning"
+    if normalized in OPTICAL_HEALTH_NO_DATA_STATUSES:
+        return "no_data"
+    return "normal"
+
+
+def is_optical_health_abnormal(status: object) -> bool:
+    return classify_optical_health(status) in {"warning", "critical"}
+
+
+def classify_optical_freshness(
+    *timestamps: object,
+    now: datetime | None = None,
+    stale_after: timedelta = OPTICAL_DATA_STALE_AFTER,
+) -> str:
+    parsed = [_parse_timestamp(value) for value in timestamps]
+    valid = [value for value in parsed if value is not None]
+    if not valid:
+        return "unknown"
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return "stale" if current - max(valid) > stale_after else "fresh"
+
+
+def is_optical_module_absent(record: dict) -> bool:
+    """Recognize only an explicit device indication that a module is absent."""
+    module_present = _first_value(record, "module_present", "has_module")
+    if _is_false(module_present) or _is_true(_first_value(record, "no_module")):
+        return True
+    return any(
+        str(record.get(field) or "").strip().casefold()
+        in {"no_module", "no module", "no-module", "no transceiver", "no-transceiver", "无光模块", "未插光模块", "光模块不存在"}
+        for field in ("module_status", "transceiver_status", "optical_alarm_status", "status")
+    )
+
+
 def display_optical_status(status: object, language: str = "zh") -> str:
     raw = str(status or "unknown").strip()
     lang = "en" if str(language or "").lower().startswith("en") else "zh"
@@ -180,6 +228,17 @@ def _first_value(record: dict, *keys: str) -> object:
 
 def _first_float(record: dict, *keys: str) -> float | None:
     return _to_float(_first_value(record, *keys))
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _to_float(value: object) -> float | None:

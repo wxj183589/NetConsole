@@ -130,7 +130,7 @@ def test_ac_query_service_returns_allowlisted_radio_history_without_raw_paths(tm
         service.get_ap_history("demo", "ap-online", "unknown")
 
 
-def test_ac_optical_anomaly_requires_ap_offline_relation(tmp_path: Path) -> None:
+def test_ac_optical_anomaly_is_independent_from_ap_online_state(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     service = AcManagementQueryService(paths)
 
@@ -140,12 +140,87 @@ def test_ac_optical_anomaly_requires_ap_offline_relation(tmp_path: Path) -> None
 
     assert online is not None
     assert online.raw_status == "no_light"
-    assert online.optical_status == "unrelated"
+    assert online.optical_status == "critical"
     assert online.ap_offline_related is False
+    assert online.ap_online_status == "online"
+    assert online.is_current_anomaly is True
+    assert "当前 AP 在线" in online.anomaly_reason
     assert offline is not None
-    assert offline.optical_status == "critical"
+    assert offline.optical_status == "warning"
     assert offline.ap_offline_related is True
-    assert [item.id for item in anomalies.items] == ["ap-offline"]
+    assert offline.ap_online_status == "offline"
+    assert offline.is_current_anomaly is True
+    assert [item.id for item in anomalies.items] == ["ap-online", "ap-offline"]
+
+
+def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_not(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            """
+            UPDATE ac_fit_ap_optical
+            SET rx_power = '-23.57 dBm', rx_low_alarm = '-23 dBm', rx_low_warning = '-20 dBm'
+            WHERE ap_uuid = 'ap-online'
+            """
+        )
+        conn.execute(
+            """
+            UPDATE device_optical_modules
+            SET rx_power = '-21.61 dBm', rx_low_alarm = '-23 dBm', rx_low_warning = '-20 dBm'
+            WHERE interface_name = 'GigabitEthernet1/0/1'
+            """
+        )
+        conn.commit()
+
+    service = AcManagementQueryService(paths)
+    optical = service.get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.ap_online_status == "online"
+    assert optical.raw_status == "alarm"
+    assert optical.threshold_status == "一般告警"
+    assert optical.optical_status == "warning"
+    assert optical.is_current_anomaly is True
+    assert "已计入异常 AP 光衰；当前 AP 在线" in optical.anomaly_reason
+
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE ac_fit_ap_optical SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE ap_uuid = 'ap-online'")
+        conn.commit()
+
+    stale = service.get_ap_optical("demo", "ap-online")
+    assert stale is not None
+    assert stale.data_freshness == "stale"
+    assert stale.is_current_anomaly is False
+    assert stale.optical_status == "warning"
+    assert "不作为当前实时状态统计" in stale.anomaly_reason
+    assert "ap-online" not in {item.id for item in service.list_optical_anomalies("demo").items}
+
+
+def test_ac_optical_offline_with_normal_power_and_explicit_no_module_are_not_anomalies(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = '-10 dBm', rx_low_alarm = '-19 dBm', rx_low_warning = '-17 dBm' WHERE ap_uuid = 'ap-offline'"
+        )
+        conn.execute(
+            "UPDATE device_optical_modules SET rx_power = '-10 dBm', rx_low_alarm = '-19 dBm', rx_low_warning = '-17 dBm' WHERE interface_name = 'GigabitEthernet1/0/2'"
+        )
+        conn.execute("UPDATE ac_fit_ap_optical SET optical_alarm_status = 'no_module', rx_power = NULL WHERE ap_uuid = 'ap-online'")
+        conn.execute("UPDATE device_optical_modules SET status = 'no_module', rx_power = NULL WHERE interface_name = 'GigabitEthernet1/0/1'")
+        conn.commit()
+
+    service = AcManagementQueryService(paths)
+    offline = service.get_ap_optical("demo", "ap-offline")
+    no_module = service.get_ap_optical("demo", "ap-online")
+
+    assert offline is not None
+    assert offline.ap_online_status == "offline"
+    assert offline.optical_status == "normal"
+    assert offline.ap_offline_related is False
+    assert offline.is_current_anomaly is False
+    assert no_module is not None
+    assert no_module.optical_status == "no_data"
+    assert no_module.is_current_anomaly is False
 
 
 def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_optical(
@@ -160,6 +235,7 @@ def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_o
             name="AP-00",
             switch_interface="GE2/0/1",
             optical_status="warning",
+            optical_is_current_anomaly=True,
         ),
         AcApDTO(
             id="ap-port-10",
@@ -168,6 +244,7 @@ def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_o
             switch_name="交换机2",
             switch_interface="GE2/0/10",
             optical_status="critical",
+            optical_is_current_anomaly=True,
         ),
         AcApDTO(
             id="ap-switch-10",
@@ -176,6 +253,7 @@ def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_o
             switch_name="交换机10",
             switch_interface="GE1/0/1",
             optical_status="warning",
+            optical_is_current_anomaly=True,
         ),
         AcApDTO(
             id="ap-missing-port",
@@ -183,6 +261,7 @@ def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_o
             name="AP-20",
             switch_name="交换机2",
             optical_status="critical",
+            optical_is_current_anomaly=True,
         ),
         AcApDTO(
             id="ap-port-9",
@@ -191,6 +270,7 @@ def test_ac_query_service_defaults_to_natural_topology_order_for_resources_and_o
             switch_name="交换机2",
             switch_interface="GigabitEthernet2/0/9",
             optical_status="warning",
+            optical_is_current_anomaly=True,
         ),
     ]
     service._ap_records = lambda _site_id, **_kwargs: [

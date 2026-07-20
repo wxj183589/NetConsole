@@ -50,6 +50,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
         summary = client.get("/api/ac-management/summary")
         aps = client.get("/api/ac-management/aps?page=1&page_size=2&status=offline")
         detail = client.get("/api/ac-management/aps/ap-offline")
+        optical_anomalies = client.get("/api/ac-management/optical-anomalies")
         radio_history = client.get("/api/ac-management/aps/ap-online/history/radio")
         invalid_history = client.get("/api/ac-management/aps/ap-online/history/unknown")
         snapshots = client.get("/api/ac-management/config-snapshots")
@@ -64,6 +65,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert summary.json()["acs"][0]["cpu_usage"] == "16%"
     assert summary.json()["acs"][0]["memory_usage"] == "47%"
     assert summary.json()["acs"][0]["https_port"] == 10443
+    assert summary.json()["optical_anomalies"] == 2
     assert aps.json()["items"][0]["id"] == "ap-offline"
     assert detail.status_code == 200
     assert radio_history.status_code == 200
@@ -76,6 +78,10 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert detail.json()["radios"][0]["usage"] == "12"
     assert detail.json()["radios"][0]["clients"] == 3
     assert detail.json()["connection"]["state"] == "Run"
+    assert detail.json()["optical"]["ap_online_status"] == "offline"
+    assert detail.json()["optical"]["is_current_anomaly"] is True
+    assert detail.json()["optical"]["data_freshness"] == "fresh"
+    assert [item["id"] for item in optical_anomalies.json()["items"]] == ["ap-online", "ap-offline"]
     assert "serial" not in detail.text.casefold()
     assert "SECRET-SN" not in detail.text
     assert content.status_code == 200

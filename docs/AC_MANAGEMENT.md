@@ -38,17 +38,16 @@ FIT-AP 详情已提供站点、里程、点位说明和方向保存入口；保�
 
 ## 光衰关联规则
 
-光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 和统一 severity 规则，Vue 不重复计算。Web 展示状态为：
+光衰阈值继续复用 `compute_ap_status`、`compute_switch_status` 与 `classify_optical_health()`，Vue 不重复计算。AP 在线状态和光模块健康状态是两个独立维度：在线 AP 的一般/严重光功率告警同样进入当前异常、概览和轨旁 AP 导出；离线 AP 的正常光功率不会伪造为光衰异常。Web 展示状态为：
 
 | 状态 | 含义 |
 | --- | --- |
 | `normal` | 已有数据且阈值结果正常 |
-| `warning` | AP 离线，并关联到关注/提示级光衰结果 |
-| `critical` | AP 离线，并关联到告警、链路异常或无光 |
-| `no_data` | 没有可用光衰结果 |
-| `unrelated` | 检测到异常光衰，但 AP 未离线，不计入 AP 光衰异常 |
+| `warning` | 最新有效样本为关注、提示或一般光功率告警 |
+| `critical` | 最新有效样本为严重告警、链路异常、链路断开或无光 |
+| `no_data` | 没有可用光衰结果，或设备明确返回无光模块 |
 
-“关联光衰异常”只统计 `warning` 和 `critical`。交换机无光但 AP 未离线时显示 `unrelated`，不计入异常总数；缺少采集结果时显示 `no_data`，不误判告警。
+“关联光衰异常”只统计 `data_freshness=fresh` 的 `warning` 和 `critical`，按 AP 身份去重；同 AP 多个异常接口仍保留全部明细。当前有效期为 24 小时，超期样本标记 `stale`，保留在历史中但不作为实时正常或当前异常计数。设备明确返回 `no_module` 时显示“无光模块”，不计入光衰异常；`no_light` 仅在模块存在且接收光功率缺失或低于无光阈值时按严重异常处理。详情页同时展示 AP 在线状态、光衰判定、告警等级、原因、数据状态与最近更新时间。
 
 ## 配置查看
 
