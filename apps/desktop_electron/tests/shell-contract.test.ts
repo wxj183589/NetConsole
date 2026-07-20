@@ -63,18 +63,13 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('MANAGED_RENDERER_RETRY_ACTION')
     expect(source).not.toContain('href="${escapeHtml(retryUrl)}"')
     expect(source).toContain('rememberManagedRendererTarget(mainWindow, rendererUrl)')
-    expect(source).toContain('rememberManagedRendererTarget(taskWindow, taskRendererTarget)')
-    expect(source).toContain('const taskRendererTarget = url.toString()')
+    expect(source).toContain('prepareNavigation: (window, target) => rememberManagedRendererTarget')
+    expect(source).toContain("new URL('/desktop/tasks', rendererUrl)")
     expect(source).toContain('const windowRendererTargets = new WeakMap<BrowserWindow, string>()')
     expect(source.indexOf('rememberManagedRendererTarget(mainWindow, rendererUrl)')).toBeLessThan(
       source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
     )
-    const taskWindowSource = source.slice(
-      source.indexOf('async function openTaskWindow'),
-      source.indexOf('async function loadStatusPage'),
-    )
-    expect(taskWindowSource.indexOf('rememberManagedRendererTarget(taskWindow, taskRendererTarget)'))
-      .toBeLessThan(taskWindowSource.indexOf('await taskWindow.loadURL(taskRendererTarget)'))
+    expect(source).toContain('return taskWindowController.open(context)')
     expect(retrySource).toContain('const target = windowRendererTargets.get(window)')
     expect(retrySource).toContain('isAllowedNavigation(target, [...rendererOrigins])')
     expect(retrySource.indexOf('armRendererThemeDisplay(window)')).toBeLessThan(
@@ -99,11 +94,11 @@ describe('Electron shell product contract', () => {
   it('keeps one hide-on-close task window without stopping the backend', () => {
     expect(source).toContain('let taskWindow: BrowserWindow | undefined')
     expect(source).toContain("url.searchParams.set('task_window', '1')")
-    expect(source).toContain('taskWindow?.hide()')
+    expect(source).toContain('window.hide()')
     expect(source).toContain('if (allowQuit) return')
-    expect(source.indexOf('taskWindow?.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
+    expect(source.indexOf('window.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
     expect(source).toContain('taskWindow.destroy()')
-    expect(source).toContain('installManagedWindowDiagnostics(taskWindow)')
+    expect(source).toContain('new TaskWindowController')
     expect(source).toContain('for (const window of [mainWindow, taskWindow])')
     expect(source).toContain("error: '本地后端不可用'")
   })

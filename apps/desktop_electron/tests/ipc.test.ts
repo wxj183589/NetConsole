@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { registerDesktopIpc } from '../src/main/ipc'
 import { GrantedPathRegistry } from '../src/main/path-access'
-import type { RendererHostReport } from '../src/shared/bridge'
+import type { NativeActionResult, RendererHostReport, TaskWindowContext } from '../src/shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../src/shared/bridge'
 
 class FakeIpcMain {
@@ -27,7 +27,7 @@ class FakeIpcMain {
 function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
   onRendererReady?: (report: RendererHostReport, window: unknown) => void
-  openTaskWindow?: (value: unknown) => void
+  openTaskWindow?: (value: TaskWindowContext) => NativeActionResult | Promise<NativeActionResult>
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
 } = {}) {
@@ -163,7 +163,7 @@ describe('desktop IPC', () => {
   })
 
   it('opens the task window only with the strict filter DTO', async () => {
-    const openTaskWindow = vi.fn()
+    const openTaskWindow = vi.fn(async () => ({ success: true }))
     const { ipcMain, sender } = createHarness({ openTaskWindow })
     const handler = ipcMain.handlers.get(DESKTOP_IPC.openTaskWindow)!
 
@@ -176,6 +176,14 @@ describe('desktop IPC', () => {
     await expect(handler({ sender }, { module: 'unknown' })).rejects.toThrow('module is invalid')
     await expect(handler({ sender }, { taskId: '../unsafe' })).rejects.toThrow('taskId is invalid')
     expect(openTaskWindow).toHaveBeenCalledTimes(6)
+  })
+
+  it('returns the task window failure instead of reporting a false success', async () => {
+    const openTaskWindow = vi.fn(async () => ({ success: false, error: '任务中心加载失败' }))
+    const { ipcMain, sender } = createHarness({ openTaskWindow })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openTaskWindow)!
+
+    await expect(handler({ sender }, { module: 'rail' })).resolves.toEqual({ success: false, error: '任务中心加载失败' })
   })
 
   it('opens only credential-free HTTPS urls in the system browser', async () => {

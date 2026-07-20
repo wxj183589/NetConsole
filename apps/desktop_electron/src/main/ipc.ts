@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
 import {
   DESKTOP_HANDLED_CHANNELS,
   DESKTOP_IPC,
@@ -75,7 +75,7 @@ export interface DesktopIpcDependencies {
   shell: ShellLike
   window: unknown
   windowForEvent?: (event: IpcEventLike) => unknown
-  openTaskWindow?: (value: TaskWindowContext) => Promise<void> | void
+  openTaskWindow?: (value: TaskWindowContext) => Promise<NativeActionResult> | NativeActionResult
   restartBackend?: (value: SiteStorageRestartRequest) => Promise<void>
   appInfo: AppInfo
   backend: BackendLike
@@ -114,8 +114,8 @@ export function registerDesktopIpc(
   dependencies.ipcMain.handle(
     DESKTOP_IPC.openTaskWindow,
     trusted(async (value) => {
-      await dependencies.openTaskWindow?.(validateTaskWindowContext(value))
-      return { success: true }
+      if (!dependencies.openTaskWindow) return { success: false, error: '任务窗口尚未就绪' }
+      return dependencies.openTaskWindow(validateTaskWindowContext(value))
     }),
   )
   dependencies.ipcMain.handle(
@@ -313,7 +313,10 @@ export function registerDesktopIpc(
     }),
   )
   dependencies.ipcMain.on(DESKTOP_IPC.rendererReady, (event, value) => {
-    if (!dependencies.isTrustedSender(event)) return
+    if (!dependencies.isTrustedSender(event)) {
+      dependencies.logger?.('ELECTRON_RENDERER_READY_UNTRUSTED')
+      return
+    }
     try {
       const report = validateRendererReadyReport(value)
       const window = dependencies.windowForEvent?.(event) ?? dependencies.window

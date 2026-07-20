@@ -15,9 +15,11 @@ const webRequire = createRequire(resolve(webRoot, 'package.json'))
 const viteCli = resolve(dirname(webRequire.resolve('vite/package.json')), 'bin', 'vite.js')
 const typescriptCli = resolve(dirname(require.resolve('typescript/package.json')), 'bin', 'tsc')
 const buildScript = resolve(appRoot, 'scripts', 'build.mjs')
-const devPort = 5173
+const devPort = Number.parseInt(process.env.NETCONSOLE_DEV_PORT || '5173', 10)
+if (!Number.isInteger(devPort) || devPort < 1 || devPort > 65_535) throw new Error('NETCONSOLE_DEV_PORT must be a valid TCP port')
 const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
+const taskWindowSmoke = process.argv.includes('--task-window')
 const codex = process.argv.includes('--codex')
 const codexBackendPort = 8000
 const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
@@ -80,6 +82,26 @@ async function waitForVite(vite, timeoutMs = 20_000) {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   }
   throw new Error(`Vite did not become ready at ${devUrl}`)
+}
+
+async function warmTaskWindowModules() {
+  const modules = [
+    '/src/App.vue',
+    '/src/layouts/TaskWindowLayout.vue',
+    '/src/views/job-center/JobCenterView.vue',
+    '/src/components/NcStatusTag.vue',
+    '/src/components/feedback/NcConfirmDialog.vue',
+    '/src/components/table/NcColumnSettings.vue',
+    '/src/components/table/NcDataTable.vue',
+  ]
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const path of modules) {
+      const response = await fetch(`${devUrl}${path}`, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`Task window module warmup failed: ${path}`)
+      await response.text()
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 600))
+  }
 }
 
 async function assertPortAvailable(port, label) {
@@ -202,7 +224,7 @@ process.once('SIGINT', requestGracefulSignalShutdown)
 process.once('SIGTERM', requestGracefulSignalShutdown)
 
 try {
-  if (codex) codexDataRoot = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-'))
+  if (codex || taskWindowSmoke) codexDataRoot = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-'))
   vite = spawnNode([
     viteCli,
     '--host',
@@ -221,6 +243,7 @@ try {
     },
   })
   await waitForVite(vite)
+  if (taskWindowSmoke) await warmTaskWindowModules()
   const electronExecutable = require('electron')
   const pythonExecutable = discoverPython()
   const electronEnv = { ...process.env }
@@ -235,13 +258,17 @@ try {
       NETCONSOLE_DEV_MODE: '1',
       NETCONSOLE_PROJECT_ROOT: projectRoot,
       ...(pythonExecutable ? { NETCONSOLE_PYTHON: pythonExecutable } : {}),
-      ...(codex ? {
+      ...(codex || taskWindowSmoke ? {
         NETCONSOLE_DATA_ROOT: codexDataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+        ...(taskWindowSmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
+        ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),
         NETCONSOLE_DEV_SESSION_TOKEN: codexSessionToken,
+        } : {}),
       } : {}),
       ...(smoke ? { NETCONSOLE_ELECTRON_SMOKE_TEST: '1' } : {}),
+      ...(taskWindowSmoke ? { NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE: '1' } : {}),
     },
   })
   if (codex) {
@@ -265,7 +292,7 @@ try {
   process.exitCode = exitCode
 } finally {
   await stopChildren()
-  if (codex) {
+  if (codexDataRoot) {
     try {
       cleanupCodexDataRoot()
     } catch {

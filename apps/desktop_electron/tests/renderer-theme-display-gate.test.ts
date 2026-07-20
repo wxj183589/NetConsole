@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   MANAGED_RENDERER_RETRY_ACTION,
+  MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
   ManagedRendererRetryNavigation,
   ManagedWindowErrorCoordinator,
   RendererThemeDisplayGate,
@@ -136,6 +137,7 @@ describe('managed Renderer retry navigation', () => {
     const retry = vi.fn(async () => undefined)
     const rejected = vi.fn()
     const retryError = vi.fn()
+    const openMainTasks = vi.fn(async () => undefined)
     const window = {
       isDestroyed: vi.fn(() => false),
       webContents: {
@@ -145,13 +147,14 @@ describe('managed Renderer retry navigation', () => {
         }),
       },
     } as unknown as BrowserWindow
-    const navigation = new ManagedRendererRetryNavigation(window, retry, rejected, retryError)
+    const navigation = new ManagedRendererRetryNavigation(window, retry, rejected, retryError, openMainTasks)
     return {
       navigation,
       listeners,
       retry,
       rejected,
       retryError,
+      openMainTasks,
       setCurrentUrl: (url: string) => { currentUrl = url },
     }
   }
@@ -198,5 +201,16 @@ describe('managed Renderer retry navigation', () => {
 
     expect(listeners).toHaveLength(1)
     expect(retry).toHaveBeenCalledOnce()
+  })
+
+  it('opens the main task route only from the exact managed status page', async () => {
+    const { navigation, listeners, openMainTasks, retry } = createRetryHarness()
+    navigation.armForStatusPage('data:text/html;charset=utf-8,managed-error')
+
+    listeners[0]?.({ preventDefault: vi.fn() }, MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION)
+    await Promise.resolve()
+
+    expect(openMainTasks).toHaveBeenCalledOnce()
+    expect(retry).not.toHaveBeenCalled()
   })
 })

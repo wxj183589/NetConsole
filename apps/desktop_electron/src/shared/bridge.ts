@@ -109,6 +109,7 @@ export interface BackendDownloadResult {
 export interface RendererReadyReport {
   healthOk: boolean
   phase: 'mounted' | 'interactive' | 'failed'
+  surface?: 'main' | 'task-window'
 }
 
 export type DesktopResolvedTheme = 'light' | 'dark'

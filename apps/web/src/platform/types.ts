@@ -40,7 +40,11 @@ export interface PlatformAdapter {
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
-  reportRendererReady(healthOk: boolean, phase?: RendererReadyReport['phase']): void
+  reportRendererReady(
+    healthOk: boolean,
+    phase?: RendererReadyReport['phase'],
+    surface?: RendererReadyReport['surface'],
+  ): void
 }
 
 export interface ActiveRuntimeConfig extends DesktopRuntimeConfig {

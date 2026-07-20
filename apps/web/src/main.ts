@@ -28,15 +28,20 @@ async function bootstrap(): Promise<void> {
     return
   }
   await initializeSystemAppearance()
-  createApp(App).use(createPinia()).use(router).mount('#app')
+  const application = createApp(App).use(createPinia()).use(router)
+  const currentUrl = new URL(window.location.href)
+  const surface = currentUrl.pathname === '/desktop/tasks' && currentUrl.searchParams.get('task_window') === '1'
+    ? 'task-window'
+    : 'main'
+  application.mount('#app')
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
-    runtime.reportRendererReady(true, 'mounted')
+    runtime.reportRendererReady(true, 'mounted', surface)
     try {
       const health = await getHealth()
-      runtime.reportRendererReady(health.status === 'ok', 'interactive')
+      if (surface === 'main') runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
     } catch {
-      runtime.reportRendererReady(false, 'failed')
+      runtime.reportRendererReady(false, 'failed', surface)
     }
   }
 }

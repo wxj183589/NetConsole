@@ -33,7 +33,11 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     onBackendStatusChanged: (listener) => bridge.onBackendStatusChanged((status) => {
       listener(validateBackendStatus(status))
     }),
-    reportRendererReady: (healthOk, phase = 'interactive') => bridge.reportRendererReady({ healthOk, phase }),
+    reportRendererReady: (healthOk, phase = 'interactive', surface) => bridge.reportRendererReady({
+      healthOk,
+      phase,
+      ...(surface ? { surface } : {}),
+    }),
   }
 }
 

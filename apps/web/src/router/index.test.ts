@@ -4,7 +4,7 @@ import { flattenNavigation } from '../navigation/registry'
 import { appRoutes } from './routes'
 
 describe('Web route ownership', () => {
-  const root = appRoutes[0]
+  const root = appRoutes.find((route) => route.path === '/')!
   const routes = root.children ?? []
 
   it('gives every business route navigation ownership or marks it hidden', () => {
@@ -44,6 +44,13 @@ describe('Web route ownership', () => {
     expect(route?.path).toBe('devices/:deviceId')
     expect(route?.meta?.navigationId).toBe('devices')
     expect(route?.meta?.hiddenRoute).toBe(true)
+  })
+
+  it('registers the independent task-window route outside the main application shell', () => {
+    const taskWindow = appRoutes.find((route) => route.path === '/desktop/tasks')
+    expect(taskWindow).toBeDefined()
+    expect(taskWindow?.children?.[0]?.name).toBe('desktop-tasks')
+    expect(taskWindow?.children?.[0]?.meta?.hiddenRoute).toBe(true)
   })
 
   it('does not register excluded or unfinished routes', () => {

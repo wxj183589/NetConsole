@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   listBuildOrder: vi.fn(),
   getActivePath: vi.fn(),
   getPeerPath: vi.fn(),
+  getRateSeries: vi.fn(),
+  getCounterDeltas: vi.fn(),
+  listAnomalies: vi.fn(),
+  routerPush: vi.fn(),
 }))
 
 vi.mock('../../api/meshAnalysis', () => ({
@@ -24,11 +28,11 @@ vi.mock('../../api/meshAnalysis', () => ({
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
   getMeshPeerSegmentChart: mocks.getPeerPath,
   getMeshRawTail: vi.fn(),
-  getMeshCounterDeltas: vi.fn(),
-  getMeshRateSeries: vi.fn(),
+  getMeshCounterDeltas: mocks.getCounterDeltas,
+  getMeshRateSeries: mocks.getRateSeries,
   listMeshActiveBuildOrder: mocks.listBuildOrder,
   listMeshAnalysisSessions: mocks.listSessions,
-  listMeshAnomalies: vi.fn(),
+  listMeshAnomalies: mocks.listAnomalies,
   listMeshApStatistics: vi.fn(),
   listMeshArtifacts: vi.fn(),
   listMeshLinks: vi.fn(),
@@ -48,7 +52,7 @@ vi.mock('../../api/railTransitWeb', () => ({
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }) }))
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource: vi.fn() }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.routerPush }) }))
 
 import MeshAnalysisView from './MeshAnalysisView.vue'
 
@@ -97,8 +101,6 @@ const stubs: Record<string, Component | boolean> = {
   ElTabs: passthrough,
   ElTag: passthrough,
   MeshChannelBusyChart: true,
-  MeshCounterDeltaChart: true,
-  MeshRateChart: true,
   MeshRssiChart: true,
   MeshSwitchRssiChart: true,
   NcDataTable: dataTableStub,
@@ -162,6 +164,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getSession).toHaveBeenCalledWith('session-1')
     expect(mocks.listBuildOrder).toHaveBeenCalledWith('session-1', expect.objectContaining({ page: 1, page_size: 100, sort_order: 'desc' }))
     expect(mocks.getActivePath).not.toHaveBeenCalled()
+    expect(mocks.getRateSeries).not.toHaveBeenCalled()
+    expect(mocks.getCounterDeltas).not.toHaveBeenCalled()
+    expect(mocks.listAnomalies).not.toHaveBeenCalled()
     expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('false')
     expect(sessionStorage.getItem('netconsole.mesh-analysis.session-expanded')).toBeNull()
     expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
@@ -191,6 +196,29 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('true')
     wrapper.unmount()
+  })
+
+  it('falls back to the main task route when the Electron task window reports failure', async () => {
+    const session = {
+      session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [], warnings: [], sources: [] })
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { openTaskWindow: vi.fn(async () => ({ success: false, error: '任务中心加载失败' })) },
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '打开任务窗口')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail' } })
+    wrapper.unmount()
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
   })
 
   it('keeps the no-selection session list expanded even when this window previously stored collapse', async () => {

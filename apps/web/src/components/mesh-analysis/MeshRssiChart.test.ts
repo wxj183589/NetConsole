@@ -6,7 +6,9 @@ describe('MeshRssiChart', () => {
   it('resizes hidden tabs and releases chart resources', () => {
     expect(source).toContain('new ResizeObserver')
     expect(source).toContain('resizeObserver?.disconnect()')
-    expect(source).toContain("window.removeEventListener('resize', resize)")
+    expect(source).toContain("window.removeEventListener('resize', handleWindowResize)")
+    expect(source).toContain('cancelAnimationFrame(resizeFrame)')
+    expect(source).toContain('clientHeight > 0')
     expect(source).toContain('chart?.dispose()')
   })
 

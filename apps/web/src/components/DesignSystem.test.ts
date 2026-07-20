@@ -27,6 +27,11 @@ describe('NetConsole design system foundations', () => {
     expect(wrapper.find('.nc-status-tag__dot').exists()).toBe(true)
   })
 
+  it('keeps a missing backend status from crashing the page', () => {
+    const wrapper = mount(NcStatusTag)
+    expect(wrapper.text()).toContain('未知')
+  })
+
   it('forwards data and density defaults to the Element Plus table', () => {
     const rows = [{ name: 'AP01' }]
     const wrapper = shallowMount(NcTable, { props: { data: rows } })

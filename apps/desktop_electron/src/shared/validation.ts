@@ -235,12 +235,19 @@ export function validateRendererReadyReport(value: unknown): RendererHostReport 
     }
     return { resolvedTheme: record.resolvedTheme }
   }
-  rejectUnknownKeys(record, ['healthOk', 'phase'])
+  rejectUnknownKeys(record, ['healthOk', 'phase', 'surface'])
   if (typeof record.healthOk !== 'boolean') throw new TypeError('healthOk must be a boolean')
   if (!['mounted', 'interactive', 'failed'].includes(String(record.phase))) {
     throw new TypeError('renderer phase is invalid')
   }
-  return { healthOk: record.healthOk, phase: record.phase as RendererReadyReport['phase'] }
+  if (record.surface !== undefined && !['main', 'task-window'].includes(String(record.surface))) {
+    throw new TypeError('renderer surface is invalid')
+  }
+  return {
+    healthOk: record.healthOk,
+    phase: record.phase as RendererReadyReport['phase'],
+    ...(record.surface === undefined ? {} : { surface: record.surface as RendererReadyReport['surface'] }),
+  }
 }
 
 function validateFilters(value: unknown): FileFilter[] {

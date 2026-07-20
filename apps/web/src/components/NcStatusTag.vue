@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = withDefaults(defineProps<{
-  status: string
+  status?: string
   label?: string
   showDot?: boolean
 }>(), {
@@ -26,7 +26,7 @@ const types: Record<string, 'success' | 'warning' | 'danger' | 'info' | 'primary
   STOPPED: 'success', FORCED_STOPPED: 'warning', ABORTED: 'info',
   STOPPED_WITH_WARNINGS: 'warning',
 }
-const key = computed(() => props.status.trim().toUpperCase())
+const key = computed(() => (props.status || '').trim().toUpperCase())
 const displayLabel = computed(() => props.label || labels[key.value] || props.status || '未知')
 const type = computed(() => types[key.value] || 'info')
 </script>

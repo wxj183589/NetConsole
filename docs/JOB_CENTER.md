@@ -2,6 +2,8 @@
 
 Electron 提供复用现有 Vue/FastAPI/Core 的独立统一任务窗口。设备管理和配置采集主页只保留紧凑摘要与打开入口；文件管理保留领域下载队列，但通用日志、跨模块筛选和统一详情仍进入任务窗口。停止、重试、Artifact 下载和本机打开动作必须由任务 owner capability 明确授权，未支持能力不得假成功。统一取消只调用对应 owner 的既有 Application Service，owner 未接线时禁用；`STOPPING` 只在 owner 已确认停止请求后返回。设备 Export 还必须同时持有当前进程内的受管 Export spec、与持久化 `ExportJob` 一致的专用 cancel 路径和仍活跃的受管进程，服务重建、spec/进程丢失或终态竞态均拒绝写 `STOPPING`。统一任务的 `message/error/error_summary/phase/stage` 等文本，以及日志的嵌套 `message/error/traceback/diagnostic/state/stage`，在 DTO 输出前统一脱敏 Windows/UNC 绝对路径；Artifact DTO 固定为安全 ID、显示名、大小、类型和受控 endpoint。关闭任务窗口不改变后台任务生命周期。
 
+独立窗口加载 `/desktop/tasks`，使用精简 `TaskWindowLayout`，但继续复用同一 `JobCenterView`、`useTaskStore` 和 Task API；主窗口 `/tasks` 仍使用正式应用 Shell。Main 先显示“正在加载任务中心”状态页，随后等待目标页面 `did-finish-load`、Vue mounted、解析主题和 Job Center interactive 四项信号。IPC 只有全部满足时返回 `success: true`；导航失败、渲染进程退出、无响应或 10 秒超时返回 `success: false` 并显示可重试错误页。错误页可在主窗口打开 `/tasks`，页面调用方收到失败结果也会回退主窗口路由。任务 ID 和模块只进入白名单 query，桌面日志只记录生命周期事件，不记录 query、Token 或本机路径。
+
 Job Center 是普通后台任务的统一调度层；Export Process 是共享同一事件协议的专用导出通道。
 
 > 2026-07-14 代码核对：Registry 当前注册 88 个 task type，分布于 11 个领域 handler 模块。新增三个本地 Traffic handler及两个 Online MR Agent 包同步/导入 handler；注册与进程协议已统一，但多数既有 handler 仍经 `legacy_tasks.py` 薄适配，领域迁移未完成。设备批量连接测试和批量详情采集仍是专用线程路径，不属于 Job Center。

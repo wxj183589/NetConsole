@@ -11,10 +11,13 @@ const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
   open: vi.fn(),
   reveal: vi.fn(),
+  reportReady: vi.fn(),
 }))
+const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, path: '', name: undefined as string | undefined }))
 const messageMocks = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
+  warning: vi.fn(),
 }))
 
 vi.mock('../../platform/runtime', () => ({
@@ -22,11 +25,12 @@ vi.mock('../../platform/runtime', () => ({
   getPlatformAdapter: () => ({
     openPath: platformMocks.open,
     showItemInFolder: platformMocks.reveal,
+    reportRendererReady: platformMocks.reportReady,
   }),
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
+  useRoute: () => routeState,
   useRouter: () => ({ push: vi.fn() }),
 }))
 
@@ -249,6 +253,9 @@ describe('Job Center saved artifact capability lifecycle', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    routeState.query = {}
+    routeState.path = ''
+    routeState.name = undefined
     platformMocks.open.mockResolvedValue({ success: true })
     platformMocks.reveal.mockResolvedValue({ success: true })
     vi.stubGlobal('document', {
@@ -359,5 +366,50 @@ describe('Job Center saved artifact capability lifecycle', () => {
     expect(findButton(root, '打开文件')).toBeUndefined()
 
     app.unmount()
+  })
+
+  it('reports the independent task window as interactive and keeps the list when a task id is missing', async () => {
+    routeState.query = { module: 'rail', task_id: 'missing-task', task_window: '1' }
+    routeState.path = '/desktop/tasks'
+    routeState.name = 'desktop-tasks'
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'selectTask').mockRejectedValue(new Error('not found'))
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+
+    await vi.waitFor(() => expect(platformMocks.reportReady).toHaveBeenCalledWith(true, 'interactive', 'task-window'))
+    expect(store.selectTask).toHaveBeenCalledWith('missing-task')
+    await vi.waitFor(() => expect(messageMocks.warning).toHaveBeenCalledWith('未找到任务 missing-task，已保留当前任务列表。'))
+    await nextTick()
+    expect(alertTitles(root)).toContain('未找到任务 missing-task，已保留当前任务列表。')
+    app.unmount()
+  })
+
+  it('reports the task window as interactive even when polling cannot start', async () => {
+    routeState.query = { module: 'rail', task_window: '1' }
+    routeState.path = '/desktop/tasks'
+    routeState.name = 'desktop-tasks'
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => { throw new Error('polling unavailable') })
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+
+    expect(platformMocks.reportReady).toHaveBeenCalledWith(true, 'interactive', 'task-window')
+    expect(messageMocks.error).toHaveBeenCalledWith('任务列表自动刷新启动失败，可手动刷新后重试。')
+    expect(alertTitles(root)).toContain('任务列表自动刷新启动失败，可手动刷新后重试。')
+    app.unmount()
+    expect(store.releasePolling).toHaveBeenCalledWith('job-center-view')
   })
 })

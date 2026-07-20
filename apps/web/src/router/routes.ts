@@ -3,6 +3,13 @@ import type { RouteRecordRaw } from 'vue-router'
 
 export const appRoutes: RouteRecordRaw[] = [
   {
+    path: '/desktop/tasks',
+    component: () => import('../layouts/TaskWindowLayout.vue'),
+    children: [
+      { path: '', name: 'desktop-tasks', component: () => import('../views/job-center/JobCenterView.vue'), meta: { featureId: 'web.job_center', moduleId: 'tasks', title: '任务中心', desktopOnly: true, hiddenRoute: true } },
+    ],
+  },
+  {
     path: '/',
     component: () => import('../layouts/AppLayout.vue'),
     children: [

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type RendererHostReport, type SiteStorageRestartRequest } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type NativeActionResult, type RendererHostReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
@@ -18,11 +18,13 @@ import {
   safeDiagnosticUrl,
 } from './renderer-diagnostics'
 import {
+  MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
   MANAGED_RENDERER_RETRY_ACTION,
   ManagedRendererRetryNavigation,
   ManagedWindowErrorCoordinator,
   RendererThemeDisplayGate,
 } from './renderer-theme-display-gate'
+import { TaskWindowController } from './task-window-controller'
 import {
   desktopSessionCookiePath,
   installWindowSecurity,
@@ -35,6 +37,7 @@ app.enableSandbox()
 
 let mainWindow: BrowserWindow | undefined
 let taskWindow: BrowserWindow | undefined
+let taskWindowController: TaskWindowController | undefined
 let backend: PythonBackendManager | undefined
 let allowQuit = false
 let requestedExitCode = 0
@@ -43,6 +46,7 @@ let smokeWatchdogTimer: NodeJS.Timeout | undefined
 let smokeStableTimer: NodeJS.Timeout | undefined
 let smokeRendererHealthy = false
 let smokeRendererLoading = true
+let taskWindowSmokeStarted = false
 const rendererOrigins = new Set<string>()
 const connectionOrigins = new Set<string>()
 const pathRegistry = new GrantedPathRegistry()
@@ -62,7 +66,9 @@ const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNa
 const windowRendererTargets = new WeakMap<BrowserWindow, string>()
 const RENDERER_THEME_READY_TIMEOUT_MS = 10_000
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+const hasSingleInstanceLock = process.env.NETCONSOLE_ISOLATED_SMOKE === '1'
+  ? true
+  : app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) app.quit()
 
 app.on('second-instance', () => {
@@ -125,6 +131,26 @@ async function startDesktop(): Promise<void> {
     if (!allowQuit) requestExit(0)
   })
   installManagedWindowDiagnostics(mainWindow, true)
+  taskWindowController = new TaskWindowController({
+    createWindow: () => {
+      const window = createMainWindow(rendererDevelopment)
+      taskWindow = window
+      window.setTitle('NetConsole 任务中心')
+      window.on('close', (event) => {
+        if (allowQuit) return
+        event.preventDefault()
+        window.hide()
+      })
+      window.on('closed', () => { if (taskWindow === window) taskWindow = undefined })
+      return window
+    },
+    buildTarget: buildTaskRendererTarget,
+    loadLoadingPage: (window) => loadStatusPage(window as BrowserWindow, '正在加载任务中心…', '正在加载任务列表与当前上下文。'),
+    loadFailurePage: (window, title, detail) => loadStatusPage(window as BrowserWindow, title, detail, true, true),
+    prepareNavigation: (window, target) => rememberManagedRendererTarget(window as BrowserWindow, target),
+    logger: (event) => logger(event),
+    timeoutMs: RENDERER_THEME_READY_TIMEOUT_MS,
+  })
   desktopIpc = registerDesktopIpc({
     ipcMain,
     dialog,
@@ -250,6 +276,7 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
       'ELECTRON_RENDERER_RETRY_FAILED',
       `type=${cause instanceof Error ? cause.name : 'unknown'}`,
     ),
+    openTasksInMainWindow,
   )
   const errorCoordinator = new ManagedWindowErrorCoordinator()
   const displayGate = new RendererThemeDisplayGate(window, {
@@ -326,27 +353,19 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
   })
 }
 
-async function openTaskWindow(context: { taskId?: string; module?: string; status?: string }): Promise<void> {
-  if (!mainWindow || !rendererUrl) throw new Error('任务窗口尚未就绪')
-  if (!taskWindow || taskWindow.isDestroyed()) {
-    taskWindow = createMainWindow(rendererDevelopment)
-    installManagedWindowDiagnostics(taskWindow)
-    taskWindow.setTitle('NetConsole 任务中心')
-    taskWindow.on('close', (event) => {
-      if (allowQuit) return
-      event.preventDefault()
-      taskWindow?.hide()
-    })
-  }
-  const url = new URL('/tasks', rendererUrl)
+async function openTaskWindow(context: TaskWindowContext): Promise<NativeActionResult> {
+  if (!mainWindow || !rendererUrl || !taskWindowController) return { success: false, error: '任务窗口尚未就绪' }
+  return taskWindowController.open(context)
+}
+
+function buildTaskRendererTarget(context: TaskWindowContext): string {
+  if (!rendererUrl) throw new Error('任务窗口尚未就绪')
+  const url = new URL('/desktop/tasks', rendererUrl)
   url.searchParams.set('task_window', '1')
   if (context.taskId) url.searchParams.set('task_id', context.taskId)
   if (context.module) url.searchParams.set('module', context.module)
   if (context.status) url.searchParams.set('status', context.status)
-  const taskRendererTarget = url.toString()
-  rememberManagedRendererTarget(taskWindow, taskRendererTarget)
-  armRendererThemeDisplay(taskWindow)
-  await taskWindow.loadURL(taskRendererTarget)
+  return url.toString()
 }
 
 async function loadStatusPage(
@@ -354,6 +373,7 @@ async function loadStatusPage(
   title: string,
   detail: string,
   retryable = false,
+  openMainTasks = false,
 ): Promise<void> {
   const retryNavigation = windowRetryNavigations.get(window)
   retryNavigation?.disarm()
@@ -370,10 +390,13 @@ async function loadStatusPage(
   const retry = retryable
     ? `<a href="${MANAGED_RENDERER_RETRY_ACTION}">重试</a>`
     : ''
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${statusBackground};color:${statusText};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${statusBorder};border-radius:14px;background:${statusPanel};text-align:center;box-shadow:${statusShadow}}h1{font-size:22px;margin:0 0 12px}p{color:${statusMuted};line-height:1.7;margin:0 0 18px}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>${retry}</main></body></html>`
+  const mainTasks = openMainTasks
+    ? `<a class="secondary" href="${MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION}">在主窗口打开任务中心</a>`
+    : ''
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${statusBackground};color:${statusText};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${statusBorder};border-radius:14px;background:${statusPanel};text-align:center;box-shadow:${statusShadow}}h1{font-size:22px;margin:0 0 12px}p{color:${statusMuted};line-height:1.7;margin:0 0 18px}.actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}.secondary{background:transparent;color:${statusText};border:1px solid ${statusBorder}}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><div class="actions">${retry}${mainTasks}</div></main></body></html>`
   const statusPageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   await window.loadURL(statusPageUrl)
-  if (retryable && !window.isDestroyed()) retryNavigation?.armForStatusPage(statusPageUrl)
+  if ((retryable || openMainTasks) && !window.isDestroyed()) retryNavigation?.armForStatusPage(statusPageUrl)
 }
 
 function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
@@ -382,12 +405,15 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     : sourceWindow === taskWindow
       ? taskWindow
       : undefined
+  if (window === taskWindow) {
+    logger(
+      'ELECTRON_TASK_WINDOW_READY_REPORT',
+      'resolvedTheme' in report ? 'phase=theme' : `phase=${report.phase} surface=${report.surface || 'none'}`,
+    )
+  }
+  if (window === taskWindow) taskWindowController?.acceptRendererReport(report, taskWindowController.currentWindow)
   if ('resolvedTheme' in report) {
-    const revealed = Boolean(window && windowDisplayGates.get(window)?.acceptResolvedTheme())
-    if (revealed && window && window === taskWindow) {
-      if (window.isMinimized()) window.restore()
-      window.focus()
-    }
+    if (window && window === mainWindow) windowDisplayGates.get(window)?.acceptResolvedTheme()
     return
   }
   if (report.phase === 'failed' && window && windowDisplayGates.get(window)?.isWaiting()) {
@@ -410,10 +436,38 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     return
   }
   smokeRendererHealthy = true
+  if (process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1') {
+    if (smokeStableTimer) {
+      clearTimeout(smokeStableTimer)
+      smokeStableTimer = undefined
+    }
+    if (!taskWindowSmokeStarted) {
+      taskWindowSmokeStarted = true
+      void runTaskWindowSmoke()
+    }
+    return
+  }
   scheduleSmokeStableExit()
 }
 
+async function runTaskWindowSmoke(): Promise<void> {
+  try {
+    let result = await openTaskWindow({ module: 'rail' })
+    if (!result.success && taskWindowController) {
+      logger('ELECTRON_TASK_WINDOW_SMOKE_RETRY')
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
+      result = await taskWindowController.retry()
+    }
+    logger(result.success ? 'ELECTRON_TASK_WINDOW_SMOKE_PASSED' : 'ELECTRON_TASK_WINDOW_SMOKE_FAILED')
+    requestExit(result.success ? 0 : 2)
+  } catch {
+    logger('ELECTRON_TASK_WINDOW_SMOKE_FAILED')
+    requestExit(2)
+  }
+}
+
 function scheduleSmokeStableExit(): void {
+  if (process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1') return
   if (!smokeRendererHealthy || smokeRendererLoading || smokeStableTimer) return
   smokeStableTimer = setTimeout(() => {
     logger('ELECTRON_SMOKE_RENDERER_STABLE')
@@ -441,6 +495,7 @@ function startSmokeWatchdog(): void {
   if (smokeWatchdogTimer) clearTimeout(smokeWatchdogTimer)
   smokeRendererHealthy = false
   smokeRendererLoading = true
+  taskWindowSmokeStarted = false
   logger('ELECTRON_SMOKE_WATCHDOG_STARTED')
   smokeWatchdogTimer = setTimeout(() => {
     logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')
@@ -476,6 +531,8 @@ async function shutdown(): Promise<void> {
   logger('ELECTRON_SHUTDOWN_STARTED')
   traceSmoke('SHUTDOWN_STARTED')
   try {
+    taskWindowController?.dispose()
+    taskWindowController = undefined
     await desktopIpc?.shutdown()
     logger('ELECTRON_DOWNLOADS_STOPPED')
     traceSmoke('DOWNLOADS_STOPPED')
@@ -530,6 +587,11 @@ function armRendererThemeDisplay(window: BrowserWindow): void {
 }
 
 async function retryManagedRenderer(window: BrowserWindow): Promise<void> {
+  if (window === taskWindow && taskWindowController) {
+    logger('ELECTRON_RENDERER_RETRY_STARTED')
+    await taskWindowController.retry()
+    return
+  }
   const target = windowRendererTargets.get(window)
   if (
     window.isDestroyed()
@@ -560,6 +622,16 @@ async function retryManagedRenderer(window: BrowserWindow): Promise<void> {
       true,
     )
   }
+}
+
+async function openTasksInMainWindow(): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed() || !rendererUrl) return
+  const target = new URL('/tasks', rendererUrl).toString()
+  rememberManagedRendererTarget(mainWindow, target)
+  armRendererThemeDisplay(mainWindow)
+  await mainWindow.loadURL(target)
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
 }
 
 function rememberManagedRendererTarget(window: BrowserWindow, target: string): void {

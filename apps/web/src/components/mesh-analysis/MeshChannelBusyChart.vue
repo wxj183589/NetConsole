@@ -18,6 +18,10 @@ const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
+let initialization: Promise<boolean> | null = null
+let resizeFrame: number | null = null
+let renderPending = false
+let disposed = false
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '—').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
@@ -41,33 +45,67 @@ function tooltip(point: MeshChartPoint | undefined): string {
   ].join('<br>')
 }
 
-onMounted(async () => {
-  const [core, charts, components, renderers] = await Promise.all([
-    import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
-  ])
-  core.use([
-    charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
-    components.DataZoomComponent, components.MarkLineComponent, components.ToolboxComponent, renderers.CanvasRenderer,
-  ])
-  await nextTick()
-  if (!container.value) return
-  chart = core.init(container.value)
-  chart.on('click', handleChartClick)
-  unsubscribeTheme = subscribeNetConsoleChartTheme(render)
-  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
-    if (container.value && container.value.clientWidth > 0) chart?.resize()
+function hasRenderableSize(): boolean {
+  return Boolean(container.value && container.value.clientWidth > 0 && container.value.clientHeight > 0)
+}
+
+async function ensureChart(): Promise<boolean> {
+  if (chart) return true
+  if (!props.active || !hasRenderableSize() || disposed) return false
+  if (initialization) return initialization
+  initialization = (async () => {
+    const [core, charts, components, renderers] = await Promise.all([
+      import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
+    ])
+    core.use([
+      charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
+      components.DataZoomComponent, components.MarkLineComponent, components.ToolboxComponent, renderers.CanvasRenderer,
+    ])
+    await nextTick()
+    if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
+    chart = core.init(container.value)
+    chart.on('click', handleChartClick)
+    unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate(true))
+    return true
+  })().finally(() => { initialization = null })
+  return initialization
+}
+
+function scheduleChartUpdate(renderOption = false): void {
+  renderPending ||= renderOption
+  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = null
+    const shouldRender = renderPending
+    renderPending = false
+    if (!props.active || !hasRenderableSize() || disposed) return
+    const chartExisted = Boolean(chart)
+    void ensureChart().then((ready) => {
+      if (!ready || !props.active || disposed) return
+      if (shouldRender || !chartExisted) render()
+      chart?.resize()
+    })
   })
-  resizeObserver?.observe(container.value)
-  render()
-  window.addEventListener('resize', resize)
-  await nextTick()
-  resize()
+}
+
+function handleWindowResize(): void { scheduleChartUpdate() }
+
+onMounted(() => {
+  disposed = false
+  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
+  if (container.value) resizeObserver?.observe(container.value)
+  window.addEventListener('resize', handleWindowResize)
+  scheduleChartUpdate(true)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resize)
+  disposed = true
+  window.removeEventListener('resize', handleWindowResize)
   resizeObserver?.disconnect()
   resizeObserver = null
+  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  resizeFrame = null
+  renderPending = false
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
@@ -75,10 +113,8 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => [props.points, props.events, props.showPeer, props.scope] as const, () => { render(); void nextTick(resize) }, { deep: true })
-watch(() => props.active, (active) => { if (active) void nextTick(resize) })
-
-function resize(): void { chart?.resize() }
+watch(() => [props.points, props.events, props.showPeer, props.scope] as const, () => scheduleChartUpdate(true), { deep: true })
+watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(true)) })
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
@@ -132,7 +168,7 @@ function render(): void {
 </template>
 
 <style scoped>
-.chart-shell { position: relative; min-height: 380px; width: 100%; }
-.chart { height: 430px; width: 100%; min-width: 0; }
+.chart-shell { position: relative; height: 100%; min-height: 360px; width: 100%; }
+.chart { height: 100%; min-height: 360px; width: 100%; min-width: 0; }
 .empty { position: absolute; inset: 0; pointer-events: none; }
 </style>

@@ -5,16 +5,15 @@ import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
-import MeshCounterDeltaChart from '../../components/mesh-analysis/MeshCounterDeltaChart.vue'
-import MeshRateChart from '../../components/mesh-analysis/MeshRateChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
 import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import {
   applyMeshBundleImport, createMeshProfile, getMeshActivePathChart, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
-  getMeshCounterDeltas, getMeshRateSeries, listMeshActiveBuildOrder, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
+  listMeshActiveBuildOrder, listMeshAnalysisSessions, listMeshApStatistics,
   listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext,
 } from '../../api/meshAnalysis'
@@ -23,8 +22,8 @@ import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks }
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
-  MeshActiveBuildOrder, MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshApStatistics, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
-  MeshChartEvent, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRatePage, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
+  MeshActiveBuildOrder, MeshAnalysisSession, MeshAnalysisSummary, MeshApStatistics, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
+  MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -48,10 +47,6 @@ const linkTotal = ref(0)
 const switches = ref<MeshSwitchEvent[]>([])
 const activePath = ref<MeshPathChart | null>(null)
 const peerPath = ref<MeshPathChart | null>(null)
-const rateSeries = ref<MeshRatePage>({ items: [], total: 0, downsampled: false })
-const counterDeltas = ref<MeshCounterDeltaPage>({ items: [], total: 0, downsampled: false })
-const anomalies = ref<MeshAnomaly[]>([])
-const anomalyTotal = ref(0)
 const apStatistics = ref<MeshApStatistics[]>([])
 const artifacts = ref<MeshArtifact[]>([])
 const rawTail = ref<MeshRawTail | null>(null)
@@ -81,6 +76,10 @@ const linkedMrId = ref('')
 const profileNotes = ref('')
 const task = ref<RailTransitTask | null>(null)
 const taskLoading = ref(false)
+const buildOrderTableHost = ref<HTMLElement | null>(null)
+const linkTableHost = ref<HTMLElement | null>(null)
+const rssiChartHost = ref<HTMLElement | null>(null)
+const busyChartHost = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
 const activeTab = ref('build-order')
@@ -111,7 +110,12 @@ let detailGeneration = 0
 let activeChartGeneration = 0
 let peerChartGeneration = 0
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
+const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
+const buildOrderPanel = useAvailablePanelHeight(buildOrderTableHost, { minHeight: 420, bottomGap: 72 })
+const linkPanel = useAvailablePanelHeight(linkTableHost, { minHeight: 420, bottomGap: 72 })
+const rssiPanel = useAvailablePanelHeight(rssiChartHost, { minHeight: 360, bottomGap: 96 })
+const busyPanel = useAvailablePanelHeight(busyChartHost, { minHeight: 360, bottomGap: 48 })
 
 const cards = computed(() => summary.value ? [
   ['分析会话', summary.value.session_count], ['列车 / MR', `${summary.value.train_count} / ${summary.value.mr_count}`],
@@ -119,7 +123,15 @@ const cards = computed(() => summary.value ? [
   ['切换事件', display(summary.value.switch_event_count)], ['短时建链', display(summary.value.short_link_count)],
   ['乒乓切换', display(summary.value.pingpong_count)], ['未匹配 AP', display(summary.value.unmatched_ap_count)],
 ] : [])
-const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
+const taskActive = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
+const taskProgress = computed(() => task.value?.status === 'COMPLETED' ? 100 : 0)
+const taskSummary = computed(() => {
+  if (!task.value) return ''
+  if (task.value.error_message) return task.value.error_message
+  if (task.value.message) return task.value.message
+  const count = Object.keys(task.value.result_summary || {}).length
+  return count ? `已生成 ${count} 项结构化结果，完整内容请在任务中心查看。` : '完整日志、结果与 Artifact 请在任务中心查看。'
+})
 const selectedSource = computed(() => selected.value?.sources[0] || null)
 const bundleCanApply = computed(() => Boolean(
   bundlePreview.value
@@ -150,11 +162,6 @@ const availableChartRadios = computed(() => [...new Set([
   ...buildOrderOptions.value.map((row) => row.local_radio).filter((value): value is number => value !== null),
 ])].sort((left, right) => left - right))
 const selectedVisitValue = computed(() => allPeerVisits.value ? 'all-visits' : selectedSegment.value?.anchor_link_id)
-type TaskResultRow = { name: string; value: string }
-const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
-  { key: 'name', label: '结果项', minWidth: 220 },
-  { key: 'value', label: '值', align: 'left', alignmentReason: 'long-text', minWidth: 240 },
-]
 const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
   { key: 'analysis_time', label: '分析时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
   { key: 'train_name', label: '列车', minWidth: 100 },
@@ -274,15 +281,6 @@ const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
   { key: 'is_pingpong', label: '乒乓', width: 75, displayValue: (row) => row.is_pingpong ? '是' : '否' },
   { key: 'station', label: '站点', width: 130 },
 ]
-const anomalyColumns: NcTableColumn<MeshAnomaly>[] = [
-  { key: 'severity', label: '级别', valueType: 'status', width: 90 },
-  { key: 'anomaly_type', label: '类型', width: 140 },
-  { key: 'start_time', label: '开始', valueType: 'datetime', width: 185 },
-  { key: 'end_time', label: '结束', valueType: 'datetime', width: 185 },
-  { key: 'peer_ap_name', label: 'AP', valueType: 'name', minWidth: 150 },
-  { key: 'description', label: '说明', valueType: 'description', minWidth: 260, alignmentReason: 'long-text' },
-  { key: 'evidence_reference', label: '证据引用', align: 'left', alignmentReason: 'long-text', minWidth: 160 },
-]
 const apStatisticColumns: NcTableColumn<MeshApStatistics>[] = [
   { key: 'peer_ap_name', label: 'AP', valueType: 'name', minWidth: 160 },
   { key: 'peer_ap_mac', label: 'MAC', valueType: 'mac', width: 145 },
@@ -312,7 +310,11 @@ const sourceColumns: NcTableColumn<MeshRawSource>[] = [
 
 onMounted(async () => { await Promise.all([refreshOverview(), recoverTask()]); scheduleRefresh() })
 onBeforeUnmount(() => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = null; stopTaskPolling() })
-watch(activeTab, (tab) => { if (selected.value) void loadTab(tab) })
+watch(activeTab, (tab) => {
+  if (selected.value) void loadTab(tab)
+  refreshDetailPanels()
+})
+watch(sessionExpanded, refreshDetailPanels)
 
 function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
@@ -347,8 +349,7 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
   selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []
   activePath.value = null; peerPath.value = null; selectedSegment.value = null; focusTimestamp.value = ''; chartRadio.value = null
   allPeerVisits.value = false; selectedChartEvent.value = null; activeChartGeneration += 1; peerChartGeneration += 1
-  rateSeries.value = { items: [], total: 0, downsampled: false }; counterDeltas.value = { items: [], total: 0, downsampled: false }
-  anomalies.value = []; anomalyTotal.value = 0; apStatistics.value = []; artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
+  apStatistics.value = []; artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   for (const key of Object.keys(loadedTabs)) delete loadedTabs[key]
   activeTab.value = 'build-order'
   try {
@@ -358,6 +359,7 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
     selected.value = detail
     restoreSessionExpansionForDetail()
     await loadBuildOrders(generation)
+    refreshDetailPanels()
     error.value = ''
   } catch (reason) { if (generation === detailGeneration) error.value = reason instanceof Error ? reason.message : '分析详情加载失败' }
   finally { if (generation === detailGeneration) detailLoading.value = false }
@@ -429,15 +431,6 @@ async function loadTab(tab: string): Promise<void> {
     else if (tab === 'switches') {
       const result = await listMeshSwitchEvents(id, { page: 1, page_size: 500 })
       if (generation === detailGeneration) switches.value = result.items
-    } else if (tab === 'rate') {
-      const result = await getMeshRateSeries(id, { max_points: 2_000 })
-      if (generation === detailGeneration) rateSeries.value = result
-    } else if (tab === 'retry-error') {
-      const result = await getMeshCounterDeltas(id, { max_points: 2_000 })
-      if (generation === detailGeneration) counterDeltas.value = result
-    } else if (tab === 'anomalies') {
-      const result = await listMeshAnomalies(id)
-      if (generation === detailGeneration) { anomalies.value = result.items; anomalyTotal.value = result.total }
     } else if (tab === 'aps') {
       const result = await listMeshApStatistics(id)
       if (generation === detailGeneration) apStatistics.value = result.items
@@ -684,7 +677,11 @@ async function previewImportFiles(): Promise<void> {
 function profileCandidates(item: MeshBundlePreview['items'][number]): Array<{ profile_id: string; display_name: string }> {
   return item.candidates.length ? item.candidates : profiles.value.map((profile) => ({ profile_id: profile.mr_id, display_name: profile.display_name }))
 }
-function rememberTask(value: RailTransitTask | null): void { task.value = value; if (value) localStorage.setItem(taskStorageKey, value.task_id); else localStorage.removeItem(taskStorageKey) }
+function rememberTask(value: RailTransitTask | null): void {
+  task.value = value
+  if (value && !terminalStates.has(value.status)) localStorage.setItem(taskStorageKey, value.task_id)
+  else localStorage.removeItem(taskStorageKey)
+}
 function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskTimer = null }
 async function afterTask(): Promise<void> {
   if (task.value?.status !== 'COMPLETED') return
@@ -718,7 +715,7 @@ function pollTask(): void {
 }
 async function startTask(factory: () => Promise<RailTransitTask>, fallback: string): Promise<void> {
   taskLoading.value = true; error.value = ''
-  try { rememberTask(await factory()); pollTask(); openTaskWindow() }
+  try { rememberTask(await factory()); pollTask(); void openTaskWindow() }
   catch (reason) { error.value = reason instanceof Error ? reason.message : fallback }
   finally { taskLoading.value = false }
 }
@@ -762,16 +759,34 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report'].includes(item.action)) || null)
+    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report'].includes(item.action))
+    const savedTask = meshRows.find((item) => item.task_id === saved && restorableTaskStates.has(item.status))
+    rememberTask(savedTask || meshRows.find((item) => restorableTaskStates.has(item.status)) || null)
     pollTask()
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务恢复失败' }
 }
-function openTaskWindow(taskId = task.value?.task_id || ''): void {
+async function openTaskWindow(taskId = task.value?.task_id || ''): Promise<void> {
   if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+    try {
+      const result = await window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
+      if (result.success) return
+      ElMessage.error(result.error || '任务中心加载失败')
+    } catch {
+      ElMessage.error('任务中心加载失败')
+    }
+    await router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
     return
   }
-  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
+  await router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
+}
+
+function refreshDetailPanels(): void {
+  void nextTick(() => {
+    buildOrderPanel.refresh()
+    linkPanel.refresh()
+    rssiPanel.refresh()
+    busyPanel.refresh()
+  })
 }
 
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
@@ -859,7 +874,15 @@ function buildResultLabel(value: string): string {
         <el-tag v-if="task" size="small">任务 {{ task.status }}</el-tag>
       </button>
       <template v-if="sessionExpanded">
-        <div v-if="task" class="task-card"><div class="detail-heading"><div><h2>MESH 处理结果 · {{ task.action }}</h2><p>{{ task.task_id }}</p></div><el-tag>{{ task.status }}</el-tag></div><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><NcDataTable v-if="taskRows.length" table-id="mesh-analysis-task-results" route-key="/rail-transit/mesh-analysis" :preference-scope="task.task_id" :data="taskRows" :columns="taskResultColumns" max-height="220" /><el-alert title="停止、日志、恢复与生成报告下载统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow()">打开任务窗口</el-button></el-alert></div>
+        <div v-if="task" class="task-card">
+          <div class="task-line">
+            <div class="task-copy"><strong>{{ task.action }}</strong><span>{{ task.task_id }}</span></div>
+            <el-tag>{{ task.status }}</el-tag>
+            <el-button link type="primary" @click="openTaskWindow()">打开任务中心</el-button>
+          </div>
+          <el-progress v-if="taskActive" :percentage="taskProgress" :indeterminate="true" :duration="2" :show-text="false" />
+          <p class="task-summary">{{ taskSummary }}</p>
+        </div>
         <div class="summary-grid">
           <article v-for="card in cards" :key="String(card[0])" class="metric-card"><span>{{ card[0] }}</span><strong>{{ card[1] }}</strong></article>
         </div>
@@ -898,7 +921,7 @@ function buildResultLabel(value: string): string {
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab" class="detail-tabs">
-        <el-tab-pane label="主链路建链顺序" name="build-order" lazy>
+        <el-tab-pane label="主链路建链顺序" name="build-order" class="table-pane" lazy>
           <div class="toolbar">
             <el-select v-model="buildOrderFilters.radio" clearable placeholder="Radio"><el-option label="Radio 1" value="1" /><el-option label="Radio 2" value="2" /></el-select>
             <el-input v-model="buildOrderFilters.peer" clearable placeholder="Peer / AP" />
@@ -907,20 +930,24 @@ function buildResultLabel(value: string): string {
             <el-checkbox v-model="buildOrderFilters.pingpong_only">仅乒乓</el-checkbox>
             <el-button type="primary" @click="loadBuildOrders(detailGeneration, 1)">查询</el-button>
           </div>
-          <NcDataTable table-id="mesh-analysis-active-build-order" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border height="500" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
-            <template #cell-build_result="{ row }"><el-tag :type="buildResultType(row.build_result)">{{ buildResultLabel(row.build_result) }}</el-tag></template>
-            <template #cell-actions="{ row }"><el-button link type="primary" @click.stop="selectBuildOrder(row, true)">查看动态图</el-button></template>
-          </NcDataTable>
+          <div ref="buildOrderTableHost" class="table-host" :style="{ height: `${buildOrderPanel.height.value}px` }">
+            <NcDataTable table-id="mesh-analysis-active-build-order" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border :height="buildOrderPanel.height.value" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
+              <template #cell-build_result="{ row }"><el-tag :type="buildResultType(row.build_result)">{{ buildResultLabel(row.build_result) }}</el-tag></template>
+              <template #cell-actions="{ row }"><el-button link type="primary" @click.stop="selectBuildOrder(row, true)">查看动态图</el-button></template>
+            </NcDataTable>
+          </div>
           <div class="pagination"><span>共 {{ buildOrderTotal }} 个主链路区段</span><el-pagination v-model:page-size="buildOrderFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="buildOrderFilters.page" layout="sizes, prev, pager, next" :total="buildOrderTotal" @size-change="() => loadBuildOrders(detailGeneration, 1)" @current-change="(page: number) => loadBuildOrders(detailGeneration, page)" /></div>
         </el-tab-pane>
 
-        <el-tab-pane label="链路明细" name="links" lazy>
+        <el-tab-pane label="链路明细" name="links" class="table-pane" lazy>
           <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
-          <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="500" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
+          <div ref="linkTableHost" class="table-host" :style="{ height: `${linkPanel.height.value}px` }">
+            <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border :height="linkPanel.height.value" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
+          </div>
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination v-model:page-size="linkFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="linkFilters.page" layout="sizes, prev, pager, next" :total="linkTotal" @size-change="() => reloadLinks(1)" @current-change="reloadLinks" /></div>
         </el-tab-pane>
 
-        <el-tab-pane label="RSSI 分析" name="rssi" lazy>
+        <el-tab-pane label="RSSI 分析" name="rssi" class="chart-pane" lazy>
           <el-tabs v-model="rssiMode" class="analysis-subtabs" @tab-change="changeRssiMode">
             <el-tab-pane label="单 AP / 分时段" name="peer" />
             <el-tab-pane label="全部 ACTIVE 主链路" name="active" />
@@ -936,12 +963,14 @@ function buildResultLabel(value: string): string {
             <el-button @click="reloadCurrentChart">重置视图</el-button>
           </div>
           <div class="mini-summary"><span>当前 PeerMac <strong>{{ chartData?.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData?.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData?.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData?.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData?.summary.sample_count ?? 0 }}</strong></span><span>ACTIVE <strong>{{ chartData?.summary.active_count ?? 0 }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData?.summary.standby_context_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData?.summary.switch_count ?? 0 }}</strong></span><span>最早 <strong>{{ chartData?.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData?.summary.last_sample_time || '—' }}</strong></span></div>
-          <MeshRssiChart :points="chartData?.points || []" :events="chartData?.events || []" :show-peer="showRssiPeer" :scope="rssiMode" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" @select-switch="selectChartSwitch" />
+          <div ref="rssiChartHost" class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
+            <MeshRssiChart :points="chartData?.points || []" :events="chartData?.events || []" :show-peer="showRssiPeer" :scope="rssiMode" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" @select-switch="selectChartSwitch" />
+          </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `后端从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点` : `展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；不同经过时段和无 ACTIVE 处保持断线，同采样点备链已预载到 Tooltip。</p>
         </el-tab-pane>
 
-        <el-tab-pane label="空口负载" name="busy" lazy>
+        <el-tab-pane label="空口负载" name="busy" class="chart-pane" lazy>
           <el-tabs v-model="busyMode" class="analysis-subtabs" @tab-change="changeBusyMode"><el-tab-pane label="全部 ACTIVE 链路信道负载" name="active" /><el-tab-pane label="单 AP / 分时段信道负载" name="peer" /></el-tabs>
           <div class="chart-toolbar">
             <el-select v-if="busyMode === 'peer'" :model-value="selectedVisitValue" filterable placeholder="选择 AP / 经过时段" @change="selectSegmentByAnchor"><el-option v-if="selectedSegment" label="全部经过时段（各区段断开）" value="all-visits" /><el-option v-for="row in buildOrderOptions" :key="row.anchor_link_id" :label="`第 ${row.sequence} 次 · Radio ${row.local_radio ?? '—'} · ${row.peer_ap_name || row.active_peer_mac} · ${row.build_start_time} — ${row.build_end_time}`" :value="row.anchor_link_id" /></el-select>
@@ -949,15 +978,13 @@ function buildResultLabel(value: string): string {
             <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
             <el-checkbox v-model="showBusyPeer">显示 Peer 侧 Tx/Rx Busy</el-checkbox><el-button @click="reloadCurrentChart">重置视图</el-button>
           </div>
-          <MeshChannelBusyChart :points="busyChartData?.points || []" :events="busyChartData?.events || []" :show-peer="showBusyPeer" :scope="busyMode" :active="activeTab === 'busy'" @select-switch="selectChartSwitch" />
+          <div ref="busyChartHost" class="chart-host" :style="{ height: `${busyPanel.height.value}px` }">
+            <MeshChannelBusyChart :points="busyChartData?.points || []" :events="busyChartData?.events || []" :show-peer="showBusyPeer" :scope="busyMode" :active="activeTab === 'busy'" @select-switch="selectChartSwitch" />
+          </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
         </el-tab-pane>
 
         <el-tab-pane label="切换事件" name="switches" lazy><NcDataTable table-id="mesh-analysis-switch-events" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></el-tab-pane>
-
-        <el-tab-pane label="Rate（原始值）" name="rate"><MeshRateChart :points="rateSeries.items" /><p class="hint">{{ rateSeries.downsampled ? `已由后端从 ${rateSeries.total} 点降采样` : `后端返回 ${rateSeries.total} 点` }}；仅展示 Query API 原始值，不猜测单位。</p></el-tab-pane>
-        <el-tab-pane label="Retry / Error 增量" name="retry-error"><MeshCounterDeltaChart :points="counterDeltas.items" /><p class="hint">{{ counterDeltas.downsampled ? `已由后端从 ${counterDeltas.total} 点降采样` : `后端返回 ${counterDeltas.total} 点` }}；增量由后端提供，Vue 不计算。</p></el-tab-pane>
-        <el-tab-pane :label="`异常摘要 (${anomalyTotal})`" name="anomalies"><NcDataTable table-id="mesh-analysis-anomalies" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="anomalies" :columns="anomalyColumns" border height="430"><template #cell-severity="{ row }"><el-tag :type="severityType(row.severity)">{{ row.severity }}</el-tag></template></NcDataTable></el-tab-pane>
 
         <el-tab-pane label="AP 统计" name="aps"><NcDataTable table-id="mesh-analysis-ap-statistics" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="apStatistics" :columns="apStatisticColumns" border height="430" /></el-tab-pane>
 
@@ -975,5 +1002,5 @@ function buildResultLabel(value: string): string {
 .report-params-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
 @media(max-width:700px){.report-params-grid{grid-template-columns:1fr}}
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
-.mesh-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{margin:8px 0 14px;padding:12px;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:8px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{padding-top:12px;color:var(--nc-text-secondary)}.detail-card{min-height:620px}.detail-tabs{scroll-margin-top:12px}.detail-tabs :deep(.el-tabs__content){min-height:520px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
+.mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{display:flex;min-height:0;flex:1;flex-direction:column;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){min-height:0;flex:1;overflow:hidden}.detail-card :deep(.detail-tabs>.el-tabs__content>.el-tab-pane){min-height:0}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
 </style>

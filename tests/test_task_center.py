@@ -468,8 +468,10 @@ def test_fastapi_serves_vue_spa_routes(tmp_path: Path) -> None:
     with TestClient(app) as client:
         root = client.get("/")
         nested = client.get("/tasks")
+        desktop_tasks = client.get("/desktop/tasks")
         health = client.get("/api/health")
 
     assert root.status_code == 200 and "NetConsole Web" in root.text
     assert nested.status_code == 200 and 'id="app"' in nested.text
+    assert desktop_tasks.status_code == 200 and 'id="app"' in desktop_tasks.text
     assert health.status_code == 200

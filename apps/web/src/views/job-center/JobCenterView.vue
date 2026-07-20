@@ -21,8 +21,10 @@ const keyword = ref('')
 const drawerVisible = ref(false)
 const lastSavedCapability = ref('')
 const nativeActionError = ref('')
+const taskContextError = ref('')
 let downloadGeneration = 0
 const pollingConsumer = 'job-center-view'
+let pollingAcquired = false
 
 function clearSavedCapability(): void {
   downloadGeneration += 1
@@ -56,20 +58,53 @@ watch(() => store.selected?.id, clearSavedCapability)
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
-  store.acquirePolling(pollingConsumer)
   const status = typeof route.query.status === 'string' ? route.query.status : ''
   const module = typeof route.query.module === 'string' ? route.query.module : ''
   if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
   if (['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs'].includes(module)) moduleFilter.value = module
+  reportTaskWindowInteractive()
+  startPolling()
   const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : typeof route.query.task === 'string' ? route.query.task : ''
-  if (taskId) void store.selectTask(taskId).then(() => { drawerVisible.value = true }).catch(() => undefined)
+  if (taskId) void selectContextTask(taskId)
 })
 
 onBeforeUnmount(() => {
   clearSavedCapability()
   document.removeEventListener('visibilitychange', handleVisibility)
-  store.releasePolling(pollingConsumer)
+  stopPolling()
 })
+
+function reportTaskWindowInteractive(): void {
+  if (route.path !== '/desktop/tasks' || route.query.task_window !== '1') return
+  getPlatformAdapter().reportRendererReady(true, 'interactive', 'task-window')
+}
+
+function startPolling(): void {
+  if (pollingAcquired) return
+  pollingAcquired = true
+  try {
+    store.acquirePolling(pollingConsumer)
+  } catch {
+    taskContextError.value = '任务列表自动刷新启动失败，可手动刷新后重试。'
+    ElMessage.error(taskContextError.value)
+  }
+}
+
+function stopPolling(): void {
+  if (!pollingAcquired) return
+  pollingAcquired = false
+  store.releasePolling(pollingConsumer)
+}
+
+async function selectContextTask(taskId: string): Promise<void> {
+  try {
+    await store.selectTask(taskId)
+    drawerVisible.value = true
+  } catch {
+    taskContextError.value = `未找到任务 ${taskId}，已保留当前任务列表。`
+    ElMessage.warning(taskContextError.value)
+  }
+}
 
 async function openDetail(task: TaskItem): Promise<void> {
   try {
@@ -81,8 +116,8 @@ async function openDetail(task: TaskItem): Promise<void> {
 }
 
 function handleVisibility(): void {
-  if (document.hidden) store.releasePolling(pollingConsumer)
-  else store.acquirePolling(pollingConsumer)
+  if (document.hidden) stopPolling()
+  else startPolling()
 }
 
 function matchesFilter(task: TaskItem): boolean {
@@ -203,6 +238,7 @@ const revealSaved = () => runSavedAction('reveal')
       show-icon
       class="readonly-alert"
     />
+    <el-alert v-if="taskContextError" :title="taskContextError" type="warning" :closable="false" show-icon class="context-alert" />
 
     <div class="job-metrics">
       <article><span>任务总数</span><strong>{{ store.tasks.length }}</strong></article>
@@ -317,7 +353,7 @@ const revealSaved = () => runSavedAction('reveal')
 
 <style scoped>
 .job-center { max-width: 1720px; margin: 0 auto; }
-.readonly-alert { margin-bottom: 16px; }
+.readonly-alert, .context-alert { margin-bottom: 16px; }
 .job-metrics { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 14px; margin-bottom: 16px; }
 .job-metrics article { padding: 16px 18px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-top: 3px solid var(--nc-border-strong); border-radius: 10px; }
 .job-metrics article.active { border-top-color: var(--nc-primary); }

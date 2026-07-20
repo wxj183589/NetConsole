@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron'
 export type RendererDisplayReason = 'theme-ready' | 'renderer-failed' | 'theme-timeout'
 
 export const MANAGED_RENDERER_RETRY_ACTION = 'netconsole-action://retry-renderer/'
+export const MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION = 'netconsole-action://open-main-tasks/'
 
 export interface RendererDisplayWindow {
   hide(): void
@@ -134,9 +135,10 @@ export class ManagedRendererRetryNavigation {
     private readonly retry: () => Promise<void> | void,
     private readonly onRejected: () => void = () => undefined,
     private readonly onRetryError: (cause: unknown) => void = () => undefined,
+    private readonly openMainTasks: () => Promise<void> | void = () => undefined,
   ) {
     window.webContents.on('will-navigate', (event, target) => {
-      if (target !== MANAGED_RENDERER_RETRY_ACTION) return
+      if (target !== MANAGED_RENDERER_RETRY_ACTION && target !== MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION) return
       event.preventDefault()
       if (
         window.isDestroyed()
@@ -147,7 +149,8 @@ export class ManagedRendererRetryNavigation {
         return
       }
       this.retryPageUrl = ''
-      void Promise.resolve().then(() => this.retry()).catch(this.onRetryError)
+      const action = target === MANAGED_RENDERER_RETRY_ACTION ? this.retry : this.openMainTasks
+      void Promise.resolve().then(() => action()).catch(this.onRetryError)
     })
   }
 

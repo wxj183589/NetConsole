@@ -94,6 +94,8 @@ NetConsole Design Token
 - 分页/懒加载，不在 Renderer 一次构造无上限数据；
 - loading、empty、success、error、cancelled 均有可见反馈。
 
+占据业务页主要区域的表格和图表不得依赖 `430/500px` 一类固定高度。使用 `useAvailablePanelHeight()` 按容器顶部、窗口可视高度和底部安全间距计算剩余空间，并用 ResizeObserver 与窗口 resize 更新；表格保留分页和横向滚动，ECharts 在隐藏 Tab 或零尺寸容器中不得初始化最终实例。
+
 ### `NcDataTable`
 
 新增和完成迁移的标准数据表格使用 `NcDataTable`。它保证表头/内容默认居中、缺失值统一、文本真实测量、字段类型宽度基线、跨页宽度稳定、手工列宽与列布局偏好，并在容器不足时保持表头完整后由表格区域横向滚动。核心不变量是 `finalWidth >= headerRequiredWidth`。详情、日志等长文本左对齐必须在列定义中声明原因。

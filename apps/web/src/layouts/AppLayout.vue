@@ -12,6 +12,7 @@ import {
   Operation,
   Setting,
 } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 import { getHealth, getWebBuildMeta } from '../api/client'
 import { isFeatureEnabled, isFeatureVisible, loadWebFeatures } from '../features'
@@ -91,12 +92,19 @@ function toggleSidebar(): void {
   sessionStorage.setItem(COLLAPSED_KEY, manualCollapsed.value ? '1' : '0')
 }
 
-function selectNavigation(path: string): void {
+async function selectNavigation(path: string): Promise<void> {
   if (path === '/tasks' && window.netconsoleDesktop && route.query.task_window !== '1') {
-    void window.netconsoleDesktop.openTaskWindow({})
+    try {
+      const result = await window.netconsoleDesktop.openTaskWindow({})
+      if (result.success) return
+      ElMessage.error(result.error || '任务中心加载失败')
+    } catch {
+      ElMessage.error('任务中心加载失败')
+    }
+    await router.push(path)
     return
   }
-  void router.push(path)
+  await router.push(path)
   if (mobile.value) drawerOpen.value = false
 }
 
