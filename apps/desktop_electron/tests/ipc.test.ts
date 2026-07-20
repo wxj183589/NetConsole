@@ -85,6 +85,19 @@ describe('desktop IPC', () => {
     expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
   })
 
+  it('accepts only the fixed UI preference key allowlist', async () => {
+    const { ipcMain, sender } = createHarness()
+    const event = { sender }
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.getUiPreference)!(
+      event,
+      'C:\\arbitrary\\preference.json',
+    )).rejects.toThrow('UI preference key is invalid')
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.setUiPreference)!(
+      event,
+      ['mesh-analysis-rssi.show-switch-points', 'false'],
+    )).rejects.toThrow('UI chart preference must be a boolean')
+  })
+
   it('opens only opaque in-memory capabilities and never renderer paths', async () => {
     const { ipcMain, sender, selectedFile, shell, pathRegistry } = createHarness()
     const event = { sender }

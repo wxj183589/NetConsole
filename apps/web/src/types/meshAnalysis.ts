@@ -119,7 +119,8 @@ export interface MeshActiveBuildOrder {
 export interface MeshChartBackupLink {
   link_id: number | null; source_file_id?: number | null; timestamp: string; timestamp_tag: string; local_radio: number | null; link_state?: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; local_rssi: number | null; peer_rssi: number | null
-  local_signal: number | null; peer_signal: number | null; local_tx_busy: number | null; peer_tx_busy: number | null
+  local_signal: number | null; peer_signal: number | null; station?: string | null; section?: string | null
+  local_tx_busy: number | null; peer_tx_busy: number | null
   local_rx_busy: number | null; peer_rx_busy: number | null
 }
 
@@ -136,6 +137,13 @@ export interface MeshChartPoint {
 export interface MeshChartEvent {
   event_id: number | null; timestamp: string; event_type: string; local_radio: number | null; from_peer_mac: string | null; to_peer_mac: string | null
   duration_ms: number | null; from_ap_name?: string | null; to_ap_name?: string | null; segment_sequence?: number | null
+  point_timestamp?: string | null; point_rssi?: number | null; before_rssi?: number | null; after_rssi?: number | null
+  station?: string | null; section?: string | null
+}
+
+export interface MeshLocationSegment {
+  start_time: string; end_time: string; station: string | null; section: string | null; label: string | null
+  direction?: string | null; mileage_start?: string | number | null; mileage_end?: string | number | null
 }
 
 export interface MeshPathChartSummary {
@@ -146,6 +154,7 @@ export interface MeshPathChartSummary {
 
 export interface MeshPathChart {
   mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
+  location_segments: MeshLocationSegment[]
   total_points: number; returned_points: number; downsampled: boolean; summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
 }
 
@@ -159,6 +168,5 @@ export interface MeshRatePage { items: MeshRatePoint[]; total: number; downsampl
 export interface MeshCounterDeltaPoint { timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_retry_delta: number | null; peer_retry_delta: number | null; local_error_delta: number | null; peer_error_delta: number | null }
 export interface MeshCounterDeltaPage { items: MeshCounterDeltaPoint[]; total: number; downsampled: boolean }
 export interface MeshAnomaly { anomaly_id: string; severity: string; anomaly_type: string; start_time: string | null; end_time: string | null; train_name: string; mr_name: string; peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; description: string; evidence_reference: string | null; rule_version: string | null }
-export interface MeshApStatistics { peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; linked_mr_count: number; link_up_count: number; link_down_count: number; switch_in_count: number; switch_out_count: number; avg_rssi: number | null; min_rssi: number | null; anomaly_count: number; match_status: string }
 export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean }
 export interface MeshRawTail { source_id: string; available: boolean; lines: string[]; message: string }

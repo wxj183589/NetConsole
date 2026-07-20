@@ -33,7 +33,6 @@ vi.mock('../../api/meshAnalysis', () => ({
   listMeshActiveBuildOrder: mocks.listBuildOrder,
   listMeshAnalysisSessions: mocks.listSessions,
   listMeshAnomalies: mocks.listAnomalies,
-  listMeshApStatistics: vi.fn(),
   listMeshArtifacts: vi.fn(),
   listMeshLinks: vi.fn(),
   listMeshProfiles: mocks.listProfiles,

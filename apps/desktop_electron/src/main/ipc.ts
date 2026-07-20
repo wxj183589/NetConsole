@@ -18,12 +18,14 @@ import {
   validateBridgePath,
   validateSiteStorageRestartRequest,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
+  validateUiPreferenceKey, validateUiPreferenceValue,
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
 import type { DesktopLogger } from './logger'
 import { resolveDesktopBackgroundColor } from './config'
 import { GrantedPathRegistry } from './path-access'
+import type { UiPreferenceStoreLike } from './ui-preferences'
 
 interface IpcEventLike {
   sender: unknown
@@ -84,6 +86,7 @@ export interface DesktopIpcDependencies {
   onRendererReady?: (report: RendererHostReport, window: unknown) => void
   logger?: DesktopLogger
   fetchImpl?: typeof fetch
+  uiPreferenceStore?: UiPreferenceStoreLike
 }
 
 export interface DesktopIpcRegistration {
@@ -138,6 +141,23 @@ export function registerDesktopIpc(
     trusted((): DesktopRuntimeConfig => {
       const runtime = dependencies.backend.getRuntimeInfo()
       return { apiBaseUrl: runtime.baseUrl, apiToken: runtime.apiToken }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.getUiPreference,
+    trusted(async (value) => {
+      const key = validateUiPreferenceKey(value)
+      const stored = await dependencies.uiPreferenceStore?.get(key)
+      return stored == null ? null : validateUiPreferenceValue(key, stored)
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.setUiPreference,
+    trusted(async (value) => {
+      if (!Array.isArray(value) || value.length !== 2) throw new TypeError('UI preference request is invalid')
+      const key = validateUiPreferenceKey(value[0])
+      const preference = validateUiPreferenceValue(key, value[1])
+      await dependencies.uiPreferenceStore?.set(key, preference)
     }),
   )
   dependencies.ipcMain.handle(

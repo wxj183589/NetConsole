@@ -50,4 +50,28 @@ describe('table preferences', () => {
       getItem: () => JSON.stringify({ version: 1, order: [], columns: [{ key: 'name', width: -1 }] }),
     })).toBeUndefined()
   })
+
+  it('migrates a valid legacy session layout to the stable table key', () => {
+    const values = new Map<string, string>()
+    const legacyKey = [
+      'netconsole', 'table-layout', 'v1', 'operator', encodeURIComponent('/devices'),
+      encodeURIComponent('mesh-analysis-active-build-order:session-1'), 'zh-CN',
+    ].join(':')
+    values.set(legacyKey, JSON.stringify(preference))
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      get length() { return values.size },
+      key: (index: number) => [...values.keys()][index] ?? null,
+    }
+
+    expect(loadTablePreferences({
+      ...identity,
+      tableId: 'mesh-analysis-active-build-order:v2',
+    }, storage)).toEqual(preference)
+    expect(values.has(tablePreferenceKey({
+      ...identity,
+      tableId: 'mesh-analysis-active-build-order:v2',
+    }))).toBe(true)
+  })
 })

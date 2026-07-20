@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Hide, View } from '@element-plus/icons-vue'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
@@ -13,7 +13,7 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import {
   applyMeshBundleImport, createMeshProfile, getMeshActivePathChart, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
-  listMeshActiveBuildOrder, listMeshAnalysisSessions, listMeshApStatistics,
+  listMeshActiveBuildOrder, listMeshAnalysisSessions,
   listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext,
 } from '../../api/meshAnalysis'
@@ -22,12 +22,13 @@ import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks }
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
-  MeshActiveBuildOrder, MeshAnalysisSession, MeshAnalysisSummary, MeshApStatistics, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
+  MeshActiveBuildOrder, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
+import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -47,7 +48,6 @@ const linkTotal = ref(0)
 const switches = ref<MeshSwitchEvent[]>([])
 const activePath = ref<MeshPathChart | null>(null)
 const peerPath = ref<MeshPathChart | null>(null)
-const apStatistics = ref<MeshApStatistics[]>([])
 const artifacts = ref<MeshArtifact[]>([])
 const rawTail = ref<MeshRawTail | null>(null)
 const profiles = ref<MeshProfile[]>([])
@@ -86,6 +86,10 @@ const activeTab = ref('build-order')
 const rssiMode = ref<'peer' | 'active'>('active')
 const busyMode = ref<'active' | 'peer'>('active')
 const showRssiPeer = ref(false)
+const showSwitchLines = ref(false)
+const showSwitchPoints = ref(true)
+const showLocationBand = ref(true)
+const meshPreferenceReady = ref(false)
 const showBusyPeer = ref(false)
 const visiblePoints = ref(600)
 const chartRadio = ref<number | null>(null)
@@ -180,17 +184,17 @@ const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
 ]
 const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'sequence', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left' },
-  { key: 'active_peer_mac', label: 'Active PeerMac', valueType: 'mac', minWidth: 150, fixed: 'left' },
-  { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175 },
+  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
+  { key: 'active_peer_mac', label: 'Active PeerMac', valueType: 'mac', minWidth: 150, fixed: 'left', hideable: false },
+  { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175, hideable: false },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', minWidth: 120 },
   { key: 'section', label: '归属区间', minWidth: 145 },
   { key: 'peer_radio', label: 'Peer Radio', minWidth: 105 },
   { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
-  { key: 'build_start_time', label: '建链开始时间', valueType: 'datetime', minWidth: 215, sortable: 'custom' },
-  { key: 'build_end_time', label: '建链结束时间', valueType: 'datetime', minWidth: 215 },
-  { key: 'main_link_duration_seconds', label: '主链路持续(s)', valueType: 'duration', minWidth: 125 },
+  { key: 'build_start_time', label: '建链开始时间', valueType: 'datetime', minWidth: 215, sortable: 'custom', hideable: false },
+  { key: 'build_end_time', label: '建链结束时间', valueType: 'datetime', minWidth: 215, hideable: false },
+  { key: 'main_link_duration_seconds', label: '主链路持续(s)', valueType: 'duration', minWidth: 125, hideable: false },
   { key: 'reported_duration_seconds', label: '日志上报时长(s)', valueType: 'duration', minWidth: 135 },
   { key: 'sample_count', label: '采样点数', valueType: 'number', width: 100 },
   { key: 'avg_mr_rssi', label: 'MR 平均 RSSI', valueType: 'number', minWidth: 120 },
@@ -218,11 +222,11 @@ const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
 ]
 const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'record_id', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
-  { key: 'timestamp', label: '采样时间', valueType: 'datetime', minWidth: 215, fixed: 'left' },
+  { key: 'timestamp', label: '采样时间', valueType: 'datetime', minWidth: 215, fixed: 'left', hideable: false },
   { key: 'timestamp_tag', label: '采样标识', minWidth: 120, fixed: 'left' },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left' },
-  { key: 'link_role', label: '状态', width: 90, fixed: 'left' },
-  { key: 'peer_mac', label: 'PeerMac', valueType: 'mac', minWidth: 145 },
+  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
+  { key: 'link_role', label: '状态', width: 90, fixed: 'left', hideable: false },
+  { key: 'peer_mac', label: 'PeerMac', valueType: 'mac', minWidth: 145, hideable: false },
   { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175 },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', width: 130 },
@@ -271,8 +275,8 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'raw_line_end', label: '原始结束行', valueType: 'number', minWidth: 110, visible: false },
 ]
 const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
-  { key: 'event_type', label: '事件', width: 130 },
+  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215, hideable: false },
+  { key: 'event_type', label: '事件', width: 130, hideable: false },
   { key: 'from_ap_name', label: '原 AP', valueType: 'name', minWidth: 150 },
   { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
   { key: 'rssi_change', label: 'RSSI 前 / 后', width: 135, displayValue: (row) => `${display(row.before_rssi)} / ${display(row.after_rssi)}` },
@@ -280,18 +284,6 @@ const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
   { key: 'is_short_link', label: '短时', width: 75, displayValue: (row) => row.is_short_link ? '是' : '否' },
   { key: 'is_pingpong', label: '乒乓', width: 75, displayValue: (row) => row.is_pingpong ? '是' : '否' },
   { key: 'station', label: '站点', width: 130 },
-]
-const apStatisticColumns: NcTableColumn<MeshApStatistics>[] = [
-  { key: 'peer_ap_name', label: 'AP', valueType: 'name', minWidth: 160 },
-  { key: 'peer_ap_mac', label: 'MAC', valueType: 'mac', width: 145 },
-  { key: 'station', label: '站点', width: 130 },
-  { key: 'section', label: '区间', minWidth: 145 },
-  { key: 'link_up_count', label: '主链记录', valueType: 'number', width: 105 },
-  { key: 'link_down_count', label: '备链记录', valueType: 'number', width: 105 },
-  { key: 'switch_in_count', label: '切入', valueType: 'number', width: 75 },
-  { key: 'switch_out_count', label: '切出', valueType: 'number', width: 75 },
-  { key: 'rssi', label: '平均 / 最小 RSSI', width: 150, displayValue: (row) => `${display(row.avg_rssi)} / ${display(row.min_rssi)}` },
-  { key: 'match_status', label: '匹配', valueType: 'status', width: 90 },
 ]
 const artifactColumns: NcTableColumn<MeshArtifact>[] = [
   { key: 'artifact_type', label: '类型', width: 140 },
@@ -308,7 +300,28 @@ const sourceColumns: NcTableColumn<MeshRawSource>[] = [
   { key: 'tail', label: '日志片段', valueType: 'actions', width: 110, hideable: false },
 ]
 
-onMounted(async () => { await Promise.all([refreshOverview(), recoverTask()]); scheduleRefresh() })
+async function restoreMeshPreferences(): Promise<void> {
+  const [lines, points, band] = await Promise.all([
+    loadUiPreference('mesh-analysis-rssi.show-switch-lines', false),
+    loadUiPreference('mesh-analysis-rssi.show-switch-points', true),
+    loadUiPreference('mesh-analysis-rssi.show-location-band', true),
+  ])
+  showSwitchLines.value = typeof lines === 'boolean' ? lines : false
+  showSwitchPoints.value = typeof points === 'boolean' ? points : true
+  showLocationBand.value = typeof band === 'boolean' ? band : true
+  meshPreferenceReady.value = true
+}
+
+watch([showSwitchLines, showSwitchPoints, showLocationBand], ([lines, points, band]) => {
+  if (!meshPreferenceReady.value) return
+  void Promise.all([
+    saveUiPreference('mesh-analysis-rssi.show-switch-lines', lines),
+    saveUiPreference('mesh-analysis-rssi.show-switch-points', points),
+    saveUiPreference('mesh-analysis-rssi.show-location-band', band),
+  ]).catch(() => ElMessage.warning('RSSI 图显示偏好保存失败，当前设置仅保留在本次运行。'))
+})
+
+onMounted(async () => { await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()]); scheduleRefresh() })
 onBeforeUnmount(() => { if (refreshTimer) clearTimeout(refreshTimer); refreshTimer = null; stopTaskPolling() })
 watch(activeTab, (tab) => {
   if (selected.value) void loadTab(tab)
@@ -349,7 +362,7 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
   selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []
   activePath.value = null; peerPath.value = null; selectedSegment.value = null; focusTimestamp.value = ''; chartRadio.value = null
   allPeerVisits.value = false; selectedChartEvent.value = null; activeChartGeneration += 1; peerChartGeneration += 1
-  apStatistics.value = []; artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
+  artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   for (const key of Object.keys(loadedTabs)) delete loadedTabs[key]
   activeTab.value = 'build-order'
   try {
@@ -431,9 +444,6 @@ async function loadTab(tab: string): Promise<void> {
     else if (tab === 'switches') {
       const result = await listMeshSwitchEvents(id, { page: 1, page_size: 500 })
       if (generation === detailGeneration) switches.value = result.items
-    } else if (tab === 'aps') {
-      const result = await listMeshApStatistics(id)
-      if (generation === detailGeneration) apStatistics.value = result.items
     } else if (tab === 'artifacts') {
       const result = await listMeshArtifacts(id)
       if (generation === detailGeneration) artifacts.value = result
@@ -892,7 +902,7 @@ function buildResultLabel(value: string): string {
           <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
           <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
         </div>
-        <NcDataTable table-id="mesh-analysis-sessions" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @row-dblclick="openSession">
+        <NcDataTable table-id="mesh-analysis-sessions:v2" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @row-dblclick="openSession">
           <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button link type="primary" @click="openSession(row)">查看</el-button></template>
         </NcDataTable>
@@ -931,7 +941,7 @@ function buildResultLabel(value: string): string {
             <el-button type="primary" @click="loadBuildOrders(detailGeneration, 1)">查询</el-button>
           </div>
           <div ref="buildOrderTableHost" class="table-host" :style="{ height: `${buildOrderPanel.height.value}px` }">
-            <NcDataTable table-id="mesh-analysis-active-build-order" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border :height="buildOrderPanel.height.value" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
+            <NcDataTable table-id="mesh-analysis-active-build-order:v2" route-key="/rail-transit/mesh-analysis" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border :height="buildOrderPanel.height.value" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
               <template #cell-build_result="{ row }"><el-tag :type="buildResultType(row.build_result)">{{ buildResultLabel(row.build_result) }}</el-tag></template>
               <template #cell-actions="{ row }"><el-button link type="primary" @click.stop="selectBuildOrder(row, true)">查看动态图</el-button></template>
             </NcDataTable>
@@ -942,7 +952,7 @@ function buildResultLabel(value: string): string {
         <el-tab-pane label="链路明细" name="links" class="table-pane" lazy>
           <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
           <div ref="linkTableHost" class="table-host" :style="{ height: `${linkPanel.height.value}px` }">
-            <NcDataTable table-id="mesh-analysis-links" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border :height="linkPanel.height.value" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
+            <NcDataTable table-id="mesh-analysis-link-details:v2" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border :height="linkPanel.height.value" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
           </div>
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination v-model:page-size="linkFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="linkFilters.page" layout="sizes, prev, pager, next" :total="linkTotal" @size-change="() => reloadLinks(1)" @current-change="reloadLinks" /></div>
         </el-tab-pane>
@@ -960,11 +970,14 @@ function buildResultLabel(value: string): string {
             <el-select v-if="rssiMode === 'active'" v-model="chartRadio" placeholder="选择 Radio" @change="reloadCurrentChart"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
             <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
             <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
+            <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
+            <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints">显示切换节点</el-button>
+            <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
             <el-button @click="reloadCurrentChart">重置视图</el-button>
           </div>
           <div class="mini-summary"><span>当前 PeerMac <strong>{{ chartData?.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData?.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData?.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData?.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData?.summary.sample_count ?? 0 }}</strong></span><span>ACTIVE <strong>{{ chartData?.summary.active_count ?? 0 }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData?.summary.standby_context_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData?.summary.switch_count ?? 0 }}</strong></span><span>最早 <strong>{{ chartData?.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData?.summary.last_sample_time || '—' }}</strong></span></div>
           <div ref="rssiChartHost" class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
-            <MeshRssiChart :points="chartData?.points || []" :events="chartData?.events || []" :show-peer="showRssiPeer" :scope="rssiMode" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" @select-switch="selectChartSwitch" />
+            <MeshRssiChart :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :scope="rssiMode" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" @select-switch="selectChartSwitch" />
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `后端从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点` : `展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；不同经过时段和无 ACTIVE 处保持断线，同采样点备链已预载到 Tooltip。</p>
@@ -979,18 +992,16 @@ function buildResultLabel(value: string): string {
             <el-checkbox v-model="showBusyPeer">显示 Peer 侧 Tx/Rx Busy</el-checkbox><el-button @click="reloadCurrentChart">重置视图</el-button>
           </div>
           <div ref="busyChartHost" class="chart-host" :style="{ height: `${busyPanel.height.value}px` }">
-            <MeshChannelBusyChart :points="busyChartData?.points || []" :events="busyChartData?.events || []" :show-peer="showBusyPeer" :scope="busyMode" :active="activeTab === 'busy'" @select-switch="selectChartSwitch" />
+            <MeshChannelBusyChart :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-location-band="showLocationBand" :scope="busyMode" :active="activeTab === 'busy'" @select-switch="selectChartSwitch" />
           </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
         </el-tab-pane>
 
-        <el-tab-pane label="切换事件" name="switches" lazy><NcDataTable table-id="mesh-analysis-switch-events" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></el-tab-pane>
-
-        <el-tab-pane label="AP 统计" name="aps"><NcDataTable table-id="mesh-analysis-ap-statistics" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="apStatistics" :columns="apStatisticColumns" border height="430" /></el-tab-pane>
+        <el-tab-pane label="切换事件" name="switches" lazy><NcDataTable table-id="mesh-analysis-switch-events:v2" route-key="/rail-transit/mesh-analysis" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></el-tab-pane>
 
         <el-tab-pane label="报告与来源" name="artifacts">
-          <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
-          <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources" route-key="/rail-transit/mesh-analysis" :preference-scope="selected.session.session_id" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
+          <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts:v2" route-key="/rail-transit/mesh-analysis" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
+          <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources:v2" route-key="/rail-transit/mesh-analysis" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </el-tab-pane>
       </el-tabs>

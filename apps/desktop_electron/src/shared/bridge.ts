@@ -126,10 +126,26 @@ export interface TaskWindowContext {
   status?: 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 }
 
+export const UI_PREFERENCE_KEYS = Object.freeze([
+  'mesh-analysis-rssi.show-switch-lines',
+  'mesh-analysis-rssi.show-switch-points',
+  'mesh-analysis-rssi.show-location-band',
+  'mesh-analysis.table.sessions:v2',
+  'mesh-analysis.table.active-build-order:v2',
+  'mesh-analysis.table.link-details:v2',
+  'mesh-analysis.table.switch-events:v2',
+  'mesh-analysis.table.artifacts:v2',
+  'mesh-analysis.table.sources:v2',
+] as const)
+
+export type UiPreferenceKey = typeof UI_PREFERENCE_KEYS[number]
+
 export interface NetConsoleDesktopBridge {
   getAppInfo(): Promise<AppInfo>
   getBackendStatus(): Promise<BackendStatus>
   getRuntimeConfig(): Promise<DesktopRuntimeConfig>
+  getUiPreference?(key: UiPreferenceKey): Promise<unknown | null>
+  setUiPreference?(key: UiPreferenceKey, value: unknown | null): Promise<void>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
@@ -156,6 +172,8 @@ export const DESKTOP_IPC = Object.freeze({
   getAppInfo: 'netconsole:desktop:get-app-info',
   getBackendStatus: 'netconsole:desktop:get-backend-status',
   getRuntimeConfig: 'netconsole:desktop:get-runtime-config',
+  getUiPreference: 'netconsole:desktop:get-ui-preference',
+  setUiPreference: 'netconsole:desktop:set-ui-preference',
   openTaskWindow: 'netconsole:desktop:open-task-window',
   selectFile: 'netconsole:desktop:select-file',
   selectDirectory: 'netconsole:desktop:select-directory',
@@ -184,6 +202,8 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.getAppInfo,
   DESKTOP_IPC.getBackendStatus,
   DESKTOP_IPC.getRuntimeConfig,
+  DESKTOP_IPC.getUiPreference,
+  DESKTOP_IPC.setUiPreference,
   DESKTOP_IPC.openTaskWindow,
   DESKTOP_IPC.selectFile,
   DESKTOP_IPC.selectDirectory,

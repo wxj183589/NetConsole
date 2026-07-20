@@ -11,6 +11,7 @@ import {
   validateRendererReadyReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateUiPreferenceKey, validateUiPreferenceValue,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateSiteStorageRestartRequest,
 } from '../shared/validation'
@@ -27,6 +28,13 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
     getAppInfo: () => ipcRenderer.invoke(DESKTOP_IPC.getAppInfo) as ReturnType<NetConsoleDesktopBridge['getAppInfo']>,
     getBackendStatus: () => ipcRenderer.invoke(DESKTOP_IPC.getBackendStatus) as ReturnType<NetConsoleDesktopBridge['getBackendStatus']>,
     getRuntimeConfig: () => ipcRenderer.invoke(DESKTOP_IPC.getRuntimeConfig) as ReturnType<NetConsoleDesktopBridge['getRuntimeConfig']>,
+    getUiPreference: (key) => ipcRenderer.invoke(
+      DESKTOP_IPC.getUiPreference, validateUiPreferenceKey(key),
+    ) as Promise<unknown | null>,
+    setUiPreference: (key, value) => ipcRenderer.invoke(
+      DESKTOP_IPC.setUiPreference,
+      [validateUiPreferenceKey(key), validateUiPreferenceValue(key, value)],
+    ) as Promise<void>,
     openTaskWindow: (context) => ipcRenderer.invoke(
       DESKTOP_IPC.openTaskWindow,
       validateTaskWindowContext(context),

@@ -1,3 +1,4 @@
+import { UI_PREFERENCE_KEYS } from './bridge'
 import type {
   BackendDownloadRequest,
   ChooseSavePathOptions,
@@ -6,6 +7,7 @@ import type {
   RendererReadyReport,
   SelectFileOptions,
   TaskWindowContext,
+  UiPreferenceKey,
   SettingsActionId, SettingsDirectoryId, SettingsToolId,
   SiteStorageRestartRequest,
 } from './bridge'
@@ -62,6 +64,41 @@ export function validateTaskWindowContext(value: unknown): TaskWindowContext {
     result.status = record.status as TaskWindowContext['status']
   }
   return result
+}
+
+export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
+  if (!UI_PREFERENCE_KEYS.includes(value as UiPreferenceKey)) throw new TypeError('UI preference key is invalid')
+  return value as UiPreferenceKey
+}
+
+export function validateUiPreferenceValue(key: UiPreferenceKey, value: unknown): unknown | null {
+  if (value === null) return null
+  if (key.startsWith('mesh-analysis-rssi.')) {
+    if (typeof value !== 'boolean') throw new TypeError('UI chart preference must be a boolean')
+    return value
+  }
+  const record = asRecord(value, 'table preference')
+  rejectUnknownKeys(record, ['version', 'order', 'columns'])
+  if (record.version !== 1) throw new TypeError('table preference version is invalid')
+  if (!Array.isArray(record.order) || record.order.length > 256 || !record.order.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 128)) {
+    throw new TypeError('table preference order is invalid')
+  }
+  if (!Array.isArray(record.columns) || record.columns.length > 256) throw new TypeError('table preference columns are invalid')
+  const columns = record.columns.map((item) => {
+    const column = asRecord(item, 'table preference column')
+    rejectUnknownKeys(column, ['key', 'width', 'visible', 'fixed'])
+    if (typeof column.key !== 'string' || !column.key || column.key.length > 128) throw new TypeError('table preference column key is invalid')
+    if (column.width !== undefined && (typeof column.width !== 'number' || !Number.isFinite(column.width) || column.width <= 0 || column.width > 10_000)) throw new TypeError('table preference column width is invalid')
+    if (column.visible !== undefined && typeof column.visible !== 'boolean') throw new TypeError('table preference column visibility is invalid')
+    if (column.fixed !== undefined && column.fixed !== false && column.fixed !== 'left' && column.fixed !== 'right') throw new TypeError('table preference column fixed state is invalid')
+    return {
+      key: column.key,
+      ...(column.width === undefined ? {} : { width: column.width }),
+      ...(column.visible === undefined ? {} : { visible: column.visible }),
+      ...(column.fixed === undefined ? {} : { fixed: column.fixed }),
+    }
+  })
+  return { version: 1, order: [...record.order], columns }
 }
 
 export function validateSelectFileOptions(value: unknown): SelectFileOptions {

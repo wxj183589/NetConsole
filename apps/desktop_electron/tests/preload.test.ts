@@ -25,6 +25,7 @@ describe('preload bridge', () => {
       'getAppInfo',
       'getBackendStatus',
       'getRuntimeConfig',
+      'getUiPreference',
       'onBackendStatusChanged',
       'openExternalUrl',
       'openPath',
@@ -39,6 +40,7 @@ describe('preload bridge', () => {
       'selectSettingsTool',
       'selectSiteExportDestination',
       'selectSitePackage',
+      'setUiPreference',
       'showItemInFolder',
     ])
     expect('ipcRenderer' in bridge).toBe(false)

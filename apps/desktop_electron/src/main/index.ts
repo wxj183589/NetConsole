@@ -9,6 +9,7 @@ import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import { resolveDesktopStorageContext } from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
+import { UiPreferenceStore } from './ui-preferences'
 import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
@@ -173,6 +174,7 @@ async function startDesktop(): Promise<void> {
     ),
     onRendererReady: handleRendererReady,
     logger,
+    uiPreferenceStore: new UiPreferenceStore(app.getPath('userData')),
   })
   backend.onStatusChange((status) => {
     logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)

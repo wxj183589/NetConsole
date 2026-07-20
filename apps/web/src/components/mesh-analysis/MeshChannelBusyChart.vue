@@ -9,10 +9,10 @@ import {
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
-import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
-import { buildMeshBusySeries } from './chartSeries'
+import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
+import { buildMeshBusySeries, buildMeshLocationBands } from './chartSeries'
 
-const props = withDefaults(defineProps<{ points: MeshChartPoint[]; events?: MeshChartEvent[]; showPeer?: boolean; scope?: 'active' | 'peer'; active?: boolean }>(), { events: () => [], showPeer: false, scope: 'active', active: true })
+const props = withDefaults(defineProps<{ points: MeshChartPoint[]; events?: MeshChartEvent[]; locationSegments?: MeshLocationSegment[]; showPeer?: boolean; showLocationBand?: boolean; scope?: 'active' | 'peer'; active?: boolean }>(), { events: () => [], locationSegments: () => [], showPeer: false, showLocationBand: true, scope: 'active', active: true })
 const emit = defineEmits<{ selectSwitch: [event: MeshChartEvent] }>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
@@ -59,7 +59,7 @@ async function ensureChart(): Promise<boolean> {
     ])
     core.use([
       charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
-      components.DataZoomComponent, components.MarkLineComponent, components.ToolboxComponent, renderers.CanvasRenderer,
+      components.DataZoomComponent, components.MarkLineComponent, components.MarkAreaComponent, components.ToolboxComponent, renderers.CanvasRenderer,
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
@@ -113,7 +113,7 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => [props.points, props.events, props.showPeer, props.scope] as const, () => scheduleChartUpdate(true), { deep: true })
+watch(() => [props.points, props.events, props.locationSegments, props.showPeer, props.showLocationBand, props.scope] as const, () => scheduleChartUpdate(true), { deep: true })
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(true)) })
 
 function handleChartClick(raw: unknown): void {
@@ -128,6 +128,16 @@ function render(): void {
   const axisStyle = createNetConsoleAxisStyle(theme)
   const series = buildMeshBusySeries(props.points, props.showPeer, props.scope)
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
+  const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
+  const markArea = locationBands.length ? {
+    silent: true,
+    itemStyle: { color: theme.info, opacity: 0.08 },
+    label: { show: true, position: 'insideBottom', color: theme.textSecondary, fontSize: 11 },
+    data: locationBands.map((band) => [
+      { name: band.label, xAxis: band.start_time },
+      { xAxis: band.end_time },
+    ]),
+  } : undefined
   chart.setOption({
     animation: false,
     color: [theme.primary, theme.info, theme.warning, theme.danger],
@@ -151,6 +161,7 @@ function render(): void {
     ],
     series: series.map((item, index) => ({
       name: item.name, type: 'line', showSymbol: false, connectNulls: false, data: item.data,
+      markArea: index === 0 ? markArea : undefined,
       markLine: index === 0 && switchEvents.length ? {
         silent: false, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning, type: 'dashed' },
         data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),

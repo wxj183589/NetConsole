@@ -1,5 +1,6 @@
 <script setup lang="ts" generic="Row extends object">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 
 import { t } from '../../i18n/runtime'
 import NcColumnSettings, { type NcColumnSettingItem } from './NcColumnSettings.vue'
@@ -13,9 +14,10 @@ import {
   type ResolvedNcTableColumn,
 } from './NcTableColumn'
 import {
-  clearTablePreferences,
+  clearTablePreferencesAsync,
   loadTablePreferences,
-  saveTablePreferences,
+  loadTablePreferencesAsync,
+  saveTablePreferencesAsync,
   type NcTablePreferences,
 } from './tablePreferences'
 import { calculateTableColumnWidths, useAutoColumnWidth } from './useAutoColumnWidth'
@@ -73,6 +75,7 @@ const preferences = ref<NcTablePreferences>()
 const manualWidths = ref<Record<string, number>>({})
 let rootObserver: MutationObserver | undefined
 let resizeObserver: ResizeObserver | undefined
+let preferenceLoadGeneration = 0
 
 function documentLanguage(): string {
   return typeof document !== 'undefined' && document.documentElement?.lang
@@ -92,11 +95,17 @@ watch(() => props.language, (language) => {
   if (language) currentLanguage.value = language
 })
 
-watch(identity, () => {
-  preferences.value = loadTablePreferences(identity.value)
-  manualWidths.value = Object.fromEntries(
-    (preferences.value?.columns ?? []).flatMap((column) => column.width == null ? [] : [[column.key, column.width]]),
-  )
+watch(identity, (nextIdentity) => {
+  const generation = ++preferenceLoadGeneration
+  const apply = (next: NcTablePreferences | undefined) => {
+    if (generation !== preferenceLoadGeneration) return
+    preferences.value = next
+    manualWidths.value = Object.fromEntries(
+      (next?.columns ?? []).flatMap((column) => column.width == null ? [] : [[column.key, column.width]]),
+    )
+  }
+  apply(loadTablePreferences(nextIdentity))
+  void loadTablePreferencesAsync(nextIdentity).then(apply)
 }, { immediate: true })
 
 const resolvedColumns = computed<ResolvedNcTableColumn<Row>[]>(() => {
@@ -108,7 +117,7 @@ const resolvedColumns = computed<ResolvedNcTableColumn<Row>[]>(() => {
       const saved = preferenceByKey.get(column.key)
       return {
         ...column,
-        visible: saved?.visible ?? column.visible,
+        visible: column.hideable ? saved?.visible ?? column.visible : true,
         fixed: saved?.fixed == null ? column.fixed : saved.fixed,
         sourceIndex,
       }
@@ -164,7 +173,13 @@ function persist(nextColumns = resolvedColumns.value): void {
     })),
   }
   preferences.value = next
-  saveTablePreferences(identity.value, next)
+  persistPreference(next)
+}
+
+function persistPreference(next: NcTablePreferences): void {
+  void saveTablePreferencesAsync(identity.value, next).catch(() => {
+    ElMessage.warning('列设置保存失败，当前布局仅保留在本次运行。')
+  })
 }
 
 function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']) => void): void {
@@ -185,11 +200,12 @@ function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']
       }
   update(next.columns)
   preferences.value = next
-  saveTablePreferences(identity.value, next)
+  persistPreference(next)
 }
 
 function toggleColumn(key: string, visible: boolean): void {
   if (!visible && visibleColumns.value.length <= 1) return
+  if (!resolvedColumns.value.find((column) => column.key === key)?.hideable) return
   updatePreferenceColumns((columns) => {
     const target = columns.find((column) => column.key === key)
     if (target) target.visible = visible
@@ -204,7 +220,7 @@ function moveColumn(key: string, direction: -1 | 1): void {
   ;[order[index], order[target]] = [order[target], order[index]]
   const next = preferences.value ?? { version: 1 as const, order: [], columns: [] }
   preferences.value = { ...next, order }
-  saveTablePreferences(identity.value, preferences.value)
+  persistPreference(preferences.value)
 }
 
 function cyclePin(key: string): void {
@@ -216,7 +232,9 @@ function cyclePin(key: string): void {
 }
 
 function resetLayout(): void {
-  clearTablePreferences(identity.value)
+  void clearTablePreferencesAsync(identity.value).catch(() => {
+    ElMessage.warning('默认列布局清理失败，请稍后重试。')
+  })
   preferences.value = undefined
   manualWidths.value = {}
   recalculate(true)

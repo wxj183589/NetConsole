@@ -4,6 +4,7 @@ import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEv
 import {
   buildMeshBusySeries,
   buildMeshCounterDeltaSeries,
+  buildMeshLocationBands,
   buildMeshRateSeries,
   buildMeshRssiSeries,
   buildMeshSwitchRssiSeries,
@@ -20,6 +21,15 @@ function point(index: number): MeshChartPoint {
 }
 
 describe('mesh ACTIVE chart series', () => {
+  it('keeps backend location segments independent for repeated visits', () => {
+    const bands = buildMeshLocationBands([
+      { start_time: '2026-07-20T10:00:00Z', end_time: '2026-07-20T10:01:00Z', station: '站点一', section: '区间一', label: '站点一 / 区间一' },
+      { start_time: '2026-07-20T10:10:00Z', end_time: '2026-07-20T10:11:00Z', station: '站点一', section: '区间一', label: '站点一 / 区间一' },
+    ])
+    expect(bands).toHaveLength(2)
+    expect(bands[0]).not.toBe(bands[1])
+  })
+
   it('keeps 100 AP on one default RSSI main line', () => {
     const series = buildMeshRssiSeries(Array.from({ length: 100 }, (_, index) => point(index)))
     expect(series).toHaveLength(1)

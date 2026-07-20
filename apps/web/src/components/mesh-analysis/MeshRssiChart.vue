@@ -9,17 +9,21 @@ import {
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
-import type { MeshChartBackupLink, MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
-import { buildMeshRssiSeries } from './chartSeries'
+import type { MeshChartBackupLink, MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
+import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
   events?: MeshChartEvent[]
+  locationSegments?: MeshLocationSegment[]
   showPeer?: boolean
+  showSwitchLines?: boolean
+  showSwitchPoints?: boolean
+  showLocationBand?: boolean
   scope?: 'active' | 'peer'
   active?: boolean
   focusTimestamp?: string
-}>(), { events: () => [], showPeer: false, scope: 'active', active: true, focusTimestamp: '' })
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '' })
 const emit = defineEmits<{ selectSwitch: [event: MeshChartEvent] }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -33,7 +37,8 @@ let renderPending = false
 let disposed = false
 
 function escapeHtml(value: unknown): string {
-  return String(value ?? '—').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
+  const text = value == null || value === '' ? '—' : String(value)
+  return text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
 }
 
 function metric(value: number | null | undefined, unit = ''): string {
@@ -41,29 +46,57 @@ function metric(value: number | null | undefined, unit = ''): string {
 }
 
 function backupLines(backups: MeshChartBackupLink[]): string[] {
-  if (!backups.length) return ['同采样点备链：无']
+  if (!backups.length) return ['备份链路：无']
   return [
-    `同采样点备链（${backups.length}）：`,
-    ...backups.map((item) => `· ${escapeHtml(item.peer_ap_name || item.peer_mac)} / Radio ${escapeHtml(item.local_radio)} / MR RSSI ${metric(item.local_rssi)}`),
+    '备份链路：',
+    ...backups.map((item, index) => [
+      `${index + 1}. ${escapeHtml(item.peer_ap_name || item.peer_mac)}`,
+      `AP MAC：${escapeHtml(item.peer_ap_mac)}`,
+      `MR / 轨旁 AP 接收信号：${metric(item.local_signal)} / ${metric(item.peer_signal)}`,
+      `Radio：${escapeHtml(item.local_radio)}`,
+      `归属站点 / 区间：${escapeHtml(item.station)} / ${escapeHtml(item.section)}`,
+    ].join('<br>')),
   ]
 }
 
-function tooltip(point: MeshChartPoint | undefined): string {
-  if (!point) return '暂无采样上下文'
+function switchTooltip(event: MeshChartEvent): string {
   return [
-    `采样时间：${escapeHtml(point.timestamp)}`,
-    `采样标识：${escapeHtml(point.timestamp_tag)}`,
-    `当前 AP：${escapeHtml(point.peer_ap_name)}`,
-    `AP MAC：${escapeHtml(point.peer_ap_mac)}`,
-    `Peer MAC：${escapeHtml(point.peer_mac)}`,
-    `Radio / Peer Radio：${escapeHtml(point.local_radio)} / ${escapeHtml(point.peer_radio)}`,
-    `MR / Peer RSSI：${metric(point.local_rssi)} / ${metric(point.peer_rssi)}`,
-    `MR / Peer 接收信号：${metric(point.local_signal, ' dBm')} / ${metric(point.peer_signal, ' dBm')}`,
-    `归属站点 / 区间：${escapeHtml(point.station)} / ${escapeHtml(point.section)}`,
-    `建链持续：${metric(point.segment_duration_seconds, ' s')}`,
-    `当前区段：${escapeHtml(point.segment_sequence)}`,
-    ...backupLines(point.backups || []),
+    '<hr>',
+    '切换事件',
+    `切出：${escapeHtml(event.from_ap_name)} / ${escapeHtml(event.from_peer_mac)}`,
+    `切入：${escapeHtml(event.to_ap_name)} / ${escapeHtml(event.to_peer_mac)}`,
+    `切换耗时：${metric(event.duration_ms, ' ms')}`,
+    `切换类型：${escapeHtml(event.event_type)}`,
   ].join('<br>')
+}
+
+function tooltip(point: MeshChartPoint | undefined, event?: MeshChartEvent): string {
+  if (!point) return '暂无采样上下文'
+  const lines = [
+    `采样时间：${escapeHtml(point.timestamp)}`,
+    '<hr>',
+    '主链路',
+    `当前轨旁 AP：${escapeHtml(point.peer_ap_name)}`,
+    `当前轨旁 AP MAC：${escapeHtml(point.peer_ap_mac)}`,
+    `MR / 轨旁 AP 接收信号：${metric(point.local_signal)} / ${metric(point.peer_signal)}`,
+    `归属站点 / 区间：${escapeHtml(point.station)} / ${escapeHtml(point.section)}`,
+    `建链持续时间：${metric(point.segment_duration_seconds, ' s')}`,
+    ...backupLines(point.backups || []),
+  ]
+  if (event) lines.push(switchTooltip(event))
+  return lines.join('<br>')
+}
+
+function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent; symbol: string }> {
+  return events.flatMap((event) => {
+    if (!event.point_timestamp || event.point_rssi == null) return []
+    return [{
+      value: [event.point_timestamp, event.point_rssi],
+      meta: props.points.find((item) => item.timestamp === event.point_timestamp),
+      meshEvent: event,
+      symbol: event.before_rssi != null && event.point_rssi === event.before_rssi ? 'emptyCircle' : 'circle',
+    }]
+  })
 }
 
 function hasRenderableSize(): boolean {
@@ -80,11 +113,13 @@ async function ensureChart(): Promise<boolean> {
     ])
     core.use([
       charts.LineChart,
+      charts.ScatterChart,
       components.GridComponent,
       components.LegendComponent,
       components.TooltipComponent,
       components.DataZoomComponent,
       components.MarkLineComponent,
+      components.MarkAreaComponent,
       components.ToolboxComponent,
       renderers.CanvasRenderer,
     ])
@@ -140,7 +175,7 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => [props.points, props.events, props.showPeer, props.scope] as const, () => {
+watch(() => [props.points, props.events, props.locationSegments, props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand, props.scope] as const, () => {
   scheduleChartUpdate(true)
 }, { deep: true })
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(true)) })
@@ -148,7 +183,7 @@ watch(() => props.focusTimestamp, () => { void nextTick(() => scheduleChartUpdat
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
-  const event = data?.meshEvent || props.events.find((item) => item.timestamp === data?.meta?.timestamp)
+  const event = data?.meshEvent || props.events.find((item) => item.point_timestamp === data?.meta?.timestamp || item.timestamp === data?.meta?.timestamp)
   if (event) emit('selectSwitch', event)
 }
 
@@ -165,6 +200,17 @@ function render(): void {
   const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
   primarySeriesData = series[0]?.data || []
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
+  const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
+  const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
+  const markArea = locationBands.length ? {
+    silent: true,
+    itemStyle: { color: theme.info, opacity: 0.08 },
+    label: { show: true, position: 'insideBottom', color: theme.textSecondary, fontSize: 11 },
+    data: locationBands.map((band) => [
+      { name: band.label, xAxis: band.start_time },
+      { xAxis: band.end_time },
+    ]),
+  } : undefined
   chart.setOption({
     animation: false,
     color: [theme.primary, theme.info, theme.warning, theme.danger],
@@ -174,7 +220,11 @@ function render(): void {
       ...createNetConsoleTooltipStyle(theme),
       formatter: (rawParams: unknown) => {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-        return tooltip((params[0] as { data?: { meta?: MeshChartPoint } } | undefined)?.data?.meta)
+        const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
+        const pointParam = params.find((item) => (item as { data?: { meta?: MeshChartPoint } }).data?.meta) as { data?: { meta?: MeshChartPoint } } | undefined
+        return eventParam?.data?.meshEvent && !pointParam?.data?.meta
+          ? switchTooltip(eventParam.data.meshEvent)
+          : tooltip(pointParam?.data?.meta, eventParam?.data?.meshEvent)
       },
     },
     legend: { bottom: 4, textStyle: { color: theme.textSecondary } },
@@ -186,20 +236,29 @@ function render(): void {
       { type: 'inside', filterMode: 'none' },
       { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
     ],
-    series: series.map((item, index) => ({
+    series: [
+      ...series.map((item, index) => ({
       name: item.name,
       type: 'line',
       showSymbol: false,
       connectNulls: false,
       data: item.data,
-      markLine: index === 0 && switchEvents.length ? {
+      markArea: index === 0 ? markArea : undefined,
+      markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
         silent: false,
         symbol: 'none',
         label: { show: false },
         lineStyle: { color: theme.warning, type: 'dashed' },
         data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
       } : undefined,
-    })),
+      })),
+      ...(nodes.length ? [{
+        name: '切换节点',
+        type: 'scatter',
+        symbolSize: 10,
+        data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
+      }] : []),
+    ],
   }, { notMerge: true })
   focusCurrentPoint()
 }

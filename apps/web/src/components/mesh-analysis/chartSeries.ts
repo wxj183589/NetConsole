@@ -1,4 +1,4 @@
-import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshLocationSegment, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
 
 export interface MeshRssiSeries {
   name: string
@@ -25,6 +25,26 @@ export interface MeshCounterDeltaSeries {
 export interface MeshSwitchRssiSeries {
   name: string
   data: Array<{ value: [string | null, number | null]; meta: MeshSwitchEvent }>
+}
+
+export interface MeshLocationBand {
+  start_time: string
+  end_time: string
+  label: string
+  station: string | null
+  section: string | null
+}
+
+export function buildMeshLocationBands(segments: MeshLocationSegment[]): MeshLocationBand[] {
+  return segments
+    .filter((segment) => Boolean(segment.start_time && segment.end_time))
+    .map((segment) => ({
+      start_time: segment.start_time,
+      end_time: segment.end_time,
+      station: segment.station ?? null,
+      section: segment.section ?? null,
+      label: segment.label || [segment.station, segment.section].filter(Boolean).join(' / ') || '—',
+    }))
 }
 
 function metricData(
