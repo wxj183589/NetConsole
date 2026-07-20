@@ -1,7 +1,10 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   clearTablePreferences,
+  loadTablePreferencesAsync,
   loadTablePreferences,
   saveTablePreferences,
   tablePreferenceKey,
@@ -73,5 +76,29 @@ describe('table preferences', () => {
       ...identity,
       tableId: 'mesh-analysis-active-build-order:v2',
     }))).toBe(true)
+  })
+
+  it('hydrates an Electron preference from the current legacy storage on first upgrade', async () => {
+    const values = new Map<string, string>()
+    values.set([
+      'netconsole', 'table-layout', 'v1', 'operator', encodeURIComponent('/devices'),
+      encodeURIComponent('mesh-analysis-active-build-order:session-1'), 'zh-CN',
+    ].join(':'), JSON.stringify(preference))
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      get length() { return values.size },
+      key: (index: number) => [...values.keys()][index] ?? null,
+    }
+    const setUiPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { getUiPreference: vi.fn().mockResolvedValue(null), setUiPreference },
+    })
+    const meshIdentity = { ...identity, tableId: 'mesh-analysis-active-build-order:v2' }
+
+    await expect(loadTablePreferencesAsync(meshIdentity, storage)).resolves.toEqual(preference)
+    expect(setUiPreference).toHaveBeenCalledWith('mesh-analysis.table.active-build-order:v2', preference)
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
   })
 })

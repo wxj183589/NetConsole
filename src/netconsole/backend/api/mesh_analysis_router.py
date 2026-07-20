@@ -627,6 +627,11 @@ def start_report(
     "/sessions/{session_id}/link-details/export",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
+    summary="导出当前 MESH 来源的链路与主链路明细",
+    responses={
+        404: {"description": "分析会话、来源或 compact v3 结果不存在"},
+        422: {"description": "来源与当前会话不一致或导出请求无效"},
+    },
     dependencies=[
         Depends(require_feature("web.mesh_analysis_report_export")),
         Depends(require_feature("web.rail_task_control")),

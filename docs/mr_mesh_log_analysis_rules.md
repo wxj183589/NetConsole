@@ -65,17 +65,22 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 图表按时间窗口和 Radio 查询，服务端只向 Renderer 返回目标点数内的数据；硬上限为 2,000 点，保留首尾、切换/异常/无 ACTIVE 断点和极值，超预算时按重要性优先级均匀取样，并在 DTO 返回 `total_points/returned_points/downsampled`。
 - 单 AP 选择以正式建链顺序区段为边界；同一 AP 的全部经过时段可以合并显示，但区段切换强制插入空值断线，不跨经过时段连线。
 - ACTIVE/STANDBY 的图表 Tooltip 备链按来源、采样时间、`timestamp_tag` 和 Radio 严格匹配；图表切换事件携带前后 AP 与区段序号，点击可定位建链顺序。
+- 切换节点由 Query Service 在估算采样间隔容差内映射到真实 ACTIVE RSSI；缺少采样间隔时只接受精确时间，无法映射时不填 `0`。黄色切换时刻线默认关闭、真实切换节点默认开启，两者互不依赖。
+- 站点/区间时间带由完整 ACTIVE 序列生成，按 `source_file_id + Radio` 分界，连续相同位置才合并；来源变化、Radio 变化、大时间间隙、未匹配位置和往返后的再次经过均拆成独立区段。
+- 表格列偏好使用稳定表 ID，不包含 session、来源、MR 或局点；Electron 只通过白名单 UI preference Bridge 持久化，Renderer 不获得路径或任意文件能力。
 - Rate 图直接读取 `mesh_links.local_rate_raw/peer_rate_raw` 并明确标注原始值，不猜单位。Retry/Error 图由 Python Query Service 使用同 source、Radio、session/peer 的采样顺序计算非负增量；首样本、缺值和计数器回退/重置返回空值，Vue 不重算。切换 RSSI 复用正式 `switch_events.before_rssi/after_rssi` 事件事实，只展示前后散点，不伪装为连续趋势。
 - MR/源文件切换使用防抖、懒加载和 repository 缓存，避免重复解析和重复查询。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
 
 ## 7. Excel 报表
 
-正式报表走 Export Process，先写临时文件再原子替换。标准工作簿包含：报告总览、质量评分、原始文件清单、采样点质量统计、主链路建链顺序、链路明细、全部 ACTIVE 主链路 RSSI、单 AP 经过时段统计、全部 ACTIVE 空口负载、Peer 质量排名、切换事件分析、异常事件分析、无备份链路风险、空口繁忙度分析、链路重建计数异常、原始证据片段、解析问题。
+正式报表走 Export Process，先写临时文件再原子替换。综合工作簿固定围绕：报告总览、分析参数与阈值、原始文件清单、数据质量总览、主链路建链顺序、主链路切换分析、全部 ACTIVE RSSI 分析、单 AP 分时段统计、空口负载分析、无备份链路风险、解析问题、原始证据。综合报告不再输出完整链路明细、全局 AP 聚合或 Peer 排名。
+
+“分析参数与阈值”逐项记录最终有效值、单位、业务含义、来源和四级候选。优先级固定为：报告临时覆盖 > 来源快照 > 局点配置 > 全局默认；布尔值显示“是/否”，未配置值显示“未配置”，不得只写一段 JSON。
 
 宽列、原始行、诊断和建议使用受控列宽与换行，兼顾 Microsoft Excel/WPS。目标文件被占用时给出可操作提示；取消或失败不得保留伪完整 workbook。
 
-Mesh 链路明细导出可在结果 metadata 中附加只读 `export_identity_diagnostics`，但不得改变 workbook 表头、原有列值、筛选、冻结窗格或业务统计。
+独立“导出链路明细”使用 `mesh_link_detail_export`，严格只创建“链路明细”和“主链路明细”两个工作表。链路明细分批读取完整来源数据，主链路明细直接复用 `query_active_link_build_order`，不得按当前页面分页截断或在导出器重算建链结果。
 
 ## 8. 验证清单
 

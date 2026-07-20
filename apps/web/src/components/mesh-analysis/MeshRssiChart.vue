@@ -53,7 +53,7 @@ function backupLines(backups: MeshChartBackupLink[]): string[] {
       `${index + 1}. ${escapeHtml(item.peer_ap_name || item.peer_mac)}`,
       `AP MAC：${escapeHtml(item.peer_ap_mac)}`,
       `MR / 轨旁 AP 接收信号：${metric(item.local_signal)} / ${metric(item.peer_signal)}`,
-      `Radio：${escapeHtml(item.local_radio)}`,
+      `Radio：${item.local_radio == null ? '—' : `radio${escapeHtml(item.local_radio)}`}`,
       `归属站点 / 区间：${escapeHtml(item.station)} / ${escapeHtml(item.section)}`,
     ].join('<br>')),
   ]
@@ -94,7 +94,7 @@ function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, numbe
       value: [event.point_timestamp, event.point_rssi],
       meta: props.points.find((item) => item.timestamp === event.point_timestamp),
       meshEvent: event,
-      symbol: event.before_rssi != null && event.point_rssi === event.before_rssi ? 'emptyCircle' : 'circle',
+      symbol: event.after_rssi != null && event.point_rssi === event.after_rssi ? 'circle' : 'emptyCircle',
     }]
   })
 }

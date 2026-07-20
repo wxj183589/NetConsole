@@ -94,7 +94,10 @@ export async function loadTablePreferencesAsync(
   if (key && bridge?.getUiPreference) {
     try {
       const value = await bridge.getUiPreference(key)
-      return value === null || !isPreference(value) ? undefined : value
+      if (isPreference(value)) return value
+      const migrated = loadTablePreferences(identity, storage)
+      if (migrated) await saveUiPreference(key, migrated)
+      return migrated
     } catch {
       return loadTablePreferences(identity, storage)
     }

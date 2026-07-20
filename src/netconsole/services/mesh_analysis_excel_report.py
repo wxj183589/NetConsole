@@ -23,8 +23,6 @@ CancelCallback = Callable[[], bool]
 ProgressCallback = Callable[[int, str], None]
 MAX_EMBEDDED_CHART_POINTS = 5000
 
-EMPTY_PARSE_ISSUES_TEXT = "未发现解析问题"
-
 
 REPORT_FIELD_LABELS: dict[str, str] = {
     "key": "项目",

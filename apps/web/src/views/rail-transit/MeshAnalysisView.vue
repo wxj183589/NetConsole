@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight, Hide, View } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Document, Download, Hide, View } from '@element-plus/icons-vue'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
@@ -12,7 +12,7 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import {
-  applyMeshBundleImport, createMeshProfile, getMeshActivePathChart, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
+  applyMeshBundleImport, createMeshProfile, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
   listMeshActiveBuildOrder, listMeshAnalysisSessions,
   listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext,
@@ -752,6 +752,17 @@ function generateReport(): void {
   reportVisible.value = false
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id, override), 'MESH 分析报告生成启动失败')
 }
+function exportLinkDetails(): void {
+  const sourceFileId = Number(selectedSource.value?.source_id)
+  if (!selected.value || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
+    ElMessage.error('当前日志缺少可导出的来源标识')
+    return
+  }
+  void startTask(
+    () => exportMeshLinkDetails(selected.value!.session.session_id, sourceFileId),
+    'MESH 链路明细导出启动失败',
+  )
+}
 async function rebuildSelected(): Promise<void> {
   if (!selected.value) return
   const accepted = await confirm({
@@ -769,7 +780,7 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report'].includes(item.action))
+    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_report', 'mesh_link_detail_export'].includes(item.action))
     const savedTask = meshRows.find((item) => item.task_id === saved && restorableTaskStates.has(item.status))
     rememberTask(savedTask || meshRows.find((item) => restorableTaskStates.has(item.status)) || null)
     pollTask()
@@ -821,7 +832,7 @@ function buildResultLabel(value: string): string {
   <section class="mesh-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>选择日志后自动匹配当前局点车载 MR，并完成归档、解析、分析和报告交付。</p></div>
-      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
+      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="exportLinkDetails">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 

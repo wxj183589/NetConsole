@@ -12,5 +12,8 @@
 - 页面与报告通过 `MeshApLocationSnapshot` 共享 AP 名称、MAC、站点、区间、里程和线路方向解析；Export Job 只携带该快照的受控字符串字段。Excel 工作表保留完整业务数据，嵌入图表使用关键点和极值降采样，空 ACTIVE 不创建空图。
 - 正式报告继续由 Export Process 生成：Worker 写临时文件，完成后原子替换目标 Artifact；Renderer 不读取全量链路，也不生成 Excel。
 - 图表请求按 Radio/时间窗口使用 generation 防止迟到响应串回旧会话；单 AP 支持单次经过和全部经过时段，后者以 `gap_before` 强制断线。
-- 切换事件由 Query Service 预载前后 AP 和建链区段；ECharts markLine 可点击，页面提供回到建链顺序动作。图表数据缺口定位使用渲染序列元数据，不把断点占位行误当业务采样。
+- 切换事件由 Query Service 按估算采样间隔映射到真实 ACTIVE 点；无有效采样间隔时只接受精确时间，找不到真实 RSSI 时不绘制节点。切换时刻线与切换节点分别控制，默认关闭时刻线、开启节点。
+- RSSI 与空口负载直接消费 Query Service 生成的连续位置区段；区段按来源、Radio、时间间隙和站点/区间边界拆分，同一站点的多次经过不会跨时间合并。
+- MESH 表格使用不含 session/source/MR/site 的稳定 ID。Browser 使用 `localStorage`，Electron 通过白名单 Bridge 写入当前 `userData` 下的受控 UI 偏好文件；恢复默认只清理当前表。
+- 链路明细通过独立 `mesh_link_detail_export` Export Job 输出“链路明细”“主链路明细”两张工作表；综合报告不承载全量链路明细或全局 AP/Peer 聚合。
 - 报告按钮默认沿用来源参数，显式启用临时参数时通过 `MeshReportRequestDTO` 进入 Export Process，不修改来源快照、局点配置或 parsed 数据库。

@@ -17,12 +17,14 @@ const mocks = vi.hoisted(() => ({
   getRateSeries: vi.fn(),
   getCounterDeltas: vi.fn(),
   listAnomalies: vi.fn(),
+  exportDetails: vi.fn(),
   routerPush: vi.fn(),
 }))
 
 vi.mock('../../api/meshAnalysis', () => ({
   applyMeshBundleImport: vi.fn(),
   createMeshProfile: vi.fn(),
+  exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisSession: mocks.getSession,
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
@@ -116,6 +118,7 @@ beforeEach(() => {
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
+  mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
 })
 
 describe('Mesh analysis import context behavior', () => {
@@ -144,6 +147,26 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('starts the independent link detail export for the selected source', async () => {
+    const session = {
+      session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [], warnings: [], sources: [{ source_id: '1', exists: true, rebuild_capability: 'ready' }] })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '导出链路明细')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1)
+    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
+    wrapper.unmount()
+  })
+
   it('collapses sessions after opening a source, defaults to build order and lazily keeps charts unloaded', async () => {
     const session = {
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '2026-07-20 10:00:00.000', last_sample_time: '2026-07-20 11:00:00.000',

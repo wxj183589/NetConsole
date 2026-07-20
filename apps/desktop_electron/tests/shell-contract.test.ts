@@ -46,7 +46,7 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('armRendererThemeDisplay(rendererWindow)')
     expect(source).toContain("windowDisplayGates.get(window)?.acceptResolvedTheme()")
     expect(displayGateSource).toContain('if (this.window.isVisible?.()) this.window.hide()')
-    expect(source).toContain("startupTimeline.mark('electron.loading_view_shown')\n  mainWindow.show()")
+    expect(source).toMatch(/startupTimeline\.mark\('electron\.loading_view_shown'\)\r?\n\s+mainWindow\.show\(\)/)
     expect(source.indexOf("startupTimeline.mark('electron.loading_view_shown')")).toBeLessThan(
       source.indexOf('const runtime = await backend.start()'),
     )
