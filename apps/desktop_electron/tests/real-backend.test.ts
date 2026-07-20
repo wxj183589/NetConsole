@@ -67,6 +67,7 @@ describe('real Python backend integration', () => {
       startupTimeoutMs: 15_000,
       stopTimeoutMs: 8_000,
       environment: {
+        NETCONSOLE_STORAGE_MODE: 'isolated_test',
         ONLINE_MR_WEB_CONTROL_ENABLED: '0',
         ONLINE_MR_AGENT_EXECUTOR_ENABLED: '0',
       },

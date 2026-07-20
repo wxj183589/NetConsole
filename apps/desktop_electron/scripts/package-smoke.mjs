@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
@@ -238,16 +238,23 @@ validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
 validateComplianceArtifacts(runtimeVersions)
 
-const smokeRoot = mkdtempSync(join(tmpdir(), 'netconsole-electron-package-smoke-'))
+const smokeRoot = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-package-smoke-'))
+const smokeDataRoot = resolve(smokeRoot, 'data')
+const smokeUserDataRoot = resolve(smokeRoot, 'electron-user-data')
+mkdirSync(smokeDataRoot, { recursive: true })
+mkdirSync(smokeUserDataRoot, { recursive: true })
 try {
   const result = spawnSync(
     executable,
-    [`--user-data-dir=${resolve(smokeRoot, 'electron')}`],
+    [`--user-data-dir=${smokeUserDataRoot}`],
     {
       cwd: unpackedRoot,
       env: {
         ...process.env,
-        NETCONSOLE_DATA_ROOT: resolve(smokeRoot, 'data-root'),
+        NETCONSOLE_DATA_ROOT: smokeDataRoot,
+        NETCONSOLE_STORAGE_MODE: 'isolated_test',
+        NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+        NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: smokeUserDataRoot,
         NETCONSOLE_ELECTRON_SMOKE_TEST: '1',
       },
       stdio: 'inherit',

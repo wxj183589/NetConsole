@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import persistent_storage
 
 
 DEFAULT_SITE = "demo"
@@ -91,14 +92,23 @@ class SiteManager:
         return site
 
     def get_current_site(self) -> str:
-        self.ensure_demo_site()
         config = self._load_config()
-        current_site = config.get("current_site", DEFAULT_SITE)
-        if not isinstance(current_site, str) or current_site not in self.list_sites():
+        existing = self.list_sites()
+        current_site = config.get("current_site")
+        if isinstance(current_site, str) and current_site in existing:
+            return current_site
+        if len(existing) == 1:
+            current_site = existing[0]
+        elif not existing or not persistent_storage():
             current_site = DEFAULT_SITE
-            config["current_site"] = DEFAULT_SITE
-            config["recent_sites"] = self._normalize_recent_sites(config.get("recent_sites", []), DEFAULT_SITE)
-            self._save_config(config)
+            self.ensure_demo_site()
+        else:
+            raise RuntimeError("当前数据根包含多个局点，但没有有效的当前局点配置")
+        if current_site == DEFAULT_SITE and not persistent_storage() and not self.paths.site_db_path(DEFAULT_SITE).is_file():
+            self.ensure_demo_site()
+        config["current_site"] = current_site
+        config["recent_sites"] = self._normalize_recent_sites(config.get("recent_sites", []), current_site)
+        self._save_config(config)
         return current_site
 
     def validate_site_name(self, site_name: str) -> str:
@@ -190,11 +200,8 @@ class SiteManager:
             temporary.unlink(missing_ok=True)
 
     def ensure_app_config(self) -> dict[str, object]:
-        self.ensure_demo_site()
         config = self._load_config()
-        current_site = config.get("current_site", DEFAULT_SITE)
-        if not isinstance(current_site, str) or not (self.paths.site_dir(current_site)).is_dir():
-            current_site = DEFAULT_SITE
+        current_site = self.get_current_site()
         normalized = {
             "current_site": current_site,
             "recent_sites": self._normalize_recent_sites(config.get("recent_sites", []), current_site),
@@ -205,9 +212,7 @@ class SiteManager:
     def _load_config(self) -> dict[str, object]:
         self.paths.config_dir.mkdir(parents=True, exist_ok=True)
         if not self.paths.app_config_path.exists():
-            config = {"current_site": DEFAULT_SITE, "recent_sites": [DEFAULT_SITE]}
-            self._save_config(config)
-            return config
+            return {}
         try:
             with self.paths.app_config_path.open("r", encoding="utf-8") as file:
                 data = json.load(file)

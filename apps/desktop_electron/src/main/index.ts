@@ -1,16 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, type NativeActionResult, type RendererHostReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type NativeActionResult, type RendererHostReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
-import {
-  cleanupCodexTemporaryDataRoot,
-  resolveCodexTemporaryDataRoot,
-} from './development-data-root'
+import { resolveDesktopStorageContext } from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { StartupTimeline } from './startup-timeline'
 import {
@@ -33,6 +30,8 @@ import {
   secureWebPreferences,
 } from './security'
 
+const desktopStorageContext = resolveDesktopStorageContext()
+if (!desktopStorageContext.persistent) app.setPath('userData', desktopStorageContext.userDataRoot!)
 app.enableSandbox()
 
 let mainWindow: BrowserWindow | undefined
@@ -56,10 +55,9 @@ let logger: DesktopLogger = () => undefined
 let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
-let codexTemporaryDataRoot: string | undefined
 let bootstrapStore: DesktopBootstrapStore | undefined
 let desktopDataRoot = ''
-let desktopActiveSiteId = 'demo'
+let desktopActiveSiteId = ''
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
 const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
 const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
@@ -92,9 +90,9 @@ if (hasSingleInstanceLock) {
 }
 
 async function startDesktop(): Promise<void> {
-  codexTemporaryDataRoot = resolveCodexTemporaryDataRoot()
   bootstrapStore = new DesktopBootstrapStore(app.getPath('userData'))
-  const bootstrap = bootstrapStore.load()
+  const bootstrapResult = bootstrapStore.loadForRuntime({ storageMode: desktopStorageContext.mode })
+  const bootstrap = bootstrapResult.value
   const config = loadDesktopConfig({
     isPackaged: app.isPackaged,
     appPath: app.getAppPath(),
@@ -102,10 +100,13 @@ async function startDesktop(): Promise<void> {
     userDataPath: app.getPath('userData'),
     bootstrapDataRoot: bootstrap.data_root,
     bootstrapActiveSiteId: bootstrap.active_site_id,
+    storageMode: desktopStorageContext.mode,
   })
   desktopDataRoot = config.dataRoot
-  desktopActiveSiteId = config.activeSiteId
+  desktopActiveSiteId = config.activeSiteId ?? ''
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
+  logger('ELECTRON_STORAGE_MODE', `mode=${desktopStorageContext.mode}`)
+  if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
   startupTimeline = new StartupTimeline(logger, startupStartedAt)
   startupTimeline.mark('electron.app_ready')
   backend = new PythonBackendManager({
@@ -194,6 +195,7 @@ async function startDesktop(): Promise<void> {
 
   try {
     const runtime = await backend.start()
+    desktopActiveSiteId = await readBackendActiveSiteId(runtime.baseUrl, runtime.apiToken, desktopActiveSiteId)
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
     const rendererOrigin = new URL(rendererUrl).origin
@@ -210,7 +212,9 @@ async function startDesktop(): Promise<void> {
       secure: false,
       path: cookiePath,
     })
-    bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
+    if (desktopStorageContext.persistent && desktopActiveSiteId) {
+      bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
+    }
     rememberManagedRendererTarget(mainWindow, rendererUrl)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
@@ -305,6 +309,7 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
 
 async function restartManagedBackend(update: SiteStorageRestartRequest): Promise<void> {
   if (!backend || !mainWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
+  if (!desktopStorageContext.persistent) throw new Error('隔离测试模式不允许修改正式局点或数据根')
   const previousRoot = desktopDataRoot
   const previousSite = desktopActiveSiteId
   const nextRoot = update.dataRoot ?? previousRoot
@@ -341,6 +346,21 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
     backend.configureStorage(previousRoot, previousSite)
     await backend.start()
     throw cause
+  }
+}
+
+async function readBackendActiveSiteId(baseUrl: string, apiToken: string, fallback: string): Promise<string> {
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/sites/active`, {
+      cache: 'no-store',
+      headers: { [DESKTOP_SESSION_HEADER]: apiToken },
+    })
+    if (!response.ok) return fallback
+    const payload = await response.json() as { site_id?: unknown }
+    const siteId = typeof payload.site_id === 'string' ? payload.site_id.trim() : ''
+    return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(siteId) ? siteId : fallback
+  } catch {
+    return fallback
   }
 }
 
@@ -544,19 +564,6 @@ async function shutdown(): Promise<void> {
     requestedExitCode = Math.max(requestedExitCode, 1)
   } finally {
     pathRegistry.clear()
-    if (codexTemporaryDataRoot) {
-      try {
-        cleanupCodexTemporaryDataRoot(codexTemporaryDataRoot)
-        logger('ELECTRON_CODEX_DATA_ROOT_CLEANED')
-      } catch (cause) {
-        const code = cause instanceof Error
-          ? (cause as NodeJS.ErrnoException).code || cause.name
-          : 'unknown'
-        logger('ELECTRON_CODEX_DATA_ROOT_CLEANUP_FAILED', `code=${code}`)
-      } finally {
-        codexTemporaryDataRoot = undefined
-      }
-    }
   }
 }
 

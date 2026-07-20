@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 
 import type { DesktopResolvedTheme } from '../shared/bridge'
+import type { DesktopStorageMode } from './development-data-root'
 
 export const DESKTOP_SAFE_BACKGROUND_COLOR = '#f4f6f8'
 
@@ -17,7 +18,8 @@ export function resolveDesktopBackgroundColor(theme: DesktopResolvedTheme): stri
 export interface DesktopConfig {
   projectRoot: string
   dataRoot: string
-  activeSiteId: string
+  activeSiteId?: string
+  storageMode: DesktopStorageMode
   runtimeMode: 'desktop-development' | 'desktop-packaged'
   backendExecutable: string
   backendArgumentsPrefix: string[]
@@ -34,6 +36,7 @@ export interface DesktopConfigInput {
   userDataPath?: string
   bootstrapDataRoot?: string
   bootstrapActiveSiteId?: string
+  storageMode?: DesktopStorageMode
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   fileExists?: (path: string) => boolean
@@ -63,7 +66,8 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   return {
     projectRoot,
     dataRoot,
-    activeSiteId: normalizeActiveSiteId(input.bootstrapActiveSiteId),
+    ...(normalizeActiveSiteId(input.bootstrapActiveSiteId) ? { activeSiteId: normalizeActiveSiteId(input.bootstrapActiveSiteId) } : {}),
+    storageMode: input.storageMode ?? 'persistent',
     runtimeMode: input.isPackaged ? 'desktop-packaged' : 'desktop-development',
     backendExecutable,
     backendArgumentsPrefix: input.isPackaged
@@ -102,9 +106,9 @@ function resolveDesktopDataRoot(
   return candidate
 }
 
-function normalizeActiveSiteId(value: string | undefined): string {
-  const candidate = value?.trim() || 'demo'
-  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(candidate)) return 'demo'
+function normalizeActiveSiteId(value: string | undefined): string | undefined {
+  const candidate = value?.trim()
+  if (!candidate || !/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(candidate)) return undefined
   return candidate
 }
 

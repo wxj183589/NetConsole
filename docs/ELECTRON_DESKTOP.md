@@ -86,6 +86,15 @@ pnpm dev:codex
 
 普通 `pnpm dev` 继续使用动态 Backend 端口并只服务 Electron；`dev:codex` 的固定端口只用于本机自动化。两者都拒绝 `0.0.0.0` 和非回环 Origin。生产打包不接受 `--dev-mode`，不注册开发状态接口和 OpenAPI，也不读取开发固定端口或开发 Session 环境变量。
 
+`pnpm dev` 是持久开发模式，继续使用正式开发 `userData`、bootstrap 和 `%LOCALAPPDATA%\NetConsole\Development`（或用户明确选择的数据根）。`dev:codex`、`smoke:dev`、`smoke:task-window` 与 package smoke 是隔离测试模式：每次只在系统 Temp 的单个 `NetConsole-Codex-*` 根下创建 `data/`、`runtime/` 与 `electron-user-data/`，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除该受校验的总临时根。隔离模式不读取或写入正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
+
+正常启动会拒绝 bootstrap 中位于 Temp、命名为 `NetConsole-Codex-*`、不存在或缺少 `data/sites` 的数据根，先保存 `bootstrap.json.invalid-<timestamp>`，再回退到正常持久化根。Python 缺失或不可执行只会让启动明确失败，不创建 demo、不改数据根和 bootstrap。可用以下命令只读诊断；只有显式 `--repair` 才会备份并原子修复配置引用，不移动或删除任何局点数据：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.maintenance.check_desktop_bootstrap
+.\.venv\Scripts\python.exe -m scripts.maintenance.check_desktop_bootstrap --repair
+```
+
 Electron/Vue 的产品标题统一为 `NetConsole`，侧栏使用“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
 
 自动开发冒烟：

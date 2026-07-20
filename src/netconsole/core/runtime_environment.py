@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 FORBIDDEN_RUNTIME_DIR_NAMES = frozenset({"docs", "tests", "project"})
+STORAGE_MODES = frozenset({"persistent", "isolated_test"})
 
 
 def is_packaged_runtime() -> bool:
@@ -57,6 +58,17 @@ def data_root() -> Path:
             resolved = resolved / "Development"
     _reject_source_tree_data_root(resolved)
     return resolved
+
+
+def desktop_storage_mode() -> str:
+    value = str(os.environ.get("NETCONSOLE_STORAGE_MODE") or "persistent").strip()
+    if value not in STORAGE_MODES:
+        raise RuntimeError("NETCONSOLE_STORAGE_MODE is invalid")
+    return value
+
+
+def persistent_storage() -> bool:
+    return desktop_storage_mode() == "persistent"
 
 
 def _platform_data_home() -> Path:

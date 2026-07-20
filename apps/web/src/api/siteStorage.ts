@@ -3,7 +3,7 @@ import { apiRequest } from './client'
 export interface SiteRecord {
   site_id: string
   display_name: string
-  path: string
+  path?: string
   created_at: string
   updated_at: string
   remark: string
@@ -16,6 +16,9 @@ export interface DataRootSnapshot {
   default_data_root: string
   site_count: number
   active_site_id: string
+  storage_mode: 'persistent' | 'isolated_test'
+  data_root_kind: 'persistent' | 'temporary'
+  persistent: boolean
 }
 
 export interface SiteTaskResponse { task_id: string; task_type: string }

@@ -1,11 +1,11 @@
 import { spawn, execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+
+import { cleanupIsolatedRuntime, createIsolatedRuntime, discoverProjectPython } from './dev-runtime.mjs'
 
 const require = createRequire(import.meta.url)
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -21,10 +21,11 @@ const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
 const taskWindowSmoke = process.argv.includes('--task-window')
 const codex = process.argv.includes('--codex')
+const isolated = codex || smoke || taskWindowSmoke
 const codexBackendPort = 8000
 const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
 const codexSessionToken = codex ? randomBytes(32).toString('base64url') : ''
-let codexDataRoot = ''
+let isolatedRuntime
 
 function spawnNode(args, options = {}) {
   return spawn(process.execPath, args, {
@@ -46,21 +47,17 @@ function runNode(args, label) {
   })
 }
 
-function discoverPython() {
-  if (process.env.NETCONSOLE_PYTHON) return process.env.NETCONSOLE_PYTHON
-  const roots = [projectRoot]
+function commonWorktreeRoot() {
   try {
     const commonGitDir = execFileSync(
       'git',
       ['-C', projectRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
       { encoding: 'utf8' },
     ).trim()
-    roots.push(resolve(commonGitDir, '..'))
+    return resolve(commonGitDir, '..')
   } catch {
-    // 普通 checkout 下 projectRoot 已足够；后续由主进程给出明确缺失错误。
+    return projectRoot
   }
-  const relative = process.platform === 'win32' ? ['.venv', 'Scripts', 'python.exe'] : ['.venv', 'bin', 'python']
-  return roots.map((root) => resolve(root, ...relative)).find(existsSync)
 }
 
 async function waitForVite(vite, timeoutMs = 20_000) {
@@ -143,18 +140,13 @@ async function waitForCodexBackend(electronProcess, timeoutMs = 30_000) {
   throw new Error('Codex development backend did not become ready')
 }
 
-function cleanupCodexDataRoot() {
-  if (!codexDataRoot) return
-  const resolvedTemp = resolve(tmpdir())
-  const resolvedData = resolve(codexDataRoot)
-  if (!resolvedData.startsWith(`${resolvedTemp}${sep}`) || !basename(resolvedData).startsWith('NetConsole-Codex-')) {
-    throw new Error('Refusing to clean an unexpected Codex data directory')
-  }
-  rmSync(resolvedData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-}
-
 await runNode([typescriptCli, '--noEmit', '-p', resolve(appRoot, 'tsconfig.json')], 'Electron typecheck')
 await runNode([buildScript], 'Electron main/preload build')
+const pythonExecutable = discoverProjectPython({
+  projectRoot,
+  commonRoot: commonWorktreeRoot(),
+  log: (event, detail = '') => process.stdout.write(`${event}${detail ? ` source=${detail}` : ''}\n`),
+})
 await assertPortAvailable(devPort, 'Vite dev')
 if (codex) await assertPortAvailable(codexBackendPort, 'Codex backend')
 
@@ -224,7 +216,10 @@ process.once('SIGINT', requestGracefulSignalShutdown)
 process.once('SIGTERM', requestGracefulSignalShutdown)
 
 try {
-  if (codex || taskWindowSmoke) codexDataRoot = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-'))
+  if (isolated) isolatedRuntime = createIsolatedRuntime()
+  process.stdout.write(isolated
+    ? 'Isolated temporary test runtime - all data will be deleted\n'
+    : 'Persistent development runtime\n')
   vite = spawnNode([
     viteCli,
     '--host',
@@ -245,9 +240,11 @@ try {
   await waitForVite(vite)
   if (taskWindowSmoke) await warmTaskWindowModules()
   const electronExecutable = require('electron')
-  const pythonExecutable = discoverPython()
   const electronEnv = { ...process.env }
   delete electronEnv.ELECTRON_RUN_AS_NODE
+  delete electronEnv.NETCONSOLE_DEV_TEMP_DATA_ROOT
+  delete electronEnv.NETCONSOLE_DEV_TEMP_USER_DATA_ROOT
+  delete electronEnv.NETCONSOLE_STORAGE_MODE
   electron = spawn(electronExecutable, [appRoot], {
     cwd: projectRoot,
     stdio: 'inherit',
@@ -257,10 +254,12 @@ try {
       NETCONSOLE_WEB_DEV_URL: devUrl,
       NETCONSOLE_DEV_MODE: '1',
       NETCONSOLE_PROJECT_ROOT: projectRoot,
-      ...(pythonExecutable ? { NETCONSOLE_PYTHON: pythonExecutable } : {}),
-      ...(codex || taskWindowSmoke ? {
-        NETCONSOLE_DATA_ROOT: codexDataRoot,
+      NETCONSOLE_PYTHON: pythonExecutable,
+      NETCONSOLE_STORAGE_MODE: isolated ? 'isolated_test' : 'persistent',
+      ...(isolated ? {
+        NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+        NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: isolatedRuntime.userDataRoot,
         ...(taskWindowSmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
         ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),
@@ -292,11 +291,11 @@ try {
   process.exitCode = exitCode
 } finally {
   await stopChildren()
-  if (codexDataRoot) {
+  if (isolatedRuntime) {
     try {
-      cleanupCodexDataRoot()
+      cleanupIsolatedRuntime(isolatedRuntime.root)
     } catch {
-      process.stderr.write('Codex temporary data cleanup failed\n')
+      process.stderr.write('Isolated temporary runtime cleanup failed\n')
     }
   }
 }

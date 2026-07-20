@@ -104,6 +104,45 @@ def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:
     assert "site-and-storage" in paths["/api/v1/sites"]["get"]["tags"]
 
 
+def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NETCONSOLE_STORAGE_MODE", "isolated_test")
+    client = _client(tmp_path)
+
+    listed = client.get("/api/v1/sites")
+    active = client.get("/api/v1/sites/active")
+    snapshot = client.get("/api/v1/storage/data-root")
+
+    assert listed.status_code == 200
+    assert all("path" not in item for item in listed.json())
+    assert active.status_code == 200
+    assert "path" not in active.json()
+    assert snapshot.status_code == 200
+    assert snapshot.json() == {
+        "data_root": "<temporary>",
+        "default_data_root": "<unavailable>",
+        "site_count": 1,
+        "active_site_id": "demo",
+        "storage_mode": "isolated_test",
+        "data_root_kind": "temporary",
+        "persistent": False,
+    }
+
+    writes = (
+        ("/api/v1/sites", {"site_id": "line-12", "display_name": "十二号线"}),
+        ("/api/v1/sites/demo/activate", {"confirmed": True}),
+        ("/api/v1/sites/demo/migrate", {"path": str(tmp_path / "target")}),
+        ("/api/v1/sites/demo/export", {"destination_path": str(tmp_path / "site.ncsite")}),
+        ("/api/v1/sites/import/inspect", {"package_path": str(tmp_path / "site.ncsite")}),
+        ("/api/v1/sites/import", {"package_path": str(tmp_path / "site.ncsite")}),
+        ("/api/v1/storage/data-root/validate", {"path": str(tmp_path / "target")}),
+        ("/api/v1/storage/data-root/migration-plan", {"path": str(tmp_path / "target")}),
+        ("/api/v1/storage/data-root/migrate", {"path": str(tmp_path / "target")}),
+    )
+    for path, payload in writes:
+        response = client.post(path, json=payload)
+        assert response.status_code == 403, (path, response.text)
+
+
 def test_site_storage_tasks_are_visible_as_cancellable_in_job_center(tmp_path: Path) -> None:
     client = _client(tmp_path)
     client.app.state.task_service.create_external_task(

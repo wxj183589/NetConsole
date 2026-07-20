@@ -9,6 +9,9 @@ class DevelopmentRuntimeStatusResponse(BaseModel):
     runtime_mode: str
     backend_ready: bool
     data_root: str = "<redacted>"
+    storage_mode: str
+    data_root_kind: str
+    persistent: bool
     frontend_mode: str
     active_tasks: int = Field(ge=0)
     agent_controller_ready: bool

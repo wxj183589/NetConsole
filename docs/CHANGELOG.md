@@ -31,6 +31,7 @@
 
 ### 局点与数据存储
 
+- 修复 Codex、任务窗口和打包冒烟把临时数据根/`demo` 写入正式 Electron bootstrap 的问题：隔离运行现在同时使用独立 data root 与 `userData`，禁止局点/迁移/导入导出写操作，正式 bootstrap 在测试前后保持不变；新增无效临时引用拒绝、字节备份和显式维护修复命令，Python 环境失败不再影响存储状态。
 - 新增 Electron 系统设置中的局点 Registry、稳定 `site_id`、中文显示名称、新建/切换和活动任务门禁。
 - 新增全局数据根校验、staging 迁移、SQLite 完整性检查、旧数据保留和 Electron bootstrap 原子配置。
 - 新增 `.ncsite` manifest/checksum 导出导入、凭据清洗、路径穿越/符号链接/压缩大小防护、替换前自动备份和失败恢复。

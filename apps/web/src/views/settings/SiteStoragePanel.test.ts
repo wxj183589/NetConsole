@@ -23,7 +23,7 @@ vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => adapter }))
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.listSites).mockResolvedValue([{ site_id: 'demo', display_name: '演示局点', path: 'C:\\data\\sites\\demo', created_at: '', updated_at: '', remark: '', active: true, size_bytes: 1024 }])
-  vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo' })
+  vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 })
 
 describe('SiteStoragePanel', () => {
@@ -42,7 +42,7 @@ describe('SiteStoragePanel', () => {
       { site_id: 'demo', display_name: '演示局点', path: 'C:\\data\\sites\\demo', created_at: '', updated_at: '', remark: '', active: true, size_bytes: 1024 },
       { site_id: 'legacy-dfd356e96ea0', display_name: '宁波地铁12号线', path: 'C:\\data\\sites\\宁波地铁12号线', created_at: '', updated_at: '', remark: '', active: false, size_bytes: 2048 },
     ])
-    vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo' })
+    vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
@@ -64,5 +64,25 @@ describe('SiteStoragePanel', () => {
     await flushPromises()
 
     expect(api.createSite).toHaveBeenCalledWith({ site_id: 'ningbo-line-12', display_name: '宁波地铁12号线' })
+  })
+
+  it('makes isolated test storage visibly read-only', async () => {
+    vi.mocked(api.getDataRoot).mockResolvedValue({
+      data_root: '<temporary>',
+      default_data_root: '<unavailable>',
+      site_count: 1,
+      active_site_id: 'demo',
+      storage_mode: 'isolated_test',
+      data_root_kind: 'temporary',
+      persistent: false,
+    })
+
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="isolated-storage-alert"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('临时测试数据根')
+    expect(wrapper.find('[data-testid="create-site"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(false)
   })
 })

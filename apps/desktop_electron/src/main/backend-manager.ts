@@ -186,7 +186,7 @@ export class PythonBackendManager {
       ...this.options.environment,
       PYTHONUNBUFFERED: '1',
       NETCONSOLE_DATA_ROOT: this.options.dataRoot,
-      NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId ?? 'demo',
+      ...(this.options.activeSiteId ? { NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId } : {}),
       NETCONSOLE_RUNTIME_MODE: this.options.runtimeMode,
     }
     if (this.options.pythonPath) {
@@ -197,6 +197,7 @@ export class PythonBackendManager {
     } else {
       delete environment.PYTHONPATH
     }
+    if (!this.options.activeSiteId) delete environment.NETCONSOLE_ACTIVE_SITE_ID
     delete environment.NETCONSOLE_DEV_SESSION_TOKEN
 
     let child: ManagedChildProcess | undefined

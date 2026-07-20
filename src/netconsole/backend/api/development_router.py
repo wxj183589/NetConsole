@@ -5,6 +5,7 @@ from ipaddress import ip_address
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from netconsole.core.version import APP_VERSION
+from netconsole.core.runtime_environment import desktop_storage_mode, persistent_storage
 from netconsole.models.api.development import DevelopmentRuntimeStatusResponse
 from netconsole.models.task_state import TaskState
 
@@ -24,10 +25,14 @@ def runtime_status(request: Request) -> DevelopmentRuntimeStatusResponse:
     task_service = request.app.state.task_service
     runtime_services_ready = bool(request.app.state.runtime_services_ready)
     active_tasks = len(task_service.list_tasks(statuses=_ACTIVE_TASK_STATES, limit=1_000))
+    storage_mode = desktop_storage_mode()
     return DevelopmentRuntimeStatusResponse(
         runtime_mode=str(request.app.state.development_runtime_label),
         backend_ready=runtime_services_ready,
         data_root="<redacted>",
+        storage_mode=storage_mode,
+        data_root_kind="temporary" if storage_mode == "isolated_test" else "persistent",
+        persistent=persistent_storage(),
         frontend_mode=str(request.app.state.development_frontend_mode),
         active_tasks=active_tasks,
         agent_controller_ready=runtime_services_ready and request.app.state.agent_service is not None,

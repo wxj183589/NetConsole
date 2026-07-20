@@ -6,7 +6,7 @@
 
 ## 边界
 
-- 清理和迁移脚本默认只生成计划，必须显式传入 `--apply` 才能改动文件。
+- 清理、迁移和修复脚本默认只读或只生成计划，必须显式传入 `--apply`、`--repair` 等对应变更参数才能改动文件。
 - 所有可删除路径必须使用固定白名单、解析绝对路径并拒绝链接越界。
 - 不得在本目录实现设备业务、数据库 Repository 或发布入口。
 
@@ -15,6 +15,7 @@
 - `migrate_legacy_runtime_data.py`：无覆盖迁移仓库历史运行数据。
 - `clean_test_artifacts.py`：清理明确白名单内的历史测试临时项。
 - `clean_generated_artifacts.py`：回收明确白名单内、可重新生成的构建产物。
+- `check_desktop_bootstrap.py`：只读检查 Electron bootstrap；`--repair` 先备份并原子修复临时/失效的数据根和局点引用，不移动业务数据。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 
 ## 数据与状态

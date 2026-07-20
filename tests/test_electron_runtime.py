@@ -231,6 +231,9 @@ def test_electron_development_runtime_is_authenticated_and_redacted(tmp_path, mo
     assert body["runtime_mode"] == "electron-development"
     assert body["frontend_mode"] == "vite"
     assert body["data_root"] == "<redacted>"
+    assert body["storage_mode"] == "persistent"
+    assert body["data_root_kind"] == "persistent"
+    assert body["persistent"] is True
     assert str(tmp_path) not in response.text
     assert TOKEN not in response.text
     assert session.status_code == 204

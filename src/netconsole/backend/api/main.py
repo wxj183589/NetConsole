@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import json
 import os
 import re
 import secrets
@@ -662,19 +661,15 @@ def create_app(
 
 
 def _current_site_name(paths: PathResolver) -> str:
-    try:
-        payload = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
-        candidate = os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or (
-            payload.get("current_site") if isinstance(payload, dict) else None
-        )
-        selected = str(candidate or "demo")
+    preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
+    if preferred:
         try:
-            selected = SiteRegistryRepository(paths).resolve_directory_name(selected)
-        except SiteStorageError:
-            selected = SiteManager(paths).validate_site_name(selected)
-        return selected if paths.site_dir(selected).is_dir() else "demo"
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-        return "demo"
+            selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
+            if paths.site_dir(selected).is_dir():
+                return selected
+        except (SiteStorageError, ValueError):
+            pass
+    return SiteManager(paths).get_current_site()
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

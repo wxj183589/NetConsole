@@ -19,6 +19,7 @@ from typing import Callable, Iterator
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import persistent_storage
 from netconsole.core.sites import DEFAULT_SITE, SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -61,13 +62,19 @@ class DataRootSnapshot:
     default_data_root: Path
     site_count: int
     active_site_id: str
+    storage_mode: str
+    data_root_kind: str
+    persistent: bool
 
     def to_public(self) -> dict[str, object]:
         return {
-            "data_root": str(self.data_root),
-            "default_data_root": str(self.default_data_root),
+            "data_root": str(self.data_root) if self.persistent else "<temporary>",
+            "default_data_root": str(self.default_data_root) if self.persistent else "<unavailable>",
             "site_count": self.site_count,
             "active_site_id": self.active_site_id,
+            "storage_mode": self.storage_mode,
+            "data_root_kind": self.data_root_kind,
+            "persistent": self.persistent,
         }
 
 
@@ -319,11 +326,22 @@ class SiteApplicationService:
 
     def list_sites(self) -> list[dict[str, object]]:
         active = self.active_site_id()
-        return [{**item.to_public(), "active": item.site_id == active, "size_bytes": _directory_size(item.root_path)} for item in self.registry.list()]
+        return [
+            {
+                **item.to_public(include_path=persistent_storage()),
+                "active": item.site_id == active,
+                "size_bytes": _directory_size(item.root_path),
+            }
+            for item in self.registry.list()
+        ]
 
     def get_site(self, site_id: str) -> dict[str, object]:
         item = self.registry.get(site_id)
-        return {**item.to_public(), "active": item.site_id == self.active_site_id(), "size_bytes": _directory_size(item.root_path)}
+        return {
+            **item.to_public(include_path=persistent_storage()),
+            "active": item.site_id == self.active_site_id(),
+            "size_bytes": _directory_size(item.root_path),
+        }
 
     def active_site_id(self) -> str:
         selected = self.manager.get_current_site()
@@ -446,7 +464,18 @@ class DataRootApplicationService:
         self.sites = sites or SiteApplicationService(paths)
 
     def snapshot(self) -> DataRootSnapshot:
-        return DataRootSnapshot(self.paths.data_root, _default_data_root(self.paths), len(self.sites.registry.list()), self.sites.active_site_id())
+        from netconsole.core.runtime_environment import desktop_storage_mode, persistent_storage
+
+        mode = desktop_storage_mode()
+        return DataRootSnapshot(
+            self.paths.data_root,
+            _default_data_root(self.paths),
+            len(self.sites.registry.list()),
+            self.sites.active_site_id(),
+            mode,
+            "temporary" if mode == "isolated_test" else "persistent",
+            persistent_storage(),
+        )
 
     def validate(self, target: Path) -> dict[str, object]:
         candidate = self._validate_target(target)

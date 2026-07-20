@@ -205,3 +205,33 @@ def test_missing_current_site_falls_back_to_demo(tmp_path):
     assert manager.get_current_site() == "demo"
     config = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
     assert config["current_site"] == "demo"
+
+
+def test_missing_current_site_selects_the_only_existing_site(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    manager.ensure_site("line-a")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text(
+        json.dumps({"current_site": "missing"}),
+        encoding="utf-8",
+    )
+
+    assert manager.get_current_site() == "line-a"
+
+
+def test_persistent_storage_refuses_to_guess_between_existing_sites(tmp_path):
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    manager.ensure_site("line-a")
+    manager.ensure_site("line-b")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text(
+        json.dumps({"current_site": "missing"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="多个局点"):
+        manager.get_current_site()
+
+    assert "demo" not in manager.list_sites()

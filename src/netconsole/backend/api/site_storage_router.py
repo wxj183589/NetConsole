@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from netconsole.core.runtime_environment import persistent_storage
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.site_storage import (
     DataRootPathRequest,
@@ -34,6 +35,14 @@ def _desktop(request: Request) -> None:
         raise HTTPException(status_code=401, detail="当前请求缺少桌面短期会话")
 
 
+def _persistent_storage() -> None:
+    if not persistent_storage():
+        raise HTTPException(
+            status_code=403,
+            detail="隔离测试模式不允许修改、迁移或导入导出正式局点",
+        )
+
+
 def _sites(request: Request) -> SiteApplicationService:
     return request.app.state.site_application_service
 
@@ -61,7 +70,7 @@ def list_sites(request: Request) -> list[dict[str, object]]:
     status_code=status.HTTP_201_CREATED,
     summary="新建局点",
     description="在 staging 初始化数据库并校验后原子发布；失败不改变当前局点。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def create_site(request: Request, payload: SiteCreateRequest) -> dict[str, object]:
     return _call(
@@ -88,7 +97,7 @@ def get_site(request: Request, site_id: str) -> dict[str, object]:
     "/sites/{site_id}/activate",
     summary="切换当前局点",
     description="有活动任务时拒绝；成功后要求 Electron 受控重启 Backend，使所有 Service 使用同一 SiteContext。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def activate_site(request: Request, site_id: str, payload: SiteActivateRequest) -> dict[str, object]:
     if not payload.confirmed:
@@ -102,7 +111,7 @@ def activate_site(request: Request, site_id: str, payload: SiteActivateRequest) 
     status_code=status.HTTP_202_ACCEPTED,
     summary="迁移单个局点",
     description="复制到目标数据根的 staging 并校验；源局点保留，不在当前 Backend 内热切换。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def migrate_site(request: Request, site_id: str, payload: DataRootPathRequest) -> SiteTaskResponse:
     _call(lambda: _sites(request).get_site(site_id))
@@ -116,7 +125,7 @@ def migrate_site(request: Request, site_id: str, payload: DataRootPathRequest) -
     status_code=status.HTTP_202_ACCEPTED,
     summary="导出局点包",
     description="创建 Task Center Worker；包内不包含 Token、密码、bootstrap、锁、缓存和临时文件。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> SiteTaskResponse:
     _call(lambda: _sites(request).get_site(site_id))
@@ -128,7 +137,7 @@ def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> S
     "/sites/import/inspect",
     summary="检查局点包",
     description="验证 manifest、checksum、路径、符号链接和解压大小，不写入业务目录。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def inspect_site_package(request: Request, payload: SiteImportInspectRequest) -> dict[str, object]:
     return _call(lambda: _packages(request).inspect_package(Path(payload.package_path)))
@@ -140,7 +149,7 @@ def inspect_site_package(request: Request, payload: SiteImportInspectRequest) ->
     status_code=status.HTTP_202_ACCEPTED,
     summary="导入局点包",
     description="创建 Task Center Worker；替换导入会先备份，失败恢复原局点。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def import_site(request: Request, payload: SiteImportRequest) -> SiteTaskResponse:
     _call(lambda: _packages(request).inspect_package(Path(payload.package_path)))
@@ -157,7 +166,7 @@ def get_data_root(request: Request) -> dict[str, object]:
     "/storage/data-root/validate",
     summary="校验候选数据根",
     description="校验可写性、仓库/安装目录、临时目录和嵌套迁移风险。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def validate_data_root(request: Request, payload: DataRootPathRequest) -> dict[str, object]:
     return _call(lambda: _storage(request).validate(Path(payload.path)))
@@ -166,7 +175,7 @@ def validate_data_root(request: Request, payload: DataRootPathRequest) -> dict[s
 @router.post(
     "/storage/data-root/migration-plan",
     summary="生成数据根迁移计划",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def plan_data_root_migration(request: Request, payload: DataRootPathRequest) -> dict[str, object]:
     result = _call(lambda: _storage(request).validate(Path(payload.path)))
@@ -179,7 +188,7 @@ def plan_data_root_migration(request: Request, payload: DataRootPathRequest) -> 
     status_code=status.HTTP_202_ACCEPTED,
     summary="迁移全部数据",
     description="复制到 staging、校验 SQLite 后原子发布；旧数据不会自动删除。",
-    dependencies=[Depends(_desktop)],
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def migrate_data_root(request: Request, payload: DataRootPathRequest) -> SiteTaskResponse:
     _call(lambda: _storage(request).validate(Path(payload.path)))

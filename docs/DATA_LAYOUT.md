@@ -6,6 +6,8 @@
 
 `src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development\`，打包态为 `%LOCALAPPDATA%\NetConsole\`；两者都不得写入仓库或安装目录。测试、工具或嵌入场景可通过显式构造参数覆盖，但 Electron Main 会拒绝位于项目/安装目录内的 `NETCONSOLE_DATA_ROOT`。业务代码应调用 PathResolver 方法，不应拼接本机绝对路径。
 
+Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,electron-user-data}`，并以 `NETCONSOLE_STORAGE_MODE=isolated_test` 与持久模式硬隔离。临时模式不能迁移、导入、导出、切换或持久化局点，不得读取/覆盖正式 `userData/bootstrap.json`；临时路径只以 `<temporary>` 进入公开 DTO。正常 `pnpm dev` 使用 `persistent`，测试变量不能改变其数据根或局点选择。
+
 仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。
 
 运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C 回显和历史日志读取时允许按明确顺序回退编码。

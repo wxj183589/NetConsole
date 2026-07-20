@@ -1,10 +1,19 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, resolve, sep } from 'node:path'
+
+import type { DesktopStorageMode } from './development-data-root'
 
 export interface DesktopBootstrap {
   schema_version: 1
   data_root: string
   active_site_id: string
+}
+
+export interface DesktopBootstrapLoadResult {
+  value: Partial<DesktopBootstrap>
+  rejectedEphemeralRoot: boolean
+  backupPath?: string
 }
 
 export class DesktopBootstrapStore {
@@ -31,6 +40,28 @@ export class DesktopBootstrapStore {
     }
   }
 
+  loadForRuntime(options: {
+    storageMode: DesktopStorageMode
+    systemTempRoot?: string
+    now?: () => Date
+  }): DesktopBootstrapLoadResult {
+    const value = this.load()
+    if (options.storageMode === 'isolated_test' || !value.data_root) {
+      return { value, rejectedEphemeralRoot: false }
+    }
+    if (!isRejectedPersistentRoot(value.data_root, options.systemTempRoot ?? tmpdir())) {
+      return { value, rejectedEphemeralRoot: false }
+    }
+    const timestamp = (options.now?.() ?? new Date()).toISOString().replace(/[:.]/g, '-')
+    const backupPath = `${this.path}.invalid-${timestamp}`
+    if (existsSync(this.path)) copyFileSync(this.path, backupPath)
+    return {
+      value: value.active_site_id ? { active_site_id: value.active_site_id } : {},
+      rejectedEphemeralRoot: true,
+      ...(existsSync(backupPath) ? { backupPath } : {}),
+    }
+  }
+
   save(value: DesktopBootstrap): void {
     const dataRoot = safePath(value.data_root)
     const activeSiteId = safeSiteId(value.active_site_id)
@@ -44,6 +75,14 @@ export class DesktopBootstrapStore {
       rmSync(temporary, { force: true })
     }
   }
+}
+
+function isRejectedPersistentRoot(value: string, systemTempRoot: string): boolean {
+  const candidate = resolve(value)
+  const temporary = resolve(systemTempRoot)
+  if (candidate === temporary || candidate.startsWith(`${temporary}${sep}`)) return true
+  if (candidate.split(/[\\/]/).some((part) => part.startsWith('NetConsole-Codex-'))) return true
+  return !existsSync(resolve(candidate, 'data', 'sites'))
 }
 
 function safePath(value: unknown): string | undefined {

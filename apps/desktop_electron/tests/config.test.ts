@@ -25,6 +25,7 @@ describe('desktop config', () => {
       appPath: 'C:\\repo\\apps\\desktop_electron',
       resourcesPath: 'C:\\resources',
       platform: 'win32',
+      storageMode: 'persistent',
       env: {
         NETCONSOLE_PROJECT_ROOT: 'C:\\repo',
         NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe',
@@ -39,6 +40,7 @@ describe('desktop config', () => {
       projectRoot: 'C:\\repo',
       dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
       runtimeMode: 'desktop-development',
+      storageMode: 'persistent',
       backendExecutable: 'C:\\repo\\.venv\\Scripts\\python.exe',
       backendArgumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
       backendPythonPath: 'C:\\repo\\src',
@@ -98,6 +100,19 @@ describe('desktop config', () => {
       },
       fileExists: () => true,
     })).toThrow('must not be inside')
+  })
+
+  it('does not invent demo when persistent bootstrap has no valid site', () => {
+    const config = loadDesktopConfig({
+      isPackaged: false,
+      appPath: 'C:\\repo\\apps\\desktop_electron',
+      resourcesPath: 'C:\\resources',
+      platform: 'win32',
+      storageMode: 'persistent',
+      env: { NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe', LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local' },
+      fileExists: () => true,
+    })
+    expect(config.activeSiteId).toBeUndefined()
   })
 
   it('shows the default menu only for an explicitly enabled development server', () => {
