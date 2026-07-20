@@ -42,6 +42,15 @@ class OnlineMrDataIntegrity(StrEnum):
     UNKNOWN = "unknown"
 
 
+class OnlineMrParsedStatus(StrEnum):
+    READY = "ready"
+    MISSING = "missing"
+    LEGACY = "legacy"
+    STALE = "stale"
+    UNREADABLE = "unreadable"
+    PARSING = "parsing"
+
+
 class OnlineMrSessionSummaryDTO(ApiModel):
     session_id: str
     site_id: str
@@ -73,12 +82,22 @@ class OnlineMrSessionSummaryDTO(ApiModel):
 
 
 class OnlineMrDatabaseSummaryDTO(ApiModel):
+    status: OnlineMrParsedStatus = OnlineMrParsedStatus.MISSING
     available: bool = False
     compatible: bool | None = None
     size_bytes: int = 0
+    modified_at: str | None = None
+    schema_version: str | None = None
+    parser_version: str | None = None
     tables: list[str] = Field(default_factory=list)
     row_counts: dict[str, int] = Field(default_factory=dict)
+    available_capabilities: list[str] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
+    missing_tables: list[str] = Field(default_factory=list)
     error_code: str | None = None
+    message: str = ""
+    recoverable: bool = True
+    action: str | None = None
 
 
 class OnlineMrSessionDetailDTO(OnlineMrSessionSummaryDTO):

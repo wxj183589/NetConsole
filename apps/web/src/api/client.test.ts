@@ -19,6 +19,7 @@ describe('API client errors', () => {
     await expect(apiRequest('/api/agents/probe')).rejects.toMatchObject({
       message: '连接 Agent 超时',
       status: 502,
+      code: 'AGENT_TIMEOUT',
     })
   })
 

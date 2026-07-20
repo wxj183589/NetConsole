@@ -30,7 +30,12 @@ const session: OnlineMrSessionDetail = {
   has_raw_data: true, has_parsed_data: false, has_package: false, package_name: null, package_reference: null,
   force_stopped: false, finalization_complete: false, stop_reason: null, task_status: 'RUNNING', mapping_state: 'LINKED',
   error_code: null, error_message: null, session_path_reference: 'MR-01/sessions/session-1', connection_summary: {},
-  collection_config: {}, enabled_collectors: ['mesh_link'], traffic_summary: {}, file_summary: {}, database_summary: {},
+  collection_config: {}, enabled_collectors: ['mesh_link'], traffic_summary: {}, file_summary: {}, database_summary: {
+    status: 'missing', available: false, compatible: false, size_bytes: 0, modified_at: null,
+    schema_version: null, parser_version: null, tables: [], row_counts: {}, available_capabilities: [],
+    missing_capabilities: [], missing_tables: [], error_code: 'ONLINE_MR_DATABASE_NOT_FOUND',
+    message: '尚未解析', recoverable: true, action: 'parse_session',
+  },
   notes_count: 0, latest_metric_time: null, data_integrity: 'unknown',
 }
 

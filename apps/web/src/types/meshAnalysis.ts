@@ -3,15 +3,15 @@ export interface MeshAnalysisSummary {
   session_count: number
   train_count: number
   mr_count: number
-  link_record_count: number
-  active_link_count: number
-  standby_link_count: number
-  switch_event_count: number
-  short_link_count: number
-  pingpong_count: number
-  rssi_anomaly_count: number
-  channel_busy_anomaly_count: number
-  unmatched_ap_count: number
+  link_record_count: number | null
+  active_link_count: number | null
+  standby_link_count: number | null
+  switch_event_count: number | null
+  short_link_count: number | null
+  pingpong_count: number | null
+  rssi_anomaly_count: number | null
+  channel_busy_anomaly_count: number | null
+  unmatched_ap_count: number | null
   warning_session_count: number
   latest_analysis_time: string | null
 }
@@ -48,12 +48,17 @@ export interface MeshAnalysisSession {
   source_type: string
   original_filename: string
   raw_log_count: number
-  link_record_count: number
-  active_link_count: number
-  standby_link_count: number
-  event_count: number
+  link_record_count: number | null
+  active_link_count: number | null
+  standby_link_count: number | null
+  event_count: number | null
   data_integrity: string
   analysis_status: string
+  parsed_status: 'ready' | 'legacy' | 'stale' | 'missing' | 'unreadable' | 'rebuilding'
+  parsed_message: string
+  schema_version: string | null
+  available_capabilities: string[]
+  missing_capabilities: string[]
   warning_count: number
   report_count: number
   first_sample_time: string | null

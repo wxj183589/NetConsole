@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   queryOnlineMrSwitchRssiWindows: vi.fn(),
   queryOnlineMrTimeline: vi.fn(),
   recoverRailTransitTasks: vi.fn(),
+  parseOnlineMrSession: vi.fn(),
   routerPush: vi.fn(),
 }))
 
@@ -26,8 +27,10 @@ vi.mock('../../api/onlineMr', () => ({
 vi.mock('../../api/railTransitWeb', () => ({
   exportOnlineMrReport: vi.fn(),
   getRailTransitTask: vi.fn(),
+  parseOnlineMrSession: mocks.parseOnlineMrSession,
   recoverRailTransitTasks: mocks.recoverRailTransitTasks,
 }))
+vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }) }))
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
@@ -61,6 +64,15 @@ const tableStub = defineComponent({
   props: { data: { type: Array, default: () => [] }, emptyText: { type: String, default: '' } },
   setup(props) { return () => h('div', props.data.length ? `${props.data.length} rows` : props.emptyText) },
 })
+const selectStub = defineComponent({
+  props: { modelValue: { type: String, default: '' }, placeholder: { type: String, default: '' } },
+  emits: ['update:modelValue', 'change'],
+  setup(props, { emit, slots }) { return () => h('div', [slots.default?.(), props.placeholder === '选择 Online MR 会话' ? h('button', { 'data-testid': 'session-b', onClick: () => { emit('update:modelValue', 'session-2'); emit('change', 'session-2') } }, '切换会话') : null]) },
+})
+const chartStub = defineComponent({
+  props: { series: { type: Array, default: () => [] } },
+  setup(props) { return () => h('div', { 'data-testid': 'chart-series' }, JSON.stringify(props.series)) },
+})
 const stubs: Record<string, Component | boolean> = {
   ElAlert: passthrough,
   ElButton: passthrough,
@@ -68,22 +80,24 @@ const stubs: Record<string, Component | boolean> = {
   ElEmpty: passthrough,
   ElInput: passthrough,
   ElInputNumber: passthrough,
+  ElIcon: passthrough,
   ElOption: passthrough,
-  ElSelect: passthrough,
+  ElSelect: selectStub,
   ElTabPane: passthrough,
   ElTabs: tabsStub,
   NcDataTable: tableStub,
-  OnlineMrAnalysisChart: passthrough,
+  OnlineMrAnalysisChart: chartStub,
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.listRecentOnlineMrSessions.mockResolvedValue([{ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', started_at: '2026-07-20 10:00:00' }])
-  mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', data_integrity: 'complete', database_summary: {} })
+  mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', data_integrity: 'complete', has_raw_data: true, database_summary: { status: 'ready', compatible: true, parser_version: 'v8', missing_capabilities: [], message: '解析数据库可用。' } })
   mocks.queryOnlineMrMetrics.mockResolvedValue({ series: [], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 0, has_more: false })
   mocks.queryOnlineMrSwitchRssiWindows.mockResolvedValue({ items: [], limit: 200, offset: 0, has_more: false })
   mocks.queryOnlineMrTimeline.mockResolvedValue([])
   mocks.recoverRailTransitTasks.mockResolvedValue([])
+  mocks.parseOnlineMrSession.mockResolvedValue({ task_id: 'parse-1', action: 'online_mr_parse', status: 'COMPLETED' })
 })
 
 async function renderView() {
@@ -93,6 +107,16 @@ async function renderView() {
 }
 
 describe('Online MR analysis view behavior', () => {
+  it('wraps inline Search and Document SVGs in bounded icon containers', async () => {
+    const wrapper = await renderView()
+
+    expect(wrapper.findAll('.inline-icon')).toHaveLength(2)
+    expect(wrapper.find('.query-hint > svg').exists()).toBe(false)
+    expect(wrapper.find('.report-card h2 > svg').exists()).toBe(false)
+    expect(wrapper.find('.report-card').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('queries real radio statistics with bounded paging instead of row counts', async () => {
     const wrapper = await renderView()
     await wrapper.get('[data-testid="statistics-tab"]').trigger('click')
@@ -120,5 +144,32 @@ describe('Online MR analysis view behavior', () => {
     expect(mocks.queryOnlineMrMetrics).not.toHaveBeenCalledWith('session-1', ['rssi'], expect.anything())
     wrapper.unmount()
     expect(clearTimeoutSpy).toHaveBeenCalled()
+  })
+
+  it('clears session A charts before session B missing parsed detail is applied', async () => {
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([
+      { session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'STOPPED', started_at: '2026-07-20 10:00:00' },
+      { session_id: 'session-2', device_name: 'MR-2', mr_name: 'MR-2', status: 'ABORTED', started_at: '2026-07-20 11:00:00' },
+    ])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionId === 'session-1'
+      ? { session_id: sessionId, device_name: 'MR-1', status: 'STOPPED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'ready', compatible: true, parser_version: 'v8', missing_capabilities: [], message: '解析数据库可用。' } }
+      : { session_id: sessionId, device_name: 'MR-2', status: 'ABORTED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'missing', compatible: false, parser_version: null, missing_capabilities: ['mesh_link'], message: '当前会话尚未生成解析数据库，原始日志仍可查看。' } })
+    mocks.queryOnlineMrMetrics.mockResolvedValueOnce({ series: [{ metric_type: 'rssi', series_key: 'AP-A', unit: 'dBm', points: [{ timestamp: 't', value: -61, text_value: null, dimensions: {} }], summary: { count: 1, minimum: -61, maximum: -61, average: -61 } }], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 1, has_more: false })
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('-61')
+
+    await wrapper.get('[data-testid="session-b"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('-61')
+    expect(wrapper.text()).toContain('当前会话尚未生成解析数据库')
+    expect(wrapper.text()).toContain('解析当前会话')
+    expect(mocks.queryOnlineMrMetrics).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-testid="parse-session"]').trigger('click')
+    await flushPromises()
+    expect(mocks.parseOnlineMrSession).toHaveBeenCalledWith('session-2', false)
+    wrapper.unmount()
   })
 })

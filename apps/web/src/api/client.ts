@@ -45,12 +45,12 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     try {
       const body = (await response.json()) as {
         detail?: string | { code?: string; message?: string; details?: Record<string, unknown> }
-        error?: { message?: string }
+        error?: { code?: string; message?: string; details?: Record<string, unknown> }
       }
       const detail = typeof body.detail === 'string' ? null : body.detail
       message = typeof body.detail === 'string' ? body.detail : detail?.message || body.error?.message || message
-      code = detail?.code || ''
-      details = detail?.details || {}
+      code = detail?.code || body.error?.code || ''
+      details = detail?.details || body.error?.details || {}
     } catch {
       // 保留稳定的 HTTP 状态错误。
     }

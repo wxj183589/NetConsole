@@ -27,6 +27,7 @@ export function previewMeshBundle(file: File): Promise<MeshBundlePreview> {
 export const applyMeshBundleImport = (payload: MeshBundleImportRequest): Promise<RailTransitTask> => apiRequest(`${root}/bundles/import`, { method: 'POST', body: JSON.stringify(payload) })
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
 export const getMeshAnalysisSession = (id: string): Promise<MeshSessionDetail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}`)
+export const rebuildMeshAnalysis = (id: string): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/rebuild`, { method: 'POST', body: JSON.stringify({ explicit_confirmation: true }) })
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/links${qs(values)}`)
 export const getMeshTimeline = (id: string): Promise<{ items: MeshTimelineItem[]; total: number }> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/timeline`)
 export const listMeshSwitchEvents = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<Page<MeshSwitchEvent>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/switch-events${qs(values)}`)

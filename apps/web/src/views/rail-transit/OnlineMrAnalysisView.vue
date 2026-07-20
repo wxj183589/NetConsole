@@ -3,9 +3,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Document, Download, Files, Refresh, Search, Tickets } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { ApiRequestError } from '../../api/client'
 import { getOnlineMrRawTail, getOnlineMrSession, listOnlineMrRawFiles, listRecentOnlineMrSessions, queryOnlineMrMetrics, queryOnlineMrSwitchRssiWindows, queryOnlineMrTimeline } from '../../api/onlineMr'
-import { exportOnlineMrReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
+import { exportOnlineMrReport, getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import OnlineMrAnalysisChart from '../../components/online-mr-analysis/OnlineMrAnalysisChart.vue'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
@@ -14,6 +16,7 @@ import type { RailTransitTask } from '../../types/railTransitWeb'
 
 const route = useRoute()
 const router = useRouter()
+const { confirm } = useConfirm()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const sessions = ref<OnlineMrSessionSummary[]>([])
 const sessionId = ref('')
@@ -44,7 +47,12 @@ const outputName = ref('')
 const loading = ref(false)
 const taskLoading = ref(false)
 const error = ref('')
+const analysisError = ref('')
 let pollTimer: number | undefined
+let requestGeneration = 0
+let requestController: AbortController | null = null
+
+type RequestContext = { sessionId: string; generation: number; signal: AbortSignal }
 
 type ChartDefinition = { key: string; title: string; unit: string; metric?: readonly string[]; switchSource?: OnlineMrSwitchRssiSource }
 const chartDefinitions: readonly ChartDefinition[] = [
@@ -115,6 +123,14 @@ const activeMetric = computed(() => ({
   fping: ['ping_rtt', 'ping_loss'],
   iperf: ['iperf_bitrate'],
 } as Record<string, string[]>)[activeTab.value])
+const parsedStatus = computed(() => detail.value?.database_summary.status || 'missing')
+const parsedReadable = computed(() => ['ready', 'legacy', 'stale'].includes(parsedStatus.value) && detail.value?.database_summary.compatible !== false)
+const parsedReady = computed(() => parsedStatus.value === 'ready')
+const parsedStatusLabel = computed(() => ({ ready: '解析结果可用', missing: '尚未解析', legacy: '旧版解析结果', stale: '解析结果已过期', unreadable: '解析结果不可读', parsing: '正在解析' }[parsedStatus.value] || parsedStatus.value))
+const parsedAlertType = computed(() => parsedReady.value ? 'success' : parsedStatus.value === 'unreadable' ? 'error' : 'warning')
+const parsedMessage = computed(() => detail.value?.database_summary.message || '当前会话尚未生成解析结果。')
+const canParse = computed(() => Boolean(detail.value?.has_raw_data && isFeatureEnabled('web.online_mr_parse')))
+const reportDisabled = computed(() => !parsedReady.value || !isFeatureEnabled('web.online_mr_report_export'))
 
 function message(cause: unknown, fallback: string): string { return cause instanceof Error ? cause.message : fallback }
 function display(value: unknown): string { return value === null || value === undefined || value === '' ? '无数据' : String(value) }
@@ -133,7 +149,27 @@ function switchRssiSeries(source: OnlineMrSwitchRssiSource): OnlineMrMetricSerie
 function chartEvents(): Array<{ time: string; label: string }> { const source = selectedChart.value.switchSource; return source ? switchWindows.value[source].filter((event) => event.event_time).map((event) => ({ time: event.event_time!, label: event.reason || '主链路切换' })) : [] }
 function rememberTask(value: RailTransitTask | null): void { task.value = value; if (value) localStorage.setItem('netconsole.online-mr-analysis.last-task', value.task_id); else localStorage.removeItem('netconsole.online-mr-analysis.last-task') }
 function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
-function poll(): void { stopPolling(); if (!task.value || terminalStates.has(task.value.status)) return; pollTimer = window.setTimeout(async () => { try { rememberTask(await getRailTransitTask(task.value!.task_id)); poll() } catch (cause) { error.value = message(cause, '报告任务读取失败') } }, 1000) }
+function poll(): void { stopPolling(); if (!task.value || terminalStates.has(task.value.status)) return; pollTimer = window.setTimeout(async () => { try { const updated = await getRailTransitTask(task.value!.task_id); rememberTask(updated); if (terminalStates.has(updated.status) && updated.action === 'online_mr_parse') { await loadAnalysis(); task.value = updated; return }; poll() } catch (cause) { error.value = message(cause, '任务状态读取失败') } }, 1000) }
+
+function clearDerivedData(): void {
+  metrics.value = {}; metricOffsets.value = {}; metricHasMore.value = {}
+  switchWindows.value = { history: [], realtime: [] }; switchOffsets.value = { history: 0, realtime: 0 }; switchHasMore.value = { history: false, realtime: false }
+  timeline.value = []; timelineOffset.value = 0; timelineHasMore.value = false
+  rawFiles.value = []; rawTail.value = []; rawName.value = ''
+  analysisError.value = ''
+}
+function nextRequestContext(): RequestContext {
+  requestController?.abort()
+  requestController = new AbortController()
+  requestGeneration += 1
+  return { sessionId: sessionId.value, generation: requestGeneration, signal: requestController.signal }
+}
+function currentRequestContext(): RequestContext {
+  if (!requestController) requestController = new AbortController()
+  return { sessionId: sessionId.value, generation: requestGeneration, signal: requestController.signal }
+}
+function isCurrent(context: RequestContext): boolean { return context.generation === requestGeneration && context.sessionId === sessionId.value && !context.signal.aborted }
+function isAbort(cause: unknown): boolean { return cause instanceof DOMException && cause.name === 'AbortError' }
 
 async function loadSessions(): Promise<void> {
   loading.value = true; error.value = ''
@@ -144,66 +180,101 @@ async function loadSessions(): Promise<void> {
     if (sessionId.value) await loadAnalysis()
   } catch (cause) { error.value = message(cause, 'Online MR 会话列表加载失败') } finally { loading.value = false }
 }
-async function loadAnalysis(): Promise<void> { if (!sessionId.value) return; loading.value = true; error.value = ''; try { detail.value = await getOnlineMrSession(sessionId.value); metrics.value = {}; metricOffsets.value = {}; metricHasMore.value = {}; switchWindows.value = { history: [], realtime: [] }; switchOffsets.value = { history: 0, realtime: 0 }; switchHasMore.value = { history: false, realtime: false }; timeline.value = []; rawFiles.value = []; await loadActiveTab(activeTab.value) } catch (cause) { error.value = message(cause, 'Online MR 分析数据加载失败') } finally { loading.value = false } }
-async function loadMetric(name: string, types: string[], append = false): Promise<void> {
-  if (!sessionId.value || (!append && metrics.value[name])) return
+async function loadAnalysis(): Promise<void> {
+  if (!sessionId.value) return
+  const context = nextRequestContext()
+  stopPolling(); task.value = null; detail.value = null; clearDerivedData()
+  loading.value = true; error.value = ''
+  try {
+    const nextDetail = await getOnlineMrSession(context.sessionId, context.signal)
+    if (!isCurrent(context)) return
+    detail.value = nextDetail
+    await loadActiveTab(activeTab.value, context)
+  } catch (cause) {
+    if (!isAbort(cause) && isCurrent(context)) error.value = message(cause, 'Online MR 会话详情加载失败')
+  } finally { if (isCurrent(context)) loading.value = false }
+}
+async function loadMetric(name: string, types: string[], append = false, context = currentRequestContext()): Promise<void> {
+  if (!context.sessionId || !isCurrent(context) || (!append && metrics.value[name])) return
   const offset = append ? metricOffsets.value[name] || 0 : 0
-  const page = await queryOnlineMrMetrics(sessionId.value, types, { startTime: startTime.value, endTime: endTime.value, limit: metricLimit, offset, downsample: downsample.value, bucketSeconds: bucketSeconds.value })
+  const page = await queryOnlineMrMetrics(context.sessionId, types, { startTime: startTime.value, endTime: endTime.value, limit: metricLimit, offset, downsample: downsample.value, bucketSeconds: bucketSeconds.value, signal: context.signal })
+  if (!isCurrent(context)) return
   metrics.value[name] = append ? appendMetricPage(metrics.value[name] || [], page.series) : page.series
   metricOffsets.value[name] = page.next_offset
   metricHasMore.value[name] = page.has_more
 }
-async function loadSwitchWindows(source: OnlineMrSwitchRssiSource, append = false): Promise<void> {
-  if (!sessionId.value || (!append && switchWindows.value[source].length)) return
+async function loadSwitchWindows(source: OnlineMrSwitchRssiSource, append = false, context = currentRequestContext()): Promise<void> {
+  if (!context.sessionId || !isCurrent(context) || (!append && switchWindows.value[source].length)) return
   const offset = append ? switchOffsets.value[source] : 0
-  const page = await queryOnlineMrSwitchRssiWindows(sessionId.value, source, { startTime: startTime.value, endTime: endTime.value, limit: switchLimit, offset })
+  const page = await queryOnlineMrSwitchRssiWindows(context.sessionId, source, { startTime: startTime.value, endTime: endTime.value, limit: switchLimit, offset, signal: context.signal })
+  if (!isCurrent(context)) return
   switchWindows.value[source] = append ? [...switchWindows.value[source], ...page.items] : page.items
   switchOffsets.value[source] = offset + page.limit
   switchHasMore.value[source] = page.has_more
 }
-async function loadTimelinePage(reset = false): Promise<void> { if (!sessionId.value) return; if (reset) timelineOffset.value = 0; const rows = await queryOnlineMrTimeline(sessionId.value, timelineLimit, timelineOffset.value); timeline.value = reset ? rows : [...timeline.value, ...rows]; timelineOffset.value += rows.length; timelineHasMore.value = rows.length === timelineLimit }
-async function loadRaw(): Promise<void> { if (!rawFiles.value.length) rawFiles.value = await listOnlineMrRawFiles(sessionId.value) }
-async function loadCollectorLog(): Promise<void> { const result = await getOnlineMrRawTail(sessionId.value, 'collector_output', 250); rawName.value = 'collector_output'; rawTail.value = result.lines }
-async function loadActiveTab(tab: string): Promise<void> {
-  if (!sessionId.value) return
-  try {
-    if (tab === 'mesh-link') await loadMetric('mesh-link', ['rssi', 'main_link'])
-    else if (tab === 'mesh-detail') await loadMetric('mesh-detail', ['rssi'])
-    else if (tab === 'channel-busy') await loadMetric('channel-busy', ['ctl_busy', 'tx_busy', 'rx_busy'])
-    else if (tab === 'statistics') await loadMetric('statistics', ['radio_statistics'])
-    else if (tab === 'interface-rate') await loadMetric('interface-rate', ['interface_in_pps', 'interface_out_pps'])
-    else if (tab === 'fping') await loadMetric('fping', ['ping_rtt', 'ping_loss'])
-    else if (tab === 'iperf') await loadMetric('iperf', ['iperf_bitrate'])
-    else if (tab === 'switch-history') await Promise.all([loadTimelinePage(true), loadSwitchWindows('history')])
-    else if (tab === 'active-switch') await Promise.all([loadTimelinePage(true), loadSwitchWindows('realtime')])
-    else if (tab === 'diagnosis') await loadTimelinePage(true)
-    else if (tab === 'raw') await loadRaw()
-    else if (tab === 'logs') await loadCollectorLog()
-    else if (tab === 'charts') { if (selectedChart.value.switchSource) await loadSwitchWindows(selectedChart.value.switchSource); else await loadMetric(selectedChart.value.key, [...(selectedChart.value.metric || [])]) }
-  } catch (cause) { error.value = message(cause, '分析数据加载失败') }
+async function loadTimelinePage(reset = false, context = currentRequestContext()): Promise<void> {
+  if (!context.sessionId || !isCurrent(context)) return
+  const offset = reset ? 0 : timelineOffset.value
+  const rows = await queryOnlineMrTimeline(context.sessionId, timelineLimit, offset, context.signal)
+  if (!isCurrent(context)) return
+  timeline.value = reset ? rows : [...timeline.value, ...rows]; timelineOffset.value = offset + rows.length; timelineHasMore.value = rows.length === timelineLimit
 }
-async function openRaw(row: OnlineMrRawFile): Promise<void> { rawName.value = row.name; try { const result = await getOnlineMrRawTail(sessionId.value, row.name, 250); rawTail.value = result.lines } catch (cause) { error.value = message(cause, '原始日志读取失败') } }
-async function startReport(): Promise<void> { if (!detail.value || !isFeatureEnabled('web.online_mr_report_export')) return; taskLoading.value = true; error.value = ''; try { rememberTask(await exportOnlineMrReport(detail.value.session_id, outputName.value)); poll(); openTaskWindow() } catch (cause) { error.value = message(cause, 'Online MR 报告生成启动失败') } finally { taskLoading.value = false } }
+async function loadRaw(context = currentRequestContext()): Promise<void> { if (!rawFiles.value.length) { const rows = await listOnlineMrRawFiles(context.sessionId, context.signal); if (isCurrent(context)) rawFiles.value = rows } }
+async function loadCollectorLog(context = currentRequestContext()): Promise<void> { const result = await getOnlineMrRawTail(context.sessionId, 'collector_output', 250, context.signal); if (isCurrent(context)) { rawName.value = 'collector_output'; rawTail.value = result.lines } }
+async function loadActiveTab(tab: string, context = currentRequestContext()): Promise<void> {
+  if (!context.sessionId || !isCurrent(context)) return
+  const rawTab = tab === 'session-history' || tab === 'raw' || tab === 'logs'
+  if (!rawTab && !parsedReadable.value) { analysisError.value = parsedMessage.value; return }
+  analysisError.value = ''
+  try {
+    if (tab === 'mesh-link') await loadMetric('mesh-link', ['rssi', 'main_link'], false, context)
+    else if (tab === 'mesh-detail') await loadMetric('mesh-detail', ['rssi'], false, context)
+    else if (tab === 'channel-busy') await loadMetric('channel-busy', ['ctl_busy', 'tx_busy', 'rx_busy'], false, context)
+    else if (tab === 'statistics') await loadMetric('statistics', ['radio_statistics'], false, context)
+    else if (tab === 'interface-rate') await loadMetric('interface-rate', ['interface_in_pps', 'interface_out_pps'], false, context)
+    else if (tab === 'fping') await loadMetric('fping', ['ping_rtt', 'ping_loss'], false, context)
+    else if (tab === 'iperf') await loadMetric('iperf', ['iperf_bitrate'], false, context)
+    else if (tab === 'switch-history') await Promise.all([loadTimelinePage(true, context), loadSwitchWindows('history', false, context)])
+    else if (tab === 'active-switch') await Promise.all([loadTimelinePage(true, context), loadSwitchWindows('realtime', false, context)])
+    else if (tab === 'diagnosis') await loadTimelinePage(true, context)
+    else if (tab === 'raw') await loadRaw(context)
+    else if (tab === 'logs') await loadCollectorLog(context)
+    else if (tab === 'charts') { if (selectedChart.value.switchSource) await loadSwitchWindows(selectedChart.value.switchSource, false, context); else await loadMetric(selectedChart.value.key, [...(selectedChart.value.metric || [])], false, context) }
+  } catch (cause) { if (!isAbort(cause) && isCurrent(context)) analysisError.value = cause instanceof ApiRequestError && cause.code ? `${cause.message}（${cause.code}）` : message(cause, '当前分析区域加载失败') }
+}
+async function openRaw(row: OnlineMrRawFile): Promise<void> { const context = currentRequestContext(); rawName.value = row.name; rawTail.value = []; try { const result = await getOnlineMrRawTail(context.sessionId, row.name, 250, context.signal); if (isCurrent(context)) rawTail.value = result.lines } catch (cause) { if (!isAbort(cause) && isCurrent(context)) analysisError.value = message(cause, '原始日志读取失败') } }
+async function startParse(forceReparse: boolean): Promise<void> {
+  if (!detail.value || !canParse.value) return
+  if (forceReparse && !await confirm({ type: 'WARNING', title: '强制重新解析', message: '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？', confirmText: '重新解析' })) return
+  taskLoading.value = true; error.value = ''
+  try { rememberTask(await parseOnlineMrSession(detail.value.session_id, forceReparse)); poll(); openTaskWindow() }
+  catch (cause) { error.value = message(cause, forceReparse ? '强制重新解析启动失败' : '会话解析启动失败') }
+  finally { taskLoading.value = false }
+}
+async function startReport(): Promise<void> { if (!detail.value || reportDisabled.value) return; taskLoading.value = true; error.value = ''; try { rememberTask(await exportOnlineMrReport(detail.value.session_id, outputName.value)); poll(); openTaskWindow() } catch (cause) { error.value = message(cause, 'Online MR 报告生成启动失败') } finally { taskLoading.value = false } }
 function openTaskWindow(): void { const taskId = task.value?.task_id || ''; if (window.netconsoleDesktop) { void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) }); return }; void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } }) }
-async function recoverTask(): Promise<void> { try { const saved = localStorage.getItem('netconsole.online-mr-analysis.last-task') || ''; const rows = await recoverRailTransitTasks(); rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => item.action === 'online_mr_report') || null); poll() } catch (cause) { error.value = message(cause, '报告任务恢复失败') } }
-function changeTab(tab: string): void { activeTab.value = tab; void loadActiveTab(tab) }
-function changeChartTab(tab: string): void { chartTab.value = tab; const definition = chartDefinitions.find((item) => item.key === tab); if (definition?.switchSource) void loadSwitchWindows(definition.switchSource); else void loadMetric(tab, [...(definition?.metric || [])]) }
+async function recoverTask(): Promise<void> { try { const saved = localStorage.getItem('netconsole.online-mr-analysis.last-task') || ''; const rows = await recoverRailTransitTasks(); rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['online_mr_parse', 'online_mr_report'].includes(item.action)) || null); poll() } catch (cause) { error.value = message(cause, '任务恢复失败') } }
+function changeTab(tab: string): void { activeTab.value = tab; const context = nextRequestContext(); void loadActiveTab(tab, context) }
+function changeChartTab(tab: string): void { chartTab.value = tab; const context = nextRequestContext(); const definition = chartDefinitions.find((item) => item.key === tab); if (definition?.switchSource) void loadSwitchWindows(definition.switchSource, false, context); else void loadMetric(tab, [...(definition?.metric || [])], false, context) }
 function loadMoreMetric(): void { if (activeMetric.value) void loadMetric(activeTab.value, activeMetric.value, true) }
 function loadMoreChart(): void { const definition = selectedChart.value; if (definition.switchSource) void loadSwitchWindows(definition.switchSource, true); else void loadMetric(definition.key, [...(definition.metric || [])], true) }
 
-watch([startTime, endTime, downsample, bucketSeconds], () => { metrics.value = {}; metricOffsets.value = {}; metricHasMore.value = {}; switchWindows.value = { history: [], realtime: [] }; switchOffsets.value = { history: 0, realtime: 0 }; switchHasMore.value = { history: false, realtime: false }; if (activeTab.value !== 'session-history') void loadActiveTab(activeTab.value) })
-onMounted(() => { void Promise.all([loadSessions(), recoverTask()]) })
-onBeforeUnmount(stopPolling)
+watch([startTime, endTime, downsample, bucketSeconds], () => { clearDerivedData(); const context = nextRequestContext(); if (activeTab.value !== 'session-history') void loadActiveTab(activeTab.value, context) })
+watch(() => route.query.site_id, () => { detail.value = null; sessionId.value = ''; sessions.value = []; clearDerivedData(); nextRequestContext(); void loadSessions() })
+onMounted(async () => { await loadSessions(); await recoverTask() })
+onBeforeUnmount(() => { requestController?.abort(); stopPolling() })
 </script>
 
 <template>
   <section class="analysis-page">
-    <header class="page-heading"><div><p class="eyebrow">RAIL TRANSIT · ONLINE MR ANALYSIS</p><h1>车载 MR 收集分析</h1><p>分析车载 MR 手工采集会话及网络测试数据，原始 MESH 日志保持独立入口。</p></div><div class="actions"><el-select v-model="sessionId" filterable placeholder="选择 Online MR 会话" style="width:360px" @change="loadAnalysis"><el-option v-for="item in sessions" :key="item.session_id" :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`" :value="item.session_id" /></el-select><el-button :icon="Refresh" :loading="loading" @click="loadSessions">刷新</el-button></div></header>
-    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTask">恢复报告任务</el-button></el-alert>
+    <header class="page-heading"><div><p class="eyebrow">RAIL TRANSIT · ONLINE MR ANALYSIS</p><h1>车载 MR 收集分析</h1><p>会话、原始日志与采集记录不依赖 parsed 数据库；分析指标按解析状态局部加载。</p></div><div class="actions"><el-select v-model="sessionId" filterable placeholder="选择 Online MR 会话" style="width:360px" @change="loadAnalysis"><el-option v-for="item in sessions" :key="item.session_id" :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`" :value="item.session_id" /></el-select><el-button :icon="Refresh" :loading="loading" @click="loadSessions">刷新</el-button><el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing'" :loading="taskLoading" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button><el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing'" :loading="taskLoading" @click="startParse(true)">强制重新解析</el-button><el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button></div></header>
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
     <el-empty v-if="!detail && !loading" description="当前局点暂无 Online MR 会话" />
     <template v-if="detail">
       <div class="summary-grid"><article><span>会话状态</span><strong>{{ detail.status || '无数据' }}</strong></article><article><span>MR</span><strong>{{ detail.device_name || detail.mr_name || '无数据' }}</strong></article><article><span>完整性</span><strong>{{ detail.data_integrity || '无数据' }}</strong></article><article><span>执行端</span><strong>{{ detail.executor_kind || '无数据' }}</strong></article><article><span>采集时长</span><strong>{{ display(detail.duration_minutes) }} min</strong></article></div>
-      <div class="query-bar"><el-date-picker v-model="startTime" type="datetime" placeholder="开始时间" value-format="YYYY-MM-DD HH:mm:ss.SSS" /><span>至</span><el-date-picker v-model="endTime" type="datetime" placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss.SSS" /><el-select v-model="downsample" style="width:160px"><el-option label="不降采样" value="NONE" /><el-option label="按桶平均" value="BUCKET_AVG" /><el-option label="保留首尾异常" value="LATEST_PER_BUCKET" /><el-option label="最小最大" value="MIN_MAX" /></el-select><el-input-number v-model="bucketSeconds" :min="1" :max="86400" controls-position="right" /><span class="query-hint"><Search /> 查询窗口仅在当前页签加载</span></div>
+      <el-alert class="parsed-status" :type="parsedAlertType" :title="`${parsedStatusLabel} · ${parsedMessage}`" show-icon :closable="false"><template #default><span v-if="detail.database_summary.parser_version">Parser：{{ detail.database_summary.parser_version }}</span><span v-if="detail.database_summary.missing_capabilities.length">；缺少能力：{{ detail.database_summary.missing_capabilities.join('、') }}</span></template></el-alert>
+      <el-alert v-if="analysisError" class="analysis-error" :title="analysisError" type="warning" show-icon :closable="false" />
+      <div class="query-bar"><el-date-picker v-model="startTime" type="datetime" placeholder="开始时间" value-format="YYYY-MM-DD HH:mm:ss.SSS" /><span>至</span><el-date-picker v-model="endTime" type="datetime" placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss.SSS" /><el-select v-model="downsample" style="width:160px"><el-option label="不降采样" value="NONE" /><el-option label="按桶平均" value="BUCKET_AVG" /><el-option label="保留首尾异常" value="LATEST_PER_BUCKET" /><el-option label="最小最大" value="MIN_MAX" /></el-select><el-input-number v-model="bucketSeconds" :min="1" :max="86400" controls-position="right" /><span class="query-hint"><el-icon :size="16" class="inline-icon"><Search /></el-icon>查询窗口仅在当前页签加载</span></div>
       <el-tabs :model-value="activeTab" class="analysis-tabs" @tab-change="changeTab">
         <el-tab-pane name="session-history" label="会话记录"><NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" border height="460" empty-text="暂无会话" @row-click="(row: OnlineMrSessionSummary) => { sessionId = row.session_id; void loadAnalysis() }" /></el-tab-pane>
         <el-tab-pane name="mesh-link" label="MESH 链路"><NcDataTable table-id="online-mr-analysis-mesh-link" route-key="/rail-transit/online-mr-analysis" :data="meshRows" :columns="metricColumns" border height="460" empty-text="暂无 MESH 链路数据" /></el-tab-pane>
@@ -222,11 +293,11 @@ onBeforeUnmount(stopPolling)
       </el-tabs>
       <div v-if="activeMetric" class="timeline-actions"><el-button :disabled="!metricHasMore[activeTab]" @click="loadMoreMetric">加载更多指标数据</el-button><span>每页最多 {{ metricLimit }} 个原始点</span></div>
       <div v-if="['switch-history','active-switch','diagnosis'].includes(activeTab)" class="timeline-actions"><el-button :disabled="timelineOffset === 0" @click="loadTimelinePage(true)">重新读取</el-button><el-button :disabled="!timelineHasMore" @click="loadTimelinePage(false)">加载更多</el-button><span>当前 {{ timelineOffset }} 条</span></div>
-      <div class="report-card"><div><h2><Document /> 分析报告</h2><p>报告由 Export Process 生成；任务、日志、Artifact 保存和打开操作统一在任务窗口完成。</p></div><div class="report-actions"><el-input v-model="outputName" placeholder="可选报告文件名" /><el-button type="primary" :icon="Download" :loading="taskLoading" :disabled="!isFeatureEnabled('web.online_mr_report_export')" @click="startReport">生成 XLSX 报告</el-button><el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button></div><el-alert v-if="task" :title="`${task.status} · ${task.error_message || task.message || task.task_id}`" :type="task.status === 'FAILED' ? 'error' : 'info'" :closable="false" /></div>
+      <div class="report-card"><div><h2><el-icon :size="18" class="inline-icon"><Document /></el-icon>分析报告</h2><p>{{ parsedReady ? '报告由 Export Process 生成；任务、日志和 Artifact 操作统一在任务窗口完成。' : `解析结果未就绪：${parsedMessage}` }}</p></div><div class="report-actions"><el-input v-model="outputName" placeholder="可选报告文件名" /><el-button type="primary" :icon="Download" :loading="taskLoading" :disabled="reportDisabled" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button><el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button></div><el-alert v-if="task" :title="`${task.status} · ${task.error_message || task.message || task.task_id}`" :type="task.status === 'FAILED' ? 'error' : 'info'" :closable="false" /></div>
     </template>
   </section>
 </template>
 
 <style scoped>
-.analysis-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.query-bar,.report-actions,.logs-toolbar{display:flex;align-items:center;gap:12px}.page-heading{justify-content:space-between}.page-heading h1,.report-card h2{margin:2px 0 6px}.page-heading p,.report-card p,.query-hint,.logs-toolbar{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px}.summary-grid article,.report-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:10px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:18px}.query-bar{flex-wrap:wrap}.query-hint{display:inline-flex;align-items:center;gap:4px;font-size:12px}.analysis-tabs{min-width:0}.raw-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px}.raw-preview{margin:0;min-height:360px;max-height:480px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light);font:12px/1.6 Consolas,monospace;white-space:pre-wrap}.timeline-actions{display:flex;align-items:center;gap:8px}.report-card{display:flex;flex-direction:column;gap:14px;padding:14px 16px}.report-card h2{display:flex;align-items:center;gap:6px}.report-actions .el-input{width:320px}@media(max-width:1200px){.summary-grid{grid-template-columns:repeat(3,minmax(140px,1fr))}.raw-layout{grid-template-columns:1fr}}@media(max-width:800px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.query-bar>*{max-width:100%;width:100%!important}.report-actions{align-items:stretch;flex-direction:column}.report-actions .el-input{width:100%}}
+.analysis-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.query-bar,.report-actions,.logs-toolbar{display:flex;align-items:center;gap:12px}.page-heading{justify-content:space-between}.page-heading h1,.report-card h2{margin:2px 0 6px}.page-heading p,.report-card p,.query-hint,.logs-toolbar{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px}.summary-grid article,.report-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:10px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:18px}.query-bar{flex-wrap:wrap}.query-hint{display:inline-flex;align-items:center;gap:4px;font-size:12px}.inline-icon{width:16px!important;height:16px!important;max-width:16px!important;max-height:16px!important;flex:0 0 16px!important;flex-shrink:0!important}.inline-icon :deep(svg){width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}.report-card h2 .inline-icon{width:18px!important;height:18px!important;max-width:18px!important;max-height:18px!important;flex-basis:18px!important}.analysis-tabs{min-width:0}.raw-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px}.raw-preview{margin:0;min-height:360px;max-height:480px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light);font:12px/1.6 Consolas,monospace;white-space:pre-wrap}.timeline-actions{display:flex;align-items:center;gap:8px}.report-card{display:flex;flex-direction:column;gap:14px;padding:14px 16px;min-height:100px;max-height:220px;overflow:auto}.report-card h2{display:flex;align-items:center;gap:6px}.report-actions .el-input{width:320px}@media(max-width:1200px){.summary-grid{grid-template-columns:repeat(3,minmax(140px,1fr))}.raw-layout{grid-template-columns:1fr}}@media(max-width:800px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.query-bar>*{max-width:100%;width:100%!important}.report-actions{align-items:stretch;flex-direction:column}.report-actions .el-input{width:100%}.report-card{max-height:none}}
 </style>

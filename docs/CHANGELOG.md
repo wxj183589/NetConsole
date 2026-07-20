@@ -2,6 +2,22 @@
 
 ## v1.3.9 - 2026-07-18
 
+### MR 分析可用性修复
+
+- 修复车载 MR 收集分析页中裸 `Search`/`Document` SVG 被全局样式放大、覆盖页面的问题；内联图标统一使用有界 `el-icon`，报告区限制为局部滚动的紧凑卡片。
+- Online MR 会话详情不再依赖 parsed SQLite 成功：STOPPED、ABORTED、强停、partial、缺库、旧库或损坏库仍可查看 metadata、原始日志和采集日志；解析状态明确区分 `ready/missing/legacy/stale/unreadable/parsing`，报告仅在 `ready` 时进入 Export Process。
+- Online MR 分析页增加请求 generation 与 AbortController，切换会话、局点或查询窗口时先清空指标、时间线、切换窗口、raw tail 和报告任务展示，迟到请求不能把旧会话曲线写回新会话。
+- 恢复“解析当前会话、重新解析、强制重新解析、打开任务窗口”操作，继续复用现有 `online_mr_parse` Job Center handler；解析失败保留原始会话。
+- MESH 查询按会话隔离旧 schema、缺表和损坏 SQLite；概览和会话列表不会再被单个旧库拖垮，缺少诊断表时异常数量显示为未知而非伪造 `0`，旧绝对路径失效时只读使用当前 MR parsed 目录同名结果。
+- 新增受控 `mesh_schema_rebuild` Job：从受保护 raw 日志归档并重建派生数据库，原始日志不删除，失败或取消恢复旧索引与 parsed；页面各指标区独立降级，兼容区域、会话信息和原始来源继续可用。
+
+### 本次验证
+
+- Python 全量 `2236 passed, 1 skipped`；Vue 全量 `84` 个测试文件、`317` 项通过；Web TypeScript 与生产构建通过。
+- 全仓 Ruff 通过；Electron-only 架构九门 `9/9` 通过且新增 finding 为 `0`；目录 README 门禁通过。
+- 使用开发数据只读核验杭州地铁 4 号线 A/B 网与宁波地铁 12 号线共 22 个 Online MR 会话，覆盖 STOPPED、ABORTED、强停及 ready/legacy/missing parsed，基础详情失败为 `0`。宁波地铁 12 号线 `列车07-MR-CT` 旧 MESH 结果可读取 `113,954` 条链路并识别迁移后的 parsed 路径。
+- Electron 亮色/暗色真实窗口截图和现场交互仍需本机人工确认；自动化结果不替代视觉验收。
+
 ### 在线列车车地通信检测
 
 - 恢复点表驱动的固定六节点拓扑配置，增加点表缺失、无效、重复和 revision 冲突校验。

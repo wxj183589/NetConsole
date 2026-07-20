@@ -34,6 +34,8 @@ from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.repositories.online_mr_diagnosis_repository import OnlineMrDiagnosisRepository
+from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
 )
@@ -92,6 +94,29 @@ def _enable_features(app) -> None:
             "client_package": True,
             "internal_only": False,
         }
+
+
+def _mark_online_mr_parsed_ready(session_dir: Path, session_id: str) -> None:
+    repository = OnlineMrDiagnosisRepository(session_dir / "parsed" / "online_diagnosis.sqlite")
+    repository.initialize()
+    raw_root = session_dir / "raw"
+    fingerprint = json.dumps(
+        [
+            {
+                "path": path.relative_to(raw_root).as_posix(),
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+            }
+            for path in sorted(raw_root.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ) if raw_root.is_dir() else "[]"
+    repository.replace_parse_metadata(
+        (session_id, "2026-07-20 12:00:00", PARSER_VERSION, fingerprint, "{}", "OK", "")
+    )
 
 
 def _point_table_csv(rows: list[dict[str, object]]) -> bytes:
@@ -356,6 +381,23 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
     assert not staging.exists()
 
 
+def test_mesh_rebuild_reuses_job_center_and_requires_confirmation(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service, normal, _export, _tasks = _service(paths, mesh_query=mesh_query)
+
+    with pytest.raises(RailTransitWebError) as confirmation:
+        service.start_mesh_rebuild("demo", session_id, explicit_confirmation=False)
+    assert confirmation.value.code == "CONFIRMATION_REQUIRED"
+
+    started = service.start_mesh_rebuild("demo", session_id, explicit_confirmation=True)
+
+    assert started.action == "mesh_schema_rebuild"
+    assert normal.jobs[started.task_id].task_type == "mesh_schema_rebuild"
+    assert normal.jobs[started.task_id].params["mr_id"] == "12345678-1234-1234-1234-123456789abc"
+    assert normal.jobs[started.task_id].params["explicit_confirmation"] is True
+
+
 def test_mesh_upload_staging_accepts_gzip_logs_and_preserves_parser_suffix(
     tmp_path: Path,
 ) -> None:
@@ -435,6 +477,10 @@ def test_online_mr_export_manifest_hash_download_cancel_and_ownership(
         encoding="utf-8",
     )
 
+    with pytest.raises(RailTransitWebError) as parse_required:
+        service.start_online_mr_report("demo", "session-1", "blocked.xlsx")
+    assert parse_required.value.code == "PARSE_REQUIRED"
+    _mark_online_mr_parsed_ready(session_dir, "session-1")
     started = service.start_online_mr_report("demo", "session-1", "report.xlsx")
     content = b"fixture-xlsx"
     output = export.complete(started.task_id, content)
@@ -488,6 +534,7 @@ def test_artifact_download_requires_task_database_anchor(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
+    _mark_online_mr_parsed_ready(session_dir, "session-anchor")
     started = service.start_online_mr_report("demo", "session-anchor", "anchor.xlsx")
     output = export.complete(started.task_id, b"trusted")
     completed = service.get_task("demo", started.task_id)
@@ -548,6 +595,7 @@ def test_artifact_finalization_failure_marks_task_failed_and_clears_paths(
         raise ValueError("forced finalization failure")
 
     monkeypatch.setattr(tasks, "finalize_artifact_result", fail_finalization)
+    _mark_online_mr_parsed_ready(session_dir, "session-failure")
     started = service.start_online_mr_report("demo", "session-failure", "failure.xlsx")
     output = export.complete(started.task_id, b"valid export")
     snapshot = tasks.repository("demo").get(started.task_id)
@@ -578,6 +626,7 @@ def test_completed_export_manifest_is_recovered_after_callback_loss(
         encoding="utf-8",
     )
 
+    _mark_online_mr_parsed_ready(session_dir, "session-recovery")
     started = service.start_online_mr_report(
         "demo", "session-recovery", "recovered.xlsx"
     )
@@ -650,6 +699,7 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
         ),
         encoding="utf-8",
     )
+    _mark_online_mr_parsed_ready(session_dir, "session-legacy-path")
     started = service.start_online_mr_report(
         "demo", "session-legacy-path", "legacy.xlsx"
     )
@@ -716,6 +766,7 @@ def test_rail_task_dto_sanitizes_legacy_web_export_paths(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
+    _mark_online_mr_parsed_ready(session_dir, "session-legacy-dto")
     started = service.start_online_mr_report(
         "demo", "session-legacy-dto", "legacy-dto.xlsx"
     )
@@ -809,6 +860,7 @@ def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> 
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
     OnlineMrDiagnosisParser(session.session_dir)._ensure_tables()
+    _mark_online_mr_parsed_ready(session.session_dir, session.meta.session_id)
     service, _normal, _fake_export, tasks = _service(paths)
     adapter = WebExportProcessAdapter(tasks)
     service.export_adapter = adapter

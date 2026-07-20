@@ -164,6 +164,8 @@ def test_get_session_handles_old_metadata_raw_only_and_safe_reference(tmp_path: 
     assert detail.has_parsed_data is False
     assert detail.finalization_complete is None
     assert detail.data_integrity == "unknown"
+    assert detail.database_summary.status == "missing"
+    assert detail.database_summary.action == "parse_session"
     assert detail.session_path_reference == "MR-01/sessions/raw-only"
     assert str(tmp_path) not in detail.model_dump_json()
 
@@ -403,10 +405,15 @@ def test_metrics_support_old_missing_schema_and_deterministic_downsample(tmp_pat
 def test_database_missing_corrupt_and_busy_are_controlled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service(tmp_path)
     session = _session(service, "database")
-    assert service.get_database_summary("site-a", "database").error_code == OnlineMrQueryErrorCode.DATABASE_NOT_FOUND
+    missing = service.get_database_summary("site-a", "database")
+    assert missing.status == "missing"
+    assert missing.error_code == OnlineMrQueryErrorCode.DATABASE_NOT_FOUND
     db = session / "parsed" / "online_diagnosis.sqlite"
     db.write_bytes(b"not sqlite")
-    assert service.get_database_summary("site-a", "database").error_code == OnlineMrQueryErrorCode.DATABASE_INCOMPATIBLE
+    corrupt = service.get_database_summary("site-a", "database")
+    assert corrupt.status == "unreadable"
+    assert corrupt.error_code == OnlineMrQueryErrorCode.DATABASE_CORRUPT
+    assert str(tmp_path) not in corrupt.model_dump_json()
 
     def locked(*args: object, **kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("database is locked")
@@ -415,6 +422,38 @@ def test_database_missing_corrupt_and_busy_are_controlled(tmp_path: Path, monkey
     with pytest.raises(OnlineMrQueryError) as error:
         service.query_metrics("site-a", "database", [OnlineMrMetricType.RSSI])
     assert error.value.code == OnlineMrQueryErrorCode.DATABASE_BUSY
+
+
+def test_session_detail_keeps_metadata_when_parsed_database_is_corrupt(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "corrupt-detail", status="ABORTED")
+    (session / "raw" / "mesh_link_raw.log").write_text("partial raw", encoding="utf-8")
+    (session / "parsed" / "online_diagnosis.sqlite").write_bytes(b"broken sqlite")
+
+    detail = service.get_session("site-a", "corrupt-detail")
+
+    assert detail.status == "ABORTED"
+    assert detail.has_raw_data is True
+    assert detail.database_summary.status == "unreadable"
+    assert detail.database_summary.action == "force_reparse"
+    assert detail.latest_metric_time is None
+
+
+def test_old_parsed_database_reports_compatible_capabilities_without_writing(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "legacy-detail")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE main_link_samples (device_time TEXT, mr_rssi REAL)")
+    before = {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")}
+
+    summary = service.get_database_summary("site-a", "legacy-detail")
+
+    assert summary.status == "legacy"
+    assert summary.compatible is True
+    assert summary.available_capabilities == ["mesh_link"]
+    assert "channel_busy" in summary.missing_capabilities
+    assert {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")} == before
 
 
 def test_notes_and_timeline_keep_missing_device_time_as_none(tmp_path: Path) -> None:

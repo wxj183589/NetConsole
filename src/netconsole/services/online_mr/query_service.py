@@ -25,6 +25,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrMetricSeriesDTO,
     OnlineMrMetricSummaryDTO,
     OnlineMrMetricType,
+    OnlineMrParsedStatus,
     OnlineMrRawFileDTO,
     OnlineMrRawTailDTO,
     OnlineMrRealtimePreviewDTO,
@@ -38,6 +39,7 @@ from netconsole.models.api.online_mr import (
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +50,23 @@ MAX_WEB_TAIL_LIMIT = 500
 MAX_WEB_TAIL_BYTES = 4 * 1024 * 1024
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
+
+_PARSED_CAPABILITY_TABLES = {
+    "mesh_link": frozenset({"main_link_samples"}),
+    "channel_busy": frozenset({"channel_busy_records"}),
+    "radio_statistics": frozenset({"radio_statistics_samples"}),
+    "interface_rate": frozenset({"interface_rate_samples"}),
+    "switch_history": frozenset({"switch_history_events"}),
+    "switch_realtime": frozenset({"switch_realtime_events"}),
+    "fping_rtt": frozenset({"fping_samples"}),
+    "fping_loss": frozenset({"fping_1s_summary"}),
+    "iperf": frozenset({"iperf_runs", "iperf_intervals"}),
+    "timeline": frozenset({"analysis_events"}),
+}
+_CURRENT_PARSED_TABLES = frozenset().union(
+    *_PARSED_CAPABILITY_TABLES.values(),
+    {"online_parse_metadata", "online_parse_issues", "time_sync_samples", "active_segments", "active_segment_metrics"},
+)
 
 
 class OnlineMrQueryService:
@@ -405,33 +424,109 @@ class OnlineMrQueryService:
         session_dir = self._find_session(site_id, session_id)
         path = session_dir / "parsed" / "online_diagnosis.sqlite"
         if not path.is_file():
-            return OnlineMrDatabaseSummaryDTO(error_code=OnlineMrQueryErrorCode.DATABASE_NOT_FOUND)
+            return OnlineMrDatabaseSummaryDTO(
+                status=OnlineMrParsedStatus.MISSING,
+                compatible=False,
+                error_code=OnlineMrQueryErrorCode.DATABASE_NOT_FOUND,
+                message="当前会话尚未生成解析数据库，原始日志仍可查看。",
+                action="parse_session",
+                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
+                missing_tables=sorted(_CURRENT_PARSED_TABLES),
+            )
+        stat = path.stat()
         try:
             with closing(self._connect_readonly(path)) as conn:
                 tables = [
                     str(row[0])
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
                 ]
+                table_set = set(tables)
                 row_counts: dict[str, int] = {}
-                if "online_parse_metadata" in tables and "row_counts" in self._table_columns(conn, "online_parse_metadata"):
-                    row = conn.execute("SELECT row_counts FROM online_parse_metadata ORDER BY id DESC LIMIT 1").fetchone()
-                    parsed_counts = self._json_object(row[0] if row else None)
+                parser_version: str | None = None
+                parse_status = ""
+                raw_fingerprint = ""
+                metadata_columns = self._table_columns(conn, "online_parse_metadata")
+                if metadata_columns:
+                    selected = [name for name in ("parser_version", "status", "raw_fingerprint", "row_counts") if name in metadata_columns]
+                    order = " ORDER BY id DESC" if "id" in metadata_columns else " ORDER BY parsed_at DESC" if "parsed_at" in metadata_columns else ""
+                    row = conn.execute(f"SELECT {', '.join(selected)} FROM online_parse_metadata{order} LIMIT 1").fetchone() if selected else None
+                    values = dict(row) if row else {}
+                    parser_version = self._text_or_none(values.get("parser_version"))
+                    parse_status = str(values.get("status") or "").upper()
+                    raw_fingerprint = str(values.get("raw_fingerprint") or "")
+                    parsed_counts = self._json_object(values.get("row_counts"))
                     row_counts = {str(key): int(value) for key, value in parsed_counts.items() if isinstance(value, int)}
-            return OnlineMrDatabaseSummaryDTO(available=True, compatible=True, size_bytes=path.stat().st_size, tables=tables, row_counts=row_counts)
+                capabilities = sorted(
+                    name for name, required in _PARSED_CAPABILITY_TABLES.items() if required.issubset(table_set)
+                )
+                missing_capabilities = sorted(set(_PARSED_CAPABILITY_TABLES) - set(capabilities))
+                missing_tables = sorted(_CURRENT_PARSED_TABLES - table_set)
+                schema_version = self._database_schema_version(conn) or parser_version
+            status = OnlineMrParsedStatus.READY
+            error_code: str | None = None
+            action: str | None = None
+            message = "解析数据库可用。"
+            if parse_status in {"RUNNING", "PARSING", "REBUILDING"}:
+                status = OnlineMrParsedStatus.PARSING
+                error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
+                action = "open_task_center"
+                message = "当前会话正在解析，原始日志仍可查看。"
+            elif missing_tables or not parser_version or parser_version != PARSER_VERSION:
+                status = OnlineMrParsedStatus.LEGACY
+                error_code = OnlineMrQueryErrorCode.SCHEMA_INCOMPLETE if missing_tables else OnlineMrQueryErrorCode.SCHEMA_LEGACY
+                action = "force_reparse"
+                message = "当前解析数据库为旧版本，兼容能力之外的指标不可用。"
+            elif parse_status and parse_status != "OK":
+                status = OnlineMrParsedStatus.STALE
+                error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
+                action = "force_reparse"
+                message = "当前解析结果未完成，需要重新解析。"
+            elif raw_fingerprint and raw_fingerprint != self._raw_fingerprint(session_dir / "raw"):
+                status = OnlineMrParsedStatus.STALE
+                error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
+                action = "force_reparse"
+                message = "原始日志已变化，当前解析结果已过期。"
+            return OnlineMrDatabaseSummaryDTO(
+                status=status,
+                available=True,
+                compatible=bool(capabilities),
+                size_bytes=stat.st_size,
+                modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
+                schema_version=schema_version,
+                parser_version=parser_version,
+                tables=tables,
+                row_counts=row_counts,
+                available_capabilities=capabilities,
+                missing_capabilities=missing_capabilities,
+                missing_tables=missing_tables,
+                error_code=error_code,
+                message=message,
+                action=action,
+            )
         except OnlineMrQueryError as exc:
             return OnlineMrDatabaseSummaryDTO(
+                status=OnlineMrParsedStatus.UNREADABLE,
                 available=True,
                 compatible=False,
-                size_bytes=path.stat().st_size,
+                size_bytes=stat.st_size,
+                modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
                 error_code=exc.code,
+                message=exc.message,
+                action="force_reparse",
+                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
             )
         except sqlite3.Error as exc:
             error = self._database_error(exc)
             return OnlineMrDatabaseSummaryDTO(
+                status=OnlineMrParsedStatus.UNREADABLE,
                 available=True,
                 compatible=False,
-                size_bytes=path.stat().st_size,
+                size_bytes=stat.st_size,
+                modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
                 error_code=error.code,
+                message=error.message,
+                action="force_reparse",
+                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
             )
 
     def query_metrics(
@@ -766,9 +861,45 @@ class OnlineMrQueryService:
 
     @staticmethod
     def _database_error(exc: sqlite3.Error) -> OnlineMrQueryError:
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        detail = str(exc).lower()
+        if "locked" in detail or "busy" in detail:
             return OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_BUSY, "Online MR 解析数据库正忙")
-        return OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_INCOMPATIBLE, "Online MR 解析数据库不可读取")
+        if "malformed" in detail or "not a database" in detail or "file is encrypted" in detail:
+            return OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_CORRUPT, "Online MR 解析数据库已损坏")
+        if "no such table" in detail or "no such column" in detail:
+            return OnlineMrQueryError(OnlineMrQueryErrorCode.SCHEMA_INCOMPLETE, "Online MR 解析数据库结构不完整")
+        return OnlineMrQueryError(OnlineMrQueryErrorCode.DATABASE_UNREADABLE, "Online MR 解析数据库无法打开")
+
+    @staticmethod
+    def _database_schema_version(conn: sqlite3.Connection) -> str | None:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(meta)")}
+            if {"key", "value"}.issubset(columns):
+                row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1").fetchone()
+                if row and row[0] not in (None, ""):
+                    return str(row[0])
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        return str(user_version) if user_version else None
+
+    @staticmethod
+    def _raw_fingerprint(raw_root: Path) -> str:
+        items: list[dict[str, object]] = []
+        if raw_root.is_dir():
+            for path in sorted(raw_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                items.append(
+                    {
+                        "path": path.relative_to(raw_root).as_posix(),
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                )
+        return json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     def _query_metric(
         self,
@@ -1016,7 +1147,8 @@ class OnlineMrQueryService:
                     row = conn.execute(f"SELECT MAX({expr}) FROM {table}").fetchone()
                     if row and row[0]:
                         values.append(str(row[0]))
-        except OnlineMrQueryError:
+        except (OnlineMrQueryError, sqlite3.Error):
+            LOGGER.debug("读取 Online MR 最新指标时间失败", exc_info=True)
             return None
         return max(values) if values else None
 

@@ -756,10 +756,20 @@ def _online_mr_query_error_status(code: str) -> int:
     if code == OnlineMrQueryErrorCode.DATABASE_BUSY:
         return 503
     if code in {
+        OnlineMrQueryErrorCode.DATABASE_UNREADABLE,
+        OnlineMrQueryErrorCode.DATABASE_CORRUPT,
+    }:
+        return 409
+    if code in {
         OnlineMrQueryErrorCode.LOG_SOURCE_INVALID,
         OnlineMrQueryErrorCode.LOG_CURSOR_INVALID,
         OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED,
         OnlineMrQueryErrorCode.METRIC_UNSUPPORTED,
+        OnlineMrQueryErrorCode.SCHEMA_LEGACY,
+        OnlineMrQueryErrorCode.SCHEMA_INCOMPLETE,
+        OnlineMrQueryErrorCode.PARSE_REQUIRED,
+        OnlineMrQueryErrorCode.RAW_SOURCE_MISSING,
+        OnlineMrQueryErrorCode.QUERY_UNSUPPORTED,
     }:
         return 422
     return 409

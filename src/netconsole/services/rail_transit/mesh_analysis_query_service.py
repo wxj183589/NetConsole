@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from contextlib import closing
@@ -43,7 +44,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshSwitchEventPageDTO,
     MeshTimelineDTO,
 )
-from netconsole.repositories.mesh_mr_repository import _active_build_order_rows_from_points
+from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, _active_build_order_rows_from_points
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
@@ -51,6 +52,15 @@ _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9]
 _MR_IDENTITY_RE = re.compile(r"^(?P<train>.+?)[-_ ]*MR[-_ ]*(?P<role>CT|TC|CW)$", re.IGNORECASE)
 _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
 _MAX_PAGE_SIZE = 500
+LOGGER = logging.getLogger(__name__)
+_DETAIL_CAPABILITY_TABLES = {
+    "links": frozenset({"mesh_links"}),
+    "timeline": frozenset({"active_segments"}),
+    "switches": frozenset({"switch_events"}),
+    "diagnosis": frozenset({"diagnosis_events"}),
+    "parse_issues": frozenset({"parse_issues"}),
+    "active_points": frozenset({"active_points"}),
+}
 
 
 class MeshAnalysisQueryError(RuntimeError):
@@ -142,17 +152,22 @@ class MeshAnalysisQueryService:
             if train_name:
                 trains.add(train_name)
             mrs.add(context.mr_name)
-            summary.link_record_count += stats["links"]
-            summary.active_link_count += stats["active"]
-            summary.standby_link_count += stats["standby"]
-            summary.link_up_event_count += stats["link_up"]
-            summary.link_down_event_count += stats["link_down"]
-            summary.switch_event_count += stats["switches"]
-            summary.short_link_count += stats["short"]
-            summary.pingpong_count += stats["pingpong"]
-            summary.rssi_anomaly_count += stats["rssi_anomalies"]
-            summary.channel_busy_anomaly_count += stats["busy_anomalies"]
-            summary.unmatched_ap_count += stats["unmatched"]
+            for field, key in (
+                ("link_record_count", "links"),
+                ("active_link_count", "active"),
+                ("standby_link_count", "standby"),
+                ("link_up_event_count", "link_up"),
+                ("link_down_event_count", "link_down"),
+                ("switch_event_count", "switches"),
+                ("short_link_count", "short"),
+                ("pingpong_count", "pingpong"),
+                ("rssi_anomaly_count", "rssi_anomalies"),
+                ("channel_busy_anomaly_count", "busy_anomalies"),
+                ("unmatched_ap_count", "unmatched"),
+            ):
+                value = stats[key]
+                current = getattr(summary, field)
+                setattr(summary, field, None if value is None or current is None else current + int(value))
             summary.warning_session_count += int(stats["warnings"] > 0)
             latest = max(latest, str(context.source.get("imported_at") or ""))
         summary.train_count = len(trains)
@@ -211,16 +226,21 @@ class MeshAnalysisQueryService:
 
     def get_analysis_session(self, site_id: str, session_id: str) -> MeshAnalysisSessionDetailDTO:
         context = self._context(site_id, session_id)
+        stats = self._stats(context)
         warnings: list[MeshAnalysisWarningDTO] = []
-        if context.detail_db is None:
+        if stats["parsed_status"] == "missing":
             warnings.append(MeshAnalysisWarningDTO(code="parsed_result_missing", message="结构化分析结果不存在，Web 不会自动重解析。", severity="error"))
+        elif stats["parsed_status"] == "unreadable":
+            warnings.append(MeshAnalysisWarningDTO(code="parsed_result_unreadable", message=stats["parsed_message"], severity="error"))
+        elif stats["parsed_status"] == "legacy":
+            warnings.append(MeshAnalysisWarningDTO(code="parsed_result_legacy", message=stats["parsed_message"], severity="warning"))
         if context.raw_path is None:
             warnings.append(MeshAnalysisWarningDTO(code="raw_source_missing", message="原始 Mesh 日志当前不可用；既有结构化结果仍按只读方式展示。"))
         if context.relocated_detail:
             warnings.append(MeshAnalysisWarningDTO(code="parsed_path_relocated", message="索引中的旧数据根路径不可用，已只读使用当前 MR parsed 目录的同名结果。"))
         if int(context.source.get("issue_count") or 0):
             warnings.append(MeshAnalysisWarningDTO(code="parse_issues", message="该来源存在既有解析告警，请查看异常摘要。"))
-        return MeshAnalysisSessionDetailDTO(session=self._session_dto(context), warnings=warnings, sources=self.get_raw_source_summary(site_id, session_id))
+        return MeshAnalysisSessionDetailDTO(session=self._session_dto(context, stats), warnings=warnings, sources=self.get_raw_source_summary(site_id, session_id))
 
     def list_link_details(
         self,
@@ -926,10 +946,16 @@ class MeshAnalysisQueryService:
             index_db = mr_root / "mesh.sqlite"
             if not index_db.is_file():
                 continue
-            with closing(self._connect_readonly(index_db)) as conn:
-                if not self._table_exists(conn, "source_files"):
-                    continue
-                sources = [dict(row) for row in conn.execute("SELECT * FROM source_files WHERE COALESCE(parsed_deleted_at, '') = '' ORDER BY id")]
+            try:
+                with closing(self._connect_readonly(index_db)) as conn:
+                    if not self._table_exists(conn, "source_files"):
+                        continue
+                    columns = self._table_columns(conn, "source_files")
+                    where = "WHERE COALESCE(parsed_deleted_at, '') = ''" if "parsed_deleted_at" in columns else ""
+                    sources = [dict(row) for row in conn.execute(f"SELECT * FROM source_files {where} ORDER BY id")]
+            except sqlite3.Error:
+                LOGGER.warning("跳过不可读取的 MESH MR 索引：%s", profile.get("display_name"), exc_info=True)
+                continue
             contexts.extend(self._context_from_rows(site_id, profile, source, index_db) for source in sources)
         return contexts
 
@@ -996,8 +1022,8 @@ class MeshAnalysisQueryService:
             relocated_detail=relocated,
         )
 
-    def _session_dto(self, context: _SessionContext) -> MeshAnalysisSessionDTO:
-        stats = self._stats(context)
+    def _session_dto(self, context: _SessionContext, stats: dict[str, Any] | None = None) -> MeshAnalysisSessionDTO:
+        stats = stats or self._stats(context)
         train_name, role = self._mr_identity(context.mr_name)
         return MeshAnalysisSessionDTO(
             session_id=context.session_id,
@@ -1011,58 +1037,100 @@ class MeshAnalysisQueryService:
             active_link_count=stats["active"],
             standby_link_count=stats["standby"],
             event_count=stats["events"],
-            data_integrity="complete" if context.detail_db and stats["warnings"] == 0 else "partial",
+            data_integrity="complete" if stats["parsed_status"] == "ready" and stats["warnings"] == 0 else "partial",
             analysis_status=str(context.source.get("parse_status") or "unknown"),
+            parsed_status=stats["parsed_status"],
+            parsed_message=stats["parsed_message"],
+            schema_version=stats["schema_version"],
+            available_capabilities=stats["available_capabilities"],
+            missing_capabilities=stats["missing_capabilities"],
             warning_count=stats["warnings"],
             report_count=len([item for item in self._artifact_candidates(context) if item.dto.artifact_type != "raw_mesh_log"]),
             first_sample_time=str(context.source.get("first_sample_time") or "") or None,
             last_sample_time=str(context.source.get("last_sample_time") or "") or None,
         )
 
-    def _stats(self, context: _SessionContext) -> dict[str, int]:
-        empty = {key: 0 for key in ("links", "active", "standby", "events", "link_up", "link_down", "switches", "short", "pingpong", "rssi_anomalies", "busy_anomalies", "unmatched", "warnings")}
+    def _stats(self, context: _SessionContext) -> dict[str, Any]:
+        count_keys = ("links", "active", "standby", "events", "link_up", "link_down", "switches", "short", "pingpong", "rssi_anomalies", "busy_anomalies", "unmatched")
+        empty: dict[str, Any] = {key: None for key in count_keys}
+        empty.update(
+            warnings=1,
+            parsed_status="missing",
+            parsed_message="结构化分析结果不存在，可继续查看原始日志并重新解析。",
+            schema_version=None,
+            available_capabilities=[],
+            missing_capabilities=sorted(_DETAIL_CAPABILITY_TABLES),
+        )
         if context.detail_db is None:
-            empty["warnings"] = 1
             return empty
-        with closing(self._connect_readonly(context.detail_db)) as conn:
-            link = conn.execute(
-                """
-                SELECT COUNT(*) AS links,
-                       SUM(CASE WHEN link_state = 'ACTIVE' THEN 1 ELSE 0 END) AS active,
-                       SUM(CASE WHEN link_state = 'STANDBY' THEN 1 ELSE 0 END) AS standby,
-                       COUNT(DISTINCT CASE WHEN COALESCE(peer_ap_name, '') = '' THEN COALESCE(peer_mac_normalized, peer_mac_raw) END) AS unmatched
-                FROM mesh_links
-                """
-            ).fetchone()
-            events = conn.execute(
-                """
-                SELECT COUNT(*) AS events,
-                       SUM(CASE WHEN event_type IN ('LINK_UP', 'ACTIVE_UP') THEN 1 ELSE 0 END) AS link_up,
-                       SUM(CASE WHEN event_type IN ('LINK_DOWN', 'NO_ACTIVE') THEN 1 ELSE 0 END) AS link_down,
-                       SUM(CASE WHEN event_type = 'ACTIVE_SWITCH' THEN 1 ELSE 0 END) AS switches
-                FROM switch_events
-                """
-            ).fetchone()
-            segment_count = int(conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] or 0)
-            issues = int(conn.execute("SELECT COUNT(*) FROM parse_issues").fetchone()[0] or 0)
-            diagnoses = conn.execute(
-                """
-                SELECT SUM(CASE WHEN LOWER(category) LIKE '%rssi%' THEN 1 ELSE 0 END) AS rssi_anomalies,
-                       SUM(CASE WHEN LOWER(category) LIKE '%busy%' THEN 1 ELSE 0 END) AS busy_anomalies
-                FROM diagnosis_events
-                """
-            ).fetchone()
-        builds = self._build_rows(context)
         result = dict(empty)
-        result.update({key: int(link[key] or 0) for key in ("links", "active", "standby", "unmatched")})
-        result.update({key: int(events[key] or 0) for key in ("events", "link_up", "link_down", "switches")})
-        result["link_up"] = segment_count
-        result["link_down"] = result["switches"]
-        result["short"] = sum(row.get("build_result") == "short" for row in builds)
-        result["pingpong"] = sum(bool(row.get("is_pingpong_abnormal")) for row in builds)
-        result["rssi_anomalies"] = int(diagnoses["rssi_anomalies"] or 0) if diagnoses else 0
-        result["busy_anomalies"] = int(diagnoses["busy_anomalies"] or 0) if diagnoses else 0
-        result["warnings"] = issues + result["unmatched"] + int(context.raw_path is None)
+        try:
+            with closing(self._connect_readonly(context.detail_db)) as conn:
+                tables = {
+                    str(row[0])
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                }
+                available = sorted(name for name, required in _DETAIL_CAPABILITY_TABLES.items() if required.issubset(tables))
+                missing = sorted(set(_DETAIL_CAPABILITY_TABLES) - set(available))
+                schema_version = self._mesh_schema_version(conn) or str(context.source.get("db_schema_version") or "") or None
+                result.update(
+                    parsed_status="ready" if schema_version == SCHEMA_VERSION and not missing else "legacy",
+                    parsed_message="结构化分析结果可用。" if schema_version == SCHEMA_VERSION and not missing else "旧版结构化结果缺少部分能力；可用区域继续只读展示。",
+                    schema_version=schema_version,
+                    available_capabilities=available,
+                    missing_capabilities=missing,
+                )
+                if "mesh_links" in tables:
+                    columns = self._table_columns(conn, "mesh_links")
+                    if "link_state" in columns:
+                        unmatched_expr = "0"
+                        if "peer_ap_name" in columns and {"peer_mac_normalized", "peer_mac_raw"}.intersection(columns):
+                            peer_parts = [name for name in ("peer_mac_normalized", "peer_mac_raw") if name in columns]
+                            peer_expr = peer_parts[0] if len(peer_parts) == 1 else f"COALESCE({', '.join(peer_parts)})"
+                            unmatched_expr = f"COUNT(DISTINCT CASE WHEN COALESCE(peer_ap_name, '') = '' THEN {peer_expr} END)"
+                        link = conn.execute(
+                            f"SELECT COUNT(*) AS links, SUM(CASE WHEN link_state = 'ACTIVE' THEN 1 ELSE 0 END) AS active, "
+                            f"SUM(CASE WHEN link_state = 'STANDBY' THEN 1 ELSE 0 END) AS standby, {unmatched_expr} AS unmatched FROM mesh_links"
+                        ).fetchone()
+                        result.update({key: int(link[key] or 0) for key in ("links", "active", "standby", "unmatched")})
+                if "switch_events" in tables and "event_type" in self._table_columns(conn, "switch_events"):
+                    events = conn.execute(
+                        "SELECT COUNT(*) AS events, "
+                        "SUM(CASE WHEN event_type IN ('LINK_UP', 'ACTIVE_UP') THEN 1 ELSE 0 END) AS link_up, "
+                        "SUM(CASE WHEN event_type IN ('LINK_DOWN', 'NO_ACTIVE') THEN 1 ELSE 0 END) AS link_down, "
+                        "SUM(CASE WHEN event_type = 'ACTIVE_SWITCH' THEN 1 ELSE 0 END) AS switches FROM switch_events"
+                    ).fetchone()
+                    result.update({key: int(events[key] or 0) for key in ("events", "link_up", "link_down", "switches")})
+                if "active_segments" in tables:
+                    result["link_up"] = int(conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] or 0)
+                if result["switches"] is not None:
+                    result["link_down"] = result["switches"]
+                issues = int(conn.execute("SELECT COUNT(*) FROM parse_issues").fetchone()[0] or 0) if "parse_issues" in tables else 0
+                if "diagnosis_events" in tables and "category" in self._table_columns(conn, "diagnosis_events"):
+                    diagnoses = conn.execute(
+                        "SELECT SUM(CASE WHEN LOWER(category) LIKE '%rssi%' THEN 1 ELSE 0 END) AS rssi_anomalies, "
+                        "SUM(CASE WHEN LOWER(category) LIKE '%busy%' THEN 1 ELSE 0 END) AS busy_anomalies FROM diagnosis_events"
+                    ).fetchone()
+                    result["rssi_anomalies"] = int(diagnoses["rssi_anomalies"] or 0)
+                    result["busy_anomalies"] = int(diagnoses["busy_anomalies"] or 0)
+                builds: list[dict[str, Any]] = []
+                if "active_points" in tables:
+                    try:
+                        builds = self._build_rows(context)
+                    except sqlite3.Error:
+                        LOGGER.debug("旧 MESH active_points 不支持派生建链统计", exc_info=True)
+                result["short"] = sum(row.get("build_result") == "short" for row in builds) if builds else None
+                result["pingpong"] = sum(bool(row.get("is_pingpong_abnormal")) for row in builds) if builds else None
+                result["warnings"] = issues + int(result["unmatched"] or 0) + int(context.raw_path is None) + int(result["parsed_status"] != "ready")
+        except sqlite3.Error:
+            LOGGER.warning("MESH 结构化结果不可读取：%s", context.session_id, exc_info=True)
+            result.update(
+                parsed_status="unreadable",
+                parsed_message="该会话的结构化数据库无法打开；其他会话与原始日志不受影响。",
+                available_capabilities=[],
+                missing_capabilities=sorted(_DETAIL_CAPABILITY_TABLES),
+                warnings=1 + int(context.raw_path is None),
+            )
         return result
 
     def _build_rows(self, context: _SessionContext) -> list[dict[str, Any]]:
@@ -1173,6 +1241,22 @@ class MeshAnalysisQueryService:
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        escaped = table.replace('"', '""')
+        return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{escaped}")')}
+
+    @classmethod
+    def _mesh_schema_version(cls, conn: sqlite3.Connection) -> str | None:
+        for table in ("schema_meta", "meta"):
+            if not cls._table_exists(conn, table) or not {"key", "value"}.issubset(cls._table_columns(conn, table)):
+                continue
+            for key in ("schema_version", "schema_" + "version"):
+                row = conn.execute(f"SELECT value FROM {table} WHERE key = ? LIMIT 1", (key,)).fetchone()
+                if row and row[0] not in (None, ""):
+                    return str(row[0])
+        return None
 
     @staticmethod
     def _page(page: int, page_size: int) -> tuple[int, int]:

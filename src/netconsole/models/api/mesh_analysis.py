@@ -75,22 +75,26 @@ class MeshBundleImportRequestDTO(ApiModel):
     explicit_confirmation: bool = False
 
 
+class MeshRebuildRequestDTO(ApiModel):
+    explicit_confirmation: bool = False
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     session_count: int = 0
     train_count: int = 0
     mr_count: int = 0
-    link_record_count: int = 0
-    active_link_count: int = 0
-    standby_link_count: int = 0
-    link_up_event_count: int = 0
-    link_down_event_count: int = 0
-    switch_event_count: int = 0
-    short_link_count: int = 0
-    pingpong_count: int = 0
-    rssi_anomaly_count: int = 0
-    channel_busy_anomaly_count: int = 0
-    unmatched_ap_count: int = 0
+    link_record_count: int | None = 0
+    active_link_count: int | None = 0
+    standby_link_count: int | None = 0
+    link_up_event_count: int | None = 0
+    link_down_event_count: int | None = 0
+    switch_event_count: int | None = 0
+    short_link_count: int | None = 0
+    pingpong_count: int | None = 0
+    rssi_anomaly_count: int | None = 0
+    channel_busy_anomaly_count: int | None = 0
+    unmatched_ap_count: int | None = 0
     warning_session_count: int = 0
     latest_analysis_time: str | None = None
 
@@ -105,12 +109,17 @@ class MeshAnalysisSessionDTO(ApiModel):
     source_type: str = "raw_mesh_log"
     original_filename: str
     raw_log_count: int = 1
-    link_record_count: int = 0
-    active_link_count: int = 0
-    standby_link_count: int = 0
-    event_count: int = 0
+    link_record_count: int | None = 0
+    active_link_count: int | None = 0
+    standby_link_count: int | None = 0
+    event_count: int | None = 0
     data_integrity: str = "unknown"
     analysis_status: str = "unknown"
+    parsed_status: str = "missing"
+    parsed_message: str = ""
+    schema_version: str | None = None
+    available_capabilities: list[str] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
     warning_count: int = 0
     report_count: int = 0
     first_sample_time: str | None = None

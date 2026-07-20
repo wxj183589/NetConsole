@@ -10,11 +10,12 @@ import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
 import MeshSwitchRssiChart from '../../components/mesh-analysis/MeshSwitchRssiChart.vue'
 import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import {
   applyMeshBundleImport, createMeshProfile, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshChannelBusy, getMeshRawTail,
   getMeshCounterDeltas, getMeshRssi, getMeshRateSeries, getMeshTimeline, listMeshAnalysisSessions, listMeshAnomalies, listMeshApStatistics,
-  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshBundle,
+  listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshBundle, rebuildMeshAnalysis,
 } from '../../api/meshAnalysis'
 import { listVehicleMrs } from '../../api/railTransitBaseData'
 import {
@@ -30,8 +31,10 @@ import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
 
 const router = useRouter()
+const { confirm } = useConfirm()
 const loading = ref(false)
 const detailLoading = ref(false)
+const detailSectionError = ref('')
 const error = ref('')
 const summary = ref<MeshAnalysisSummary | null>(null)
 const sessions = ref<MeshAnalysisSession[]>([])
@@ -72,14 +75,15 @@ const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let failureCount = 0
 let taskTimer: ReturnType<typeof setTimeout> | null = null
+let detailGeneration = 0
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
 
 const cards = computed(() => summary.value ? [
   ['分析会话', summary.value.session_count], ['列车 / MR', `${summary.value.train_count} / ${summary.value.mr_count}`],
-  ['链路记录', summary.value.link_record_count], ['主 / 备链路', `${summary.value.active_link_count} / ${summary.value.standby_link_count}`],
-  ['切换事件', summary.value.switch_event_count], ['短时建链', summary.value.short_link_count],
-  ['乒乓切换', summary.value.pingpong_count], ['未匹配 AP', summary.value.unmatched_ap_count],
+  ['链路记录', display(summary.value.link_record_count)], ['主 / 备链路', `${display(summary.value.active_link_count)} / ${display(summary.value.standby_link_count)}`],
+  ['切换事件', display(summary.value.switch_event_count)], ['短时建链', display(summary.value.short_link_count)],
+  ['乒乓切换', display(summary.value.pingpong_count)], ['未匹配 AP', display(summary.value.unmatched_ap_count)],
 ] : [])
 const taskRows = computed(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
 const bundleCanApply = computed(() => Boolean(
@@ -113,8 +117,9 @@ const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
   { key: 'source_type', label: '来源', width: 125 },
   { key: 'original_filename', label: '原始日志', align: 'left', alignmentReason: 'path', minWidth: 260, showOverflowTooltip: true },
   { key: 'link_record_count', label: '链路记录', valueType: 'number', width: 110 },
-  { key: 'link_roles', label: '主 / 备', width: 125, displayValue: (row) => `${row.active_link_count} / ${row.standby_link_count}` },
+  { key: 'link_roles', label: '主 / 备', width: 125, displayValue: (row) => `${display(row.active_link_count)} / ${display(row.standby_link_count)}` },
   { key: 'event_count', label: '事件', valueType: 'number', width: 90 },
+  { key: 'parsed_status', label: '解析状态', valueType: 'status', width: 105 },
   { key: 'data_integrity', label: '完整性', valueType: 'status', width: 95 },
   { key: 'warnings', label: '告警', valueType: 'status', width: 80 },
   { key: 'report_count', label: '报告', valueType: 'number', width: 75 },
@@ -234,29 +239,38 @@ async function refreshOverview(silent = false): Promise<void> {
 }
 
 async function openSession(row: MeshAnalysisSession): Promise<void> {
+  const generation = ++detailGeneration
   detailLoading.value = true
-  rawTail.value = null
+  selected.value = null; links.value = []; linkTotal.value = 0; timeline.value = []; switches.value = []; rssi.value = null
+  channelBusy.value = []; rateSeries.value = { items: [], total: 0, downsampled: false }; counterDeltas.value = { items: [], total: 0, downsampled: false }
+  anomalies.value = []; anomalyTotal.value = 0; apStatistics.value = []; artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   try {
     const id = row.session_id
-    const [detail, linkPage, timelineData, switchPage, rssiData, busyData, rateData, counterData, anomalyPage, apPage, artifactRows] = await Promise.all([
-      getMeshAnalysisSession(id), listMeshLinks(id, linkFilters), getMeshTimeline(id), listMeshSwitchEvents(id, { page: 1, page_size: 500 }), getMeshRssi(id),
+    const detail = await getMeshAnalysisSession(id)
+    if (generation !== detailGeneration) return
+    selected.value = detail
+    const results = await Promise.allSettled([
+      listMeshLinks(id, linkFilters), getMeshTimeline(id), listMeshSwitchEvents(id, { page: 1, page_size: 500 }), getMeshRssi(id),
       getMeshChannelBusy(id), getMeshRateSeries(id, { max_points: 2_000 }), getMeshCounterDeltas(id, { max_points: 2_000 }),
       listMeshAnomalies(id), listMeshApStatistics(id), listMeshArtifacts(id),
     ])
-    selected.value = detail
-    links.value = linkPage.items; linkTotal.value = linkPage.total
-    timeline.value = timelineData.items
-    switches.value = switchPage.items
-    rssi.value = rssiData
-    channelBusy.value = busyData.items
-    rateSeries.value = rateData
-    counterDeltas.value = counterData
-    anomalies.value = anomalyPage.items; anomalyTotal.value = anomalyPage.total
-    apStatistics.value = apPage.items
-    artifacts.value = artifactRows
+    if (generation !== detailGeneration) return
+    const [linkPage, timelineData, switchPage, rssiData, busyData, rateData, counterData, anomalyPage, apPage, artifactRows] = results
+    if (linkPage.status === 'fulfilled') { links.value = linkPage.value.items; linkTotal.value = linkPage.value.total }
+    if (timelineData.status === 'fulfilled') timeline.value = timelineData.value.items
+    if (switchPage.status === 'fulfilled') switches.value = switchPage.value.items
+    if (rssiData.status === 'fulfilled') rssi.value = rssiData.value
+    if (busyData.status === 'fulfilled') channelBusy.value = busyData.value.items
+    if (rateData.status === 'fulfilled') rateSeries.value = rateData.value
+    if (counterData.status === 'fulfilled') counterDeltas.value = counterData.value
+    if (anomalyPage.status === 'fulfilled') { anomalies.value = anomalyPage.value.items; anomalyTotal.value = anomalyPage.value.total }
+    if (apPage.status === 'fulfilled') apStatistics.value = apPage.value.items
+    if (artifactRows.status === 'fulfilled') artifacts.value = artifactRows.value
+    const failed = results.filter((result) => result.status === 'rejected').length
+    detailSectionError.value = failed ? `${failed} 个旧版指标区域不可用；会话详情、可兼容指标和原始日志仍可查看。` : ''
     error.value = ''
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : '分析详情加载失败' }
-  finally { detailLoading.value = false }
+  } catch (reason) { if (generation === detailGeneration) error.value = reason instanceof Error ? reason.message : '分析详情加载失败' }
+  finally { if (generation === detailGeneration) detailLoading.value = false }
 }
 
 async function reloadLinks(page = linkFilters.page): Promise<void> {
@@ -350,8 +364,13 @@ function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskT
 async function afterTask(): Promise<void> {
   if (task.value?.status !== 'COMPLETED') return
   await refreshOverview()
-  if (['mesh_log_import', 'mesh_bundle_import'].includes(task.value.action)) await loadProfiles()
-  if (selected.value) artifacts.value = await listMeshArtifacts(selected.value.session.session_id)
+  if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild'].includes(task.value.action)) await loadProfiles()
+  if (selected.value) {
+    const selectedId = selected.value.session.session_id
+    const next = sessions.value.find((item) => item.session_id === selectedId)
+    if (task.value.action === 'mesh_schema_rebuild' && next) await openSession(next)
+    else artifacts.value = await listMeshArtifacts(selectedId)
+  }
 }
 function pollTask(): void {
   stopTaskPolling()
@@ -386,11 +405,22 @@ function generateReport(): void {
   if (!selected.value) return
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id), 'MESH 分析报告生成启动失败')
 }
+async function rebuildSelected(): Promise<void> {
+  if (!selected.value) return
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '重建 MESH 解析结果',
+    message: '将从当前 MR 的受保护原始日志重建派生数据库；旧派生结果会先归档，原始日志不会删除。确认继续？',
+    confirmText: '确认重建',
+  })
+  if (!accepted) return
+  void startTask(() => rebuildMeshAnalysis(selected.value!.session.session_id), 'MESH 派生数据库重建启动失败')
+}
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_analysis_report'].includes(item.action)) || null)
+    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_analysis_report'].includes(item.action)) || null)
     pollTask()
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务恢复失败' }
 }
@@ -416,7 +446,7 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
   <section class="mesh-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>独立完成 MR profile、原始日志导入解析、主备链分析、异常汇总、报告与 Artifact 交付。</p></div>
-      <div class="jump-actions"><el-button :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="importVisible = true">导入日志 / 文件夹</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selected || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="generateReport">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
+      <div class="jump-actions"><el-button :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="importVisible = true">导入日志 / 文件夹</el-button><el-button type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="generateReport">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
@@ -475,6 +505,8 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
       <div class="detail-heading">
         <div><h2>{{ selected.session.mr_name }}</h2><p>{{ selected.session.original_filename }} · {{ selected.session.first_sample_time }} — {{ selected.session.last_sample_time }}</p></div>
         <div class="jump-actions">
+          <el-button :loading="taskLoading" :disabled="!selected.sources.some((source) => source.exists) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selected.session.parsed_status === 'ready' ? '重新解析' : '重建旧解析结果' }}</el-button>
+          <el-button @click="openTaskWindow()">打开任务窗口</el-button>
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
           <el-button @click="router.push('/rail-transit/train-online')">列车在线情况</el-button>
@@ -486,6 +518,7 @@ function roleClass(value: string): string { return value === 'ACTIVE' ? 'mesh-ro
         </el-alert>
         <div v-if="warningsExpanded" class="warning-list"><el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon /></div>
       </div>
+      <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab">
         <el-tab-pane label="链路明细" name="links">

@@ -107,6 +107,7 @@ class RailTransitWebApplicationService:
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
+        "mesh_schema_rebuild": "MESH 派生数据库重建",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -984,6 +985,11 @@ class RailTransitWebApplicationService:
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         detail = self.query_service.get_session(site_id, session_id)
+        if detail.database_summary.status != "ready":
+            raise RailTransitWebError(
+                "PARSE_REQUIRED",
+                detail.database_summary.message or "Online MR 解析数据库尚未就绪，请先解析当前会话",
+            )
         root = self.paths.online_mr_root(site_id).resolve()
         session_dir = (root / detail.session_path_reference).resolve()
         self._require_within(session_dir, root)
@@ -1114,6 +1120,26 @@ class RailTransitWebApplicationService:
             },
         )
         return self._start_export(site_id, job, "mesh_analysis_report", reservation)
+
+    def start_mesh_rebuild(self, site_id: str, session_id: str, *, explicit_confirmation: bool) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError("CONFIRMATION_REQUIRED", "重建 MESH 派生数据库前必须显式确认")
+        try:
+            context = self.mesh_query_service._context(site_id, session_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        if context.raw_path is None:
+            raise RailTransitWebError("RAW_DATA_NOT_FOUND", "当前 MESH 会话缺少可用于重建的原始日志")
+        return self._start_task(
+            site_id,
+            "mesh_schema_rebuild",
+            {
+                "mr_id": context.mr_id,
+                "explicit_confirmation": True,
+                "audit": {"source": "electron_mesh_analysis", "action": "rebuild_parsed"},
+            },
+        )
 
     def get_task(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         site_id = self._site(site_id)

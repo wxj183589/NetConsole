@@ -67,6 +67,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/bundles/import",
         "/rail-transit/mesh-analysis/bundles/preview",
         "/rail-transit/mesh-analysis/profiles",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/rebuild",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
     }
     assert all(route.methods in ({"GET"}, {"POST"}) for route in routes)

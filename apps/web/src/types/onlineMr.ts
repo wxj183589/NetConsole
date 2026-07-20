@@ -35,7 +35,7 @@ export interface OnlineMrSessionDetail extends OnlineMrSessionSummary {
   enabled_collectors: string[]
   traffic_summary: Record<string, unknown>
   file_summary: Record<string, unknown>
-  database_summary: Record<string, unknown>
+  database_summary: OnlineMrDatabaseSummary
   notes_count: number
   latest_metric_time: string | null
   data_integrity: 'complete' | 'partial' | 'unknown'
@@ -95,6 +95,27 @@ export interface OnlineMrManualNote {
   severity: string | null
   title: string
   payload: Record<string, unknown>
+}
+
+export type OnlineMrParsedStatus = 'ready' | 'missing' | 'legacy' | 'stale' | 'unreadable' | 'parsing'
+
+export interface OnlineMrDatabaseSummary {
+  status: OnlineMrParsedStatus
+  available: boolean
+  compatible: boolean | null
+  size_bytes: number
+  modified_at: string | null
+  schema_version: string | null
+  parser_version: string | null
+  tables: string[]
+  row_counts: Record<string, number>
+  available_capabilities: string[]
+  missing_capabilities: string[]
+  missing_tables: string[]
+  error_code: string | null
+  message: string
+  recoverable: boolean
+  action: string | null
 }
 
 export interface OnlineMrMetricPoint {

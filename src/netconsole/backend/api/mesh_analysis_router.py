@@ -30,6 +30,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshProfileCreateRequestDTO,
     MeshProfileDTO,
     MeshRawTailDTO,
+    MeshRebuildRequestDTO,
     MeshRatePageDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
@@ -427,6 +428,29 @@ def raw_tail(
     lines: int = Query(default=100, ge=1, le=200),
 ) -> MeshRawTailDTO:
     return _query(lambda: _service(request).read_raw_tail(_site_id(request, site_id), session_id, source_id, lines=lines))
+
+
+@router.post(
+    "/sessions/{session_id}/rebuild",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def rebuild_session(request: Request, session_id: str, payload: MeshRebuildRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_rebuild(
+            _current_site_id(request),
+            session_id,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @router.post(
