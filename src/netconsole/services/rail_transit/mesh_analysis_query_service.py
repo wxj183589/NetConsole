@@ -35,6 +35,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshChannelBusyPageDTO,
     MeshChartBackupLinkDTO,
     MeshChartEventDTO,
+    MeshChartLocationSegmentDTO,
     MeshChartPointDTO,
     MeshCounterDeltaPageDTO,
     MeshCounterDeltaPointDTO,
@@ -1753,6 +1754,7 @@ class MeshAnalysisQueryService:
             point_rows.append(
                 {
                     "item": item,
+                    "source": source,
                     "timestamp": str(timestamp),
                     "timestamp_tag": str(tags[index] if index < len(tags) else item.get("timestamp_tag") or ""),
                     "radio": radio,
@@ -1782,6 +1784,7 @@ class MeshAnalysisQueryService:
         important.update(self._important_chart_row_indices(point_rows))
         indices = [int(index) for index in render_indices(total_points, 0, 0, important, max_points)]
         returned = [self._materialize_chart_point(ap_map, context, point_rows[index]) for index in indices]
+        location_segments = self._chart_location_segments(ap_map, point_rows)
         anchor_index = self._int(dict(chart.get("metadata") or {}).get("anchor_index"))
         anchor = (
             self._materialize_chart_point(ap_map, context, point_rows[anchor_index])
@@ -1790,7 +1793,8 @@ class MeshAnalysisQueryService:
         )
         events: list[MeshChartEventDTO] = []
         seen_events: set[int] = set()
-        for values in events_by_index.values():
+        for event_index_value, values in events_by_index.items():
+            event_index = self._int(event_index_value)
             for event in values:
                 event_id = int(event.get("id") or 0)
                 if event_id in seen_events:
@@ -1814,6 +1818,20 @@ class MeshAnalysisQueryService:
                     ap_map,
                     {"peer_ap_mac": event.get("to_peer_mac"), "peer_ap_name": event.get("to_peer_ap_name")},
                 )
+                before_point = self._chart_event_point(
+                    point_rows,
+                    event_index,
+                    step=-1,
+                    expected_peer_mac=str(event.get("from_peer_mac") or ""),
+                )
+                after_point = self._chart_event_point(
+                    point_rows,
+                    event_index,
+                    step=1,
+                    expected_peer_mac=str(event.get("to_peer_mac") or ""),
+                )
+                event_point = after_point or before_point
+                event_location = self._locate_ap(ap_map, dict((event_point or {}).get("item") or {}))
                 events.append(
                     MeshChartEventDTO(
                         event_id=event_id,
@@ -1826,6 +1844,12 @@ class MeshAnalysisQueryService:
                         to_ap_name=str(event.get("to_peer_ap_name") or to_location.name or "") or None,
                         segment_sequence=self._int((event_segment or {}).get("sequence")),
                         duration_ms=self._int(event.get("observed_window_ms")),
+                        point_timestamp=str((event_point or {}).get("timestamp") or "") or None,
+                        point_rssi=self._number((event_point or {}).get("local_rssi")),
+                        before_rssi=self._number((before_point or {}).get("local_rssi")),
+                        after_rssi=self._number((after_point or {}).get("local_rssi")),
+                        station=event_location.station or None,
+                        section=event_location.section or None,
                     )
                 )
         current_row = next(
@@ -1841,6 +1865,7 @@ class MeshAnalysisQueryService:
             anchor=anchor,
             points=returned,
             events=events,
+            location_segments=location_segments,
             summary=MeshPathChartSummaryDTO(
                 current_peer_mac=current.peer_mac if current else None,
                 current_peer_ap_name=current.peer_ap_name if current else None,
@@ -1862,6 +1887,79 @@ class MeshAnalysisQueryService:
             time_from=time_from or first_time,
             time_to=time_to or last_time,
         )
+
+    def _chart_location_segments(
+        self,
+        ap_map: MeshApLocationSnapshot,
+        point_rows: list[dict[str, Any]],
+    ) -> list[MeshChartLocationSegmentDTO]:
+        segments: list[MeshChartLocationSegmentDTO] = []
+        current: dict[str, Any] | None = None
+        for row in point_rows:
+            item = dict(row.get("item") or {})
+            if str(item.get("status") or "") != "ACTIVE":
+                current = None
+                continue
+            location = self._locate_ap(
+                ap_map,
+                {
+                    "peer_ap_mac": item.get("ap_mac"),
+                    "peer_ap_name": item.get("ap_name"),
+                    "peer_mac_normalized": item.get("peer_mac"),
+                    "peer_site": item.get("site"),
+                },
+            )
+            station = location.station.strip()
+            section = location.section.strip()
+            if not station and not section:
+                current = None
+                continue
+            key = (str(row.get("source") or ""), self._int(row.get("radio")), station, section)
+            timestamp = str(row.get("timestamp") or "")
+            if current is not None and not bool(row.get("gap_before")) and current["key"] == key:
+                current["dto"].end_time = timestamp
+                current["dto"].mileage_end = location.mileage or current["dto"].mileage_end
+                continue
+            label = " / ".join(value for value in (station, section) if value)
+            dto = MeshChartLocationSegmentDTO(
+                start_time=timestamp,
+                end_time=timestamp,
+                station=station or None,
+                section=section or None,
+                label=label,
+                direction=location.line_side or None,
+                mileage_start=location.mileage or None,
+                mileage_end=location.mileage or None,
+            )
+            segments.append(dto)
+            current = {"key": key, "dto": dto}
+        return segments
+
+    def _chart_event_point(
+        self,
+        point_rows: list[dict[str, Any]],
+        event_index: int | None,
+        *,
+        step: int,
+        expected_peer_mac: str,
+    ) -> dict[str, Any] | None:
+        if event_index is None or not point_rows:
+            return None
+        start = event_index if step > 0 else event_index - 1
+        reference = point_rows[event_index] if 0 <= event_index < len(point_rows) else None
+        reference_source = str((reference or {}).get("source") or "")
+        reference_radio = (reference or {}).get("radio")
+        index = start
+        while 0 <= index < len(point_rows):
+            row = point_rows[index]
+            if str(row.get("source") or "") != reference_source or row.get("radio") != reference_radio:
+                break
+            item = dict(row.get("item") or {})
+            peer_matches = not expected_peer_mac or self._mac_key(item.get("peer_mac")) == self._mac_key(expected_peer_mac)
+            if peer_matches and str(item.get("status") or "") == "ACTIVE" and row.get("local_rssi") is not None:
+                return row
+            index += step
+        return None
 
     @staticmethod
     def _chart_rows_in_window(value: object, time_from: str, time_to: str) -> list[dict[str, Any]]:

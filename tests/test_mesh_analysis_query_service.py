@@ -289,6 +289,28 @@ def test_index_source_id_is_mapped_to_single_source_detail_database(tmp_path: Pa
     } <= {2}
 
 
+def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+
+    assert [(item.start_time, item.end_time, item.label) for item in chart.location_segments] == [
+        ("2026-07-14 10:00:00.000", "2026-07-14 10:00:00.000", "车站A"),
+        ("2026-07-14 10:00:01.000", "2026-07-14 10:00:01.000", "区间A-B"),
+        ("2026-07-14 10:00:02.000", "2026-07-14 10:00:02.000", "车站A"),
+    ]
+    first, second = chart.events
+    assert first.before_rssi == 42
+    assert first.after_rssi is None
+    assert first.point_timestamp == "2026-07-14 10:00:00.000"
+    assert first.point_rssi == 42
+    assert second.before_rssi is None
+    assert second.after_rssi == 43
+    assert second.point_timestamp == "2026-07-14 10:00:02.000"
+    assert second.point_rssi == 43
+
+
 def test_peer_chart_can_return_all_visits_with_explicit_gaps(tmp_path: Path) -> None:
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]

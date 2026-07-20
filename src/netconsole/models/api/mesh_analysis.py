@@ -394,6 +394,23 @@ class MeshChartEventDTO(ApiModel):
     to_ap_name: str | None = None
     segment_sequence: int | None = None
     duration_ms: int | None = None
+    point_timestamp: str | None = None
+    point_rssi: float | None = None
+    before_rssi: float | None = None
+    after_rssi: float | None = None
+    station: str | None = None
+    section: str | None = None
+
+
+class MeshChartLocationSegmentDTO(ApiModel):
+    start_time: str
+    end_time: str
+    station: str | None = None
+    section: str | None = None
+    label: str
+    direction: str | None = None
+    mileage_start: str | None = None
+    mileage_end: str | None = None
 
 
 class MeshPathChartSummaryDTO(ApiModel):
@@ -417,6 +434,7 @@ class MeshPathChartDTO(ApiModel):
     anchor: MeshChartPointDTO | None = None
     points: list[MeshChartPointDTO] = Field(default_factory=list)
     events: list[MeshChartEventDTO] = Field(default_factory=list)
+    location_segments: list[MeshChartLocationSegmentDTO] = Field(default_factory=list)
     summary: MeshPathChartSummaryDTO = Field(default_factory=MeshPathChartSummaryDTO)
     total_points: int = 0
     returned_points: int = 0

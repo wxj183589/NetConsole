@@ -127,7 +127,15 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     for index, context in enumerate(main_links_by_index):
         if context and not active_source_file_ids[index]:
             active_source_file_ids[index] = str(context.get("source_file_id") or "")
-    events_by_index = _events_by_index(events, master_times, active_peer_macs, active_peer_ap_names, active_peer_sites)
+    estimated_interval = peer_segment.get("estimated_interval_seconds") or run_segment.get("estimated_interval_seconds")
+    events_by_index = _events_by_index(
+        events,
+        master_times,
+        active_peer_macs,
+        active_peer_ap_names,
+        active_peer_sites,
+        max_delta_seconds=_sampling_tolerance_seconds(estimated_interval),
+    )
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
     anchor_index = _nearest_time_index(master_times, anchor_key or anchor_time)
     return {
@@ -599,6 +607,7 @@ def _events_by_index(
     active_peer_macs: list[str] | None = None,
     active_peer_ap_names: list[str] | None = None,
     active_peer_sites: list[str] | None = None,
+    max_delta_seconds: float | None = None,
 ) -> dict[int, list[dict[str, object]]]:
     by_index: dict[int, list[dict[str, object]]] = {}
     exact: dict[tuple[str, str, str], int] = {}
@@ -634,13 +643,18 @@ def _events_by_index(
             for candidate, key in enumerate(sample_keys)
             if (not source or _sample_source(key) == source) and (not radio or _sample_radio(key) == radio)
         ]
-        nearest = _nearest_scoped_index(scoped, sample_time)
+        nearest = _nearest_scoped_index(scoped, sample_time, max_delta_seconds=max_delta_seconds)
         if nearest >= 0:
             by_index.setdefault(nearest, []).append(_enrich_switch_event(event, nearest, active_peer_macs or [], active_peer_ap_names or [], active_peer_sites or []))
     return by_index
 
 
-def _nearest_scoped_index(scoped: list[tuple[str, int]], sample_time: str) -> int:
+def _nearest_scoped_index(
+    scoped: list[tuple[str, int]],
+    sample_time: str,
+    *,
+    max_delta_seconds: float | None = None,
+) -> int:
     if not scoped or not sample_time:
         return -1
     ordered = sorted(scoped)
@@ -650,7 +664,21 @@ def _nearest_scoped_index(scoped: list[tuple[str, int]], sample_time: str) -> in
     if not candidates:
         return -1
     target = _parse_time(sample_time)
-    return min(candidates, key=lambda item: abs((_parse_time(item[0]) - target).total_seconds()))[1]
+    nearest = min(candidates, key=lambda item: abs((_parse_time(item[0]) - target).total_seconds()))
+    delta_seconds = abs((_parse_time(nearest[0]) - target).total_seconds())
+    if max_delta_seconds is not None and delta_seconds > max_delta_seconds:
+        return -1
+    return nearest[1]
+
+
+def _sampling_tolerance_seconds(value: object) -> float:
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if interval <= 0:
+        return 0.0
+    return max(interval * 1.5, 0.25)
 
 
 def _enrich_switch_event(

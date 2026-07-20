@@ -1006,6 +1006,33 @@ def test_aba_active_switch_preserves_three_runs_and_rapid_flap():
     assert payload["rapid_flaps"][0]["is_rapid_flap"] is True
 
 
+def test_chart_switch_event_nearest_point_respects_sampling_tolerance():
+    from netconsole.services.mesh_chart_payload import build_chart_payload
+
+    rows = [
+        _payload_row(1, "2025-12-03 10:00:01.000", "30f5-277a-5a2f", "ACTIVE", 24, 34),
+        _payload_row(2, "2025-12-03 10:00:02.000", "30f5-277a-5a3f", "ACTIVE", 25, 35),
+    ]
+    events = [
+        {"id": 1, "event_type": EVENT_ACTIVE_SWITCH, "event_time": "2025-12-03 10:00:02.400"},
+        {"id": 2, "event_type": EVENT_ACTIVE_SWITCH, "event_time": "2025-12-03 10:00:20.000"},
+    ]
+
+    payload = build_chart_payload(
+        {"anchor": rows[0], "rows": rows},
+        {"anchor": rows[0], "rows": rows, "events": events, "estimated_interval_seconds": 1.0},
+    )
+
+    mapped_ids = [item["id"] for values in payload["events_by_index"].values() for item in values]
+    assert mapped_ids == [1]
+
+    without_interval = build_chart_payload(
+        {"anchor": rows[0], "rows": rows},
+        {"anchor": rows[0], "rows": rows, "events": [events[0]]},
+    )
+    assert without_interval["events_by_index"] == {}
+
+
 
 
 def test_no_active_and_multi_active_do_not_generate_active_series():
