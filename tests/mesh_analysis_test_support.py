@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,7 +37,7 @@ def create_mesh_analysis_fixture(tmp_path: Path) -> tuple[PathResolver, str, Pat
     detail = parsed_dir / "mesh.mesh.sqlite"
     _create_detail(detail)
     index = paths.mesh_mr_db_path(site, mr_name)
-    with sqlite3.connect(index) as conn:
+    with closing(sqlite3.connect(index)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE source_files (
@@ -66,7 +67,7 @@ def create_mesh_analysis_fixture(tmp_path: Path) -> tuple[PathResolver, str, Pat
         )
     catalog = paths.mesh_catalog_path(site)
     catalog.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(catalog) as conn:
+    with closing(sqlite3.connect(catalog)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE mr_profiles (
@@ -86,7 +87,7 @@ def create_mesh_analysis_fixture(tmp_path: Path) -> tuple[PathResolver, str, Pat
 
 
 def _create_detail(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE source_files (id INTEGER PRIMARY KEY, archived_filename TEXT, analysis_params_json TEXT);
@@ -126,7 +127,7 @@ def _create_detail(path: Path) -> None:
             INSERT INTO mesh_links VALUES (1, 1, 1, 1, '2026-07-14 10:00:00.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 42, 2, 78, 'exact', 'mapping', '00000000001f', '', 'session-1', 100, 90, 10, 20, 1, 2);
             INSERT INTO mesh_links VALUES (2, 2, 1, 2, '2026-07-14 10:00:01.000', 1, 'ACTIVE', '0000-0000-002f', '00000000002f', '00000000002f', 'AP-02', '000000000020', '区间A-B', 'radio2', 1, NULL, 3, 80, 'exact', 'mapping', '00000000002f', '', 'session-1', 110, 95, 13, 20, 2, 4);
             INSERT INTO mesh_links VALUES (3, 3, 1, 3, '2026-07-14 10:00:02.000', 1, 'ACTIVE', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '000000000010', '车站A', 'radio2', 1, 43, 2, 77, 'exact', 'mapping', '00000000001f', '', 'session-1', 120, 100, 5, 25, 2, 1);
-            INSERT INTO mesh_links VALUES (4, 3, 1, 4, '2026-07-14 10:00:02.000', 2, 'STANDBY', '0000-0000-003f', '00000000003f', '00000000003f', 'AP-03', '000000000030', '车站B', 'radio2', 1, 39, 1, 5, 'exact', 'mapping', '00000000003f', '', 'session-2', 80, 75, 3, 4, 0, 0);
+            INSERT INTO mesh_links VALUES (4, 3, 1, 4, '2026-07-14 10:00:02.000', 1, 'STANDBY', '0000-0000-003f', '00000000003f', '00000000003f', 'AP-03', '000000000030', '车站B', 'radio2', 1, 39, 1, 5, 'exact', 'mapping', '00000000003f', '', 'session-2', 80, 75, 3, 4, 0, 0);
             INSERT INTO active_points VALUES (1, 1, 1, 1, '2026-07-14 10:00:00.000', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '车站A', 'radio2', 'radio2', '1s', 1, 42, 45, 2, 1, 78, 77);
             INSERT INTO active_points VALUES (2, 2, 1, 1, '2026-07-14 10:00:01.000', '0000-0000-002f', '00000000002f', '00000000002f', 'AP-02', '区间A-B', 'radio2', 'radio2', '1s', 1, NULL, 44, 3, 1, 80, 76);
             INSERT INTO active_points VALUES (3, 3, 1, 1, '2026-07-14 10:00:02.000', '0000-0000-001f', '00000000001f', '00000000001f', 'AP-01', '车站A', 'radio2', 'radio2', '1s', 1, 43, 46, 2, 1, 77, 75);
@@ -135,5 +136,63 @@ def _create_detail(path: Path) -> None:
             INSERT INTO switch_events VALUES (2, 'ACTIVE_SWITCH', '2026-07-14 10:00:02.000', 1, '2026-07-14 10:00:01.000', '2026-07-14 10:00:02.000', 1000, '0000-0000-002f', '0000-0000-001f', '{"from_local_rssi":null,"to_local_rssi":43}', 1);
             INSERT INTO rssi_stats VALUES (1, 'all', 'all', 2, 42.5, 42, 43, 42, 42.5, 43, 0, 0);
             INSERT INTO diagnosis_events VALUES (1, '2026-07-14 10:00:01.000', 'warning', 'switch', '切换', '正式切换事件', 'event:1', '', '0000-0000-002f', NULL, NULL);
+
+            CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO schema_meta VALUES ('schema_version', 'meshlog_compact_v3_tagged_samples');
+            CREATE TABLE samples (
+                id INTEGER PRIMARY KEY, source_file_id INTEGER, radio INTEGER, sample_time TEXT,
+                timestamp_tag TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO samples VALUES (1, 1, 1, '2026-07-14 10:00:00.000', '');
+            INSERT INTO samples VALUES (2, 1, 1, '2026-07-14 10:00:01.000', '');
+            INSERT INTO samples VALUES (3, 1, 1, '2026-07-14 10:00:02.000', '');
+
+            ALTER TABLE mesh_links ADD COLUMN source_file_order INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN source_line_number INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN peer_radio TEXT DEFAULT '';
+            ALTER TABLE mesh_links ADD COLUMN establish_time TEXT;
+            ALTER TABLE mesh_links ADD COLUMN duration_text TEXT DEFAULT '';
+            ALTER TABLE mesh_links ADD COLUMN link_count INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_rssi_db INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_cpu_percent INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_cpu_percent INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_mem_percent INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_mem_percent INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_tx_busy INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_rx_busy INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_noise_raw INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_noise_raw INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_tx_des_free_cnt INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_tx_des_free_cnt INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_tx INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_tx INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_rx INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_rx INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_tx_garp INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_rx_garp INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_tx_mul_join INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_rx_mul_join INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_noise_dbm INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_noise_dbm INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN local_signal_dbm INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN peer_signal_dbm INTEGER;
+            ALTER TABLE mesh_links ADD COLUMN raw_line_start INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN raw_line_end INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN raw_offset_start INTEGER DEFAULT 0;
+            ALTER TABLE mesh_links ADD COLUMN raw_offset_end INTEGER DEFAULT 0;
+            UPDATE mesh_links SET source_line_number = record_seq, peer_radio = peer_radio_label,
+                duration_text = '1s', link_count = 1,
+                peer_rssi_db = local_rssi_db + 3,
+                peer_tx_busy = 1, peer_rx_busy = 76,
+                local_noise_dbm = -95, peer_noise_dbm = -94,
+                local_signal_dbm = -53, peer_signal_dbm = -50;
+
+            ALTER TABLE active_points ADD COLUMN sample_id INTEGER;
+            ALTER TABLE active_points ADD COLUMN session_id TEXT DEFAULT '';
+            ALTER TABLE active_points ADD COLUMN establish_time TEXT;
+            ALTER TABLE active_points ADD COLUMN local_signal_dbm INTEGER;
+            ALTER TABLE active_points ADD COLUMN peer_signal_dbm INTEGER;
+            UPDATE active_points SET sample_id = id, session_id = 'session-1',
+                establish_time = sample_time, local_signal_dbm = -53, peer_signal_dbm = -50;
             """
         )

@@ -111,9 +111,20 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
     workbook = load_workbook(target)
     sheet = workbook["链路明细"]
     headers = [cell.value for cell in sheet[1]]
-    assert headers[:8] == ["序号", "采样时间", "Radio", "链路状态", "Peer MAC", "对端AP MAC", "对端AP名称", "归属站点"]
+    assert headers[:9] == [
+        "序号",
+        "采样时间",
+        "采样标识",
+        "Radio",
+        "状态",
+        "PeerMac",
+        "当前 PEER AP 名称",
+        "AP MAC",
+        "归属站点",
+    ]
     assert "归属来源" not in headers
-    assert "Peer Radio MAC" not in headers
+    assert "Peer Radio MAC" in headers
+    assert {"MR 侧 RSSI 差值", "Peer 侧 RSSI 差值", "L_TxBusy", "P_RxBusy", "行号"} <= set(headers)
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref
 
@@ -130,7 +141,7 @@ def test_mesh_export_diagnostics_failure_does_not_fail_export(tmp_path: Path, mo
 
     assert target.exists()
     assert result["export_identity_diagnostics"]["available"] is False
-    assert load_workbook(target)["链路明细"]["E2"].value == "30f5-277a-5a2f"
+    assert load_workbook(target)["链路明细"]["F2"].value == "30f5-277a-5a2f"
 
 
 def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path, monkeypatch) -> None:

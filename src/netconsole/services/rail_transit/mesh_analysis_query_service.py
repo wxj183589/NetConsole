@@ -4,8 +4,11 @@ import hashlib
 import gzip
 import json
 import logging
+import math
 import re
 import sqlite3
+from bisect import bisect_right
+from collections import defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,14 +22,20 @@ from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDTO,
     MeshAnalysisSessionDetailDTO,
     MeshAnalysisSessionPageDTO,
+    MeshAnalysisParamsDTO,
     MeshAnalysisSummaryDTO,
     MeshAnalysisWarningDTO,
+    MeshActiveBuildOrderDTO,
+    MeshActiveBuildOrderPageDTO,
     MeshAnomalyDTO,
     MeshAnomalyPageDTO,
     MeshApStatisticsDTO,
     MeshApStatisticsPageDTO,
     MeshChannelBusyDTO,
     MeshChannelBusyPageDTO,
+    MeshChartBackupLinkDTO,
+    MeshChartEventDTO,
+    MeshChartPointDTO,
     MeshCounterDeltaPageDTO,
     MeshCounterDeltaPointDTO,
     MeshDataSourceDTO,
@@ -34,6 +43,8 @@ from netconsole.models.api.mesh_analysis import (
     MeshLinkPageDTO,
     MeshProfileDTO,
     MeshLinkTimelineDTO,
+    MeshPathChartDTO,
+    MeshPathChartSummaryDTO,
     MeshRawTailDTO,
     MeshRatePageDTO,
     MeshRatePointDTO,
@@ -45,15 +56,23 @@ from netconsole.models.api.mesh_analysis import (
     MeshSwitchEventPageDTO,
     MeshTimelineDTO,
 )
-from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION, _active_build_order_rows_from_points
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json, mesh_analysis_params_to_json
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired, SCHEMA_VERSION
+from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
+from netconsole.services.mesh_chart_payload import build_chart_payload, render_indices
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.mesh_ap_location_service import (
+    MeshApLocation,
+    MeshApLocationService,
+    MeshApLocationSnapshot,
+)
 from netconsole.services.mesh_source_locator import MeshSourceLocator
 
 
 _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-9]*)$")
 _MR_IDENTITY_RE = re.compile(r"^(?P<train>.+?)[-_ ]*MR[-_ ]*(?P<role>CT|TC|CW)$", re.IGNORECASE)
 _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
-_MAX_PAGE_SIZE = 500
+_MAX_PAGE_SIZE = 1_000
 LOGGER = logging.getLogger(__name__)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
@@ -70,16 +89,6 @@ class MeshAnalysisQueryError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class _ApLocation:
-    name: str = ""
-    mac: str = ""
-    station: str = ""
-    section: str = ""
-    mileage: str = ""
-    line_side: str = ""
-
-
-@dataclass(frozen=True)
 class _SessionContext:
     site_id: str
     session_id: str
@@ -88,6 +97,7 @@ class _SessionContext:
     safe_folder_name: str
     linked_device_id: int | None
     source_id: int
+    detail_source_id: int
     source: dict[str, Any]
     mr_root: Path
     index_db: Path
@@ -113,6 +123,7 @@ class MeshAnalysisQueryService:
     ) -> None:
         self.paths = paths
         self.base_query = base_query or RailTransitBaseDataQueryService(paths)
+        self.location_service = MeshApLocationService(self.base_query)
 
     def current_site_id(self) -> str:
         try:
@@ -244,7 +255,42 @@ class MeshAnalysisQueryService:
             warnings.append(MeshAnalysisWarningDTO(code="parsed_path_relocated", message="索引中的旧数据根路径不可用，已只读使用当前 MR parsed 目录的同名结果。"))
         if int(context.source.get("issue_count") or 0):
             warnings.append(MeshAnalysisWarningDTO(code="parse_issues", message="该来源存在既有解析告警，请查看异常摘要。"))
-        return MeshAnalysisSessionDetailDTO(session=self._session_dto(context, stats), warnings=warnings, sources=self.get_raw_source_summary(site_id, session_id))
+        return MeshAnalysisSessionDetailDTO(
+            session=self._session_dto(context, stats),
+            analysis_params=self._effective_analysis_params(context),
+            available_radios=self._available_radios(context),
+            warnings=warnings,
+            sources=self.get_raw_source_summary(site_id, session_id),
+        )
+
+    def _available_radios(self, context: _SessionContext) -> list[int]:
+        """Return the real Radio dimensions without depending on the visible build-order page."""
+        if context.detail_db is None:
+            return []
+        try:
+            with closing(self._connect_readonly(context.detail_db)) as conn:
+                table = "active_points" if self._table_exists(conn, "active_points") else "mesh_links"
+                if not self._table_exists(conn, table):
+                    return []
+                rows = conn.execute(
+                    f"SELECT DISTINCT radio FROM {table} WHERE radio IS NOT NULL ORDER BY radio"
+                ).fetchall()
+            return [int(row[0]) for row in rows if row[0] is not None]
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            LOGGER.debug("读取 MESH Radio 维度失败：%s", context.session_id, exc_info=True)
+            return []
+
+    def _effective_analysis_params(self, context: _SessionContext) -> MeshAnalysisParamsDTO:
+        source_params = str(context.source.get("analysis_params_json") or "").strip()
+        try:
+            params = (
+                mesh_analysis_params_from_json(source_params)
+                if source_params
+                else load_site_mesh_analysis_params(self.paths, context.site_id)
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            params = mesh_analysis_params_from_json(None)
+        return MeshAnalysisParamsDTO(**params.to_dict())
 
     def list_link_details(
         self,
@@ -323,14 +369,36 @@ class MeshAnalysisQueryService:
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
             rows = conn.execute(
                 f"""
-                SELECT ml.id, ml.sample_time, ml.radio, ml.link_state, ml.peer_mac_raw,
-                       ml.peer_mac_normalized, ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site,
-                       ml.peer_radio_label, ml.local_rssi_db, ml.duration_seconds,
-                       ml.record_seq, ml.peer_match_rule, ml.peer_resolve_source,
-                       (SELECT event_type FROM switch_events se WHERE se.event_time = ml.sample_time ORDER BY se.id LIMIT 1) AS event_type
+                SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
+                       DENSE_RANK() OVER (
+                           ORDER BY ml.source_file_id, ml.sample_time, s.timestamp_tag
+                       ) - 1 AS sample_group_index,
+                       ml.radio, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
+                       ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site, ml.peer_radio_mac,
+                       ml.peer_radio_label, ml.establish_time, ml.duration_text, ml.duration_seconds,
+                       ml.link_count, ml.local_rssi_db, ml.peer_rssi_db,
+                       ml.local_noise_dbm, ml.peer_noise_dbm, ml.local_signal_dbm, ml.peer_signal_dbm,
+                       ml.local_rate_raw, ml.peer_rate_raw,
+                       ml.local_tx_busy, ml.peer_tx_busy, ml.local_rx_busy, ml.peer_rx_busy,
+                       ml.local_cpu_percent, ml.peer_cpu_percent, ml.local_mem_percent, ml.peer_mem_percent,
+                       ml.local_tx_des_free_cnt, ml.peer_tx_des_free_cnt,
+                       ml.local_tx, ml.peer_tx, ml.local_rx, ml.peer_rx,
+                       ml.local_retry, ml.peer_retry, ml.local_err, ml.peer_err,
+                       ml.local_tx_garp, ml.peer_rx_garp, ml.local_tx_mul_join, ml.peer_rx_mul_join,
+                       ml.source_line_number, ml.record_seq, ml.raw_line_start, ml.raw_line_end,
+                       ml.raw_offset_start, ml.raw_offset_end,
+                       ml.peer_match_rule, ml.peer_resolve_source,
+                       sf.archived_filename AS source_file,
+                       (SELECT event_type FROM switch_events se
+                        WHERE se.source_file_id = ml.source_file_id
+                          AND se.radio = ml.radio
+                          AND se.event_time = ml.sample_time
+                        ORDER BY se.id LIMIT 1) AS event_type
                 FROM mesh_links ml
+                LEFT JOIN samples s ON s.id = ml.sample_id
+                LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
-                ORDER BY {sort_column} {direction}, ml.id {direction}
+                ORDER BY {sort_column} {direction}, s.timestamp_tag {direction}, ml.record_seq {direction}, ml.id {direction}
                 LIMIT ? OFFSET ?
                 """,
                 (*values, size, offset),
@@ -349,26 +417,186 @@ class MeshAnalysisQueryService:
                     train_name=train_name,
                     mr_name=context.mr_name,
                     mr_role=role,
+                    timestamp_tag=str(data.get("timestamp_tag") or ""),
+                    sample_group_index=data.get("sample_group_index"),
                     local_radio=data.get("radio"),
+                    peer_mac=str(data.get("peer_mac_normalized") or data.get("peer_mac_raw") or "") or None,
                     peer_ap_name=peer_name,
                     peer_ap_mac=peer_mac,
+                    peer_radio_mac=str(data.get("peer_radio_mac") or "") or None,
                     peer_radio=str(data.get("peer_radio_label") or "") or None,
                     link_role=str(data.get("link_state") or ""),
                     link_status=str(data.get("link_state") or ""),
                     rssi=self._number(data.get("local_rssi_db")),
+                    peer_rssi=self._number(data.get("peer_rssi_db")),
+                    local_noise=self._number(data.get("local_noise_dbm")),
+                    peer_noise=self._number(data.get("peer_noise_dbm")),
+                    local_signal=self._number(data.get("local_signal_dbm")),
+                    peer_signal=self._number(data.get("peer_signal_dbm")),
+                    local_rssi_db=self._number(data.get("local_rssi_db")),
+                    peer_rssi_db=self._number(data.get("peer_rssi_db")),
+                    local_noise_dbm=self._number(data.get("local_noise_dbm")),
+                    peer_noise_dbm=self._number(data.get("peer_noise_dbm")),
+                    local_signal_dbm=self._number(data.get("local_signal_dbm")),
+                    peer_signal_dbm=self._number(data.get("peer_signal_dbm")),
+                    local_rate_raw=self._number(data.get("local_rate_raw")),
+                    peer_rate_raw=self._number(data.get("peer_rate_raw")),
+                    local_tx_busy=self._number(data.get("local_tx_busy")),
+                    peer_tx_busy=self._number(data.get("peer_tx_busy")),
+                    local_rx_busy=self._number(data.get("local_rx_busy")),
+                    peer_rx_busy=self._number(data.get("peer_rx_busy")),
+                    establish_time=str(data.get("establish_time") or "") or None,
+                    duration_text=str(data.get("duration_text") or "") or None,
+                    duration_seconds=self._number(data.get("duration_seconds")),
+                    link_count=data.get("link_count"),
                     station=location.station or str(data.get("peer_site") or "") or None,
                     section=location.section or None,
                     mileage=location.mileage or None,
                     line_side=location.line_side or None,
                     event_type=str(data.get("event_type") or "") or None,
                     duration_ms=self._milliseconds(data.get("duration_seconds")),
-                    source_file=str(context.source.get("original_filename") or context.source.get("archived_filename") or ""),
+                    source_file=str(data.get("source_file") or context.source.get("original_filename") or context.source.get("archived_filename") or ""),
                     source_record_index=data.get("record_seq"),
+                    source_line_number=data.get("source_line_number"),
+                    raw_line_start=data.get("raw_line_start"),
+                    raw_line_end=data.get("raw_line_end"),
+                    raw_offset_start=data.get("raw_offset_start"),
+                    raw_offset_end=data.get("raw_offset_end"),
+                    local_cpu_percent=self._number(data.get("local_cpu_percent")),
+                    peer_cpu_percent=self._number(data.get("peer_cpu_percent")),
+                    local_mem_percent=self._number(data.get("local_mem_percent")),
+                    peer_mem_percent=self._number(data.get("peer_mem_percent")),
+                    local_tx_des_free_cnt=data.get("local_tx_des_free_cnt"),
+                    peer_tx_des_free_cnt=data.get("peer_tx_des_free_cnt"),
+                    local_tx=data.get("local_tx"),
+                    peer_tx=data.get("peer_tx"),
+                    local_rx=data.get("local_rx"),
+                    peer_rx=data.get("peer_rx"),
+                    local_retry=data.get("local_retry"),
+                    peer_retry=data.get("peer_retry"),
+                    local_err=data.get("local_err"),
+                    peer_err=data.get("peer_err"),
+                    local_tx_garp=data.get("local_tx_garp"),
+                    peer_rx_garp=data.get("peer_rx_garp"),
+                    local_tx_mul_join=data.get("local_tx_mul_join"),
+                    peer_rx_mul_join=data.get("peer_rx_mul_join"),
                     match_method=str(data.get("peer_match_rule") or data.get("peer_resolve_source") or "") or None,
                     warning=None if peer_name else "Peer AP 未匹配",
                 )
             )
         return MeshLinkPageDTO(items=items, total=total, page=current, page_size=size)
+
+    def list_active_build_order(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        radio: int | None = None,
+        peer: str = "",
+        station: str = "",
+        build_result: str = "",
+        pingpong_only: bool = False,
+        time_from: str = "",
+        time_to: str = "",
+        page: int = 1,
+        page_size: int = 100,
+        sort_order: str = "desc",
+    ) -> MeshActiveBuildOrderPageDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshActiveBuildOrderPageDTO(page=page, page_size=page_size)
+        rows = self._build_rows(context)
+        ap_map = self._ap_map(site_id)
+        items: list[MeshActiveBuildOrderDTO] = []
+        peer_needle = peer.casefold().strip()
+        station_needle = station.casefold().strip()
+        result_needle = build_result.casefold().strip()
+        for row in rows:
+            location = self._locate_ap(ap_map, row)
+            peer_text = " ".join(
+                str(row.get(key) or "")
+                for key in ("active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_radio", "peer_radio_mac")
+            ).casefold()
+            resolved_station = location.station or str(row.get("peer_site") or "")
+            start_time = str(row.get("build_start_time") or "")
+            end_time = str(row.get("build_end_time") or "")
+            if radio is not None and self._int(row.get("radio")) != int(radio):
+                continue
+            if peer_needle and peer_needle not in peer_text:
+                continue
+            if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
+                continue
+            if result_needle and result_needle != str(row.get("build_result") or "").casefold():
+                continue
+            if pingpong_only and not bool(row.get("is_ap_return_event") or row.get("is_pingpong_abnormal")):
+                continue
+            if time_from and end_time < time_from:
+                continue
+            if time_to and start_time > time_to:
+                continue
+            items.append(
+                MeshActiveBuildOrderDTO(
+                    sequence=int(row.get("sequence") or 0),
+                    source_file_id=context.source_id,
+                    anchor_link_id=self._int(row.get("anchor_link_id")),
+                    local_radio=self._int(row.get("radio")),
+                    active_peer_mac=str(row.get("active_peer_mac") or ""),
+                    peer_ap_name=str(row.get("peer_ap_name") or location.name or "") or None,
+                    peer_ap_mac=str(row.get("peer_ap_mac") or location.mac or "") or None,
+                    peer_radio=str(row.get("peer_radio") or "") or None,
+                    peer_radio_mac=str(row.get("peer_radio_mac") or "") or None,
+                    station=resolved_station or None,
+                    section=location.section or None,
+                    mileage=location.mileage or None,
+                    line_side=location.line_side or None,
+                    build_start_time=start_time,
+                    build_end_time=end_time,
+                    main_link_duration_seconds=self._number(row.get("main_link_duration_seconds")),
+                    reported_duration_seconds=self._number(row.get("reported_duration_seconds")),
+                    sample_count=int(row.get("sample_count") or 0),
+                    avg_mr_rssi=self._number(row.get("avg_mr_rssi")),
+                    min_mr_rssi=self._number(row.get("min_mr_rssi")),
+                    max_mr_rssi=self._number(row.get("max_mr_rssi")),
+                    p10_mr_rssi=self._number(row.get("p10_mr_rssi")),
+                    avg_tx_busy=self._number(row.get("avg_tx_busy")),
+                    avg_rx_busy=self._number(row.get("avg_rx_busy")),
+                    avg_peer_tx_busy=self._number(row.get("avg_peer_tx_busy")),
+                    avg_peer_rx_busy=self._number(row.get("avg_peer_rx_busy")),
+                    main_link_switch_time_ms=self._int(row.get("main_link_switch_time_ms")),
+                    short_link_tolerance_ms=self._int(row.get("short_link_tolerance_ms")),
+                    pingpong_tolerance_ms=self._int(row.get("pingpong_tolerance_ms")),
+                    pingpong_return_window_ms=self._int(row.get("pingpong_return_window_ms")),
+                    short_threshold_seconds=self._number(row.get("short_threshold_seconds")),
+                    min_normal_sample_count=self._int(row.get("min_normal_sample_count")),
+                    build_result=str(row.get("build_result") or ""),
+                    judge_reason=str(row.get("judge_reason") or ""),
+                    is_same_physical_ap_radio_switch=bool(row.get("is_same_physical_ap_radio_switch")),
+                    physical_ap_key=str(row.get("physical_ap_key") or ""),
+                    is_ap_return_event=bool(row.get("is_ap_return_event")),
+                    is_pingpong_abnormal=bool(row.get("is_pingpong_abnormal")),
+                    pingpong_type=str(row.get("pingpong_type") or ""),
+                    pingpong_group_id=str(row.get("pingpong_group_id") or ""),
+                    pingpong_return_duration_ms=self._int(row.get("pingpong_return_duration_ms")),
+                    middle_ap_dwell_ms=self._int(row.get("middle_ap_dwell_ms")),
+                    previous_ap=str(row.get("previous_ap") or ""),
+                    middle_ap=str(row.get("middle_ap") or ""),
+                    return_ap=str(row.get("return_ap") or ""),
+                    pingpong_judgment_reason=str(row.get("pingpong_judgment_reason") or ""),
+                    source_file=str(row.get("source_file") or context.source.get("archived_filename") or ""),
+                )
+            )
+        items.sort(
+            key=lambda item: (item.build_start_time, item.sequence),
+            reverse=sort_order.lower() != "asc",
+        )
+        current, size = self._page(page, page_size)
+        start = (current - 1) * size
+        return MeshActiveBuildOrderPageDTO(
+            items=items[start : start + size],
+            total=len(items),
+            page=current,
+            page_size=size,
+        )
 
     def get_link_timeline(self, site_id: str, session_id: str, *, time_from: str = "", time_to: str = "", limit: int = 2_000) -> MeshTimelineDTO:
         context = self._context(site_id, session_id)
@@ -588,6 +816,171 @@ class MeshAnalysisQueryService:
             for row in rows
         ]
         return MeshChannelBusyPageDTO(items=items, total=total, downsampled=step > 1)
+
+    def get_active_path_chart(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        radio: int | None = None,
+        time_from: str = "",
+        time_to: str = "",
+        max_points: int = 1_000,
+    ) -> MeshPathChartDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshPathChartDTO(mode="active_path")
+        repository = self._chart_repository(context)
+        payload = repository.query_active_link_chart_segments(
+            source_file_id=context.detail_source_id,
+            radio=radio,
+            time_from=time_from,
+            time_to=time_to,
+        )
+        return self._chart_dto(
+            site_id,
+            context,
+            payload,
+            mode="active_path",
+            max_points=max_points,
+            time_from=time_from,
+            time_to=time_to,
+        )
+
+    def get_peer_segment_chart(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        anchor_link_id: int,
+        time_from: str = "",
+        time_to: str = "",
+        max_points: int = 1_000,
+        all_visits: bool = False,
+    ) -> MeshPathChartDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshPathChartDTO(mode="peer_segment")
+        repository = self._chart_repository(context)
+        if all_visits:
+            payload = self._all_peer_visit_payload(context, repository, anchor_link_id)
+        elif time_from and time_to:
+            payload = repository.query_peer_chart_segments_in_range(
+                anchor_link_id,
+                time_from,
+                time_to,
+                source_file_id=context.detail_source_id,
+            )
+        elif time_from or time_to:
+            payload = repository.query_peer_chart_segments(
+                anchor_link_id,
+                source_file_id=context.detail_source_id,
+            )
+        else:
+            payload = repository.query_peer_chart_initial_segments(
+                anchor_link_id,
+                visible_samples=min(max(int(max_points), 10), 2_000),
+                margin_samples=60,
+                source_file_id=context.detail_source_id,
+            )
+        return self._chart_dto(
+            site_id,
+            context,
+            payload,
+            mode="peer_segment",
+            max_points=max_points,
+            time_from=time_from,
+            time_to=time_to,
+        )
+
+    def _all_peer_visit_payload(
+        self,
+        context: _SessionContext,
+        repository: MeshMrRepository,
+        anchor_link_id: int,
+    ) -> dict[str, object]:
+        builds = self._build_rows(context)
+        anchor_build = next(
+            (row for row in builds if self._int(row.get("anchor_link_id")) == int(anchor_link_id)),
+            None,
+        )
+        if anchor_build is None:
+            return repository.query_peer_chart_segments(
+                anchor_link_id,
+                source_file_id=context.detail_source_id,
+            )
+        identity = self._build_ap_identity(anchor_build)
+        radio = self._int(anchor_build.get("radio"))
+        visits = [
+            row
+            for row in builds
+            if self._build_ap_identity(row) == identity and self._int(row.get("radio")) == radio
+        ]
+        payloads = [
+            repository.query_peer_chart_segments_in_range(
+                int(row["anchor_link_id"]),
+                str(row.get("build_start_time") or ""),
+                str(row.get("build_end_time") or ""),
+                source_file_id=context.detail_source_id,
+            )
+            for row in visits
+            if self._int(row.get("anchor_link_id")) is not None
+        ]
+        return self._merge_peer_visit_payloads(payloads)
+
+    @classmethod
+    def _merge_peer_visit_payloads(cls, payloads: list[dict[str, object]]) -> dict[str, object]:
+        peer_rows: list[dict[str, object]] = []
+        run_rows: list[dict[str, object]] = []
+        events: list[dict[str, object]] = []
+        anchors: list[dict[str, object]] = []
+        intervals: list[float] = []
+        gaps: list[float] = []
+        for payload in payloads:
+            peer_segment = dict(payload.get("peer_segment") or {})
+            run_segment = dict(payload.get("run_segment") or {})
+            peer_rows.extend(dict(row) for row in peer_segment.get("rows") or [])
+            run_rows.extend(dict(row) for row in run_segment.get("rows") or [])
+            events.extend(dict(row) for row in run_segment.get("events") or [])
+            anchor = dict(payload.get("anchor") or peer_segment.get("anchor") or {})
+            if anchor:
+                anchors.append(anchor)
+            for segment in (peer_segment, run_segment):
+                interval = cls._number(segment.get("estimated_interval_seconds"))
+                gap = cls._number(segment.get("continuity_gap_seconds"))
+                if interval is not None:
+                    intervals.append(interval)
+                if gap is not None:
+                    gaps.append(gap)
+        peer_rows.sort(key=lambda row: (str(row.get("sample_time") or ""), str(row.get("timestamp_tag") or ""), int(row.get("id") or 0)))
+        run_rows.sort(key=lambda row: (str(row.get("sample_time") or ""), str(row.get("timestamp_tag") or ""), int(row.get("id") or 0)))
+        anchor = anchors[0] if anchors else None
+        interval = min(intervals) if intervals else None
+        gap = max(gaps) if gaps else None
+        peer_segment = {
+            "anchor": anchor,
+            "rows": peer_rows,
+            "estimated_interval_seconds": interval,
+            "continuity_gap_seconds": gap,
+        }
+        run_segment = {
+            "anchor": anchor,
+            "rows": run_rows,
+            "events": events,
+            "estimated_interval_seconds": interval,
+            "continuity_gap_seconds": gap,
+        }
+        return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
+
+    @classmethod
+    def _build_ap_identity(cls, row: dict[str, Any]) -> str:
+        physical = str(row.get("physical_ap_key") or "").strip().casefold()
+        if physical:
+            return f"physical:{physical}"
+        mac = cls._mac_key(row.get("peer_ap_mac") or row.get("active_peer_mac"))
+        if mac:
+            return f"mac:{mac}"
+        return f"name:{str(row.get('peer_ap_name') or '').strip().casefold()}"
 
     def get_rate_series(
         self,
@@ -1036,6 +1429,7 @@ class MeshAnalysisQueryService:
             safe_folder_name=safe_name,
             linked_device_id=profile.get("linked_device_id"),
             source_id=int(source["id"]),
+            detail_source_id=self._resolve_detail_source_id(detail, source),
             source=source,
             mr_root=mr_root.resolve(),
             index_db=index_db.resolve(),
@@ -1139,7 +1533,7 @@ class MeshAnalysisQueryService:
                 if "active_points" in tables:
                     try:
                         builds = self._build_rows(context)
-                    except sqlite3.Error:
+                    except (sqlite3.Error, MeshAnalysisQueryError):
                         LOGGER.debug("旧 MESH active_points 不支持派生建链统计", exc_info=True)
                 result["short"] = sum(row.get("build_result") == "short" for row in builds) if builds else None
                 result["pingpong"] = sum(bool(row.get("is_pingpong_abnormal")) for row in builds) if builds else None
@@ -1159,34 +1553,497 @@ class MeshAnalysisQueryService:
         if context.detail_db is None:
             return []
         stat = context.detail_db.stat()
-        params = str(context.source.get("analysis_params_json") or "")
-        return [dict(row) for row in self._build_rows_cached(str(context.detail_db), stat.st_mtime_ns, stat.st_size, params)]
+        source_params = str(context.source.get("analysis_params_json") or "")
+        try:
+            fallback_params = mesh_analysis_params_to_json(
+                load_site_mesh_analysis_params(self.paths, context.site_id)
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            fallback_params = "{}"
+        return [
+            dict(row)
+            for row in self._build_rows_cached(
+                str(context.detail_db),
+                stat.st_mtime_ns,
+                stat.st_size,
+                context.detail_source_id,
+                source_params,
+                fallback_params,
+            )
+        ]
+
+    def _resolve_detail_source_id(self, detail_db: Path | None, source: dict[str, Any]) -> int:
+        index_source_id = int(source["id"])
+        if detail_db is None:
+            return index_source_id
+        try:
+            with closing(self._connect_readonly(detail_db)) as conn:
+                if not self._table_exists(conn, "source_files"):
+                    return index_source_id
+                columns = self._table_columns(conn, "source_files")
+                selected = [
+                    column
+                    for column in ("id", "sha256", "original_filename", "archived_filename")
+                    if column in columns
+                ]
+                if "id" not in selected:
+                    return index_source_id
+                rows = [dict(row) for row in conn.execute(f"SELECT {', '.join(selected)} FROM source_files ORDER BY id")]
+        except sqlite3.Error:
+            return index_source_id
+        if not rows:
+            return index_source_id
+        source_sha = str(source.get("sha256") or "").strip().casefold()
+        if source_sha:
+            matched = [row for row in rows if str(row.get("sha256") or "").strip().casefold() == source_sha]
+            if len(matched) == 1:
+                return int(matched[0]["id"])
+        source_names = {
+            str(source.get(field) or "").strip().casefold()
+            for field in ("original_filename", "archived_filename")
+            if str(source.get(field) or "").strip()
+        }
+        if source_names:
+            matched = [
+                row
+                for row in rows
+                if source_names
+                & {
+                    str(row.get(field) or "").strip().casefold()
+                    for field in ("original_filename", "archived_filename")
+                }
+            ]
+            if len(matched) == 1:
+                return int(matched[0]["id"])
+        if len(rows) == 1:
+            return int(rows[0]["id"])
+        same_id = next((row for row in rows if int(row["id"]) == index_source_id), None)
+        return int(same_id["id"]) if same_id is not None else index_source_id
 
     @lru_cache(maxsize=16)
-    def _build_rows_cached(self, path: str, _mtime_ns: int, _size: int, analysis_params_json: str) -> tuple[dict[str, Any], ...]:
-        with closing(self._connect_readonly(Path(path))) as conn:
-            rows = [
-                dict(row)
-                for row in conn.execute(
-                    """
-                    SELECT ap.id, ap.link_id, ap.source_file_id, ap.radio, ap.sample_time,
-                           ap.peer_mac_raw, ap.peer_mac_normalized, ap.peer_mac,
-                           ap.peer_ap_name, ap.peer_site, ap.peer_radio, ap.peer_radio_label,
-                           ml.peer_ap_mac, ml.peer_radio_mac,
-                           ap.duration_text, ap.duration_seconds,
-                           ap.local_rssi_db, ap.peer_rssi_db,
-                           ap.local_tx_busy, ap.peer_tx_busy, ap.local_rx_busy, ap.peer_rx_busy,
-                           sf.archived_filename AS source_file,
-                           COALESCE(NULLIF(?, ''), sf.analysis_params_json) AS analysis_params_json
-                    FROM active_points ap
-                    LEFT JOIN source_files sf ON sf.id = ap.source_file_id
-                    LEFT JOIN mesh_links ml ON ml.id = ap.link_id
-                    ORDER BY ap.source_file_id, ap.radio, ap.sample_time, ap.id
-                    """,
-                    (analysis_params_json,),
+    def _build_rows_cached(
+        self,
+        path: str,
+        _mtime_ns: int,
+        _size: int,
+        source_file_id: int,
+        analysis_params_json: str,
+        fallback_params_json: str,
+    ) -> tuple[dict[str, Any], ...]:
+        try:
+            repository = MeshMrRepository(Path(path), read_only=True)
+            return tuple(
+                repository.query_active_link_build_order(
+                    source_file_id=source_file_id,
+                    analysis_params=analysis_params_json or None,
+                    fallback_analysis_params=fallback_params_json,
                 )
-            ]
-        return tuple(_active_build_order_rows_from_points(rows))
+            )
+        except MeshSchemaRebuildRequired as exc:
+            raise MeshAnalysisQueryError(str(exc)) from exc
+
+    @staticmethod
+    def _chart_repository(context: _SessionContext) -> MeshMrRepository:
+        if context.detail_db is None:
+            raise MeshAnalysisQueryError("结构化分析结果不存在")
+        try:
+            return MeshMrRepository(context.detail_db, read_only=True)
+        except MeshSchemaRebuildRequired as exc:
+            raise MeshAnalysisQueryError(str(exc)) from exc
+
+    def _chart_dto(
+        self,
+        site_id: str,
+        context: _SessionContext,
+        payload: dict[str, object],
+        *,
+        mode: str,
+        max_points: int,
+        time_from: str,
+        time_to: str,
+    ) -> MeshPathChartDTO:
+        return self._chart_payload_dto(
+            site_id,
+            context,
+            payload,
+            mode=mode,
+            max_points=max_points,
+            time_from=time_from,
+            time_to=time_to,
+        )
+
+    def _chart_payload_dto(
+        self,
+        site_id: str,
+        context: _SessionContext,
+        payload: dict[str, object],
+        *,
+        mode: str,
+        max_points: int,
+        time_from: str,
+        time_to: str,
+    ) -> MeshPathChartDTO:
+        run_segment = dict(payload.get("run_segment") or {})
+        peer_segment = dict(payload.get("peer_segment") or {})
+        run_segment["rows"] = self._chart_rows_in_window(run_segment.get("rows"), time_from, time_to)
+        peer_segment["rows"] = self._chart_rows_in_window(peer_segment.get("rows"), time_from, time_to)
+        run_segment["events"] = self._chart_events_in_window(run_segment.get("events"), time_from, time_to)
+        chart = build_chart_payload(peer_segment, run_segment)
+        timestamps = list(chart.get("timestamp_labels") or [])
+        tags = list(chart.get("timestamp_tags") or [])
+        sources = list(chart.get("sample_source_file_ids") or [])
+        radios = list(chart.get("sample_radios") or [])
+        backups = list(chart.get("standby_links_by_index") or [])
+        contexts = list(
+            chart.get("main_links_by_index") if mode == "active_path" else chart.get("peer_links_by_index") or []
+        )
+        active_series = dict(chart.get("active_series") or {})
+        peer_series = dict(chart.get("peer_series") or {})
+        active_peer_rssi = chart.get("active_peer_rssi")
+        no_active_values = chart.get("no_active_indices")
+        multi_active_values = chart.get("multi_active_indices")
+        switch_values = chart.get("switch_indices")
+        no_active = {int(value) for value in (no_active_values if no_active_values is not None else [])}
+        multi_active = {int(value) for value in (multi_active_values if multi_active_values is not None else [])}
+        switch_indices = {int(value) for value in (switch_values if switch_values is not None else [])}
+        events_by_index = dict(chart.get("events_by_index") or {})
+        segment_index = self._chart_segment_index(self._build_rows(context))
+        ap_map = self._ap_map(site_id)
+        continuity_gap = self._number(dict(chart.get("metadata") or {}).get("continuity_gap_seconds"))
+        point_rows: list[dict[str, Any]] = []
+        previous_time: datetime | None = None
+        previous_source = ""
+        previous_segment_sequence: int | None = None
+        for index, timestamp in enumerate(timestamps):
+            item = dict(contexts[index] or {}) if index < len(contexts) else {}
+            source = str(sources[index] if index < len(sources) else item.get("source_file_id") or "")
+            radio = self._int(radios[index] if index < len(radios) else item.get("radio"))
+            current_time = self._parse_time(timestamp)
+            gap_before = bool(previous_source and source != previous_source)
+            if previous_time is not None and current_time is not None and continuity_gap is not None:
+                gap_before = gap_before or (current_time - previous_time).total_seconds() > continuity_gap
+            row_for_segment = {
+                "source_file_id": source,
+                "sample_time": timestamp,
+                "radio": radio,
+                "peer_mac_normalized": item.get("peer_mac"),
+            }
+            segment = self._chart_segment(segment_index, row_for_segment)
+            segment_sequence = self._int((segment or {}).get("sequence"))
+            if mode == "peer_segment" and previous_segment_sequence is not None and segment_sequence != previous_segment_sequence:
+                gap_before = True
+            if mode == "active_path":
+                local_rssi = self._chart_array_number(active_series.get("active_local_rssi"), index)
+                peer_rssi = self._chart_array_number(active_peer_rssi, index)
+                local_tx_busy = self._chart_array_number(active_series.get("active_local_tx_busy"), index)
+                local_rx_busy = self._chart_array_number(active_series.get("active_local_rx_busy"), index)
+                peer_tx_busy = self._chart_array_number(chart.get("active_peer_tx_busy"), index)
+                peer_rx_busy = self._chart_array_number(chart.get("active_peer_rx_busy"), index)
+                local_signal = self._chart_array_number(chart.get("active_local_signal"), index)
+                peer_signal = self._chart_array_number(chart.get("active_peer_signal"), index)
+            else:
+                local_rssi = self._chart_array_number(peer_series.get("local_rssi"), index)
+                peer_rssi = self._chart_array_number(peer_series.get("peer_rssi"), index)
+                local_tx_busy = self._chart_array_number(peer_series.get("local_tx_busy"), index)
+                local_rx_busy = self._chart_array_number(peer_series.get("local_rx_busy"), index)
+                peer_tx_busy = self._chart_array_number(peer_series.get("peer_tx_busy"), index)
+                peer_rx_busy = self._chart_array_number(peer_series.get("peer_rx_busy"), index)
+                local_signal = self._chart_array_number(peer_series.get("local_signal"), index)
+                peer_signal = self._chart_array_number(peer_series.get("peer_signal"), index)
+            point_rows.append(
+                {
+                    "item": item,
+                    "timestamp": str(timestamp),
+                    "timestamp_tag": str(tags[index] if index < len(tags) else item.get("timestamp_tag") or ""),
+                    "radio": radio,
+                    "segment": segment,
+                    "segment_sequence": segment_sequence,
+                    "local_rssi": local_rssi,
+                    "peer_rssi": peer_rssi,
+                    "local_signal": local_signal,
+                    "peer_signal": peer_signal,
+                    "local_tx_busy": local_tx_busy,
+                    "peer_tx_busy": peer_tx_busy,
+                    "local_rx_busy": local_rx_busy,
+                    "peer_rx_busy": peer_rx_busy,
+                    "is_switch": index in switch_indices,
+                    "is_anomaly": index in no_active or index in multi_active,
+                    "gap_before": gap_before,
+                    "backups": backups[index] if index < len(backups) else [],
+                }
+            )
+            previous_source = source
+            previous_time = current_time or previous_time
+            previous_segment_sequence = segment_sequence
+        total_points = len(point_rows)
+        max_points = min(max(int(max_points), 10), 2_000)
+        important_values = chart.get("important_indices")
+        important = {int(value) for value in (important_values if important_values is not None else [])}
+        important.update(self._important_chart_row_indices(point_rows))
+        indices = [int(index) for index in render_indices(total_points, 0, 0, important, max_points)]
+        returned = [self._materialize_chart_point(ap_map, context, point_rows[index]) for index in indices]
+        anchor_index = self._int(dict(chart.get("metadata") or {}).get("anchor_index"))
+        anchor = (
+            self._materialize_chart_point(ap_map, context, point_rows[anchor_index])
+            if anchor_index is not None and 0 <= anchor_index < total_points
+            else None
+        )
+        events: list[MeshChartEventDTO] = []
+        seen_events: set[int] = set()
+        for values in events_by_index.values():
+            for event in values:
+                event_id = int(event.get("id") or 0)
+                if event_id in seen_events:
+                    continue
+                seen_events.add(event_id)
+                timestamp = str(event.get("event_time") or event.get("current_sample_time") or "")
+                event_segment = self._chart_segment(
+                    segment_index,
+                    {
+                        "source_file_id": event.get("source_file_id") or context.detail_source_id,
+                        "sample_time": timestamp,
+                        "radio": event.get("radio"),
+                        "peer_mac_normalized": event.get("to_peer_mac"),
+                    },
+                )
+                from_location = self._locate_ap(
+                    ap_map,
+                    {"peer_ap_mac": event.get("from_peer_mac"), "peer_ap_name": event.get("from_peer_ap_name")},
+                )
+                to_location = self._locate_ap(
+                    ap_map,
+                    {"peer_ap_mac": event.get("to_peer_mac"), "peer_ap_name": event.get("to_peer_ap_name")},
+                )
+                events.append(
+                    MeshChartEventDTO(
+                        event_id=event_id,
+                        timestamp=timestamp,
+                        event_type=str(event.get("event_type") or ""),
+                        local_radio=self._int(event.get("radio")),
+                        from_peer_mac=str(event.get("from_peer_mac") or "") or None,
+                        to_peer_mac=str(event.get("to_peer_mac") or "") or None,
+                        from_ap_name=str(event.get("from_peer_ap_name") or from_location.name or "") or None,
+                        to_ap_name=str(event.get("to_peer_ap_name") or to_location.name or "") or None,
+                        segment_sequence=self._int((event_segment or {}).get("sequence")),
+                        duration_ms=self._int(event.get("observed_window_ms")),
+                    )
+                )
+        current_row = next(
+            (row for row in reversed(point_rows) if str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE"),
+            None,
+        )
+        current = self._materialize_chart_point(ap_map, context, current_row) if current_row else None
+        first_time = str(point_rows[0]["timestamp"]) if point_rows else None
+        last_time = str(point_rows[-1]["timestamp"]) if point_rows else None
+        metadata = dict(chart.get("metadata") or {})
+        return MeshPathChartDTO(
+            mode="active_path" if mode == "active_path" else "peer_segment",
+            anchor=anchor,
+            points=returned,
+            events=events,
+            summary=MeshPathChartSummaryDTO(
+                current_peer_mac=current.peer_mac if current else None,
+                current_peer_ap_name=current.peer_ap_name if current else None,
+                current_radio=current.local_radio if current else None,
+                sample_count=total_points,
+                active_count=sum(str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE" for row in point_rows),
+                standby_context_count=sum(len(row.get("backups") or []) for row in point_rows),
+                switch_count=sum(event.event_type == "ACTIVE_SWITCH" for event in events),
+                earliest_sample_time=first_time,
+                latest_sample_time=last_time,
+                first_sample_time=first_time,
+                last_sample_time=last_time,
+                estimated_interval_seconds=self._number(metadata.get("estimated_interval_seconds")),
+                continuity_gap_seconds=continuity_gap,
+            ),
+            total_points=total_points,
+            returned_points=len(returned),
+            downsampled=len(returned) < total_points,
+            time_from=time_from or first_time,
+            time_to=time_to or last_time,
+        )
+
+    @staticmethod
+    def _chart_rows_in_window(value: object, time_from: str, time_to: str) -> list[dict[str, Any]]:
+        rows = [dict(row) for row in (value or []) if isinstance(row, dict)]
+        if time_from:
+            rows = [row for row in rows if str(row.get("sample_time") or "") >= time_from]
+        if time_to:
+            rows = [row for row in rows if str(row.get("sample_time") or "") <= time_to]
+        return rows
+
+    @staticmethod
+    def _chart_events_in_window(value: object, time_from: str, time_to: str) -> list[dict[str, Any]]:
+        events = [dict(row) for row in (value or []) if isinstance(row, dict)]
+        if time_from:
+            events = [row for row in events if str(row.get("event_time") or "") >= time_from]
+        if time_to:
+            events = [row for row in events if str(row.get("event_time") or "") <= time_to]
+        return events
+
+    def _chart_backup_from_summary(
+        self,
+        ap_map: MeshApLocationSnapshot,
+        row: dict[str, Any],
+        public_source_id: int,
+    ) -> MeshChartBackupLinkDTO:
+        location = self._locate_ap(
+            ap_map,
+            {
+                "peer_ap_mac": row.get("ap_mac"),
+                "peer_ap_name": row.get("ap_name"),
+                "peer_mac_normalized": row.get("peer_mac"),
+                "peer_site": row.get("site"),
+            },
+        )
+        return MeshChartBackupLinkDTO(
+            link_id=self._int(row.get("link_id")),
+            source_file_id=public_source_id,
+            timestamp=str(row.get("sample_time") or ""),
+            timestamp_tag=str(row.get("timestamp_tag") or ""),
+            local_radio=self._int(row.get("radio")),
+            peer_mac=str(row.get("peer_mac") or ""),
+            peer_ap_name=str(row.get("ap_name") or location.name or "") or None,
+            peer_ap_mac=str(row.get("ap_mac") or location.mac or "") or None,
+            peer_radio=str(row.get("peer_radio") or "") or None,
+            peer_radio_mac=str(row.get("peer_radio_mac") or "") or None,
+            station=location.station or str(row.get("site") or "") or None,
+            section=location.section or None,
+            local_rssi=self._number(row.get("mr_rssi")),
+            peer_rssi=self._number(row.get("ap_rssi")),
+            local_signal=self._number(row.get("local_signal")),
+            peer_signal=self._number(row.get("peer_signal")),
+            local_tx_busy=self._number(row.get("local_tx_busy")),
+            peer_tx_busy=self._number(row.get("peer_tx_busy")),
+            local_rx_busy=self._number(row.get("local_rx_busy")),
+            peer_rx_busy=self._number(row.get("peer_rx_busy")),
+        )
+
+    def _materialize_chart_point(
+        self,
+        ap_map: MeshApLocationSnapshot,
+        context: _SessionContext,
+        row: dict[str, Any],
+    ) -> MeshChartPointDTO:
+        item = dict(row.get("item") or {})
+        segment = dict(row.get("segment") or {})
+        location = self._locate_ap(
+            ap_map,
+            {
+                "peer_ap_mac": item.get("ap_mac"),
+                "peer_ap_name": item.get("ap_name"),
+                "peer_mac_normalized": item.get("peer_mac"),
+                "peer_site": item.get("site"),
+            },
+        )
+        return MeshChartPointDTO(
+            link_id=self._int(item.get("link_id")),
+            source_file_id=context.source_id,
+            timestamp=str(row.get("timestamp") or ""),
+            timestamp_tag=str(row.get("timestamp_tag") or ""),
+            local_radio=self._int(row.get("radio")),
+            link_state=str(item.get("status") or ""),
+            peer_mac=str(item.get("peer_mac") or ""),
+            peer_ap_name=str(item.get("ap_name") or location.name or "") or None,
+            peer_ap_mac=str(item.get("ap_mac") or location.mac or "") or None,
+            peer_radio=str(item.get("peer_radio") or "") or None,
+            peer_radio_mac=str(item.get("peer_radio_mac") or "") or None,
+            station=location.station or str(item.get("site") or "") or None,
+            section=location.section or None,
+            local_rssi=self._number(row.get("local_rssi")),
+            peer_rssi=self._number(row.get("peer_rssi")),
+            local_signal=self._number(row.get("local_signal")),
+            peer_signal=self._number(row.get("peer_signal")),
+            local_tx_busy=self._number(row.get("local_tx_busy")),
+            peer_tx_busy=self._number(row.get("peer_tx_busy")),
+            local_rx_busy=self._number(row.get("local_rx_busy")),
+            peer_rx_busy=self._number(row.get("peer_rx_busy")),
+            establish_time=str(item.get("establish_time") or "") or None,
+            segment_sequence=self._int(row.get("segment_sequence")),
+            segment_start=str(segment.get("build_start_time") or "") or None,
+            segment_end=str(segment.get("build_end_time") or "") or None,
+            segment_duration_seconds=self._number(segment.get("main_link_duration_seconds")),
+            is_switch=bool(row.get("is_switch")),
+            is_anomaly=bool(row.get("is_anomaly")),
+            gap_before=bool(row.get("gap_before")),
+            backups=[
+                self._chart_backup_from_summary(ap_map, dict(backup), context.source_id)
+                for backup in row.get("backups") or []
+            ],
+        )
+
+    def _chart_segment(
+        self,
+        segment_index: dict[
+            tuple[int | None, int | None, str],
+            tuple[list[str], list[dict[str, Any]]],
+        ],
+        row: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        timestamp = str(row.get("sample_time") or "")
+        source = self._int(row.get("source_file_id"))
+        radio = self._int(row.get("radio"))
+        peer = self._mac_key(row.get("peer_mac_normalized") or row.get("peer_mac_raw"))
+        starts, segments = segment_index.get((source, radio, peer), ([], []))
+        position = bisect_right(starts, timestamp) - 1
+        if position < 0:
+            return None
+        segment = segments[position]
+        return segment if timestamp <= str(segment.get("build_end_time") or "") else None
+
+    def _chart_segment_index(
+        self,
+        segments: list[dict[str, Any]],
+    ) -> dict[
+        tuple[int | None, int | None, str],
+        tuple[list[str], list[dict[str, Any]]],
+    ]:
+        grouped: dict[tuple[int | None, int | None, str], list[dict[str, Any]]] = defaultdict(list)
+        for segment in segments:
+            key = (
+                self._int(segment.get("source_file_id")),
+                self._int(segment.get("radio")),
+                self._mac_key(segment.get("active_peer_mac")),
+            )
+            grouped[key].append(segment)
+        result: dict[
+            tuple[int | None, int | None, str],
+            tuple[list[str], list[dict[str, Any]]],
+        ] = {}
+        for key, rows in grouped.items():
+            ordered = sorted(rows, key=lambda item: str(item.get("build_start_time") or ""))
+            result[key] = (
+                [str(item.get("build_start_time") or "") for item in ordered],
+                ordered,
+            )
+        return result
+
+    @staticmethod
+    def _important_chart_row_indices(points: list[dict[str, Any]]) -> set[int]:
+        important = {
+            index
+            for index, point in enumerate(points)
+            if point.get("is_switch") or point.get("is_anomaly") or point.get("gap_before")
+        }
+        for index in range(1, len(points)):
+            if points[index].get("segment_sequence") != points[index - 1].get("segment_sequence"):
+                important.update((index - 1, index))
+        for field in ("local_rssi", "peer_rssi", "local_tx_busy", "local_rx_busy", "peer_tx_busy", "peer_rx_busy"):
+            values = [(index, point.get(field)) for index, point in enumerate(points) if point.get(field) is not None]
+            if values:
+                important.add(min(values, key=lambda item: item[1])[0])
+                important.add(max(values, key=lambda item: item[1])[0])
+        return important
+
+    @classmethod
+    def _chart_array_number(cls, values: object, index: int) -> float | None:
+        if values is None:
+            return None
+        try:
+            number = cls._number(values[index])
+        except (IndexError, KeyError, TypeError):
+            return None
+        return number if number is not None and math.isfinite(number) else None
 
     def _artifact_candidates(self, context: _SessionContext) -> list[_ArtifactCandidate]:
         rows: list[tuple[str, Path]] = []
@@ -1211,46 +2068,18 @@ class MeshAnalysisQueryService:
             result.append(_ArtifactCandidate(dto=dto, path=path))
         return sorted(result, key=lambda item: (item.dto.artifact_type, item.dto.name))
 
-    def _ap_map(self, site_id: str) -> dict[str, _ApLocation]:
-        result: dict[str, _ApLocation] = {}
+    def ap_location_snapshot(self, site_id: str) -> MeshApLocationSnapshot:
         try:
-            first = self.base_query.list_aps(site_id, page=1, page_size=500)
-            items = list(first.items)
-            page = 2
-            while len(items) < first.total:
-                part = self.base_query.list_aps(site_id, page=page, page_size=500)
-                if not part.items:
-                    break
-                items.extend(part.items)
-                page += 1
+            return self.location_service.snapshot(site_id)
         except (OSError, ValueError, sqlite3.Error):
-            return result
-        for item in items:
-            mileage = getattr(getattr(item, "mileage", None), "raw", "")
-            location = _ApLocation(
-                name=str(item.name or ""),
-                mac=str(item.mac or ""),
-                station=str(item.station or ""),
-                section=str(item.section or ""),
-                mileage=str(mileage or ""),
-                line_side=str(item.line_side or ""),
-            )
-            mac_key = self._mac_key(item.mac)
-            if mac_key:
-                result[f"mac:{mac_key}"] = location
-            if item.name:
-                result[f"name:{str(item.name).casefold()}"] = location
-        return result
+            return MeshApLocationSnapshot()
 
-    def _locate_ap(self, ap_map: dict[str, _ApLocation], row: dict[str, Any]) -> _ApLocation:
-        mac = self._mac_key(row.get("peer_ap_mac") or row.get("peer_mac_normalized") or row.get("peer_mac") or row.get("ap_mac"))
-        name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
-        location = ap_map.get(f"mac:{mac}") if mac else None
-        if location is None and name:
-            location = ap_map.get(f"name:{name.casefold()}")
-        if location is not None:
-            return location
-        return _ApLocation(name=name, mac=mac, station=str(row.get("peer_site") or ""))
+    def _ap_map(self, site_id: str) -> MeshApLocationSnapshot:
+        return self.ap_location_snapshot(site_id)
+
+    @staticmethod
+    def _locate_ap(ap_map: MeshApLocationSnapshot, row: dict[str, Any]) -> MeshApLocation:
+        return ap_map.resolve(row)
 
     @staticmethod
     def _connect_readonly(path: Path) -> sqlite3.Connection:
@@ -1295,6 +2124,15 @@ class MeshAnalysisQueryService:
             return None
         try:
             return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _int(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
         except (TypeError, ValueError):
             return None
 

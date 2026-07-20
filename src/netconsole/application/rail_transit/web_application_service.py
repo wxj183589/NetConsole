@@ -58,6 +58,7 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.car_network_diagnostic import (
@@ -1085,7 +1086,13 @@ class RailTransitWebApplicationService:
             },
         )
 
-    def start_mesh_report(self, site_id: str, session_id: str) -> RailTransitTaskDTO:
+    def start_mesh_report(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        analysis_params_override: dict[str, object] | None = None,
+    ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         try:
             context = self.mesh_query_service._context(site_id, session_id)
@@ -1093,6 +1100,11 @@ class RailTransitWebApplicationService:
             raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
         if context.detail_db is None or not context.detail_db.is_file():
             raise RailTransitWebError("MESH_RESULT_NOT_FOUND", "MESH 结构化分析结果不存在")
+        try:
+            site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            site_analysis_params = {}
+        ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
         task_id = f"rail-export-{uuid4().hex}"
@@ -1115,8 +1127,13 @@ class RailTransitWebApplicationService:
             params={
                 "payload": {
                     "mr_name": context.mr_name,
-                    "source_file_ids": [context.source_id],
-                    "options": {"report_name": f"{context.mr_name} MESH 分析报告"},
+                    "source_file_ids": [context.detail_source_id],
+                        "options": {
+                            "report_name": f"{context.mr_name} MESH 分析报告",
+                            "analysis_params_override": analysis_params_override,
+                            "site_analysis_params": site_analysis_params,
+                        "ap_location_snapshot": ap_location_snapshot,
+                    },
                 }
             },
         )

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
 
 from openpyxl import load_workbook
 
 from netconsole.services.mesh_analysis_excel_report import EMPTY_PARSE_ISSUES_TEXT, MeshAnalysisExcelReportExporter, REPORT_FIELD_LABELS, SHEET_DEFINITIONS, translate_report_value
+from netconsole.services.mesh_analysis_excel_report import MAX_EMBEDDED_CHART_POINTS, _downsample_chart_rows
 from netconsole.services.mesh_analysis_report import (
     MeshAnalysisReportModel,
+    MeshAnalysisReportService,
     MeshReportOptions,
     build_active_anomalies,
     build_active_segments,
@@ -16,7 +20,16 @@ from netconsole.services.mesh_analysis_report import (
     build_rssi_statistics,
     build_switch_sequence,
     detect_flap_switches,
+    _active_path_report_rows,
 )
+from netconsole.services.mesh_chart_payload import build_chart_payload
+from netconsole.services.mesh_link_detail_export import active_build_order_row_values, link_detail_row_values
+from netconsole.services.mesh_report_process import _analysis_params_for_report
+from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
+from netconsole.core.paths import PathResolver
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_quality_analysis import (
     MeshQualityRules,
     analyze_anomaly_events,
@@ -290,6 +303,282 @@ def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_tex
         REPORT_FIELD_LABELS["from_peer"],
     ]
     assert workbook["解析问题"]["F2"].value == EMPTY_PARSE_ISSUES_TEXT
+
+
+def test_formal_report_reuses_repository_results_and_exports_fixed_active_series(tmp_path: Path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "meshlog.log"
+    active_a = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
+    active_b = active_a.replace("Active 30f5-277a-5a2f", "Active 30f5-277a-5a3f").replace("36/43", "37/44")
+    standby = active_a.replace("Active 30f5-277a-5a2f", "Standy 30f5-277a-5a4f").replace("36/43", "30/31")
+    source.write_text(
+        "\n".join(
+            [
+                "[1] 2025/12/03 10:12:33.000 (2)",
+                active_a,
+                standby,
+                "[1] 2025/12/03 10:12:34.000 (4)",
+                active_b,
+                "[1] 2025/12/03 10:12:35.000 (5)",
+                active_a,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    index_repository = MeshMrRepository(index_path, read_only=True)
+    source_file = index_repository.list_source_files()[0]
+    source_file_id = int(source_file["id"])
+    expected_order = index_repository.query_active_link_build_order(source_file_id)
+
+    model = MeshAnalysisReportService(index_path, profile.display_name).build_report(
+        MeshReportOptions(source_file_id=source_file_id)
+    )
+
+    assert [row["active_peer_mac"] for row in model.active_build_order] == [
+        row["active_peer_mac"] for row in expected_order
+    ]
+    assert len(model.link_details) == 4
+    assert {row["timestamp_tag"] for row in model.link_details} == {"2", "4", "5"}
+    assert len(model.active_path_rssi) == 3
+    assert len(model.active_path_busy) == 3
+    assert [row["visit_sequence"] for row in model.peer_visit_statistics] == [1, 1, 2]
+
+    report_path = MeshAnalysisExcelReportExporter().export(model, tmp_path / "formal-report.xlsx")
+    workbook = load_workbook(report_path)
+    assert {
+        "主链路建链顺序",
+        "链路明细",
+        "全部 ACTIVE 主链路 RSSI",
+        "单 AP 经过时段统计",
+        "全部 ACTIVE 空口负载",
+        "切换事件分析",
+        "异常事件分析",
+    } <= set(workbook.sheetnames)
+    link_headers = [cell.value for cell in workbook["链路明细"][1]]
+    assert {"采样标识", "MR 接收信号", "Peer 接收信号", "L_TxBusy", "P_RxBusy"} <= set(link_headers)
+    assert [cell.value for cell in workbook["链路明细"][2]] == [
+        None if value == "" else value for value in link_detail_row_values(model.link_details[0])
+    ]
+    build_sheet = workbook["主链路建链顺序"]
+    assert [cell.value for cell in build_sheet[2]] == [
+        None if value == "" else value for value in active_build_order_row_values(model.active_build_order[0])
+    ]
+    busy_sheet = workbook["全部 ACTIVE 空口负载"]
+    busy_headers = [cell.value for cell in busy_sheet[1]]
+    busy_values = dict(zip(busy_headers, (cell.value for cell in busy_sheet[2])))
+    assert "CtlBusy" not in " ".join(str(value) for value in busy_headers)
+    assert busy_values["MR侧 TxBusy"] == model.active_path_busy[0]["local_tx_busy"]
+    assert len(workbook["全部 ACTIVE 主链路 RSSI"]._charts[0].series) == 2
+    assert len(workbook["全部 ACTIVE 空口负载"]._charts[0].series) == 2
+
+
+def test_report_peer_busy_keeps_same_millisecond_timestamp_tags_isolated():
+    rows = [
+        {
+            "id": 1,
+            "source_file_id": 7,
+            "sample_time": "2025-12-03 10:00:00.000",
+            "timestamp_tag": "2",
+            "radio": 1,
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": PEER_A,
+            "local_tx_busy": 1,
+            "local_rx_busy": 2,
+            "peer_tx_busy": 11,
+            "peer_rx_busy": 12,
+        },
+        {
+            "id": 2,
+            "source_file_id": 7,
+            "sample_time": "2025-12-03 10:00:00.000",
+            "timestamp_tag": "4",
+            "radio": 1,
+            "link_state": "ACTIVE",
+            "peer_mac_normalized": PEER_A,
+            "local_tx_busy": 3,
+            "local_rx_busy": 4,
+            "peer_tx_busy": 21,
+            "peer_rx_busy": 22,
+        },
+    ]
+    chart = build_chart_payload({}, {"rows": rows, "events": []})
+
+    _rssi, busy = _active_path_report_rows(chart, [{"id": 7, "archived_filename": "mesh.log"}])
+
+    assert [row["timestamp_tag"] for row in busy] == ["2", "4"]
+    assert [row["peer_tx_busy"] for row in busy] == [11, 21]
+    assert [row["peer_rx_busy"] for row in busy] == [12, 22]
+
+
+def test_report_time_window_filters_complete_segments_links_charts_and_visits(tmp_path: Path):
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-02")
+    source = tmp_path / "mesh-window.log"
+    base = "[1] Active {peer} 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
+    source.write_text(
+        "\n".join(
+            [
+                "[1] 2025/12/03 10:12:33.000 (2)",
+                base.format(peer="30f5-277a-5a2f"),
+                "[1] 2025/12/03 10:12:34.000 (3)",
+                base.format(peer="30f5-277a-5a3f"),
+                "[1] 2025/12/03 10:12:35.000 (4)",
+                base.format(peer="30f5-277a-5a2f"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    source_id = int(MeshMrRepository(index_path, read_only=True).list_source_files()[0]["id"])
+
+    model = MeshAnalysisReportService(index_path, profile.display_name).build_report(
+        MeshReportOptions(
+            source_file_id=source_id,
+            start_time="2025-12-03 10:12:34.000",
+            end_time="2025-12-03 10:12:34.000",
+        )
+    )
+
+    assert [row["sample_time"] for row in model.link_details] == ["2025-12-03 10:12:34.000"]
+    assert [row["build_start_time"] for row in model.active_build_order] == ["2025-12-03 10:12:34.000"]
+    assert [row["sample_time"] for row in model.active_path_rssi] == ["2025-12-03 10:12:34.000"]
+    assert [row["sample_time"] for row in model.active_path_busy] == ["2025-12-03 10:12:34.000"]
+    assert len(model.peer_visit_statistics) == 1
+
+
+def test_embedded_chart_downsampling_preserves_key_points_and_has_fixed_limit():
+    rows = [
+        {
+            "sample_time": f"2025-12-03 10:{index // 60:02d}:{index % 60:02d}.000",
+            "mr_rssi": index % 80,
+            "peer_rssi": 80 - (index % 80),
+            "chart_key_point": index in {123, 30_000, 58_143},
+        }
+        for index in range(58_144)
+    ]
+
+    sampled = _downsample_chart_rows(rows, ("mr_rssi", "peer_rssi"))
+
+    assert len(sampled) <= MAX_EMBEDDED_CHART_POINTS
+    assert {123, 30_000, 58_143} <= {rows.index(row) for row in sampled if row.get("chart_key_point")}
+    assert sampled[0] is rows[0]
+    assert sampled[-1] is rows[-1]
+
+
+def test_embedded_chart_downsampling_caps_all_key_points():
+    rows = [
+        {
+            "sample_time": f"2025-12-03 10:{index // 60:02d}:{index % 60:02d}.000",
+            "mr_rssi": index,
+            "chart_key_point": True,
+        }
+        for index in range(MAX_EMBEDDED_CHART_POINTS + 1_000)
+    ]
+
+    sampled = _downsample_chart_rows(rows, ("mr_rssi",))
+
+    assert len(sampled) == MAX_EMBEDDED_CHART_POINTS
+    assert sampled[0] is rows[0]
+    assert sampled[-1] is rows[-1]
+
+
+def test_empty_active_series_does_not_create_embedded_chart(tmp_path: Path):
+    model = MeshAnalysisReportModel(
+        mr_name="14CW-03",
+        report_name="14CW-03",
+        generated_at=datetime.now(),
+        options=MeshReportOptions(),
+        active_path_rssi=[{"sample_time": "2025-12-03 10:00:00.000", "mr_rssi": "", "peer_rssi": ""}],
+        active_path_busy=[{"sample_time": "2025-12-03 10:00:00.000", "local_tx_busy": "", "local_rx_busy": ""}],
+    )
+
+    workbook = load_workbook(MeshAnalysisExcelReportExporter().export(model, tmp_path / "empty-chart.xlsx"))
+
+    assert workbook["全部 ACTIVE 主链路 RSSI"]._charts == []
+    assert workbook["全部 ACTIVE 空口负载"]._charts == []
+    assert "_ACTIVE_RSSI图表数据" not in workbook.sheetnames
+    assert "_ACTIVE_BUSY图表数据" not in workbook.sheetnames
+
+
+def test_report_analysis_params_keep_override_source_site_default_priority():
+    source = {"analysis_params_json": '{"main_link_switch_time_ms":2222}'}
+    site = {"main_link_switch_time_ms": 3333}
+
+    assert _analysis_params_for_report(MeshReportOptions(site_analysis_params=site), source).main_link_switch_time_ms == 2222
+    assert (
+        _analysis_params_for_report(
+            MeshReportOptions(
+                analysis_params_override={"main_link_switch_time_ms": 1111},
+                site_analysis_params=site,
+            ),
+            source,
+        ).main_link_switch_time_ms
+        == 1111
+    )
+    assert _analysis_params_for_report(MeshReportOptions(site_analysis_params=site), {}).main_link_switch_time_ms == 3333
+    assert _analysis_params_for_report(MeshReportOptions(), {}).main_link_switch_time_ms == 2500
+
+
+def test_report_and_page_share_ap_location_snapshot_values(tmp_path: Path):
+    class BaseQuery:
+        @staticmethod
+        def list_aps(*_args, **_kwargs):
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        name="轨旁AP-01",
+                        mac=PEER_A,
+                        station="车站A",
+                        section="区间A-B",
+                        mileage=SimpleNamespace(raw="K12+300"),
+                        line_side="上行",
+                    )
+                ],
+                total=1,
+            )
+
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-04")
+    source = tmp_path / "mesh-location.log"
+    source.write_text(
+        "[1] 2025/12/03 10:12:33.000 (2)\n"
+        "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 "
+        "36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0\n",
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [source])
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    source_id = int(MeshMrRepository(index_path, read_only=True).list_source_files()[0]["id"])
+    session_id = f"{profile.mr_id}:{source_id}"
+    query = MeshAnalysisQueryService(paths, base_query=BaseQuery())
+    snapshot_rows = query.ap_location_snapshot("demo").to_serializable()
+
+    page_row = query.list_active_build_order("demo", session_id).items[0]
+    report = MeshAnalysisReportService(index_path, profile.display_name).build_report(
+        MeshReportOptions(source_file_id=source_id, ap_location_snapshot=tuple(snapshot_rows))
+    )
+    report_row = report.active_build_order[0]
+
+    assert report_row["peer_ap_name"] == page_row.peer_ap_name == "轨旁AP-01"
+    assert report_row["peer_ap_mac"] == page_row.peer_ap_mac == PEER_A
+    assert report_row["station"] == page_row.station == "车站A"
+    assert report_row["section"] == page_row.section == "区间A-B"
+    assert report_row["mileage"] == page_row.mileage == "K12+300"
+    assert report_row["line_side"] == page_row.line_side == "上行"
+    for rows in (
+        report.link_details,
+        report.active_path_rssi,
+        report.active_path_busy,
+        report.peer_visit_statistics,
+    ):
+        assert rows[0]["station"] == "车站A"
+        assert rows[0]["section"] == "区间A-B"
+        assert rows[0]["mileage"] == "K12+300"
+        assert rows[0]["line_side"] == "上行"
 
 
 def test_excel_report_emits_row_progress_for_large_sheets(tmp_path):

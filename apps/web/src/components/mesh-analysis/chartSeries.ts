@@ -1,9 +1,15 @@
-import type { MeshChannelBusy, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+
+export interface MeshRssiSeries {
+  name: string
+  metric: 'local_rssi' | 'peer_rssi'
+  data: Array<{ value: [string, number | null]; meta: MeshChartPoint }>
+}
 
 export interface MeshBusySeries {
   name: string
-  metric: 'TxBusy' | 'RxBusy'
-  data: Array<{ value: [string, number | null]; meta: MeshChannelBusy }>
+  metric: 'local_tx_busy' | 'local_rx_busy' | 'peer_tx_busy' | 'peer_rx_busy'
+  data: Array<{ value: [string, number | null]; meta: MeshChartPoint }>
 }
 
 export interface MeshRateSeries {
@@ -21,19 +27,42 @@ export interface MeshSwitchRssiSeries {
   data: Array<{ value: [string | null, number | null]; meta: MeshSwitchEvent }>
 }
 
-export function buildMeshBusySeries(points: MeshChannelBusy[]): MeshBusySeries[] {
-  const groups = new Map<string, MeshChannelBusy[]>()
-  for (const point of points) {
-    const peer = point.peer_ap_name || 'AP 未知'
-    const key = `${peer} · Radio ${point.local_radio ?? '—'}`
-    const group = groups.get(key) || []
-    group.push(point)
-    groups.set(key, group)
-  }
-  return [...groups.entries()].flatMap(([key, group]) => [
-    { name: `${key} · TxBusy`, metric: 'TxBusy' as const, data: group.map((point) => ({ value: [point.timestamp, point.tx_busy], meta: point })) },
-    { name: `${key} · RxBusy`, metric: 'RxBusy' as const, data: group.map((point) => ({ value: [point.timestamp, point.rx_busy], meta: point })) },
+function metricData(
+  points: MeshChartPoint[],
+  read: (point: MeshChartPoint) => number | null,
+): Array<{ value: [string, number | null]; meta: MeshChartPoint }> {
+  return points.flatMap((point, index) => [
+    ...(index > 0 && point.gap_before ? [{ value: [point.timestamp, null] as [string, number | null], meta: point }] : []),
+    { value: [point.timestamp, read(point)] as [string, number | null], meta: point },
   ])
+}
+
+export function buildMeshRssiSeries(points: MeshChartPoint[], showPeer = false, scope: 'active' | 'peer' = 'active'): MeshRssiSeries[] {
+  const prefix = scope === 'peer' ? '选中 AP' : '当前 ACTIVE'
+  const series: MeshRssiSeries[] = [{
+    name: `${prefix} MR 侧 RSSI`,
+    metric: 'local_rssi',
+    data: metricData(points, (point) => point.local_rssi),
+  }]
+  if (showPeer) series.push({
+    name: `${prefix} Peer 侧 RSSI`,
+    metric: 'peer_rssi',
+    data: metricData(points, (point) => point.peer_rssi),
+  })
+  return series
+}
+
+export function buildMeshBusySeries(points: MeshChartPoint[], showPeer = false, scope: 'active' | 'peer' = 'active'): MeshBusySeries[] {
+  const prefix = scope === 'peer' ? '选中 AP' : '当前 ACTIVE'
+  const series: MeshBusySeries[] = [
+    { name: `${prefix} MR 侧 TxBusy`, metric: 'local_tx_busy', data: metricData(points, (point) => point.local_tx_busy) },
+    { name: `${prefix} MR 侧 RxBusy`, metric: 'local_rx_busy', data: metricData(points, (point) => point.local_rx_busy) },
+  ]
+  if (showPeer) series.push(
+    { name: `${prefix} Peer 侧 TxBusy`, metric: 'peer_tx_busy', data: metricData(points, (point) => point.peer_tx_busy) },
+    { name: `${prefix} Peer 侧 RxBusy`, metric: 'peer_rx_busy', data: metricData(points, (point) => point.peer_rx_busy) },
+  )
+  return series
 }
 
 function peerRadioKey(peerName: string | null, peerMac: string | null, radio: number | null): string {

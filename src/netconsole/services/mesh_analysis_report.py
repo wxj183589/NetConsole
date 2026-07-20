@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Callable
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c, normalize_link_state
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.services.mesh_chart_payload import build_chart_payload
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 from netconsole.services.mesh_quality_analysis import (
     MR_RAW_MESH_LOG,
@@ -18,12 +20,12 @@ from netconsole.services.mesh_quality_analysis import (
     get_threshold_template,
     load_default_rules,
 )
+from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
 
 
 ProgressCallback = Callable[[int, str], None]
 CancelCallback = Callable[[], bool]
 _REPORT_METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
-_REPORT_METRIC_SELECT = ", ".join(f"ml.{column}" for column in _REPORT_METRIC_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class MeshReportOptions:
     threshold_template_description: str = ""
     analysis_params_override: dict[str, object] | None = None
     site_analysis_params: dict[str, object] | None = None
+    ap_location_snapshot: tuple[dict[str, str], ...] = ()
 
 
 @dataclass
@@ -106,6 +109,11 @@ class MeshAnalysisReportModel:
     link_rebuild_events: list[dict[str, object]] = field(default_factory=list)
     raw_evidence: list[dict[str, object]] = field(default_factory=list)
     all_link_details: list[dict[str, object]] = field(default_factory=list)
+    active_build_order: list[dict[str, object]] = field(default_factory=list)
+    link_details: list[dict[str, object]] = field(default_factory=list)
+    active_path_rssi: list[dict[str, object]] = field(default_factory=list)
+    peer_visit_statistics: list[dict[str, object]] = field(default_factory=list)
+    active_path_busy: list[dict[str, object]] = field(default_factory=list)
 
 
 class MeshReportCancelled(RuntimeError):
@@ -130,7 +138,9 @@ class MeshAnalysisReportService:
         should_cancel = should_cancel or (lambda: False)
         self._raise_if_cancelled(should_cancel)
         progress(5, "loading")
-        links = self._load_links(options)
+        repository = MeshMrRepository(self._active_db_path, read_only=True)
+        location_snapshot = MeshApLocationSnapshot.from_serializable(options.ap_location_snapshot)
+        links = [_with_ap_location(row, location_snapshot) for row in self._load_links(options, repository)]
         events = self._load_events(options) if options.include_raw_events else []
         parse_issues = self._load_parse_issues(options) if options.include_parse_issues else []
         source_files = self._load_source_files(options)
@@ -159,6 +169,31 @@ class MeshAnalysisReportService:
         progress(25, "active_segments")
         active_segments = build_active_segments(links)
         switch_sequence = build_switch_sequence(active_segments)
+        active_build_order = repository.query_active_link_build_order(
+            options.source_file_id,
+            options.radio_filter,
+            options.analysis_params_override,
+            options.site_analysis_params,
+        )
+        active_build_order = [_with_ap_location(row, location_snapshot) for row in active_build_order]
+        active_build_order = _filter_active_build_order(active_build_order, options.start_time, options.end_time)
+        chart_segments = repository.query_active_link_chart_segments(
+            options.source_file_id,
+            options.radio_filter,
+            options.start_time or "",
+            options.end_time or "",
+        )
+        chart_payload = build_chart_payload(
+            dict(chart_segments.get("peer_segment") or {}),
+            dict(chart_segments.get("run_segment") or {}),
+        )
+        active_path_rssi, active_path_busy = _active_path_report_rows(
+            chart_payload,
+            source_files,
+        )
+        active_path_rssi = [_with_ap_location(row, location_snapshot) for row in active_path_rssi]
+        active_path_busy = [_with_ap_location(row, location_snapshot) for row in active_path_busy]
+        peer_visit_statistics = _peer_visit_statistics(active_build_order)
         self._raise_if_cancelled(should_cancel)
 
         progress(45, "flap")
@@ -222,6 +257,11 @@ class MeshAnalysisReportService:
             link_rebuild_events=quality_report.link_rebuild_events,
             raw_evidence=quality_report.raw_evidence,
             all_link_details=quality_report.all_link_details,
+            active_build_order=active_build_order,
+            link_details=links,
+            active_path_rssi=active_path_rssi,
+            peer_visit_statistics=peer_visit_statistics,
+            active_path_busy=active_path_busy,
         )
 
     def _rules_from_options(self, options: MeshReportOptions) -> MeshQualityRules:
@@ -249,46 +289,21 @@ class MeshAnalysisReportService:
             score_weights=weights,
         )
 
-    def _load_links(self, options: MeshReportOptions) -> list[dict[str, object]]:
-        clauses: list[str] = []
-        values: list[object] = []
+    def _load_links(self, options: MeshReportOptions, repository: MeshMrRepository) -> list[dict[str, object]]:
+        filters: dict[str, object] = {}
         if options.radio_filter is not None:
-            clauses.append("ml.radio = ?")
-            values.append(options.radio_filter)
+            filters["radio"] = options.radio_filter
         if options.source_file_id is not None:
-            clauses.append("ml.source_file_id = ?")
-            values.append(options.source_file_id)
-        if options.start_time:
-            clauses.append("ml.sample_time >= ?")
-            values.append(options.start_time)
-        if options.end_time:
-            clauses.append("ml.sample_time <= ?")
-            values.append(options.end_time)
-        where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT
-                    ml.id, ml.sample_id, ml.source_file_id, ml.source_file_order, ml.record_seq,
-                    ml.source_line_number,
-                    ('raw定位:' || COALESCE(sf.archived_filename, '') || ':' || COALESCE(ml.raw_line_start, ml.source_line_number)) AS raw_line,
-                    ml.radio, ml.sample_time,
-                    ml.link_state_raw, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
-                    ml.peer_mac, ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site,
-                    ml.peer_radio_id, ml.peer_radio, ml.peer_radio_label, ml.peer_radio_mac,
-                    ml.peer_match_rule, ml.peer_resolve_source, ml.establish_time,
-                    ml.duration_text, ml.duration_seconds, ml.link_count, ml.session_id,
-                    {_REPORT_METRIC_SELECT}, ml.local_noise_dbm, ml.peer_noise_dbm,
-                    ml.local_signal_dbm, ml.peer_signal_dbm,
-                    sf.archived_filename, sf.original_filename
-                FROM mesh_links ml
-                LEFT JOIN source_files sf ON sf.id = ml.source_file_id
-                {where}
-                ORDER BY ml.sample_time ASC, ml.radio ASC, ml.id ASC
-                """,
-                values,
-            ).fetchall()
-        return [_normalize_link_row(_report_row_payload(dict(row))) for row in rows]
+            filters["source_file_id"] = options.source_file_id
+        rows: list[dict[str, object]] = []
+        for row in repository.iter_link_details(filters, batch_size=2000):
+            sample_time = str(row.get("sample_time") or "")
+            if options.start_time and sample_time < options.start_time:
+                continue
+            if options.end_time and sample_time > options.end_time:
+                continue
+            rows.append(_normalize_link_row(_report_row_payload(dict(row))))
+        return rows
 
     def _load_events(self, options: MeshReportOptions) -> list[dict[str, object]]:
         clauses: list[str] = []
@@ -351,7 +366,7 @@ class MeshAnalysisReportService:
         if self.db_path.name != "mesh.sqlite" or not self.db_path.exists():
             return options
         try:
-            repo = MeshMrRepository(self.db_path)
+            repo = MeshMrRepository(self.db_path, read_only=True)
             sources = repo.list_source_files()
         except Exception:
             return options
@@ -624,6 +639,143 @@ def build_rssi_statistics(rows: list[dict[str, object]]) -> list[dict[str, objec
 
 def build_channel_busy_statistics(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return _metric_statistics(rows, ("local_tx_busy", "local_rx_busy", "peer_tx_busy", "peer_rx_busy"), "busy")
+
+
+def _active_path_report_rows(
+    payload: dict[str, object],
+    source_files: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    timestamps = _as_list(payload.get("timestamp_labels"))
+    timestamp_tags = _as_list(payload.get("timestamp_tags"))
+    sample_source_ids = _as_list(payload.get("sample_source_file_ids"))
+    sample_radios = _as_list(payload.get("sample_radios"))
+    active_series = dict(payload.get("active_series") or {})
+    local_rssi = _as_list(active_series.get("active_local_rssi"))
+    peer_rssi = _as_list(payload.get("active_peer_rssi"))
+    peer_tx_busy = _as_list(payload.get("active_peer_tx_busy"))
+    peer_rx_busy = _as_list(payload.get("active_peer_rx_busy"))
+    local_tx_busy = _as_list(active_series.get("active_local_tx_busy"))
+    local_rx_busy = _as_list(active_series.get("active_local_rx_busy"))
+    peer_macs = _as_list(payload.get("active_peer_macs"))
+    peer_ap_names = _as_list(payload.get("active_peer_ap_names"))
+    peer_sites = _as_list(payload.get("active_peer_sites"))
+    peer_radios = _as_list(payload.get("active_peer_radios"))
+    source_ids = _as_list(payload.get("active_source_file_ids"))
+    main_links = _as_list(payload.get("main_links_by_index"))
+    source_names = {
+        str(row.get("id") or ""): str(row.get("archived_filename") or row.get("original_filename") or "")
+        for row in source_files
+    }
+    important_values = payload.get("important_indices")
+    important_indices = {int(value) for value in (important_values if important_values is not None else [])}
+    rssi_rows: list[dict[str, object]] = []
+    busy_rows: list[dict[str, object]] = []
+    for index, timestamp in enumerate(timestamps):
+        main = main_links[index] if index < len(main_links) and isinstance(main_links[index], dict) else {}
+        source_id = str(_at(sample_source_ids, index) or _at(source_ids, index) or main.get("source_file_id") or "")
+        peer_mac = _at(peer_macs, index)
+        common = {
+            "sequence": index + 1,
+            "sample_time": timestamp,
+            "timestamp_tag": _at(timestamp_tags, index),
+            "radio": _at(sample_radios, index) or main.get("radio") or "",
+            "active_peer_mac": peer_mac,
+            "peer_ap_name": _at(peer_ap_names, index),
+            "peer_ap_mac": main.get("ap_mac") or "",
+            "peer_site": _at(peer_sites, index),
+            "peer_radio": _at(peer_radios, index),
+            "peer_radio_mac": main.get("peer_radio_mac") or "",
+            "source_file": source_names.get(source_id, source_id),
+            "chart_key_point": index in important_indices,
+        }
+        rssi_rows.append(
+            {
+                **common,
+                "mr_rssi": _finite_or_blank(_at(local_rssi, index)),
+                "peer_rssi": _finite_or_blank(_at(peer_rssi, index)),
+            }
+        )
+        busy_rows.append(
+            {
+                **common,
+                "local_tx_busy": _finite_or_blank(_at(local_tx_busy, index)),
+                "local_rx_busy": _finite_or_blank(_at(local_rx_busy, index)),
+                "peer_tx_busy": _finite_or_blank(_at(peer_tx_busy, index)),
+                "peer_rx_busy": _finite_or_blank(_at(peer_rx_busy, index)),
+            }
+        )
+    return rssi_rows, busy_rows
+
+
+def _peer_visit_statistics(active_build_order: list[dict[str, object]]) -> list[dict[str, object]]:
+    counts: dict[str, int] = {}
+    rows: list[dict[str, object]] = []
+    for segment in sorted(active_build_order, key=lambda item: str(item.get("build_start_time") or "")):
+        identity = str(
+            segment.get("peer_ap_mac")
+            or segment.get("physical_ap_key")
+            or segment.get("peer_ap_name")
+            or segment.get("active_peer_mac")
+            or "未识别AP"
+        )
+        counts[identity] = counts.get(identity, 0) + 1
+        rows.append({**segment, "visit_sequence": counts[identity]})
+    return rows
+
+
+def _filter_active_build_order(
+    rows: list[dict[str, object]],
+    time_from: str | None,
+    time_to: str | None,
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for row in rows:
+        start_time = str(row.get("build_start_time") or "")
+        end_time = str(row.get("build_end_time") or "")
+        if time_from and end_time < time_from:
+            continue
+        if time_to and start_time > time_to:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _with_ap_location(
+    row: dict[str, object],
+    snapshot: MeshApLocationSnapshot,
+) -> dict[str, object]:
+    location = snapshot.resolve(row)
+    result = dict(row)
+    result["peer_ap_name"] = str(result.get("peer_ap_name") or location.name or "")
+    result["peer_ap_mac"] = str(result.get("peer_ap_mac") or location.mac or "")
+    result["peer_site"] = location.station or str(result.get("peer_site") or "")
+    result["station"] = location.station or str(result.get("station") or result.get("peer_site") or "")
+    result["belong_section"] = location.section or str(result.get("belong_section") or result.get("peer_section") or "")
+    result["peer_section"] = result["belong_section"]
+    result["section"] = result["belong_section"]
+    result["peer_location"] = location.mileage or str(result.get("peer_location") or result.get("mileage") or "")
+    result["mileage"] = result["peer_location"]
+    result["peer_direction"] = location.line_side or str(result.get("peer_direction") or result.get("line_side") or "")
+    result["line_side"] = result["peer_direction"]
+    return result
+
+
+def _at(values: list[object], index: int) -> object:
+    return values[index] if index < len(values) else ""
+
+
+def _as_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    return list(value)  # type: ignore[arg-type]
+
+
+def _finite_or_blank(value: object) -> object:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return number if math.isfinite(number) else ""
 
 
 def _metric_statistics(rows: list[dict[str, object]], fields: tuple[str, ...], metric_group: str) -> list[dict[str, object]]:

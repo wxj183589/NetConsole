@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping
+
+from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+
+
+@dataclass(frozen=True)
+class MeshApLocation:
+    name: str = ""
+    mac: str = ""
+    station: str = ""
+    section: str = ""
+    mileage: str = ""
+    line_side: str = ""
+
+    def to_serializable(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "mac": self.mac,
+            "station": self.station,
+            "section": self.section,
+            "mileage": self.mileage,
+            "line_side": self.line_side,
+        }
+
+
+class MeshApLocationSnapshot:
+    def __init__(self, locations: Iterable[MeshApLocation] = ()) -> None:
+        self._locations = tuple(locations)
+        self._by_mac: dict[str, MeshApLocation] = {}
+        self._by_name: dict[str, MeshApLocation | None] = {}
+        for location in self._locations:
+            mac = normalize_mesh_ap_mac(location.mac)
+            if mac:
+                self._by_mac[mac] = location
+            if location.name:
+                name = location.name.casefold()
+                if name in self._by_name:
+                    self._by_name[name] = None
+                else:
+                    self._by_name[name] = location
+
+    @classmethod
+    def from_base_data_items(cls, items: Iterable[object]) -> MeshApLocationSnapshot:
+        locations: list[MeshApLocation] = []
+        for item in items:
+            mileage = getattr(getattr(item, "mileage", None), "raw", "")
+            locations.append(
+                MeshApLocation(
+                    name=str(getattr(item, "name", "") or ""),
+                    mac=str(getattr(item, "mac", "") or ""),
+                    station=str(getattr(item, "station", "") or ""),
+                    section=str(getattr(item, "section", "") or ""),
+                    mileage=str(mileage or ""),
+                    line_side=str(getattr(item, "line_side", "") or ""),
+                )
+            )
+        return cls(locations)
+
+    @classmethod
+    def from_serializable(cls, rows: Iterable[Mapping[str, object]]) -> MeshApLocationSnapshot:
+        return cls(
+            MeshApLocation(
+                name=str(row.get("name") or ""),
+                mac=str(row.get("mac") or ""),
+                station=str(row.get("station") or ""),
+                section=str(row.get("section") or ""),
+                mileage=str(row.get("mileage") or ""),
+                line_side=str(row.get("line_side") or ""),
+            )
+            for row in rows
+        )
+
+    def to_serializable(self) -> list[dict[str, str]]:
+        return [location.to_serializable() for location in self._locations]
+
+    def values(self) -> tuple[MeshApLocation, ...]:
+        return self._locations
+
+    def resolve(self, row: Mapping[str, Any]) -> MeshApLocation:
+        mac = normalize_mesh_ap_mac(
+            row.get("peer_ap_mac")
+            or row.get("active_peer_mac")
+            or row.get("peer_mac_normalized")
+            or row.get("peer_mac")
+            or row.get("ap_mac")
+        )
+        name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
+        location = self._by_mac.get(mac) if mac else None
+        if location is None and name:
+            location = self._by_name.get(name.casefold())
+        if location is not None:
+            return location
+        return MeshApLocation(
+            name=name,
+            mac=mac,
+            station=str(row.get("peer_site") or row.get("station") or row.get("belong_station") or ""),
+            section=str(row.get("peer_section") or row.get("section") or row.get("belong_section") or ""),
+            mileage=str(row.get("mileage") or ""),
+            line_side=str(row.get("line_side") or ""),
+        )
+
+
+class MeshApLocationService:
+    def __init__(self, base_query: RailTransitBaseDataQueryService) -> None:
+        self.base_query = base_query
+
+    def snapshot(self, site_id: str) -> MeshApLocationSnapshot:
+        first = self.base_query.list_aps(site_id, page=1, page_size=500)
+        items = list(first.items)
+        page = 2
+        while len(items) < first.total:
+            part = self.base_query.list_aps(site_id, page=page, page_size=500)
+            if not part.items:
+                break
+            items.extend(part.items)
+            page += 1
+        return MeshApLocationSnapshot.from_base_data_items(items)
+
+
+def normalize_mesh_ap_mac(value: object) -> str:
+    return "".join(character for character in str(value or "").lower() if character in "0123456789abcdef")
+
+
+__all__ = [
+    "MeshApLocation",
+    "MeshApLocationService",
+    "MeshApLocationSnapshot",
+    "normalize_mesh_ap_mac",
+]

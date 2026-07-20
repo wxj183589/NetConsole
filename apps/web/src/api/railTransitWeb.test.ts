@@ -80,6 +80,26 @@ describe('rail transit Web parity API client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/online-mr/sessions/session%2F1/timeline?limit=300&offset=0')
   })
 
+  it('sends temporary MESH analysis params only when explicitly provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-4' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const override = {
+      main_link_switch_time_ms: 3000,
+      short_link_tolerance_ms: 250,
+      pingpong_tolerance_ms: 500,
+      pingpong_return_window_ms: null,
+      merge_same_physical_ap_dual_radio: true,
+      include_log_boundary_segments: false,
+      sample_interval_ms: null,
+      service_type: 'PIS' as const,
+      wifi_type: 'WiFi6' as const,
+    }
+
+    await exportMeshAnalysisReport('mr-id:1', override)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ analysis_params_override: override })
+  })
+
   it('keeps the legacy Online MR metric consumer on the list contract', async () => {
     const series = [{ metric_type: 'rssi', series_key: 'radio=1', unit: 'dBm', points: [], summary: { count: 0, minimum: null, maximum: null, average: null } }]
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: series }) })

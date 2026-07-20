@@ -4,11 +4,14 @@ import type {
   OnlineMrMetricSeries, OnlineMrTimelineEvent, MeshImportProfile, OnlineTrainPage, RailTransitTask,
 } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
+import type { MeshAnalysisParams } from '../types/meshAnalysis'
 
 const onlineMrRoot = '/api/online-mr'
 const trainRoot = '/api/rail-transit/train-communication'
 
 interface ApiResponse<T> { ok: boolean; data: T }
+
+export type MeshAnalysisParamsOverride = MeshAnalysisParams
 
 export function listOnlineTrains(page = 1, pageSize = 50): Promise<OnlineTrainPage> {
   return apiRequest<OnlineTrainPage>(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
@@ -112,8 +115,11 @@ export function parseOnlineMrSession(sessionId: string, forceReparse = false): P
   })
 }
 
-export function exportMeshAnalysisReport(sessionId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`/api/rail-transit/mesh-analysis/sessions/${encodeURIComponent(sessionId)}/report`, { method: 'POST' })
+export function exportMeshAnalysisReport(sessionId: string, override?: MeshAnalysisParamsOverride): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(`/api/rail-transit/mesh-analysis/sessions/${encodeURIComponent(sessionId)}/report`, {
+    method: 'POST',
+    ...(override ? { body: JSON.stringify({ analysis_params_override: override }) } : {}),
+  })
 }
 
 export function getRailTransitTask(taskId: string): Promise<RailTransitTask> {

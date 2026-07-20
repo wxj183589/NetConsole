@@ -88,6 +88,26 @@ class MeshRebuildRequestDTO(ApiModel):
     explicit_confirmation: bool = False
 
 
+class MeshAnalysisParamsDTO(ApiModel):
+    main_link_switch_time_ms: int = Field(gt=0, le=600_000)
+    short_link_tolerance_ms: int = Field(ge=0, le=600_000)
+    pingpong_tolerance_ms: int = Field(ge=0, le=600_000)
+    pingpong_return_window_ms: int | None = Field(default=None, gt=0, le=3_600_000)
+    merge_same_physical_ap_dual_radio: bool = True
+    include_log_boundary_segments: bool = False
+    sample_interval_ms: int | None = Field(default=None, gt=0, le=600_000)
+    service_type: Literal["PIS", "信号", "其他"] = "PIS"
+    wifi_type: Literal["WiFi5", "WiFi6", "其他"] = "WiFi6"
+
+
+class MeshAnalysisParamsOverrideDTO(MeshAnalysisParamsDTO):
+    pass
+
+
+class MeshReportRequestDTO(ApiModel):
+    analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     session_count: int = 0
@@ -162,6 +182,8 @@ class MeshDataSourceDTO(ApiModel):
 
 class MeshAnalysisSessionDetailDTO(ApiModel):
     session: MeshAnalysisSessionDTO
+    analysis_params: MeshAnalysisParamsDTO
+    available_radios: list[int] = Field(default_factory=list)
     warnings: list[MeshAnalysisWarningDTO] = Field(default_factory=list)
     sources: list[MeshDataSourceDTO] = Field(default_factory=list)
 
@@ -169,16 +191,41 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
 class MeshLinkDetailDTO(ApiModel):
     record_id: int
     timestamp: str
+    timestamp_tag: str = ""
+    sample_group_index: int | None = None
     train_name: str = ""
     mr_name: str
     mr_role: str = ""
     local_radio: int | None = None
+    peer_mac: str | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
+    peer_radio_mac: str | None = None
     peer_radio: str | None = None
     link_role: str
     link_status: str
     rssi: float | None = None
+    peer_rssi: float | None = None
+    local_noise: float | None = None
+    peer_noise: float | None = None
+    local_signal: float | None = None
+    peer_signal: float | None = None
+    local_rssi_db: float | None = None
+    peer_rssi_db: float | None = None
+    local_noise_dbm: float | None = None
+    peer_noise_dbm: float | None = None
+    local_signal_dbm: float | None = None
+    peer_signal_dbm: float | None = None
+    local_rate_raw: float | None = None
+    peer_rate_raw: float | None = None
+    local_tx_busy: float | None = None
+    peer_tx_busy: float | None = None
+    local_rx_busy: float | None = None
+    peer_rx_busy: float | None = None
+    establish_time: str | None = None
+    duration_text: str | None = None
+    duration_seconds: float | None = None
+    link_count: int | None = None
     channel: str | None = None
     bandwidth: str | None = None
     station: str | None = None
@@ -189,6 +236,29 @@ class MeshLinkDetailDTO(ApiModel):
     duration_ms: int | None = None
     source_file: str
     source_record_index: int | None = None
+    source_line_number: int | None = None
+    raw_line_start: int | None = None
+    raw_line_end: int | None = None
+    raw_offset_start: int | None = None
+    raw_offset_end: int | None = None
+    local_cpu_percent: float | None = None
+    peer_cpu_percent: float | None = None
+    local_mem_percent: float | None = None
+    peer_mem_percent: float | None = None
+    local_tx_des_free_cnt: int | None = None
+    peer_tx_des_free_cnt: int | None = None
+    local_tx: int | None = None
+    peer_tx: int | None = None
+    local_rx: int | None = None
+    peer_rx: int | None = None
+    local_retry: int | None = None
+    peer_retry: int | None = None
+    local_err: int | None = None
+    peer_err: int | None = None
+    local_tx_garp: int | None = None
+    peer_rx_garp: int | None = None
+    local_tx_mul_join: int | None = None
+    peer_rx_mul_join: int | None = None
     match_method: str | None = None
     warning: str | None = None
 
@@ -198,6 +268,161 @@ class MeshLinkPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+
+
+class MeshActiveBuildOrderDTO(ApiModel):
+    sequence: int
+    source_file_id: int | None = None
+    anchor_link_id: int | None = None
+    local_radio: int | None = None
+    active_peer_mac: str = ""
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    peer_radio: str | None = None
+    peer_radio_mac: str | None = None
+    station: str | None = None
+    section: str | None = None
+    mileage: str | None = None
+    line_side: str | None = None
+    build_start_time: str
+    build_end_time: str
+    main_link_duration_seconds: float | None = None
+    reported_duration_seconds: float | None = None
+    sample_count: int = 0
+    avg_mr_rssi: float | None = None
+    min_mr_rssi: float | None = None
+    max_mr_rssi: float | None = None
+    p10_mr_rssi: float | None = None
+    avg_tx_busy: float | None = None
+    avg_rx_busy: float | None = None
+    avg_peer_tx_busy: float | None = None
+    avg_peer_rx_busy: float | None = None
+    main_link_switch_time_ms: int | None = None
+    short_link_tolerance_ms: int | None = None
+    pingpong_tolerance_ms: int | None = None
+    pingpong_return_window_ms: int | None = None
+    short_threshold_seconds: float | None = None
+    min_normal_sample_count: int | None = None
+    build_result: str
+    judge_reason: str = ""
+    is_same_physical_ap_radio_switch: bool = False
+    physical_ap_key: str = ""
+    is_ap_return_event: bool = False
+    is_pingpong_abnormal: bool = False
+    pingpong_type: str = ""
+    pingpong_group_id: str = ""
+    pingpong_return_duration_ms: int | None = None
+    middle_ap_dwell_ms: int | None = None
+    previous_ap: str = ""
+    middle_ap: str = ""
+    return_ap: str = ""
+    pingpong_judgment_reason: str = ""
+    source_file: str = ""
+
+
+class MeshActiveBuildOrderPageDTO(ApiModel):
+    items: list[MeshActiveBuildOrderDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
+
+
+class MeshChartBackupLinkDTO(ApiModel):
+    link_id: int | None = None
+    source_file_id: int | None = None
+    timestamp: str
+    timestamp_tag: str = ""
+    local_radio: int | None = None
+    peer_mac: str = ""
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    peer_radio: str | None = None
+    peer_radio_mac: str | None = None
+    station: str | None = None
+    section: str | None = None
+    local_rssi: float | None = None
+    peer_rssi: float | None = None
+    local_signal: float | None = None
+    peer_signal: float | None = None
+    local_tx_busy: float | None = None
+    peer_tx_busy: float | None = None
+    local_rx_busy: float | None = None
+    peer_rx_busy: float | None = None
+
+
+class MeshChartPointDTO(ApiModel):
+    link_id: int | None = None
+    source_file_id: int | None = None
+    timestamp: str
+    timestamp_tag: str = ""
+    local_radio: int | None = None
+    link_state: str = ""
+    peer_mac: str = ""
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    peer_radio: str | None = None
+    peer_radio_mac: str | None = None
+    station: str | None = None
+    section: str | None = None
+    local_rssi: float | None = None
+    peer_rssi: float | None = None
+    local_signal: float | None = None
+    peer_signal: float | None = None
+    local_tx_busy: float | None = None
+    peer_tx_busy: float | None = None
+    local_rx_busy: float | None = None
+    peer_rx_busy: float | None = None
+    establish_time: str | None = None
+    segment_sequence: int | None = None
+    segment_start: str | None = None
+    segment_end: str | None = None
+    segment_duration_seconds: float | None = None
+    is_switch: bool = False
+    is_anomaly: bool = False
+    gap_before: bool = False
+    backups: list[MeshChartBackupLinkDTO] = Field(default_factory=list)
+
+
+class MeshChartEventDTO(ApiModel):
+    event_id: int
+    timestamp: str
+    event_type: str
+    local_radio: int | None = None
+    from_peer_mac: str | None = None
+    to_peer_mac: str | None = None
+    from_ap_name: str | None = None
+    to_ap_name: str | None = None
+    segment_sequence: int | None = None
+    duration_ms: int | None = None
+
+
+class MeshPathChartSummaryDTO(ApiModel):
+    current_peer_mac: str | None = None
+    current_peer_ap_name: str | None = None
+    current_radio: int | None = None
+    sample_count: int = 0
+    active_count: int = 0
+    standby_context_count: int = 0
+    switch_count: int = 0
+    earliest_sample_time: str | None = None
+    latest_sample_time: str | None = None
+    first_sample_time: str | None = None
+    last_sample_time: str | None = None
+    estimated_interval_seconds: float | None = None
+    continuity_gap_seconds: float | None = None
+
+
+class MeshPathChartDTO(ApiModel):
+    mode: Literal["active_path", "peer_segment"]
+    anchor: MeshChartPointDTO | None = None
+    points: list[MeshChartPointDTO] = Field(default_factory=list)
+    events: list[MeshChartEventDTO] = Field(default_factory=list)
+    summary: MeshPathChartSummaryDTO = Field(default_factory=MeshPathChartSummaryDTO)
+    total_points: int = 0
+    returned_points: int = 0
+    downsampled: bool = False
+    time_from: str | None = None
+    time_to: str | None = None
 
 
 class MeshLinkTimelineDTO(ApiModel):

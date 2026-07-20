@@ -1,25 +1,59 @@
 import { describe, expect, it } from 'vitest'
 
-import type { MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
 import {
   buildMeshBusySeries,
   buildMeshCounterDeltaSeries,
   buildMeshRateSeries,
+  buildMeshRssiSeries,
   buildMeshSwitchRssiSeries,
 } from './chartSeries'
 
-describe('mesh busy chart series', () => {
-  it('keeps AP and Radio dimensions and null samples', () => {
-    const series = buildMeshBusySeries([
-      { timestamp: '2026-07-20T10:00:00.123Z', local_radio: 1, tx_busy: 20, rx_busy: null, ctl_busy: null, total_busy: null, peer_ap_name: 'AP-1', station: null, section: null, source_type: 'mesh_link_metrics', warning: null },
-      { timestamp: '2026-07-20T10:00:00.123Z', local_radio: 2, tx_busy: 30, rx_busy: 40, ctl_busy: null, total_busy: null, peer_ap_name: 'AP-1', station: null, section: null, source_type: 'mesh_link_metrics', warning: null },
-    ])
+function point(index: number): MeshChartPoint {
+  return {
+    link_id: index, timestamp: `2026-07-20T10:00:${String(index).padStart(2, '0')}.123Z`, timestamp_tag: `tag-${index}`, source_file_id: 1,
+    local_radio: index % 2 + 1, link_state: 'ACTIVE', peer_mac: `peer-${index}`, peer_ap_name: `AP-${index}`, peer_ap_mac: `ap-${index}`,
+    peer_radio: 'Radio 1', peer_radio_mac: null, station: null, local_rssi: -40 - index, peer_rssi: -45 - index,
+    local_signal: -50, peer_signal: -55, local_tx_busy: 20, peer_tx_busy: 30, local_rx_busy: null, peer_rx_busy: 40,
+    is_switch: false, is_anomaly: false, gap_before: false, backups: [],
+  }
+}
 
-    expect(series.map((item) => item.name)).toEqual([
-      'AP-1 · Radio 1 · TxBusy', 'AP-1 · Radio 1 · RxBusy',
-      'AP-1 · Radio 2 · TxBusy', 'AP-1 · Radio 2 · RxBusy',
+describe('mesh ACTIVE chart series', () => {
+  it('keeps 100 AP on one default RSSI main line', () => {
+    const series = buildMeshRssiSeries(Array.from({ length: 100 }, (_, index) => point(index)))
+    expect(series).toHaveLength(1)
+    expect(series[0].name).toBe('当前 ACTIVE MR 侧 RSSI')
+    expect(series[0].data).toHaveLength(100)
+  })
+
+  it('adds only one optional Peer RSSI line', () => {
+    expect(buildMeshRssiSeries([point(1)], true).map((item) => item.name)).toEqual([
+      '当前 ACTIVE MR 侧 RSSI', '当前 ACTIVE Peer 侧 RSSI',
     ])
-    expect(series[1].data[0].value).toEqual(['2026-07-20T10:00:00.123Z', null])
+    expect(buildMeshRssiSeries([point(1)], false, 'peer')[0].name).toBe('选中 AP MR 侧 RSSI')
+  })
+
+  it('uses two MR Busy lines by default and at most four with Peer enabled', () => {
+    const sample = point(1)
+    const defaults = buildMeshBusySeries([sample])
+    expect(defaults.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 TxBusy', '当前 ACTIVE MR 侧 RxBusy'])
+    expect(defaults[1].data[0].value).toEqual([sample.timestamp, null])
+    expect(buildMeshBusySeries([sample], true)).toHaveLength(4)
+  })
+
+  it('inserts explicit null breakpoints before a new visit or backend gap', () => {
+    const firstVisit = point(1)
+    const secondVisit = { ...point(2), gap_before: true }
+    const rssi = buildMeshRssiSeries([firstVisit, secondVisit])[0].data
+    const busy = buildMeshBusySeries([firstVisit, secondVisit])[0].data
+
+    expect(rssi.map((item) => item.value)).toEqual([
+      [firstVisit.timestamp, firstVisit.local_rssi],
+      [secondVisit.timestamp, null],
+      [secondVisit.timestamp, secondVisit.local_rssi],
+    ])
+    expect(busy[1].value).toEqual([secondVisit.timestamp, null])
   })
 })
 

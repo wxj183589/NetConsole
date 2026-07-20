@@ -19,6 +19,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
     MeshAnalysisSessionPageDTO,
     MeshAnalysisSummaryDTO,
+    MeshActiveBuildOrderPageDTO,
     MeshAnomalyPageDTO,
     MeshApStatisticsPageDTO,
     MeshBundleImportRequestDTO,
@@ -28,10 +29,12 @@ from netconsole.models.api.mesh_analysis import (
     MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
     MeshLinkPageDTO,
+    MeshPathChartDTO,
     MeshProfileCreateRequestDTO,
     MeshProfileDTO,
     MeshRawTailDTO,
     MeshRebuildRequestDTO,
+    MeshReportRequestDTO,
     MeshRatePageDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
@@ -293,7 +296,7 @@ def links(
     has_warning: bool | None = None,
     query: str = Query(default="", max_length=200),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=100, ge=1, le=500),
+    page_size: int = Query(default=100, ge=1, le=1_000),
     sort_by: str = Query(default="timestamp", pattern="^(timestamp|rssi|peer_ap_name)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> MeshLinkPageDTO:
@@ -390,6 +393,101 @@ def rate_series(
             time_from=time_from,
             time_to=time_to,
             max_points=max_points,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/active-build-order",
+    response_model=MeshActiveBuildOrderPageDTO,
+    summary="读取正式主链路建链顺序",
+    responses={404: {"description": "分析会话或 compact v3 结果不存在"}},
+)
+def active_build_order(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    peer: str = Query(default="", max_length=100),
+    station: str = Query(default="", max_length=100),
+    build_result: str = Query(default="", max_length=50),
+    pingpong_only: bool = False,
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1_000),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+) -> MeshActiveBuildOrderPageDTO:
+    return _query(
+        lambda: _service(request).list_active_build_order(
+            _site_id(request, site_id),
+            session_id,
+            radio=radio,
+            peer=peer,
+            station=station,
+            build_result=build_result,
+            pingpong_only=pingpong_only,
+            time_from=time_from,
+            time_to=time_to,
+            page=page,
+            page_size=page_size,
+            sort_order=sort_order,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/charts/active-path",
+    response_model=MeshPathChartDTO,
+    summary="读取全 ACTIVE 主链路动态图数据",
+    responses={404: {"description": "分析会话或 compact v3 结果不存在"}},
+)
+def active_path_chart(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1_000, ge=10, le=2_000),
+) -> MeshPathChartDTO:
+    return _query(
+        lambda: _service(request).get_active_path_chart(
+            _site_id(request, site_id),
+            session_id,
+            radio=radio,
+            time_from=time_from,
+            time_to=time_to,
+            max_points=max_points,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/charts/peer-segment",
+    response_model=MeshPathChartDTO,
+    summary="读取单 Peer 连续经过时段动态图数据",
+    responses={404: {"description": "分析会话、锚点或 compact v3 结果不存在"}},
+)
+def peer_segment_chart(
+    request: Request,
+    session_id: str,
+    anchor_link_id: int = Query(ge=1),
+    site_id: str = Query(default="", max_length=100),
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1_000, ge=10, le=2_000),
+    all_visits: bool = Query(default=False),
+) -> MeshPathChartDTO:
+    return _query(
+        lambda: _service(request).get_peer_segment_chart(
+            _site_id(request, site_id),
+            session_id,
+            anchor_link_id=anchor_link_id,
+            time_from=time_from,
+            time_to=time_to,
+            max_points=max_points,
+            all_visits=all_visits,
         )
     )
 
@@ -501,9 +599,22 @@ def rebuild_session(request: Request, session_id: str, payload: MeshRebuildReque
         Depends(require_feature("web.rail_task_control")),
     ],
 )
-def start_report(request: Request, session_id: str) -> RailTransitTaskDTO:
+def start_report(
+    request: Request,
+    session_id: str,
+    payload: MeshReportRequestDTO | None = None,
+) -> RailTransitTaskDTO:
     try:
-        return _rail_service(request).start_mesh_report(_current_site_id(request), session_id)
+        override = (
+            payload.analysis_params_override.model_dump(exclude_none=True)
+            if payload and payload.analysis_params_override
+            else None
+        )
+        return _rail_service(request).start_mesh_report(
+            _current_site_id(request),
+            session_id,
+            analysis_params_override=override,
+        )
     except RailTransitWebError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,

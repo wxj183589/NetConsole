@@ -3,18 +3,47 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import MeshCounterDeltaChart from './MeshCounterDeltaChart.vue'
+import MeshChannelBusyChart from './MeshChannelBusyChart.vue'
 import MeshRateChart from './MeshRateChart.vue'
+import MeshRssiChart from './MeshRssiChart.vue'
 import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
+import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
 
 const echartsMock = vi.hoisted(() => {
-  const chart = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() }
+  const chart = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn(), dispatchAction: vi.fn(), on: vi.fn(), off: vi.fn() }
   return { chart, init: vi.fn(() => chart), use: vi.fn() }
 })
 
 vi.mock('echarts/core', () => ({ init: echartsMock.init, use: echartsMock.use }))
 vi.mock('echarts/charts', () => ({ LineChart: {}, ScatterChart: {} }))
-vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, TooltipComponent: {} }))
+vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, MarkLineComponent: {}, ToolboxComponent: {}, TooltipComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
+
+const chartPoint: MeshChartPoint = {
+  link_id: 1, timestamp: '2026-07-20T10:00:00.123Z', timestamp_tag: 'sample-1', source_file_id: 1,
+  local_radio: 1, link_state: 'ACTIVE', peer_mac: 'peer-1', peer_ap_name: 'AP-1', peer_ap_mac: 'ap-1', peer_radio: 'Radio 1', peer_radio_mac: null,
+  station: '站点一', section: '区间一', local_rssi: -40, peer_rssi: -45, local_signal: -50, peer_signal: -55,
+  local_tx_busy: 20, peer_tx_busy: 30, local_rx_busy: 25, peer_rx_busy: 35, is_switch: true, is_anomaly: false, gap_before: false,
+  backups: [{ link_id: 2, timestamp: '2026-07-20T10:00:00.123Z', timestamp_tag: 'sample-1', local_radio: 1, peer_mac: 'backup', peer_ap_name: '备链 AP', peer_ap_mac: null, peer_radio: null, peer_radio_mac: null, local_rssi: -60, peer_rssi: -62, local_signal: -65, peer_signal: -67, local_tx_busy: 10, peer_tx_busy: 11, local_rx_busy: 12, peer_rx_busy: 13 }],
+}
+const chartEvent: MeshChartEvent = {
+  event_id: 1,
+  timestamp: chartPoint.timestamp,
+  event_type: 'ACTIVE_SWITCH',
+  local_radio: 1,
+  from_peer_mac: 'peer-0',
+  to_peer_mac: 'peer-1',
+  from_ap_name: 'AP-0',
+  to_ap_name: 'AP-1',
+  segment_sequence: 2,
+  duration_ms: 1_000,
+}
+const chartPointAfterGap: MeshChartPoint = {
+  ...chartPoint,
+  link_id: 3,
+  timestamp: '2026-07-20T10:00:10.123Z',
+  gap_before: true,
+}
 
 describe('MESH charts mount and render', () => {
   beforeEach(() => {
@@ -26,17 +55,32 @@ describe('MESH charts mount and render', () => {
       mount(MeshRateChart, { props: { points: [{ timestamp: '2026-07-20T10:00:00.123Z', local_radio: 1, peer_ap_name: 'AP-1', peer_ap_mac: null, local_rate_raw: 54, peer_rate_raw: null }] } }),
       mount(MeshCounterDeltaChart, { props: { points: [{ timestamp: '2026-07-20T10:00:00.123Z', local_radio: 1, peer_ap_name: 'AP-1', peer_ap_mac: null, local_retry_delta: 2, peer_retry_delta: null, local_error_delta: 1, peer_error_delta: 0 }] } }),
       mount(MeshSwitchRssiChart, { props: { events: [{ event_id: 1, timestamp: '2026-07-20T10:00:00.123Z', event_type: 'switch', mr_name: 'MR-1', local_radio: 1, from_peer_mac: null, to_peer_mac: null, from_ap_name: 'AP-1', to_ap_name: 'AP-2', before_rssi: -40, after_rssi: -45, duration_ms: null, is_short_link: false, is_pingpong: false, station: null, section: null, warning: null }] } }),
+      mount(MeshRssiChart, { props: { points: [chartPoint, chartPointAfterGap], events: [chartEvent], focusTimestamp: chartPointAfterGap.timestamp } }),
+      mount(MeshChannelBusyChart, { props: { points: [chartPoint], events: [chartEvent] } }),
     ]
     await flushPromises()
 
-    expect(echartsMock.init).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(3)
+    expect(echartsMock.init).toHaveBeenCalledTimes(5)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(5)
     const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as { series: Array<{ name: string; type: string }> })
     expect(options[0].series[0].name).toContain('Rate 原始值')
     expect(options[1].series[0].name).toContain('Retry 增量')
     expect(options[2].series.every((item) => item.type === 'scatter')).toBe(true)
+    expect(options[3].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI'])
+    expect(options[4].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 TxBusy', '当前 ACTIVE MR 侧 RxBusy'])
+    expect((echartsMock.chart.setOption.mock.calls[3][0] as { series: Array<{ markLine?: { silent: boolean } }> }).series[0].markLine?.silent).toBe(false)
+
+    const rssiOption = echartsMock.chart.setOption.mock.calls[3][0] as { dataZoom: unknown[]; toolbox: { feature: { saveAsImage: unknown } }; tooltip: { formatter: (params: unknown) => string } }
+    expect(rssiOption.dataZoom).toHaveLength(2)
+    expect(rssiOption.toolbox.feature.saveAsImage).toBeDefined()
+    expect(rssiOption.tooltip.formatter([{ data: { meta: chartPoint } }])).toContain('同采样点备链（1）')
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({ type: 'showTip', seriesIndex: 0, dataIndex: 2 })
+    const rssiClick = echartsMock.chart.on.mock.calls[0][1] as (payload: unknown) => void
+    rssiClick({ data: { meshEvent: chartEvent } })
+    expect(wrappers[3].emitted('selectSwitch')?.[0]).toEqual([chartEvent])
 
     wrappers.forEach((wrapper) => wrapper.unmount())
-    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(5)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(2)
   })
 })

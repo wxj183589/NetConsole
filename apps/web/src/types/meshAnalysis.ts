@@ -77,15 +77,76 @@ export interface MeshRawSource {
   rebuild_capability: 'ready' | 'recoverable_from_bundle' | 'raw_missing' | 'task_running' | 'unsupported'
   package_name: string; package_sha256: string; bundle_member_id: string
 }
-export interface MeshSessionDetail { session: MeshAnalysisSession; warnings: MeshWarning[]; sources: MeshRawSource[] }
+export interface MeshAnalysisParams {
+  main_link_switch_time_ms: number; short_link_tolerance_ms: number; pingpong_tolerance_ms: number; pingpong_return_window_ms: number | null
+  merge_same_physical_ap_dual_radio: boolean; include_log_boundary_segments: boolean; sample_interval_ms: number | null
+  service_type: 'PIS' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
+}
+export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; sources: MeshRawSource[] }
 
 export interface MeshLinkDetail {
-  record_id: number; timestamp: string; train_name: string; mr_name: string; mr_role: string
-  local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; peer_radio: string | null
-  link_role: string; link_status: string; rssi: number | null; channel: string | null; bandwidth: string | null
+  record_id: number; timestamp: string; timestamp_tag: string | null; sample_group_index: number | null; train_name: string; mr_name: string; mr_role: string
+  local_radio: number | null; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null; peer_radio: string | null; peer_radio_mac: string | null
+  link_role: string; link_status: string; establish_time: string | null; duration_text: string | null; duration_seconds: number | null; link_count: number | null
+  local_rssi_db: number | null; peer_rssi_db: number | null; local_noise_dbm: number | null; peer_noise_dbm: number | null
+  local_signal_dbm: number | null; peer_signal_dbm: number | null; local_rate_raw: string | number | null; peer_rate_raw: string | number | null
+  local_tx_busy: number | null; peer_tx_busy: number | null; local_rx_busy: number | null; peer_rx_busy: number | null
+  rssi: number | null; channel: string | null; bandwidth: string | null
   station: string | null; section: string | null; mileage: string | null; line_side: string | null
-  event_type: string | null; duration_ms: number | null; source_file: string; source_record_index: number | null
+  event_type: string | null; duration_ms: number | null; source_file: string; source_record_index: number | null; source_line_number: number | null
+  local_cpu_percent: number | null; peer_cpu_percent: number | null; local_mem_percent: number | null; peer_mem_percent: number | null
+  local_tx_des_free_cnt: number | null; peer_tx_des_free_cnt: number | null; local_tx: number | null; peer_tx: number | null; local_rx: number | null; peer_rx: number | null
+  local_retry: number | null; peer_retry: number | null; local_err: number | null; peer_err: number | null
+  local_tx_garp: number | null; peer_rx_garp: number | null; local_tx_mul_join: number | null; peer_rx_mul_join: number | null
+  raw_line_start: number | null; raw_line_end: number | null; raw_offset_start: number | null; raw_offset_end: number | null
   match_method: string | null; warning: string | null
+}
+
+export interface MeshActiveBuildOrder {
+  sequence: number; source_file_id: number | null; local_radio: number | null; active_peer_mac: string
+  peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null
+  peer_radio: string | null; peer_radio_mac?: string | null; anchor_link_id: number | null
+  build_start_time: string; build_end_time: string; main_link_duration_seconds: number | null; reported_duration_seconds: number | null
+  sample_count: number; avg_mr_rssi: number | null; min_mr_rssi: number | null; max_mr_rssi: number | null; p10_mr_rssi: number | null
+  avg_tx_busy: number | null; avg_rx_busy: number | null; avg_peer_tx_busy: number | null; avg_peer_rx_busy: number | null
+  build_result: string; judge_reason: string; pingpong_type: string; source_file: string
+  main_link_switch_time_ms?: number | null; short_link_tolerance_ms?: number | null; pingpong_tolerance_ms?: number | null; pingpong_return_window_ms?: number | null; short_threshold_seconds?: number | null
+  physical_ap_key?: string
+  is_same_physical_ap_radio_switch?: boolean; is_pingpong_abnormal?: boolean; pingpong_judgment_reason?: string; pingpong_group_id?: string; middle_ap_dwell_ms?: number | null
+  pingpong_return_duration_ms?: number | null; previous_ap?: string; middle_ap?: string; return_ap?: string
+}
+
+export interface MeshChartBackupLink {
+  link_id: number | null; source_file_id?: number | null; timestamp: string; timestamp_tag: string; local_radio: number | null; link_state?: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
+  peer_radio: string | null; peer_radio_mac: string | null; local_rssi: number | null; peer_rssi: number | null
+  local_signal: number | null; peer_signal: number | null; local_tx_busy: number | null; peer_tx_busy: number | null
+  local_rx_busy: number | null; peer_rx_busy: number | null
+}
+
+export interface MeshChartPoint {
+  link_id: number | null; timestamp: string; timestamp_tag: string | null; source_file_id: number | null; segment_sequence?: number | null
+  local_radio: number | null; link_state: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
+  peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section?: string | null
+  establish_time?: string | null; segment_start?: string | null; segment_end?: string | null; segment_duration_seconds?: number | null
+  local_rssi: number | null; peer_rssi: number | null; local_signal: number | null; peer_signal: number | null
+  local_tx_busy: number | null; peer_tx_busy: number | null; local_rx_busy: number | null; peer_rx_busy: number | null
+  is_switch: boolean; is_anomaly: boolean; gap_before: boolean; backups: MeshChartBackupLink[]
+}
+
+export interface MeshChartEvent {
+  event_id: number | null; timestamp: string; event_type: string; local_radio: number | null; from_peer_mac: string | null; to_peer_mac: string | null
+  duration_ms: number | null; from_ap_name?: string | null; to_ap_name?: string | null; segment_sequence?: number | null
+}
+
+export interface MeshPathChartSummary {
+  current_peer_mac: string | null; current_peer_ap_name: string | null; current_radio: number | null
+  earliest_sample_time?: string | null; latest_sample_time?: string | null; first_sample_time: string | null; last_sample_time: string | null; sample_count: number; active_count: number
+  standby_context_count: number; switch_count: number; estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
+}
+
+export interface MeshPathChart {
+  mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
+  total_points: number; returned_points: number; downsampled: boolean; summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
 }
 
 export interface MeshTimelineItem { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }

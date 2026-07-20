@@ -10,13 +10,13 @@ describe('MeshRssiChart', () => {
     expect(source).toContain('chart?.dispose()')
   })
 
-  it('renders stable AP/Radio series with zoom, legend and complete tooltip context', () => {
+  it('renders one ACTIVE path series with zoom and preloaded standby context', () => {
     expect(source).toContain('components.LegendComponent')
     expect(source).toContain("type: 'slider'")
     expect(source).toContain("filterMode: 'none'")
-    expect(source).toContain('peer_ap_name || point.peer_ap_mac')
-    expect(source).toContain('Peer MAC：')
+    expect(source).toContain('buildMeshRssiSeries(props.points, props.showPeer, props.scope)')
+    expect(source).toContain('同采样点备链')
     expect(source).toContain('connectNulls: false')
-    expect(source).not.toMatch(/point\.value\s*\?\?\s*0/)
+    expect(source).not.toContain('new Map<string, MeshRssiPoint[]>')
   })
 })

@@ -3,17 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Iterable
 
+import numpy as np
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
+from openpyxl.chart import LineChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from netconsole.services.mesh_analysis_report import MeshAnalysisReportModel
+from netconsole.services.mesh_chart_payload import preserve_extrema_indices, render_indices
+from netconsole.services.mesh_link_detail_export import (
+    ACTIVE_BUILD_ORDER_COLUMNS,
+    LINK_DETAIL_COLUMNS,
+    active_build_order_row_values,
+    link_detail_row_values,
+)
 
 
 EMPTY_PARSE_ISSUES_TEXT = "未发现解析问题"
 CancelCallback = Callable[[], bool]
 ProgressCallback = Callable[[int, str], None]
+MAX_EMBEDDED_CHART_POINTS = 5000
 
 EMPTY_PARSE_ISSUES_TEXT = "未发现解析问题"
 
@@ -524,6 +534,91 @@ ALL_LINK_COLUMNS: tuple[str, ...] = (
     "raw_line",
 )
 
+ACTIVE_BUILD_ORDER_FIELDS = tuple(field for _label, field in ACTIVE_BUILD_ORDER_COLUMNS)
+LINK_DETAIL_FIELDS = tuple(field for _label, field in LINK_DETAIL_COLUMNS)
+ACTIVE_PATH_RSSI_FIELDS = (
+    "sequence",
+    "sample_time",
+    "timestamp_tag",
+    "radio",
+    "active_peer_mac",
+    "peer_ap_name",
+    "peer_ap_mac",
+    "peer_site",
+    "section",
+    "mileage",
+    "line_side",
+    "peer_radio",
+    "peer_radio_mac",
+    "mr_rssi",
+    "peer_rssi",
+    "source_file",
+)
+PEER_VISIT_FIELDS = (
+    "sequence",
+    "visit_sequence",
+    "radio",
+    "active_peer_mac",
+    "peer_ap_name",
+    "peer_ap_mac",
+    "peer_site",
+    "section",
+    "mileage",
+    "line_side",
+    "peer_radio",
+    "peer_radio_mac",
+    "build_start_time",
+    "build_end_time",
+    "main_link_duration_seconds",
+    "sample_count",
+    "avg_mr_rssi",
+    "min_mr_rssi",
+    "max_mr_rssi",
+    "p10_mr_rssi",
+    "avg_tx_busy",
+    "avg_rx_busy",
+    "source_file",
+)
+ACTIVE_PATH_BUSY_FIELDS = (
+    "sequence",
+    "sample_time",
+    "timestamp_tag",
+    "radio",
+    "active_peer_mac",
+    "peer_ap_name",
+    "peer_ap_mac",
+    "peer_site",
+    "section",
+    "mileage",
+    "line_side",
+    "peer_radio",
+    "local_tx_busy",
+    "local_rx_busy",
+    "peer_tx_busy",
+    "peer_rx_busy",
+    "source_file",
+)
+ACTIVE_BUILD_ORDER_LABELS = {field: label for label, field in ACTIVE_BUILD_ORDER_COLUMNS}
+LINK_DETAIL_LABELS = {field: label for label, field in LINK_DETAIL_COLUMNS}
+
+REPORT_FIELD_LABELS.update({field: label for label, field in (*ACTIVE_BUILD_ORDER_COLUMNS, *LINK_DETAIL_COLUMNS)})
+REPORT_FIELD_LABELS.update(
+    {
+        "visit_sequence": "第几次经过",
+        "build_start_time": "建链开始时间",
+        "build_end_time": "建链结束时间",
+        "main_link_duration_seconds": "主链路持续时长(秒)",
+        "reported_duration_seconds": "日志上报时长(秒)",
+        "local_tx_busy": "MR侧 TxBusy",
+        "local_rx_busy": "MR侧 RxBusy",
+        "peer_tx_busy": "Peer侧 TxBusy",
+        "peer_rx_busy": "Peer侧 RxBusy",
+        "section": "归属区间",
+        "mileage": "里程",
+        "line_side": "线路方向",
+    }
+)
+
 FIXED_WIDTH_FIELDS = {"raw_line", "diagnosis", "suggestion", "quality_reasons", "segment_problem_tags", "problem_tags", "source_files", "source_file", "error_message", "message", "sha256", "pingpong_judgment_reason"}
 FIXED_WIDTH_BY_FIELD = {
     "raw_line": 60,
@@ -563,7 +658,18 @@ FIXED_WIDTH_BY_FIELD = {
     "avg_rx_busy": 14,
 }
 MAC_FIELDS = {"active_peer_mac", "peer_mac", "peer_mac_display", "peer_ap_mac", "from_peer", "to_peer", "best_backup_peer_mac", "best_backup_peer_before_switch", "active_peer"}
-LARGE_SHEET_ATTRS = {"sample_quality", "raw_evidence", "all_link_details", "active_segments", "peer_ranking", "anomaly_events", "switch_events"}
+LARGE_SHEET_ATTRS = {
+    "sample_quality",
+    "raw_evidence",
+    "all_link_details",
+    "link_details",
+    "active_build_order",
+    "active_path_rssi",
+    "active_path_busy",
+    "peer_ranking",
+    "anomaly_events",
+    "switch_events",
+}
 RSSI_STAT_FIELDS = {
     "first_mr_rssi",
     "last_mr_rssi",
@@ -585,7 +691,11 @@ SHEET_DEFINITIONS = tuple(
         ("质量评分", SHEET_DEFINITIONS[1][1], "score_rows"),
         ("原始文件清单", SHEET_DEFINITIONS[2][1], "source_files"),
         ("采样点质量统计", SHEET_DEFINITIONS[3][1], "sample_quality"),
-        ("Active 主链路区段", SHEET_DEFINITIONS[4][1], "active_segments"),
+        ("主链路建链顺序", ACTIVE_BUILD_ORDER_FIELDS, "active_build_order"),
+        ("链路明细", LINK_DETAIL_FIELDS, "link_details"),
+        ("全部 ACTIVE 主链路 RSSI", ACTIVE_PATH_RSSI_FIELDS, "active_path_rssi"),
+        ("单 AP 经过时段统计", PEER_VISIT_FIELDS, "peer_visit_statistics"),
+        ("全部 ACTIVE 空口负载", ACTIVE_PATH_BUSY_FIELDS, "active_path_busy"),
         ("Peer质量排名", SHEET_DEFINITIONS[5][1], "peer_ranking"),
         ("切换事件分析", SHEET_DEFINITIONS[6][1], "switch_events"),
         ("异常事件分析", SHEET_DEFINITIONS[7][1], "anomaly_events"),
@@ -601,6 +711,11 @@ STAGE_BY_ATTR = {
     "overview": "excel_overview",
     "sample_quality": "excel_sample_quality",
     "active_segments": "excel_active_segments",
+    "active_build_order": "excel_active_build_order",
+    "link_details": "excel_link_details",
+    "active_path_rssi": "excel_active_path_rssi",
+    "peer_visit_statistics": "excel_peer_visit_statistics",
+    "active_path_busy": "excel_active_path_busy",
     "peer_ranking": "excel_peer_ranking",
     "raw_evidence": "excel_raw_evidence",
 }
@@ -610,6 +725,11 @@ EMPTY_SHEET_MESSAGES = {
     "source_files": "未找到源文件清单。",
     "sample_quality": "未生成采样点质量统计。",
     "active_segments": "未生成 Active 主链路区段。",
+    "active_build_order": "未生成主链路建链顺序。",
+    "link_details": "未找到链路明细。",
+    "active_path_rssi": "未找到唯一 ACTIVE 主链路 RSSI 数据。",
+    "peer_visit_statistics": "未找到单 AP 经过时段。",
+    "active_path_busy": "未找到唯一 ACTIVE 主链路空口负载数据。",
     "peer_ranking": "未生成 Peer 质量排名。",
     "switch_events": "未发现切换事件。",
     "anomaly_events": "未发现异常事件。",
@@ -667,7 +787,7 @@ class MeshAnalysisExcelReportExporter:
         sheet.freeze_panes = "A2"
         scan_limit = int(getattr(getattr(workbook, "_mesh_report_options", None), "autofit_scan_limit", 2000) or 2000)
         width_tracker = _WidthTracker(field_list, scan_limit=scan_limit if attr_name in LARGE_SHEET_ATTRS else 100000)
-        width_tracker.feed([REPORT_FIELD_LABELS.get(field, field) for field in field_list])
+        width_tracker.feed([_field_label(field, attr_name) for field in field_list])
         if attr_name == "parse_issues" and not rows:
             rows = [{"issue_sequence": 1, "issue_type": "N/A", "severity": "INFO", "message": EMPTY_PARSE_ISSUES_TEXT}]
         elif not rows:
@@ -676,7 +796,7 @@ class MeshAnalysisExcelReportExporter:
         for index, row in enumerate(rows[: width_tracker.scan_limit], 1):
             width_tracker.feed(self._row_values(field_list, row, attr_name, index))
         width_tracker.apply(sheet)
-        sheet.append([_header_cell(sheet, REPORT_FIELD_LABELS.get(field, field)) for field in field_list])
+        sheet.append([_header_cell(sheet, _field_label(field, attr_name)) for field in field_list])
         total_rows = len(rows)
         for index, row in enumerate(rows, 1):
             if index % 1000 == 0:
@@ -684,16 +804,22 @@ class MeshAnalysisExcelReportExporter:
                 progress(95, f"excel_sheet_rows:{sheet_name}:{index}:{total_rows}")
             values = self._row_values(field_list, row, attr_name, index)
             sheet.append(values)
+        if total_rows:
+            _add_active_path_chart(workbook, sheet, rows, attr_name)
 
     def _row_values(self, fields: list[str], row: dict[str, object] | tuple[object, ...], attr_name: str, index: int) -> list[object]:
         if isinstance(row, tuple):
             return [translate_report_value(field, value) for field, value in zip(fields, row)]
         materialized = dict(row)
+        if attr_name == "link_details":
+            return link_detail_row_values(materialized)
+        if attr_name == "active_build_order":
+            return active_build_order_row_values(materialized)
         if attr_name == "parse_issues":
             materialized.setdefault("issue_sequence", index)
             if "source_line_number" not in materialized and "line_number" in materialized:
                 materialized["source_line_number"] = materialized.get("line_number")
-        if attr_name == "all_link_details":
+        if attr_name in {"all_link_details", "link_details"}:
             materialized.setdefault("duration_time", materialized.get("duration_seconds"))
             materialized.setdefault("link_cnt", materialized.get("link_count"))
             materialized.setdefault("source_file", materialized.get("archived_filename"))
@@ -721,12 +847,86 @@ def translate_report_value(field_name: str, value: object) -> object:
     return VALUE_TRANSLATIONS.get(field_name, {}).get(text, value)
 
 
+def _field_label(field: str, attr_name: str) -> str:
+    if attr_name == "link_details":
+        return LINK_DETAIL_LABELS.get(field, REPORT_FIELD_LABELS.get(field, field))
+    if attr_name == "active_build_order":
+        return ACTIVE_BUILD_ORDER_LABELS.get(field, REPORT_FIELD_LABELS.get(field, field))
+    return REPORT_FIELD_LABELS.get(field, field)
+
+
 def apply_fast_report_autofit(sheet, headers: list[str], sample_rows: list[list[object]], max_scan_rows: int = 1000) -> None:
     tracker = _WidthTracker(headers, scan_limit=max_scan_rows)
     tracker.feed(headers)
     for row in sample_rows[:max_scan_rows]:
         tracker.feed(row)
     tracker.apply(sheet)
+
+
+def _add_active_path_chart(
+    workbook: Workbook,
+    sheet,
+    rows: list[dict[str, object]] | list[tuple[object, ...]],
+    attr_name: str,
+) -> None:
+    if attr_name == "active_path_rssi":
+        value_fields = ("mr_rssi", "peer_rssi")
+        title = "全部 ACTIVE 主链路 RSSI"
+        y_title = "RSSI"
+        data_sheet_name = "_ACTIVE_RSSI图表数据"
+    elif attr_name == "active_path_busy":
+        value_fields = ("local_tx_busy", "local_rx_busy")
+        title = "全部 ACTIVE 主链路空口负载"
+        y_title = "繁忙度(%)"
+        data_sheet_name = "_ACTIVE_BUSY图表数据"
+    else:
+        return
+    materialized = [dict(row) for row in rows if isinstance(row, dict)]
+    if not materialized or not any(_chart_number(row.get(field)) is not None for row in materialized for field in value_fields):
+        return
+    chart_rows = _downsample_chart_rows(materialized, value_fields)
+    data_sheet = workbook.create_sheet(data_sheet_name)
+    data_sheet.sheet_state = "hidden"
+    data_sheet.append(["采样时间", *[REPORT_FIELD_LABELS.get(field, field) for field in value_fields]])
+    for row in chart_rows:
+        data_sheet.append([row.get("sample_time"), *[row.get(field) for field in value_fields]])
+    chart = LineChart()
+    chart.title = title
+    chart.y_axis.title = y_title
+    chart.x_axis.title = "采样时间"
+    chart.height = 8
+    chart.width = 20
+    for column in range(2, len(value_fields) + 2):
+        chart.add_data(Reference(data_sheet, min_col=column, min_row=1, max_row=len(chart_rows) + 1), titles_from_data=True)
+    chart.set_categories(Reference(data_sheet, min_col=1, min_row=2, max_row=len(chart_rows) + 1))
+    sheet.add_chart(chart, "Q2")
+
+
+def _downsample_chart_rows(
+    rows: list[dict[str, object]],
+    value_fields: tuple[str, ...],
+) -> list[dict[str, object]]:
+    if len(rows) <= MAX_EMBEDDED_CHART_POINTS:
+        return rows
+    important = {index for index, row in enumerate(rows) if row.get("chart_key_point")}
+    budget = max(MAX_EMBEDDED_CHART_POINTS // max(len(value_fields), 1), 2)
+    all_indices = np.arange(len(rows), dtype=np.int32)
+    for field in value_fields:
+        values = np.asarray(
+            [number if (number := _chart_number(row.get(field))) is not None else np.nan for row in rows],
+            dtype=np.float64,
+        )
+        important.update(int(value) for value in preserve_extrema_indices(all_indices, values, budget))
+    selected = render_indices(len(rows), 0, 0, important, MAX_EMBEDDED_CHART_POINTS)
+    return [rows[int(index)] for index in selected]
+
+
+def _chart_number(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
 
 
 def _header_cell(sheet, value: str) -> WriteOnlyCell:

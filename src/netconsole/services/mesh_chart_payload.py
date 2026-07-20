@@ -29,6 +29,8 @@ _METRIC_KEYS = (
     "peer_tx_busy",
     "local_rx_busy",
     "peer_rx_busy",
+    "local_signal_dbm",
+    "peer_signal_dbm",
 )
 
 
@@ -38,11 +40,12 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     events = [event for event in run_segment.get("events", []) if isinstance(event, dict)]
     anchor = peer_segment.get("anchor") if isinstance(peer_segment.get("anchor"), dict) else run_segment.get("anchor")
     anchor_time = str(anchor.get("sample_time")) if isinstance(anchor, dict) and anchor.get("sample_time") else ""
-    master_times = sorted({str(row.get("sample_time")) for row in run_rows if row.get("sample_time")})
+    anchor_key = _sample_key(anchor) if isinstance(anchor, dict) and anchor_time else ""
+    master_times = sorted({_sample_key(row) for row in run_rows if row.get("sample_time")}, key=_sample_sort_key)
     if not master_times:
-        master_times = sorted({str(row.get("sample_time")) for row in peer_rows if row.get("sample_time")})
-    time_index = {sample_time: index for index, sample_time in enumerate(master_times)}
-    timestamps = [_parse_time(value) for value in master_times]
+        master_times = sorted({_sample_key(row) for row in peer_rows if row.get("sample_time")}, key=_sample_sort_key)
+    time_index = {sample_key: index for index, sample_key in enumerate(master_times)}
+    timestamps = [_parse_time(_sample_time(value)) for value in master_times]
     timestamp_numeric = np.asarray([date2num(value) for value in timestamps], dtype=np.float64)
     count = len(master_times)
     peer_series = _empty_peer_series(count)
@@ -53,9 +56,10 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     peer_link_states = [""] * count
     peer_establish_times = [""] * count
     peer_session_ids = [""] * count
+    peer_links_by_index = [{} for _ in range(count)]
     session_bounds: dict[str, list[str]] = {}
     for row in peer_rows:
-        index = time_index.get(str(row.get("sample_time")))
+        index = time_index.get(_sample_key(row))
         if index is None:
             continue
         session_id = str(row.get("session_id") or "")
@@ -66,6 +70,7 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         peer_link_states[index] = str(row.get("link_state") or "")
         peer_establish_times[index] = str(row.get("establish_time") or "")
         peer_session_ids[index] = session_id
+        peer_links_by_index[index] = _link_context_summary(row)
         if session_id:
             bounds = session_bounds.setdefault(session_id, [str(row.get("sample_time")), str(row.get("sample_time"))])
             bounds[0] = min(bounds[0], str(row.get("sample_time")))
@@ -79,6 +84,8 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         peer_series["peer_tx_busy"][index] = _float(metrics.get("peer_tx_busy"))
         peer_series["local_rx_busy"][index] = _float(metrics.get("local_rx_busy"))
         peer_series["peer_rx_busy"][index] = _float(metrics.get("peer_rx_busy"))
+        peer_series["local_signal"][index] = _float(metrics.get("local_signal_dbm"))
+        peer_series["peer_signal"][index] = _float(metrics.get("peer_signal_dbm"))
         peer_series["state"][index] = 1 if row.get("link_state") == LINK_STATE_ACTIVE else 0
     rows_by_time, rows_by_time_and_peer = _index_rows_by_time(run_rows)
     unique_active_by_index, no_active_indices, multi_active_indices = build_unique_active_samples(master_times, rows_by_time)
@@ -90,21 +97,39 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     active_peer_radios = [""] * count
     active_source_file_ids = [""] * count
     active_peer_rssi = np.full(count, np.nan, dtype=np.float32)
+    active_peer_tx_busy = np.full(count, np.nan, dtype=np.float32)
+    active_peer_rx_busy = np.full(count, np.nan, dtype=np.float32)
+    active_local_signal = np.full(count, np.nan, dtype=np.float32)
+    active_peer_signal = np.full(count, np.nan, dtype=np.float32)
     standby_links_by_index = [[] for _ in range(count)]
     main_links_by_index = [{} for _ in range(count)]
     peer_change_indices = [run.start_sample_index for run in active_runs[1:]]
     rapid_flaps = detect_rapid_flaps(active_runs, master_times, peer_segment.get("estimated_interval_seconds") or run_segment.get("estimated_interval_seconds"))
     rapid_flap_indices = [int(item["return_sample_index"]) for item in rapid_flaps]
-    assign_active_series(active_runs, master_times, rows_by_time_and_peer, active_series, active_peer_macs, active_peer_ap_names, active_peer_sites, active_peer_radios, active_peer_rssi)
+    assign_active_series(
+        active_runs,
+        master_times,
+        rows_by_time_and_peer,
+        active_series,
+        active_peer_macs,
+        active_peer_ap_names,
+        active_peer_sites,
+        active_peer_radios,
+        active_peer_rssi,
+        active_peer_tx_busy,
+        active_peer_rx_busy,
+        active_local_signal,
+        active_peer_signal,
+    )
     assign_standby_links(master_times, rows_by_time, standby_links_by_index, unique_active_by_index, main_links_by_index)
     for index, row in unique_active_by_index.items():
         active_source_file_ids[index] = str(row.get("source_file_id") or "")
     for index, context in enumerate(main_links_by_index):
         if context and not active_source_file_ids[index]:
             active_source_file_ids[index] = str(context.get("source_file_id") or "")
-    events_by_index = _events_by_index(events, time_index, active_peer_macs, active_peer_ap_names, active_peer_sites)
+    events_by_index = _events_by_index(events, master_times, active_peer_macs, active_peer_ap_names, active_peer_sites)
     switch_indices = [index for index, items in events_by_index.items() if any(item.get("event_type") == "ACTIVE_SWITCH" for item in items)]
-    anchor_index = _nearest_time_index(master_times, anchor_time)
+    anchor_index = _nearest_time_index(master_times, anchor_key or anchor_time)
     return {
         "metadata": {
             "anchor": anchor,
@@ -123,7 +148,10 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
             "query_active_count": int(peer_segment.get("query_active_count") or run_segment.get("query_active_count") or 0),
         },
         "timestamps": timestamps,
-        "timestamp_labels": master_times,
+        "timestamp_labels": [_sample_time(value) for value in master_times],
+        "timestamp_tags": [_sample_tag(value) for value in master_times],
+        "sample_source_file_ids": [_sample_source(value) for value in master_times],
+        "sample_radios": [_sample_radio(value) for value in master_times],
         "timestamp_numeric": timestamp_numeric,
         "peer_series": peer_series,
         "active_series": active_series,
@@ -133,6 +161,10 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         "active_peer_radios": active_peer_radios,
         "active_source_file_ids": active_source_file_ids,
         "active_peer_rssi": active_peer_rssi,
+        "active_peer_tx_busy": active_peer_tx_busy,
+        "active_peer_rx_busy": active_peer_rx_busy,
+        "active_local_signal": active_local_signal,
+        "active_peer_signal": active_peer_signal,
         "main_links_by_index": main_links_by_index,
         "standby_links_by_index": standby_links_by_index,
         "backup_links_by_index": standby_links_by_index,
@@ -143,6 +175,7 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
         "peer_link_states": peer_link_states,
         "peer_establish_times": peer_establish_times,
         "peer_session_ids": peer_session_ids,
+        "peer_links_by_index": peer_links_by_index,
         "session_options": [
             {"session_id": session_id, "first_sample_time": bounds[0], "last_sample_time": bounds[1]}
             for session_id, bounds in sorted(session_bounds.items(), key=lambda item: item[1][0])
@@ -177,14 +210,28 @@ def render_indices(total_count: int, start_index: int, visible_count: int, impor
     important = {int(index) for index in important_indices if 0 <= int(index) < total_count}
     if total_count <= max_points:
         return np.arange(total_count, dtype=np.int32)
-    keep = {0, total_count - 1, *important}
-    bucket_count = max((max_points - len(keep)) // 2, 1)
-    bucket_size = max(total_count // bucket_count, 1)
-    for start in range(0, total_count, bucket_size):
-        end = min(start + bucket_size, total_count)
-        keep.add(start)
-        keep.add(end - 1)
-    return np.asarray(sorted(keep), dtype=np.int32)
+    limit = max(int(max_points), 2)
+    required = sorted({0, total_count - 1, *important})
+    if len(required) >= limit:
+        return _spread_indices(required, limit, pinned=(0, total_count - 1))
+    excluded = set(required)
+    candidates = (index for index in range(total_count) if index not in excluded)
+    sampled = _spread_indices(candidates, limit - len(required))
+    return np.asarray(sorted({*required, *(int(index) for index in sampled)}), dtype=np.int32)
+
+
+def _spread_indices(values: Iterable[int], limit: int, *, pinned: tuple[int, ...] = ()) -> np.ndarray:
+    ordered = sorted({int(value) for value in values})
+    if limit <= 0 or not ordered:
+        return np.asarray([], dtype=np.int32)
+    if len(ordered) <= limit:
+        return np.asarray(ordered, dtype=np.int32)
+    fixed = [value for value in dict.fromkeys(pinned) if value in ordered]
+    if len(fixed) >= limit:
+        return np.asarray(fixed[:limit], dtype=np.int32)
+    remaining = [value for value in ordered if value not in fixed]
+    positions = np.linspace(0, len(remaining) - 1, limit - len(fixed), dtype=np.int32)
+    return np.asarray(sorted({*fixed, *(remaining[int(position)] for position in positions)}), dtype=np.int32)
 
 
 def preserve_extrema_indices(base_indices: np.ndarray, values: np.ndarray, max_points: int) -> np.ndarray:
@@ -215,6 +262,8 @@ def _empty_peer_series(count: int) -> dict[str, np.ndarray]:
         "peer_tx_busy",
         "local_rx_busy",
         "peer_rx_busy",
+        "local_signal",
+        "peer_signal",
     )
     series = {key: np.full(count, np.nan, dtype=np.float32) for key in float_keys}
     series["state"] = np.full(count, -1, dtype=np.int8)
@@ -247,10 +296,11 @@ def _index_rows_by_time(run_rows: list[dict[str, object]]) -> tuple[dict[str, li
         sample_time = str(row.get("sample_time") or "")
         if not sample_time:
             continue
-        rows_by_time.setdefault(sample_time, []).append(row)
+        sample_key = _sample_key(row)
+        rows_by_time.setdefault(sample_key, []).append(row)
         peer = canonical_mesh_mac(row)
         if peer:
-            rows_by_time_and_peer.setdefault(sample_time, {})[peer] = row
+            rows_by_time_and_peer.setdefault(sample_key, {})[peer] = row
     return rows_by_time, rows_by_time_and_peer
 
 
@@ -302,6 +352,10 @@ def assign_active_series(
     active_peer_sites: list[str],
     active_peer_radios: list[str],
     active_peer_rssi: np.ndarray,
+    active_peer_tx_busy: np.ndarray,
+    active_peer_rx_busy: np.ndarray,
+    active_local_signal: np.ndarray,
+    active_peer_signal: np.ndarray,
 ) -> None:
     for run in active_runs:
         for sample_index in run.active_sample_indices:
@@ -317,6 +371,10 @@ def assign_active_series(
                 active_peer_rssi[sample_index] = _float(metrics.get("peer_rssi_db"))
                 active_series["active_local_tx_busy"][sample_index] = _float(metrics.get("local_tx_busy"))
                 active_series["active_local_rx_busy"][sample_index] = _float(metrics.get("local_rx_busy"))
+                active_peer_tx_busy[sample_index] = _float(metrics.get("peer_tx_busy"))
+                active_peer_rx_busy[sample_index] = _float(metrics.get("peer_rx_busy"))
+                active_local_signal[sample_index] = _float(metrics.get("local_signal_dbm"))
+                active_peer_signal[sample_index] = _float(metrics.get("peer_signal_dbm"))
 
 
 def assign_standby_links(
@@ -326,10 +384,8 @@ def assign_standby_links(
     unique_active_by_index: dict[int, dict[str, object]],
     main_links_by_index: list[dict[str, object]],
 ) -> None:
-    fallback_index = _standby_fallback_index(rows_by_time)
-    active_fallback_index = _active_fallback_index(rows_by_time)
     for index, sample_time in enumerate(master_times):
-        active_row = unique_active_by_index.get(index) or _nearest_active_row(active_fallback_index, _source_for_time(rows_by_time, sample_time), sample_time)
+        active_row = unique_active_by_index.get(index)
         if not active_row:
             continue
         main_links_by_index[index] = _link_context_summary(active_row)
@@ -340,8 +396,6 @@ def assign_standby_links(
             for row in rows_by_time.get(sample_time, [])
             if row.get("link_state") == "STANDBY" and _source_key(row) == active_source and canonical_mesh_mac(row) != active_peer
         ]
-        if not standby_rows:
-            standby_rows = _nearest_standby_rows(fallback_index, active_source, sample_time, active_peer)
         items = [_standby_summary(row) for row in standby_rows]
         items.sort(key=_standby_sort_key)
         standby_links_by_index[index] = items
@@ -354,6 +408,7 @@ def _standby_summary(row: dict[str, object]) -> dict[str, object]:
 def _link_context_summary(row: dict[str, object]) -> dict[str, object]:
     metrics = _metrics(row)
     return {
+        "link_id": row.get("id") or row.get("link_id"),
         "peer_mac": row.get("peer_mac_normalized") or row.get("peer_mac_raw") or "",
         "ap_mac": row.get("peer_ap_mac") or "",
         "ap_name": row.get("peer_ap_name") or "",
@@ -364,9 +419,17 @@ def _link_context_summary(row: dict[str, object]) -> dict[str, object]:
         "peer_radio_mac": row.get("peer_radio_mac") or "",
         "mr_rssi": metrics.get("local_rssi_db"),
         "ap_rssi": metrics.get("peer_rssi_db"),
+        "local_signal": metrics.get("local_signal_dbm"),
+        "peer_signal": metrics.get("peer_signal_dbm"),
+        "local_tx_busy": metrics.get("local_tx_busy"),
+        "peer_tx_busy": metrics.get("peer_tx_busy"),
+        "local_rx_busy": metrics.get("local_rx_busy"),
+        "peer_rx_busy": metrics.get("peer_rx_busy"),
         "status": row.get("link_state") or "",
         "sample_time": row.get("sample_time") or "",
+        "timestamp_tag": row.get("timestamp_tag") or "",
         "source_file_id": row.get("source_file_id") or "",
+        "establish_time": row.get("establish_time") or "",
     }
 
 
@@ -532,22 +595,62 @@ def detect_rapid_flaps(active_runs: list[ActiveRun], master_times: list[str], es
 
 def _events_by_index(
     events: list[dict[str, object]],
-    time_index: dict[str, int],
+    sample_keys: list[str],
     active_peer_macs: list[str] | None = None,
     active_peer_ap_names: list[str] | None = None,
     active_peer_sites: list[str] | None = None,
 ) -> dict[int, list[dict[str, object]]]:
     by_index: dict[int, list[dict[str, object]]] = {}
+    exact: dict[tuple[str, str, str], int] = {}
+    by_source_time: dict[tuple[str, str], int] = {}
+    by_radio_time: dict[tuple[str, str], int] = {}
+    by_time: dict[str, int] = {}
+    scoped_rows: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for index, key in enumerate(sample_keys):
+        source, sample_time, _tag, radio = _sample_parts(key)
+        exact.setdefault((source, radio, sample_time), index)
+        by_source_time.setdefault((source, sample_time), index)
+        by_radio_time.setdefault((radio, sample_time), index)
+        by_time.setdefault(sample_time, index)
+        scoped_rows.setdefault((source, radio), []).append((sample_time, index))
     for event in events:
         sample_time = str(event.get("event_time") or event.get("current_sample_time") or "")
-        if sample_time in time_index:
-            index = time_index[sample_time]
+        source = str(event.get("source_file_id") or "")
+        radio = str(event.get("radio") or "")
+        index = (
+            exact.get((source, radio, sample_time))
+            if source and radio
+            else by_source_time.get((source, sample_time))
+            if source
+            else by_radio_time.get((radio, sample_time))
+            if radio
+            else by_time.get(sample_time)
+        )
+        if index is not None:
             by_index.setdefault(index, []).append(_enrich_switch_event(event, index, active_peer_macs or [], active_peer_ap_names or [], active_peer_sites or []))
             continue
-        nearest = _nearest_time_index(list(time_index), sample_time)
+        scoped = scoped_rows.get((source, radio), []) if source and radio else [
+            (str(_sample_time(key)), candidate)
+            for candidate, key in enumerate(sample_keys)
+            if (not source or _sample_source(key) == source) and (not radio or _sample_radio(key) == radio)
+        ]
+        nearest = _nearest_scoped_index(scoped, sample_time)
         if nearest >= 0:
             by_index.setdefault(nearest, []).append(_enrich_switch_event(event, nearest, active_peer_macs or [], active_peer_ap_names or [], active_peer_sites or []))
     return by_index
+
+
+def _nearest_scoped_index(scoped: list[tuple[str, int]], sample_time: str) -> int:
+    if not scoped or not sample_time:
+        return -1
+    ordered = sorted(scoped)
+    times = [value for value, _index in ordered]
+    position = bisect_left(times, sample_time)
+    candidates = ordered[max(position - 1, 0) : min(position + 1, len(ordered))]
+    if not candidates:
+        return -1
+    target = _parse_time(sample_time)
+    return min(candidates, key=lambda item: abs((_parse_time(item[0]) - target).total_seconds()))[1]
 
 
 def _enrich_switch_event(
@@ -603,11 +706,58 @@ def _float(value: object) -> float:
 
 
 def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(str(value))
+    return datetime.fromisoformat(_sample_time(str(value)))
 
 
 def _seconds_between(previous: str, current: str) -> float:
     try:
-        return (datetime.fromisoformat(current) - datetime.fromisoformat(previous)).total_seconds()
+        return (_parse_time(current) - _parse_time(previous)).total_seconds()
     except (TypeError, ValueError):
         return 0.0
+
+
+_SAMPLE_KEY_SEPARATOR = "\x1f"
+
+
+def _sample_key(row: dict[str, object]) -> str:
+    return _SAMPLE_KEY_SEPARATOR.join(
+        (
+            str(row.get("source_file_id") or ""),
+            str(row.get("sample_time") or ""),
+            str(row.get("timestamp_tag") or ""),
+            str(row.get("radio") or ""),
+        )
+    )
+
+
+def _sample_parts(value: str) -> tuple[str, str, str, str]:
+    parts = str(value).split(_SAMPLE_KEY_SEPARATOR)
+    if len(parts) == 4:
+        return parts[0], parts[1], parts[2], parts[3]
+    return "", str(value), "", ""
+
+
+def _sample_source(value: str) -> str:
+    return _sample_parts(value)[0]
+
+
+def _sample_time(value: str) -> str:
+    return _sample_parts(value)[1]
+
+
+def _sample_tag(value: str) -> str:
+    return _sample_parts(value)[2]
+
+
+def _sample_radio(value: str) -> str:
+    return _sample_parts(value)[3]
+
+
+def _sample_sort_key(value: str) -> tuple[str, str, int, int]:
+    source, sample_time, tag, radio = _sample_parts(value)
+    digits = "".join(character for character in tag if character.isdigit())
+    try:
+        radio_number = int(radio)
+    except ValueError:
+        radio_number = 0
+    return source, sample_time, int(digits or 0), radio_number

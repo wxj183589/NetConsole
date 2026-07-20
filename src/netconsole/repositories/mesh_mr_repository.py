@@ -41,16 +41,13 @@ _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_ME
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
 _MESH_LINK_CHART_COLUMNS = (
     "id, source_file_id, session_id, sample_time, radio, link_state, peer_mac_raw, peer_mac_normalized, "
-    "peer_ap_name, peer_site, peer_radio, peer_radio_label, establish_time, "
+    "peer_ap_name, peer_ap_mac, peer_site, peer_radio, peer_radio_label, peer_radio_mac, establish_time, "
+    "local_signal_dbm, peer_signal_dbm, "
+    "(SELECT s.timestamp_tag FROM samples s WHERE s.id = mesh_links.sample_id) AS timestamp_tag, "
     + _METRIC_SELECT_COLUMNS
 )
-_ACTIVE_POINT_CHART_COLUMNS = (
-    "link_id AS id, source_file_id, session_id, sample_time, radio, 'ACTIVE' AS link_state, "
-    "peer_mac_raw, peer_mac_normalized, peer_ap_name, peer_site, peer_radio, peer_radio_label, "
-    "establish_time, local_rssi_db, peer_rssi_db, local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy"
-)
 _MESH_EVENT_CHART_COLUMNS = (
-    "id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
+    "id, source_file_id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
     "current_sample_time, observed_window_ms, details_json"
 )
 
@@ -80,9 +77,22 @@ class MeshSchemaRebuildRequired(RuntimeError):
     pass
 
 
+class _ReadOnlyConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 class MeshMrRepository:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
+        self.read_only = read_only
+        if read_only:
+            if not self.path.is_file() or not self._is_compact_schema(self.path):
+                raise MeshSchemaRebuildRequired("MESH 派生数据库不存在或版本不兼容")
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -434,7 +444,8 @@ class MeshMrRepository:
     def _is_compact_schema(path: Path) -> bool:
         conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(path)
+            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+            conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_KEY,)).fetchone()
             if row is not None:
                 return str(row[0] or "") == SCHEMA_VERSION
@@ -1394,13 +1405,19 @@ class MeshMrRepository:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
         return self._query_peer_chart_segments_in_range(anchor, start_time, end_time, interval, gap, partial=False, full_loading=False, source_file_id=source_file_id)
 
-    def query_active_link_chart_segments(self, source_file_id: int | str | None = None, radio: int | None = None) -> dict[str, object]:
+    def query_active_link_chart_segments(
+        self,
+        source_file_id: int | str | None = None,
+        radio: int | None = None,
+        time_from: str = "",
+        time_to: str = "",
+    ) -> dict[str, object]:
         if self._is_index_database():
             if source_file_id not in (None, ""):
                 repo = self._detail_repo_for_source(source_file_id)
                 if repo is None:
                     return {"anchor": None, "peer_segment": _segment_payload(None, [], None, None), "run_segment": _segment_payload(None, [], None, None)}
-                payload = repo.query_active_link_chart_segments(None, radio)
+                payload = repo.query_active_link_chart_segments(None, radio, time_from, time_to)
                 for segment_key in ("peer_segment", "run_segment"):
                     segment = payload.get(segment_key)
                     if isinstance(segment, dict):
@@ -1412,7 +1429,7 @@ class MeshMrRepository:
             rows: list[dict[str, object]] = []
             events: list[dict[str, object]] = []
             for source_id, repo in self._detail_repo_items():
-                payload = repo.query_active_link_chart_segments(None, radio)
+                payload = repo.query_active_link_chart_segments(None, radio, time_from, time_to)
                 run = dict(payload.get("run_segment") or {})
                 detail_rows = list(run.get("rows") or [])
                 for row in detail_rows:
@@ -1443,22 +1460,41 @@ class MeshMrRepository:
         if radio is not None:
             clauses.append("radio = ?")
             values.append(int(radio))
+        if time_from:
+            clauses.append("sample_time >= ?")
+            values.append(time_from)
+        if time_to:
+            clauses.append("sample_time <= ?")
+            values.append(time_to)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        events_where = where
+        event_clauses: list[str] = []
+        event_values: list[object] = []
+        if source_file_id not in (None, ""):
+            event_clauses.append("source_file_id = ?")
+            event_values.append(int(source_file_id))
+        if radio is not None:
+            event_clauses.append("radio = ?")
+            event_values.append(int(radio))
+        if time_from:
+            event_clauses.append("event_time >= ?")
+            event_values.append(time_from)
+        if time_to:
+            event_clauses.append("event_time <= ?")
+            event_values.append(time_to)
+        events_where = f"WHERE {' AND '.join(event_clauses)}" if event_clauses else ""
         with self._connect() as conn:
             rows = [
                 _with_synthetic_payload(row)
                 for row in conn.execute(
                     f"""
-                    SELECT {_ACTIVE_POINT_CHART_COLUMNS}
-                    FROM active_points
+                    SELECT {_MESH_LINK_CHART_COLUMNS}
+                    FROM mesh_links
                     {where}
                     ORDER BY radio ASC, sample_time ASC, id ASC
                     """,
                     values,
                 ).fetchall()
             ]
-            standby_rows = self._query_active_path_backup_rows(conn, rows)
             events = [
                 dict(row)
                 for row in conn.execute(
@@ -1468,18 +1504,26 @@ class MeshMrRepository:
                     {events_where}
                     ORDER BY radio ASC, event_time ASC, id ASC
                     """,
-                    values,
+                    event_values,
                 ).fetchall()
             ]
-        active_count = len(rows)
-        matched_backup_count = _count_exact_backup_matches(rows, standby_rows)
+        active_rows = [row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE]
+        standby_rows = [row for row in rows if row.get("link_state") == LINK_STATE_STANDBY]
+        active_count = len(active_rows)
+        matched_backup_count = _count_exact_backup_matches(active_rows, standby_rows)
         app_logger.log_info(
             "MESH_ACTIVE_PATH_BACKUP_QUERY_DONE",
             f"active_count={active_count}, standby_count={len(standby_rows)}, matched_backup_count={matched_backup_count}",
         )
         rows = sorted(
-            [*rows, *standby_rows],
-            key=lambda row: (str(row.get("sample_time") or ""), int(row.get("radio") or 0), str(row.get("link_state") or ""), int(row.get("id") or 0)),
+            rows,
+            key=lambda row: (
+                str(row.get("sample_time") or ""),
+                str(row.get("timestamp_tag") or ""),
+                int(row.get("radio") or 0),
+                str(row.get("link_state") or ""),
+                int(row.get("id") or 0),
+            ),
         )
         anchor = next((row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE), rows[0] if rows else None)
         interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in rows if row.get("sample_time")])
@@ -1514,7 +1558,7 @@ class MeshMrRepository:
             _with_synthetic_payload(row)
             for row in conn.execute(
                 f"""
-                SELECT {_MESH_LINK_CHART_COLUMNS}, peer_ap_mac, peer_radio_mac
+                SELECT {_MESH_LINK_CHART_COLUMNS}
                 FROM mesh_links
                 WHERE link_state = ?
                   AND source_file_id IN ({placeholders})
@@ -1630,6 +1674,37 @@ class MeshMrRepository:
         if not times:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
         return self._query_peer_chart_segments_in_range(anchor, times[0], times[-1], interval, gap, partial=True, full_loading=True, source_file_id=source_file_id)
+
+    def query_peer_chart_segments_in_range(
+        self,
+        anchor_link_id: int,
+        start_time: str,
+        end_time: str,
+        source_file_id: int | str | None = None,
+    ) -> dict[str, object]:
+        if self._is_index_database():
+            if source_file_id in (None, ""):
+                return _empty_peer_chart_payload(
+                    "index database peer chart range query requires source_file_id because mesh_links.id is local to each parsed database"
+                )
+            repo = self._detail_repo_for_source(source_file_id)
+            return repo.query_peer_chart_segments_in_range(anchor_link_id, start_time, end_time) if repo else _empty_peer_chart_payload("source file not found")
+        anchor, _run_start, _run_end, interval, gap = self._locate_run_segment(
+            anchor_link_id,
+            source_file_id=source_file_id,
+        )
+        if anchor is None:
+            return _empty_peer_chart_payload("anchor link not found")
+        return self._query_peer_chart_segments_in_range(
+            anchor,
+            start_time,
+            end_time,
+            interval,
+            gap,
+            partial=True,
+            full_loading=False,
+            source_file_id=source_file_id,
+        )
 
     def _query_peer_chart_segments_in_range(
         self,
@@ -2114,6 +2189,17 @@ class MeshMrRepository:
         return []
 
     def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            conn = sqlite3.connect(
+                f"{self.path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=5,
+                factory=_ReadOnlyConnection,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            return conn
         return connect_sqlite(self.path, foreign_keys=True, temp_store_memory=True)
 
     @staticmethod
@@ -2812,13 +2898,21 @@ def _format_sample_time(value: datetime) -> str:
 
 
 def _count_exact_backup_matches(active_rows: list[dict[str, object]], standby_rows: list[dict[str, object]]) -> int:
-    standby_index: dict[tuple[str, str], int] = defaultdict(int)
+    standby_index: dict[tuple[str, str, str], int] = defaultdict(int)
     for row in standby_rows:
-        key = (str(row.get("source_file_id") or ""), str(row.get("sample_time") or ""))
+        key = (
+            str(row.get("source_file_id") or ""),
+            str(row.get("sample_time") or ""),
+            str(row.get("timestamp_tag") or ""),
+        )
         standby_index[key] += 1
     matched = 0
     for row in active_rows:
-        key = (str(row.get("source_file_id") or ""), str(row.get("sample_time") or ""))
+        key = (
+            str(row.get("source_file_id") or ""),
+            str(row.get("sample_time") or ""),
+            str(row.get("timestamp_tag") or ""),
+        )
         matched += standby_index.get(key, 0)
     return matched
 
@@ -2917,8 +3011,11 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "radio": first.get("radio"),
         "active_peer_mac": first.get("peer_mac_normalized") or first.get("peer_mac_raw") or "",
         "peer_ap_name": first.get("peer_ap_name") or "",
+        "peer_ap_mac": first.get("peer_ap_mac") or "",
         "peer_site": first.get("peer_site") or "",
         "peer_radio": peer_radio,
+        "peer_radio_mac": first.get("peer_radio_mac") or "",
+        "anchor_link_id": first.get("link_id") or first.get("id"),
         "build_start_time": first.get("sample_time") or "",
         "build_end_time": last.get("sample_time") or "",
         "main_link_duration_seconds": round(duration, 3),

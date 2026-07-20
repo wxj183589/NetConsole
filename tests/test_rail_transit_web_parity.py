@@ -28,6 +28,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.rail_transit_web import OnlineMrReportRequestDTO
+from netconsole.models.mesh_analysis_params import MeshAnalysisParams
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.task_application_service import (
@@ -40,6 +41,8 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
 )
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_analysis_params_service import save_site_mesh_analysis_params
+from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
 from netconsole.services.rail_transit.car_network_diagnostic import (
     POINT_TABLE_FIELDS,
     CarNetworkNode,
@@ -881,21 +884,65 @@ def test_online_mr_report_runs_in_independent_export_process(tmp_path: Path) -> 
 
 def test_mesh_report_uses_existing_context_and_artifact_manifest(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     paths, session_id, detail_db, _raw, _existing = create_mesh_analysis_fixture(
         tmp_path
     )
     paths.ensure_site_dirs("demo")
+    save_site_mesh_analysis_params(
+        paths,
+        "demo",
+        MeshAnalysisParams(main_link_switch_time_ms=4321, short_link_tolerance_ms=321),
+    )
     mesh_query = MeshAnalysisQueryService(
         paths, base_query=EmptyBaseQuery()
     )
+    monkeypatch.setattr(
+        mesh_query,
+        "ap_location_snapshot",
+        lambda _site_id: MeshApLocationSnapshot.from_serializable(
+            [
+                {
+                    "name": "AP-01",
+                    "mac": "000000000010",
+                    "station": "车站A",
+                    "section": "区间A-B",
+                    "mileage": "K12+300",
+                    "line_side": "上行",
+                }
+            ]
+        ),
+    )
     service, _normal, export, _tasks = _service(paths, mesh_query)
 
-    started = service.start_mesh_report("demo", session_id)
+    override = {
+        "main_link_switch_time_ms": 3000,
+        "short_link_tolerance_ms": 250,
+        "pingpong_tolerance_ms": 500,
+        "merge_same_physical_ap_dual_radio": True,
+        "include_log_boundary_segments": False,
+        "service_type": "PIS",
+        "wifi_type": "WiFi6",
+    }
+    started = service.start_mesh_report("demo", session_id, analysis_params_override=override)
     job = export.jobs[started.task_id]
     assert job.job_type == "mesh_analysis_report"
     assert Path(job.db_path) == detail_db
     assert job.params["payload"]["source_file_ids"] == [1]
+    assert job.params["payload"]["options"]["site_analysis_params"]["main_link_switch_time_ms"] == 4321
+    assert job.params["payload"]["options"]["site_analysis_params"]["short_link_tolerance_ms"] == 321
+    assert job.params["payload"]["options"]["analysis_params_override"] == override
+    assert job.params["payload"]["options"]["ap_location_snapshot"] == [
+        {
+            "name": "AP-01",
+            "mac": "000000000010",
+            "station": "车站A",
+            "section": "区间A-B",
+            "mileage": "K12+300",
+            "line_side": "上行",
+        }
+    ]
 
     export.complete(started.task_id, b"mesh-xlsx")
     completed = service.get_task("demo", started.task_id)

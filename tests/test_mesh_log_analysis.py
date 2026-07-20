@@ -956,16 +956,28 @@ def test_current_active_payload_uses_canonical_mac_formats_for_runs():
 
 
 
-def test_active_payload_backup_links_are_isolated_by_source_and_allow_nearby_time():
+def test_active_payload_backup_links_require_exact_source_time_tag_and_radio():
     from netconsole.services.mesh_chart_payload import build_chart_payload
 
     active = _payload_row(1, "2025-12-03 10:00:00.000", "30f5-277a-5a2f", "ACTIVE", 45, 53, source_file_id=1)
     same_source = _payload_row(2, "2025-12-03 10:00:00.600", "30f5-277a-5a3f", "STANDBY", 27, 37, source_file_id=1)
     other_source = _payload_row(3, "2025-12-03 10:00:00.000", "30f5-277a-5a4f", "STANDBY", 31, 39, source_file_id=2)
-    payload = build_chart_payload({"anchor": active, "rows": [active]}, {"anchor": active, "rows": [active, same_source, other_source], "events": []})
+    exact = _payload_row(4, "2025-12-03 10:00:00.000", "30f5-277a-5a5f", "STANDBY", 29, 38, source_file_id=1)
+    other_tag = _payload_row(5, "2025-12-03 10:00:00.000", "30f5-277a-5a6f", "STANDBY", 28, 36, source_file_id=1)
+    other_tag["timestamp_tag"] = "(2)"
+    other_radio = _payload_row(6, "2025-12-03 10:00:00.000", "30f5-277a-5a7f", "STANDBY", 26, 35, source_file_id=1)
+    other_radio["radio"] = 2
+    payload = build_chart_payload(
+        {"anchor": active, "rows": [active]},
+        {
+            "anchor": active,
+            "rows": [active, same_source, other_source, exact, other_tag, other_radio],
+            "events": [],
+        },
+    )
 
     backups = payload["standby_links_by_index"][0]
-    assert [item["peer_mac"] for item in backups] == ["30f5277a5a3f"]
+    assert [item["peer_mac"] for item in backups] == ["30f5277a5a5f"]
     assert backups[0]["source_file_id"] == 1
 
 

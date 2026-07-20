@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { applyMeshBundleImport, createMeshProfile, getMeshCounterDeltas, getMeshRateSeries, listMeshProfiles, listMeshSwitchEvents, previewMeshBundle } from './meshAnalysis'
+import {
+  applyMeshBundleImport, createMeshProfile, getMeshActivePathChart, getMeshCounterDeltas, getMeshPeerSegmentChart,
+  getMeshRateSeries, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents, previewMeshBundle,
+} from './meshAnalysis'
 
 describe('Mesh profile API', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -55,6 +58,21 @@ describe('Mesh profile API', () => {
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/rate-series?time_from=2026-07-20T10%3A00%3A00.123Z&time_to=2026-07-20T11%3A00%3A00.123Z&max_points=2000',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/counter-deltas?max_points=2000',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/switch-events?page=1&page_size=500',
+    ])
+  })
+
+  it('encodes build order and chart query contracts without client-side analysis', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [], total: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listMeshActiveBuildOrder('session/1', { page: 2, page_size: 500, sort_order: 'desc', radio: 1, pingpong_only: true })
+    await getMeshActivePathChart('session/1', { max_points: 600 })
+    await getMeshPeerSegmentChart('session/1', { anchor_link_id: 42, max_points: 300, all_visits: true })
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/active-build-order?page=2&page_size=500&sort_order=desc&radio=1&pingpong_only=true',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/active-path?max_points=600',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/peer-segment?anchor_link_id=42&max_points=300&all_visits=true',
     ])
   })
 })

@@ -38,30 +38,55 @@ class MeshLinkDetailExportCancelled(Exception):
 LINK_DETAIL_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "record_seq"),
     ("采样时间", "sample_time"),
+    ("采样标识", "timestamp_tag"),
     ("Radio", "radio"),
-    ("链路状态", "link_state"),
-    ("Peer MAC", "peer_mac"),
-    ("对端AP MAC", "peer_ap_mac"),
-    ("对端AP名称", "peer_ap_name"),
+    ("状态", "link_state"),
+    ("PeerMac", "peer_mac"),
+    ("当前 PEER AP 名称", "peer_ap_name"),
+    ("AP MAC", "peer_ap_mac"),
     ("归属站点", "peer_site"),
     ("归属区间", "belong_section"),
-    ("归属类型", "belong_type"),
-    ("对端射频口", "peer_radio"),
+    ("里程", "peer_location"),
+    ("方向", "peer_direction"),
+    ("Peer Radio MAC", "peer_radio_mac"),
+    ("PEER Radio", "peer_radio"),
     ("建链时间", "establish_time"),
     ("链路时长", "duration_text"),
-    ("链路数量", "link_count"),
-    ("MR侧RSSI", "local_rssi_db"),
-    ("对端RSSI", "peer_rssi_db"),
-    ("MR侧CPU", "local_cpu_percent"),
-    ("对端CPU", "peer_cpu_percent"),
-    ("MR侧噪声", "local_noise_dbm"),
-    ("对端噪声", "peer_noise_dbm"),
-    ("发送繁忙度", "local_tx_busy"),
-    ("接收繁忙度", "local_rx_busy"),
-    ("总发送繁忙度", "max_tx_busy"),
-    ("总接收繁忙度", "max_rx_busy"),
-    ("源文件", "archived_filename"),
-    ("源行号", "source_line_number"),
+    ("LinkCnt", "link_count"),
+    ("MR 侧 RSSI 差值", "local_rssi_db"),
+    ("Peer 侧 RSSI 差值", "peer_rssi_db"),
+    ("MR 侧底噪", "local_noise_dbm"),
+    ("Peer 侧底噪", "peer_noise_dbm"),
+    ("MR 接收信号", "local_signal_dbm"),
+    ("Peer 接收信号", "peer_signal_dbm"),
+    ("MR 侧协商速率原始值", "local_rate_raw"),
+    ("Peer 侧协商速率原始值", "peer_rate_raw"),
+    ("L_TxBusy", "local_tx_busy"),
+    ("P_TxBusy", "peer_tx_busy"),
+    ("L_RxBusy", "local_rx_busy"),
+    ("P_RxBusy", "peer_rx_busy"),
+    ("来源文件", "archived_filename"),
+    ("行号", "source_line_number"),
+    ("MR CPU", "local_cpu_percent"),
+    ("Peer CPU", "peer_cpu_percent"),
+    ("MR 内存", "local_mem_percent"),
+    ("Peer 内存", "peer_mem_percent"),
+    ("MR TxDesFreeCnt", "local_tx_des_free_cnt"),
+    ("Peer TxDesFreeCnt", "peer_tx_des_free_cnt"),
+    ("LocalTx", "local_tx"),
+    ("PeerTx", "peer_tx"),
+    ("LocalRx", "local_rx"),
+    ("PeerRx", "peer_rx"),
+    ("LocalRetry", "local_retry"),
+    ("PeerRetry", "peer_retry"),
+    ("LocalErr", "local_err"),
+    ("PeerErr", "peer_err"),
+    ("GARP", "local_tx_garp"),
+    ("Multicast Join", "local_tx_mul_join"),
+    ("匹配方式", "peer_match_rule"),
+    ("解析来源", "peer_resolve_source"),
+    ("原始行起点", "raw_line_start"),
+    ("原始行终点", "raw_line_end"),
     ("备注", "remark"),
 )
 
@@ -90,8 +115,13 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("Radio", "radio"),
     ("主链路 Peer MAC", "active_peer_mac"),
     ("对端AP名称", "peer_ap_name"),
+    ("AP MAC", "peer_ap_mac"),
     ("归属站点", "peer_site"),
+    ("归属区间", "belong_section"),
+    ("里程", "mileage"),
+    ("线路方向", "line_side"),
     ("对端射频口", "peer_radio"),
+    ("Peer Radio MAC", "peer_radio_mac"),
     ("建链开始时间", "build_start_time"),
     ("建链结束时间", "build_end_time"),
     ("主链路持续时长(秒)", "main_link_duration_seconds"),
@@ -100,8 +130,11 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("MR侧平均RSSI", "avg_mr_rssi"),
     ("MR侧最低RSSI", "min_mr_rssi"),
     ("MR侧最高RSSI", "max_mr_rssi"),
+    ("MR侧P10 RSSI", "p10_mr_rssi"),
     ("发送繁忙度", "avg_tx_busy"),
     ("接收繁忙度", "avg_rx_busy"),
+    ("Peer发送繁忙度", "avg_peer_tx_busy"),
+    ("Peer接收繁忙度", "avg_peer_rx_busy"),
     ("配置切换时间(ms)", "main_link_switch_time_ms"),
     ("短时判定容差(ms)", "short_link_tolerance_ms"),
     ("是否同AP射频切换", "is_same_physical_ap_radio_switch"),
@@ -132,30 +165,55 @@ def link_detail_row_values(row: dict[str, object]) -> list[object]:
     return [
         row.get("record_seq") or row.get("source_line_number"),
         _excel_time_text(row.get("sample_time")),
+        row.get("timestamp_tag") or "",
         row.get("radio"),
         format_link_state(row.get("link_state")),
         row.get("peer_mac_raw") or peer,
-        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
         row.get("peer_ap_name") or "-",
+        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
         row.get("peer_site") or "-",
         row.get("belong_section") or row.get("peer_section") or "-",
-        _belong_type_text(row.get("belong_type")),
+        row.get("peer_location") or row.get("mileage") or "-",
+        row.get("peer_direction") or row.get("direction") or "-",
+        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "-",
         row.get("peer_radio") or row.get("peer_radio_label") or "-",
         _excel_time_text(row.get("establish_time")),
         row.get("duration_text"),
         row.get("link_count"),
-        _dash(metrics.get("local_rssi_db")),
-        _dash(metrics.get("peer_rssi_db")),
-        _dash(metrics.get("local_cpu_percent")),
-        _dash(metrics.get("peer_cpu_percent")),
-        _dash(row.get("local_noise_dbm") or metrics.get("local_noise_raw")),
-        _dash(row.get("peer_noise_dbm") or metrics.get("peer_noise_raw")),
+        _dash(_metric(row, metrics, "local_rssi_db")),
+        _dash(_metric(row, metrics, "peer_rssi_db")),
+        _dash(_metric(row, metrics, "local_noise_dbm", "local_noise_raw")),
+        _dash(_metric(row, metrics, "peer_noise_dbm", "peer_noise_raw")),
+        _dash(_metric(row, metrics, "local_signal_dbm")),
+        _dash(_metric(row, metrics, "peer_signal_dbm")),
+        _dash(_metric(row, metrics, "local_rate_raw")),
+        _dash(_metric(row, metrics, "peer_rate_raw")),
         _dash(local_tx_busy),
+        _dash(peer_tx_busy),
         _dash(local_rx_busy),
-        _dash(_max_numeric(local_tx_busy, peer_tx_busy)),
-        _dash(_max_numeric(local_rx_busy, peer_rx_busy)),
+        _dash(peer_rx_busy),
         row.get("archived_filename") or row.get("source_file") or "-",
         _dash(row.get("source_line_number")),
+        _dash(_metric(row, metrics, "local_cpu_percent")),
+        _dash(_metric(row, metrics, "peer_cpu_percent")),
+        _dash(_metric(row, metrics, "local_mem_percent")),
+        _dash(_metric(row, metrics, "peer_mem_percent")),
+        _dash(_metric(row, metrics, "local_tx_des_free_cnt")),
+        _dash(_metric(row, metrics, "peer_tx_des_free_cnt")),
+        _dash(_metric(row, metrics, "local_tx")),
+        _dash(_metric(row, metrics, "peer_tx")),
+        _dash(_metric(row, metrics, "local_rx")),
+        _dash(_metric(row, metrics, "peer_rx")),
+        _dash(_metric(row, metrics, "local_retry")),
+        _dash(_metric(row, metrics, "peer_retry")),
+        _dash(_metric(row, metrics, "local_err")),
+        _dash(_metric(row, metrics, "peer_err")),
+        _dash(_metric(row, metrics, "local_tx_garp")),
+        _dash(_metric(row, metrics, "local_tx_mul_join")),
+        row.get("peer_match_rule") or "-",
+        row.get("peer_resolve_source") or "-",
+        _dash(row.get("raw_line_start")),
+        _dash(row.get("raw_line_end")),
         _link_detail_remark(row, metrics),
     ]
 
@@ -167,8 +225,13 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
         row.get("radio"),
         format_mac_h3c(row.get("active_peer_mac")) if row.get("active_peer_mac") else "",
         row.get("peer_ap_name") or "",
+        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "",
         row.get("peer_site") or "",
+        row.get("belong_section") or row.get("peer_section") or "",
+        row.get("mileage") or row.get("peer_location") or "",
+        row.get("line_side") or row.get("peer_direction") or "",
         row.get("peer_radio") or "",
+        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "",
         row.get("build_start_time") or "",
         row.get("build_end_time") or "",
         row.get("main_link_duration_seconds") or "",
@@ -177,8 +240,11 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
         _rssi_stat_value(row.get("avg_mr_rssi")),
         _rssi_stat_value(row.get("min_mr_rssi")),
         _rssi_stat_value(row.get("max_mr_rssi")),
+        _rssi_stat_value(row.get("p10_mr_rssi")),
         row.get("avg_tx_busy") or "",
         row.get("avg_rx_busy") or "",
+        row.get("avg_peer_tx_busy") or "",
+        row.get("avg_peer_rx_busy") or "",
         row.get("main_link_switch_time_ms") or "",
         row.get("short_link_tolerance_ms") or "",
         "是" if row.get("is_same_physical_ap_radio_switch") else "否",
@@ -314,7 +380,7 @@ def _write_link_detail_sheet_xlsx(
     worksheet.freeze_panes(1, 0)
     worksheet.hide_gridlines(2)
     group_index = -1
-    previous_group_key: tuple[object, object, object] | None = None
+    previous_group_key: tuple[object, object, object, object] | None = None
     written = 0
     last_progress_at = time.monotonic()
     for row in rows:
@@ -326,7 +392,7 @@ def _write_link_detail_sheet_xlsx(
                 diagnostics.mark_unavailable(exc)
         values = link_detail_row_values(row)
         _collect_link_stats(stats, row, values)
-        group_key = (row.get("source_file_id"), row.get("sample_time"), row.get("radio"))
+        group_key = (row.get("source_file_id"), row.get("sample_time"), row.get("timestamp_tag"), row.get("radio"))
         if group_key != previous_group_key:
             group_index += 1
             previous_group_key = group_key
@@ -689,7 +755,9 @@ def _collect_link_stats(stats: dict[str, object], row: dict[str, object], values
     metrics = _json_dict(row.get("metrics_json"))
     sample_time = str(row.get("sample_time") or "")
     if sample_time:
-        stats["samples"].add((row.get("source_file_id"), sample_time[:19], row.get("radio")))  # type: ignore[index, union-attr]
+        stats["samples"].add(  # type: ignore[index, union-attr]
+            (row.get("source_file_id"), sample_time, row.get("timestamp_tag"), row.get("radio"))
+        )
         stats["start_time"] = min(str(stats.get("start_time") or sample_time), sample_time) if stats.get("start_time") else sample_time
         stats["end_time"] = max(str(stats.get("end_time") or sample_time), sample_time)
     peer = row.get("peer_mac_normalized") or row.get("peer_mac") or row.get("peer_mac_raw")
@@ -890,6 +958,14 @@ def _number(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _metric(row: dict[str, object], metrics: dict[str, object], key: str, fallback_key: str | None = None) -> object:
+    if row.get(key) is not None:
+        return row.get(key)
+    if metrics.get(key) is not None:
+        return metrics.get(key)
+    return metrics.get(fallback_key) if fallback_key else None
 
 
 def _dash(value: object) -> object:

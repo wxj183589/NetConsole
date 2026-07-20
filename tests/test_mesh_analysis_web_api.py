@@ -35,6 +35,9 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             "/api/rail-transit/mesh-analysis/sessions?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/links?site_id=demo&page_size=2",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/active-build-order?site_id=demo&page_size=2",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path?site_id=demo&radio=1&max_points=10",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/peer-segment?site_id=demo&anchor_link_id=1&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/timeline?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/switch-events?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/rssi?site_id=demo&max_points=10",
@@ -58,7 +61,9 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert download.status_code == 200
     payload = "".join(response.text for response in responses)
     assert str(tmp_path) not in payload
-    assert "peer_radio_mac" not in payload
+    assert "peer_radio_mac" in payload
+    assert "timestamp_tag" in payload
+    assert "standby_context_count" in payload
     assert before == [_fingerprint(path) for path in protected]
     routes = [route for route in mesh_analysis_router.routes if getattr(route, "path", "").startswith("/rail-transit/mesh-analysis")]
     assert routes
