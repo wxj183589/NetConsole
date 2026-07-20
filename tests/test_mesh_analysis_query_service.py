@@ -4,7 +4,12 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
+import pytest
+
+from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisQueryService,
+    MeshAnalysisTimeRangeError,
+)
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.job_center.job_registry import registered_task_types
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
@@ -245,11 +250,16 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
         session_id,
         radio=1,
         time_from="2026-07-14 10:00:03.000",
-        time_to="2026-07-14 10:00:03.000",
+        time_to="2026-07-14 10:00:03.001",
         max_points=10,
     )
 
     assert chart.total_points == 2
+    assert chart.total_points_in_range == 2
+    assert chart.requested_time_from == "2026-07-14 10:00:03.000"
+    assert chart.requested_time_to == "2026-07-14 10:00:03.001"
+    assert chart.effective_time_from == "2026-07-14 10:00:03.000"
+    assert chart.effective_time_to == "2026-07-14 10:00:03.000"
     gap = next(item for item in chart.points if item.timestamp_tag == "")
     tagged = next(item for item in chart.points if item.timestamp_tag == "(2)")
     assert gap.link_state == ""
@@ -268,6 +278,34 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
     assert tagged.backups[0].local_signal is None
     assert tagged.backups[0].peer_signal is None
     assert before == _fingerprint(detail)
+
+
+def test_chart_time_range_filters_peer_payload_and_rejects_invalid_order(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    first = service.list_active_build_order("demo", session_id, sort_order="asc", page_size=100).items[0]
+
+    chart = service.get_peer_segment_chart(
+        "demo",
+        session_id,
+        anchor_link_id=int(first.anchor_link_id or 0),
+        time_from="2026-07-14 10:00:00.000",
+        time_to="2026-07-14 10:00:01.500",
+        max_points=10,
+        all_visits=True,
+    )
+
+    assert chart.requested_time_from == "2026-07-14 10:00:00.000"
+    assert chart.requested_time_to == "2026-07-14 10:00:01.500"
+    assert chart.total_points == chart.total_points_in_range
+    assert all(chart.requested_time_from <= point.timestamp <= chart.requested_time_to for point in chart.points)
+    with pytest.raises(MeshAnalysisTimeRangeError, match="time_from 必须早于 time_to"):
+        service.get_active_path_chart(
+            "demo",
+            session_id,
+            time_from="2026-07-14 10:00:01.000",
+            time_to="2026-07-14 10:00:01.000",
+        )
 
 
 def test_index_source_id_is_mapped_to_single_source_detail_database(tmp_path: Path) -> None:

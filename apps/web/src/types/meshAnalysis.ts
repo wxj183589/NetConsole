@@ -156,6 +156,8 @@ export interface MeshPathChart {
   mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
   location_segments: MeshLocationSegment[]
   total_points: number; returned_points: number; downsampled: boolean; summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
+  requested_time_from: string | null; requested_time_to: string | null; effective_time_from: string | null; effective_time_to: string | null
+  first_sample_time: string | null; last_sample_time: string | null; total_points_in_range: number
 }
 
 export interface MeshTimelineItem { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 
 import {
@@ -11,17 +11,47 @@ import {
 } from '../../theme/echarts'
 import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshBusySeries, buildMeshLocationBands } from './chartSeries'
+import {
+  createFullMeshViewport,
+  normalizeMeshViewport,
+  viewportFromDataZoom,
+  type MeshChartViewport,
+} from './meshChartViewport'
 
-const props = withDefaults(defineProps<{ points: MeshChartPoint[]; events?: MeshChartEvent[]; locationSegments?: MeshLocationSegment[]; showPeer?: boolean; showLocationBand?: boolean; scope?: 'active' | 'peer'; active?: boolean }>(), { events: () => [], locationSegments: () => [], showPeer: false, showLocationBand: true, scope: 'active', active: true })
-const emit = defineEmits<{ selectSwitch: [event: MeshChartEvent] }>()
+const props = withDefaults(defineProps<{
+  points: MeshChartPoint[]
+  events?: MeshChartEvent[]
+  locationSegments?: MeshLocationSegment[]
+  showPeer?: boolean
+  showLocationBand?: boolean
+  scope?: 'active' | 'peer'
+  active?: boolean
+  initialViewport?: MeshChartViewport | null
+  lockedViewport?: MeshChartViewport | null
+  preserveViewport?: boolean
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showLocationBand: true, scope: 'active', active: true, initialViewport: null, lockedViewport: null, preserveViewport: true })
+const emit = defineEmits<{
+  selectSwitch: [event: MeshChartEvent]
+  'viewport-change': [viewport: MeshChartViewport]
+  'viewport-ready': [viewport: MeshChartViewport]
+}>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
 let initialization: Promise<boolean> | null = null
 let resizeFrame: number | null = null
-let renderPending = false
+let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
 let disposed = false
+let currentViewport: MeshChartViewport | null = null
+let applyingViewport = false
+let viewportReady = false
+let viewportTimer: ReturnType<typeof setTimeout> | null = null
+
+const timestamps = (): string[] => props.points.map((point) => point.timestamp)
+const hasBusySamples = computed(() => props.points.some((point) => (
+  point.local_tx_busy != null || point.local_rx_busy != null || point.peer_tx_busy != null || point.peer_rx_busy != null
+)))
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '—').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
@@ -65,24 +95,25 @@ async function ensureChart(): Promise<boolean> {
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
     chart = core.init(container.value)
     chart.on('click', handleChartClick)
-    unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate(true))
+    chart.on('datazoom', handleDataZoom)
+    unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
     return true
   })().finally(() => { initialization = null })
   return initialization
 }
 
-function scheduleChartUpdate(renderOption = false): void {
-  renderPending ||= renderOption
+function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'resize' = 'resize'): void {
+  if (reason !== 'resize') pendingRenderReason = reason
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = null
-    const shouldRender = renderPending
-    renderPending = false
     if (!props.active || !hasRenderableSize() || disposed) return
     const chartExisted = Boolean(chart)
     void ensureChart().then((ready) => {
       if (!ready || !props.active || disposed) return
-      if (shouldRender || !chartExisted) render()
+      const renderReason = pendingRenderReason
+      pendingRenderReason = null
+      if (renderReason || !chartExisted) render(renderReason || 'data')
       chart?.resize()
     })
   })
@@ -95,7 +126,7 @@ onMounted(() => {
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
-  scheduleChartUpdate(true)
+  scheduleChartUpdate('data')
 })
 
 onBeforeUnmount(() => {
@@ -105,16 +136,27 @@ onBeforeUnmount(() => {
   resizeObserver = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = null
-  renderPending = false
+  pendingRenderReason = null
+  if (viewportTimer) clearTimeout(viewportTimer)
+  viewportTimer = null
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
+  chart?.off('datazoom', handleDataZoom)
   chart?.dispose()
   chart = null
 })
 
-watch(() => [props.points, props.events, props.locationSegments, props.showPeer, props.showLocationBand, props.scope] as const, () => scheduleChartUpdate(true), { deep: true })
-watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(true)) })
+watch(() => props.points, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => [props.showPeer, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
+watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
+watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
+watch(() => props.lockedViewport, (viewport, previous) => {
+  if (viewport) void nextTick(() => applyViewport(viewport))
+  else if (previous) { currentViewport = null; scheduleChartUpdate('reset') }
+}, { deep: true })
+watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
@@ -122,8 +164,43 @@ function handleChartClick(raw: unknown): void {
   if (event) emit('selectSwitch', event)
 }
 
-function render(): void {
+function handleDataZoom(raw: unknown): void {
+  if (applyingViewport) return
+  const viewport = viewportFromDataZoom(raw, timestamps())
+  if (!viewport) return
+  currentViewport = viewport
+  if (viewportTimer) clearTimeout(viewportTimer)
+  viewportTimer = setTimeout(() => emit('viewport-change', { ...viewport }), 100)
+}
+
+function getViewport(): MeshChartViewport | null {
+  return currentViewport ? { ...currentViewport } : createFullMeshViewport(timestamps())
+}
+
+function applyViewport(viewport: MeshChartViewport): void {
+  const isLocked = Boolean(props.lockedViewport
+    && props.lockedViewport.start_time === viewport.start_time
+    && props.lockedViewport.end_time === viewport.end_time)
+  const normalized = normalizeMeshViewport(viewport, isLocked ? [] : timestamps(), 'programmatic')
+  if (!normalized) return
+  currentViewport = normalized
   if (!chart) return
+  applyingViewport = true
+  chart.dispatchAction({
+    type: 'dataZoom',
+    batch: [0, 1].map((dataZoomIndex) => ({ dataZoomIndex, startValue: normalized.start_time, endValue: normalized.end_time })),
+  })
+  queueMicrotask(() => { applyingViewport = false })
+}
+
+function resetViewport(): void {
+  const target = props.lockedViewport || createFullMeshViewport(timestamps())
+  if (target) applyViewport(target)
+}
+
+function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
+  if (!chart) return
+  const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
   const theme = readNetConsoleChartTokens()
   const axisStyle = createNetConsoleAxisStyle(theme)
   const series = buildMeshBusySeries(props.points, props.showPeer, props.scope)
@@ -153,7 +230,12 @@ function render(): void {
     legend: { bottom: 4, textStyle: { color: theme.textSecondary } },
     toolbox: { right: 16, feature: { saveAsImage: { title: '保存图像', pixelRatio: 2 } } },
     grid: { left: 54, right: 22, top: 42, bottom: 74, containLabel: true },
-    xAxis: { type: 'time', ...axisStyle },
+    xAxis: {
+      type: 'time',
+      min: props.lockedViewport?.start_time,
+      max: props.lockedViewport?.end_time,
+      ...axisStyle,
+    },
     yAxis: { type: 'value', name: '繁忙度 (%)', min: 0, max: 100, nameTextStyle: { color: theme.textSecondary }, ...axisStyle },
     dataZoom: [
       { type: 'inside', filterMode: 'none' },
@@ -168,13 +250,28 @@ function render(): void {
       } : undefined,
     })),
   }, { notMerge: true })
+  const target = props.lockedViewport || previous || props.initialViewport || createFullMeshViewport(timestamps())
+  if (target) {
+    applyViewport(target)
+    if (!viewportReady && currentViewport) {
+      viewportReady = true
+      emit('viewport-ready', { ...currentViewport })
+    }
+  }
 }
+
+defineExpose({
+  getViewport,
+  applyViewport,
+  resetViewport,
+  getVisibleTimeRange: getViewport,
+})
 </script>
 
 <template>
   <div class="chart-shell">
     <div ref="container" class="chart"></div>
-    <el-empty v-if="!points.length" class="empty" description="暂无 TxBusy / RxBusy 数据" :image-size="60" />
+    <el-empty v-if="!hasBusySamples" class="empty" description="暂无 TxBusy / RxBusy 数据" :image-size="60" />
   </div>
 </template>
 

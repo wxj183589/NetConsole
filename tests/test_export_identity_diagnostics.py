@@ -195,8 +195,8 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
     captured: dict[str, object] = {}
 
     class FakeRepository:
-        def __init__(self, _path: Path) -> None:
-            pass
+        def __init__(self, _path: Path, *, read_only: bool = False) -> None:
+            assert read_only is True
 
         def count_link_details(self, _filters: dict[str, object]) -> int:
             return 1

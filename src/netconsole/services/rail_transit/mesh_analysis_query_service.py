@@ -89,6 +89,10 @@ class MeshAnalysisQueryError(RuntimeError):
     pass
 
 
+class MeshAnalysisTimeRangeError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class _SessionContext:
     site_id: str
@@ -828,9 +832,14 @@ class MeshAnalysisQueryService:
         time_to: str = "",
         max_points: int = 1_000,
     ) -> MeshPathChartDTO:
+        self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshPathChartDTO(mode="active_path")
+            return MeshPathChartDTO(
+                mode="active_path",
+                requested_time_from=time_from or None,
+                requested_time_to=time_to or None,
+            )
         repository = self._chart_repository(context)
         payload = repository.query_active_link_chart_segments(
             source_file_id=context.detail_source_id,
@@ -859,12 +868,23 @@ class MeshAnalysisQueryService:
         max_points: int = 1_000,
         all_visits: bool = False,
     ) -> MeshPathChartDTO:
+        self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshPathChartDTO(mode="peer_segment")
+            return MeshPathChartDTO(
+                mode="peer_segment",
+                requested_time_from=time_from or None,
+                requested_time_to=time_to or None,
+            )
         repository = self._chart_repository(context)
         if all_visits:
-            payload = self._all_peer_visit_payload(context, repository, anchor_link_id)
+            payload = self._all_peer_visit_payload(
+                context,
+                repository,
+                anchor_link_id,
+                time_from=time_from,
+                time_to=time_to,
+            )
         elif time_from and time_to:
             payload = repository.query_peer_chart_segments_in_range(
                 anchor_link_id,
@@ -899,6 +919,9 @@ class MeshAnalysisQueryService:
         context: _SessionContext,
         repository: MeshMrRepository,
         anchor_link_id: int,
+        *,
+        time_from: str = "",
+        time_to: str = "",
     ) -> dict[str, object]:
         builds = self._build_rows(context)
         anchor_build = next(
@@ -906,6 +929,13 @@ class MeshAnalysisQueryService:
             None,
         )
         if anchor_build is None:
+            if time_from and time_to:
+                return repository.query_peer_chart_segments_in_range(
+                    anchor_link_id,
+                    time_from,
+                    time_to,
+                    source_file_id=context.detail_source_id,
+                )
             return repository.query_peer_chart_segments(
                 anchor_link_id,
                 source_file_id=context.detail_source_id,
@@ -917,16 +947,25 @@ class MeshAnalysisQueryService:
             for row in builds
             if self._build_ap_identity(row) == identity and self._int(row.get("radio")) == radio
         ]
-        payloads = [
-            repository.query_peer_chart_segments_in_range(
-                int(row["anchor_link_id"]),
-                str(row.get("build_start_time") or ""),
-                str(row.get("build_end_time") or ""),
-                source_file_id=context.detail_source_id,
+        payloads: list[dict[str, object]] = []
+        for row in visits:
+            visit_anchor = self._int(row.get("anchor_link_id"))
+            visit_start = str(row.get("build_start_time") or "")
+            visit_end = str(row.get("build_end_time") or "")
+            if visit_anchor is None or not visit_start or not visit_end:
+                continue
+            query_start = max(visit_start, time_from) if time_from else visit_start
+            query_end = min(visit_end, time_to) if time_to else visit_end
+            if query_start > query_end:
+                continue
+            payloads.append(
+                repository.query_peer_chart_segments_in_range(
+                    visit_anchor,
+                    query_start,
+                    query_end,
+                    source_file_id=context.detail_source_id,
+                )
             )
-            for row in visits
-            if self._int(row.get("anchor_link_id")) is not None
-        ]
         return self._merge_peer_visit_payloads(payloads)
 
     @classmethod
@@ -1897,7 +1936,25 @@ class MeshAnalysisQueryService:
             downsampled=len(returned) < total_points,
             time_from=time_from or first_time,
             time_to=time_to or last_time,
+            requested_time_from=time_from or None,
+            requested_time_to=time_to or None,
+            effective_time_from=first_time,
+            effective_time_to=last_time,
+            first_sample_time=first_time,
+            last_sample_time=last_time,
+            total_points_in_range=total_points,
         )
+
+    @classmethod
+    def _validate_chart_time_range(cls, time_from: str, time_to: str) -> None:
+        start = cls._parse_time(time_from) if time_from else None
+        end = cls._parse_time(time_to) if time_to else None
+        if time_from and start is None:
+            raise MeshAnalysisTimeRangeError("time_from 必须是包含毫秒的有效日志时间")
+        if time_to and end is None:
+            raise MeshAnalysisTimeRangeError("time_to 必须是包含毫秒的有效日志时间")
+        if start is not None and end is not None and start >= end:
+            raise MeshAnalysisTimeRangeError("time_from 必须早于 time_to")
 
     def _chart_location_segments(
         self,

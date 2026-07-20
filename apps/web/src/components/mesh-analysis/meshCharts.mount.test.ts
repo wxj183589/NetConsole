@@ -89,7 +89,7 @@ describe('MESH charts mount and render', () => {
 
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.off).toHaveBeenCalledTimes(2)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(4)
   })
 
   it('waits for a visible active container before initializing ECharts', async () => {
@@ -133,6 +133,46 @@ describe('MESH charts mount and render', () => {
     expect(tooltip).toContain('<strong>主链路</strong>')
     expect(tooltip).toContain('<strong>备份链路</strong>')
     expect(tooltip).toContain('<strong>切换事件</strong>')
+    wrapper.unmount()
+  })
+
+  it('preserves the real time viewport when presentation options rerender RSSI', async () => {
+    const points = [0, 1, 2, 3].map((index) => ({
+      ...chartPoint,
+      link_id: index + 1,
+      timestamp: `2026-07-20T10:0${index}:00.123Z`,
+    }))
+    const wrapper = mount(MeshRssiChart, { props: { points } })
+    await flushPromises()
+    const dataZoomHandler = echartsMock.chart.on.mock.calls.find(([event]) => event === 'datazoom')?.[1] as (payload: unknown) => void
+    dataZoomHandler({ startValue: points[1].timestamp, endValue: points[2].timestamp })
+    echartsMock.chart.dispatchAction.mockClear()
+
+    await wrapper.setProps({ showPeer: true, showSwitchLines: true, showLocationBand: false })
+    await flushPromises()
+
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: points[1].timestamp,
+        endValue: points[2].timestamp,
+      })),
+    })
+    expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
+      start_time: points[1].timestamp,
+      end_time: points[2].timestamp,
+    })
+
+    echartsMock.chart.dispatchAction.mockClear()
+    window.dispatchEvent(new CustomEvent('netconsole:theme-change'))
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'dataZoom' }))
+    expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
+      start_time: points[1].timestamp,
+      end_time: points[2].timestamp,
+    })
     wrapper.unmount()
   })
 })

@@ -448,6 +448,13 @@ class MeshPathChartDTO(ApiModel):
     downsampled: bool = False
     time_from: str | None = None
     time_to: str | None = None
+    requested_time_from: str | None = None
+    requested_time_to: str | None = None
+    effective_time_from: str | None = None
+    effective_time_to: str | None = None
+    first_sample_time: str | None = None
+    last_sample_time: str | None = None
+    total_points_in_range: int = 0
 
 
 class MeshLinkTimelineDTO(ApiModel):

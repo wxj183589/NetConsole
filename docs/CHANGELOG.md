@@ -14,6 +14,7 @@
 - 新增受控 `mesh_schema_rebuild` Job：从受保护 raw 日志归档并重建派生数据库，原始日志不删除，失败或取消恢复旧索引与 parsed；页面各指标区独立降级，兼容区域、会话信息和原始来源继续可用。
 - MESH 离线分析完成主链路建链顺序、完整链路明细、单 AP/全部 ACTIVE RSSI、空口 Tx/Rx Busy、切换点和全部经过时段图表闭环；同一采样点 STANDBY 备链严格按来源/时间/tag/Radio 匹配，图表和报告共享 AP 位置快照。
 - 图表服务端按 Radio/时间窗口降采样并返回实际点数，切换事件索引优化后真实 34-CW ACTIVE 图约 3.3 秒、目标 1200 点；报告嵌入图硬上限 5000 点，完整业务 Sheet 不截断。报告支持显式 typed 临时分析参数，不写回来源或局点配置。
+- MESH RSSI 与空口负载建立共享毫秒时间视口契约：Peer、切换线、切换节点、站点区间带、主题、窗口缩放和侧栏变化不再重置当前缩放。RSSI 可锁定当前时间范围并以相同 Radio、ACTIVE/Peer 模式、锚点和全部经过语义重新查询同期 TxBusy/RxBusy；两类图表使用独立响应状态，API 明确返回 requested/effective 与实际采样边界，切换会话或分析上下文自动解除锁定。正常持久化 Electron 的 `列车06-MR-CT / 6CTmeshlog.log` 人工点击验收仍待本机执行，自动化不替代该项。
 - 收紧 MESH 详情界面：移除 Rate 原始值、Retry/Error 增量和异常摘要三个 Web 页签，主链路、链路明细、RSSI 与空口图按可视区域自适应，RSSI 二级 Tab 不再撑出中间空白；页面内任务结果改为紧凑摘要。
 - Electron 任务中心改用独立 `/desktop/tasks` 精简布局并复用原 `JobCenterView/useTaskStore/Task API`；加载状态、交互就绪、超时、失败重试和主窗口回退均返回真实 IPC 结果，不再打开纯色空白子窗口。
 

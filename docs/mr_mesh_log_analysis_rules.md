@@ -72,6 +72,8 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 表格列偏好使用稳定表 ID，不包含 session、来源、MR 或局点；Electron 只通过白名单 UI preference Bridge 持久化，Renderer 不获得路径或任意文件能力。
 - Rate 图直接读取 `mesh_links.local_rate_raw/peer_rate_raw` 并明确标注原始值，不猜单位。Retry/Error 图由 Python Query Service 使用同 source、Radio、session/peer 的采样顺序计算非负增量；首样本、缺值和计数器回退/重置返回空值，Vue 不重算。切换 RSSI 复用正式 `switch_events.before_rssi/after_rssi` 事件事实，只展示前后散点，不伪装为连续趋势。
 - MR/源文件切换使用防抖、懒加载和 repository 缓存，避免重复解析和重复查询。
+- RSSI 与空口负载使用独立响应和视口状态。`dataZoom` 以真实毫秒时间为主标识；Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
+- 锁定 RSSI 后进入空口负载，必须使用相同来源、Radio、ACTIVE/Peer 模式、锚点、全部经过标记和 `time_from/time_to` 重新查询，不得只筛选前端降采样数组。响应分别报告 requested、effective、首末实际采样、范围内总点数和返回点数；无 Busy 样本时不扩大范围或伪造 `0`。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
 
 ## 7. Excel 报表

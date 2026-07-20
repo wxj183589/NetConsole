@@ -50,6 +50,10 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources?site_id=demo",
         ]
         responses = [client.get(url) for url in urls]
+        invalid_range = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path"
+            "?site_id=demo&time_from=2026-07-14%2010%3A00%3A01.000&time_to=2026-07-14%2010%3A00%3A01.000"
+        )
         removed_alignment = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/alignment?site_id=demo")
         source = responses[-1].json()[0]
         source_id = source["source_action_id"]
@@ -58,6 +62,9 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         download = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts/{artifact_id}/download?site_id=demo")
 
     assert all(response.status_code == 200 for response in responses)
+    assert invalid_range.status_code == 422
+    assert responses[5].json()["total_points_in_range"] == responses[5].json()["total_points"]
+    assert responses[5].json()["effective_time_from"] == responses[5].json()["first_sample_time"]
     assert removed_alignment.status_code == 404
     assert download.status_code == 200
     assert source["source_file_id"] == 1

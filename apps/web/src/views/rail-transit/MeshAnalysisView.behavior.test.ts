@@ -83,6 +83,27 @@ const dataTableStub = defineComponent({
     ]))
   },
 })
+const chartViewport = {
+  start_time: '2026-07-20 10:00:01.123',
+  end_time: '2026-07-20 10:00:03.456',
+  start_percent: 10,
+  end_percent: 30,
+  full_start_time: '2026-07-20 10:00:00.000',
+  full_end_time: '2026-07-20 10:00:10.000',
+  source: 'user_zoom' as const,
+}
+const meshChartStub = defineComponent({
+  name: 'MeshChartStub',
+  setup(_props, { expose }) {
+    expose({
+      getViewport: () => chartViewport,
+      getVisibleTimeRange: () => chartViewport,
+      applyViewport: vi.fn(),
+      resetViewport: vi.fn(),
+    })
+    return () => h('div', { class: 'mesh-chart-stub' })
+  },
+})
 const stubs: Record<string, Component | boolean> = {
   ElAlert: alertStub,
   ElButton: buttonStub,
@@ -101,8 +122,8 @@ const stubs: Record<string, Component | boolean> = {
   ElTabPane: passthrough,
   ElTabs: passthrough,
   ElTag: passthrough,
-  MeshChannelBusyChart: true,
-  MeshRssiChart: true,
+  MeshChannelBusyChart: meshChartStub,
+  MeshRssiChart: meshChartStub,
   MeshSwitchRssiChart: true,
   NcDataTable: dataTableStub,
 }
@@ -196,6 +217,59 @@ describe('Mesh analysis detail behavior', () => {
 
     expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1)
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
+    wrapper.unmount()
+  })
+
+  it('locks the real RSSI viewport and requeries Busy with the same peer context', async () => {
+    const session = {
+      session_id: 'session-locked', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    const otherSession = { ...session, session_id: 'session-other', mr_name: '列车06-MR-CW', original_filename: '6CWmeshlog.log' }
+    const build = {
+      anchor_link_id: 10, sequence: 2, source_file_id: 7, local_radio: 1, peer_ap_name: '轨旁AP-1', active_peer_mac: '0000-0000-0010',
+      build_start_time: '2026-07-20 10:00:00.000', build_end_time: '2026-07-20 10:00:10.000',
+    }
+    const points = [
+      { timestamp: chartViewport.start_time },
+      { timestamp: '2026-07-20 10:00:02.000' },
+      { timestamp: chartViewport.end_time },
+    ]
+    mocks.listSessions.mockResolvedValue({ items: [session, otherSession], total: 2, page: 1, page_size: 50 })
+    mocks.getSession.mockImplementation(async (id: string) => ({ session: id === session.session_id ? session : otherSession, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: id === session.session_id ? 7 : 8 }] }))
+    mocks.listBuildOrder.mockResolvedValue({ items: [build], total: 1, page: 1, page_size: 100 })
+    mocks.getPeerPath.mockResolvedValue({
+      mode: 'peer_segment', anchor: null, points, events: [], location_segments: [], total_points: 3, returned_points: 3,
+      downsampled: false, summary: { sample_count: 3 }, time_from: build.build_start_time, time_to: build.build_end_time,
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.sessions-toggle').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '锁定当前时间范围')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain(`已锁定 ${chartViewport.start_time} — ${chartViewport.end_time}`)
+
+    await wrapper.findAll('button').find((button) => button.text() === '查看同期空口负载')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getPeerPath).toHaveBeenLastCalledWith('session-locked', {
+      anchor_link_id: 10,
+      max_points: 600,
+      all_visits: null,
+      time_from: chartViewport.start_time,
+      time_to: chartViewport.end_time,
+    })
+    expect(wrapper.text()).toContain('已使用 RSSI 锁定时间')
+
+    await wrapper.findAll('button').filter((button) => button.text() === '查看')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('已锁定 2026-07-20 10:00:01.123')
+    expect(wrapper.findAll('button').some((button) => button.text() === '锁定当前时间范围')).toBe(true)
     wrapper.unmount()
   })
 
