@@ -27,7 +27,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 ## 编辑会话
 
 - 页面初始状态为 `LOCKED`，解锁后停止轮询，避免服务端刷新覆盖编辑区。
-- 编辑会话记录 `site_id`、`base_revision` 和 `loaded_at`；`base_revision` 是当前 SQLite 逻辑内容 SHA-256。
+- 编辑会话记录 `site_id`、`base_revision` 和 `loaded_at`；`base_revision` 同时覆盖当前 SQLite 逻辑内容和 `site_meta.json` 的规范化内容。
 - 修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
 - revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。
 - 锁定、刷新、顶层页签切换、离开路由和关闭窗口均保护未保存修改；全局确认框提供取消、放弃并锁定、保存并锁定。
@@ -99,7 +99,7 @@ POST /api/rail-transit/base-data/validate
 POST /api/rail-transit/base-data/changes
 ```
 
-`changes` 只接受强类型实体动作、`base_revision`、局点和明确确认；凭据、Token、Community、数据库路径、表名和 SQL 均被拒绝。站点、区间、轨旁 AP、车载 MR 和统一规划在同一数据库事务内写入，任何一步失败完整回滚。
+`changes` 只接受强类型实体动作、`base_revision`、局点和明确确认；凭据、Token、Community、数据库路径、表名和 SQL 均被拒绝。局点元数据（线路名称、项目类型、网络类型、备注）、站点、区间、轨旁 AP、车载 MR 和统一规划在同一请求内写入；SQLite 事务与 metadata 原子替换失败时执行补偿恢复，任何一步失败都不得留下半完成状态。
 
 预览接口：
 
@@ -139,13 +139,13 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 
 ```text
 Feature Registry: web.rail_transit_base_data_write
-RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1
+RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1       # Server/副本脚本的显式开关
 NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1       # 仅带 copy_validation 标记的副本
-NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1       # 正式局点的额外授权；本阶段禁止设置
+NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1       # 正式局点脚本额外授权
 RAIL_TRANSIT_BASE_DATA_ROLLBACK_ENABLED=1     # 回滚独立开关
 ```
 
-副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
+Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正式局点写入，不依赖环境变量；普通 Server/浏览器不会因为 Electron 参数获得该能力。副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
 
 普通维护一次保存固定满足：
 

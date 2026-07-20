@@ -15,6 +15,7 @@
 - `migrate_legacy_runtime_data.py`：无覆盖迁移仓库历史运行数据。
 - `clean_test_artifacts.py`：清理明确白名单内的历史测试临时项。
 - `clean_generated_artifacts.py`：回收明确白名单内、可重新生成的构建产物。
+- `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 
 ## 数据与状态
 

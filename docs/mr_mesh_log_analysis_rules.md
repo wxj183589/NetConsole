@@ -12,6 +12,10 @@
 - `catalog.sqlite` 和目录型 `mesh.sqlite` 管理文件目录与入口；明细数据可能在 `source_files.parsed_db_path` 指向的单文件 parsed SQLite。
 - `raw/` 永不因解析失败而删除；`parsed/` 和 `outputs/` 可重建。
 - 解析保留源文件、源行号和必要原始证据，便于从报表回溯。
+- 当前派生库 schema/parser 版本为 `meshlog_compact_v3_tagged_samples`。同一毫秒内日志携带的 `(2)`、`(4)` 等 `timestamp_tag` 属于采样身份的一部分，解析、唯一键、链路分组、质量分析和报告不得把它们合并。
+- 正式启动和查询不兼容旧派生 schema，也不自动移动、删除或清空用户数据。检测到旧版或损坏的 `mesh.sqlite` 时返回需要重建的明确错误；维护人员只能在 NetConsole 完全退出后，通过 `scripts/maintenance/rebuild_mesh_parsed_data.py` 先 dry-run，再显式 `--apply` 从受保护 raw 重建。工具只归档派生数据库和 `parsed/`，不移动或删除 `raw/`、`outputs/` 与 catalog，失败时恢复旧派生数据。
+- ZIP 导入固定为“安全预览 → 人工确认列车号/CT-CW/Profile → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；ZIP 检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越、重复显示名和扩展名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
+- 同一 ZIP SHA 默认幂等。真实 12 文件包已在系统临时数据根验证：6 列车/12 MR、353,035 条解析记录、0 个解析问题；最终 353,033 条链路中 ACTIVE 129,524、STANDBY 223,509。重复导入同一 SHA 返回 12 个 duplicate，不重复写入；manifest 不含临时根/staging 路径，退出后无 staging/backup 残留。该结果证明当前样本闭环，不等同于所有 H3C 版本现场兼容。
 
 ## 3. 解析模型
 
@@ -54,8 +58,9 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 ## 6. 大数据与图表
 
-- 页面按源文件解析到实际明细库，优先读取 compact v2 标量列，仅兼容旧库时回退 JSON 指标列。
+- 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
 - 图表只绘制可见窗口或下采样结果，并保留切换点、异常点、锚点等重要样本；不得一次性渲染全部采样。
+- Rate 图直接读取 `mesh_links.local_rate_raw/peer_rate_raw` 并明确标注原始值，不猜单位。Retry/Error 图由 Python Query Service 使用同 source、Radio、session/peer 的采样顺序计算非负增量；首样本、缺值和计数器回退/重置返回空值，Vue 不重算。切换 RSSI 复用正式 `switch_events.before_rssi/after_rssi` 事件事实，只展示前后散点，不伪装为连续趋势。
 - MR/源文件切换使用防抖、懒加载和 repository 缓存，避免重复解析和重复查询。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
 
@@ -74,5 +79,8 @@ Mesh 链路明细导出可在结果 metadata 中附加只读 `export_identity_di
 - 单/双 Radio、同物理 AP 切换、A-B-A 临界与异常乒乓；
 - 缺失 RSSI/Busy 时不伪造统计；
 - 目录库到 `parsed_db_path` 的正确解析；
+- compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
+- ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；
+- Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 可见窗口、全量下采样、关键点保留和重复加载防抖；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。

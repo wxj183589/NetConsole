@@ -355,6 +355,10 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 
+分析页继续复用同一个只读 `OnlineMrQueryService`：既有 `/metrics` 列表契约保持兼容，新 `/metric-page` 对动态图提供总点数封顶的分页查询，`limit` 在去重后的指标间均分并显式返回 `page_size_per_metric`、`next_offset` 和 `has_more`。RSSI、Channel Busy、接口 PPS、fping RTT/丢包与 iPerf 吞吐读取各自正式表；无线统计读取 `radio_statistics_samples.metric_value/metric_unit`，不得用表行数或占位值替代。
+
+历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer、Radio 及相对 raw 证据。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
+
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 
 `/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 和 5B-13A 远端执行结果都可按 `executor=AGENT` 只读显示；当前 Web 不提供 AGENT 控制入口。

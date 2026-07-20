@@ -4,6 +4,7 @@
 
 ## 可编辑范围
 
+- 局点基础信息：线路名称、项目类型、网络类型和备注；局点名称为只读。
 - 站点与区间：名称、编码、顺序、起止站、上下行、备注等基础字段。
 - 轨旁 AP：名称、点位编码、MAC、归属站点/区间、里程、线路方向和备注。
 - 轨旁 AP 规划：站点、AP 数、起始地址、掩码、网关、管理 VLAN 和备注。
@@ -35,22 +36,22 @@ Vue 草稿
   -> SQLite BEGIN IMMEDIATE 单事务
 ```
 
-站点、区间、轨旁 AP、车载 MR 和轨旁 AP 规划在同一个 changes 请求中提交。任意校验、引用、唯一性或 SQLite 错误都会整体回滚；返回新 revision 后页面重新读取服务端事实并自动锁定。
+局点元数据、站点、区间、轨旁 AP、车载 MR 和轨旁 AP 规划在同一个 changes 请求中提交。revision 同时覆盖 SQLite 和 `site_meta.json`；任意校验、引用、唯一性、metadata 原子写入或 SQLite 错误都会整体回滚；返回新 revision 后页面重新读取服务端事实并自动锁定。
 
 后端业务校验负责 IP、MAC、里程、站点引用、MR 历史和规划网段等规则；Vue 只做输入展示、轻量状态和字段错误定位。Router 不执行 SQL、设备连接或命令拼接。
 
 ## 授权
 
-真实写入仍由 Feature Registry、环境开关和局点范围共同控制：
+真实写入仍由 Feature Registry、环境开关和局点范围共同控制。Electron Desktop 的受管会话在后端显式启用真实局点写入能力，普通 Server/浏览器不会继承该能力：
 
 ```text
 web.rail_transit_base_data_write
-RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1
+RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1  # Server/副本脚本写入开关；Electron 受管会话不依赖环境变量
 NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1  # copy_validation 局点
 NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权
 ```
 
-未获得写权限时，页面始终保持锁定，后端也拒绝 validate/save 之外的越权写入。导入预览是独立流程，不复用普通表格的草稿提交。
+未获得写权限时，页面始终保持锁定，后端也拒绝 validate/save 之外的越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览是独立流程，不复用普通表格的草稿提交。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
 
 ## 定向验证
 
