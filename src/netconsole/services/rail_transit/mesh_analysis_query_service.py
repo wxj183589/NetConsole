@@ -1297,9 +1297,12 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         location = MeshSourceLocator(self.paths).locate(site_id, context.source | {"safe_folder_name": context.safe_folder_name, "mr_id": context.mr_id}, context.source)
         if context.raw_path is None:
+            source_action_id = self._artifact_id(session_id, "raw", str(context.source.get("archived_filename") or "missing"))
             return [
                 MeshDataSourceDTO(
-                    source_id=self._artifact_id(session_id, "raw", str(context.source.get("archived_filename") or "missing")),
+                    source_file_id=context.source_id,
+                    source_action_id=source_action_id,
+                    source_id=source_action_id,
                     source_type="raw_mesh_log",
                     name=str(context.source.get("original_filename") or context.source.get("archived_filename") or "原始日志"),
                     recoverable=location.recoverable,
@@ -1313,9 +1316,12 @@ class MeshAnalysisQueryService:
             ]
         path = context.raw_path
         stat = path.stat()
+        source_action_id = self._artifact_id(session_id, "raw", path.name)
         return [
             MeshDataSourceDTO(
-                source_id=self._artifact_id(session_id, "raw", path.name),
+                source_file_id=context.source_id,
+                source_action_id=source_action_id,
+                source_id=source_action_id,
                 source_type="raw_mesh_log",
                 name=str(context.source.get("original_filename") or path.name),
                 exists=True,
@@ -1331,9 +1337,9 @@ class MeshAnalysisQueryService:
             )
         ]
 
-    def read_raw_tail(self, site_id: str, session_id: str, source_id: str, *, lines: int = 100) -> MeshRawTailDTO:
+    def read_raw_tail(self, site_id: str, session_id: str, source_action_id: str, *, lines: int = 100) -> MeshRawTailDTO:
         context = self._context(site_id, session_id)
-        if context.raw_path is None or source_id != self._artifact_id(session_id, "raw", context.raw_path.name):
+        if context.raw_path is None or source_action_id != self._artifact_id(session_id, "raw", context.raw_path.name):
             raise MeshAnalysisQueryError("原始来源不存在")
         limit = min(max(int(lines), 1), 200)
         if context.raw_path.suffix.lower() == ".gz":
@@ -1344,7 +1350,7 @@ class MeshAnalysisQueryService:
                 handle.seek(max(0, size - 256 * 1024))
                 raw = handle.read()
         text = self._decode_text(raw)
-        return MeshRawTailDTO(source_id=source_id, available=True, lines=text.splitlines()[-limit:])
+        return MeshRawTailDTO(source_action_id=source_action_id, source_id=source_action_id, available=True, lines=text.splitlines()[-limit:])
 
     @staticmethod
     def _gzip_tail(path: Path, maximum: int) -> bytes:

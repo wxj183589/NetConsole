@@ -11,7 +11,12 @@ export interface NcColumnSettingItem {
   fixed: 'left' | 'right' | false
 }
 
-defineProps<{ columns: readonly NcColumnSettingItem[] }>()
+withDefaults(defineProps<{
+  columns: readonly NcColumnSettingItem[]
+  preferenceState?: 'saved' | 'saving' | 'error'
+}>(), {
+  preferenceState: 'saved',
+})
 
 const emit = defineEmits<{
   toggle: [key: string, visible: boolean]
@@ -25,9 +30,11 @@ const emit = defineEmits<{
 <template>
   <el-popover placement="bottom-end" :width="330" trigger="click">
     <template #reference>
-      <el-tooltip :content="t('table.column_settings', '列设置')" placement="top">
-        <el-button :icon="Setting" circle :aria-label="t('table.column_settings', '列设置')" />
-      </el-tooltip>
+      <span class="nc-column-settings__trigger">
+        <el-tooltip :content="t('table.column_settings', '列设置')" placement="top">
+          <el-button :icon="Setting" circle :aria-label="t('table.column_settings', '列设置')" />
+        </el-tooltip>
+      </span>
     </template>
     <div class="nc-column-settings">
       <div class="nc-column-settings__header">
@@ -55,6 +62,13 @@ const emit = defineEmits<{
           </div>
         </div>
       </div>
+      <div class="nc-column-settings__status" :class="`is-${preferenceState}`">
+        {{ preferenceState === 'saving'
+          ? t('table.preference_saving', '正在保存列设置')
+          : preferenceState === 'error'
+            ? t('table.preference_save_failed', '保存失败，当前设置仅在本次运行有效')
+            : t('table.preference_saved', '已保存到本地配置') }}
+      </div>
     </div>
   </el-popover>
 </template>
@@ -63,10 +77,13 @@ const emit = defineEmits<{
 .nc-column-settings__header,
 .nc-column-settings__item,
 .nc-column-settings__actions { display: flex; align-items: center; }
+.nc-column-settings__trigger { display: inline-flex; }
 .nc-column-settings__header { justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--nc-divider); }
 .nc-column-settings__list { max-height: 360px; overflow-y: auto; }
 .nc-column-settings__item { justify-content: space-between; gap: 12px; min-height: 38px; border-bottom: 1px solid var(--nc-divider); }
 .nc-column-settings__item :deep(.el-checkbox) { min-width: 0; }
 .nc-column-settings__item :deep(.el-checkbox__label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-column-settings__actions { flex: 0 0 auto; gap: 2px; }
+.nc-column-settings__status { padding-top: 8px; color: var(--nc-text-tertiary); font-size: 12px; }
+.nc-column-settings__status.is-error { color: var(--nc-color-danger); }
 </style>

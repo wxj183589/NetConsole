@@ -1,24 +1,27 @@
 // @vitest-environment happy-dom
 
 import { defineComponent, h } from 'vue'
-import { mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import NcDataTable from './NcDataTable.vue'
 import { tablePreferenceKey } from './tablePreferences'
+
+const tableDoLayout = vi.fn()
 
 const ElTable = defineComponent({
   name: 'ElTable',
   props: ['data', 'stripe', 'fit'],
   emits: ['header-dragend'],
-  setup(_props, { slots }) {
+  setup(_props, { slots, expose }) {
+    expose({ doLayout: tableDoLayout })
     return () => h('div', { class: 'el-table-stub' }, slots.default?.())
   },
 })
 
 const ElTableColumn = defineComponent({
   name: 'ElTableColumn',
-  props: ['columnKey', 'label', 'width', 'align', 'headerAlign', 'type'],
+  props: ['columnKey', 'label', 'width', 'align', 'headerAlign', 'type', 'fixed'],
   setup(props, { slots }) {
     return () => h('div', {
       class: 'el-table-column-stub',
@@ -39,7 +42,7 @@ const global = {
   },
 }
 
-afterEach(() => localStorage.clear())
+afterEach(() => { localStorage.clear(); tableDoLayout.mockClear(); Reflect.deleteProperty(window, 'netconsoleDesktop') })
 
 describe('NcDataTable', () => {
   it('renders columns centered with widths that include the full header', async () => {
@@ -129,6 +132,64 @@ describe('NcDataTable', () => {
     const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
     expect(() => settings.vm.$emit('toggle', 'name', true)).not.toThrow()
     await wrapper.vm.$nextTick()
+    wrapper.unmount()
+  })
+
+  it('normalizes partial preferences so newly added columns remain operable', async () => {
+    localStorage.setItem(tablePreferenceKey({ userKey: 'local-user', routeKey: '/devices', tableId: 'device-list', language: 'zh-CN' }), JSON.stringify({
+      version: 1,
+      order: ['name'],
+      columns: [{ key: 'name', visible: true }],
+    }))
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'device-list',
+        routeKey: '/devices',
+        language: 'zh-CN',
+        showColumnSettings: true,
+        data: [{ name: 'AP01', status: '在线', group: '默认' }],
+        columns: [
+          { key: 'name', label: '名称', valueType: 'name' },
+          { key: 'status', label: '状态', valueType: 'status' },
+          { key: 'group', label: '分组', valueType: 'text' },
+        ],
+      },
+      global,
+    })
+    const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
+    settings.vm.$emit('toggle', 'group', false)
+    await flushPromises()
+    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
+    expect(tableDoLayout).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not let an asynchronous Electron preference overwrite a user mutation', async () => {
+    let resolvePreference: (value: unknown) => void = () => undefined
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { getUiPreference: vi.fn(() => new Promise((resolve) => { resolvePreference = resolve })) },
+    })
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'mesh-analysis-link-details:v2',
+        routeKey: '/rail-transit/mesh-analysis',
+        language: 'zh-CN',
+        showColumnSettings: true,
+        data: [{ name: 'AP01', status: '在线' }],
+        columns: [
+          { key: 'name', label: '名称', valueType: 'name' },
+          { key: 'status', label: '状态', valueType: 'status' },
+        ],
+      },
+      global,
+    })
+    const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
+    settings.vm.$emit('toggle', 'status', false)
+    await wrapper.vm.$nextTick()
+    resolvePreference({ version: 1, order: ['name', 'status'], columns: [{ key: 'name', visible: true }, { key: 'status', visible: true }] })
+    await flushPromises()
+    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name'])
     wrapper.unmount()
   })
 

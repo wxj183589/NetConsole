@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="Row extends object">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { t } from '../../i18n/runtime'
@@ -17,6 +17,7 @@ import {
   clearTablePreferencesAsync,
   loadTablePreferences,
   loadTablePreferencesAsync,
+  normalizeTablePreferences,
   saveTablePreferencesAsync,
   type NcTablePreferences,
 } from './tablePreferences'
@@ -73,9 +74,13 @@ const headerFont = ref('600 14px "Microsoft YaHei UI", sans-serif')
 const currentLanguage = ref(props.language || documentLanguage())
 const preferences = ref<NcTablePreferences>()
 const manualWidths = ref<Record<string, number>>({})
+const columnLayoutRevision = ref(0)
+const preferenceMutationRevision = ref(0)
+const preferenceSaveState = ref<'saved' | 'saving' | 'error'>('saved')
 let rootObserver: MutationObserver | undefined
 let resizeObserver: ResizeObserver | undefined
 let preferenceLoadGeneration = 0
+let preferenceSaveGeneration = 0
 
 function documentLanguage(): string {
   return typeof document !== 'undefined' && document.documentElement?.lang
@@ -95,24 +100,42 @@ watch(() => props.language, (language) => {
   if (language) currentLanguage.value = language
 })
 
+const normalizedColumns = computed(() => props.columns.map(normalizeNcTableColumn))
+
+function normalizeCurrentPreference(value?: NcTablePreferences | null): NcTablePreferences {
+  return normalizeTablePreferences(normalizedColumns.value, value)
+}
+
+function applyLoadedPreference(value: NcTablePreferences | undefined): NcTablePreferences {
+  const next = normalizeCurrentPreference(value)
+  preferences.value = next
+  manualWidths.value = Object.fromEntries(
+    next.columns.flatMap((column) => column.width == null ? [] : [[column.key, column.width]]),
+  )
+  return next
+}
+
+function samePreference(left: NcTablePreferences, right: NcTablePreferences): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 watch(identity, (nextIdentity) => {
   const generation = ++preferenceLoadGeneration
-  const apply = (next: NcTablePreferences | undefined) => {
+  const mutationRevision = preferenceMutationRevision.value
+  const apply = (next: NcTablePreferences | undefined, persistNormalized = false) => {
     if (generation !== preferenceLoadGeneration) return
-    preferences.value = next
-    manualWidths.value = Object.fromEntries(
-      (next?.columns ?? []).flatMap((column) => column.width == null ? [] : [[column.key, column.width]]),
-    )
+    if (preferenceMutationRevision.value !== mutationRevision) return
+    const normalized = applyLoadedPreference(next)
+    if (persistNormalized && next && !samePreference(next, normalized)) persistPreference(normalized)
   }
   apply(loadTablePreferences(nextIdentity))
-  void loadTablePreferencesAsync(nextIdentity).then(apply)
+  void loadTablePreferencesAsync(nextIdentity).then((next) => apply(next, true))
 }, { immediate: true })
 
 const resolvedColumns = computed<ResolvedNcTableColumn<Row>[]>(() => {
-  const normalized = props.columns.map(normalizeNcTableColumn)
   const preferenceByKey = new Map((preferences.value?.columns ?? []).map((item) => [item.key, item]))
   const order = new Map((preferences.value?.order ?? []).map((key, index) => [key, index]))
-  return normalized
+  return normalizedColumns.value
     .map((column, sourceIndex) => {
       const saved = preferenceByKey.get(column.key)
       return {
@@ -162,45 +185,49 @@ function cellValue(row: Row, column: ResolvedNcTableColumn<Row>, index: number):
 }
 
 function persist(nextColumns = resolvedColumns.value): void {
+  const current = normalizeCurrentPreference(preferences.value)
+  const nextByKey = new Map(nextColumns.map((column) => [column.key, column]))
   const next: NcTablePreferences = {
     version: 1,
     order: nextColumns.map((column) => column.key),
-    columns: nextColumns.map((column) => ({
-      key: column.key,
-      width: manualWidths.value[column.key],
-      visible: column.visible,
-      fixed: column.fixed === 'left' || column.fixed === 'right' ? column.fixed : false,
-    })),
+    columns: current.columns.map((column) => {
+      const nextColumn = nextByKey.get(column.key)
+      return {
+        ...column,
+        width: manualWidths.value[column.key],
+        visible: nextColumn?.visible ?? column.visible,
+        fixed: nextColumn?.fixed === 'left' || nextColumn?.fixed === 'right' ? nextColumn.fixed : false,
+      }
+    }),
   }
-  preferences.value = next
-  persistPreference(next)
+  commitPreference(next, false)
 }
 
 function persistPreference(next: NcTablePreferences): void {
-  void saveTablePreferencesAsync(identity.value, next).catch(() => {
-    ElMessage.warning('列设置保存失败，当前布局仅保留在本次运行。')
+  const generation = ++preferenceSaveGeneration
+  preferenceSaveState.value = 'saving'
+  void saveTablePreferencesAsync(identity.value, next).then(() => {
+    if (generation === preferenceSaveGeneration) preferenceSaveState.value = 'saved'
+  }).catch(() => {
+    if (generation === preferenceSaveGeneration) {
+      preferenceSaveState.value = 'error'
+      ElMessage.warning('列设置保存失败，当前布局仅保留在本次运行。')
+    }
   })
 }
 
-function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']) => void): void {
-  const next: NcTablePreferences = preferences.value
-    ? {
-        version: 1,
-        order: [...preferences.value.order],
-        columns: preferences.value.columns.map((column) => ({ ...column })),
-      }
-    : {
-        version: 1,
-        order: resolvedColumns.value.map((column) => column.key),
-        columns: resolvedColumns.value.map((column) => ({
-          key: column.key,
-          visible: column.visible,
-          fixed: column.fixed === 'left' || column.fixed === 'right' ? column.fixed : false,
-        })),
-      }
-  update(next.columns)
+function commitPreference(value: NcTablePreferences, refresh = true): void {
+  const next = normalizeCurrentPreference(value)
+  preferenceMutationRevision.value += 1
   preferences.value = next
   persistPreference(next)
+  if (refresh) void refreshColumnLayout(true)
+}
+
+function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']) => void): void {
+  const next = normalizeCurrentPreference(preferences.value)
+  update(next.columns)
+  commitPreference(next)
 }
 
 function toggleColumn(key: string, visible: boolean): void {
@@ -218,9 +245,8 @@ function moveColumn(key: string, direction: -1 | 1): void {
   const target = index + direction
   if (index < 0 || target < 0 || target >= order.length) return
   ;[order[index], order[target]] = [order[target], order[index]]
-  const next = preferences.value ?? { version: 1 as const, order: [], columns: [] }
-  preferences.value = { ...next, order }
-  persistPreference(preferences.value)
+  const next = normalizeCurrentPreference(preferences.value)
+  commitPreference({ ...next, order })
 }
 
 function cyclePin(key: string): void {
@@ -232,18 +258,25 @@ function cyclePin(key: string): void {
 }
 
 function resetLayout(): void {
-  void clearTablePreferencesAsync(identity.value).catch(() => {
-    ElMessage.warning('默认列布局清理失败，请稍后重试。')
+  preferenceMutationRevision.value += 1
+  const generation = ++preferenceSaveGeneration
+  preferenceSaveState.value = 'saving'
+  void clearTablePreferencesAsync(identity.value).then(() => {
+    if (generation === preferenceSaveGeneration) preferenceSaveState.value = 'saved'
+  }).catch(() => {
+    if (generation === preferenceSaveGeneration) {
+      preferenceSaveState.value = 'error'
+      ElMessage.warning('默认列布局清理失败，请稍后重试。')
+    }
   })
-  preferences.value = undefined
+  preferences.value = normalizeCurrentPreference()
   manualWidths.value = {}
-  recalculate(true)
+  void refreshColumnLayout(true)
 }
 
 function autoFit(): void {
   manualWidths.value = {}
   persist()
-  recalculate(true)
 }
 
 function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: { columnKey?: string }, event: MouseEvent): void {
@@ -262,6 +295,14 @@ function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: { colum
     }
   }
   emit('header-dragend', newWidth, oldWidth, column, event)
+}
+
+async function refreshColumnLayout(force = false): Promise<void> {
+  await nextTick()
+  columnLayoutRevision.value += 1
+  await nextTick()
+  tableRef.value?.doLayout?.()
+  recalculate(force)
 }
 
 function clearSelection(): void {
@@ -333,6 +374,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
       <NcColumnSettings
         v-if="showColumnSettings"
         :columns="settingColumns"
+        :preference-state="preferenceSaveState"
         @toggle="toggleColumn"
         @move="moveColumn"
         @pin="cyclePin"
@@ -343,6 +385,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
     <div ref="scrollRef" class="nc-data-table__scroll">
       <el-table
         ref="tableRef"
+        :key="columnLayoutRevision"
         v-bind="$attrs"
         :data="data"
         :height="height"

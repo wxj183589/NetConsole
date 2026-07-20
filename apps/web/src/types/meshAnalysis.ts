@@ -72,7 +72,7 @@ export interface MeshAnalysisSession {
 export interface Page<T> { items: T[]; total: number; page: number; page_size: number }
 export interface MeshWarning { code: string; message: string; severity: string }
 export interface MeshRawSource {
-  source_id: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null
+  source_file_id: number; source_action_id: string; source_id?: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null
   compressed: boolean; tail_available: boolean; recoverable: boolean; recovery_source: string; missing_reason: string
   rebuild_capability: 'ready' | 'recoverable_from_bundle' | 'raw_missing' | 'task_running' | 'unsupported'
   package_name: string; package_sha256: string; bundle_member_id: string
@@ -169,4 +169,4 @@ export interface MeshCounterDeltaPoint { timestamp: string; local_radio: number 
 export interface MeshCounterDeltaPage { items: MeshCounterDeltaPoint[]; total: number; downsampled: boolean }
 export interface MeshAnomaly { anomaly_id: string; severity: string; anomaly_type: string; start_time: string | null; end_time: string | null; train_name: string; mr_name: string; peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; description: string; evidence_reference: string | null; rule_version: string | null }
 export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean }
-export interface MeshRawTail { source_id: string; available: boolean; lines: string[]; message: string }
+export interface MeshRawTail { source_action_id: string; source_id?: string; available: boolean; lines: string[]; message: string }

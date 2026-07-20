@@ -51,7 +51,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         ]
         responses = [client.get(url) for url in urls]
         removed_alignment = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/alignment?site_id=demo")
-        source_id = responses[-1].json()[0]["source_id"]
+        source = responses[-1].json()[0]
+        source_id = source["source_action_id"]
         responses.append(client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources/{source_id}/tail?site_id=demo"))
         artifact_id = next(item["artifact_id"] for item in responses[-3].json() if item["artifact_type"] == "analysis_report")
         download = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts/{artifact_id}/download?site_id=demo")
@@ -59,6 +60,10 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert all(response.status_code == 200 for response in responses)
     assert removed_alignment.status_code == 404
     assert download.status_code == 200
+    assert source["source_file_id"] == 1
+    assert isinstance(source["source_action_id"], str)
+    assert source["source_action_id"] == source["source_id"]
+    assert responses[-1].json()["source_action_id"] == source_id
     payload = "".join(response.text for response in responses)
     assert str(tmp_path) not in payload
     assert "peer_radio_mac" in payload

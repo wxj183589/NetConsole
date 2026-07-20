@@ -14,6 +14,15 @@ export interface NcTablePreferences {
   columns: NcTableColumnPreference[]
 }
 
+export interface NcTablePreferenceColumnDefinition {
+  key: string
+  visible?: boolean
+  hideable?: boolean
+  fixed?: 'left' | 'right' | false | boolean
+  minWidth?: number
+  maxWidth?: number
+}
+
 export interface NcTablePreferenceIdentity {
   userKey?: string
   routeKey: string
@@ -62,10 +71,62 @@ function isPreference(value: unknown): value is NcTablePreferences {
       if (!item || typeof item !== 'object') return false
       const column = item as NcTableColumnPreference
       return typeof column.key === 'string'
-        && (column.width == null || (Number.isFinite(column.width) && column.width > 0))
-        && (column.visible == null || typeof column.visible === 'boolean')
-        && (column.fixed == null || column.fixed === false || column.fixed === 'left' || column.fixed === 'right')
     })
+}
+
+function validFixed(value: unknown): value is 'left' | 'right' | false {
+  return value === false || value === 'left' || value === 'right'
+}
+
+function defaultFixed(column: NcTablePreferenceColumnDefinition): 'left' | 'right' | false {
+  if (column.fixed === true) return 'left'
+  return validFixed(column.fixed) ? column.fixed : false
+}
+
+function validWidth(value: unknown, column: NcTablePreferenceColumnDefinition): value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return false
+  if (column.minWidth != null && value < column.minWidth) return false
+  if (column.maxWidth != null && value > column.maxWidth) return false
+  return true
+}
+
+/** 以当前代码列定义为基准修复旧版、部分或空的表格偏好。 */
+export function normalizeTablePreferences(
+  currentColumns: readonly NcTablePreferenceColumnDefinition[],
+  savedPreferences?: NcTablePreferences | null,
+): NcTablePreferences {
+  const current = currentColumns.filter((column, index, all) => column.key && all.findIndex((item) => item.key === column.key) === index)
+  const currentByKey = new Map(current.map((column) => [column.key, column]))
+  const savedByKey = new Map((isPreference(savedPreferences) ? savedPreferences.columns : []).map((column) => [column.key, column]))
+  const order: string[] = []
+  const seen = new Set<string>()
+  for (const key of isPreference(savedPreferences) ? savedPreferences.order : []) {
+    if (currentByKey.has(key) && !seen.has(key)) {
+      seen.add(key)
+      order.push(key)
+    }
+  }
+  for (const column of current) {
+    if (!seen.has(column.key)) {
+      seen.add(column.key)
+      order.push(column.key)
+    }
+  }
+  return {
+    version: 1,
+    order,
+    columns: order.map((key) => {
+      const definition = currentByKey.get(key)!
+      const saved = savedByKey.get(key)
+      const preference: NcTableColumnPreference = {
+        key,
+        visible: definition.hideable === false ? true : saved?.visible ?? definition.visible ?? true,
+        fixed: validFixed(saved?.fixed) ? saved.fixed : defaultFixed(definition),
+      }
+      if (validWidth(saved?.width, definition)) preference.width = saved!.width
+      return preference
+    }),
+  }
 }
 
 export function loadTablePreferences(

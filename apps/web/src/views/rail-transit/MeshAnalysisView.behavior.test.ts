@@ -153,7 +153,7 @@ describe('Mesh analysis detail behavior', () => {
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
     mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
-    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [], warnings: [], sources: [{ source_id: '1', exists: true, rebuild_capability: 'ready' }] })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [], warnings: [], sources: [{ source_file_id: 1, source_action_id: 'source-action-1', source_id: 'source-action-1', exists: true, rebuild_capability: 'ready' }] })
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
@@ -173,7 +173,7 @@ describe('Mesh analysis detail behavior', () => {
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
     mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
-    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1, 2], warnings: [], sources: [{ source_id: 'source-1', exists: true, rebuild_capability: 'ready' }] })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1, 2], warnings: [], sources: [{ source_file_id: 7, source_action_id: 'source-1', source_id: 'source-1', exists: true, rebuild_capability: 'ready' }] })
     mocks.listBuildOrder.mockResolvedValue({ items: [{ sequence: 1, anchor_link_id: 10, peer_ap_name: 'AP-1', active_peer_mac: 'aa', build_start_time: '2026-07-20 10:00:00.000', build_end_time: '2026-07-20 10:00:10.000', build_result: 'normal' }], total: 1, page: 1, page_size: 100 })
 
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })

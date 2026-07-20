@@ -167,7 +167,9 @@ class MeshAnalysisSessionPageDTO(ApiModel):
 
 
 class MeshDataSourceDTO(ApiModel):
-    source_id: str
+    source_file_id: int = Field(gt=0, description="索引库 source_files.id，用于分析查询和导出")
+    source_action_id: str = Field(description="原始来源操作 ID，用于 tail 等受控来源操作")
+    source_id: str = Field(default="", description="兼容别名，等同 source_action_id；新客户端不得用于导出")
     source_type: str
     name: str
     exists: bool = False
@@ -637,7 +639,8 @@ class MeshReportArtifactDTO(ApiModel):
 
 
 class MeshRawTailDTO(ApiModel):
-    source_id: str
+    source_action_id: str
+    source_id: str = Field(default="", description="兼容别名，等同 source_action_id")
     available: bool = False
     lines: list[str] = Field(default_factory=list)
     message: str = ""

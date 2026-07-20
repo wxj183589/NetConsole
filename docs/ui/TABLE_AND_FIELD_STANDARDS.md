@@ -61,7 +61,7 @@ baseTotalWidth < availableWidth
 用户手工设置 > 页面显式配置 > 自动计算 > 字段类型默认值
 ```
 
-视图偏好按用户、route、table ID 和语言写入专用 localStorage 键，保存宽度、顺序、显隐和固定列。它不是业务数据，不写 SQLite、系统设置 API 或 Electron 配置。损坏偏好失败关闭为默认布局，不能阻止表格加载。
+视图偏好按用户、route、table ID 和语言写入专用 localStorage 键，保存宽度、顺序、显隐和固定列。它不是业务数据，不写 SQLite、系统设置 API 或 Electron 配置。载入时必须以当前完整列定义为基准归一化：补齐新增列、删除旧列、去重并补齐顺序、强制不可隐藏列可见、清理非法宽度和固定状态；异步 Electron 偏好返回不得覆盖用户已经做出的修改。损坏偏好失败关闭为默认布局，不能阻止表格加载。结构变化后必须等待 DOM 更新并调用 Element Plus `doLayout()` 与宽度重算。
 
 ## 字段和操作列
 

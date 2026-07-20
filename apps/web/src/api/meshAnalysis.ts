@@ -51,7 +51,7 @@ export const getMeshCounterDeltas = (id: string, values: Record<string, string |
 export const listMeshAnomalies = (id: string): Promise<Page<MeshAnomaly>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/anomalies`)
 export const listMeshArtifacts = (id: string): Promise<MeshArtifact[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/artifacts`)
 export const listMeshRawSources = (id: string): Promise<MeshRawSource[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources`)
-export const getMeshRawTail = (id: string, sourceId: string): Promise<MeshRawTail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources/${encodeURIComponent(sourceId)}/tail`)
+export const getMeshRawTail = (id: string, sourceActionId: string): Promise<MeshRawTail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources/${encodeURIComponent(sourceActionId)}/tail`)
 export const meshArtifactDownloadRequest = (
   id: string,
   artifactId: string,

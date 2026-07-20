@@ -557,15 +557,15 @@ def raw_sources(request: Request, session_id: str, site_id: str = Query(default=
     return _query(lambda: _service(request).get_raw_source_summary(_site_id(request, site_id), session_id))
 
 
-@router.get("/sessions/{session_id}/raw-sources/{source_id}/tail", response_model=MeshRawTailDTO)
+@router.get("/sessions/{session_id}/raw-sources/{source_action_id}/tail", response_model=MeshRawTailDTO)
 def raw_tail(
     request: Request,
     session_id: str,
-    source_id: str,
+    source_action_id: str,
     site_id: str = Query(default="", max_length=100),
     lines: int = Query(default=100, ge=1, le=200),
 ) -> MeshRawTailDTO:
-    return _query(lambda: _service(request).read_raw_tail(_site_id(request, site_id), session_id, source_id, lines=lines))
+    return _query(lambda: _service(request).read_raw_tail(_site_id(request, site_id), session_id, source_action_id, lines=lines))
 
 
 @router.post(

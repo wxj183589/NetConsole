@@ -575,9 +575,9 @@ async function reloadLinks(page = linkFilters.page, generation = detailGeneratio
   links.value = result.items; linkTotal.value = result.total; loadedTabs.links = true
 }
 
-async function loadRawTail(sourceId: string, available: boolean): Promise<void> {
+async function loadRawTail(sourceActionId: string, available: boolean): Promise<void> {
   if (!selected.value || !available) return
-  rawTail.value = await getMeshRawTail(selected.value.session.session_id, sourceId)
+  rawTail.value = await getMeshRawTail(selected.value.session.session_id, sourceActionId)
 }
 
 async function downloadArtifact(artifact: MeshArtifact): Promise<void> {
@@ -723,10 +723,16 @@ function pollTask(): void {
     catch (reason) { error.value = reason instanceof Error ? reason.message : 'MESH 任务状态读取失败' }
   }, 1000)
 }
-async function startTask(factory: () => Promise<RailTransitTask>, fallback: string): Promise<void> {
+async function startTask(factory: () => Promise<RailTransitTask>, fallback: string): Promise<RailTransitTask | null> {
   taskLoading.value = true; error.value = ''
-  try { rememberTask(await factory()); pollTask(); void openTaskWindow() }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : fallback }
+  try {
+    const created = await factory()
+    rememberTask(created); pollTask(); void openTaskWindow(created.task_id)
+    return created
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : fallback
+    return null
+  }
   finally { taskLoading.value = false }
 }
 function startBundleImport(): void {
@@ -753,15 +759,18 @@ function generateReport(): void {
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id, override), 'MESH 分析报告生成启动失败')
 }
 function exportLinkDetails(): void {
-  const sourceFileId = Number(selectedSource.value?.source_id)
-  if (!selected.value || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
-    ElMessage.error('当前日志缺少可导出的来源标识')
+  const sourceFileId = selectedSource.value?.source_file_id
+  if (!selected.value || typeof sourceFileId !== 'number' || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
+    ElMessage.error('当前来源缺少正式 source_file_id，请刷新或重新解析后再试。')
     return
   }
+  ElMessage.info('正在提交链路明细导出任务')
   void startTask(
     () => exportMeshLinkDetails(selected.value!.session.session_id, sourceFileId),
     'MESH 链路明细导出启动失败',
-  )
+  ).then((created) => {
+    if (created) ElMessage.success(`链路明细导出任务已创建：${created.task_id}`)
+  })
 }
 async function rebuildSelected(): Promise<void> {
   if (!selected.value) return
@@ -1012,7 +1021,7 @@ function buildResultLabel(value: string): string {
 
         <el-tab-pane label="报告与来源" name="artifacts">
           <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts:v2" route-key="/rail-transit/mesh-analysis" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
-          <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources:v2" route-key="/rail-transit/mesh-analysis" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
+          <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources:v2" route-key="/rail-transit/mesh-analysis" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_action_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </el-tab-pane>
       </el-tabs>

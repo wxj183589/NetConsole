@@ -17,6 +17,7 @@
 - 正式资产来源是当前局点基础资料/设备管理中的车载 MR。打开导入时由显式 ApplicationService POST 按 `linked_device_id → device_uuid → 规范化名称` 幂等准备内部 Profile；设备改名只更新显示名，稳定 `safe_folder_name` 和已有数据目录不变，普通 GET 不隐式写库。
 - ZIP、单个/多个 LOG/GZ 和文件夹统一为“安全预览 → 自动确认唯一列车号/CT-CW/正式 MR 映射 → `mesh_bundle_import` Job → 隔离 Profile/SQLite 导入 → 路径复验 → 原子目录提交 → 成功 manifest”。非 ZIP 上传只在运行时缓存封装为受保护 ZIP 后复用同一链。Preview 使用有 TTL/总容量限制的随机 ID，Renderer 不接收绝对路径；检查成员数、单文件/总解压量、压缩比、加密、符号链接、路径穿越、重复显示名和扩展名。整批成功前不得发布成功 manifest，失败或取消恢复原 Profile/catalog。
 - `source_files` 保存 `raw_relative_path`、`parsed_relative_path`、bundle/archive SHA 与成员 ID/SHA。读取优先使用当前 MR 相对路径，其次安全文件名、SHA、bundle 归档，最后才读旧绝对路径。当前来源重建走 `mesh_source_rebuild`，只恢复/替换一个 detail SQLite；`mesh_schema_rebuild` 是高级 Profile 全量重建，两者不能混用。
+- API 来源摘要明确区分三个标识：`source_file_id` 是索引库 `source_files.id` 数字值，用于分析查询、重建和导出；`source_action_id` 是受控 raw tail/来源操作的安全 ID，可以是哈希值；`bundle_member_id` 仅用于 ZIP manifest 成员恢复。旧 `source_id` 仅作为等同 `source_action_id` 的兼容别名，新客户端不得将其转换为导出 ID。
 - 同一 ZIP SHA 默认幂等。真实 12 文件包已在系统临时数据根验证：6 列车/12 MR、353,035 条解析记录、0 个解析问题；最终 353,033 条链路中 ACTIVE 129,524、STANDBY 223,509。重复导入同一 SHA 返回 12 个 duplicate，不重复写入；manifest 不含临时根/staging 路径，退出后无 staging/backup 残留。该结果证明当前样本闭环，不等同于所有 H3C 版本现场兼容。
 - 2026-07-20 使用同一真实包复验统一入口与来源恢复：12/12 自动匹配，raw/parsed 各 12 份；移走一个 raw 后从 bundle 恢复并重解析 39,160 条，SHA 一致。宁波地铁 1 号线既有 06/34 四个 missing 来源使用现存 raw 原位修复为 ready，合计解析 189,468 条；未移动或删除 raw，也未重建同 MR 其他来源。
 
