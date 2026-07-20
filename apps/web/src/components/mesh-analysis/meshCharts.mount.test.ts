@@ -70,7 +70,18 @@ describe('MESH charts mount and render', () => {
     const rssiOption = echartsMock.chart.setOption.mock.calls[1][0] as { dataZoom: unknown[]; toolbox: { feature: { saveAsImage: unknown } }; tooltip: { formatter: (params: unknown) => string } }
     expect(rssiOption.dataZoom).toHaveLength(2)
     expect(rssiOption.toolbox.feature.saveAsImage).toBeDefined()
-    expect(rssiOption.tooltip.formatter([{ data: { meta: chartPoint } }])).toContain('备份链路：')
+    const tooltipHtml = rssiOption.tooltip.formatter([{ data: { meta: chartPoint } }, { data: { meta: chartPoint, meshEvent: chartEvent } }])
+    expect(tooltipHtml).toContain('<strong>备份链路</strong>')
+    expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：-40 / -45')
+    expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：-60 / -62')
+    expect(tooltipHtml).not.toContain('MR / 轨旁 AP 接收信号：-50 / -55')
+    expect(tooltipHtml).not.toContain('切换耗时')
+    expect(tooltipHtml).not.toContain('切换类型')
+    expect(tooltipHtml.match(/class="mesh-rssi-tooltip"/g)).toHaveLength(1)
+    const switchOption = echartsMock.chart.setOption.mock.calls[0][0] as { tooltip: { formatter: (params: unknown) => string } }
+    const switchTooltip = switchOption.tooltip.formatter({ seriesName: '切换前', data: { value: [chartPoint.timestamp, -40], meta: chartEvent } })
+    expect(switchTooltip).not.toContain('ACTIVE_SWITCH')
+    expect(switchTooltip).not.toContain('事件：')
     expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith({ type: 'showTip', seriesIndex: 0, dataIndex: 2 })
     const rssiClick = echartsMock.chart.on.mock.calls[0][1] as (payload: unknown) => void
     rssiClick({ data: { meshEvent: chartEvent } })
@@ -102,19 +113,26 @@ describe('MESH charts mount and render', () => {
       ...chartEvent,
       point_timestamp: chartPoint.timestamp,
       point_rssi: -40,
+      point_context: chartPoint,
       before_rssi: -40,
       after_rssi: -48,
     }
-    const wrapper = mount(MeshRssiChart, { props: { points: [chartPoint], events: [event], showSwitchLines: true, showSwitchPoints: true } })
+    const unrelatedPoint = { ...chartPoint, timestamp: chartPointAfterGap.timestamp }
+    const wrapper = mount(MeshRssiChart, { props: { points: [unrelatedPoint], events: [event], showSwitchLines: true, showSwitchPoints: true } })
     await flushPromises()
 
-    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as { series: Array<{ name: string; data?: Array<{ value: [string, number]; symbol?: string }> ; markLine?: unknown }> }
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as { tooltip: { formatter: (params: unknown) => string }; series: Array<{ name: string; data?: Array<{ value: [string, number]; symbol?: string; meta?: MeshChartPoint; meshEvent?: MeshChartEvent }> ; markLine?: unknown }> }
     expect(option.series.map((item) => item.name)).toContain('切换节点')
     const nodes = option.series.find((item) => item.name === '切换节点')!
     expect(nodes.data?.[0]?.value).toEqual([chartPoint.timestamp, -40])
+    expect(nodes.data?.[0]?.meta).toEqual(chartPoint)
     expect(nodes.data?.[0]?.symbol).toBe('emptyCircle')
     expect(option.series[0].markLine).toBeDefined()
     expect(nodes.data?.[0]?.value[1]).not.toBe(0)
+    const tooltip = option.tooltip.formatter([{ data: nodes.data?.[0] }])
+    expect(tooltip).toContain('<strong>主链路</strong>')
+    expect(tooltip).toContain('<strong>备份链路</strong>')
+    expect(tooltip).toContain('<strong>切换事件</strong>')
     wrapper.unmount()
   })
 })

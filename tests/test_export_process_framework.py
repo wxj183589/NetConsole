@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 import sys
-import json
 
 import pytest
 from openpyxl import load_workbook
@@ -47,6 +48,33 @@ def test_export_worker_import_does_not_load_pyside6() -> None:
     )
 
     assert result.stdout.strip() == "False"
+
+
+def test_mesh_link_detail_export_opens_derived_database_read_only(tmp_path) -> None:
+    from netconsole.export_worker import _run_mesh_link_detail_export
+    from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+
+    database = tmp_path / "mesh.sqlite"
+    repository = MeshMrRepository(database)
+    with repository._connect() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    wal = database.with_name(f"{database.name}-wal")
+    before = (hashlib.sha256(database.read_bytes()).hexdigest(), database.stat().st_mtime_ns, wal.exists())
+
+    job = ExportJob(
+        job_id="mesh-read-only",
+        job_type="mesh_link_detail_export",
+        output_path=str(tmp_path / "links.xlsx"),
+        tmp_path=str(tmp_path / "links.xlsx.tmp"),
+        db_path=str(database),
+        filters={"source_file_id": 1},
+    )
+
+    with pytest.raises(RuntimeError, match="暂无可导出的链路明细数据"):
+        _run_mesh_link_detail_export(job)
+
+    after = (hashlib.sha256(database.read_bytes()).hexdigest(), database.stat().st_mtime_ns, wal.exists())
+    assert after == before
 
 
 def test_generic_table_csv_handler_writes_utf8_sig_and_replaces_tmp(tmp_path) -> None:

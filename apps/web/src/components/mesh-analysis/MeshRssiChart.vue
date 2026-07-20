@@ -9,8 +9,9 @@ import {
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
-import type { MeshChartBackupLink, MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
+import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
+import { buildMeshRssiTooltip } from './meshRssiTooltip'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -36,63 +37,12 @@ let resizeFrame: number | null = null
 let renderPending = false
 let disposed = false
 
-function escapeHtml(value: unknown): string {
-  const text = value == null || value === '' ? '—' : String(value)
-  return text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] || char)
-}
-
-function metric(value: number | null | undefined, unit = ''): string {
-  return value == null ? '—' : `${value}${unit}`
-}
-
-function backupLines(backups: MeshChartBackupLink[]): string[] {
-  if (!backups.length) return ['备份链路：无']
-  return [
-    '备份链路：',
-    ...backups.map((item, index) => [
-      `${index + 1}. ${escapeHtml(item.peer_ap_name || item.peer_mac)}`,
-      `AP MAC：${escapeHtml(item.peer_ap_mac)}`,
-      `MR / 轨旁 AP 接收信号：${metric(item.local_signal)} / ${metric(item.peer_signal)}`,
-      `Radio：${item.local_radio == null ? '—' : `radio${escapeHtml(item.local_radio)}`}`,
-      `归属站点 / 区间：${escapeHtml(item.station)} / ${escapeHtml(item.section)}`,
-    ].join('<br>')),
-  ]
-}
-
-function switchTooltip(event: MeshChartEvent): string {
-  return [
-    '<hr>',
-    '切换事件',
-    `切出：${escapeHtml(event.from_ap_name)} / ${escapeHtml(event.from_peer_mac)}`,
-    `切入：${escapeHtml(event.to_ap_name)} / ${escapeHtml(event.to_peer_mac)}`,
-    `切换耗时：${metric(event.duration_ms, ' ms')}`,
-    `切换类型：${escapeHtml(event.event_type)}`,
-  ].join('<br>')
-}
-
-function tooltip(point: MeshChartPoint | undefined, event?: MeshChartEvent): string {
-  if (!point) return '暂无采样上下文'
-  const lines = [
-    `采样时间：${escapeHtml(point.timestamp)}`,
-    '<hr>',
-    '主链路',
-    `当前轨旁 AP：${escapeHtml(point.peer_ap_name)}`,
-    `当前轨旁 AP MAC：${escapeHtml(point.peer_ap_mac)}`,
-    `MR / 轨旁 AP 接收信号：${metric(point.local_signal)} / ${metric(point.peer_signal)}`,
-    `归属站点 / 区间：${escapeHtml(point.station)} / ${escapeHtml(point.section)}`,
-    `建链持续时间：${metric(point.segment_duration_seconds, ' s')}`,
-    ...backupLines(point.backups || []),
-  ]
-  if (event) lines.push(switchTooltip(event))
-  return lines.join('<br>')
-}
-
 function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent; symbol: string }> {
   return events.flatMap((event) => {
     if (!event.point_timestamp || event.point_rssi == null) return []
     return [{
       value: [event.point_timestamp, event.point_rssi],
-      meta: props.points.find((item) => item.timestamp === event.point_timestamp),
+      meta: event.point_context || props.points.find((item) => item.timestamp === event.point_timestamp),
       meshEvent: event,
       symbol: event.after_rssi != null && event.point_rssi === event.after_rssi ? 'circle' : 'emptyCircle',
     }]
@@ -222,9 +172,12 @@ function render(): void {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
         const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
         const pointParam = params.find((item) => (item as { data?: { meta?: MeshChartPoint } }).data?.meta) as { data?: { meta?: MeshChartPoint } } | undefined
-        return eventParam?.data?.meshEvent && !pointParam?.data?.meta
-          ? switchTooltip(eventParam.data.meshEvent)
-          : tooltip(pointParam?.data?.meta, eventParam?.data?.meshEvent)
+        const event = eventParam?.data?.meshEvent
+        const point = pointParam?.data?.meta
+          || eventParam?.data?.meta
+          || event?.point_context
+          || props.points.find((item) => item.timestamp === (event?.point_timestamp || event?.timestamp))
+        return buildMeshRssiTooltip(point, event)
       },
     },
     legend: { bottom: 4, textStyle: { color: theme.textSecondary } },

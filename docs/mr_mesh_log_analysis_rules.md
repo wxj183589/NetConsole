@@ -65,7 +65,8 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
 - 图表按时间窗口和 Radio 查询，服务端只向 Renderer 返回目标点数内的数据；硬上限为 2,000 点，保留首尾、切换/异常/无 ACTIVE 断点和极值，超预算时按重要性优先级均匀取样，并在 DTO 返回 `total_points/returned_points/downsampled`。
 - 单 AP 选择以正式建链顺序区段为边界；同一 AP 的全部经过时段可以合并显示，但区段切换强制插入空值断线，不跨经过时段连线。
-- ACTIVE/STANDBY 的图表 Tooltip 备链按来源、采样时间、`timestamp_tag` 和 Radio 严格匹配；图表切换事件携带前后 AP 与区段序号，点击可定位建链顺序。
+- 链路明细导出进入独立 Export Process，并以只读 Repository 打开 compact v3 派生库；导出阶段不得初始化 schema、写回解析结果或触发 WAL/checkpoint。
+- ACTIVE/STANDBY 的图表 Tooltip 备链按来源、采样时间、`timestamp_tag` 和 Radio 严格匹配；“MR / 轨旁 AP 接收信号”按业务展示要求只读取 compact v3 的 `local_rssi_db / peer_rssi_db` 差值，不得回退 `local_signal_dbm / peer_signal_dbm`。主链、备链和可选切换事件使用一个 Tooltip 与主题分隔线；原始 MESH 页面不展示不可靠的切换耗时和事件类型。图表切换事件仍携带前后 AP 与区段序号，点击可定位建链顺序。
 - 切换节点由 Query Service 在估算采样间隔容差内映射到真实 ACTIVE RSSI；缺少采样间隔时只接受精确时间，无法映射时不填 `0`。黄色切换时刻线默认关闭、真实切换节点默认开启，两者互不依赖。
 - 站点/区间时间带由完整 ACTIVE 序列生成，按 `source_file_id + Radio` 分界，连续相同位置才合并；来源变化、Radio 变化、大时间间隙、未匹配位置和往返后的再次经过均拆成独立区段。
 - 表格列偏好使用稳定表 ID，不包含 session、来源、MR 或局点；Electron 只通过白名单 UI preference Bridge 持久化，Renderer 不获得路径或任意文件能力。

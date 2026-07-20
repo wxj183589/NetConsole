@@ -1,5 +1,5 @@
 import type { UiPreferenceKey } from '../../../../desktop_electron/src/shared/bridge'
-import { clearUiPreference, saveUiPreference } from '../../platform/uiPreferences'
+import { clearUiPreference, loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 
 export interface NcTableColumnPreference {
   key: string
@@ -37,9 +37,39 @@ const BRIDGE_TABLE_KEYS: Record<string, UiPreferenceKey> = {
   'mesh-analysis-sessions:v2': 'mesh-analysis.table.sessions:v2',
   'mesh-analysis-active-build-order:v2': 'mesh-analysis.table.active-build-order:v2',
   'mesh-analysis-link-details:v2': 'mesh-analysis.table.link-details:v2',
+  'mesh-analysis-link-details:v3': 'mesh-analysis.table.link-details:v3',
   'mesh-analysis-switch-events:v2': 'mesh-analysis.table.switch-events:v2',
+  'mesh-analysis-switch-events:v3': 'mesh-analysis.table.switch-events:v3',
   'mesh-analysis-artifacts:v2': 'mesh-analysis.table.artifacts:v2',
   'mesh-analysis-sources:v2': 'mesh-analysis.table.sources:v2',
+}
+
+const PREVIOUS_TABLE_IDS: Record<string, string> = {
+  'mesh-analysis-link-details:v3': 'mesh-analysis-link-details:v2',
+  'mesh-analysis-switch-events:v3': 'mesh-analysis-switch-events:v2',
+}
+
+const PREVIOUS_BRIDGE_KEYS: Partial<Record<UiPreferenceKey, UiPreferenceKey>> = {
+  'mesh-analysis.table.link-details:v3': 'mesh-analysis.table.link-details:v2',
+  'mesh-analysis.table.switch-events:v3': 'mesh-analysis.table.switch-events:v2',
+}
+
+export const MESH_LINK_DETAILS_V2_DEFAULT_ORDER = Object.freeze([
+    'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac', 'peer_ap_name', 'peer_ap_mac',
+    'station', 'section', 'mileage', 'line_side', 'peer_radio_mac', 'peer_radio', 'establish_time', 'duration_text',
+    'link_count', 'local_rssi_db', 'peer_rssi_db', 'local_noise_dbm', 'peer_noise_dbm', 'local_signal_dbm',
+    'peer_signal_dbm', 'local_rate_raw', 'peer_rate_raw', 'local_tx_busy', 'peer_tx_busy', 'local_rx_busy',
+    'peer_rx_busy', 'source_file', 'source_line_number', 'local_cpu_percent', 'peer_cpu_percent', 'local_mem_percent',
+    'peer_mem_percent', 'local_tx_des_free_cnt', 'peer_tx_des_free_cnt', 'local_tx', 'peer_tx', 'local_rx', 'peer_rx',
+    'local_retry', 'peer_retry', 'local_err', 'peer_err', 'local_tx_garp', 'peer_rx_garp', 'local_tx_mul_join',
+    'peer_rx_mul_join', 'match_method', 'raw_line_start', 'raw_line_end',
+])
+
+const V2_DEFAULT_ORDERS: Record<string, readonly string[]> = {
+  'mesh-analysis-link-details:v3': MESH_LINK_DETAILS_V2_DEFAULT_ORDER,
+  'mesh-analysis-switch-events:v3': [
+    'timestamp', 'event_type', 'from_ap_name', 'to_ap_name', 'rssi_change', 'duration_ms', 'is_short_link', 'is_pingpong', 'station',
+  ],
 }
 
 function encodePart(value: string): string {
@@ -58,6 +88,20 @@ export function tablePreferenceKey(identity: NcTablePreferenceIdentity): string 
 
 function bridgeTableKey(identity: NcTablePreferenceIdentity): UiPreferenceKey | undefined {
   return BRIDGE_TABLE_KEYS[identity.tableId]
+}
+
+export function migrateVersionedPreference(identity: NcTablePreferenceIdentity, value: NcTablePreferences): NcTablePreferences {
+  const previousDefault = V2_DEFAULT_ORDERS[identity.tableId]
+  if (!previousDefault) return value
+  const order = value.order.filter((key, index, all) => key && all.indexOf(key) === index)
+  const explicitlyCustomized = order.length === previousDefault.length
+    && order.some((key, index) => key !== previousDefault[index])
+  if (explicitlyCustomized) return value
+  return {
+    ...value,
+    order: [],
+    columns: value.columns.map(({ fixed: _fixed, ...column }) => column),
+  }
 }
 
 function isPreference(value: unknown): value is NcTablePreferences {
@@ -91,7 +135,7 @@ function validWidth(value: unknown, column: NcTablePreferenceColumnDefinition): 
 }
 
 /** 以当前代码列定义为基准修复旧版、部分或空的表格偏好。 */
-export function normalizeTablePreferences(
+export function reconcileTablePreferences(
   currentColumns: readonly NcTablePreferenceColumnDefinition[],
   savedPreferences?: NcTablePreferences | null,
 ): NcTablePreferences {
@@ -140,6 +184,12 @@ export function loadTablePreferences(
       const value: unknown = JSON.parse(raw)
       if (isPreference(value)) return value
     }
+    const previousTableId = PREVIOUS_TABLE_IDS[identity.tableId]
+    if (previousTableId) {
+      const previousRaw = storage.getItem(tablePreferenceKey({ ...identity, tableId: previousTableId }))
+      const previousValue: unknown = previousRaw ? JSON.parse(previousRaw) : null
+      if (isPreference(previousValue)) return migrateVersionedPreference(identity, previousValue)
+    }
     return migrateLegacyPreference(identity, storage)
   } catch {
     return undefined
@@ -156,6 +206,15 @@ export async function loadTablePreferencesAsync(
     try {
       const value = await bridge.getUiPreference(key)
       if (isPreference(value)) return value
+      const previousKey = PREVIOUS_BRIDGE_KEYS[key]
+      if (previousKey) {
+        const previousValue = await loadUiPreference<unknown>(previousKey, null)
+        if (isPreference(previousValue)) {
+          const migrated = migrateVersionedPreference(identity, previousValue)
+          await saveUiPreference(key, migrated)
+          return migrated
+        }
+      }
       const migrated = loadTablePreferences(identity, storage)
       if (migrated) await saveUiPreference(key, migrated)
       return migrated
@@ -219,7 +278,7 @@ interface LegacyStorage extends Pick<Storage, 'getItem'> {
 function migrateLegacyPreference(identity: NcTablePreferenceIdentity, storage: Pick<Storage, 'getItem'>): NcTablePreferences | undefined {
   const legacy = storage as LegacyStorage
   if (legacy.length == null || !legacy.key) return undefined
-  const tableBase = identity.tableId.replace(/:v2$/, '')
+  const tableBase = identity.tableId.replace(/:v\d+$/, '')
   let migrated: NcTablePreferences | undefined
   for (let index = 0; index < legacy.length; index += 1) {
     const key = legacy.key(index)

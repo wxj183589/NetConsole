@@ -137,7 +137,7 @@ export interface MeshChartPoint {
 export interface MeshChartEvent {
   event_id: number | null; timestamp: string; event_type: string; local_radio: number | null; from_peer_mac: string | null; to_peer_mac: string | null
   duration_ms: number | null; from_ap_name?: string | null; to_ap_name?: string | null; segment_sequence?: number | null
-  point_timestamp?: string | null; point_rssi?: number | null; before_rssi?: number | null; after_rssi?: number | null
+  point_timestamp?: string | null; point_rssi?: number | null; point_context?: MeshChartPoint | null; before_rssi?: number | null; after_rssi?: number | null
   station?: string | null; section?: string | null
 }
 

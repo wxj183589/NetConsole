@@ -10,6 +10,7 @@ import {
 } from '../../theme/echarts'
 import type { MeshSwitchEvent } from '../../types/meshAnalysis'
 import { buildMeshSwitchRssiSeries, hasMeshChartSamples } from './chartSeries'
+import { buildMeshSwitchPointTooltip } from './meshRssiTooltip'
 
 const props = defineProps<{ events: MeshSwitchEvent[] }>()
 const container = ref<HTMLDivElement | null>(null)
@@ -70,13 +71,7 @@ function render(): void {
         const item = rawParam as { seriesName?: string; data?: { value?: [string | null, number | null]; meta?: MeshSwitchEvent } }
         const event = item.data?.meta
         const value = item.data?.value?.[1]
-        return [
-          `时间：${event?.timestamp || '—'}`,
-          `${item.seriesName || '切换 RSSI'}：${value ?? '—'}`,
-          `事件：${event?.event_type || '—'}`,
-          `原 AP → 目标 AP：${event?.from_ap_name || event?.from_peer_mac || '—'} → ${event?.to_ap_name || event?.to_peer_mac || '—'}`,
-          `Radio：${event?.local_radio ?? '—'}`,
-        ].join('<br>')
+        return buildMeshSwitchPointTooltip(event, item.seriesName || '切换 RSSI', value)
       },
     },
     legend: { type: 'scroll', bottom: 4, textStyle: { color: theme.textSecondary } },

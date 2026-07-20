@@ -258,8 +258,15 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
     assert gap.backups == []
     assert tagged.link_state == "ACTIVE"
     assert tagged.local_rssi == 44
+    assert tagged.peer_rssi == 46
+    assert tagged.local_signal is None
+    assert tagged.peer_signal is None
     assert [item.link_id for item in tagged.backups] == [7]
     assert all(item.source_file_id == 1 and item.timestamp_tag == "(2)" for item in tagged.backups)
+    assert tagged.backups[0].local_rssi == 38
+    assert tagged.backups[0].peer_rssi == 40
+    assert tagged.backups[0].local_signal is None
+    assert tagged.backups[0].peer_signal is None
     assert before == _fingerprint(detail)
 
 
@@ -305,10 +312,16 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
     assert first.after_rssi is None
     assert first.point_timestamp == "2026-07-14 10:00:00.000"
     assert first.point_rssi == 42
+    assert first.point_context is not None
+    assert first.point_context.timestamp == first.point_timestamp
+    assert first.point_context.local_rssi == first.point_rssi
     assert second.before_rssi is None
     assert second.after_rssi == 43
     assert second.point_timestamp == "2026-07-14 10:00:02.000"
     assert second.point_rssi == 43
+    assert second.point_context is not None
+    assert second.point_context.timestamp == second.point_timestamp
+    assert second.point_context.local_rssi == second.point_rssi
 
 
 def test_peer_chart_can_return_all_visits_with_explicit_gaps(tmp_path: Path) -> None:

@@ -109,7 +109,7 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
     output_path = Path(job.output_path)
     tmp_path = Path(job.tmp_path)
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
-    repo = MeshMrRepository(db_path)
+    repo = MeshMrRepository(db_path, read_only=True)
     filters = dict(job.filters or {})
     params = dict(job.params or {})
     context = dict(job.context or {})

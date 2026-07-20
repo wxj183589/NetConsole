@@ -402,6 +402,7 @@ class MeshChartEventDTO(ApiModel):
     duration_ms: int | None = None
     point_timestamp: str | None = None
     point_rssi: float | None = None
+    point_context: MeshChartPointDTO | None = None
     before_rssi: float | None = None
     after_rssi: float | None = None
     station: str | None = None

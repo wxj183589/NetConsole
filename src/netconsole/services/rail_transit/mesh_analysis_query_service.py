@@ -1852,6 +1852,11 @@ class MeshAnalysisQueryService:
                         duration_ms=self._int(event.get("observed_window_ms")),
                         point_timestamp=str((event_point or {}).get("timestamp") or "") or None,
                         point_rssi=self._number((event_point or {}).get("local_rssi")),
+                        point_context=(
+                            self._materialize_chart_point(ap_map, context, event_point)
+                            if event_point is not None
+                            else None
+                        ),
                         before_rssi=self._number((before_point or {}).get("local_rssi")),
                         after_rssi=self._number((after_point or {}).get("local_rssi")),
                         station=event_location.station or None,

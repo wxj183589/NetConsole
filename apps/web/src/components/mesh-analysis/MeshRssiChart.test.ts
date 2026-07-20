@@ -17,7 +17,7 @@ describe('MeshRssiChart', () => {
     expect(source).toContain("type: 'slider'")
     expect(source).toContain("filterMode: 'none'")
     expect(source).toContain('buildMeshRssiSeries(props.points, props.showPeer, props.scope)')
-    expect(source).toContain('备份链路：')
+    expect(source).toContain('buildMeshRssiTooltip')
     expect(source).toContain('point_timestamp')
     expect(source).toContain('point_rssi')
     expect(source).toContain('buildMeshLocationBands')

@@ -228,18 +228,16 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'link_role', label: '状态', width: 90, fixed: 'left', hideable: false },
   { key: 'peer_mac', label: 'PeerMac', valueType: 'mac', minWidth: 145, hideable: false },
   { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175 },
+  { key: 'local_rssi_db', label: 'MR 侧 RSSI 差值', valueType: 'number', minWidth: 130 },
+  { key: 'peer_rssi_db', label: 'Peer 侧 RSSI 差值', valueType: 'number', minWidth: 140 },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', width: 130 },
   { key: 'section', label: '归属区间', width: 150 },
-  { key: 'mileage', label: '里程', valueType: 'mileage', width: 120 },
-  { key: 'line_side', label: '方向', width: 95 },
-  { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
   { key: 'peer_radio', label: 'PEER Radio', minWidth: 105 },
+  { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
   { key: 'establish_time', label: '建链时间', valueType: 'datetime', minWidth: 210 },
   { key: 'duration_text', label: '链路时长', minWidth: 110 },
   { key: 'link_count', label: 'LinkCnt', valueType: 'number', width: 90 },
-  { key: 'local_rssi_db', label: 'MR 侧 RSSI 差值', valueType: 'number', minWidth: 130 },
-  { key: 'peer_rssi_db', label: 'Peer 侧 RSSI 差值', valueType: 'number', minWidth: 140 },
   { key: 'local_noise_dbm', label: 'MR 侧底噪', valueType: 'number', minWidth: 105 },
   { key: 'peer_noise_dbm', label: 'Peer 侧底噪', valueType: 'number', minWidth: 115 },
   { key: 'local_signal_dbm', label: 'MR 接收信号', valueType: 'number', minWidth: 115 },
@@ -250,6 +248,8 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'peer_tx_busy', label: 'P_TxBusy', valueType: 'percentage', width: 100 },
   { key: 'local_rx_busy', label: 'L_RxBusy', valueType: 'percentage', width: 100 },
   { key: 'peer_rx_busy', label: 'P_RxBusy', valueType: 'percentage', width: 100 },
+  { key: 'mileage', label: '里程', valueType: 'mileage', width: 120 },
+  { key: 'line_side', label: '方向', width: 95 },
   { key: 'source_file', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 240, showOverflowTooltip: true },
   { key: 'source_line_number', label: '行号', valueType: 'number', width: 90 },
   { key: 'local_cpu_percent', label: 'MR CPU', valueType: 'percentage', width: 100, visible: false },
@@ -275,15 +275,17 @@ const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'raw_line_end', label: '原始结束行', valueType: 'number', minWidth: 110, visible: false },
 ]
 const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
-  { key: 'timestamp', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 215, hideable: false },
-  { key: 'event_type', label: '事件', width: 130, hideable: false },
+  { key: 'timestamp', label: '切换时间', valueType: 'datetime', widthMode: 'content', minWidth: 215, hideable: false },
+  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, hideable: false },
   { key: 'from_ap_name', label: '原 AP', valueType: 'name', minWidth: 150 },
+  { key: 'from_peer_mac', label: '原 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
+  { key: 'to_peer_mac', label: '目标 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'rssi_change', label: 'RSSI 前 / 后', width: 135, displayValue: (row) => `${display(row.before_rssi)} / ${display(row.after_rssi)}` },
-  { key: 'duration_ms', label: '耗时(ms)', valueType: 'duration', width: 100 },
   { key: 'is_short_link', label: '短时', width: 75, displayValue: (row) => row.is_short_link ? '是' : '否' },
   { key: 'is_pingpong', label: '乒乓', width: 75, displayValue: (row) => row.is_pingpong ? '是' : '否' },
-  { key: 'station', label: '站点', width: 130 },
+  { key: 'station', label: '归属站点', width: 130 },
+  { key: 'section', label: '归属区间', width: 150 },
 ]
 const artifactColumns: NcTableColumn<MeshArtifact>[] = [
   { key: 'artifact_type', label: '类型', width: 140 },
@@ -951,7 +953,15 @@ function buildResultLabel(value: string): string {
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab" class="detail-tabs">
-        <el-tab-pane label="主链路建链顺序" name="build-order" class="table-pane" lazy>
+        <el-tab-pane label="主链路建链顺序" name="build-order" />
+        <el-tab-pane label="链路明细" name="links" />
+        <el-tab-pane label="RSSI 分析" name="rssi" />
+        <el-tab-pane label="空口负载" name="busy" />
+        <el-tab-pane label="切换事件" name="switches" />
+        <el-tab-pane label="报告与来源" name="artifacts" />
+      </el-tabs>
+      <div class="detail-tab-content">
+        <div v-show="activeTab === 'build-order'" id="pane-build-order" class="table-pane">
           <div class="toolbar">
             <el-select v-model="buildOrderFilters.radio" clearable placeholder="Radio"><el-option label="Radio 1" value="1" /><el-option label="Radio 2" value="2" /></el-select>
             <el-input v-model="buildOrderFilters.peer" clearable placeholder="Peer / AP" />
@@ -961,23 +971,23 @@ function buildResultLabel(value: string): string {
             <el-button type="primary" @click="loadBuildOrders(detailGeneration, 1)">查询</el-button>
           </div>
           <div ref="buildOrderTableHost" class="table-host" :style="{ height: `${buildOrderPanel.height.value}px` }">
-            <NcDataTable table-id="mesh-analysis-active-build-order:v2" route-key="/rail-transit/mesh-analysis" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border :height="buildOrderPanel.height.value" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
+            <NcDataTable table-id="mesh-analysis-active-build-order:v2" route-key="/rail-transit/mesh-analysis" :data="buildOrders" :columns="buildOrderColumns" :stripe="false" :row-class-name="buildOrderRowClass" border height="100%" @sort-change="sortBuildOrders" @row-click="selectBuildOrder" @row-dblclick="(row: MeshActiveBuildOrder) => selectBuildOrder(row, true)">
               <template #cell-build_result="{ row }"><el-tag :type="buildResultType(row.build_result)">{{ buildResultLabel(row.build_result) }}</el-tag></template>
               <template #cell-actions="{ row }"><el-button link type="primary" @click.stop="selectBuildOrder(row, true)">查看动态图</el-button></template>
             </NcDataTable>
           </div>
           <div class="pagination"><span>共 {{ buildOrderTotal }} 个主链路区段</span><el-pagination v-model:page-size="buildOrderFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="buildOrderFilters.page" layout="sizes, prev, pager, next" :total="buildOrderTotal" @size-change="() => loadBuildOrders(detailGeneration, 1)" @current-change="(page: number) => loadBuildOrders(detailGeneration, page)" /></div>
-        </el-tab-pane>
+        </div>
 
-        <el-tab-pane label="链路明细" name="links" class="table-pane" lazy>
+        <div v-show="activeTab === 'links'" id="pane-links" class="table-pane">
           <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
           <div ref="linkTableHost" class="table-host" :style="{ height: `${linkPanel.height.value}px` }">
-            <NcDataTable table-id="mesh-analysis-link-details:v2" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border :height="linkPanel.height.value" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
+            <NcDataTable table-id="mesh-analysis-link-details:v3" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="100%" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
           </div>
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination v-model:page-size="linkFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="linkFilters.page" layout="sizes, prev, pager, next" :total="linkTotal" @size-change="() => reloadLinks(1)" @current-change="reloadLinks" /></div>
-        </el-tab-pane>
+        </div>
 
-        <el-tab-pane label="RSSI 分析" name="rssi" class="chart-pane" lazy>
+        <div v-show="activeTab === 'rssi'" id="pane-rssi" class="chart-pane">
           <el-tabs v-model="rssiMode" class="analysis-subtabs" @tab-change="changeRssiMode">
             <el-tab-pane label="单 AP / 分时段" name="peer" />
             <el-tab-pane label="全部 ACTIVE 主链路" name="active" />
@@ -1001,9 +1011,9 @@ function buildResultLabel(value: string): string {
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `后端从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点` : `展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；不同经过时段和无 ACTIVE 处保持断线，同采样点备链已预载到 Tooltip。</p>
-        </el-tab-pane>
+        </div>
 
-        <el-tab-pane label="空口负载" name="busy" class="chart-pane" lazy>
+        <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">
           <el-tabs v-model="busyMode" class="analysis-subtabs" @tab-change="changeBusyMode"><el-tab-pane label="全部 ACTIVE 链路信道负载" name="active" /><el-tab-pane label="单 AP / 分时段信道负载" name="peer" /></el-tabs>
           <div class="chart-toolbar">
             <el-select v-if="busyMode === 'peer'" :model-value="selectedVisitValue" filterable placeholder="选择 AP / 经过时段" @change="selectSegmentByAnchor"><el-option v-if="selectedSegment" label="全部经过时段（各区段断开）" value="all-visits" /><el-option v-for="row in buildOrderOptions" :key="row.anchor_link_id" :label="`第 ${row.sequence} 次 · Radio ${row.local_radio ?? '—'} · ${row.peer_ap_name || row.active_peer_mac} · ${row.build_start_time} — ${row.build_end_time}`" :value="row.anchor_link_id" /></el-select>
@@ -1015,16 +1025,16 @@ function buildResultLabel(value: string): string {
             <MeshChannelBusyChart :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-location-band="showLocationBand" :scope="busyMode" :active="activeTab === 'busy'" @select-switch="selectChartSwitch" />
           </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
-        </el-tab-pane>
+        </div>
 
-        <el-tab-pane label="切换事件" name="switches" lazy><NcDataTable table-id="mesh-analysis-switch-events:v2" route-key="/rail-transit/mesh-analysis" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></el-tab-pane>
+        <div v-show="activeTab === 'switches'" id="pane-switches"><NcDataTable table-id="mesh-analysis-switch-events:v3" route-key="/rail-transit/mesh-analysis" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></div>
 
-        <el-tab-pane label="报告与来源" name="artifacts">
+        <div v-show="activeTab === 'artifacts'" id="pane-artifacts">
           <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts:v2" route-key="/rail-transit/mesh-analysis" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
           <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources:v2" route-key="/rail-transit/mesh-analysis" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_action_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
-        </el-tab-pane>
-      </el-tabs>
+        </div>
+      </div>
     </div>
   </section>
 </template>
@@ -1033,5 +1043,5 @@ function buildResultLabel(value: string): string {
 .report-params-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
 @media(max-width:700px){.report-params-grid{grid-template-columns:1fr}}
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
-.mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{display:flex;min-height:0;flex:1;flex-direction:column;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){min-height:0;flex:1;overflow:hidden}.detail-card :deep(.detail-tabs>.el-tabs__content>.el-tab-pane){min-height:0}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
+.mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{min-height:0;flex:none;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){display:none}.detail-tab-content{min-height:0;flex:1}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
 </style>

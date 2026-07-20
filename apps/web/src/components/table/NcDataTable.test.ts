@@ -11,7 +11,13 @@ const tableDoLayout = vi.fn()
 
 const ElTable = defineComponent({
   name: 'ElTable',
-  props: ['data', 'stripe', 'fit'],
+  props: {
+    data: { type: Array, default: () => [] },
+    stripe: Boolean,
+    fit: Boolean,
+    flexible: Boolean,
+    scrollbarAlwaysOn: Boolean,
+  },
   emits: ['header-dragend'],
   setup(_props, { slots, expose }) {
     expose({ doLayout: tableDoLayout })
@@ -21,10 +27,10 @@ const ElTable = defineComponent({
 
 const ElTableColumn = defineComponent({
   name: 'ElTableColumn',
-  props: ['columnKey', 'label', 'width', 'align', 'headerAlign', 'type', 'fixed'],
+  props: ['columnKey', 'label', 'width', 'align', 'headerAlign', 'type', 'fixed', 'className', 'labelClassName'],
   setup(props, { slots }) {
     return () => h('div', {
-      class: 'el-table-column-stub',
+      class: ['el-table-column-stub', props.className],
       'data-key': props.columnKey,
       'data-label': props.label,
       'data-width': props.width,
@@ -90,7 +96,9 @@ describe('NcDataTable', () => {
       const totalWidth = wrapper.findAll('.el-table-column-stub')
         .reduce((total, column) => total + Number(column.attributes('data-width')), 0)
       expect(totalWidth).toBe(600)
-      expect(wrapper.get('.el-table-stub').attributes('style')).toContain('width: 600px')
+      expect(wrapper.get('.el-table-stub').attributes('style')).toContain('width: 100%')
+      expect(wrapper.getComponent(ElTable).props('flexible')).toBe(true)
+      expect(wrapper.getComponent(ElTable).props('scrollbarAlwaysOn')).toBe(true)
     } finally {
       wrapper.unmount()
       if (original) Object.defineProperty(HTMLElement.prototype, 'clientWidth', original)
@@ -159,8 +167,10 @@ describe('NcDataTable', () => {
     const settings = wrapper.findComponent({ name: 'NcColumnSettings' })
     settings.vm.$emit('toggle', 'group', false)
     await flushPromises()
-    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
-    expect(tableDoLayout).toHaveBeenCalled()
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 120))
+    await flushPromises()
+    expect(wrapper.findAll('.el-table-column-stub:not(.nc-data-table__column--hidden)').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
+    expect(tableDoLayout).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -189,7 +199,7 @@ describe('NcDataTable', () => {
     await wrapper.vm.$nextTick()
     resolvePreference({ version: 1, order: ['name', 'status'], columns: [{ key: 'name', visible: true }, { key: 'status', visible: true }] })
     await flushPromises()
-    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name'])
+    expect(wrapper.findAll('.el-table-column-stub:not(.nc-data-table__column--hidden)').map((item) => item.attributes('data-key'))).toEqual(['name'])
     wrapper.unmount()
   })
 

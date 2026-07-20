@@ -133,7 +133,9 @@ export const UI_PREFERENCE_KEYS = Object.freeze([
   'mesh-analysis.table.sessions:v2',
   'mesh-analysis.table.active-build-order:v2',
   'mesh-analysis.table.link-details:v2',
+  'mesh-analysis.table.link-details:v3',
   'mesh-analysis.table.switch-events:v2',
+  'mesh-analysis.table.switch-events:v3',
   'mesh-analysis.table.artifacts:v2',
   'mesh-analysis.table.sources:v2',
 ] as const)

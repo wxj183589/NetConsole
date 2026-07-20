@@ -17,7 +17,7 @@ import {
   clearTablePreferencesAsync,
   loadTablePreferences,
   loadTablePreferencesAsync,
-  normalizeTablePreferences,
+  reconcileTablePreferences,
   saveTablePreferencesAsync,
   type NcTablePreferences,
 } from './tablePreferences'
@@ -75,6 +75,9 @@ const currentLanguage = ref(props.language || documentLanguage())
 const preferences = ref<NcTablePreferences>()
 const manualWidths = ref<Record<string, number>>({})
 const columnLayoutRevision = ref(0)
+const rebuildingColumnLayout = ref(false)
+const mountedColumnKeys = ref<Set<string>>(new Set())
+let mountedColumnsInitialized = false
 const preferenceMutationRevision = ref(0)
 const preferenceSaveState = ref<'saved' | 'saving' | 'error'>('saved')
 let rootObserver: MutationObserver | undefined
@@ -95,6 +98,7 @@ const identity = computed(() => ({
   language: currentLanguage.value,
 }))
 const resolvedEmptyText = computed(() => props.emptyText || t('table.no_data', '暂无数据'))
+type RenderColumn = ResolvedNcTableColumn<Row> & { sourceIndex: number }
 
 watch(() => props.language, (language) => {
   if (language) currentLanguage.value = language
@@ -102,12 +106,12 @@ watch(() => props.language, (language) => {
 
 const normalizedColumns = computed(() => props.columns.map(normalizeNcTableColumn))
 
-function normalizeCurrentPreference(value?: NcTablePreferences | null): NcTablePreferences {
-  return normalizeTablePreferences(normalizedColumns.value, value)
+function reconcileCurrentPreference(value?: NcTablePreferences | null): NcTablePreferences {
+  return reconcileTablePreferences(normalizedColumns.value, value)
 }
 
 function applyLoadedPreference(value: NcTablePreferences | undefined): NcTablePreferences {
-  const next = normalizeCurrentPreference(value)
+  const next = reconcileCurrentPreference(value)
   preferences.value = next
   manualWidths.value = Object.fromEntries(
     next.columns.flatMap((column) => column.width == null ? [] : [[column.key, column.width]]),
@@ -132,7 +136,7 @@ watch(identity, (nextIdentity) => {
   void loadTablePreferencesAsync(nextIdentity).then((next) => apply(next, true))
 }, { immediate: true })
 
-const resolvedColumns = computed<ResolvedNcTableColumn<Row>[]>(() => {
+const resolvedColumns = computed<RenderColumn[]>(() => {
   const preferenceByKey = new Map((preferences.value?.columns ?? []).map((item) => [item.key, item]))
   const order = new Map((preferences.value?.order ?? []).map((key, index) => [key, index]))
   return normalizedColumns.value
@@ -149,8 +153,26 @@ const resolvedColumns = computed<ResolvedNcTableColumn<Row>[]>(() => {
 })
 
 const visibleColumns = computed(() => resolvedColumns.value.filter((column) => column.visible))
+const renderColumns = computed(() => resolvedColumns.value.filter((column) => mountedColumnKeys.value.has(column.key)))
+watch(resolvedColumns, (columns) => {
+  const missing = columns.filter((column) => column.visible && !mountedColumnKeys.value.has(column.key))
+  if (!mountedColumnsInitialized) {
+    mountedColumnKeys.value = new Set(columns.filter((column) => column.visible).map((column) => column.key))
+    mountedColumnsInitialized = true
+    return
+  }
+  if (!missing.length) return
+  const hadMountedColumns = mountedColumnKeys.value.size > 0
+  mountedColumnKeys.value = new Set([...mountedColumnKeys.value, ...missing.map((column) => column.key)])
+  if (hadMountedColumns && props.data.length > props.sampleLimit) {
+    void refreshColumnLayout(true, true)
+  } else {
+    columnLayoutRevision.value += 1
+    void refreshColumnLayout(true)
+  }
+}, { immediate: true })
 const rows = computed(() => props.data)
-const sizingColumns = computed(() => visibleColumns.value as readonly NcTableColumn<Row>[])
+const sizingColumns = computed(() => renderColumns.value as readonly NcTableColumn<Row>[])
 const { widths, recalculate, schedule } = useAutoColumnWidth({
   columns: sizingColumns,
   rows,
@@ -163,14 +185,35 @@ const { widths, recalculate, schedule } = useAutoColumnWidth({
   headerFont,
 })
 const resolvedTableWidth = computed(() => Object.values(widths.value).reduce((total, width) => total + width, 0))
-const tableStyle = computed(() => {
-  if (!availableWidth.value || !resolvedTableWidth.value) return { width: '100%' }
-  const centered = resolvedTableWidth.value < availableWidth.value
-  return {
-    width: `${resolvedTableWidth.value}px`,
-    marginInline: centered ? 'auto' : '0',
+const tableStyle = computed(() => ({ width: '100%' }))
+const tableData = computed(() => rebuildingColumnLayout.value ? [] : props.data)
+
+function columnDomClass(column: RenderColumn): string {
+  return `nc-data-table__column-${column.sourceIndex}`
+}
+
+function applyColumnVisibility(): void {
+  const container = containerRef.value
+  if (!container) return
+  const visibility = new Map(resolvedColumns.value.map((column) => [column.key, column.visible]))
+  for (const column of renderColumns.value) {
+    const hidden = visibility.get(column.key) === false
+    const cells = container.querySelectorAll<HTMLElement>(`.${columnDomClass(column)}`)
+    const internalNames = new Set<string>()
+    for (const cell of cells) {
+      cell.classList.toggle('nc-data-table__column--hidden', hidden)
+      cell.style.display = hidden ? 'none' : ''
+      for (const name of cell.classList) {
+        if (/^el-table_\d+_column_\d+$/.test(name)) internalNames.add(name)
+      }
+    }
+    for (const name of internalNames) {
+      for (const col of container.querySelectorAll<HTMLElement>(`col[name="${name}"]`)) {
+        col.style.display = hidden ? 'none' : ''
+      }
+    }
   }
-})
+}
 
 const settingColumns = computed<NcColumnSettingItem[]>(() => resolvedColumns.value.map((column) => ({
   key: column.key,
@@ -185,7 +228,7 @@ function cellValue(row: Row, column: ResolvedNcTableColumn<Row>, index: number):
 }
 
 function persist(nextColumns = resolvedColumns.value): void {
-  const current = normalizeCurrentPreference(preferences.value)
+  const current = reconcileCurrentPreference(preferences.value)
   const nextByKey = new Map(nextColumns.map((column) => [column.key, column]))
   const next: NcTablePreferences = {
     version: 1,
@@ -216,16 +259,16 @@ function persistPreference(next: NcTablePreferences): void {
   })
 }
 
-function commitPreference(value: NcTablePreferences, refresh = true): void {
-  const next = normalizeCurrentPreference(value)
+function commitPreference(value: NcTablePreferences, refresh = true, remount = false): void {
+  const next = reconcileCurrentPreference(value)
   preferenceMutationRevision.value += 1
   preferences.value = next
   persistPreference(next)
-  if (refresh) void refreshColumnLayout(true)
+  if (refresh) void refreshColumnLayout(true, remount)
 }
 
 function updatePreferenceColumns(update: (columns: NcTablePreferences['columns']) => void): void {
-  const next = normalizeCurrentPreference(preferences.value)
+  const next = reconcileCurrentPreference(preferences.value)
   update(next.columns)
   commitPreference(next)
 }
@@ -245,16 +288,17 @@ function moveColumn(key: string, direction: -1 | 1): void {
   const target = index + direction
   if (index < 0 || target < 0 || target >= order.length) return
   ;[order[index], order[target]] = [order[target], order[index]]
-  const next = normalizeCurrentPreference(preferences.value)
-  commitPreference({ ...next, order })
+  const next = reconcileCurrentPreference(preferences.value)
+  commitPreference({ ...next, order }, true, true)
 }
 
 function cyclePin(key: string): void {
-  updatePreferenceColumns((columns) => {
-    const target = columns.find((column) => column.key === key)
-    if (!target) return
+  const next = reconcileCurrentPreference(preferences.value)
+  const target = next.columns.find((column) => column.key === key)
+  if (target) {
     target.fixed = target.fixed === 'left' ? 'right' : target.fixed === 'right' ? false : 'left'
-  })
+    commitPreference(next, true, true)
+  }
 }
 
 function resetLayout(): void {
@@ -269,9 +313,9 @@ function resetLayout(): void {
       ElMessage.warning('默认列布局清理失败，请稍后重试。')
     }
   })
-  preferences.value = normalizeCurrentPreference()
+  preferences.value = reconcileCurrentPreference()
   manualWidths.value = {}
-  void refreshColumnLayout(true)
+  void refreshColumnLayout(true, true)
 }
 
 function autoFit(): void {
@@ -297,12 +341,22 @@ function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: { colum
   emit('header-dragend', newWidth, oldWidth, column, event)
 }
 
-async function refreshColumnLayout(force = false): Promise<void> {
+async function refreshColumnLayout(force = false, remount = false): Promise<void> {
+  if (remount) {
+    rebuildingColumnLayout.value = true
+    columnLayoutRevision.value += 1
+    await nextTick()
+    // 先完成输入事件和空表骨架，再恢复可能包含 1000 行的数据。
+    await new Promise<void>((resolvePromise) => window.setTimeout(resolvePromise, 100))
+    rebuildingColumnLayout.value = false
+  }
   await nextTick()
-  columnLayoutRevision.value += 1
+  applyColumnVisibility()
+  if (remount) tableRef.value?.doLayout?.()
   await nextTick()
-  tableRef.value?.doLayout?.()
-  recalculate(force)
+  applyColumnVisibility()
+  tableRef.value?.scrollBarRef?.update?.()
+  if (remount) recalculate(force)
 }
 
 function clearSelection(): void {
@@ -342,6 +396,7 @@ onMounted(() => {
   refreshFonts()
   updateAvailableWidth()
   recalculate()
+  void nextTick(applyColumnVisibility)
   rootObserver = new MutationObserver((records) => {
     const languageChanged = records.some((record) => record.attributeName === 'lang')
     if (languageChanged && !props.language) currentLanguage.value = documentLanguage()
@@ -386,8 +441,9 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
       <el-table
         ref="tableRef"
         :key="columnLayoutRevision"
+        v-memo="[tableData, columnLayoutRevision, widths, height, maxHeight, rowKey, stripe, border]"
         v-bind="$attrs"
-        :data="data"
+        :data="tableData"
         :height="height"
         :max-height="maxHeight"
         :empty-text="resolvedEmptyText"
@@ -396,9 +452,15 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         :border="border"
         :fit="true"
         :style="tableStyle"
+        flexible
+        scrollbar-always-on
         @header-dragend="handleHeaderDragEnd"
       >
-        <template v-for="column in visibleColumns" :key="column.key">
+        <template
+          v-for="(column, columnIndex) in renderColumns"
+          :key="column.key"
+          v-memo="[column.key, columnIndex, widths[column.key], column.fixed, column.label, column.prop, column.type]"
+        >
           <el-table-column
             v-if="column.type"
             v-bind="safeNcTableColumnAttrs(column.columnAttrs)"
@@ -406,6 +468,8 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
             :column-key="column.key"
             :label="column.label"
             :width="widths[column.key]"
+            :class-name="columnDomClass(column)"
+            :label-class-name="columnDomClass(column)"
             :align="column.align"
             :header-align="column.headerAlign"
             :fixed="column.fixed"
@@ -422,6 +486,8 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
             :column-key="column.key"
             :label="column.label"
             :width="widths[column.key]"
+            :class-name="columnDomClass(column)"
+            :label-class-name="columnDomClass(column)"
             :align="column.align"
             :header-align="column.headerAlign"
             :fixed="column.fixed"
@@ -449,14 +515,15 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 </template>
 
 <style scoped>
-.nc-data-table { display: flex; flex-direction: column; min-width: 0; width: 100%; height: 100%; overflow: hidden; }
+.nc-data-table { display: flex; flex-direction: column; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; }
 .nc-data-table__tools { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; padding: 0 0 8px; }
-.nc-data-table__scroll { flex: 1; min-width: 0; overflow: auto; }
-.nc-data-table :deep(.el-table) { color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }
+.nc-data-table__scroll { flex: 1; min-width: 0; min-height: 0; width: 100%; overflow: hidden; }
+.nc-data-table :deep(.el-table) { width: 100%; color: var(--nc-text-primary); font-size: var(--nc-font-size-base); }
 .nc-data-table :deep(.el-table__header th.el-table__cell) { height: var(--nc-table-row-height); padding: 0; background: var(--nc-table-header-bg); color: var(--nc-text-secondary); font-weight: 600; text-align: center; }
 .nc-data-table :deep(.el-table__body td.el-table__cell) { height: var(--nc-table-row-height); padding: 0; vertical-align: middle; }
 .nc-data-table :deep(.el-table__body tr:hover > td.el-table__cell) { background: var(--nc-table-hover-bg); }
 .nc-data-table :deep(.el-table__body tr.current-row > td.el-table__cell) { background: var(--nc-table-selected-bg); }
+.nc-data-table :deep(.nc-data-table__column--hidden) { display: none !important; }
 .nc-data-table--compact :deep(.el-table__header th.el-table__cell),
 .nc-data-table--compact :deep(.el-table__body td.el-table__cell) { height: 34px; }
 </style>

@@ -6,7 +6,9 @@ import {
   clearTablePreferences,
   loadTablePreferencesAsync,
   loadTablePreferences,
-  normalizeTablePreferences,
+  MESH_LINK_DETAILS_V2_DEFAULT_ORDER,
+  migrateVersionedPreference,
+  reconcileTablePreferences,
   saveTablePreferences,
   tablePreferenceKey,
   type NcTablePreferenceIdentity,
@@ -34,7 +36,7 @@ describe('table preferences', () => {
   ]
 
   it('normalizes partial and empty layouts against the complete current column set', () => {
-    expect(normalizeTablePreferences(columns, {
+    expect(reconcileTablePreferences(columns, {
       version: 1,
       order: ['status', 'status', 'removed'],
       columns: [{ key: 'status', visible: false, fixed: false }],
@@ -47,12 +49,12 @@ describe('table preferences', () => {
         { key: 'actions', visible: true, fixed: 'right' },
       ],
     })
-    expect(normalizeTablePreferences(columns, { version: 1, order: [], columns: [] }).columns.map((item) => item.key))
+    expect(reconcileTablePreferences(columns, { version: 1, order: [], columns: [] }).columns.map((item) => item.key))
       .toEqual(['name', 'status', 'actions'])
   })
 
   it('drops invalid widths and fixed values while forcing non-hideable columns visible', () => {
-    const normalized = normalizeTablePreferences(columns, {
+    const normalized = reconcileTablePreferences(columns, {
       version: 1,
       order: ['name', 'status', 'actions'],
       columns: [
@@ -141,6 +143,64 @@ describe('table preferences', () => {
 
     await expect(loadTablePreferencesAsync(meshIdentity, storage)).resolves.toEqual(preference)
     expect(setUiPreference).toHaveBeenCalledWith('mesh-analysis.table.active-build-order:v2', preference)
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
+  })
+
+  it('migrates an unchanged or incomplete v2 link layout to the v3 default order while retaining widths and visibility', () => {
+    const meshIdentity = { ...identity, tableId: 'mesh-analysis-link-details:v3' }
+    const migrated = migrateVersionedPreference(meshIdentity, {
+      version: 1,
+      order: [...MESH_LINK_DETAILS_V2_DEFAULT_ORDER],
+      columns: [
+        { key: 'timestamp_tag', width: 160, visible: false, fixed: 'left' },
+        { key: 'local_rssi_db', width: 180, visible: true, fixed: false },
+      ],
+    })
+
+    expect(migrated.order).toEqual([])
+    expect(migrated.columns).toEqual([
+      { key: 'timestamp_tag', width: 160, visible: false },
+      { key: 'local_rssi_db', width: 180, visible: true },
+    ])
+    expect(migrateVersionedPreference(meshIdentity, {
+      version: 1,
+      order: ['timestamp', 'local_rssi_db'],
+      columns: [{ key: 'local_rssi_db', visible: true }],
+    }).order).toEqual([])
+  })
+
+  it('retains a complete v2 order only when it differs from the former default', () => {
+    const customOrder = [...MESH_LINK_DETAILS_V2_DEFAULT_ORDER]
+    ;[customOrder[0], customOrder[1]] = [customOrder[1], customOrder[0]]
+    const value: NcTablePreferences = { version: 1, order: customOrder, columns: [] }
+
+    expect(migrateVersionedPreference({ ...identity, tableId: 'mesh-analysis-link-details:v3' }, value).order)
+      .toEqual(customOrder)
+  })
+
+  it('hydrates the v3 Electron key from the v2 bridge preference', async () => {
+    const oldValue: NcTablePreferences = {
+      version: 1,
+      order: [...MESH_LINK_DETAILS_V2_DEFAULT_ORDER],
+      columns: [{ key: 'local_rssi_db', width: 180, visible: true, fixed: false }],
+    }
+    const getUiPreference = vi.fn(async (key: string) => key === 'mesh-analysis.table.link-details:v2' ? oldValue : null)
+    const setUiPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { getUiPreference, setUiPreference },
+    })
+
+    const migrated = await loadTablePreferencesAsync({
+      ...identity,
+      routeKey: '/rail-transit/mesh-analysis',
+      tableId: 'mesh-analysis-link-details:v3',
+    })
+
+    expect(getUiPreference).toHaveBeenCalledWith('mesh-analysis.table.link-details:v3')
+    expect(getUiPreference).toHaveBeenCalledWith('mesh-analysis.table.link-details:v2')
+    expect(migrated?.order).toEqual([])
+    expect(setUiPreference).toHaveBeenCalledWith('mesh-analysis.table.link-details:v3', migrated)
     Reflect.deleteProperty(window, 'netconsoleDesktop')
   })
 })

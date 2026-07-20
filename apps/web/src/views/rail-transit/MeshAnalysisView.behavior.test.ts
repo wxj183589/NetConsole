@@ -75,7 +75,7 @@ const optionStub = defineComponent({
 })
 const dataTableStub = defineComponent({
   inheritAttrs: false,
-  props: { data: { type: Array, default: () => [] }, tableId: { type: String, default: '' } },
+  props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, tableId: { type: String, default: '' } },
   setup(props, { attrs, slots }) {
     return () => h('div', { ...attrs, 'data-table-id': props.tableId }, props.data.flatMap((row) => [
       slots.default?.({ row }),
@@ -147,6 +147,38 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('places RSSI deltas before AP MAC and hides unreliable switch type and duration columns', async () => {
+    const session = {
+      session_id: 'session-1', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [] })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    const tables = wrapper.findAllComponents(dataTableStub)
+    const linkTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-link-details:v3')!
+    const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string }>
+    const linkKeys = resolvedLinkColumns.map((column) => column.key)
+    expect(linkKeys.slice(0, 10)).toEqual([
+      'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac', 'peer_ap_name',
+      'local_rssi_db', 'peer_rssi_db', 'peer_ap_mac',
+    ])
+    expect(resolvedLinkColumns.find((column) => column.key === 'timestamp_tag')?.fixed).toBe('left')
+    const switchTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-switch-events:v3')!
+    const switchKeys = (switchTable.props('columns') as Array<{ key: string }>).map((column) => column.key)
+    expect(switchKeys).toEqual([
+      'timestamp', 'local_radio', 'from_ap_name', 'from_peer_mac', 'to_ap_name', 'to_peer_mac',
+      'rssi_change', 'is_short_link', 'is_pingpong', 'station', 'section',
+    ])
+    expect(switchKeys).not.toContain('event_type')
+    expect(switchKeys).not.toContain('duration_ms')
+    wrapper.unmount()
+  })
+
   it('starts the independent link detail export for the selected source', async () => {
     const session = {
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',

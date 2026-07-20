@@ -76,3 +76,5 @@ baseTotalWidth < availableWidth
 阶段 1 的旧表进入 `table-layout-baseline.json` 并在清单标记 `BLOCKED`。新表不得使用直接 `el-table`；逐域迁移后删除对应基线记录。固定列例外必须精确到表格和列，包含原因、测试与到期日期，禁止页面级通配。
 
 当前清单中的 77 张标准表格均已迁移为 `NcDataTable + NcTableColumn`，并自动继承可视区填充策略，旧表基线为空。后续新增表格必须在同一提交中接入公共组件、补充定向测试并更新 `TABLE_INVENTORY.md`；截图、DPI/缩放和人工验收仍是独立门禁。
+
+`NcDataTable` 外层只负责 flex 尺寸约束并保持 `overflow: hidden`，不得与固定高度的 Element Plus 表格形成第二层 `overflow: auto/scroll`。根 `el-table` 宽度固定为 `100%`，列宽总和只通过 `el-table-column width` 进入 Element Plus 自身布局；纵向和横向滚动、固定表头及底部横向滚动条均由 Element Plus 的单一滚动平面管理。分页必须位于表格宿主之外。

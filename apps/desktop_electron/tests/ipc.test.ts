@@ -96,6 +96,10 @@ describe('desktop IPC', () => {
       event,
       ['mesh-analysis-rssi.show-switch-points', 'false'],
     )).rejects.toThrow('UI chart preference must be a boolean')
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.getUiPreference)!(
+      event,
+      'mesh-analysis.table.link-details:v3',
+    )).resolves.toBeNull()
   })
 
   it('opens only opaque in-memory capabilities and never renderer paths', async () => {
