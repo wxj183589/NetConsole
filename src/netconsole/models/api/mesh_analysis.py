@@ -108,6 +108,10 @@ class MeshReportRequestDTO(ApiModel):
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
 
 
+class MeshLinkDetailExportRequestDTO(ApiModel):
+    source_file_id: int = Field(gt=0)
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     session_count: int = 0

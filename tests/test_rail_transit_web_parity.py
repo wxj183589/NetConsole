@@ -951,6 +951,28 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     assert path.is_relative_to(paths.mesh_mr_export_dir("demo", "列车01-MR-CT"))
 
 
+def test_mesh_link_detail_export_binds_selected_source_and_uses_export_process(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail_db, _raw, _existing = create_mesh_analysis_fixture(tmp_path)
+    paths.ensure_site_dirs("demo")
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())
+    service, _normal, export, _tasks = _service(paths, mesh_query)
+
+    started = service.start_mesh_link_detail_export("demo", session_id, source_file_id=1)
+    job = export.jobs[started.task_id]
+
+    assert started.action == "mesh_link_detail_export"
+    assert job.job_type == "mesh_link_detail_export"
+    assert Path(job.db_path) == detail_db
+    assert job.filters == {"source_file_id": 1}
+    assert "链路明细" in Path(job.output_path).name
+
+    with pytest.raises(RailTransitWebError) as mismatch:
+        service.start_mesh_link_detail_export("demo", session_id, source_file_id=2)
+    assert mismatch.value.code == "MESH_SOURCE_NOT_FOUND"
+
+
 def test_mesh_report_worker_reuses_existing_process_pipeline(tmp_path: Path) -> None:
     from netconsole.repositories.mesh_mr_repository import MeshMrRepository
     from netconsole.services.mesh_import_service import MeshImportService

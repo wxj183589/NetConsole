@@ -25,6 +25,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshBundleImportRequestDTO,
     MeshBundlePreviewDTO,
     MeshImportContextPrepareDTO,
+    MeshLinkDetailExportRequestDTO,
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
@@ -614,6 +615,33 @@ def start_report(
             _current_site_id(request),
             session_id,
             analysis_params_override=override,
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/link-details/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_report_export")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def start_link_detail_export(
+    request: Request,
+    session_id: str,
+    payload: MeshLinkDetailExportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_link_detail_export(
+            _current_site_id(request),
+            session_id,
+            source_file_id=payload.source_file_id,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

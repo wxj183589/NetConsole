@@ -154,6 +154,80 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("源文件", "source_file"),
 )
 
+# 独立“导出链路明细”契约。综合分析报告仍使用上面的扩展字段集合。
+LINK_DETAIL_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("序号", "record_seq"),
+    ("采样时间", "sample_time"),
+    ("采样标识", "timestamp_tag"),
+    ("Radio", "radio"),
+    ("状态", "link_state"),
+    ("PeerMac", "peer_mac"),
+    ("当前 PEER AP 名称", "peer_ap_name"),
+    ("AP MAC", "peer_ap_mac"),
+    ("归属站点", "peer_site"),
+    ("归属区间", "belong_section"),
+    ("里程", "peer_location"),
+    ("方向", "peer_direction"),
+    ("Peer Radio MAC", "peer_radio_mac"),
+    ("PEER Radio", "peer_radio"),
+    ("建链时间", "establish_time"),
+    ("链路时长", "duration_text"),
+    ("LinkCnt", "link_count"),
+    ("MR 侧 RSSI 差值", "local_rssi_db"),
+    ("Peer 侧 RSSI 差值", "peer_rssi_db"),
+    ("MR 侧底噪", "local_noise_dbm"),
+    ("Peer 侧底噪", "peer_noise_dbm"),
+    ("MR 接收信号", "local_signal_dbm"),
+    ("Peer 接收信号", "peer_signal_dbm"),
+    ("MR 侧协商速率原始值", "local_rate_raw"),
+    ("Peer 侧协商速率原始值", "peer_rate_raw"),
+    ("L_TxBusy", "local_tx_busy"),
+    ("P_TxBusy", "peer_tx_busy"),
+    ("L_RxBusy", "local_rx_busy"),
+    ("P_RxBusy", "peer_rx_busy"),
+    ("MR CPU", "local_cpu_percent"),
+    ("Peer CPU", "peer_cpu_percent"),
+    ("MR 内存", "local_mem_percent"),
+    ("Peer 内存", "peer_mem_percent"),
+    ("LocalTx", "local_tx"),
+    ("PeerTx", "peer_tx"),
+    ("LocalRx", "local_rx"),
+    ("PeerRx", "peer_rx"),
+    ("LocalRetry", "local_retry"),
+    ("PeerRetry", "peer_retry"),
+    ("LocalErr", "local_err"),
+    ("PeerErr", "peer_err"),
+    ("来源文件", "archived_filename"),
+    ("行号", "source_line_number"),
+)
+
+ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("序号", "sequence"),
+    ("Radio", "radio"),
+    ("Active PeerMac", "active_peer_mac"),
+    ("当前 PEER AP 名称", "peer_ap_name"),
+    ("AP MAC", "peer_ap_mac"),
+    ("归属站点", "peer_site"),
+    ("归属区间", "belong_section"),
+    ("Peer Radio", "peer_radio"),
+    ("Peer Radio MAC", "peer_radio_mac"),
+    ("建链开始时间", "build_start_time"),
+    ("建链结束时间", "build_end_time"),
+    ("主链路持续时长(s)", "main_link_duration_seconds"),
+    ("日志上报时长(s)", "reported_duration_seconds"),
+    ("采样点数", "sample_count"),
+    ("MR 平均 RSSI", "avg_mr_rssi"),
+    ("最小 RSSI", "min_mr_rssi"),
+    ("最大 RSSI", "max_mr_rssi"),
+    ("P10 RSSI", "p10_mr_rssi"),
+    ("平均 TxBusy", "avg_tx_busy"),
+    ("平均 RxBusy", "avg_rx_busy"),
+    ("建链结果", "build_result"),
+    ("判定原因", "judge_reason"),
+    ("乒乓类型", "pingpong_type"),
+    ("来源文件", "source_file"),
+)
+
 
 def link_detail_row_values(row: dict[str, object]) -> list[object]:
     metrics = _json_dict(row.get("metrics_json"))
@@ -265,6 +339,85 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
     ]
 
 
+def link_detail_export_row_values(row: dict[str, object]) -> list[object]:
+    metrics = _json_dict(row.get("metrics_json"))
+    peer = format_mac_h3c(row.get("peer_mac_normalized")) if row.get("peer_mac_normalized") else row.get("peer_mac_raw")
+    return [
+        row.get("record_seq") or row.get("source_line_number"),
+        _excel_time_text(row.get("sample_time")),
+        row.get("timestamp_tag") or "",
+        row.get("radio"),
+        format_link_state(row.get("link_state")),
+        row.get("peer_mac_raw") or peer,
+        row.get("peer_ap_name") or "-",
+        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
+        row.get("peer_site") or "-",
+        row.get("belong_section") or row.get("peer_section") or "-",
+        row.get("peer_location") or row.get("mileage") or "-",
+        row.get("peer_direction") or row.get("direction") or "-",
+        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "-",
+        row.get("peer_radio") or row.get("peer_radio_label") or "-",
+        _excel_time_text(row.get("establish_time")),
+        row.get("duration_text") or "-",
+        _dash(row.get("link_count")),
+        _dash(_metric(row, metrics, "local_rssi_db")),
+        _dash(_metric(row, metrics, "peer_rssi_db")),
+        _dash(_metric(row, metrics, "local_noise_dbm", "local_noise_raw")),
+        _dash(_metric(row, metrics, "peer_noise_dbm", "peer_noise_raw")),
+        _dash(_metric(row, metrics, "local_signal_dbm")),
+        _dash(_metric(row, metrics, "peer_signal_dbm")),
+        _dash(_metric(row, metrics, "local_rate_raw")),
+        _dash(_metric(row, metrics, "peer_rate_raw")),
+        _dash(_metric(row, metrics, "local_tx_busy")),
+        _dash(_metric(row, metrics, "peer_tx_busy")),
+        _dash(_metric(row, metrics, "local_rx_busy")),
+        _dash(_metric(row, metrics, "peer_rx_busy")),
+        _dash(_metric(row, metrics, "local_cpu_percent")),
+        _dash(_metric(row, metrics, "peer_cpu_percent")),
+        _dash(_metric(row, metrics, "local_mem_percent")),
+        _dash(_metric(row, metrics, "peer_mem_percent")),
+        _dash(_metric(row, metrics, "local_tx")),
+        _dash(_metric(row, metrics, "peer_tx")),
+        _dash(_metric(row, metrics, "local_rx")),
+        _dash(_metric(row, metrics, "peer_rx")),
+        _dash(_metric(row, metrics, "local_retry")),
+        _dash(_metric(row, metrics, "peer_retry")),
+        _dash(_metric(row, metrics, "local_err")),
+        _dash(_metric(row, metrics, "peer_err")),
+        row.get("archived_filename") or row.get("source_file") or "-",
+        _dash(row.get("source_line_number")),
+    ]
+
+
+def active_build_order_export_row_values(row: dict[str, object]) -> list[object]:
+    return [
+        row.get("sequence"),
+        row.get("radio"),
+        format_mac_h3c(row.get("active_peer_mac")) if row.get("active_peer_mac") else "",
+        row.get("peer_ap_name") or "",
+        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "",
+        row.get("peer_site") or "",
+        row.get("belong_section") or row.get("peer_section") or "",
+        row.get("peer_radio") or "",
+        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "",
+        row.get("build_start_time") or "",
+        row.get("build_end_time") or "",
+        row.get("main_link_duration_seconds") if row.get("main_link_duration_seconds") is not None else "",
+        row.get("reported_duration_seconds") if row.get("reported_duration_seconds") is not None else "",
+        row.get("sample_count") if row.get("sample_count") is not None else "",
+        _rssi_stat_value(row.get("avg_mr_rssi")),
+        _rssi_stat_value(row.get("min_mr_rssi")),
+        _rssi_stat_value(row.get("max_mr_rssi")),
+        _rssi_stat_value(row.get("p10_mr_rssi")),
+        row.get("avg_tx_busy") if row.get("avg_tx_busy") is not None else "",
+        row.get("avg_rx_busy") if row.get("avg_rx_busy") is not None else "",
+        _build_result_text(str(row.get("build_result") or "")),
+        row.get("judge_reason") or "",
+        row.get("pingpong_type") or "",
+        row.get("source_file") or "",
+    ]
+
+
 def export_mesh_link_details_xlsx(
     path: Path,
     rows: Iterable[dict[str, object]],
@@ -285,8 +438,6 @@ def export_mesh_link_details_xlsx(
         raise RuntimeError("缺少 xlsxwriter 依赖，无法执行高速链路明细导出") from exc
 
     active_rows = list(active_build_order_rows or [])
-    sources = list(source_files or [])
-    events = list(event_rows or [])
     row_total = max(int(total_rows or 0), 0)
     fast_mode = row_total >= LINK_DETAIL_FAST_MODE_THRESHOLD
     diagnostics: ExportIdentityDiagnostics | None
@@ -307,16 +458,17 @@ def export_mesh_link_details_xlsx(
     closed = False
     try:
         formats = _xlsx_business_formats(workbook)
-        description_sheet = workbook.add_worksheet("导出说明")
-        summary_sheet = workbook.add_worksheet("统计汇总")
+        workbook.set_properties({
+            "title": "MESH 链路明细",
+            "subject": "链路明细与主链路明细",
+            "comments": "数据来自结构化 MESH 分析结果；主链路明细复用正式 active-build-order 查询。",
+        })
         link_sheet = workbook.add_worksheet("链路明细")
-        active_sheet = workbook.add_worksheet("主链路建链顺序")
-        event_sheet = workbook.add_worksheet("事件明细")
-        params_sheet = workbook.add_worksheet("分析参数")
+        active_sheet = workbook.add_worksheet("主链路明细")
 
-        stats = _write_link_detail_sheet_xlsx(
+        _write_link_detail_sheet_xlsx(
             link_sheet,
-            LINK_DETAIL_COLUMNS,
+            LINK_DETAIL_EXPORT_COLUMNS,
             rows,
             total_rows=row_total,
             formats=formats,
@@ -324,20 +476,17 @@ def export_mesh_link_details_xlsx(
             should_cancel=should_cancel,
             fast_mode=fast_mode,
             diagnostics=diagnostics,
+            row_factory=link_detail_export_row_values,
         )
         _write_basic_sheet_xlsx(
             active_sheet,
-            ACTIVE_BUILD_ORDER_COLUMNS,
+            ACTIVE_BUILD_ORDER_EXPORT_COLUMNS,
             active_rows,
-            active_build_order_row_values,
+            active_build_order_export_row_values,
             formats=formats,
             empty_message="未生成主链路建链顺序；请确认当前日志存在 ACTIVE 主链路采样。",
             should_cancel=should_cancel,
         )
-        _write_event_sheet_xlsx(event_sheet, events, active_rows, formats, should_cancel)
-        _write_params_sheet_xlsx(params_sheet, analysis_params or {}, export_context or {}, formats, should_cancel)
-        _write_description_sheet_xlsx(description_sheet, stats, active_rows, sources, events, export_context or {}, formats, should_cancel)
-        _write_summary_sheet_xlsx(summary_sheet, stats, active_rows, events, formats, should_cancel)
         _raise_if_cancelled(should_cancel)
         workbook.close()
         closed = True
@@ -372,6 +521,7 @@ def _write_link_detail_sheet_xlsx(
     should_cancel: CancelCallback | None,
     fast_mode: bool,
     diagnostics: ExportIdentityDiagnostics | None,
+    row_factory: Callable[[dict[str, object]], list[object]] = link_detail_row_values,
 ) -> dict[str, object]:
     specs = _xlsx_column_specs(columns)
     widths = [column.width for column in specs]
@@ -390,7 +540,7 @@ def _write_link_detail_sheet_xlsx(
                 diagnostics.inspect_mesh_link_detail_row(row, row_index=written + 1)
             except Exception as exc:
                 diagnostics.mark_unavailable(exc)
-        values = link_detail_row_values(row)
+        values = row_factory(row)
         _collect_link_stats(stats, row, values)
         group_key = (row.get("source_file_id"), row.get("sample_time"), row.get("timestamp_tag"), row.get("radio"))
         if group_key != previous_group_key:

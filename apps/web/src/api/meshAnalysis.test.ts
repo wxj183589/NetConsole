@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  applyMeshBundleImport, createMeshProfile, getMeshActivePathChart, getMeshCounterDeltas, getMeshPeerSegmentChart,
+  applyMeshBundleImport, createMeshProfile, exportMeshLinkDetails, getMeshActivePathChart, getMeshCounterDeltas, getMeshPeerSegmentChart,
   getMeshRateSeries, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents, previewMeshBundle,
 } from './meshAnalysis'
 
@@ -74,5 +74,15 @@ describe('Mesh profile API', () => {
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/active-path?max_points=600',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/peer-segment?anchor_link_id=42&max_points=300&all_visits=true',
     ])
+  })
+
+  it('starts the formal two-sheet link detail export for a selected source', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await exportMeshLinkDetails('mr-id:1', 7)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/link-details/export')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7 })
   })
 })

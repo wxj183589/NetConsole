@@ -76,10 +76,12 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/profiles",
         "/rail-transit/mesh-analysis/sessions/{session_id}/rebuild",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
     }
     assert all(route.methods in ({"GET"}, {"POST"}) for route in routes)
     generated_report_paths = post_paths | {
-        "/rail-transit/mesh-analysis/report-artifacts/{artifact_id}/download"
+        "/rail-transit/mesh-analysis/report-artifacts/{artifact_id}/download",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
     }
     forbidden = ("analyze", "reparse", "export", "report", "delete", "start", "stop")
     assert not any(

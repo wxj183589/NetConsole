@@ -32,7 +32,6 @@ from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
-from netconsole.services.file_contract import attach_export_metadata
 
 
 def _emit(event: dict[str, Any]) -> None:
@@ -104,7 +103,7 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
     )
 
 
-def _run_mesh_link_detail(job: ExportJob) -> None:
+def _run_mesh_link_detail_export(job: ExportJob) -> None:
     job.validate()
     db_path = Path(job.db_path)
     output_path = Path(job.output_path)
@@ -115,6 +114,12 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
     params = dict(job.params or {})
     context = dict(job.context or {})
     source_file_id = context.get("source_file_id")
+    if source_file_id in (None, ""):
+        source_file_id = filters.get("source_file_id")
+    if job.job_type == "mesh_link_detail_export" and source_file_id in (None, ""):
+        raise ValueError("链路明细导出必须绑定具体来源文件")
+    if source_file_id not in (None, ""):
+        filters["source_file_id"] = int(source_file_id)
     radio = context.get("radio")
     analysis_params = params.get("analysis_params") if isinstance(params.get("analysis_params"), dict) else None
     fallback_analysis_params = params.get("fallback_analysis_params") if isinstance(params.get("fallback_analysis_params"), dict) else None
@@ -134,11 +139,6 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
         analysis_params,
         fallback_analysis_params,
     )
-    _source_total, source_files = repo.query_source_files(100000, 0)
-    try:
-        event_rows = repo.export_rows("switch_events")
-    except Exception:
-        event_rows = []
     if _should_cancel(job):
         raise MeshLinkDetailExportCancelled("导出已取消")
 
@@ -156,8 +156,6 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
         rows,
         active_build_order_rows,
         total_rows=total,
-        source_files=source_files,
-        event_rows=event_rows,
         analysis_params=merged_params,
         export_context=export_context,
         progress_callback=lambda done, row_total, key: _emit_progress(job, done, row_total, key, f"正在导出链路明细：{done} / {row_total}"),
@@ -166,18 +164,18 @@ def _run_mesh_link_detail(job: ExportJob) -> None:
     if _should_cancel(job):
         raise MeshLinkDetailExportCancelled("导出已取消")
     _emit_progress(job, total, total, "mesh_analysis.export_progress_save", "正在保存链路明细 Excel")
-    attach_export_metadata(
-        tmp_path,
-        effective_suffix=output_path.suffix,
-        export_type=job.job_type,
-        payload={"source_module": "rail.mesh_link_detail"},
-    )
     os.replace(tmp_path, output_path)
     event = _finished(job, str(output_path), row_count=total)
     result = event.get("result")
     if isinstance(result, dict):
         result.update(export_result)
     _emit(event)
+
+
+def _run_mesh_link_detail(job: ExportJob) -> None:
+    """兼容历史直接 Worker 调用；Web 正式入口使用 mesh_link_detail_export。"""
+
+    _run_mesh_link_detail_export(job)
 
 
 class _MeshProgressQueue:
@@ -270,8 +268,8 @@ def _run_job(job: ExportJob) -> int:
         if job.job_type == "trackside_ap_business":
             _run_trackside_ap_business(job)
             return 0
-        if job.job_type == "mesh_link_detail":
-            _run_mesh_link_detail(job)
+        if job.job_type in {"mesh_link_detail", "mesh_link_detail_export"}:
+            _run_mesh_link_detail_export(job)
             return 0
         if job.job_type == "mesh_analysis_report":
             _run_mesh_analysis_report(job)

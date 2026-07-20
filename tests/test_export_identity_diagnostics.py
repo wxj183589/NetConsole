@@ -12,7 +12,11 @@ from netconsole.services.export_identity_diagnostics import (
     ExportIdentityDiagnostics,
     unavailable_export_identity_diagnostics,
 )
-from netconsole.services.mesh_link_detail_export import export_mesh_link_details_xlsx
+from netconsole.services.mesh_link_detail_export import (
+    ACTIVE_BUILD_ORDER_EXPORT_COLUMNS,
+    LINK_DETAIL_EXPORT_COLUMNS,
+    export_mesh_link_details_xlsx,
+)
 from netconsole.services.online_mr_analysis_report_exporter import OnlineMrAnalysisReportExporter
 from netconsole.services.export.export_job import ExportJob
 
@@ -129,6 +133,47 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
     assert sheet.auto_filter.ref
 
 
+def test_mesh_link_detail_export_has_only_the_two_formal_sheets(tmp_path: Path) -> None:
+    target = tmp_path / "mesh-link-detail.xlsx"
+    active_row = {
+        "sequence": 1,
+        "radio": 1,
+        "active_peer_mac": "30f5277a5a2f",
+        "peer_ap_name": "AP-01",
+        "peer_ap_mac": "30f5277a5a2f",
+        "peer_site": "站点A",
+        "belong_section": "区间A",
+        "peer_radio": "radio1",
+        "peer_radio_mac": "30f5277a5a2f",
+        "build_start_time": "2026-07-11 10:00:00.000",
+        "build_end_time": "2026-07-11 10:00:01.000",
+        "main_link_duration_seconds": 2.0,
+        "reported_duration_seconds": 1.0,
+        "sample_count": 2,
+        "avg_mr_rssi": 40,
+        "min_mr_rssi": 39,
+        "max_mr_rssi": 41,
+        "p10_mr_rssi": 39,
+        "avg_tx_busy": 1,
+        "avg_rx_busy": 2,
+        "build_result": "normal",
+        "judge_reason": "正常",
+        "pingpong_type": "无",
+        "source_file": "mesh.log",
+    }
+
+    export_mesh_link_details_xlsx(target, [_mesh_row()], [active_row], total_rows=1)
+
+    workbook = load_workbook(target)
+    assert workbook.sheetnames == ["链路明细", "主链路明细"]
+    assert [cell.value for cell in workbook["链路明细"][1]] == [header for header, _field in LINK_DETAIL_EXPORT_COLUMNS]
+    assert [cell.value for cell in workbook["主链路明细"][1]] == [header for header, _field in ACTIVE_BUILD_ORDER_EXPORT_COLUMNS]
+    assert workbook["链路明细"].max_row == 2
+    assert workbook["主链路明细"].max_row == 2
+    assert "_netconsole_meta" not in workbook.sheetnames
+    workbook.close()
+
+
 def test_mesh_export_diagnostics_failure_does_not_fail_export(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "mesh-diagnostics-failed.xlsx"
 
@@ -147,6 +192,8 @@ def test_mesh_export_diagnostics_failure_does_not_fail_export(tmp_path: Path, mo
 def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path, monkeypatch) -> None:
     from netconsole import export_worker
 
+    captured: dict[str, object] = {}
+
     class FakeRepository:
         def __init__(self, _path: Path) -> None:
             pass
@@ -155,6 +202,7 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
             return 1
 
         def query_active_link_build_order(self, *_args) -> list[dict[str, object]]:
+            captured["active_args"] = _args
             return []
 
         def query_source_files(self, _limit: int, _offset: int) -> tuple[int, list[dict[str, object]]]:
@@ -174,10 +222,12 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
     tmp_output = tmp_path / "worker-mesh.xlsx.tmp"
     job = ExportJob(
         job_id="mesh-diagnostics",
-        job_type="mesh_link_detail",
+        job_type="mesh_link_detail_export",
         db_path=str(tmp_path / "mesh.sqlite"),
         output_path=str(output_path),
         tmp_path=str(tmp_output),
+        filters={"source_file_id": 7},
+        context={"source_file_id": 7},
     )
 
     export_worker._run_mesh_link_detail(job)
@@ -185,6 +235,7 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
     assert output_path.exists()
     assert events[-1]["type"] == "finished"
     assert events[-1]["result"]["export_identity_diagnostics"]["total_rows"] == 1
+    assert captured["active_args"][0] == 7
     assert not list(tmp_path.glob("*.diagnostics.json"))
 
 
