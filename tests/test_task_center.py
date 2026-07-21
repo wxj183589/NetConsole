@@ -22,6 +22,7 @@ from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
     TaskResourceConflictError,
 )
+from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.worker_protocol import encode_event
 
 
@@ -75,6 +76,50 @@ def test_task_repository_persists_snapshot_events_and_wal(tmp_path: Path) -> Non
     assert {event["type"] for event in service.list_events("task-complete")} >= {"state", "progress", "finished"}
     with sqlite3.connect(service.paths.site_tasks_db_path("demo")) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_structured_progress_details_persist_and_can_cap_running_progress(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "structured-progress"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="trackside_ap_optical_update", params={"task_name": "轨旁 AP 光衰"}))
+    service.mark_running(task_id)
+    service.feed_stdout(
+        task_id,
+        encode_event(
+            progress_event(
+                task_id,
+                "trackside_ap.fit_ap.collect",
+                1000,
+                1000,
+                "AP 1000/1000 成功",
+                details={
+                    "phase": "fit_ap_optical",
+                    "event": "ap_completed",
+                    "ap_name": "AP-1000",
+                    "ap_ip": "10.0.0.100",
+                    "status": "success",
+                    "prevent_running_100": True,
+                },
+            )
+        ).encode("utf-8"),
+    )
+
+    snapshot = service.get_task(task_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.RUNNING
+    assert snapshot.progress == 99
+    events = service.list_events(task_id)
+    progress_payload = next(event["payload"] for event in events if event["type"] == "progress")
+    assert progress_payload["details"]["ap_name"] == "AP-1000"
+    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+    logs = JobCenterQueryService(service.paths).get_logs("demo", task_id)
+    assert detail is not None and detail.details["ap_ip"] == "10.0.0.100"
+    assert logs is not None and logs.lines[-1].details["status"] == "success"
+
+    service.feed_stdout(task_id, encode_event(finished_event(task_id, {"success_count": 1})).encode("utf-8"))
+    service.complete(task_id, 0)
+    finished = service.get_task(task_id)
+    assert finished is not None and finished.progress == 100
 
 
 def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path) -> None:

@@ -51,6 +51,7 @@ class JobCenterTaskDTO(ApiModel):
     retry_reason: str = "当前任务 owner 未提供统一重试能力"
     artifact_download: JobCenterArtifactDTO | None = None
     artifact_reason: str = "当前任务 owner 未提供可下载 Artifact"
+    details: dict[str, object] = Field(default_factory=dict)
 
 
 class JobCenterSummaryDTO(ApiModel):
@@ -68,6 +69,7 @@ class JobCenterLogLineDTO(ApiModel):
     type: str
     source: str = "service"
     message: str
+    details: dict[str, object] = Field(default_factory=dict)
 
 
 class JobCenterLogTailDTO(ApiModel):

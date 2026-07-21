@@ -56,6 +56,7 @@ vi.mock('element-plus', async () => {
     ElOption: empty,
     ElProgress: empty,
     ElSelect: passthrough('select'),
+    ElSwitch: passthrough('switch'),
     ElTable: empty,
     ElTableColumn: empty,
     ElTooltip: passthrough('tooltip'),
@@ -100,6 +101,7 @@ vi.mock('element-plus/es', async () => {
     ElOption: empty,
     ElProgress: empty,
     ElSelect: passthrough('select'),
+    ElSwitch: passthrough('switch'),
     ElTable: empty,
     ElTableColumn: empty,
     ElTooltip: passthrough('tooltip'),
@@ -414,6 +416,81 @@ describe('Job Center saved artifact capability lifecycle', () => {
     })
     expect(messageMocks.success).toHaveBeenCalledWith('轨旁 AP 业务表格已保存')
     expect(findButton(root, '打开文件')).toBeDefined()
+    app.unmount()
+  })
+
+  it('renders structured FIT-AP progress details without parsing log text', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    store.selected = {
+      ...task('fit-ap-progress'),
+      type: 'trackside_ap_optical_update',
+      name: '轨旁 AP 光衰更新',
+      status: 'RUNNING',
+      progress: 37,
+      stage: 'trackside_ap.fit_ap.collect',
+      module: 'rail',
+      details: {
+        phase: 'fit_ap_optical',
+        event: 'ap_completed',
+        ap_name: 'bc5a-3457-a920',
+        ap_ip: '10.122.223.4',
+        station: '01-小洋江站',
+        round: 1,
+        fit_ap_completed: 37,
+        fit_ap_total: 974,
+        success_count: 31,
+        failed_count: 6,
+        effective_concurrency: 64,
+        status: 'failed',
+        reason_code: 'connect_timeout',
+      },
+    }
+    store.logs = [
+      {
+        sequence: 1,
+        time: '2026-07-22T02:39:52Z',
+        level: 'INFO',
+        type: 'progress',
+        source: 'worker',
+        message: 'AP 37/974 失败：bc5a-3457-a920',
+        details: { event: 'ap_completed', status: 'failed', reason_code: 'connect_timeout' },
+      },
+      {
+        sequence: 2,
+        time: '2026-07-22T02:39:53Z',
+        level: 'INFO',
+        type: 'progress',
+        source: 'worker',
+        message: '第 2 轮重试 3/27：bc5a-3457-a920',
+        details: { event: 'ap_retry_started', status: 'retrying' },
+      },
+    ]
+    store.setLogsExpanded(true)
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+    const drawer = descendants(root).find((target) => target.type === 'drawer')
+    const showDrawer = drawer?.props['onUpdate:modelValue'] as ((value: boolean) => void) | undefined
+    showDrawer?.(true)
+    await nextTick()
+
+    const text = textContent(root)
+    expect(text).toContain('当前处理')
+    expect(text).toContain('bc5a-3457-a920')
+    expect(text).toContain('10.122.223.4')
+    expect(text).toContain('01-小洋江站')
+    expect(text).toContain('37 / 974')
+    expect(text).toContain('31 / 6')
+    expect(text).toContain('连接超时')
+    const logRows = descendants(root).filter((target) => target.props.class && String(target.props.class).includes('log-line'))
+    expect(String(logRows[0].props.class)).toContain('error')
+    expect(String(logRows[1].props.class)).toContain('warning')
     app.unmount()
   })
 

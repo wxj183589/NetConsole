@@ -1046,6 +1046,93 @@ def test_fit_ap_optical_round_isolates_single_future_failure(monkeypatch, tmp_pa
     assert progress[-1] == (2, 2)
 
 
+def test_fit_ap_optical_round_emits_structured_item_progress(monkeypatch, tmp_path):
+    ac_device = make_ac_device()
+    ac_device.device_uuid = "ac-1"
+    resources = [
+        {"ap_uuid": f"ap-{index}", "ap_name": f"AP-{index}", "ap_ip": f"10.0.0.{index}", "site": "A站"}
+        for index in range(1, 4)
+    ]
+    events: list[dict[str, object]] = []
+
+    def collect_one(_ac_device, ap_row, *_args, **_kwargs):
+        return {
+            **dict(ap_row),
+            "ac_device_uuid": _ac_device.device_uuid,
+            "status": "success",
+            "rx_power": "-7.88",
+            "tx_power": "-2.10",
+        }
+
+    monkeypatch.setattr(h3c_ac_collect_service, "_collect_single_fit_ap_optical", collect_one)
+
+    rows = h3c_ac_collect_service._collect_fit_ap_optical_round(
+        ac_device,
+        resources,
+        "demo",
+        "run-1",
+        tmp_path,
+        PathResolver(tmp_path),
+        3,
+        lambda: False,
+        lambda _current, _total: None,
+        round_index=1,
+        item_progress=events.append,
+    )
+
+    completed = [event for event in events if event["event"] == "ap_completed"]
+    assert len(rows) == 3
+    assert len(completed) == 3
+    assert sorted(event["index"] for event in completed) == [1, 2, 3]
+    assert {event["total"] for event in completed} == {3}
+    assert {event["ap_name"] for event in completed} == {"AP-1", "AP-2", "AP-3"}
+    assert completed[-1]["success_count"] == 3
+    assert completed[-1]["failed_count"] == 0
+    assert completed[-1]["rx_power"] == "-7.88"
+    assert isinstance(completed[-1]["elapsed_ms"], int)
+
+
+def test_fit_ap_optical_round_reports_failed_ap_reason_and_retry_event(monkeypatch, tmp_path):
+    ac_device = make_ac_device()
+    ac_device.device_uuid = "ac-1"
+    resources = [
+        {"ap_uuid": "ap-ok", "ap_name": "AP-OK", "ap_ip": "10.0.0.21"},
+        {"ap_uuid": "ap-fail", "ap_name": "AP-FAIL", "ap_ip": "10.0.0.22"},
+    ]
+    events: list[dict[str, object]] = []
+
+    def collect_one(_ac_device, ap_row, *_args, **_kwargs):
+        if ap_row["ap_uuid"] == "ap-fail":
+            raise TimeoutError("connect timeout")
+        return {**dict(ap_row), "ac_device_uuid": _ac_device.device_uuid, "status": "success"}
+
+    monkeypatch.setattr(h3c_ac_collect_service, "_collect_single_fit_ap_optical", collect_one)
+
+    rows = h3c_ac_collect_service._collect_fit_ap_optical_round(
+        ac_device,
+        resources,
+        "demo",
+        "run-1",
+        tmp_path,
+        PathResolver(tmp_path),
+        2,
+        lambda: False,
+        lambda _current, _total: None,
+        round_index=2,
+        item_progress=events.append,
+        retry=True,
+    )
+
+    retry_started = [event for event in events if event["event"] == "ap_retry_started"]
+    failed = [event for event in events if event.get("status") == "failed"]
+    assert len(rows) == 2
+    assert len(retry_started) == 2
+    assert failed[0]["ap_name"] == "AP-FAIL"
+    assert failed[0]["round"] == 2
+    assert failed[0]["reason_code"] == "connect_timeout"
+    assert "connect_timeout" in str(failed[0]["error_message"])
+
+
 def test_fit_ap_optical_round_skips_executor_when_no_targets(monkeypatch, tmp_path):
     ac_device = make_ac_device()
 
@@ -4530,7 +4617,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     resource_calls = []
 
     def fake_resource_collect(
-        ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True
+        ac_device, site_name, repository=None, paths=None, progress=None, should_cancel=None, refresh_ac_overview=True
     ):
         resource_calls.append((ac_device.device_uuid, site_name, refresh_ac_overview))
         run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / "resource-run"
@@ -4569,6 +4656,8 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         repository=None,
         paths=None,
         max_workers=None,
+        progress=None,
+        item_progress=None,
         target_ap_uuids=None,
         target_ap_macs=None,
         target_ap_names=None,
@@ -4672,7 +4761,7 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
     fit_calls = []
 
     def fake_resource_collect(
-        ac_device, site_name, repository=None, paths=None, refresh_ac_overview=True
+        ac_device, site_name, repository=None, paths=None, progress=None, should_cancel=None, refresh_ac_overview=True
     ):
         repository.replace_fit_ap_resources(
             ac_device.device_uuid,
@@ -4707,6 +4796,8 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
         repository=None,
         paths=None,
         max_workers=None,
+        progress=None,
+        item_progress=None,
         target_ap_uuids=None,
         target_ap_macs=None,
         target_ap_names=None,
@@ -4764,6 +4855,54 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
         meta = json.load(handle)
     assert meta["target_ap_offline"] is True
     assert meta["switch_scope"] == "ap_switch"
+
+
+def test_trackside_progress_tracker_prevents_switch_branch_from_reaching_full_progress():
+    events: list[tuple[int, int, dict[str, object]]] = []
+    tracker = trackside_optical_collection.TracksideOpticalProgressTracker(
+        switch_total=26,
+        progress_callback=lambda current, total, details: events.append((current, total, details)),
+    )
+    target = trackside_optical_collection.TracksideOpticalTarget(
+        key="device:1",
+        name="SW",
+        host="10.0.0.10",
+        port=22,
+        protocol="ssh",
+        target_type="SWITCH",
+        group_name="车站",
+        device=Device(name="SW"),
+    )
+
+    tracker.handle_fit_ap_event({"event": "plan_ready", "phase": "fit_ap_optical", "total": 974, "ac_device_uuid": "ac-1"})
+    for _index in range(26):
+        tracker.mark_switch_completed(trackside_optical_collection.TracksideDeviceCollectionResult(target, True))
+
+    current, total, details = events[-1]
+    assert details["logical_total"] == 1000
+    assert current == 26
+    assert total == 1001
+    assert current < total
+    assert details["prevent_running_100"] is True
+
+
+def test_trackside_progress_tracker_counts_retried_ap_only_once():
+    events: list[tuple[int, int, dict[str, object]]] = []
+    tracker = trackside_optical_collection.TracksideOpticalProgressTracker(
+        switch_total=0,
+        progress_callback=lambda current, total, details: events.append((current, total, details)),
+    )
+
+    tracker.handle_fit_ap_event({"event": "plan_ready", "phase": "fit_ap_optical", "total": 1, "ac_device_uuid": "ac-1"})
+    tracker.handle_fit_ap_event({"event": "ap_completed", "phase": "fit_ap_optical", "ap_identity": "ap:1", "ap_name": "AP-1", "status": "failed"})
+    tracker.handle_fit_ap_event({"event": "ap_retry_started", "phase": "fit_ap_optical", "ap_identity": "ap:1", "ap_name": "AP-1", "status": "retrying"})
+    tracker.handle_fit_ap_event({"event": "ap_completed", "phase": "fit_ap_optical", "ap_identity": "ap:1", "ap_name": "AP-1", "status": "success"})
+
+    current, _total, details = events[-1]
+    assert current == 1
+    assert details["fit_ap_completed"] == 1
+    assert details["success_count"] == 1
+    assert details["failed_count"] == 0
 
 
 def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):

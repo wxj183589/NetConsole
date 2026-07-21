@@ -63,7 +63,7 @@ class JobContext:
         current: int,
         total: int,
         message: str,
-        **details: int | str,
+        **details: object,
     ) -> None:
         payload: dict[str, object] = {"message": str(message or stage or "")}
         payload.update(details)

@@ -444,7 +444,16 @@ class TaskApplicationService:
                 values["finished_time"] = event_time
         elif event_type == "progress":
             if total > 0:
-                values["progress"] = max(0, min(round(current * 100 / total), 100))
+                progress = max(0, min(round(current * 100 / total), 100))
+                details = payload.get("details")
+                if (
+                    progress >= 100
+                    and isinstance(details, dict)
+                    and bool(details.get("prevent_running_100"))
+                    and snapshot.status in _ACTIVE_TASK_STATES
+                ):
+                    progress = 99
+                values["progress"] = progress
         elif event_type == "finished":
             result = dict(payload.get("result") or {})
             values.update(

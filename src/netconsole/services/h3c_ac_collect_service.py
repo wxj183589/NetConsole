@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -118,6 +120,7 @@ FIT_AP_OPTICAL_COMMANDS = (
 BATCH_CONCURRENCY = 50
 DEFAULT_FIT_AP_TELNET_CONCURRENCY = DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 ProgressCallback = Callable[[str], None]
+FitApOpticalProgressCallback = Callable[[Mapping[str, object]], None]
 CancelCheck = Callable[[], bool]
 
 
@@ -588,6 +591,7 @@ def collect_h3c_fit_ap_optical(
     paths: PathResolver | None = None,
     max_workers: int | None = None,
     progress: ProgressCallback | None = None,
+    item_progress: FitApOpticalProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
     target_ap_uuids: list[str] | None = None,
     target_ap_macs: list[str] | None = None,
@@ -686,6 +690,17 @@ def collect_h3c_fit_ap_optical(
         total,
         platform_limit=platform_concurrency_limit,
     )
+    _emit_fit_ap_optical_progress(
+        item_progress,
+        _fit_ap_optical_plan_progress(
+            ac_device,
+            collect_run_uuid,
+            total=total,
+            requested_concurrency=requested_concurrency,
+            effective_concurrency=worker_count,
+            platform_concurrency_limit=platform_concurrency_limit,
+        ),
+    )
     if scoped_refresh and total == 0:
         fact_repository.update_collect_run_status(collect_run_uuid, "success", error_message=None)
         _safe_log_info("FIT_AP_OPTICAL_SKIPPED_NO_CONNECTABLE_TARGET", _detail(ac_device, collect_run_uuid))
@@ -716,6 +731,8 @@ def collect_h3c_fit_ap_optical(
             worker_count,
             should_cancel,
             lambda done, total_count: progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a{done}/{total_count}"),
+            round_index=1,
+            item_progress=item_progress,
         )
         rows.extend(first_round_rows)
         round_summaries.append(_fit_ap_optical_round_summary(1, worker_count, first_round_rows))
@@ -753,6 +770,9 @@ def collect_h3c_fit_ap_optical(
                 retry_concurrency,
                 should_cancel,
                 lambda done, total_count, r=round_index: progress(f"\u6b63\u5728\u91cd\u8bd5 AP\u4fa7\u5149\u8870\uff08第{r}轮\uff09\uff1a{done}/{total_count}"),
+                round_index=round_index,
+                item_progress=item_progress,
+                retry=True,
             )
             rows.extend(retry_rows)
             round_summaries.append(_fit_ap_optical_round_summary(round_index, retry_concurrency, retry_rows))
@@ -1008,6 +1028,154 @@ def _filter_fit_ap_optical_targets(
     return result
 
 
+def _emit_fit_ap_optical_progress(
+    callback: FitApOpticalProgressCallback | None,
+    payload: Mapping[str, object],
+) -> None:
+    if callback is None:
+        return
+    callback(dict(payload))
+
+
+def _fit_ap_optical_plan_progress(
+    ac_device: Device,
+    collect_run_uuid: str,
+    *,
+    total: int,
+    requested_concurrency: int,
+    effective_concurrency: int,
+    platform_concurrency_limit: int,
+) -> dict[str, object]:
+    ac_name = str(ac_device.name or ac_device.system_name or ac_device.device_uuid or "")
+    return {
+        "message": f"{ac_name} 可采集 AP 数量：{int(total or 0)}",
+        "phase": "fit_ap_optical",
+        "event": "plan_ready",
+        "collect_run_uuid": collect_run_uuid,
+        "ac_device_uuid": str(ac_device.device_uuid or ""),
+        "ac_name": ac_name,
+        "total": int(total or 0),
+        "completed": 0,
+        "requested_concurrency": int(requested_concurrency or 0),
+        "effective_concurrency": int(effective_concurrency or 0),
+        "platform_concurrency_limit": int(platform_concurrency_limit or 0),
+    }
+
+
+def _fit_ap_identity_for_progress(row: Mapping[str, object | None]) -> str:
+    identity = _fit_ap_optical_identity(dict(row))
+    if identity:
+        return identity
+    return str(row.get("ap_uuid") or row.get("ap_mac") or row.get("ap_name") or row.get("ap_ip") or "").strip()
+
+
+def _fit_ap_progress_base(
+    ac_device: Device,
+    resource: Mapping[str, object | None],
+    collect_run_uuid: str,
+) -> dict[str, object]:
+    ap_name = str(resource.get("ap_name") or resource.get("ap_ip") or "FIT-AP")
+    return {
+        "phase": "fit_ap_optical",
+        "collect_run_uuid": collect_run_uuid,
+        "ac_device_uuid": str(ac_device.device_uuid or ""),
+        "ac_name": str(ac_device.name or ac_device.system_name or ac_device.device_uuid or ""),
+        "ap_identity": _fit_ap_identity_for_progress(resource),
+        "ap_uuid": str(resource.get("ap_uuid") or ""),
+        "ap_name": ap_name,
+        "ap_mac": str(resource.get("ap_mac") or ""),
+        "ap_ip": str(resource.get("ap_ip") or ""),
+        "station": str(resource.get("site") or resource.get("site_name") or resource.get("station") or ""),
+    }
+
+
+def _fit_ap_optical_started_progress(
+    ac_device: Device,
+    resource: Mapping[str, object | None],
+    collect_run_uuid: str,
+    *,
+    round_index: int,
+    index: int,
+    total: int,
+    retry: bool,
+    effective_concurrency: int,
+) -> dict[str, object]:
+    base = _fit_ap_progress_base(ac_device, resource, collect_run_uuid)
+    ap_name = str(base["ap_name"])
+    ap_ip = str(base["ap_ip"])
+    if retry:
+        message = f"第 {round_index} 轮重试 {index}/{total}：{ap_name}"
+        event = "ap_retry_started"
+        status = "retrying"
+    else:
+        suffix = f"（{ap_ip}）" if ap_ip else ""
+        message = f"开始采集 AP {index}/{total}：{ap_name}{suffix}"
+        event = "ap_started"
+        status = "running"
+    return {
+        **base,
+        "message": message,
+        "event": event,
+        "round": int(round_index),
+        "index": int(index),
+        "total": int(total),
+        "completed": 0,
+        "status": status,
+        "previous_reason": str(resource.get("error_message") or resource.get("reason_code") or ""),
+        "effective_concurrency": int(effective_concurrency or 0),
+    }
+
+
+def _fit_ap_optical_completed_progress(
+    ac_device: Device,
+    resource: Mapping[str, object | None],
+    row: Mapping[str, object | None],
+    collect_run_uuid: str,
+    *,
+    round_index: int,
+    completed: int,
+    total: int,
+    success_count: int,
+    failed_count: int,
+    elapsed_ms: int,
+    effective_concurrency: int,
+) -> dict[str, object]:
+    merged = {**dict(resource), **dict(row)}
+    base = _fit_ap_progress_base(ac_device, merged, collect_run_uuid)
+    status = str(row.get("status") or "failed").strip().casefold() or "failed"
+    reason_code = ""
+    error_message = ""
+    if status != "success":
+        error_message = str(row.get("error_message") or "FIT-AP 光衰采集失败")
+        reason_code = _fit_ap_optical_error_category(error_message)
+    rx_power = str(row.get("rx_power") or "")
+    tx_power = str(row.get("tx_power") or "")
+    seconds = elapsed_ms / 1000
+    if status == "success":
+        optical = f"，Rx {rx_power} dBm" if rx_power else ""
+        message = f"AP {completed}/{total} 成功：{base['ap_name']}{optical}，耗时 {seconds:.2f} 秒"
+    else:
+        message = f"AP {completed}/{total} 失败：{base['ap_name']}，{error_message}，耗时 {seconds:.2f} 秒"
+    return {
+        **base,
+        "message": message,
+        "event": "ap_completed",
+        "round": int(round_index),
+        "index": int(completed),
+        "total": int(total),
+        "completed": int(completed),
+        "success_count": int(success_count),
+        "failed_count": int(failed_count),
+        "status": "success" if status == "success" else "failed",
+        "reason_code": reason_code,
+        "error_message": error_message,
+        "rx_power": rx_power,
+        "tx_power": tx_power,
+        "elapsed_ms": int(elapsed_ms),
+        "effective_concurrency": int(effective_concurrency or 0),
+    }
+
+
 def _collect_fit_ap_optical_round(
     ac_device: Device,
     resources: list[dict[str, object | None]],
@@ -1018,18 +1186,39 @@ def _collect_fit_ap_optical_round(
     concurrency: int,
     should_cancel: CancelCheck,
     progress_round: Callable[[int, int], None],
+    *,
+    round_index: int = 1,
+    item_progress: FitApOpticalProgressCallback | None = None,
+    retry: bool = False,
 ) -> list[dict[str, object | None]]:
     rows: list[dict[str, object | None]] = []
     total = len(resources)
     if total <= 0:
         return rows
     completed = 0
+    success_count = 0
+    failed_count = 0
     worker_count = max(1, min(total, int(concurrency or 1)))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
-            for row in resources
-        }
+        futures = {}
+        started_at: dict[object, float] = {}
+        for index, row in enumerate(resources, start=1):
+            _emit_fit_ap_optical_progress(
+                item_progress,
+                _fit_ap_optical_started_progress(
+                    ac_device,
+                    row,
+                    collect_run_uuid,
+                    round_index=round_index,
+                    index=index,
+                    total=total,
+                    retry=retry,
+                    effective_concurrency=worker_count,
+                ),
+            )
+            future = executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths)
+            futures[future] = row
+            started_at[future] = time.monotonic()
         for future in as_completed(futures):
             if should_cancel():
                 for pending in futures:
@@ -1058,6 +1247,27 @@ def _collect_fit_ap_optical_round(
                 row = _failed_fit_ap_optical_row(ac_device, resource, collect_run_uuid, category, message)
             rows.append(row)
             completed += 1
+            elapsed_ms = max(0, int((time.monotonic() - started_at.get(future, time.monotonic())) * 1000))
+            if str(row.get("status") or "").casefold() == "success":
+                success_count += 1
+            else:
+                failed_count += 1
+            _emit_fit_ap_optical_progress(
+                item_progress,
+                _fit_ap_optical_completed_progress(
+                    ac_device,
+                    resource,
+                    row,
+                    collect_run_uuid,
+                    round_index=round_index,
+                    completed=completed,
+                    total=total,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                    elapsed_ms=elapsed_ms,
+                    effective_concurrency=worker_count,
+                ),
+            )
             progress_round(completed, total)
     return rows
 

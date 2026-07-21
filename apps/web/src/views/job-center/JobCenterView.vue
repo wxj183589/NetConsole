@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh, View } from '@element-plus/icons-vue'
@@ -26,6 +26,8 @@ const drawerVisible = ref(false)
 const lastSavedCapability = ref('')
 const nativeActionError = ref('')
 const taskContextError = ref('')
+const followLatestLogs = ref(true)
+const logContainer = ref<HTMLElement | null>(null)
 let downloadGeneration = 0
 const pollingConsumer = 'job-center-view'
 let pollingAcquired = false
@@ -43,6 +45,19 @@ const visibleTasks = computed(() => {
 const artifactDownloadLabel = computed(() => (
   isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : 'Artifact 下载'
 ))
+const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
+const showCurrentProcessing = computed(() => {
+  const details = selectedDetails.value
+  const phase = String(details.phase || '')
+  const event = String(details.event || '')
+  return phase === 'fit_ap_optical' || event.startsWith('ap_') || Boolean(details.ap_name || details.ap_ip)
+})
+const currentPhaseLabel = computed(() => phaseLabel(String(selectedDetails.value.phase || store.selected?.stage || '')))
+const currentApProgress = computed(() => {
+  const completed = numberDetail('fit_ap_completed', numberDetail('completed', 0))
+  const total = numberDetail('fit_ap_total', numberDetail('total', 0))
+  return total ? `${completed} / ${total}` : '--'
+})
 const columns: NcTableColumn<TaskItem>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
   { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
@@ -62,6 +77,13 @@ watch(drawerVisible, (visible) => {
   if (!visible) clearSavedCapability()
 })
 watch(() => store.selected?.id, clearSavedCapability)
+watch(() => store.logs.at(-1)?.sequence, () => {
+  if (!followLatestLogs.value) return
+  void nextTick(() => {
+    const target = logContainer.value
+    if (target) target.scrollTop = target.scrollHeight
+  })
+})
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
@@ -203,6 +225,75 @@ async function downloadArtifact(): Promise<void> {
   } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
 }
 
+function stringDetail(key: string, fallback = '--'): string {
+  const value = selectedDetails.value[key]
+  const text = value == null ? '' : String(value)
+  return text || fallback
+}
+
+function numberDetail(key: string, fallback = 0): number {
+  const value = Number(selectedDetails.value[key])
+  return Number.isFinite(value) ? value : fallback
+}
+
+function phaseLabel(value: string): string {
+  const labels: Record<string, string> = {
+    fit_ap_optical: 'AP 侧光衰采集',
+    switch_optical: '交换机侧光模块采集',
+    aggregate: '结果聚合',
+    persist: '数据库保存',
+    'trackside_ap.fit_ap.plan': 'AP 侧目标统计',
+    'trackside_ap.fit_ap.collect': 'AP 侧光衰采集',
+    'trackside_ap.fit_ap.retry': 'AP 侧光衰重试',
+    'trackside_ap.switch.collect': '交换机侧光模块采集',
+    'trackside_ap.persist': '数据库保存',
+  }
+  return labels[value] || value || '--'
+}
+
+function reasonLabel(value: unknown): string {
+  const code = String(value || '')
+  const labels: Record<string, string> = {
+    connect_timeout: '连接超时',
+    auth_failed: '认证失败',
+    command_failed: '命令执行失败',
+    parse_failed: '光模块数据解析失败',
+    no_optical_data: '未获取到光模块数据',
+    offline: 'AP 离线',
+    cancelled: '已取消',
+    unexpected_error: '未知异常',
+    log_write_failed: '日志写入失败',
+  }
+  return labels[code] || code
+}
+
+function logLineClass(line: { level: string; details?: Record<string, unknown> }): string {
+  const status = String(line.details?.status || '').toLowerCase()
+  const event = String(line.details?.event || '').toLowerCase()
+  if (status === 'failed') return 'error'
+  if (status === 'success') return 'success'
+  if (status === 'retrying' || event === 'ap_retry_started') return 'warning'
+  if (line.level.toLowerCase() === 'error') return 'error'
+  if (line.level.toLowerCase() === 'warning') return 'warning'
+  return 'info'
+}
+
+function logStatusLabel(line: { type: string; details?: Record<string, unknown> }): string {
+  const status = String(line.details?.status || '').toLowerCase()
+  const event = String(line.details?.event || '').toLowerCase()
+  if (status === 'success') return '成功'
+  if (status === 'failed') return '失败'
+  if (status === 'retrying' || event === 'ap_retry_started') return '重试'
+  if (event === 'ap_started') return '开始'
+  return line.type
+}
+
+function handleLogScroll(): void {
+  const target = logContainer.value
+  if (!target) return
+  followLatestLogs.value = target.scrollHeight - target.scrollTop - target.clientHeight < 24
+}
+
 function nativeFailureMessage(action: 'open' | 'reveal', error = ''): string {
   if (error.includes('文件授权已过期')) return '文件授权已过期，请重新下载后再试'
   if (error.includes('文件授权')) return '文件授权已失效，请重新下载后再试'
@@ -325,6 +416,27 @@ const revealSaved = () => runSavedAction('reveal')
           </template>
         </el-descriptions>
 
+        <section v-if="showCurrentProcessing" class="current-processing">
+          <div class="current-heading">
+            <h3>当前处理</h3>
+            <NcStatusTag :status="store.selected.status" />
+          </div>
+          <div class="current-grid">
+            <article><span>当前阶段</span><strong>{{ currentPhaseLabel }}</strong></article>
+            <article><span>当前 AP</span><strong>{{ stringDetail('ap_name') }}</strong></article>
+            <article><span>AP IP</span><strong>{{ stringDetail('ap_ip') }}</strong></article>
+            <article><span>归属站点</span><strong>{{ stringDetail('station') }}</strong></article>
+            <article><span>当前轮次</span><strong>第 {{ numberDetail('round', 1) }} 轮</strong></article>
+            <article><span>AP 进度</span><strong>{{ currentApProgress }}</strong></article>
+            <article><span>成功 / 失败</span><strong>{{ numberDetail('success_count') }} / {{ numberDetail('failed_count') }}</strong></article>
+            <article><span>并发 / 已运行</span><strong>{{ numberDetail('effective_concurrency') || '--' }} / {{ formatDuration(store.selected.duration_seconds) }}</strong></article>
+            <article v-if="selectedDetails.reason_code || selectedDetails.error_message" class="wide danger">
+              <span>失败原因</span>
+              <strong>{{ reasonLabel(selectedDetails.reason_code) || stringDetail('error_message') }}</strong>
+            </article>
+          </div>
+        </section>
+
         <div v-if="store.selected.session_id" class="association-actions">
           <el-button type="primary" @click="openOnlineMr(store.selected)">查看 Online MR 收集分析</el-button>
           <el-button :icon="CopyDocument" @click="copyText(store.selected.session_id, 'Session ID 已复制')">复制 Session ID</el-button>
@@ -344,13 +456,16 @@ const revealSaved = () => runSavedAction('reveal')
         <section class="log-section">
           <div class="log-heading">
             <div><h3>任务日志 tail</h3><p>默认隐藏；展开后每秒读取最后 300 条结构化事件。</p></div>
-            <el-button @click="store.setLogsExpanded(!store.logsExpanded)">{{ store.logsExpanded ? '隐藏日志' : '显示日志' }}</el-button>
+            <div class="log-actions">
+              <el-switch v-model="followLatestLogs" active-text="跟随最新" inactive-text="暂停跟随" />
+              <el-button @click="store.setLogsExpanded(!store.logsExpanded)">{{ store.logsExpanded ? '隐藏日志' : '显示日志' }}</el-button>
+            </div>
           </div>
           <template v-if="store.logsExpanded">
             <el-alert v-if="store.logError" :title="store.logError" type="error" :closable="false" show-icon />
-            <div class="task-log">
-              <div v-for="line in store.logs" :key="line.sequence" :class="['log-line', line.level.toLowerCase()]">
-                <time>{{ formatTime(line.time) }}</time><span>{{ line.type }}</span><p>{{ line.message }}</p>
+            <div ref="logContainer" class="task-log" @scroll="handleLogScroll">
+              <div v-for="line in store.logs" :key="line.sequence" :class="['log-line', logLineClass(line)]">
+                <time>{{ formatTime(line.time) }}</time><span>{{ logStatusLabel(line) }}</span><p>{{ line.message }}<small v-if="line.details?.reason_code"> · {{ reasonLabel(line.details.reason_code) }}</small></p>
               </div>
               <el-empty v-if="!store.logs.length && !store.logError" description="暂无日志" :image-size="68" />
             </div>
@@ -382,6 +497,15 @@ const revealSaved = () => runSavedAction('reveal')
 .cell-subtitle { margin-top: 5px; color: var(--nc-text-tertiary); font-size: 11px; }
 .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .detail-alert { margin: 0 0 15px; }
+.current-processing { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--nc-divider); }
+.current-heading, .log-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.current-heading h3 { margin: 0; font-size: 15px; }
+.current-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.current-grid article { min-width: 0; padding: 10px 12px; background: var(--nc-bg-muted); border: 1px solid var(--nc-border); border-radius: 8px; }
+.current-grid article.wide { grid-column: span 2; }
+.current-grid article.danger { border-color: var(--nc-danger); }
+.current-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
+.current-grid strong { display: block; margin-top: 5px; overflow-wrap: anywhere; color: var(--nc-text-primary); font-size: 13px; font-weight: 600; }
 .association-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .native-action-error { margin-top: 12px; }
 .log-section { margin-top: 22px; }
@@ -390,12 +514,15 @@ const revealSaved = () => runSavedAction('reveal')
 .log-line { display: grid; grid-template-columns: 155px 90px 1fr; gap: 10px; padding: 4px 2px; border-bottom: 1px solid var(--nc-border-code); }
 .log-line time, .log-line span { color: var(--nc-text-code-muted); }
 .log-line p { margin: 0; overflow-wrap: anywhere; }
+.log-line small { color: var(--nc-text-code-muted); }
 .log-line.error p { color: var(--nc-text-code-danger); }
 .log-line.warning p { color: var(--nc-text-code-warning); }
+.log-line.success p { color: var(--nc-success); }
 code { overflow-wrap: anywhere; font-family: Consolas, "Microsoft YaHei", monospace; }
 @media (max-width: 1200px) {
   .job-metrics { grid-template-columns: repeat(3, 1fr); }
   .job-toolbar { align-items: flex-start; flex-direction: column; }
   .job-toolbar-actions { flex-wrap: wrap; width: 100%; }
+  .current-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 </style>

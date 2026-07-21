@@ -122,7 +122,28 @@ class JobCenterQueryService:
                 self._task_select(conn, detail=True) + " WHERE task.task_id = ? LIMIT 1",
                 (str(task_id),),
             ).fetchone()
-        return self._task_from_row(dict(row), include_result=True) if row is not None else None
+            if row is None:
+                return None
+            values = dict(row)
+            if self._table_exists(conn, "task_events"):
+                rows = conn.execute(
+                    """
+                    SELECT payload_json
+                    FROM task_events
+                    WHERE task_id = ? AND event_type = 'progress'
+                    ORDER BY sequence DESC
+                    LIMIT 30
+                    """,
+                    (str(task_id),),
+                ).fetchall()
+                for row_item in rows:
+                    payload = self._json_object(row_item["payload_json"])
+                    details = self._payload_details(payload)
+                    event = str(details.get("event") or "").casefold()
+                    if details and (details.get("ap_name") or details.get("ap_ip") or event in {"ap_started", "ap_completed", "ap_retry_started", "plan_ready"}):
+                        values["latest_progress_json"] = row_item["payload_json"]
+                        break
+        return self._task_from_row(values, include_result=True)
 
     def list_task_results(
         self,
@@ -295,6 +316,7 @@ class JobCenterQueryService:
             cancel_reason=cancel_reason,
             artifact_download=artifact_download,
             artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
+            details=self._progress_details(row) if include_result else {},
         )
 
     @staticmethod
@@ -475,7 +497,16 @@ class JobCenterQueryService:
         event_type = str(row.get("event_type") or "log")
         payload = cls._json_object(row.get("payload_json"))
         message = redact_web_task_text(cls._first_text(payload, "message", "error", "traceback", "diagnostic", "state", "stage") or cls._event_label(event_type))
-        level = "ERROR" if event_type == "error" else "WARNING" if event_type == "cancelled" else "INFO"
+        details = cls._payload_details(payload)
+        status = str(details.get("status") or "").casefold()
+        item_event = str(details.get("event") or "").casefold()
+        level = (
+            "ERROR"
+            if event_type == "error" or status == "failed"
+            else "WARNING"
+            if event_type == "cancelled" or item_event == "ap_retry_started" or status == "retrying"
+            else "INFO"
+        )
         return JobCenterLogLineDTO(
             sequence=int(row.get("sequence") or 0),
             time=str(row.get("event_time") or ""),
@@ -483,6 +514,7 @@ class JobCenterQueryService:
             type=event_type,
             source=redact_web_task_text(row.get("source") or "service"),
             message=message,
+            details=details,
         )
 
     @staticmethod
@@ -499,6 +531,16 @@ class JobCenterQueryService:
         except (TypeError, ValueError, json.JSONDecodeError):
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def _progress_details(cls, row: dict[str, object]) -> dict[str, Any]:
+        payload = cls._json_object(row.get("latest_progress_json"))
+        return cls._payload_details(payload)
+
+    @staticmethod
+    def _payload_details(payload: dict[str, Any]) -> dict[str, Any]:
+        details = payload.get("details")
+        return dict(details) if isinstance(details, dict) else {}
 
     @staticmethod
     def _first_text(values: dict[str, Any], *keys: str) -> str:

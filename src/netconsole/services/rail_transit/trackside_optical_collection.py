@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from uuid import uuid4
 
 from netconsole.core.optical_severity_engine import compute_optical_severity
@@ -177,6 +178,215 @@ class TracksideOpticalSessionResult:
     fit_ap_round_summaries: list[dict[str, object]] = field(default_factory=list)
 
 
+ProgressCallback = Callable[..., None]
+StageCallback = Callable[..., None]
+
+
+STAGE_MESSAGES = {
+    "trackside_ap.prepare": "正在准备轨旁 AP 光衰更新",
+    "trackside_ap.ac_resource_refresh": "正在刷新 AC FIT-AP 资源",
+    "trackside_ap.switch.collect": "正在采集交换机侧光模块",
+    "trackside_ap.switch.persist": "正在保存交换机侧光模块",
+    "trackside_ap.fit_ap.plan": "正在统计 AP 侧光衰目标",
+    "trackside_ap.fit_ap.collect": "正在采集 AP 侧光衰",
+    "trackside_ap.fit_ap.retry": "正在重试 AP 侧光衰",
+    "trackside_ap.aggregate": "正在聚合轨旁 AP 光衰结果",
+    "trackside_ap.persist": "正在写入轨旁 AP 光衰结果",
+}
+
+
+class TracksideOpticalProgressTracker:
+    """聚合交换机与 FIT-AP 两条并行分支的可见进度。"""
+
+    _FINAL_STEP = 1
+
+    def __init__(
+        self,
+        *,
+        switch_total: int,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
+        self.switch_total = max(0, int(switch_total or 0))
+        self.switch_completed = 0
+        self.switch_success_count = 0
+        self.switch_failed_count = 0
+        self.fit_ap_total = 0
+        self.fit_ap_completed = 0
+        self.fit_ap_plan_ready = False
+        self.fit_ap_branch_done = False
+        self.success_count = 0
+        self.failed_count = 0
+        self.skipped_count = 0
+        self._progress_callback = progress_callback
+        self._fit_ap_plan_by_ac: dict[str, int] = {}
+        self._fit_ap_status_by_identity: dict[str, str] = {}
+        self._lock = Lock()
+
+    def emit_stage(self, stage: str, message: str, **details: object) -> None:
+        with self._lock:
+            self._emit_locked(stage, message, details)
+
+    def mark_switch_completed(self, result: TracksideDeviceCollectionResult) -> None:
+        status = "success" if result.success else "failed"
+        with self._lock:
+            self.switch_completed = min(self.switch_total, self.switch_completed + 1)
+            if result.success:
+                self.switch_success_count += 1
+            else:
+                self.switch_failed_count += 1
+            self._recount_fit_ap_status_locked()
+            self._emit_locked(
+                "trackside_ap.switch.persist",
+                f"交换机 {self.switch_completed}/{self.switch_total} {'成功' if result.success else '失败'}：{result.target.name}",
+                {
+                    "phase": "switch_optical",
+                    "event": "switch_completed",
+                    "status": status,
+                    "target_name": result.target.name,
+                    "target_ip": result.target.host,
+                    "device_uuid": result.target.device_uuid or "",
+                    "error_message": result.error_message or "",
+                },
+            )
+
+    def handle_fit_ap_event(self, payload: Mapping[str, object]) -> None:
+        event = str(payload.get("event") or "")
+        details = dict(payload)
+        stage = self._fit_ap_stage(event)
+        message = str(details.get("message") or STAGE_MESSAGES.get(stage) or stage)
+        with self._lock:
+            if event == "plan_ready":
+                ac_uuid = str(details.get("ac_device_uuid") or "")
+                planned_total = max(0, _int_value(details.get("total")))
+                previous = self._fit_ap_plan_by_ac.get(ac_uuid)
+                if previous is None:
+                    self.fit_ap_total += planned_total
+                else:
+                    self.fit_ap_total += planned_total - previous
+                if ac_uuid:
+                    self._fit_ap_plan_by_ac[ac_uuid] = planned_total
+                self.fit_ap_total = max(0, self.fit_ap_total)
+                self.fit_ap_plan_ready = True
+            elif event == "ap_completed":
+                identity = str(details.get("ap_identity") or details.get("ap_uuid") or details.get("ap_name") or details.get("ap_ip") or "")
+                status = str(details.get("status") or "failed").casefold()
+                if identity:
+                    self._fit_ap_status_by_identity[identity] = "success" if status == "success" else "failed"
+                    self.fit_ap_completed = len(self._fit_ap_status_by_identity)
+                    self._recount_fit_ap_status_locked()
+            self._emit_locked(stage, message, details)
+
+    def mark_fit_ap_branch_done(self) -> None:
+        with self._lock:
+            self.fit_ap_branch_done = True
+            if not self.fit_ap_plan_ready:
+                self.fit_ap_plan_ready = True
+            self._emit_locked(
+                "trackside_ap.fit_ap.collect",
+                "AP 侧光衰采集分支已收口",
+                {"phase": "fit_ap_optical", "event": "fit_ap_branch_done"},
+            )
+
+    def mark_persisting(self) -> None:
+        with self._lock:
+            self._emit_locked(
+                "trackside_ap.persist",
+                "正在写入轨旁 AP 光衰结果",
+                {"phase": "persist", "event": "persist_started"},
+            )
+
+    def mark_completed(self) -> None:
+        with self._lock:
+            self._emit_locked(
+                "trackside_ap.aggregate",
+                "轨旁 AP 光衰更新即将完成",
+                {"phase": "aggregate", "event": "final_progress"},
+                force_work_complete=True,
+            )
+
+    @staticmethod
+    def _fit_ap_stage(event: str) -> str:
+        if event == "plan_ready":
+            return "trackside_ap.fit_ap.plan"
+        if event == "ap_retry_started":
+            return "trackside_ap.fit_ap.retry"
+        return "trackside_ap.fit_ap.collect"
+
+    def _recount_fit_ap_status_locked(self) -> None:
+        fit_success = sum(1 for status in self._fit_ap_status_by_identity.values() if status == "success")
+        fit_failed = sum(1 for status in self._fit_ap_status_by_identity.values() if status != "success")
+        self.success_count = self.switch_success_count + fit_success
+        self.failed_count = self.switch_failed_count + fit_failed
+
+    def _emit_locked(
+        self,
+        stage: str,
+        message: str,
+        details: Mapping[str, object],
+        *,
+        force_work_complete: bool = False,
+    ) -> None:
+        if self._progress_callback is None:
+            return
+        logical_total = self.switch_total + self.fit_ap_total
+        logical_current = logical_total if force_work_complete else min(
+            logical_total,
+            self.switch_completed + self.fit_ap_completed,
+        )
+        total = logical_total + self._FINAL_STEP if (self.fit_ap_plan_ready or self.fit_ap_branch_done) else 0
+        current = logical_current if total > 0 else 0
+        payload = {
+            "message": message,
+            "stage": stage,
+            "phase": details.get("phase") or "",
+            "switch_total": self.switch_total,
+            "switch_completed": self.switch_completed,
+            "fit_ap_total": self.fit_ap_total,
+            "fit_ap_completed": self.fit_ap_completed,
+            "logical_total": logical_total,
+            "logical_current": logical_current,
+            "success_count": self.success_count,
+            "failed_count": self.failed_count,
+            "skipped_count": self.skipped_count,
+            "prevent_running_100": True,
+            **dict(details),
+        }
+        _call_progress_callback(self._progress_callback, current, total, payload)
+
+
+def _call_progress_callback(
+    callback: ProgressCallback,
+    current: int,
+    total: int,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    if details is None:
+        callback(int(current or 0), int(total or 0))
+        return
+    try:
+        callback(int(current or 0), int(total or 0), dict(details))
+    except TypeError:
+        callback(int(current or 0), int(total or 0))
+
+
+def _call_stage_callback(
+    callback: StageCallback | None,
+    stage: str,
+    message: str,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    if callback is None:
+        return
+    payload = {"message": message, **dict(details or {})}
+    try:
+        callback(stage, message, payload)
+    except TypeError:
+        try:
+            callback(stage, message)
+        except TypeError:
+            callback(stage)
+
+
 def normalize_switch_type(value: object) -> str:
     text = re.sub(r"[\s_\-]+", "", str(value or "")).casefold()
     if text in {"sw", "switch", "交换机", "交换机sw"}:
@@ -318,13 +528,13 @@ def collect_trackside_optical(
     target_ap_mac: str | None = None,
     target_ap_name: str | None = None,
 ) -> TracksideOpticalSessionResult:
-    def stage(key: str) -> None:
-        if stage_callback is not None:
-            stage_callback(key)
+    def stage(key: str, message: str | None = None, **details: object) -> None:
+        text = message or STAGE_MESSAGES.get(key) or key
+        _call_stage_callback(stage_callback, key, text, details)
 
-    stage("trackside_ap.stage_prepare")
+    stage("trackside_ap.prepare")
     ac_repository = AcRepository(repository.database)
-    stage("trackside_ap.stage_collect_lldp")
+    stage("trackside_ap.fit_ap.plan", "正在统计轨旁 AP 与车站交换机目标", phase="prepare", event="target_planning")
     effective_station = str(target_station or "").strip()
     target_ap_update = bool(target_ap_uuid or target_ap_mac or target_ap_name)
     if not effective_station and target_ap_update:
@@ -376,12 +586,25 @@ def collect_trackside_optical(
     max_workers = max(1, min(safe_requested_concurrency, switch_concurrency, len(targets) or 1))
     fit_ap_requested_concurrency = min(safe_requested_concurrency, fit_ap_concurrency)
     results: list[TracksideDeviceCollectionResult] = []
-    completed = 0
-    total_units = len(targets)
-    if progress_callback is not None:
-        progress_callback(0, total_units)
+    progress_tracker = TracksideOpticalProgressTracker(
+        switch_total=len(targets),
+        progress_callback=progress_callback,
+    )
+    progress_tracker.emit_stage(
+        "trackside_ap.fit_ap.plan",
+        "正在统计 AP 侧光衰目标",
+        phase="fit_ap_optical",
+        event="target_planning",
+        requested_concurrency=fit_ap_requested_concurrency,
+    )
+
+    def ac_progress(payload: Mapping[str, object]) -> None:
+        details = dict(payload)
+        message = str(details.pop("message", "") or "正在刷新 AC FIT-AP 资源")
+        progress_tracker.emit_stage("trackside_ap.ac_resource_refresh", message, **details)
+
     with ThreadPoolExecutor(max_workers=1) as branch_executor:
-        stage("trackside_ap.stage_refresh_fit_ap")
+        stage("trackside_ap.ac_resource_refresh")
         fit_future = branch_executor.submit(
             _collect_fit_ap_optical_subtasks,
             repository,
@@ -393,9 +616,11 @@ def collect_trackside_optical(
             target_ap_uuid,
             target_ap_mac,
             target_ap_name,
+            progress_tracker.handle_fit_ap_event,
+            ac_progress,
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            stage("trackside_ap.stage_collect_optical")
+            stage("trackside_ap.switch.collect")
             futures = []
             for target in targets:
                 if cancel_event.is_set():
@@ -405,13 +630,12 @@ def collect_trackside_optical(
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
-                stage("trackside_ap.stage_write_database")
+                stage("trackside_ap.switch.persist")
                 _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
-                completed += 1
-                if progress_callback is not None:
-                    progress_callback(completed, max(total_units, 1))
-        stage("trackside_ap.stage_refresh_fit_ap_optical")
+                progress_tracker.mark_switch_completed(result)
+        stage("trackside_ap.fit_ap.collect")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
+        progress_tracker.mark_fit_ap_branch_done()
     fit_ap_effective_concurrency = max(
         (int(getattr(result, "effective_concurrency", 0) or 0) for result in fit_ap_results),
         default=0,
@@ -425,14 +649,14 @@ def collect_trackside_optical(
     )
     target_ap_offline = bool(target_ap_update and target_ap_resource and is_fit_ap_offline(target_ap_resource))
     skipped.extend(fit_ap_skipped)
-    stage("trackside_ap.stage_aggregate")
+    stage("trackside_ap.aggregate")
+    progress_tracker.emit_stage("trackside_ap.aggregate", "正在聚合轨旁 AP 光衰结果", phase="aggregate", event="aggregate_started")
     fit_success = sum(max(int(result.optical_rows_updated or 0) - int(result.failed_aps or 0), 0) for result in fit_ap_results)
     fit_failed = sum(int(result.failed_aps or 0) for result in fit_ap_results)
     fit_failures = sum(1 for result in fit_ap_results if not result.success and not result.partial_success and int(result.optical_rows_updated or 0) == 0)
     total_units = fit_ap_total + len(targets)
-    if progress_callback is not None:
-        progress_callback(total_units, total_units)
-    stage("trackside_ap.stage_write_database")
+    stage("trackside_ap.persist")
+    progress_tracker.mark_persisting()
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
     status = _trackside_update_status(
@@ -486,6 +710,7 @@ def collect_trackside_optical(
             "switch_scope_reason": switch_scope_reason,
         },
     )
+    progress_tracker.mark_completed()
     return TracksideOpticalSessionResult(
         session_id,
         session_dir,
@@ -665,17 +890,51 @@ def _collect_fit_ap_optical_subtasks(
     target_ap_uuid: str | None = None,
     target_ap_mac: str | None = None,
     target_ap_name: str | None = None,
+    fit_ap_progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    ac_progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ):
     ac_repository = AcRepository(repository.database)
     results = []
     skipped: list[TracksideSkippedTarget] = []
     total = 0
     summaries = {str(row.get("ac_device_uuid") or ""): row for row in ac_repository.list_ac_ap_summaries()}
-    for ac_device in sorted(repository.list(vendor="H3C", device_type="AC"), key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or "")))):
+    ac_devices = sorted(
+        repository.list(vendor="H3C", device_type="AC"),
+        key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or ""))),
+    )
+    ac_total = len(ac_devices)
+    for ac_index, ac_device in enumerate(ac_devices, start=1):
         if cancel_event.is_set():
             continue
-        resource_result = collect_h3c_ac_resources(ac_device, site_name, repository=ac_repository, paths=paths, refresh_ac_overview=False)
+        ac_name = str(ac_device.name or ac_device.system_name or ac_device.device_uuid or "")
+
+        def emit_ac_progress(message: object, *, event: str = "ac_resource_refresh") -> None:
+            if ac_progress_callback is None:
+                return
+            ac_progress_callback(
+                {
+                    "message": str(message or ""),
+                    "phase": "fit_ap_optical",
+                    "event": event,
+                    "ac_device_uuid": str(ac_device.device_uuid or ""),
+                    "ac_name": ac_name,
+                    "ac_index": ac_index,
+                    "ac_total": ac_total,
+                }
+            )
+
+        emit_ac_progress(f"正在刷新 AC {ac_index}/{ac_total} FIT-AP 资源：{ac_name}", event="ac_resource_refresh_started")
+        resource_result = collect_h3c_ac_resources(
+            ac_device,
+            site_name,
+            repository=ac_repository,
+            paths=paths,
+            progress=lambda message: emit_ac_progress(message),
+            should_cancel=cancel_event.is_set,
+            refresh_ac_overview=False,
+        )
         if not resource_result.success:
+            emit_ac_progress(f"AC {ac_name} FIT-AP 资源刷新失败", event="ac_resource_refresh_failed")
             skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.primary_address))
             continue
         resources = _filter_scoped_fit_ap_resources(
@@ -686,6 +945,7 @@ def _collect_fit_ap_optical_subtasks(
             target_ap_name=target_ap_name,
         )
         total += len(resources)
+        emit_ac_progress(f"AC {ac_name} 可用 FIT-AP 目标 {len(resources)} 台", event="ac_resource_refresh_completed")
         skipped.extend(
             TracksideSkippedTarget(str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"), "FIT_AP", "connection_incomplete", str(row.get("ap_ip") or ""))
             for row in resources
@@ -694,12 +954,32 @@ def _collect_fit_ap_optical_subtasks(
         if cancel_event.is_set():
             skipped.extend(TracksideSkippedTarget(str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"), "FIT_AP", "cancelled", str(row.get("ap_ip") or "")) for row in resources if row.get("ap_ip"))
             continue
+
+        def item_progress(payload: Mapping[str, object]) -> None:
+            if fit_ap_progress_callback is None:
+                return
+            fit_ap_progress_callback(
+                {
+                    **dict(payload),
+                    "ac_index": ac_index,
+                    "ac_total": ac_total,
+                }
+            )
+
         result = collect_h3c_fit_ap_optical(
             ac_device,
             site_name,
             repository=ac_repository,
             paths=paths,
             max_workers=concurrency,
+            progress=lambda message: item_progress(
+                {
+                    "message": str(message or ""),
+                    "phase": "fit_ap_optical",
+                    "event": "fit_ap_progress_message",
+                }
+            ),
+            item_progress=item_progress,
             target_ap_uuids=[target_ap_uuid] if target_ap_uuid else None,
             target_ap_macs=[target_ap_mac] if target_ap_mac else None,
             target_ap_names=[target_ap_name] if target_ap_name else None,

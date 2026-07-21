@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Callable
 
 from netconsole.core.paths import PathResolver
@@ -14,7 +15,8 @@ from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit
 from netconsole.utils.interface_sort import interface_sort_key
 
 
-ProgressCallback = Callable[[str, int, int, str], None]
+ProgressMessage = str | Mapping[str, object]
+ProgressCallback = Callable[[str, int, int, ProgressMessage], None]
 CancelCallback = Callable[[], bool]
 
 
@@ -108,6 +110,13 @@ class AcOpticalService:
         self._check_cancelled(should_cancel)
         device = self._load_device(request.device_uuid)
         self._progress(progress_callback, "ac_fit_ap_optical_collect", 0, 0, "正在通过 H3C CLI 更新 FIT-AP 光衰...")
+
+        def item_progress(payload: Mapping[str, object]) -> None:
+            stage = _fit_ap_stage_from_event(payload, default="ac_fit_ap_optical_collect")
+            current = _int_value(payload.get("completed"))
+            total = _int_value(payload.get("total"))
+            self._progress(progress_callback, stage, current, total, payload)
+
         result: FitApOpticalCollectResult = self.cli_collector(
             device,
             request.site_name,
@@ -115,6 +124,7 @@ class AcOpticalService:
             paths=self.paths,
             max_workers=max(1, int(request.max_workers or 1)),
             progress=lambda message: self._progress(progress_callback, "ac_fit_ap_optical_collect", 0, 0, message),
+            item_progress=item_progress,
             should_cancel=should_cancel,
             target_ap_uuids=list(request.target_ap_uuids) or None,
             target_ap_macs=list(request.target_ap_macs) or None,
@@ -219,7 +229,7 @@ class AcOpticalService:
         return device
 
     @staticmethod
-    def _progress(callback: ProgressCallback | None, stage: str, current: int, total: int, message: str) -> None:
+    def _progress(callback: ProgressCallback | None, stage: str, current: int, total: int, message: ProgressMessage) -> None:
         if callback is not None:
             callback(stage, current, total, message)
 
@@ -231,3 +241,21 @@ class AcOpticalService:
     @staticmethod
     def _cancelled(callback: CancelCallback | None) -> bool:
         return bool(callback is not None and callback())
+
+
+def _fit_ap_stage_from_event(payload: Mapping[str, object], *, default: str) -> str:
+    event = str(payload.get("event") or "")
+    if event == "ap_retry_started":
+        return "ac_fit_ap_optical.retry"
+    if event in {"ap_started", "ap_completed"}:
+        return "ac_fit_ap_optical.collect"
+    if event == "plan_ready":
+        return "ac_fit_ap_optical.plan"
+    return default
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

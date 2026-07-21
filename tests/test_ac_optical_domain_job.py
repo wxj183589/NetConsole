@@ -112,6 +112,18 @@ def test_ac_optical_service_refreshes_batch_and_single_without_changing_collecto
     def collector(device, site_name, **kwargs):
         calls.append({"device": device, "site_name": site_name, **kwargs})
         kwargs["progress"]("正在采集 AP 侧光衰")
+        kwargs["item_progress"](
+            {
+                "message": "AP 1/2 成功：AP-01",
+                "phase": "fit_ap_optical",
+                "event": "ap_completed",
+                "ap_name": "AP-01",
+                "ap_ip": "10.0.0.21",
+                "status": "success",
+                "completed": 1,
+                "total": 2,
+            }
+        )
         return FitApOpticalCollectResult(
             True,
             False,
@@ -127,7 +139,7 @@ def test_ac_optical_service_refreshes_batch_and_single_without_changing_collecto
         )
 
     service, _repository = _service(tmp_path, collector)
-    progress: list[str] = []
+    progress: list[object] = []
     batch = service.refresh_fit_ap_optical(
         AcOpticalRefreshRequest("ac-001", "demo", max_workers=50),
         progress_callback=lambda _stage, _current, _total, message: progress.append(message),
@@ -151,7 +163,8 @@ def test_ac_optical_service_refreshes_batch_and_single_without_changing_collecto
     assert calls[0]["target_ap_uuids"] is None
     assert calls[1]["target_ap_uuids"] == ["ap-1"]
     assert single.refresh_scope == "single"
-    assert any("采集 AP 侧光衰" in message for message in progress)
+    assert any("采集 AP 侧光衰" in str(message) for message in progress)
+    assert any(isinstance(message, dict) and message["ap_name"] == "AP-01" for message in progress)
 
 
 def test_ac_optical_service_preserves_offline_association_and_does_not_map_switch_no_light_to_ap_alarm(tmp_path: Path) -> None:

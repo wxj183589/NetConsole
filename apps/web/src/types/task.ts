@@ -57,6 +57,7 @@ export interface TaskItem {
     query: Record<string, string>
   } | null
   artifact_reason?: string
+  details?: Record<string, unknown>
 }
 
 export interface TaskLogLine {
@@ -66,6 +67,7 @@ export interface TaskLogLine {
   type: string
   source: string
   message: string
+  details?: Record<string, unknown>
 }
 
 export interface TaskLogTail {
