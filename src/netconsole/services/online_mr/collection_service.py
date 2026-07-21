@@ -49,6 +49,8 @@ class OnlineMrCollectionService:
         stop_reason = ["collector_ended"]
         duration_deadline: list[float | None] = [None]
         traffic_started = Event()
+        traffic_start_thread: Thread | None = None
+        startup_started = self.clock()
 
         def requested_stop() -> bool:
             if should_cancel is not None and should_cancel():
@@ -77,6 +79,51 @@ class OnlineMrCollectionService:
             if progress is not None:
                 progress(stage, current, total, message)
 
+        def elapsed_ms() -> int:
+            return max(0, int((self.clock() - startup_started) * 1000))
+
+        def mark_startup(stage: str, *, session=None, status: str = "ok", message: str = "", publish: bool = True) -> None:
+            payload = {
+                "controller_task_id": controller_task_id,
+                "session_id": session.meta.session_id if session is not None else "",
+                "site_id": config.site,
+                "device_id": config.device_id,
+                "stage": stage,
+                "elapsed_ms": elapsed_ms(),
+                "status": status,
+                "message": message,
+            }
+            if session is not None:
+                session.record_startup_milestone(stage, elapsed_ms=payload["elapsed_ms"], status=status, message=message)
+            if publish:
+                emit("online_mr_startup_stage", json.dumps(payload, ensure_ascii=False))
+
+        coordinator = self.traffic_coordinator or OnlineMrTrafficCoordinator(self.store.paths)
+
+        def start_traffic_async(session) -> None:
+            nonlocal traffic_start_thread, traffic_summary
+            if not manage_traffic or traffic_started.is_set() or traffic_start_thread is not None:
+                return
+
+            def target() -> None:
+                nonlocal traffic_summary
+                mark_startup("traffic_start_begin", session=session)
+                try:
+                    traffic_summary = coordinator.start_for_session(session, config)
+                    traffic_started.set()
+                    mark_startup("traffic_start_submitted", session=session)
+                except Exception as exc:
+                    warning = f"Traffic 启动失败：{exc}"
+                    warnings.append(warning)
+                    mark_startup("traffic_start_failed", session=session, status="failed", message=warning)
+
+            traffic_start_thread = Thread(
+                target=target,
+                name=f"online-mr-traffic-start-{session.meta.session_id}",
+                daemon=True,
+            )
+            traffic_start_thread.start()
+
         def on_session_created(meta) -> None:
             payload = {
                 "controller_task_id": controller_task_id,
@@ -86,6 +133,9 @@ class OnlineMrCollectionService:
                 "mr_name": config.mr_name,
             }
             emit("online_mr_session_created", json.dumps(payload, ensure_ascii=False))
+            if collector.session is not None:
+                mark_startup("session_created", session=collector.session, publish=False)
+                start_traffic_async(collector.session)
 
         collector = OnlineMrCollector(
             config,
@@ -93,7 +143,6 @@ class OnlineMrCollectionService:
             connection_factory=self.connection_factory,
             session_created_callback=on_session_created,
         )
-        coordinator = self.traffic_coordinator or OnlineMrTrafficCoordinator(self.store.paths)
         monitor = Thread(target=monitor_cancel, name="online-mr-job-cancel-monitor", daemon=True)
         monitor.start()
 
@@ -111,6 +160,8 @@ class OnlineMrCollectionService:
         try:
             try:
                 meta = collector.start()
+                if collector.session is not None:
+                    mark_startup("collector_start_ready", session=collector.session)
             except Exception as exc:
                 collector.fail_start(str(exc) or exc.__class__.__name__)
                 raise
@@ -129,13 +180,16 @@ class OnlineMrCollectionService:
             if config.duration_minutes is not None and int(config.duration_minutes) > 0:
                 duration_deadline[0] = self.clock() + int(config.duration_minutes) * 60
             if manage_traffic and collector.session is not None and not collector.cancelled:
-                traffic_summary = coordinator.start_for_session(collector.session, config)
-                traffic_started.set()
+                start_traffic_async(collector.session)
             collector.run_forever(
                 on_snapshot,
                 should_cancel=(lambda: collector.cancelled) if manage_traffic else should_cancel,
             )
             session = collector.session
+            if traffic_start_thread is not None:
+                traffic_start_thread.join(timeout=traffic_flush_timeout_seconds)
+                if traffic_start_thread.is_alive():
+                    warnings.append("Traffic 启动线程仍在运行，停止阶段将继续尝试回收")
             if manage_traffic and session is not None and traffic_started.is_set():
                 emit("online_mr_stopping_traffic", "正在停止 Online MR Traffic 子任务")
                 coordinator.stop_traffic_for_session(session.meta.session_id)
@@ -190,6 +244,16 @@ class OnlineMrCollectionService:
         finally:
             monitor_stop.set()
             monitor.join(timeout=1)
+            if manage_traffic and collector.session is not None and collector.status == STATE_FAILED:
+                if traffic_start_thread is not None:
+                    traffic_start_thread.join(timeout=traffic_flush_timeout_seconds)
+                if traffic_started.is_set():
+                    coordinator.stop_traffic_for_session(collector.session.meta.session_id)
+                    coordinator.flush_traffic_outputs(
+                        collector.session.meta.session_id,
+                        timeout_seconds=traffic_flush_timeout_seconds,
+                    )
+                    coordinator.finalize_traffic_outputs(collector.session.meta.session_id)
             if collector.session is not None and collector.status not in {"STOPPED", "FORCED_STOPPED", "FAILED"}:
                 collector.stop()
 

@@ -25,7 +25,10 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
   const preview = ref<OnlineMrRealtimePreview | null>(null)
   const rawFiles = ref<OnlineMrRawFile[]>([])
   const rawTail = ref<OnlineMrRawTail | null>(null)
-  const rawSource = ref('mesh_link')
+  const meshRawTail = ref<OnlineMrRawTail | null>(null)
+  const fpingRawTail = ref<OnlineMrRawTail | null>(null)
+  const otherRawTail = ref<OnlineMrRawTail | null>(null)
+  const rawSource = ref('terminal_monitor')
   const loading = ref(false)
   const error = ref('')
   const failures = ref(0)
@@ -45,6 +48,9 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     preview.value = null
     rawFiles.value = []
     rawTail.value = null
+    meshRawTail.value = null
+    fpingRawTail.value = null
+    otherRawTail.value = null
   }
 
   async function refreshOverview(): Promise<void> {
@@ -69,7 +75,12 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
       collectors.value = nextCollectors
       preview.value = nextPreview
       rawFiles.value = nextRawFiles
-      if (sessionChanged) rawTail.value = null
+      if (sessionChanged) {
+        rawTail.value = null
+        meshRawTail.value = null
+        fpingRawTail.value = null
+        otherRawTail.value = null
+      }
       if (rawExpanded) await refreshRawTail()
       recordSuccess()
     } catch (cause) {
@@ -88,8 +99,25 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     if (!rawExpanded || !current.value || rawBusy) return
     rawBusy = true
     try {
-      rawTail.value = await getOnlineMrRawTail(current.value.session_id, rawSource.value)
-      recordSuccess()
+      const sessionId = current.value.session_id
+      const sources = [
+        ['mesh_link', (value: OnlineMrRawTail) => { meshRawTail.value = value }] as const,
+        ['fping_raw', (value: OnlineMrRawTail) => { fpingRawTail.value = value }] as const,
+      ]
+      const otherSource = rawSource.value && !['mesh_link', 'fping_raw'].includes(rawSource.value) ? rawSource.value : ''
+      const tasks = sources.map(([name, assign]) => getOnlineMrRawTail(sessionId, name).then(assign))
+      if (otherSource) {
+        tasks.push(
+          getOnlineMrRawTail(sessionId, otherSource).then((value) => {
+            otherRawTail.value = value
+            rawTail.value = value
+          }),
+        )
+      }
+      const results = await Promise.allSettled(tasks)
+      const rejected = results.find((item): item is PromiseRejectedResult => item.status === 'rejected')
+      if (results.some((item) => item.status === 'fulfilled')) recordSuccess()
+      else recordFailure(rejected?.reason)
     } catch (cause) {
       recordFailure(cause)
     } finally {
@@ -146,6 +174,9 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     preview,
     rawFiles,
     rawTail,
+    meshRawTail,
+    fpingRawTail,
+    otherRawTail,
     rawSource,
     loading,
     error,

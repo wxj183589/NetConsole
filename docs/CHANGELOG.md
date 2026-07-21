@@ -13,6 +13,9 @@
 
 - 实时页只展示活动 Task/Session Mapping 对应的唯一当前 Session，不再回退最近历史 Session，也不接受历史 `session_id` 路由；终态后立即清空，历史查询、解析和报告统一进入“车载 MR 收集分析”。
 - 当前 Session、采集项、轻量 preview 和日志增长每 5 秒更新；采集项由 Python 按 30/120 秒阈值标记异常和采集中断，fping/iPerf 写入原子轻量快照。主链路 view/结构化 sample 缺失时仅解析 raw 尾部 128 KiB，原始日志展开后每 3 秒读取一次；H3C 正数 RSSI 幅值由 Python 规范化为负 dBm。
+- 修复现场 `display wlan mesh-link` 字段块格式未进入轻量预览的问题：`Peer Name/Peer MAC/RSSI/BSSID/Interface/Link state/Online time` 可从 raw tail 识别 `Active(ax)`，站点未匹配时仍显示主链路、Peer MAC、接口、链路状态和 RSSI。
+- 实时页合并“当前采集状态”和“文件增长明细”为一张表，并固定并列显示主链路原始日志与 fping v5 原始输出；其他日志仍可切换查看，展开后保持 3 秒 tail。
+- LOCAL Worker 在 Session 创建后异步启动 fping/iPerf，提前记录 `startup_timeline` 阶段耗时；SSH collector 命令文本和顺序保持不变，启动失败时同步回收已启动的 Traffic 子任务。
 - 增加 `REAL_DEVICE_TEST=true` 服务端保护：仅允许宁波12号线01车，fping 固定 1000/4000 ms，iPerf 固定本地回环 TCP 2 Mbps；本地 server 随采集生命周期托管，历史业务数据保持只追加、禁止清理或覆盖。
 
 ### 验证范围

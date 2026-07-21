@@ -66,6 +66,17 @@ MESH_PEER_TABLE_RE = re.compile(
     r"(?P<online_time>.*)?$"
 )
 LINK_STATE_WITH_MODE_RE = re.compile(r"^(?P<state>[A-Za-z]+)(?:\((?P<mode>[^)]+)\))?$")
+MESH_PEER_FIELD_RE = re.compile(r"^\s*(?P<key>[A-Za-z][A-Za-z ]+)\s*[:：]\s*(?P<value>.*?)\s*$")
+MESH_PEER_FIELD_ALIASES = {
+    "peer name": "peer_name",
+    "peer mac": "peer_mac",
+    "peer radio": "bssid",
+    "bssid": "bssid",
+    "rssi": "rssi",
+    "interface": "interface",
+    "link state": "link_state_raw",
+    "online time": "online_time",
+}
 
 
 def strip_collector_prefix(line: str) -> tuple[datetime | None, str]:
@@ -93,6 +104,9 @@ def _clean_collector_text(raw_text: str) -> tuple[str, datetime | None]:
 
 def parse_mesh_link_text(raw_text: str, collected_at: datetime) -> tuple[list[MeshLogRecord], str, str]:
     clean_text, _collector_time = _clean_collector_text(raw_text)
+    field_records = _parse_mesh_peer_field_blocks(clean_text, collected_at)
+    if field_records:
+        return field_records, "OK", ""
     if _looks_like_mesh_peer_table(clean_text):
         table_records = _parse_mesh_peer_table(clean_text, collected_at)
         if table_records:
@@ -102,6 +116,9 @@ def parse_mesh_link_text(raw_text: str, collected_at: datetime) -> tuple[list[Me
         table_records = _parse_mesh_peer_table(clean_text, collected_at)
         if table_records:
             return table_records, "OK", ""
+        field_records = _parse_mesh_peer_field_blocks(clean_text, collected_at)
+        if field_records:
+            return field_records, "OK", ""
         message = "; ".join(issue.message for issue in issues[:3]) or "no mesh link records parsed"
         return [], "FAILED", message
     if issues:
@@ -158,6 +175,100 @@ def _parse_mesh_peer_table(raw_text: str, collected_at: datetime) -> list[MeshLo
             )
         )
     return records
+
+
+def _parse_mesh_peer_field_blocks(raw_text: str, collected_at: datetime) -> list[MeshLogRecord]:
+    records: list[MeshLogRecord] = []
+    current: dict[str, object] = {}
+    start_line = 0
+    raw_lines: list[str] = []
+
+    def flush(end_line: int) -> None:
+        nonlocal current, start_line, raw_lines
+        if _mesh_field_block_complete(current):
+            record = _mesh_field_block_record(current, raw_lines, start_line or end_line, end_line, collected_at)
+            if record is not None:
+                records.append(record)
+        current = {}
+        start_line = 0
+        raw_lines = []
+
+    for line_number, line in enumerate(raw_text.splitlines(), start=1):
+        match = MESH_PEER_FIELD_RE.match(line)
+        if not match:
+            if current and line.strip() == "":
+                flush(line_number)
+            continue
+        key = MESH_PEER_FIELD_ALIASES.get(match.group("key").strip().casefold())
+        if key is None:
+            continue
+        if key == "peer_name" and current:
+            flush(line_number - 1)
+        elif key in current and _mesh_field_block_complete(current):
+            flush(line_number - 1)
+        if not current:
+            start_line = line_number
+            raw_lines = []
+        current[key] = match.group("value").strip()
+        raw_lines.append(line.strip())
+    if current:
+        flush(len(raw_text.splitlines()))
+    return records
+
+
+def _mesh_field_block_complete(block: dict[str, object]) -> bool:
+    return all(block.get(key) not in (None, "") for key in ("peer_mac", "rssi", "interface", "link_state_raw"))
+
+
+def _mesh_field_block_record(
+    block: dict[str, object],
+    raw_lines: list[str],
+    start_line: int,
+    end_line: int,
+    collected_at: datetime,
+) -> MeshLogRecord | None:
+    peer_mac_raw = str(block.get("peer_mac") or "")
+    peer_mac = normalize_peer_mac(peer_mac_raw)
+    rssi = _int_or_none(block.get("rssi"))
+    link_state_raw = str(block.get("link_state_raw") or "")
+    state_match = LINK_STATE_WITH_MODE_RE.match(link_state_raw.strip())
+    radio_mode = (state_match.group("mode") if state_match else "") or ""
+    if rssi is None:
+        return None
+    peer_name = str(block.get("peer_name") or "").strip()
+    return MeshLogRecord(
+        source_label="online",
+        source_file="<online>",
+        source_line_number=start_line,
+        raw_line=" | ".join(raw_lines).strip(),
+        radio=1,
+        sample_time=collected_at,
+        timestamp_tag=None,
+        link_state_raw=link_state_raw,
+        link_state=_normalize_online_link_state(link_state_raw),
+        peer_mac_raw=peer_mac_raw,
+        peer_mac_normalized=peer_mac,
+        establish_time=None,
+        duration_text="",
+        duration_seconds=None,
+        link_count=None,
+        metrics={
+            "peer_name": peer_name,
+            "resolved_peer_name": peer_name or peer_mac_raw,
+            "bssid": str(block.get("bssid") or ""),
+            "interface": str(block.get("interface") or ""),
+            "online_time": str(block.get("online_time") or ""),
+            "radio_mode": radio_mode.strip(),
+            "local_rssi_db": rssi,
+            "peer_rssi_db": None,
+            "local_retry": None,
+            "peer_retry": None,
+            "local_tx_busy": None,
+            "local_rx_busy": None,
+        },
+        raw_line_start=start_line,
+        raw_line_end=end_line,
+    )
 
 
 def parse_mesh_link_row(line: str) -> dict[str, object] | None:
@@ -294,6 +405,13 @@ def _channel_busy_sample_time(sample_date: str, raw_time: str, current_time: str
 
 def _busy_int(value: str) -> int | None:
     return None if value == "-" else int(value)
+
+
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_online_link_state(value: str) -> str:

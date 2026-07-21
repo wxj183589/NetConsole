@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -377,6 +378,60 @@ def test_online_mr_collection_service_emits_session_created_before_connection_fa
     assert order[:2] == ["online_mr_session_created", "connect"]
     assert meta["status"] == "FAILED"
     assert session_dir.is_dir()
+
+
+def test_application_collection_starts_traffic_before_ssh_initialization(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    order: list[str] = []
+    traffic_started = threading.Event()
+
+    class TrafficCoordinator:
+        def start_for_session(self, _session, _config):
+            order.append("traffic-start")
+            traffic_started.set()
+            return {"flush_complete": False, "warnings": []}
+
+        def stop_traffic_for_session(self, _session_id):
+            order.append("traffic-stop")
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            assert timeout_seconds > 0
+            order.append("traffic-flush")
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            order.append("traffic-finalize")
+            return {"flush_complete": True, "warnings": []}
+
+    def connect_after_traffic(_config: OnlineMrConnectionConfig):
+        assert traffic_started.wait(1.0)
+        order.append("connect")
+        return FakeConnection()
+
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=connect_after_traffic,
+        traffic_coordinator=TrafficCoordinator(),
+    )
+    deadline = time.monotonic() + 0.25
+
+    result = service.run(
+        _config(),
+        should_cancel=lambda: time.monotonic() >= deadline,
+        manage_traffic=True,
+        package_on_stop=False,
+    )
+
+    assert result["status"] == "STOPPED"
+    assert order.index("traffic-start") < order.index("connect")
+    meta = json.loads((Path(result["session_dir"]) / "session_meta.json").read_text(encoding="utf-8"))
+    stages = [item["stage"] for item in meta["startup_timeline"]]
+    assert "session_created" in stages
+    assert "traffic_start_begin" in stages
+    assert "traffic_start_submitted" in stages
+    assert "ssh_connect_start" in stages
 
 
 def test_online_mr_packaging_failure_preserves_raw_and_cleans_tmp(

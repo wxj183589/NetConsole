@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshLogRecord
@@ -139,7 +139,7 @@ class OnlineMrSession:
         self.session_dir = session_dir
         self.meta = meta
         self.db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
-        self._meta_lock = Lock()
+        self._meta_lock = RLock()
 
     def initialize_database(self) -> None:
         with self._connect() as conn:
@@ -338,6 +338,27 @@ class OnlineMrSession:
         self.meta.status = status
         self.log("INFO", f"state={status}")
         self.write_meta()
+
+    def record_startup_milestone(
+        self,
+        stage: str,
+        *,
+        elapsed_ms: int | None = None,
+        status: str = "ok",
+        message: str = "",
+    ) -> None:
+        item: dict[str, object] = {
+            "stage": stage,
+            "at": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+            "status": status,
+        }
+        if elapsed_ms is not None:
+            item["elapsed_ms"] = max(0, int(elapsed_ms))
+        if message:
+            item["message"] = message
+        with self._meta_lock:
+            self.meta.startup_timeline = [*self.meta.startup_timeline, item][-200:]
+            self.write_meta()
 
     def finish(self, status: str, stats: dict[str, int]) -> None:
         self.meta.status = status

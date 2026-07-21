@@ -389,6 +389,7 @@ class OnlineMrSessionMeta:
     stop_reason: str = ""
     force_stopped: bool = False
     traffic_summary: dict[str, Any] = field(default_factory=dict)
+    startup_timeline: list[dict[str, Any]] = field(default_factory=list)
     finalization_warnings: list[str] = field(default_factory=list)
     finalization_complete: bool = False
     package_available: bool = False
@@ -426,6 +427,7 @@ class OnlineMrSessionMeta:
             "stop_reason": self.stop_reason,
             "force_stopped": self.force_stopped,
             "traffic_summary": self.traffic_summary,
+            "startup_timeline": self.startup_timeline,
             "finalization_warnings": self.finalization_warnings,
             "finalization_complete": self.finalization_complete,
             "package_available": self.package_available,

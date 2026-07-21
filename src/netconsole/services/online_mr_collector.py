@@ -339,11 +339,16 @@ class OnlineMrCollector:
         if self.session_created_callback is not None:
             self.session_created_callback(self.session.meta)
         if self.config.collect_config_on_start:
+            self._record_startup("config_collect_start")
             self.collect_current_configuration()
+            self._record_startup("config_collect_finished", status=self.session.meta.config_collect_status)
         else:
             self.session.update_config_collect(enabled=False, status="skipped", error=None)
+            self._record_startup("config_collect_skipped", status="skipped")
         self._set_status(STATE_CONNECTING)
+        self._record_startup("ssh_connect_start")
         self.connection = self.connection_factory(self.config)
+        self._record_startup("ssh_login_success")
         if self.config.connection_method:
             self.session.meta.connection_method = self.config.connection_method
             self.session.write_meta()
@@ -352,6 +357,7 @@ class OnlineMrCollector:
             self._set_status(STATE_STOPPING)
             return self.session.meta
         self._set_status(STATE_COLLECTING)
+        self._record_startup("collector_status_collecting")
         return self.session.meta
 
     def collect_config_only(self) -> OnlineMrSessionMeta:
@@ -404,7 +410,9 @@ class OnlineMrCollector:
         if self.cancelled or self._stream_stop.is_set():
             return
         self._set_status(STATE_INITIALIZING)
+        self._record_startup("init_commands_start")
         self._run_init_commands(self.connection, record_meta=True)
+        self._record_startup("init_commands_finished")
 
     def _run_init_commands(self, connection: OnlineMrConnection, *, record_meta: bool = False) -> None:
         if self.cancelled or self._stream_stop.is_set():
@@ -825,6 +833,7 @@ class OnlineMrCollector:
         thread = Thread(target=target, name=f"online-mr-{task_type}", daemon=True)
         self._stream_threads.append(thread)
         thread.start()
+        self._record_startup(f"{task_type}_collector_thread_started")
 
     def _replace_main_connection_for_stream_task(self, task_type: str) -> bool:
         self._close_main_connection()
@@ -1033,6 +1042,16 @@ class OnlineMrCollector:
         self.status = status
         if self.session:
             self.session.update_status(status)
+
+    def _record_startup(self, stage: str, *, status: str = "ok", message: str = "") -> None:
+        if self.session is None:
+            return
+        self.session.record_startup_milestone(
+            stage,
+            elapsed_ms=int((self.clock() - self.started_monotonic) * 1000),
+            status=status,
+            message=message,
+        )
 
     def _update_meta(self) -> None:
         session = self._session()

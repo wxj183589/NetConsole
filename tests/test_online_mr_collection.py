@@ -46,6 +46,7 @@ from netconsole.services.online_mr_collector import NetmikoShellConnection, Repe
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_mesh_link_text, parse_switch_history_text
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr_analysis_report_exporter import OnlineMrAnalysisReportExporter
 from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder
 from netconsole.services.online_mr_terminal_log_parser import parse_active_link_endpoint, parse_active_link_switch_logs, switch_reason_text
@@ -1268,6 +1269,134 @@ def test_mesh_parser_normalizes_active_variants() -> None:
     assert error == ""
     assert records[0].link_state == "ACTIVE"
     assert records[0].metrics["local_rssi_db"] == 36
+
+
+def test_online_mesh_parser_accepts_peer_field_block_active_ax() -> None:
+    records, status, error = parse_mesh_link_text(
+        "Peer Name: 30f5-277a-25a0\n"
+        "Peer MAC: 30f5-277a-25af\n"
+        "RSSI: 32\n"
+        "BSSID: 78a1-3e52-553f\n"
+        "Interface: WLAN-MeshLink102\n"
+        "Link state: Active(ax)\n"
+        "Online time: 00h 00m 05s\n",
+        datetime(2026, 7, 21, 15, 52, 38),
+    )
+
+    assert status == "OK"
+    assert error == ""
+    assert len(records) == 1
+    assert records[0].link_state == "ACTIVE"
+    assert records[0].link_state_raw == "Active(ax)"
+    assert records[0].peer_mac_raw == "30f5-277a-25af"
+    assert records[0].peer_mac_normalized == "30f5277a25af"
+    assert records[0].metrics["peer_name"] == "30f5-277a-25a0"
+    assert records[0].metrics["local_rssi_db"] == 32
+    assert records[0].metrics["bssid"] == "78a1-3e52-553f"
+    assert records[0].metrics["interface"] == "WLAN-MeshLink102"
+    assert records[0].metrics["online_time"] == "00h 00m 05s"
+
+
+def test_online_mr_realtime_preview_uses_mesh_link_field_block_raw_tail(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "2026-07-21 15:52:38.363 [collector=repeat] RX Peer Name: 30f5-277a-25a0\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX Peer MAC: 30f5-277a-25af\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX RSSI: 32\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX BSSID: 78a1-3e52-553f\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX Interface: WLAN-MeshLink102\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX Link state: Active(ax)\n"
+        "2026-07-21 15:52:38.363 [collector=repeat] RX Online time: 00h 00m 05s\n",
+        encoding="utf-8",
+    )
+
+    preview = OnlineMrQueryService(paths).get_realtime_preview(config.site, session.meta.session_id)
+
+    assert preview.available is True
+    assert preview.link["peer_name"] == "30f5-277a-25a0"
+    assert preview.link["peer_mac"] == "30f5-277a-25af"
+    assert preview.link["peer_mac_normalized"] == "30f5277a25af"
+    assert preview.link["peer_radio_mac"] == "78a1-3e52-553f"
+    assert preview.link["interface"] == "WLAN-MeshLink102"
+    assert preview.link["link_state"] == "Active(ax)"
+    assert preview.link["local_rssi_db"] == 32
+    assert preview.link["rssi_dbm"] == -32
+    assert preview.link["online_time"] == "00h 00m 05s"
+    assert preview.link["source"] == "mesh_link_raw_tail"
+    assert preview.display_context["match_source"] == "none"
+    assert preview.message.startswith("已从主链路原始日志尾部识别")
+
+
+def test_online_mr_realtime_preview_keeps_active_when_tail_also_has_standby(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
+        "Peer Name: 30f5-277a-25a0\n"
+        "Peer MAC: 30f5-277a-25af\n"
+        "RSSI: 32\n"
+        "BSSID: 78a1-3e52-553f\n"
+        "Interface: WLAN-MeshLink102\n"
+        "Link state: Active(ax)\n"
+        "Online time: 00h 00m 05s\n\n"
+        "Peer Name: 30f5-277a-9990\n"
+        "Peer MAC: 30f5-277a-999f\n"
+        "RSSI: 18\n"
+        "BSSID: 78a1-3e52-553f\n"
+        "Interface: WLAN-MeshLink103\n"
+        "Link state: Standby(ax)\n"
+        "Online time: 00h 00m 02s\n",
+        encoding="utf-8",
+    )
+
+    preview = OnlineMrQueryService(paths).get_realtime_preview(config.site, session.meta.session_id)
+
+    assert preview.link["peer_name"] == "30f5-277a-25a0"
+    assert preview.link["link_state"] == "Active(ax)"
+    assert preview.link["local_rssi_db"] == 32
+
+
+def test_online_mr_realtime_preview_raw_fallback_uses_bounded_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text("placeholder", encoding="utf-8")
+    calls: list[int] = []
+
+    def fake_read_tail_text(_path: Path, maximum_bytes: int) -> str:
+        calls.append(maximum_bytes)
+        return (
+            "Peer Name: 30f5-277a-25a0\n"
+            "Peer MAC: 30f5-277a-25af\n"
+            "RSSI: 32\n"
+            "BSSID: 78a1-3e52-553f\n"
+            "Interface: WLAN-MeshLink102\n"
+            "Link state: Active(ax)\n"
+        )
+
+    monkeypatch.setattr(OnlineMrQueryService, "_read_tail_text", staticmethod(fake_read_tail_text))
+
+    preview = OnlineMrQueryService(paths).get_realtime_preview(config.site, session.meta.session_id)
+
+    assert preview.available is True
+    assert calls == [128 * 1024]
+    assert preview.link["peer_mac"] == "30f5-277a-25af"
+
+
+def test_online_mr_raw_tail_reads_mesh_and_fping_independently(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    (session.session_dir / "raw" / "mesh_link_raw.log").write_text("mesh active\n", encoding="utf-8")
+    (session.session_dir / "raw" / "fping_v5_raw.log").write_text("fping sample\n", encoding="utf-8")
+    service = OnlineMrQueryService(paths)
+
+    mesh = service.read_raw_tail(config.site, session.meta.session_id, "mesh_link", tail=10)
+    fping = service.read_raw_tail(config.site, session.meta.session_id, "fping_raw", tail=10)
+
+    assert mesh.lines == ["mesh active"]
+    assert fping.lines == ["fping sample"]
 
 
 def test_online_mesh_parser_accepts_peer_name_table_format() -> None:

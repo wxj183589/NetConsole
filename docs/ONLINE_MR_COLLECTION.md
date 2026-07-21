@@ -355,7 +355,11 @@ raw 尾部白名单固定为 `terminal_monitor`、`mesh_link`、`channel_busy`�
 
 当前 Session、采集器、轻量预览和 raw 摘要每 5 秒刷新；原始日志只有展开后才每 3 秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。当前 operation 进入终态后页面立即清空实时状态，历史数据仍由分析页读取。
 
-采集项更新时间综合使用采集器 view、`live_samples` 最新事实时间和 raw 文件 mtime。活动 Session 中更新时间不超过 30 秒为 `normal`，超过 30 秒为 `stale`，超过 120 秒为 `interrupted`；判定由 Python Query Service 返回，Vue 不自行推导。fping/iPerf 在采集过程中原子更新 `view/live_fping_status.json` 与 `view/live_iperf_status.json`；主链路 view 缺失时，查询层先只读最新一个 `mesh_link` sample，再降级读取 `mesh_link_raw.log` 最后 128 KiB 并复用既有 parser，不扫描完整日志。H3C 在线 Peer 表只有正数 RSSI 幅值而缺少已计算信号值时，由 Python 规范化为负 dBm，Vue 不猜测转换。
+采集项更新时间综合使用采集器 view、`live_samples` 最新事实时间和 raw 文件 mtime。活动 Session 中更新时间不超过 30 秒为 `normal`，超过 30 秒为 `stale`，超过 120 秒为 `interrupted`；判定由 Python Query Service 返回，Vue 不自行推导。实时页将采集项状态、当前文件大小、最近增长、更新时间、健康状态和异常说明合并到一张表，不再单独展示重复的文件增长表；额外的 fping samples、fping summary 和采集器输出只作为同一状态表中的 raw 行显示。
+
+原始日志动态查看固定并列 tail `mesh_link_raw.log` 与 `fping_v5_raw.log`，现场可同时观察主链路和高频 Ping；终端实时日志、无线状态、空口负载、iPerf 和采集器输出仍通过其他日志选择器查看。fping/iPerf 在采集过程中原子更新 `view/live_fping_status.json` 与 `view/live_iperf_status.json`；主链路 view 缺失时，查询层先只读最新一个 `mesh_link` sample，再降级读取 `mesh_link_raw.log` 最后 128 KiB 并复用既有 parser，不扫描完整日志。H3C 在线 Peer 表支持表格行和 `Peer Name:`、`Peer MAC:`、`RSSI:`、`BSSID:`、`Interface:`、`Link state:`、`Online time:` 字段块两类格式；只选择 `Active/ACTIVE/Active(ax)` 作为当前主链路，`Standby/Standby(ax)` 不覆盖主链路。站点或区间匹配不到时，预览仍返回主链路 AP、Peer MAC、接口、链路状态、RSSI、在线时长、数据来源、更新时间和识别说明；H3C 正数 RSSI 幅值由 Python 规范化为负 dBm，Vue 不猜测转换。
+
+LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping/iPerf 启动从 SSH 初始化后移到 Session 创建后的异步阶段。Traffic 子任务不改变采集命令语义，仍随采集停止和最终化统一 flush；启动失败时若 Traffic 已开始，也必须停止、flush 并释放。`startup_timeline` 只记录阶段、耗时和状态，不包含密码、Token 或服务器绝对路径。
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 

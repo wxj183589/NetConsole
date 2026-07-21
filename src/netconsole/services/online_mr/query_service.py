@@ -183,6 +183,7 @@ class OnlineMrQueryService:
                 "session_type": meta.get("session_type"),
                 "config_collect_enabled": meta.get("config_collect_enabled"),
                 "config_collect_status": meta.get("config_collect_status"),
+                "startup_timeline": meta.get("startup_timeline") or [],
             },
             enabled_collectors=self._enabled_collectors(meta),
             traffic_summary=dict(
@@ -272,10 +273,15 @@ class OnlineMrQueryService:
         assert meta is not None
         mr_view = self._read_view_json(session_dir, "live_mr_status.json")
         link = self._read_view_json(session_dir, "live_link_status.json")
+        raw_link: dict[str, Any] = {}
         if not link:
             link = self._latest_live_link(session_dir)
+        if link and any(not link.get(key) for key in ("interface", "online_time", "local_rssi_db", "link_state")):
+            raw_link = self._latest_raw_link(session_dir)
+            link = self._merge_preview_link(link, raw_link)
         if not link:
-            link = self._latest_raw_link(session_dir)
+            raw_link = raw_link or self._latest_raw_link(session_dir)
+            link = raw_link
         fping = self._read_view_json(session_dir, "live_fping_status.json")
         iperf = self._read_view_json(session_dir, "live_iperf_status.json")
         if str(meta.get("status") or "").upper() not in self._ACTIVE_WEB_STATES:
@@ -397,19 +403,28 @@ class OnlineMrQueryService:
                 if not row:
                     return {}
                 peer_name = str(row["resolved_peer_name"] or row["peer_name"] or "")
-                peer_mac = str(row["peer_mac_normalized"] or row["peer_mac_raw"] or "")
+                peer_mac = str(row["peer_mac_raw"] or row["peer_mac_normalized"] or "")
                 rssi = self._preview_rssi_dbm(row["local_signal_dbm"], row["local_rssi_db"])
                 return {
                     "status": str(row["link_state"] or "unknown").lower(),
+                    "link_state": str(row["link_state"] or ""),
+                    "link_state_normalized": str(row["link_state"] or ""),
                     "updated_at": self._text_or_none(sample["collected_at"]),
                     "master": peer_name,
+                    "master_ap": peer_name,
                     "peer_name": peer_name,
                     "peer_mac": peer_mac,
+                    "peer_mac_normalized": str(row["peer_mac_normalized"] or ""),
                     "rssi_dbm": rssi,
+                    "local_rssi_db": row["local_rssi_db"],
                     "radio": row["radio"],
+                    "source": "parsed_sqlite_latest",
+                    "message": "已从结构化实时库识别 ACTIVE 主链路",
                     "display_context": {
                         "station": str(row["belong_station"] or ""),
                         "section": str(row["belong_section"] or ""),
+                        "match_source": "parsed_sqlite" if row["belong_station"] or row["belong_section"] else "none",
+                        "match_key": "peer_mac" if peer_mac else "none",
                     },
                 }
         except (OnlineMrQueryError, sqlite3.Error):
@@ -427,14 +442,18 @@ class OnlineMrQueryService:
                 return {}
             collected_at = datetime.fromtimestamp(stat.st_mtime)
             records, _status, _error = parse_mesh_link_text(raw_text, collected_at)
-            active = next((record for record in reversed(records) if record.link_state == "ACTIVE"), None)
+            active_records = [record for record in records if record.link_state == "ACTIVE"]
+            active = next(reversed(active_records), None) if active_records else None
             if active is None:
                 return {}
             metrics = active.metrics
             peer_name = str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or "")
-            peer_mac = str(active.peer_mac_normalized or active.peer_mac_raw or "")
+            peer_mac = str(active.peer_mac_raw or active.peer_mac_normalized or "")
             master_ap = peer_name or peer_mac
             rssi = self._preview_rssi_dbm(active.local_signal_dbm, metrics.get("local_rssi_db"))
+            message = "已从主链路原始日志尾部识别 ACTIVE 主链路"
+            if len(active_records) > 1:
+                message = f"{message}；检测到 {len(active_records)} 条 ACTIVE，已按尾部最新记录显示"
             return {
                 "status": "active",
                 "updated_at": collected_at.isoformat(sep=" ", timespec="seconds"),
@@ -442,13 +461,79 @@ class OnlineMrQueryService:
                 "master_ap": master_ap,
                 "peer_name": peer_name,
                 "peer_mac": peer_mac,
+                "peer_mac_raw": active.peer_mac_raw,
+                "peer_mac_normalized": active.peer_mac_normalized,
+                "peer_radio_mac": str(metrics.get("bssid") or ""),
+                "bssid": str(metrics.get("bssid") or ""),
+                "interface": str(metrics.get("interface") or ""),
+                "link_state": str(active.link_state_raw or active.link_state),
+                "link_state_normalized": active.link_state,
+                "online_time": str(metrics.get("online_time") or ""),
+                "local_rssi_db": metrics.get("local_rssi_db"),
                 "rssi_dbm": rssi,
                 "radio": active.radio,
-                "source": "raw_tail",
+                "source": "mesh_link_raw_tail",
+                "raw_file": "mesh_link_raw.log",
+                "display_context": {
+                    "station": "",
+                    "section": "",
+                    "match_source": "none",
+                    "match_key": "peer_mac" if peer_mac else "none",
+                },
+                "message": message,
             }
         except OSError:
             LOGGER.debug("读取 Online MR 原始链路尾部失败：%s", session_dir.name, exc_info=True)
             return {}
+
+    @classmethod
+    def _merge_preview_link(cls, primary: dict[str, Any], supplement: dict[str, Any]) -> dict[str, Any]:
+        if not primary:
+            return dict(supplement)
+        if not supplement:
+            return dict(primary)
+        primary_mac = cls._compact_mac_key(primary.get("peer_mac") or primary.get("peer_mac_raw"))
+        supplement_mac = cls._compact_mac_key(supplement.get("peer_mac") or supplement.get("peer_mac_raw"))
+        if primary_mac and supplement_mac and primary_mac != supplement_mac:
+            return dict(primary)
+        merged = dict(primary)
+        for key in (
+            "master_ap",
+            "peer_name",
+            "peer_mac",
+            "peer_mac_raw",
+            "peer_mac_normalized",
+            "peer_radio_mac",
+            "bssid",
+            "interface",
+            "link_state",
+            "link_state_normalized",
+            "online_time",
+            "local_rssi_db",
+            "rssi_dbm",
+            "radio",
+            "raw_file",
+        ):
+            if not cls._has_value(merged.get(key)) and cls._has_value(supplement.get(key)):
+                merged[key] = supplement[key]
+        if cls._has_value(supplement.get("source")) and supplement.get("source") != merged.get("source"):
+            merged["supplement_source"] = supplement["source"]
+        primary_context = merged.get("display_context") if isinstance(merged.get("display_context"), dict) else {}
+        supplement_context = supplement.get("display_context") if isinstance(supplement.get("display_context"), dict) else {}
+        context = dict(supplement_context)
+        context.update({key: value for key, value in primary_context.items() if cls._has_value(value)})
+        merged["display_context"] = context
+        if not cls._has_value(merged.get("message")) and cls._has_value(supplement.get("message")):
+            merged["message"] = supplement["message"]
+        return merged
+
+    @staticmethod
+    def _compact_mac_key(value: object) -> str:
+        return re.sub(r"[^0-9a-f]", "", str(value or "").casefold())
+
+    @staticmethod
+    def _has_value(value: object) -> bool:
+        return value not in (None, "")
 
     @staticmethod
     def _preview_rssi_dbm(signal_dbm: object, raw_rssi: object) -> float | int | None:
