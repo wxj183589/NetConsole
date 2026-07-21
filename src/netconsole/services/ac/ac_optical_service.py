@@ -137,6 +137,10 @@ class AcOpticalService:
             optical_rows_updated=result.optical_rows_updated,
             failed_aps=result.failed_aps,
             error_message=str(result.error_message or ""),
+            requested_concurrency=result.requested_concurrency,
+            effective_concurrency=result.effective_concurrency,
+            platform_concurrency_limit=result.platform_concurrency_limit,
+            round_summaries=list(result.round_summaries),
         )
 
     def refresh_single_ap_optical(

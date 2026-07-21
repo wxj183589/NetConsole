@@ -22,6 +22,10 @@ from netconsole.repositories.device_group_repository import DeviceGroupRepositor
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
 from netconsole.services import command_guard, netmiko_connection
+from netconsole.services.ac.fit_ap_optical_concurrency import (
+    DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
+    fit_ap_optical_platform_concurrency_limit,
+)
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
 from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, safe_send_command, sanitize_sensitive_text
@@ -37,7 +41,7 @@ TRACKSIDE_OPTICAL_COMMANDS = (
     "display transceiver diagnosis interface",
     "display interface brief",
 )
-DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = 1000
+DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
 TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
 TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
@@ -166,6 +170,11 @@ class TracksideOpticalSessionResult:
     rows_with_ap_identity: int = 0
     rows_without_ap_identity: int = 0
     current_lldp_identity_count: int = 0
+    requested_concurrency: int = 0
+    effective_concurrency: int = 0
+    platform_concurrency_limit: int = 0
+    fit_ap_effective_concurrency: int = 0
+    fit_ap_round_summaries: list[dict[str, object]] = field(default_factory=list)
 
 
 def normalize_switch_type(value: object) -> str:
@@ -349,11 +358,23 @@ def collect_trackside_optical(
     started_at = _now()
     cancel_event = cancel_event or Event()
     command_guard.validate_command_list(TRACKSIDE_OPTICAL_COMMANDS, "optical_refresh")
+    platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
     concurrency_settings = _trackside_concurrency_settings(paths)
-    requested_concurrency = max(1, int(concurrency or concurrency_settings["device"]))
-    switch_concurrency = max(1, int(concurrency_settings["switch"] or requested_concurrency))
-    fit_ap_concurrency = max(1, int(concurrency_settings["fit_ap"] or requested_concurrency))
-    max_workers = max(1, min(requested_concurrency, switch_concurrency, len(targets) or 1))
+    requested_concurrency = _positive_int_setting(
+        concurrency if concurrency is not None else concurrency_settings["device"],
+        concurrency_settings["device"],
+    )
+    safe_requested_concurrency = _safe_trackside_concurrency(requested_concurrency, platform_concurrency_limit)
+    switch_concurrency = _safe_trackside_concurrency(
+        concurrency_settings["switch"] or safe_requested_concurrency,
+        platform_concurrency_limit,
+    )
+    fit_ap_concurrency = _safe_trackside_concurrency(
+        concurrency_settings["fit_ap"] or safe_requested_concurrency,
+        platform_concurrency_limit,
+    )
+    max_workers = max(1, min(safe_requested_concurrency, switch_concurrency, len(targets) or 1))
+    fit_ap_requested_concurrency = min(safe_requested_concurrency, fit_ap_concurrency)
     results: list[TracksideDeviceCollectionResult] = []
     completed = 0
     total_units = len(targets)
@@ -366,7 +387,7 @@ def collect_trackside_optical(
             repository,
             site_name,
             paths,
-            min(requested_concurrency, fit_ap_concurrency),
+            fit_ap_requested_concurrency,
             cancel_event,
             effective_station or None,
             target_ap_uuid,
@@ -391,6 +412,11 @@ def collect_trackside_optical(
                     progress_callback(completed, max(total_units, 1))
         stage("trackside_ap.stage_refresh_fit_ap_optical")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
+    fit_ap_effective_concurrency = max(
+        (int(getattr(result, "effective_concurrency", 0) or 0) for result in fit_ap_results),
+        default=0,
+    )
+    fit_ap_round_summaries = _fit_ap_result_round_summaries(fit_ap_results)
     target_ap_resource = _find_scoped_fit_ap_resource(
         ac_repository.list_all_fit_ap_resources_with_metadata(),
         target_ap_uuid=target_ap_uuid,
@@ -437,7 +463,12 @@ def collect_trackside_optical(
             "success_count": success_count,
             "failed_count": failed_count,
             "skipped_count": len(skipped),
-            "concurrency": concurrency,
+            "concurrency": safe_requested_concurrency,
+            "requested_concurrency": requested_concurrency,
+            "effective_concurrency": max_workers if targets else 0,
+            "platform_concurrency_limit": platform_concurrency_limit,
+            "fit_ap_effective_concurrency": fit_ap_effective_concurrency,
+            "round_summaries": fit_ap_round_summaries,
             "command_list": sorted({command for target in targets for command in target.commands}),
             "commands": sorted({command for target in targets for command in target.commands}),
             "status": status,
@@ -456,7 +487,7 @@ def collect_trackside_optical(
         failed_count,
         len(skipped),
         total_units,
-        concurrency,
+        safe_requested_concurrency,
         status,
         skipped,
         results,
@@ -477,6 +508,11 @@ def collect_trackside_optical(
         int(coverage.get("rows_with_ap_identity") or 0),
         int(coverage.get("rows_without_ap_identity") or 0),
         int(coverage.get("current_lldp_identity_count") or 0),
+        requested_concurrency,
+        max_workers if targets else 0,
+        platform_concurrency_limit,
+        fit_ap_effective_concurrency,
+        fit_ap_round_summaries,
     )
 
 
@@ -548,10 +584,24 @@ def _has_trackside_ap_identity(row: dict[str, object | None]) -> bool:
 
 def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
     settings = SettingsStore(paths)
-    device = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY)
-    switch = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY, device), device)
-    fit_ap = _positive_int_setting(settings.get_value(TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY, device), device)
+    platform_limit = fit_ap_optical_platform_concurrency_limit()
+    device = _safe_trackside_concurrency(
+        settings.get_value(TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY),
+        platform_limit,
+    )
+    switch = _safe_trackside_concurrency(
+        settings.get_value(TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY, device),
+        platform_limit,
+    )
+    fit_ap = _safe_trackside_concurrency(
+        settings.get_value(TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY, device),
+        platform_limit,
+    )
     return {"device": device, "switch": switch, "fit_ap": fit_ap}
+
+
+def _safe_trackside_concurrency(value: object, platform_limit: int) -> int:
+    return max(1, min(_positive_int_setting(value, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), int(platform_limit or 1)))
 
 
 def _positive_int_setting(value: object, default: int) -> int:
@@ -560,6 +610,24 @@ def _positive_int_setting(value: object, default: int) -> int:
     except (TypeError, ValueError):
         return int(default)
     return parsed if parsed > 0 else int(default)
+
+
+def _fit_ap_result_round_summaries(results: list[object]) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for result in results:
+        rounds = getattr(result, "round_summaries", None)
+        if not rounds:
+            continue
+        summaries.append(
+            {
+                "ac_device_uuid": str(getattr(result, "ac_device_uuid", "") or ""),
+                "requested_concurrency": int(getattr(result, "requested_concurrency", 0) or 0),
+                "effective_concurrency": int(getattr(result, "effective_concurrency", 0) or 0),
+                "platform_concurrency_limit": int(getattr(result, "platform_concurrency_limit", 0) or 0),
+                "rounds": [dict(row) for row in rounds if isinstance(row, dict)],
+            }
+        )
+    return summaries
 
 
 def _collect_fit_ap_optical_subtasks(
@@ -611,6 +679,7 @@ def _collect_fit_ap_optical_subtasks(
             target_ap_macs=[target_ap_mac] if target_ap_mac else None,
             target_ap_names=[target_ap_name] if target_ap_name else None,
             target_stations=[target_station] if target_station else None,
+            should_cancel=cancel_event.is_set,
         )
         results.append(result)
     return results, total, skipped

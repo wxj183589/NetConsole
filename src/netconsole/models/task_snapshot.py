@@ -35,6 +35,7 @@ class TaskSnapshot:
     source: str = "local"
     site_name: str = "demo"
     owner_pid: int = 0
+    resource_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

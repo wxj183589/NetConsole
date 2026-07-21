@@ -966,6 +966,107 @@ def test_fit_ap_optical_retry_targets_and_concurrency():
         )
         == 100
     )
+    assert (
+        h3c_ac_collect_service.retry_fit_ap_optical_concurrency(
+            64, floor=100, ratio=0.5
+        )
+        == 32
+    )
+
+
+def test_fit_ap_optical_final_rows_count_each_ap_once_after_retry():
+    rows = [
+        {
+            "ap_uuid": "ap-retried",
+            "status": "failed",
+            "error_message": "connect_timeout: first round",
+            "collected_at": "2026-01-01T00:00:00",
+        },
+        {
+            "ap_uuid": "ap-stable",
+            "status": "success",
+            "rx_power": "-8.10",
+            "collected_at": "2026-01-01T00:00:00",
+        },
+        {
+            "ap_uuid": "ap-retried",
+            "status": "success",
+            "rx_power": "-7.20",
+            "collected_at": "2026-01-01T00:00:01",
+        },
+    ]
+
+    final_rows = h3c_ac_collect_service._final_fit_ap_optical_rows(rows)
+
+    assert len(final_rows) == 2
+    by_uuid = {str(row["ap_uuid"]): row for row in final_rows}
+    assert by_uuid["ap-retried"]["status"] == "success"
+    assert by_uuid["ap-retried"]["rx_power"] == "-7.20"
+    assert by_uuid["ap-stable"]["status"] == "success"
+
+
+def test_fit_ap_optical_round_isolates_single_future_failure(monkeypatch, tmp_path):
+    ac_device = make_ac_device()
+    ac_device.device_uuid = "ac-1"
+    resources = [
+        {"ap_uuid": "ap-ok", "ap_name": "AP-OK", "ap_ip": "10.0.0.10"},
+        {"ap_uuid": "ap-fail", "ap_name": "AP-FAIL", "ap_ip": "10.0.0.11"},
+    ]
+
+    def collect_one(_ac_device, ap_row, *_args, **_kwargs):
+        if ap_row["ap_uuid"] == "ap-fail":
+            raise OSError(36, "Resource deadlock avoided")
+        return {
+            "ac_device_uuid": "ac-1",
+            "ap_uuid": ap_row["ap_uuid"],
+            "ap_name": ap_row["ap_name"],
+            "status": "success",
+            "rx_power": "-7.10",
+        }
+
+    monkeypatch.setattr(h3c_ac_collect_service, "_collect_single_fit_ap_optical", collect_one)
+    progress: list[tuple[int, int]] = []
+
+    rows = h3c_ac_collect_service._collect_fit_ap_optical_round(
+        ac_device,
+        resources,
+        "demo",
+        "run-1",
+        tmp_path,
+        PathResolver(tmp_path),
+        64,
+        lambda: False,
+        lambda current, total: progress.append((current, total)),
+    )
+
+    by_uuid = {row["ap_uuid"]: row for row in rows}
+    assert by_uuid["ap-ok"]["status"] == "success"
+    assert by_uuid["ap-fail"]["status"] == "failed"
+    assert str(by_uuid["ap-fail"]["error_message"]).startswith("log_write_failed:")
+    assert progress[-1] == (2, 2)
+
+
+def test_fit_ap_optical_round_skips_executor_when_no_targets(monkeypatch, tmp_path):
+    ac_device = make_ac_device()
+
+    def forbidden_executor(*_args, **_kwargs):
+        raise AssertionError("empty FIT-AP target list must not create a thread pool")
+
+    monkeypatch.setattr(h3c_ac_collect_service, "ThreadPoolExecutor", forbidden_executor)
+
+    rows = h3c_ac_collect_service._collect_fit_ap_optical_round(
+        ac_device,
+        [],
+        "demo",
+        "run-empty",
+        tmp_path,
+        PathResolver(tmp_path),
+        64,
+        lambda: False,
+        lambda _current, _total: None,
+    )
+
+    assert rows == []
 
 
 def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
@@ -4307,7 +4408,7 @@ def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
         ac_repository, repository, [{"ap_uuid": "ap-shared"}]
     )
 
-    assert DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY == 1000
+    assert DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY == 64
     assert len(dedupe_targets([*switch_targets, *ap_targets])) == 1
     assert switch_targets[0].device_id == shared.id
 
@@ -4354,7 +4455,8 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
         concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
     )
 
-    assert result.concurrency == 1000
+    assert result.concurrency == 64
+    assert result.requested_concurrency == 64
     assert result.success_count == 1
     assert result.failed_count == 1
     assert any(
@@ -4471,6 +4573,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
         target_ap_macs=None,
         target_ap_names=None,
         target_stations=None,
+        should_cancel=None,
     ):
         fit_calls.append(
             (
@@ -4508,7 +4611,7 @@ def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     )
 
     assert resource_calls == [(ac.device_uuid, "demo", False)]
-    assert fit_calls == [(ac.device_uuid, "demo", 1000, None, None, None, None)]
+    assert fit_calls == [(ac.device_uuid, "demo", 64, None, None, None, None)]
     assert result.fit_ap_total == 3
     assert result.station_switch_total == 1
     assert result.success_count == 3
@@ -4608,6 +4711,7 @@ def test_trackside_ap_update_scopes_switch_to_target_ap_and_reports_offline(
         target_ap_macs=None,
         target_ap_names=None,
         target_stations=None,
+        should_cancel=None,
     ):
         fit_calls.append(
             (target_ap_uuids, target_ap_macs, target_ap_names, target_stations)

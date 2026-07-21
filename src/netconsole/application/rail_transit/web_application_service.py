@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
 import threading
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -43,8 +44,10 @@ from netconsole.models.api.vehicle_mr_online import (
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_keys
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import (
@@ -57,7 +60,7 @@ from netconsole.services.export.export_task_builders import (
 )
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_analysis_params_service import (
@@ -792,6 +795,19 @@ class RailTransitWebApplicationService:
             ap_mac=ap_mac,
             ap_name=ap_name,
         )
+        ac_uuids = self._trackside_ap_optical_ac_uuids(
+            site_id,
+            station=params.get("station", ""),
+            ap_uuid=params.get("ap_uuid", ""),
+            ap_mac=params.get("ap_mac", ""),
+            ap_name=params.get("ap_name", ""),
+        )
+        resource_keys = fit_ap_optical_resource_keys(site_id, ac_uuids)
+        if resource_keys:
+            params["resource_keys"] = resource_keys
+        if len(ac_uuids) == 1:
+            params["device_uuid"] = ac_uuids[0]
+            params["ac_uuid"] = ac_uuids[0]
         return self._start_task(
             site_id,
             "trackside_ap_optical_update",
@@ -806,7 +822,7 @@ class RailTransitWebApplicationService:
         ap_uuid: str = "",
         ap_mac: str = "",
         ap_name: str = "",
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         selected_station = str(station or "").strip()
         selected_uuid = str(ap_uuid or "").strip()
         selected_mac_text = str(ap_mac or "").strip()
@@ -831,7 +847,71 @@ class RailTransitWebApplicationService:
             "ap_uuid": str(matched.get("ap_uuid") or selected_uuid),
             "ap_mac": str(matched.get("ap_mac") or selected_mac_text),
             "ap_name": str(matched.get("ap_name") or selected_name),
+            "ac_uuid": str(matched.get("ac_device_uuid") or ""),
+            "device_uuid": str(matched.get("ac_device_uuid") or ""),
         }
+
+    def _trackside_ap_optical_ac_uuids(
+        self,
+        site_id: str,
+        *,
+        station: object = "",
+        ap_uuid: object = "",
+        ap_mac: object = "",
+        ap_name: object = "",
+    ) -> list[str]:
+        database = Database(self.paths.site_db_path(site_id))
+        ac_repository = AcRepository(database)
+        try:
+            rows = ac_repository.list_all_fit_ap_resources_with_metadata()
+        except sqlite3.OperationalError as exc:
+            if not self._is_missing_table_error(exc):
+                raise
+            rows = []
+        selected_station = str(station or "").strip().casefold()
+        selected_uuid = str(ap_uuid or "").strip()
+        selected_mac = normalize_mac(ap_mac) if str(ap_mac or "").strip() else None
+        selected_name = str(ap_name or "").strip().casefold()
+        has_ap_identity = bool(selected_uuid or selected_mac or selected_name)
+        if not selected_station and not has_ap_identity:
+            return self._h3c_ac_device_uuids(database)
+        matched_ac_uuids: list[str] = []
+        for row in rows:
+            ac_uuid = str(row.get("ac_device_uuid") or "").strip()
+            if not ac_uuid:
+                continue
+            if has_ap_identity:
+                if selected_uuid and str(row.get("ap_uuid") or "").strip() != selected_uuid:
+                    continue
+                if selected_mac and normalize_mac(row.get("ap_mac")) != selected_mac:
+                    continue
+                if selected_name and str(row.get("ap_name") or "").strip().casefold() != selected_name:
+                    continue
+                matched_ac_uuids.append(ac_uuid)
+                continue
+            row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
+            if selected_station and row_station != selected_station:
+                continue
+            matched_ac_uuids.append(ac_uuid)
+        if matched_ac_uuids:
+            return list(dict.fromkeys(matched_ac_uuids))
+        return self._h3c_ac_device_uuids(database)
+
+    def _h3c_ac_device_uuids(self, database: Database) -> list[str]:
+        try:
+            return [
+                str(device.device_uuid or "")
+                for device in DeviceRepository(database).list(vendor="H3C", device_type="AC")
+                if str(device.device_uuid or "").strip()
+            ]
+        except sqlite3.OperationalError as exc:
+            if self._is_missing_table_error(exc):
+                return []
+            raise
+
+    @staticmethod
+    def _is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
+        return "no such table" in str(exc).casefold()
 
     def _resolve_trackside_ap_update_target(
         self,
@@ -1507,10 +1587,14 @@ class RailTransitWebApplicationService:
             "task_source": "local",
             **params,
         }
-        self.process_adapter.start_job(
-            BackgroundJob(job_id=task_id, task_type=task_type, params=job_params),
-            on_complete=on_complete,
-        )
+        try:
+            self.process_adapter.start_job(
+                BackgroundJob(job_id=task_id, task_type=task_type, params=job_params),
+                on_complete=on_complete,
+            )
+        except TaskResourceConflictError as exc:
+            code = "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING" if task_type == "trackside_ap_optical_update" else "TASK_RESOURCE_BUSY"
+            raise RailTransitWebError(code, str(exc)) from exc
         return self.get_task(site_id, task_id)
 
     def _start_export(
@@ -1602,10 +1686,15 @@ class RailTransitWebApplicationService:
             "session_id", "status", "scope", "target_label", "target_count", "skipped_count",
             "fit_ap_resource_count", "fit_ap_optical_success_count", "fit_ap_optical_failed_count",
             "candidate_ap_interface_count", "current_lldp_port_count", "preserved_lldp_port_count",
+            "concurrency", "requested_concurrency", "effective_concurrency",
+            "platform_concurrency_limit", "fit_ap_effective_concurrency",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):
                 summary[key] = value
+        round_summaries = result.get("round_summaries")
+        if isinstance(round_summaries, list):
+            summary["round_summaries_count"] = len(round_summaries)
         for key in ("rows", "items", "generated_files"):
             value = result.get(key)
             if isinstance(value, list):

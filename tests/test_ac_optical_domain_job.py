@@ -112,7 +112,19 @@ def test_ac_optical_service_refreshes_batch_and_single_without_changing_collecto
     def collector(device, site_name, **kwargs):
         calls.append({"device": device, "site_name": site_name, **kwargs})
         kwargs["progress"]("正在采集 AP 侧光衰")
-        return FitApOpticalCollectResult(True, False, "ac-001", "run-001", 2, 0, None)
+        return FitApOpticalCollectResult(
+            True,
+            False,
+            "ac-001",
+            "run-001",
+            2,
+            0,
+            None,
+            requested_concurrency=50,
+            effective_concurrency=2,
+            platform_concurrency_limit=64,
+            round_summaries=[{"round_index": 1, "concurrency": 2}],
+        )
 
     service, _repository = _service(tmp_path, collector)
     progress: list[str] = []
@@ -133,6 +145,8 @@ def test_ac_optical_service_refreshes_batch_and_single_without_changing_collecto
 
     assert batch.success is True
     assert batch.snapshot.optical_rows[0]["ap_name"] == "AP-01"
+    assert batch.to_payload()["collection"]["effective_concurrency"] == 2
+    assert batch.to_payload()["collection"]["round_summaries"][0]["round_index"] == 1
     assert calls[0]["max_workers"] == 50
     assert calls[0]["target_ap_uuids"] is None
     assert calls[1]["target_ap_uuids"] == ["ap-1"]
@@ -182,7 +196,7 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     snapshot = AcOpticalSnapshot("ac-001", {"total_aps": 1}, [{"ap_name": "AP-01"}], [{"ap_name": "AP-01"}])
-    state = {"mode": "success", "method": ""}
+    state = {"mode": "success", "method": "", "max_workers": 0}
 
     class FakeOpticalService:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -191,6 +205,7 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
         def refresh_fit_ap_optical(self, request, *, progress_callback=None, should_cancel=None):
             del should_cancel
             state["method"] = "batch"
+            state["max_workers"] = request.max_workers
             if progress_callback is not None:
                 progress_callback("ac_fit_ap_optical_collect", 1, 1, "光衰采集完成")
             return self._result(request)
@@ -223,6 +238,7 @@ def test_ac_optical_job_success_partial_single_failed_cancelled_and_clean_stdout
     success = run_job(job, progress_callback=lambda stage, *_args: progress.append(stage))
     assert success.ok is True
     assert success.result["collection"]["optical_rows_updated"] == 1
+    assert state["max_workers"] == 64
     assert progress == ["ac_fit_ap_optical_collect"]
     assert capsys.readouterr().out == ""
 

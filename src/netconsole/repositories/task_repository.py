@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS task_snapshots (
     source TEXT NOT NULL DEFAULT 'local',
     site_name TEXT NOT NULL DEFAULT 'demo',
     owner_pid INTEGER NOT NULL DEFAULT 0,
+    resource_keys_json TEXT NOT NULL DEFAULT '[]',
     updated_time TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_snapshots_status_updated
@@ -75,6 +76,7 @@ class TaskRepository:
             with self._connect() as conn:
                 initialize_sqlite_wal(conn)
                 conn.executescript(TASK_SCHEMA)
+                self._ensure_schema_compat(conn)
                 conn.commit()
 
         run_sqlite_with_retry(operation)
@@ -86,6 +88,49 @@ class TaskRepository:
                 conn.commit()
 
         run_sqlite_with_retry(operation)
+
+    def save_with_resource_guard(
+        self,
+        snapshot: TaskSnapshot,
+        *,
+        active_statuses: Collection[TaskState],
+    ) -> TaskSnapshot | None:
+        """Persist a task only when none of its resource keys are already active."""
+
+        requested = self._resource_key_set(snapshot.resource_keys)
+        if not requested:
+            self.save(snapshot)
+            return None
+        conflict: TaskSnapshot | None = None
+
+        def operation() -> None:
+            nonlocal conflict
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                active_values = sorted(state.value for state in active_statuses)
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM task_snapshots
+                    WHERE site_name = ?
+                      AND status IN ({','.join('?' for _ in active_values)})
+                      AND resource_keys_json <> '[]'
+                    ORDER BY updated_time DESC, created_time DESC, task_id DESC
+                    """,
+                    (snapshot.site_name, *active_values),
+                ).fetchall()
+                for row in rows:
+                    current = self._snapshot_from_row(dict(row))
+                    if current.task_id == snapshot.task_id:
+                        continue
+                    if self._resource_key_set(current.resource_keys) & requested:
+                        conflict = current
+                        conn.rollback()
+                        return
+                self._upsert(conn, snapshot)
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return conflict
 
     def record(
         self,
@@ -352,6 +397,20 @@ class TaskRepository:
         return changed
 
     @staticmethod
+    def _ensure_schema_compat(conn) -> None:
+        if not TaskRepository._column_exists(conn, "task_snapshots", "resource_keys_json"):
+            conn.execute("ALTER TABLE task_snapshots ADD COLUMN resource_keys_json TEXT NOT NULL DEFAULT '[]'")
+
+    @staticmethod
+    def _column_exists(conn, table: str, column: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        for row in rows:
+            name = row["name"] if hasattr(row, "keys") and "name" in row.keys() else row[1]
+            if str(name) == column:
+                return True
+        return False
+
+    @staticmethod
     def _upsert(
         conn,
         snapshot: TaskSnapshot,
@@ -370,8 +429,9 @@ class TaskRepository:
             INSERT INTO task_snapshots (
                 task_id, task_type, task_name, created_time, started_time, finished_time,
                 status, progress, stage, current, total, message, owner, device, agent,
-                result_path, error_message, result_json, source, site_name, owner_pid, updated_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                result_path, error_message, result_json, source, site_name, owner_pid,
+                resource_keys_json, updated_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 task_type=excluded.task_type,
                 task_name=excluded.task_name,
@@ -392,6 +452,7 @@ class TaskRepository:
                 source=excluded.source,
                 site_name=excluded.site_name,
                 owner_pid=excluded.owner_pid,
+                resource_keys_json=excluded.resource_keys_json,
                 updated_time=excluded.updated_time
             {transition_guard}
             """,
@@ -417,6 +478,7 @@ class TaskRepository:
                 snapshot.source,
                 snapshot.site_name,
                 int(snapshot.owner_pid),
+                json.dumps(list(snapshot.resource_keys or []), ensure_ascii=False, separators=(",", ":")),
                 snapshot.updated_time,
                 *(allowed_values or ()),
             ),
@@ -447,6 +509,7 @@ class TaskRepository:
             source=str(row.get("source") or "local"),
             site_name=str(row.get("site_name") or "demo"),
             owner_pid=int(row.get("owner_pid") or 0),
+            resource_keys=cls._json_list(row.get("resource_keys_json")),
             updated_time=str(row["updated_time"]),
         )
 
@@ -457,6 +520,22 @@ class TaskRepository:
         except (TypeError, ValueError, json.JSONDecodeError):
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _json_list(value: object) -> list[str]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if str(item or "").strip()]
+        if isinstance(parsed, str) and parsed.strip():
+            return [parsed]
+        return []
+
+    @staticmethod
+    def _resource_key_set(values: Collection[str]) -> set[str]:
+        return {str(value or "").strip() for value in values if str(value or "").strip()}
 
     @classmethod
     def _event_from_row(cls, values: dict[str, object]) -> dict[str, Any]:

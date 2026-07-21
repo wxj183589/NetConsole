@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
+import threading
 from dataclasses import asdict
 from typing import Any
 
@@ -25,6 +27,13 @@ _ACTIVE_TASK_STATES = frozenset(
 )
 
 
+class TaskResourceConflictError(RuntimeError):
+    def __init__(self, message: str, *, task: TaskSnapshot, resource_keys: list[str]) -> None:
+        super().__init__(message)
+        self.task = task
+        self.resource_keys = list(resource_keys)
+
+
 class TaskApplicationService:
     """Qt、FastAPI 等宿主共享的任务应用层与持久化入口。"""
 
@@ -43,6 +52,7 @@ class TaskApplicationService:
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
         self._reconcile_on_start = bool(reconcile_on_start)
+        self._resource_guard = threading.Lock()
         self.events.add_guard(self._persist_event)
         if self._reconcile_on_start:
             self.reconcile_orphaned_local_tasks()
@@ -68,6 +78,7 @@ class TaskApplicationService:
         runtime_job = BackgroundJob.from_dict({**job.to_dict(), "job_id": job_id})
         params = dict(runtime_job.params or {})
         site_name = str(params.get("site_name") or self.site_name or "demo")
+        resource_keys = self._resource_keys(params)
         now = utc_now_iso()
         snapshot = TaskSnapshot(
             task_id=job_id,
@@ -83,8 +94,22 @@ class TaskApplicationService:
             source=self._task_source(params.get("task_source"), default="local"),
             site_name=site_name,
             owner_pid=os.getpid(),
+            resource_keys=resource_keys,
         )
-        self.repository(site_name).save(snapshot)
+        repository = self.repository(site_name)
+        if resource_keys:
+            with self._resource_guard:
+                conflict = repository.save_with_resource_guard(
+                    snapshot,
+                    active_statuses=_ACTIVE_TASK_STATES,
+                )
+                if conflict is not None:
+                    message = (
+                        f"当前 AC 已有光衰更新任务正在运行：{conflict.task_name} ({conflict.task_id})"
+                    )
+                    raise TaskResourceConflictError(message, task=conflict, resource_keys=resource_keys)
+        else:
+            repository.save(snapshot)
         self._job_sites[job_id] = site_name
         try:
             return self.runtime.prepare(runtime_job)
@@ -320,6 +345,55 @@ class TaskApplicationService:
 
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
+
+    @staticmethod
+    def _resource_keys(params: dict[str, Any]) -> list[str]:
+        values = params.get("resource_keys")
+        if values is None:
+            values = params.get("resource_key")
+        if values is None:
+            return []
+        if isinstance(values, str):
+            text = values.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed = [text]
+                else:
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item or "").strip()]
+                    if isinstance(parsed, str) and parsed.strip():
+                        return [parsed.strip()]
+                    return []
+            return [text]
+        if isinstance(values, (list, tuple, set)):
+            return [str(item).strip() for item in values if str(item or "").strip()]
+        return [str(values).strip()] if str(values).strip() else []
+
+    @staticmethod
+    def _snapshot_resource_keys(snapshot: TaskSnapshot) -> set[str]:
+        return {str(value).strip() for value in snapshot.resource_keys if str(value or "").strip()}
+
+    def _active_resource_conflict(
+        self,
+        repository: TaskRepository,
+        site_name: str,
+        resource_keys: list[str],
+    ) -> TaskSnapshot | None:
+        requested = {str(value).strip() for value in resource_keys if str(value or "").strip()}
+        if not requested:
+            return None
+        for snapshot in repository.list_filtered(
+            statuses=_ACTIVE_TASK_STATES,
+            site_name=site_name,
+            limit=1000,
+        ):
+            if self._snapshot_resource_keys(snapshot) & requested:
+                return snapshot
+        return None
 
     def _persist_event(self, envelope: dict[str, object]) -> bool:
         try:

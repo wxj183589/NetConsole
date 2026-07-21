@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +31,11 @@ from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ac.fit_ap_optical_concurrency import (
+    DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
+    clamp_fit_ap_optical_concurrency,
+    fit_ap_optical_platform_concurrency_limit,
+)
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
@@ -109,13 +116,20 @@ FIT_AP_OPTICAL_COMMANDS = (
     "display transceiver diagnosis interface",
 )
 BATCH_CONCURRENCY = 50
-DEFAULT_FIT_AP_TELNET_CONCURRENCY = 1000
+DEFAULT_FIT_AP_TELNET_CONCURRENCY = DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 ProgressCallback = Callable[[str], None]
 CancelCheck = Callable[[], bool]
 
 
 class CollectionCancelled(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str = "用户已取消更新",
+        *,
+        completed_rows: list[dict[str, object | None]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.completed_rows = list(completed_rows or [])
 
 
 @dataclass(frozen=True)
@@ -155,6 +169,11 @@ class FitApOpticalCollectResult:
     optical_rows_updated: int
     failed_aps: int
     error_message: str | None
+    status: str = ""
+    requested_concurrency: int = 0
+    effective_concurrency: int = 0
+    platform_concurrency_limit: int = 0
+    round_summaries: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -567,7 +586,7 @@ def collect_h3c_fit_ap_optical(
     site_name: str,
     repository: AcRepository | None = None,
     paths: PathResolver | None = None,
-    max_workers: int = DEFAULT_FIT_AP_TELNET_CONCURRENCY,
+    max_workers: int | None = None,
     progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
     target_ap_uuids: list[str] | None = None,
@@ -586,6 +605,10 @@ def collect_h3c_fit_ap_optical(
     persist_raw_logs = _persist_raw_logs()
     run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
     fit_ap_dir = run_dir / "fit_ap"
+    settings = _fit_ap_optical_collect_settings(paths)
+    requested_concurrency = _fit_ap_optical_requested_concurrency(max_workers, settings)
+    platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
+    round_summaries: list[dict[str, object]] = []
     fact_repository.create_collect_run(
         {
             "collect_run_uuid": collect_run_uuid,
@@ -596,29 +619,54 @@ def collect_h3c_fit_ap_optical(
             "created_at": started_at,
         }
     )
-    app_logger.log_info("FIT_AP_OPTICAL_STARTED", _detail(ac_device, collect_run_uuid))
+    _safe_log_info("FIT_AP_OPTICAL_STARTED", _detail(ac_device, collect_run_uuid))
     progress("\u51c6\u5907\u66f4\u65b0FIT-AP\u5149\u8870...")
     try:
-        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
+        _safe_log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
         _raise_if_cancelled(should_cancel)
         progress("\u6b63\u5728\u8fde\u63a5AC\u5e76\u542f\u7528AP\u63a7\u5236\u53f0...")
         enable_results = _enable_fit_ap_console(ac_device, collect_run_uuid)
         _write_raw_files(run_dir / f"{ac_device.device_uuid}.log", run_dir / f"{ac_device.device_uuid}_commands.jsonl", ac_device, collect_run_uuid, enable_results)
         if any(not result.success for result in enable_results):
             raise RuntimeError(_command_error_summary(enable_results) or "AC enable AP console failed")
-        app_logger.log_info("FIT_AP_OPTICAL_AC_ENABLE_SUCCESS", _detail(ac_device, collect_run_uuid))
+        _safe_log_info("FIT_AP_OPTICAL_AC_ENABLE_SUCCESS", _detail(ac_device, collect_run_uuid))
     except CollectionCancelled:
         message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
-        app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
+        _safe_log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
         fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
         progress("\u5df2\u53d6\u6d88")
-        return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
+        return _fit_ap_optical_result(
+            success=False,
+            partial_success=False,
+            ac_device_uuid=str(ac_device.device_uuid),
+            collect_run_uuid=collect_run_uuid,
+            optical_rows_updated=0,
+            failed_aps=0,
+            error_message=message,
+            status="cancelled",
+            requested_concurrency=requested_concurrency,
+            platform_concurrency_limit=platform_concurrency_limit,
+            round_summaries=round_summaries,
+        )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
-        app_logger.log_error("FIT_AP_OPTICAL_AC_ENABLE_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=message))
+        trace = _sanitized_traceback(exc, ac_device)
+        _safe_log_error("FIT_AP_OPTICAL_AC_ENABLE_FAILED", _detail(ac_device, collect_run_uuid, error=f"{message}; traceback={trace}"))
+        _safe_log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
-        return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, message)
+        return _fit_ap_optical_result(
+            success=False,
+            partial_success=False,
+            ac_device_uuid=str(ac_device.device_uuid),
+            collect_run_uuid=collect_run_uuid,
+            optical_rows_updated=0,
+            failed_aps=0,
+            error_message=message,
+            status="failed",
+            requested_concurrency=requested_concurrency,
+            platform_concurrency_limit=platform_concurrency_limit,
+            round_summaries=round_summaries,
+        )
 
     progress("\u6b63\u5728\u7b5b\u9009\u5728\u7ebfAP...")
     scoped_refresh = _is_scoped_fit_ap_refresh(target_ap_uuids, target_ap_macs, target_ap_names, target_stations)
@@ -632,17 +680,32 @@ def collect_h3c_fit_ap_optical(
     )
     resources = [row for row in resources if row.get("ap_ip") and not is_fit_ap_offline(row)]
     rows: list[dict[str, object | None]] = []
-    settings = _fit_ap_optical_collect_settings(paths)
-    worker_count = max(1, int(max_workers or settings["max_fit_ap_concurrency"] or DEFAULT_FIT_AP_TELNET_CONCURRENCY))
     total = len(resources)
+    worker_count = clamp_fit_ap_optical_concurrency(
+        requested_concurrency,
+        total,
+        platform_limit=platform_concurrency_limit,
+    )
     if scoped_refresh and total == 0:
         fact_repository.update_collect_run_status(collect_run_uuid, "success", error_message=None)
-        app_logger.log_info("FIT_AP_OPTICAL_SKIPPED_NO_CONNECTABLE_TARGET", _detail(ac_device, collect_run_uuid))
+        _safe_log_info("FIT_AP_OPTICAL_SKIPPED_NO_CONNECTABLE_TARGET", _detail(ac_device, collect_run_uuid))
         progress("\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f 0\uff0c\u5931\u8d25 0\uff0c\u79bb\u7ebf 0")
-        return FitApOpticalCollectResult(True, False, str(ac_device.device_uuid), collect_run_uuid, 0, 0, None)
+        return _fit_ap_optical_result(
+            success=True,
+            partial_success=False,
+            ac_device_uuid=str(ac_device.device_uuid),
+            collect_run_uuid=collect_run_uuid,
+            optical_rows_updated=0,
+            failed_aps=0,
+            error_message=None,
+            status="success",
+            requested_concurrency=requested_concurrency,
+            effective_concurrency=worker_count,
+            platform_concurrency_limit=platform_concurrency_limit,
+            round_summaries=round_summaries,
+        )
     progress(f"\u6b63\u5728\u91c7\u96c6 AP\u4fa7\u5149\u8870\uff1a0/{total}")
     try:
-        round_summaries: list[dict[str, object]] = []
         first_round_rows = _collect_fit_ap_optical_round(
             ac_device,
             resources,
@@ -671,7 +734,15 @@ def collect_h3c_fit_ap_optical(
                 if settings["adaptive_concurrency_enabled"]
                 else previous_concurrency
             )
-            app_logger.log_info("FIT_AP_OPTICAL_RETRY_STARTED", _detail(ac_device, collect_run_uuid, count=len(retry_targets), error=f"round={round_index}, concurrency={retry_concurrency}"))
+            retry_concurrency = clamp_fit_ap_optical_concurrency(
+                retry_concurrency,
+                len(retry_targets),
+                platform_limit=platform_concurrency_limit,
+            )
+            _safe_log_info(
+                "FIT_AP_OPTICAL_RETRY_STARTED",
+                _detail(ac_device, collect_run_uuid, count=len(retry_targets), error=f"round={round_index}, concurrency={retry_concurrency}"),
+            )
             retry_rows = _collect_fit_ap_optical_round(
                 ac_device,
                 retry_targets,
@@ -687,24 +758,42 @@ def collect_h3c_fit_ap_optical(
             round_summaries.append(_fit_ap_optical_round_summary(round_index, retry_concurrency, retry_rows))
             retry_targets = _retry_fit_ap_optical_targets(retry_targets, retry_rows)
             previous_concurrency = retry_concurrency
-        app_logger.log_info("FIT_AP_OPTICAL_ADAPTIVE_SUMMARY", f"ac_device_uuid={ac_device.device_uuid}, rounds={round_summaries}")
+        _safe_log_info("FIT_AP_OPTICAL_ADAPTIVE_SUMMARY", f"ac_device_uuid={ac_device.device_uuid}, rounds={round_summaries}")
         progress("\u6b63\u5728\u89e3\u6790\u5149\u6a21\u5757\u6570\u636e...")
         _raise_if_cancelled(should_cancel)
+        rows = _final_fit_ap_optical_rows(rows)
         progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
-        existing_rows = repository.list_fit_ap_optical(str(ac_device.device_uuid))
-        rows_to_save = _merge_fit_ap_optical_rows(existing_rows, rows)
-        successful_rows = [row for row in rows if _is_fit_ap_optical_success_row(row)]
-        if successful_rows:
-            repository.replace_fit_ap_optical(str(ac_device.device_uuid), rows_to_save)
-        else:
-            app_logger.log_warning("FIT_AP_OPTICAL_DB_SAVE_SKIPPED", _detail(ac_device, collect_run_uuid, error="no successful AP optical rows; keeping previous data"))
-    except CollectionCancelled:
+        if not _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
+            _safe_log_warning("FIT_AP_OPTICAL_DB_SAVE_SKIPPED", _detail(ac_device, collect_run_uuid, error="no successful AP optical rows; keeping previous data"))
+    except CollectionCancelled as exc:
+        rows.extend(exc.completed_rows)
+        rows = _final_fit_ap_optical_rows(rows)
         message = "\u7528\u6237\u5df2\u53d6\u6d88\u66f4\u65b0"
-        app_logger.log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
+        _safe_log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
+        failed = sum(1 for row in rows if row.get("status") != "success")
+        try:
+            if _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
+                _safe_log_info("FIT_AP_OPTICAL_CANCELLED_PARTIAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
+        except Exception as save_exc:
+            save_message = sanitize_sensitive_text(str(save_exc), ac_device)
+            _safe_log_error("FIT_AP_OPTICAL_CANCELLED_DB_SAVE_FAILED", _detail(ac_device, collect_run_uuid, error=save_message))
         fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
         progress("\u5df2\u53d6\u6d88")
-        return FitApOpticalCollectResult(False, False, str(ac_device.device_uuid), collect_run_uuid, len(rows), 0, message)
-    app_logger.log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
+        return _fit_ap_optical_result(
+            success=False,
+            partial_success=bool(rows),
+            ac_device_uuid=str(ac_device.device_uuid),
+            collect_run_uuid=collect_run_uuid,
+            optical_rows_updated=len(rows),
+            failed_aps=failed,
+            error_message=message,
+            status="cancelled",
+            requested_concurrency=requested_concurrency,
+            effective_concurrency=worker_count,
+            platform_concurrency_limit=platform_concurrency_limit,
+            round_summaries=round_summaries,
+        )
+    _safe_log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
     failed = sum(1 for row in rows if row.get("status") != "success")
     status = "failed" if rows and failed == len(rows) else "partial_success" if failed else "success"
     if not rows:
@@ -712,13 +801,26 @@ def collect_h3c_fit_ap_optical(
     error_message = f"failed_aps={failed}" if failed else None
     fact_repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message)
     if status == "success":
-        app_logger.log_info("FIT_AP_OPTICAL_SUCCESS", _detail(ac_device, collect_run_uuid, count=len(rows)))
+        _safe_log_info("FIT_AP_OPTICAL_SUCCESS", _detail(ac_device, collect_run_uuid, count=len(rows)))
     elif status == "partial_success":
-        app_logger.log_warning("FIT_AP_OPTICAL_PARTIAL_SUCCESS", _detail(ac_device, collect_run_uuid, count=len(rows), error=error_message or ""))
+        _safe_log_warning("FIT_AP_OPTICAL_PARTIAL_SUCCESS", _detail(ac_device, collect_run_uuid, count=len(rows), error=error_message or ""))
     else:
-        app_logger.log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no AP resources"))
+        _safe_log_error("FIT_AP_OPTICAL_FAILED", _detail(ac_device, collect_run_uuid, error=error_message or "no AP resources"))
     progress(f"\u66f4\u65b0\u5b8c\u6210\uff1a\u6210\u529f {len(rows) - failed}\uff0c\u5931\u8d25 {failed}\uff0c\u79bb\u7ebf 0")
-    return FitApOpticalCollectResult(status != "failed", status == "partial_success", str(ac_device.device_uuid), collect_run_uuid, len(rows), failed, error_message)
+    return _fit_ap_optical_result(
+        success=status != "failed",
+        partial_success=status == "partial_success",
+        ac_device_uuid=str(ac_device.device_uuid),
+        collect_run_uuid=collect_run_uuid,
+        optical_rows_updated=len(rows),
+        failed_aps=failed,
+        error_message=error_message,
+        status=status,
+        requested_concurrency=requested_concurrency,
+        effective_concurrency=worker_count,
+        platform_concurrency_limit=platform_concurrency_limit,
+        round_summaries=round_summaries,
+    )
 
 
 def _is_scoped_fit_ap_refresh(*scopes: list[str] | None) -> bool:
@@ -731,7 +833,7 @@ def _fit_ap_optical_collect_settings(paths: PathResolver) -> dict[str, object]:
         "adaptive_concurrency_enabled": True,
         "adaptive_retry_enabled": True,
         "retry_count": 2,
-        "retry_concurrency_floor": 100,
+        "retry_concurrency_floor": 16,
         "retry_concurrency_ratio": 0.5,
     }
     try:
@@ -748,8 +850,117 @@ def _fit_ap_optical_collect_settings(paths: PathResolver) -> dict[str, object]:
     }
 
 
-def retry_fit_ap_optical_concurrency(previous_concurrency: int, *, floor: int = 100, ratio: float = 0.5) -> int:
-    return max(max(1, int(floor or 1)), int(max(1, previous_concurrency) * max(0.01, float(ratio or 0.01))))
+def _fit_ap_optical_requested_concurrency(max_workers: object, settings: dict[str, object]) -> int:
+    configured = settings.get("max_fit_ap_concurrency") or DEFAULT_FIT_AP_TELNET_CONCURRENCY
+    requested = max_workers if str(max_workers or "").strip() else configured
+    return _int_setting(requested, configured, minimum=1)
+
+
+def retry_fit_ap_optical_concurrency(previous_concurrency: int, *, floor: int = 16, ratio: float = 0.5) -> int:
+    previous = max(1, int(previous_concurrency or 1))
+    if previous <= 1:
+        return 1
+    candidate = max(1, int(previous * max(0.01, float(ratio or 0.01))))
+    retry_floor = int(floor or 1)
+    if 1 <= retry_floor < previous:
+        candidate = max(candidate, retry_floor)
+    return max(1, min(previous - 1, candidate))
+
+
+def _fit_ap_optical_result(
+    *,
+    success: bool,
+    partial_success: bool,
+    ac_device_uuid: str,
+    collect_run_uuid: str,
+    optical_rows_updated: int,
+    failed_aps: int,
+    error_message: str | None,
+    status: str,
+    requested_concurrency: int = 0,
+    effective_concurrency: int = 0,
+    platform_concurrency_limit: int = 0,
+    round_summaries: list[dict[str, object]] | None = None,
+) -> FitApOpticalCollectResult:
+    return FitApOpticalCollectResult(
+        success,
+        partial_success,
+        ac_device_uuid,
+        collect_run_uuid,
+        optical_rows_updated,
+        failed_aps,
+        error_message,
+        status,
+        requested_concurrency,
+        effective_concurrency,
+        platform_concurrency_limit,
+        list(round_summaries or []),
+    )
+
+
+def _safe_app_log(log_fn: Callable[[str, str], None], level: str, event: str, detail: str) -> None:
+    try:
+        log_fn(event, detail)
+    except Exception as exc:
+        try:
+            trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        except Exception:
+            trace = f"{type(exc).__name__}: {exc}"
+        message = app_logger.sanitize_detail(
+            f"fit_ap_optical_log_failed level={level} event={event} detail={detail} "
+            f"error_type={type(exc).__name__} error={exc} traceback={trace}"
+        )
+        try:
+            sys.stderr.write(message + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+
+def _safe_log_info(event: str, detail: str) -> None:
+    _safe_app_log(app_logger.log_info, "INFO", event, detail)
+
+
+def _safe_log_warning(event: str, detail: str) -> None:
+    _safe_app_log(app_logger.log_warning, "WARNING", event, detail)
+
+
+def _safe_log_error(event: str, detail: str) -> None:
+    _safe_app_log(app_logger.log_error, "ERROR", event, detail)
+
+
+def _sanitized_traceback(exc: BaseException, device: Device | None = None) -> str:
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    if device is not None:
+        return sanitize_sensitive_text(text, device)
+    return app_logger.sanitize_detail(text)
+
+
+def _fit_ap_optical_error_category(message: object) -> str:
+    text = str(message or "").casefold()
+    if not text:
+        return "unexpected_error"
+    if "fit_ap_optical_log_failed" in text or "app-log.lock" in text or "resource deadlock" in text:
+        return "log_write_failed"
+    if "cancel" in text or "取消" in text:
+        return "cancelled"
+    if "timeout" in text or "timed out" in text or "read timeout" in text:
+        return "connect_timeout"
+    if "auth" in text or "password" in text or "login" in text or "认证" in text or "密码" in text:
+        return "auth_failed"
+    if "parse" in text or "解析" in text or "no optical data parsed" in text:
+        return "parse_failed"
+    if "command" in text or "命令" in text or "cli" in text:
+        return "command_failed"
+    return "unexpected_error"
+
+
+def _fit_ap_optical_error_message(category: str, message: object) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return category
+    prefix = f"{category}:".casefold()
+    return text if text.casefold().startswith(prefix) else f"{category}: {text}"
 
 
 def _int_setting(value: object, default: object, *, minimum: int) -> int:
@@ -810,8 +1021,11 @@ def _collect_fit_ap_optical_round(
 ) -> list[dict[str, object | None]]:
     rows: list[dict[str, object | None]] = []
     total = len(resources)
+    if total <= 0:
+        return rows
     completed = 0
-    with ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1))) as executor:
+    worker_count = max(1, min(total, int(concurrency or 1)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(_collect_single_fit_ap_optical, ac_device, row, site_name, collect_run_uuid, fit_ap_dir, paths): row
             for row in resources
@@ -820,11 +1034,70 @@ def _collect_fit_ap_optical_round(
             if should_cancel():
                 for pending in futures:
                     pending.cancel()
-                raise CollectionCancelled()
-            rows.append(future.result())
+                raise CollectionCancelled(completed_rows=rows)
+            resource = futures[future]
+            try:
+                row = future.result()
+            except CollectionCancelled as exc:
+                for pending in futures:
+                    pending.cancel()
+                raise CollectionCancelled(completed_rows=[*rows, *exc.completed_rows]) from exc
+            except Exception as exc:
+                message = sanitize_sensitive_text(str(exc), ac_device)
+                category = _fit_ap_optical_error_category(message)
+                trace = _sanitized_traceback(exc, ac_device)
+                _safe_log_error(
+                    "FIT_AP_OPTICAL_AP_FUTURE_FAILED",
+                    _detail(
+                        ac_device,
+                        collect_run_uuid,
+                        ap=str(resource.get("ap_name") or resource.get("ap_ip") or "FIT-AP"),
+                        error=f"category={category}, error={message}, traceback={trace}",
+                    ),
+                )
+                row = _failed_fit_ap_optical_row(ac_device, resource, collect_run_uuid, category, message)
+            rows.append(row)
             completed += 1
             progress_round(completed, total)
     return rows
+
+
+def _failed_fit_ap_optical_row(
+    ac_device: Device,
+    ap_row: dict[str, object | None],
+    collect_run_uuid: str,
+    category: str,
+    message: str,
+    raw_log_path: str = "",
+) -> dict[str, object | None]:
+    ap_name = str(ap_row.get("ap_name") or ap_row.get("ap_ip") or "FIT-AP")
+    collected_at = _now()
+    error_message = _fit_ap_optical_error_message(category, message)
+    return {
+        "ac_device_uuid": ac_device.device_uuid,
+        "ap_uuid": ap_row.get("ap_uuid"),
+        "ap_name": ap_name,
+        "ap_mac": ap_row.get("ap_mac"),
+        "serial_number": ap_row.get("serial_number"),
+        "apid": ap_row.get("apid"),
+        "ap_ip": ap_row.get("ap_ip"),
+        "site": ap_row.get("site") or ap_row.get("site_name") or ap_row.get("station"),
+        "collected_at": collected_at,
+        "updated_at": collected_at,
+        "collect_run_uuid": collect_run_uuid,
+        "raw_log_path": raw_log_path,
+        "lldp_neighbor": None,
+        "neighbor_interface": None,
+        "neighbor_mac": None,
+        "neighbor_device_name": None,
+        "neighbor_rx_power": None,
+        "interface_name": None,
+        "temperature": None,
+        "tx_power": None,
+        "rx_power": None,
+        "status": "failed",
+        "error_message": error_message,
+    }
 
 
 def _retry_fit_ap_optical_targets(
@@ -853,6 +1126,23 @@ def _fit_ap_optical_round_summary(round_index: int, concurrency: int, rows: list
         "concurrency": concurrency,
         "success_rate": 0 if not rows else round((len(rows) - failed) / len(rows), 4),
     }
+
+
+def _final_fit_ap_optical_rows(
+    rows: list[dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    final_by_identity: dict[str, dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in rows:
+        current = dict(row)
+        key = _fit_ap_optical_identity(current)
+        if not key:
+            passthrough.append(current)
+            continue
+        previous = final_by_identity.get(key)
+        if previous is None or fit_ap_optical_prefer_score(current) >= fit_ap_optical_prefer_score(previous):
+            final_by_identity[key] = current
+    return [*final_by_identity.values(), *passthrough]
 
 
 def _merge_fit_ap_optical_rows(
@@ -884,6 +1174,19 @@ def _merge_fit_ap_optical_rows(
     return [*merged.values(), *passthrough]
 
 
+def _persist_successful_fit_ap_optical_rows(
+    repository: AcRepository,
+    ac_device_uuid: str,
+    rows: list[dict[str, object | None]],
+) -> bool:
+    successful_rows = [row for row in rows if _is_fit_ap_optical_success_row(row)]
+    if not successful_rows:
+        return False
+    existing_rows = repository.list_fit_ap_optical(ac_device_uuid)
+    repository.replace_fit_ap_optical(ac_device_uuid, _merge_fit_ap_optical_rows(existing_rows, rows))
+    return True
+
+
 def _fit_ap_optical_identity(row: dict[str, object | None]) -> str:
     ac_uuid = str(row.get("ac_device_uuid") or "").strip().casefold()
     apid = str(row.get("apid") or row.get("ap_id") or "").strip().casefold()
@@ -903,7 +1206,14 @@ def _merge_failed_fit_ap_optical_row(
     old: dict[str, object | None],
     new: dict[str, object | None],
 ) -> dict[str, object | None]:
-    merged = {**old, **new}
+    merged = dict(new) if not old else {**new, **old}
+    if old:
+        merged["status"] = new.get("status") or "failed"
+        merged["error_message"] = new.get("error_message") or old.get("error_message")
+        merged["collect_run_uuid"] = new.get("collect_run_uuid") or old.get("collect_run_uuid")
+        merged["raw_log_path"] = new.get("raw_log_path") or old.get("raw_log_path")
+        merged["collected_at"] = old.get("collected_at") or new.get("collected_at")
+        merged["updated_at"] = old.get("updated_at") or old.get("collected_at") or new.get("updated_at")
     merged["ap_optical_data_source"] = "沿用历史" if _has_fit_ap_optical_data(old) else "本轮失败"
     merged["ap_last_valid_rx_power"] = old.get("rx_power") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_rx_power")
     merged["ap_last_valid_collected_at"] = old.get("collected_at") if not _is_empty_fit_ap_value(old.get("rx_power")) else old.get("ap_last_valid_collected_at")
@@ -964,12 +1274,11 @@ def _has_fit_ap_lldp_data(row: dict[str, object | None]) -> bool:
 
 def _fit_ap_optical_missing_reason(row: dict[str, object | None]) -> str:
     message = str(row.get("error_message") or "").casefold()
-    if "timeout" in message:
-        return "connect_timeout"
-    if "auth" in message or "password" in message:
-        return "auth_failed"
+    category = _fit_ap_optical_error_category(message)
+    if category != "unexpected_error":
+        return category
     if str(row.get("status") or "").strip().casefold() in {"failed", "timeout"}:
-        return "connect_timeout"
+        return "unexpected_error"
     return "unknown"
 
 
@@ -1252,8 +1561,8 @@ def _collect_single_fit_ap_optical(
     )
     command_results: list[CommandResult] = []
     connection = None
-    app_logger.log_info("FIT_AP_OPTICAL_AP_STARTED", _detail(ac_device, collect_run_uuid, ap=ap_name))
     try:
+        _safe_log_info("FIT_AP_OPTICAL_AP_STARTED", _detail(ac_device, collect_run_uuid, ap=ap_name))
         target = choose_connection_target(temp_device)
         if target is None:
             raise RuntimeError("AP Telnet target unavailable")
@@ -1284,9 +1593,9 @@ def _collect_single_fit_ap_optical(
             paths=paths,
         )
         if match.device_uuid:
-            app_logger.log_info("FIT_AP_OPTICAL_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
+            _safe_log_info("FIT_AP_OPTICAL_NEIGHBOR_MATCHED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"matched_by={match.matched_by}"))
         else:
-            app_logger.log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
+            _safe_log_warning("FIT_AP_OPTICAL_NEIGHBOR_MATCH_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name))
         if match.station:
             base["site"] = match.station
         if match.matched_by == "device_lldp":
@@ -1302,26 +1611,22 @@ def _collect_single_fit_ap_optical(
         # optical_alarm_status is no longer stored — computed real-time by optical_severity_engine
         success = any(parsed.values()) and all(result.success for result in command_results)
         status = "success" if success else "failed"
-        app_logger.log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else _command_error_summary(command_results) or "no optical data parsed"))
-        return {**base, **parsed, "status": status, "error_message": None if success else _command_error_summary(command_results) or "no optical data parsed"}
+        error_message = None if success else _command_error_summary(command_results) or "no optical data parsed"
+        if error_message:
+            error_message = _fit_ap_optical_error_message(_fit_ap_optical_error_category(error_message), error_message)
+        _safe_log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else error_message or "no optical data parsed"))
+        return {**base, **parsed, "status": status, "error_message": error_message}
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), temp_device)
-        _write_raw_files(raw_log_file, commands_file, temp_device, collect_run_uuid, command_results, fatal_error=message)
-        app_logger.log_error("FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=message))
-        return {
-            **base,
-            "lldp_neighbor": None,
-            "neighbor_interface": None,
-            "neighbor_mac": None,
-            "neighbor_device_name": None,
-            "neighbor_rx_power": None,
-            "interface_name": None,
-            "temperature": None,
-            "tx_power": None,
-            "rx_power": None,
-            "status": "failed",
-            "error_message": message,
-        }
+        category = _fit_ap_optical_error_category(message)
+        trace = _sanitized_traceback(exc, temp_device)
+        try:
+            _write_raw_files(raw_log_file, commands_file, temp_device, collect_run_uuid, command_results, fatal_error=message)
+        except Exception as raw_exc:
+            raw_message = sanitize_sensitive_text(str(raw_exc), temp_device)
+            _safe_log_warning("FIT_AP_OPTICAL_RAW_LOG_WRITE_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=raw_message))
+        _safe_log_error("FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"category={category}, error={message}, traceback={trace}"))
+        return {**base, **_failed_fit_ap_optical_row(ac_device, ap_row, collect_run_uuid, category, message, raw_log_path=relative_raw_log_path)}
     finally:
         if connection is not None:
             _disconnect(connection)
@@ -1341,7 +1646,7 @@ def _run_command(
     if reason:
         command_guard.log_command_rejected(command, context, reason)
         return CommandResult(command=command, success=False, error_message=reason)
-    app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
+    _safe_log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
         output = netmiko_connection.safe_send_command(
             connection,
@@ -1374,7 +1679,7 @@ def _should_treat_enable_console_timeout_as_success(previous_results: list[Comma
 
 def _success_with_read_timeout_warning(result: CommandResult, device: Device, collect_run_uuid: str) -> CommandResult:
     warning = "warning: read timeout after command, treated as success because key commands completed"
-    app_logger.log_warning(
+    _safe_log_warning(
         "AC_ENABLE_AP_CONSOLE_READ_TIMEOUT_TREATED_SUCCESS",
         _detail(device, collect_run_uuid, command=result.command, error=warning),
     )

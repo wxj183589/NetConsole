@@ -8,6 +8,7 @@ from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAd
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.models.device import Device
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -124,6 +125,12 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
         failed_count = 0
         skipped_count = 0
         target_count = 2
+        concurrency = 64
+        requested_concurrency = 1000
+        effective_concurrency = 2
+        platform_concurrency_limit = 64
+        fit_ap_effective_concurrency = 2
+        fit_ap_round_summaries = [{"ac_device_uuid": "ac-1", "rounds": []}]
         fit_ap_resource_count = 1
         fit_ap_optical_success_count = 1
         fit_ap_optical_failed_count = 0
@@ -153,6 +160,8 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert captured["rows"] == _snapshot().rows
     assert result["session_id"] == "session-1"
     assert result["success_count"] == 2
+    assert result["requested_concurrency"] == 1000
+    assert result["effective_concurrency"] == 2
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
 
 
@@ -180,12 +189,33 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     paths.ensure_site_dirs("demo")
     database = Database(paths.site_db_path("demo"))
     database.initialize()
+    ac_uuid_1 = "00000000-0000-4000-8000-000000000001"
+    ac_uuid_2 = "00000000-0000-4000-8000-000000000002"
+    device_repository = DeviceRepository(database)
+    device_repository.create(
+        Device(
+            device_uuid=ac_uuid_1,
+            name="AC-1",
+            device_vendor="H3C",
+            device_type="AC",
+            primary_address="10.0.0.1",
+        )
+    )
+    device_repository.create(
+        Device(
+            device_uuid=ac_uuid_2,
+            name="AC-2",
+            device_vendor="H3C",
+            device_type="AC",
+            primary_address="10.0.0.2",
+        )
+    )
     repository = AcRepository(database)
     repository.replace_fit_ap_resources(
-        "ac-1",
+        ac_uuid_1,
         [
             {
-                "ac_device_uuid": "ac-1",
+                "ac_device_uuid": ac_uuid_1,
                 "ap_uuid": "ap-1",
                 "ap_name": "AP-A",
                 "ap_mac": "00:11:22:33:44:55",
@@ -206,17 +236,32 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     assert "trackside_ap_optical_update" in registered_task_types()
 
     all_update = service.start_trackside_ap_update("demo")
+    all_job = process.jobs[all_update.task_id]
+    process.complete(all_update.task_id, {"success_count": 1})
     station_update = service.start_trackside_ap_update("demo", station="站点A")
+    station_job = process.jobs[station_update.task_id]
+    process.complete(station_update.task_id, {"success_count": 1})
     ap_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="00:11:22:33:44:55", ap_name="AP-A")
+    ap_job = process.jobs[ap_update.task_id]
 
-    assert process.jobs[all_update.task_id].params["station"] == ""
-    assert process.jobs[all_update.task_id].params["ap_uuid"] == ""
-    assert process.jobs[station_update.task_id].params["station"] == "站点A"
-    assert process.jobs[station_update.task_id].params["ap_uuid"] == ""
-    assert process.jobs[ap_update.task_id].params["station"] == ""
-    assert process.jobs[ap_update.task_id].params["ap_uuid"] == "ap-1"
-    assert process.jobs[ap_update.task_id].params["ap_mac"] == "00:11:22:33:44:55"
-    assert process.jobs[ap_update.task_id].params["ap_name"] == "AP-A"
+    assert all_job.params["station"] == ""
+    assert all_job.params["ap_uuid"] == ""
+    assert all_job.params["resource_keys"] == [
+        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical",
+        f"site:demo|ac:{ac_uuid_2}|fit_ap_optical",
+    ]
+    assert station_job.params["station"] == "站点A"
+    assert station_job.params["ap_uuid"] == ""
+    assert station_job.params["resource_keys"] == [
+        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
+    ]
+    assert ap_job.params["station"] == ""
+    assert ap_job.params["ap_uuid"] == "ap-1"
+    assert ap_job.params["ap_mac"] == "00:11:22:33:44:55"
+    assert ap_job.params["ap_name"] == "AP-A"
+    assert ap_job.params["resource_keys"] == [
+        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
+    ]
 
     with pytest.raises(RailTransitWebError) as scope_conflict:
         service.start_trackside_ap_update("demo", station="站点A", ap_uuid="ap-1")

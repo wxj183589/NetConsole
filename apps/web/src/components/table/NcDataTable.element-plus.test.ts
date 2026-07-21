@@ -41,7 +41,9 @@ async function renderTable(): Promise<VueWrapper> {
 }
 
 async function settleColumnLayout(): Promise<void> {
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 120))
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 240))
+  await flushPromises()
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
   await flushPromises()
 }
 

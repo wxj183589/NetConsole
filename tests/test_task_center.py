@@ -18,7 +18,10 @@ from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, log_event, progress_event
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import (
+    TaskApplicationService,
+    TaskResourceConflictError,
+)
 from netconsole.services.job_center.worker_protocol import encode_event
 
 
@@ -135,6 +138,65 @@ def test_task_restores_while_owner_process_is_alive(tmp_path: Path) -> None:
     restored = _service(tmp_path).get_task("running")
 
     assert restored is not None and restored.status is TaskState.RUNNING
+
+
+def test_task_resource_keys_conflict_across_service_instances_and_release_after_terminal(tmp_path: Path) -> None:
+    first = _service(tmp_path)
+    second = TaskApplicationService(paths=first.paths, site_name="demo", reconcile_on_start=False)
+    params = {"site_name": "demo", "resource_keys": ["site:demo|ac:ac-1|fit_ap_optical"]}
+
+    first.prepare(BackgroundJob(job_id="optical-a", task_type="ac_fit_ap_optical_refresh", params=params))
+
+    with pytest.raises(TaskResourceConflictError) as conflict:
+        second.prepare(BackgroundJob(job_id="optical-b", task_type="trackside_ap_optical_update", params=params))
+    assert conflict.value.task.task_id == "optical-a"
+
+    first.mark_running("optical-a")
+    first.feed_stdout(
+        "optical-a",
+        encode_event(finished_event("optical-a", {"success_count": 1})).encode("utf-8"),
+    )
+    first.complete("optical-a", 0)
+
+    second.prepare(BackgroundJob(job_id="optical-c", task_type="trackside_ap_optical_update", params=params))
+    restored = second.get_task("optical-c")
+    assert restored is not None
+    assert restored.resource_keys == ["site:demo|ac:ac-1|fit_ap_optical"]
+
+
+def test_task_resource_keys_are_reserved_atomically_under_parallel_prepare(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    paths.ensure_site_dirs("demo")
+    outcomes: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    def prepare(index: int) -> None:
+        service = TaskApplicationService(paths=paths, site_name="demo", reconcile_on_start=False)
+        job_id = f"optical-race-{index}"
+        try:
+            service.prepare(
+                BackgroundJob(
+                    job_id=job_id,
+                    task_type="ac_fit_ap_optical_refresh",
+                    params={
+                        "site_name": "demo",
+                        "resource_keys": ["site:demo|ac:ac-1|fit_ap_optical"],
+                    },
+                )
+            )
+        except TaskResourceConflictError as exc:
+            outcomes.put(("conflict", exc.task.task_id))
+        else:
+            outcomes.put(("ok", job_id))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(prepare, range(8)))
+
+    values = list(outcomes.queue)
+    winners = [task_id for state, task_id in values if state == "ok"]
+    conflicts = [task_id for state, task_id in values if state == "conflict"]
+    assert len(winners) == 1
+    assert len(conflicts) == 7
+    assert set(conflicts) == set(winners)
 
 
 def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:

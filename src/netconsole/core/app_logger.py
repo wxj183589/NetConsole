@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
+import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -18,6 +21,8 @@ from netconsole.core.log_pagination import (
 _paths = PathResolver()
 APP_LOG_MAX_BYTES = 25 * 1024 * 1024
 _ROTATED_LOG_PATTERN = "app-*.log"
+_LOG_FAILURE_GUARD = threading.Lock()
+_LOG_FAILURE_COUNT = 0
 _SENSITIVE_KEYS = (
     "password",
     "ssh_password",
@@ -113,16 +118,21 @@ def sanitize_detail(detail: object) -> str:
 
 def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | None = None) -> None:
     path = log_path or _log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-    safe_event = _clean_cell(event).upper()
-    safe_detail = _sanitize_detail(detail)
-    line = f"{timestamp} | {level} | {safe_event} | {safe_detail}\n"
-    with interprocess_file_lock(log_lock_path(path)):
-        _rotate_if_needed(path, now, len(line.encode("utf-8")))
-        with path.open("a", encoding="utf-8") as file:
-            file.write(line)
+    safe_event = ""
+    safe_detail = ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        safe_event = _clean_cell(event).upper()
+        safe_detail = _sanitize_detail(detail)
+        line = f"{timestamp} | {level} | {safe_event} | {safe_detail}\n"
+        with interprocess_file_lock(log_lock_path(path)):
+            _rotate_if_needed(path, now, len(line.encode("utf-8")))
+            with path.open("a", encoding="utf-8") as file:
+                file.write(line)
+    except Exception as exc:
+        _report_log_write_failure(level, safe_event or event, safe_detail or detail, path, exc)
 
 
 def _log_path() -> Path:
@@ -160,6 +170,33 @@ def _rotate_if_needed(path: Path, now: datetime, incoming_bytes: int) -> None:
         except OSError:
             return
         return
+
+
+def _report_log_write_failure(
+    level: str,
+    event: object,
+    detail: object,
+    path: Path,
+    exc: Exception,
+) -> None:
+    global _LOG_FAILURE_COUNT
+    with _LOG_FAILURE_GUARD:
+        _LOG_FAILURE_COUNT += 1
+        count = _LOG_FAILURE_COUNT
+    try:
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    except Exception:
+        trace = f"{type(exc).__name__}: {exc}"
+    message = _sanitize_detail(
+        "log_write_failed "
+        f"count={count} level={level} event={event} path={path} detail={detail} "
+        f"error_type={type(exc).__name__} error={exc} traceback={trace}"
+    )
+    try:
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _parse_line(line: str) -> dict[str, str] | None:

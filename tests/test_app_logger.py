@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import errno
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 from netconsole.core import app_logger
@@ -127,3 +132,40 @@ def test_get_logs_supports_keyword_with_pagination(tmp_path):
 
     assert [row["event"] for row in page.rows] == ["DEVICE_ERROR", "DEVICE_WARN"]
     assert page.state.total_items == 2
+
+
+def test_app_logger_handles_concurrent_writes_without_line_corruption(tmp_path):
+    paths = configure(tmp_path)
+    total_threads = 100
+    writes_per_thread = 50
+
+    def write_logs(thread_index: int) -> None:
+        for item_index in range(writes_per_thread):
+            app_logger.log_info(f"THREAD_{thread_index}_{item_index}", "并发日志")
+
+    with ThreadPoolExecutor(max_workers=total_threads) as executor:
+        list(executor.map(write_logs, range(total_threads)))
+
+    lines = paths.app_log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == total_threads * writes_per_thread
+    assert all(len(line.split(" | ", 3)) == 4 for line in lines)
+    assert all("并发日志" in line for line in lines)
+
+
+def test_app_logger_write_failure_does_not_escape_to_caller(tmp_path, monkeypatch, capsys):
+    paths = configure(tmp_path)
+
+    @contextmanager
+    def failing_lock(_path):
+        raise OSError(errno.EDEADLK, "Resource deadlock avoided")
+        yield
+
+    monkeypatch.setattr(app_logger, "interprocess_file_lock", failing_lock)
+
+    app_logger.log_info("LOCK_FAILED", "password=secret")
+
+    captured = capsys.readouterr()
+    assert "log_write_failed" in captured.err
+    assert "Resource deadlock avoided" in captured.err
+    assert "secret" not in captured.err
+    assert not paths.app_log_path.exists()

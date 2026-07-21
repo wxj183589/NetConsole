@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from netconsole.services.ac.fit_ap_optical_concurrency import DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
+
 
 @dataclass(frozen=True)
 class AcResourceRefreshRequest:
@@ -77,7 +79,7 @@ class AcOpticalRefreshRequest:
     site_name: str
     refresh_scope: str = "all"
     source: str = "auto"
-    max_workers: int = 200
+    max_workers: int = DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
     timeout: int = 15
     retry: int = 2
     target_ap_uuids: list[str] = field(default_factory=list)
@@ -112,6 +114,10 @@ class AcOpticalRefreshResult:
     optical_rows_updated: int = 0
     failed_aps: int = 0
     error_message: str = ""
+    requested_concurrency: int = 0
+    effective_concurrency: int = 0
+    platform_concurrency_limit: int = 0
+    round_summaries: list[dict[str, object]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -125,6 +131,10 @@ class AcOpticalRefreshResult:
                 "optical_rows_updated": self.optical_rows_updated,
                 "failed_aps": self.failed_aps,
                 "error_message": self.error_message,
+                "requested_concurrency": self.requested_concurrency,
+                "effective_concurrency": self.effective_concurrency,
+                "platform_concurrency_limit": self.platform_concurrency_limit,
+                "round_summaries": [dict(row) for row in self.round_summaries],
             },
         }
 

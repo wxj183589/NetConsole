@@ -65,7 +65,7 @@ describe('Online MR polling store', () => {
     await vi.advanceTimersByTimeAsync(2999)
     expect(getOnlineMrRawTail).toHaveBeenCalledTimes(initialTailCalls)
     await vi.advanceTimersByTimeAsync(1)
-    expect(getOnlineMrRawTail).toHaveBeenCalledTimes(initialTailCalls + 1)
+    expect(getOnlineMrRawTail).toHaveBeenCalledTimes(initialTailCalls + 3)
     const previewCalls = vi.mocked(getOnlineMrPreview).mock.calls.length
     await vi.advanceTimersByTimeAsync(2000)
     expect(getOnlineMrPreview).toHaveBeenCalledTimes(previewCalls + 1)

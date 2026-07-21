@@ -15,6 +15,7 @@ from netconsole.services.ac.ac_models import (
     AcOpticalRefreshRequest,
     AcResourceRefreshRequest,
 )
+from netconsole.services.ac.fit_ap_optical_concurrency import DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 from netconsole.services.ac.ac_optical_identity_adapter import AcOpticalIdentityAdapter
 from netconsole.services.ac.ac_identity_models import AcOpticalIdentityShadowReport
 from netconsole.services.ac.ac_optical_service import AcOpticalRefreshCancelled, AcOpticalService
@@ -261,7 +262,11 @@ def ac_fit_ap_optical_refresh(context: JobContext) -> dict[str, object]:
         site_name=site_name,
         refresh_scope=refresh_scope,
         source=str(params.get("source") or "auto"),
-        max_workers=int(params.get("concurrency") or params.get("max_workers") or 200),
+        max_workers=int(
+            params.get("concurrency")
+            or params.get("max_workers")
+            or DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
+        ),
         timeout=int(params.get("timeout") or 15),
         retry=int(params.get("retry") or 2),
         target_ap_uuids=_string_list(params.get("target_ap_uuids"), params.get("ap_uuid") or params.get("ap_id")),

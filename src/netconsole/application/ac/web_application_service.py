@@ -29,11 +29,12 @@ from netconsole.models.api.ac_management import (
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec
 from netconsole.services.fit_ap_import_export import normalize_ap_direction
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError, RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -183,7 +184,13 @@ class AcWebApplicationService:
             params["ap_uuid"] = ap_uuid
         if refresh_kind == "optical":
             params.update(source="auto", refresh_scope="all")
-        self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
+            resource_key = fit_ap_optical_resource_key(site_id, device_uuid)
+            if resource_key:
+                params["resource_keys"] = [resource_key]
+        try:
+            self.process_adapter.start_job(BackgroundJob(job_id=task_id, task_type=task_type, params=params))
+        except TaskResourceConflictError as exc:
+            raise AcWebActionError("FIT_AP_OPTICAL_UPDATE_RUNNING", str(exc)) from exc
         return self._task_dto(site_id, task_id)
 
     def get_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
@@ -720,9 +727,15 @@ class AcWebApplicationService:
                     "optical_rows_updated",
                     "failed_aps",
                     "error_message",
+                    "requested_concurrency",
+                    "effective_concurrency",
+                    "platform_concurrency_limit",
                 )
                 if key in collection
             }
+            round_summaries = collection.get("round_summaries")
+            if isinstance(round_summaries, list):
+                summary["collection"]["round_summaries_count"] = len(round_summaries)
         commands = result.get("commands")
         if isinstance(commands, list):
             summary["commands"] = [str(command) for command in commands]
