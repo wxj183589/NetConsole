@@ -455,6 +455,32 @@ def test_local_runtime_persists_result_before_single_terminal_state_event(
     assert event_types[-2:] == ["finished", "state"]
 
 
+def test_local_runtime_honors_finished_terminal_state(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "local-finished-failed"
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+    service.feed_stdout(
+        task_id,
+        encode_event(
+            finished_event(
+                task_id,
+                {"count": 1},
+                terminal_state=TaskState.FAILED.value,
+            )
+        ).encode("utf-8"),
+    )
+
+    service.complete(task_id, 0)
+
+    persisted = service.get_task(task_id)
+    assert persisted is not None
+    assert persisted.status is TaskState.FAILED
+    assert persisted.result == {"count": 1}
+    event_types = [event["type"] for event in service.list_events(task_id)]
+    assert event_types[-2:] == ["finished", "state"]
+
+
 def test_worker_read_only_task_service_does_not_reconcile_parent_owned_task(
     tmp_path: Path,
 ) -> None:

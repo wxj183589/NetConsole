@@ -125,7 +125,7 @@ class TaskRuntime:
         cancelled = bool(event.get("cancelled")) or task.cancel_requested
         if exit_code == 0 and str(event.get("type") or "") == "finished":
             payload = event
-            terminal_state = TaskState.COMPLETED
+            terminal_state = self._finished_terminal_state(event)
         else:
             message = str(event.get("message") or event.get("error") or task.stderr_buffer.strip() or f"后台任务异常退出，退出码 {exit_code}")
             payload = {
@@ -203,6 +203,19 @@ class TaskRuntime:
             return
         if event_type:
             self.events.publish(event, source="worker")
+
+    @staticmethod
+    def _finished_terminal_state(event: dict[str, object]) -> TaskState:
+        state_text = str(event.get("terminal_state") or "").strip().upper()
+        if not state_text:
+            return TaskState.COMPLETED
+        try:
+            state = TaskState(state_text)
+        except ValueError:
+            return TaskState.COMPLETED
+        if state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+            return state
+        return TaskState.COMPLETED
 
     def _set_state(self, job_id: str, state: TaskState) -> None:
         task = self._tasks.get(job_id)

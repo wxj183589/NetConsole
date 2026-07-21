@@ -41,6 +41,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
     return {
         "session_id": result.session_id,
         "status": result.status,
+        "terminal_state": _task_terminal_state(result.status),
         "scope": result.scope,
         "target_label": result.target_label,
         "success_count": result.success_count,
@@ -60,6 +61,15 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "current_lldp_port_count": result.current_lldp_port_count,
         "preserved_lldp_port_count": result.preserved_lldp_port_count,
     }
+
+
+def _task_terminal_state(status: str) -> str:
+    normalized = str(status or "").strip().upper()
+    if normalized == "FAILED":
+        return "FAILED"
+    if normalized == "CANCELLED":
+        return "CANCELLED"
+    return "COMPLETED"
 
 
 __all__ = ["run_trackside_ap_optical_update"]

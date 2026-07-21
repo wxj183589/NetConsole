@@ -435,7 +435,13 @@ def collect_trackside_optical(
     stage("trackside_ap.stage_write_database")
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
-    status = "CANCELLED" if cancel_event.is_set() else ("NO_TARGET" if total_units == 0 else "DONE")
+    status = _trackside_update_status(
+        success_count=success_count,
+        failed_count=failed_count,
+        skipped_count=len(skipped),
+        target_count=total_units,
+        cancelled=cancel_event.is_set(),
+    )
     coverage = _trackside_update_coverage(
         repository,
         ac_repository,
@@ -598,6 +604,25 @@ def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
         platform_limit,
     )
     return {"device": device, "switch": switch, "fit_ap": fit_ap}
+
+
+def _trackside_update_status(
+    *,
+    success_count: int,
+    failed_count: int,
+    skipped_count: int,
+    target_count: int,
+    cancelled: bool,
+) -> str:
+    if cancelled:
+        return "CANCELLED"
+    if target_count <= 0:
+        return "NO_TARGET"
+    if success_count > 0:
+        if failed_count > 0 or skipped_count > 0:
+            return "PARTIAL_SUCCESS"
+        return "SUCCESS"
+    return "FAILED"
 
 
 def _safe_trackside_concurrency(value: object, platform_limit: int) -> int:

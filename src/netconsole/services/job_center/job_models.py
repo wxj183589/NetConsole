@@ -87,6 +87,7 @@ class JobResult:
     error: str = ""
     traceback: str = ""
     cancelled: bool = False
+    terminal_state: str = ""
 
     def to_event(self) -> dict[str, Any]:
         from netconsole.services.job_center.job_events import cancelled_event, error_event, finished_event
@@ -99,4 +100,9 @@ class JobResult:
                 self.error or self.message or "后台任务失败",
                 traceback_text=self.traceback,
             )
-        return finished_event(self.job_id, self.result, self.message or "后台任务完成")
+        return finished_event(
+            self.job_id,
+            self.result,
+            self.message or "后台任务完成",
+            terminal_state=self.terminal_state,
+        )

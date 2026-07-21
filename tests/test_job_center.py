@@ -139,6 +139,24 @@ def test_job_runner_returns_structured_cancelled_result() -> None:
     assert result.to_event()["type"] == "cancelled"
 
 
+def test_job_runner_promotes_terminal_state_from_result() -> None:
+    task_type = "test_job_center_terminal_state"
+
+    def handler(_context: JobContext) -> dict[str, object]:
+        return {"count": 1, "terminal_state": "FAILED"}
+
+    register_handler(task_type, handler)
+    result = run_job(BackgroundJob(job_id="job-failed-result", task_type=task_type))
+    event = result.to_event()
+
+    assert result.ok is True
+    assert result.terminal_state == "FAILED"
+    assert result.result == {"count": 1}
+    assert event["type"] == "finished"
+    assert event["terminal_state"] == "FAILED"
+    assert event["result"] == {"count": 1}
+
+
 def test_export_events_reuse_common_protocol() -> None:
     event = export_error_event(
         "export-1", "已取消", output_path="report.xlsx", cancelled=True

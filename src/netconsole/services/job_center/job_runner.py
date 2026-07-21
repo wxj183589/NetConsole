@@ -24,7 +24,14 @@ class JobRunner:
         try:
             result = dispatch_job(job, progress_callback, should_cancel, sensitive_bootstrap)
             safe_result = redact_sensitive_values(dict(result or {}), secret_values)
-            return JobResult(job.job_id, True, safe_result, message="后台任务完成")
+            terminal_state = str(safe_result.pop("terminal_state", "") or "").strip().upper()
+            return JobResult(
+                job.job_id,
+                True,
+                safe_result,
+                message=_terminal_message(terminal_state),
+                terminal_state=terminal_state,
+            )
         except BackgroundTaskCancelled as exc:
             message = str(redact_sensitive_values(str(exc), secret_values))
             return JobResult(job.job_id, False, message=message, error=message, cancelled=True)
@@ -49,3 +56,11 @@ def run_job(
     sensitive_bootstrap: SensitiveBootstrap | None = None,
 ) -> JobResult:
     return JobRunner().run(job, progress_callback, should_cancel, sensitive_bootstrap)
+
+
+def _terminal_message(terminal_state: str) -> str:
+    if terminal_state == "FAILED":
+        return "后台任务失败"
+    if terminal_state == "CANCELLED":
+        return "后台任务已取消"
+    return "后台任务完成"

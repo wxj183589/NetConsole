@@ -94,6 +94,8 @@ result, error, traceback, cancelled
 {"type":"finished","job_id":"a1","stage":"","current":0,"total":0,"message":"后台任务完成","result":{"rows":[],"total":0},"error":"","traceback":"","cancelled":false}
 ```
 
+`finished` 可选携带 `terminal_state=COMPLETED|FAILED|CANCELLED`。它只用于 Worker 已正常返回、仍需保留结构化 `result`，但业务结果应落成失败或取消终态的场景；未提供时仍按 `COMPLETED` 处理，不新增事件类型。
+
 失败：
 
 ```json
@@ -115,6 +117,8 @@ stdout 不得混入设备原始回显或普通 print；诊断内容写 stderr。
 3. 将 `task_type` 加入该模块 `HANDLERS`，禁止改兼容 dispatcher。
 4. 在循环、批量和阶段边界调用 `context.check_cancelled()` 与 `context.progress(...)`。
 5. 返回 JSON 可序列化 dict。
+
+需要保留统计结果但让任务终态不是 `COMPLETED` 的 handler，可在返回 dict 中加入 `terminal_state`；`JobRunner` 会提升到 `finished` 事件字段并从 `result` 中移除。
 
 ```python
 def device_status_refresh(context: JobContext) -> dict[str, object]:
@@ -187,6 +191,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - AP 在线/离线关联和交换机侧光模块状态在 Domain 层合并。交换机侧无光不直接改写在线 AP 的 AP 侧异常；AP 离线仍按现有状态映射为历史光衰展示。
 - 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。
 - `ac_fit_ap_optical_refresh` 与轨旁 `trackside_ap_optical_update` 对同一 `site_id + ac_device_uuid + fit_ap_optical` 写入 `resource_keys`，`TaskApplicationService` 通过所属局点 `tasks.db` 的 `BEGIN IMMEDIATE` 原子检查和保存阻止同一 AC 重复光衰任务；任务进入 completed/failed/cancelled 或重启 orphan reconcile 后即释放占用，不使用永久文件锁。
+- 轨旁 `trackside_ap_optical_update` 的业务结果 `status` 使用 `SUCCESS / PARTIAL_SUCCESS / FAILED / NO_TARGET / CANCELLED`；其中 `FAILED/CANCELLED` 通过 `finished.terminal_state` 映射为 Task 终态，仍保留 `success_count/failed_count/target_count` 等统计。
 - 光衰采集结果的 `collection` 会返回 `requested_concurrency`、`effective_concurrency`、`platform_concurrency_limit` 和 `round_summaries`，用于诊断旧并发配置是否被裁剪以及重试轮次是否下降。
 - 本阶段不修改数据库 schema、AP 统一模型、轨旁 AP 业务或 MR/Mesh；旧 MIB/SNMP Collection 已在后续 E6A 阶段删除。
 

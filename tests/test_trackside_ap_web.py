@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +13,7 @@ from netconsole.models.device import Device
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
-from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job
+from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job, trackside_optical_collection
 from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
@@ -118,7 +119,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
 
     class Result:
         session_id = "session-1"
-        status = "DONE"
+        status = "SUCCESS"
         scope = "station"
         target_label = "站点A"
         success_count = 2
@@ -159,10 +160,72 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert captured["target_station"] == "站点A"
     assert captured["rows"] == _snapshot().rows
     assert result["session_id"] == "session-1"
+    assert result["status"] == "SUCCESS"
+    assert result["terminal_state"] == "COMPLETED"
     assert result["success_count"] == 2
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("SUCCESS", "COMPLETED"),
+        ("PARTIAL_SUCCESS", "COMPLETED"),
+        ("NO_TARGET", "COMPLETED"),
+        ("FAILED", "FAILED"),
+        ("CANCELLED", "CANCELLED"),
+    ],
+)
+def test_trackside_update_job_maps_result_status_to_task_terminal_state(
+    monkeypatch,
+    tmp_path: Path,
+    status: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(trackside_ap_update_job, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_update_job, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_update_job, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: _snapshot())
+    monkeypatch.setattr(
+        trackside_ap_update_job,
+        "collect_trackside_optical",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            session_id="session-1",
+            status=status,
+            scope="all",
+            target_label="",
+            success_count=0 if status == "FAILED" else 1,
+            failed_count=2 if status == "FAILED" else 0,
+            skipped_count=0,
+            target_count=2,
+            concurrency=64,
+            requested_concurrency=64,
+            effective_concurrency=2,
+            platform_concurrency_limit=64,
+            fit_ap_effective_concurrency=2,
+            fit_ap_round_summaries=[],
+            fit_ap_resource_count=1,
+            fit_ap_optical_success_count=0,
+            fit_ap_optical_failed_count=0,
+            candidate_ap_interface_count=2,
+            current_lldp_port_count=2,
+            preserved_lldp_port_count=0,
+        ),
+    )
+    context = JobContext(
+        "task-1",
+        "trackside_ap_optical_update",
+        {"site_name": "demo", "db_path": str(tmp_path / "site.sqlite")},
+        lambda *_args: None,
+        lambda: False,
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+    )
+
+    result = trackside_ap_update_job.run_trackside_ap_optical_update(context)
+
+    assert result["status"] == status
+    assert result["terminal_state"] == expected
 
 
 def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
@@ -293,6 +356,37 @@ def test_trackside_collection_no_target_does_not_fake_success(tmp_path: Path) ->
     assert result.target_count == 0
     assert result.success_count == 0
     assert result.failed_count == 0
+
+
+@pytest.mark.parametrize(
+    ("success_count", "failed_count", "skipped_count", "target_count", "cancelled", "expected"),
+    [
+        (2, 0, 0, 2, False, "SUCCESS"),
+        (1, 1, 0, 2, False, "PARTIAL_SUCCESS"),
+        (0, 38, 0, 38, False, "FAILED"),
+        (0, 0, 3, 3, False, "FAILED"),
+        (0, 0, 0, 0, False, "NO_TARGET"),
+        (1, 1, 0, 2, True, "CANCELLED"),
+    ],
+)
+def test_trackside_collection_status_classification(
+    success_count: int,
+    failed_count: int,
+    skipped_count: int,
+    target_count: int,
+    cancelled: bool,
+    expected: str,
+) -> None:
+    assert (
+        trackside_optical_collection._trackside_update_status(
+            success_count=success_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+            target_count=target_count,
+            cancelled=cancelled,
+        )
+        == expected
+    )
 
 
 def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> None:

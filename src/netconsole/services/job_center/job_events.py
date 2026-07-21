@@ -46,8 +46,17 @@ def log_event(job_id: str, message: str, *, stage: str = "", level: str = "info"
     return _event("log", job_id, stage=str(stage or ""), message=str(message or ""), level=str(level or "info"))
 
 
-def finished_event(job_id: str, result: dict[str, Any] | None = None, message: str = "后台任务完成") -> dict[str, Any]:
-    return _event("finished", job_id, message=str(message or "后台任务完成"), result=dict(result or {}))
+def finished_event(
+    job_id: str,
+    result: dict[str, Any] | None = None,
+    message: str = "后台任务完成",
+    *,
+    terminal_state: str = "",
+) -> dict[str, Any]:
+    event = _event("finished", job_id, message=str(message or "后台任务完成"), result=dict(result or {}))
+    if terminal_state:
+        event["terminal_state"] = str(terminal_state).upper()
+    return event
 
 
 def error_event(job_id: str, error: str, *, message: str = "", traceback_text: str = "") -> dict[str, Any]:

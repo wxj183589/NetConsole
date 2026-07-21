@@ -449,7 +449,7 @@ class TaskApplicationService:
             result = dict(payload.get("result") or {})
             values.update(
                 {
-                    "status": TaskState.COMPLETED,
+                    "status": self._finished_event_state(payload),
                     "finished_time": event_time,
                     "progress": 100,
                     "result": result,
@@ -602,6 +602,19 @@ class TaskApplicationService:
             ),
             "",
         )
+
+    @staticmethod
+    def _finished_event_state(payload: dict[str, Any]) -> TaskState:
+        state_text = str(payload.get("terminal_state") or "").strip().upper()
+        if not state_text:
+            return TaskState.COMPLETED
+        try:
+            state = TaskState(state_text)
+        except ValueError:
+            return TaskState.COMPLETED
+        if state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+            return state
+        return TaskState.COMPLETED
 
     @staticmethod
     def _task_source(value: object, *, default: str) -> str:
