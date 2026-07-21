@@ -38,6 +38,7 @@ from netconsole.models.api.online_mr import (
 )
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
+from netconsole.services.online_mr_parser import parse_mesh_link_text
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 
@@ -48,6 +49,7 @@ MAX_LOG_LIMIT = 1_000
 MAX_LOG_LINE_BYTES = 1024 * 1024
 MAX_WEB_TAIL_LIMIT = 500
 MAX_WEB_TAIL_BYTES = 4 * 1024 * 1024
+MAX_PREVIEW_RAW_TAIL_BYTES = 128 * 1024
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 
@@ -89,6 +91,7 @@ class OnlineMrQueryService:
         "collector": "logs/collector.log",
     }
     _WEB_RAW_SOURCES = {
+        "terminal_monitor": "raw/terminal_monitor_raw.log",
         "mesh_link": "raw/mesh_link_raw.log",
         "channel_busy": "raw/channel_busy_raw.log",
         "fping_samples": "raw/fping_v5_samples.jsonl",
@@ -193,11 +196,16 @@ class OnlineMrQueryService:
             data_integrity=integrity,
         )
 
-    def get_current_session(self, site_id: str) -> OnlineMrSessionDetailDTO | None:
-        for row in self.list_sessions(site_id, limit=100):
-            if row.status.upper() in self._ACTIVE_WEB_STATES:
-                return self.get_session(site_id, row.session_id)
-        return None
+    def get_current_session(
+        self,
+        site_id: str,
+        *,
+        session_id: str | None,
+    ) -> OnlineMrSessionDetailDTO | None:
+        if not session_id:
+            return None
+        detail = self.get_session(site_id, session_id)
+        return detail if detail.status.upper() in self._ACTIVE_WEB_STATES else None
 
     def list_collectors(self, site_id: str, session_id: str) -> list[OnlineMrCollectorStatusDTO]:
         session_dir = self._find_session(site_id, session_id)
@@ -226,6 +234,19 @@ class OnlineMrQueryService:
                 status = "stopped" if exists else "missing"
             elif not status:
                 status = "running" if active and size else "starting" if active else "stopped" if exists else "missing"
+            updated_at = self._collector_updated_at(
+                session_dir,
+                name=name,
+                path=path if exists else None,
+                item=item,
+                view=view,
+            )
+            health_status, stale_seconds = self._collector_health(
+                active=active,
+                enabled=is_enabled,
+                status=status,
+                updated_at=updated_at,
+            )
             rows.append(
                 OnlineMrCollectorStatusDTO(
                     name=name,
@@ -238,7 +259,9 @@ class OnlineMrQueryService:
                     error=str(item.get("error") or ""),
                     started_at=self._text_or_none(item.get("started_at")),
                     ended_at=self._text_or_none(item.get("ended_at")),
-                    updated_at=self._text_or_none(item.get("updated_at")) or self._text_or_none(view.get("updated_at")),
+                    updated_at=updated_at,
+                    health_status=health_status,
+                    stale_seconds=stale_seconds,
                 )
             )
         return rows
@@ -249,6 +272,10 @@ class OnlineMrQueryService:
         assert meta is not None
         mr_view = self._read_view_json(session_dir, "live_mr_status.json")
         link = self._read_view_json(session_dir, "live_link_status.json")
+        if not link:
+            link = self._latest_live_link(session_dir)
+        if not link:
+            link = self._latest_raw_link(session_dir)
         fping = self._read_view_json(session_dir, "live_fping_status.json")
         iperf = self._read_view_json(session_dir, "live_iperf_status.json")
         if str(meta.get("status") or "").upper() not in self._ACTIVE_WEB_STATES:
@@ -273,6 +300,179 @@ class OnlineMrQueryService:
             fping=fping,
             iperf=iperf,
         )
+
+    def _collector_updated_at(
+        self,
+        session_dir: Path,
+        *,
+        name: str,
+        path: Path | None,
+        item: dict[str, Any],
+        view: dict[str, Any],
+    ) -> str | None:
+        candidates = [
+            self._text_or_none(item.get("updated_at")),
+            self._text_or_none(view.get("updated_at")),
+        ]
+        if path is not None:
+            try:
+                candidates.append(datetime.fromtimestamp(path.stat().st_mtime).isoformat(sep=" ", timespec="milliseconds"))
+            except OSError:
+                pass
+        sample_time = self._latest_live_sample_time(session_dir, name)
+        if sample_time:
+            candidates.append(sample_time)
+        values = [(self._as_datetime(value), value) for value in candidates if value]
+        valid = [(stamp, value) for stamp, value in values if stamp is not None]
+        return max(valid, key=lambda row: row[0])[1] if valid else None
+
+    def _latest_live_sample_time(self, session_dir: Path, collector_name: str) -> str | None:
+        task_name = "fping" if collector_name == "fping_v5" else "iperf" if collector_name == "iperf_client" else collector_name
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.is_file() or db_path.is_symlink():
+            return None
+        try:
+            with closing(self._connect_readonly(db_path)) as conn:
+                tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                if "live_samples" not in tables:
+                    return None
+                row = conn.execute(
+                    "SELECT MAX(collected_at) FROM live_samples WHERE task_type = ?",
+                    (task_name,),
+                ).fetchone()
+                return self._text_or_none(row[0]) if row else None
+        except (OnlineMrQueryError, sqlite3.Error):
+            return None
+
+    @classmethod
+    def _collector_health(
+        cls,
+        *,
+        active: bool,
+        enabled: bool,
+        status: str,
+        updated_at: str | None,
+    ) -> tuple[str, float | None]:
+        if not active or not enabled:
+            return "unknown", None
+        if status in {"failed", "error", "missing"}:
+            return "interrupted", None
+        stamp = cls._as_datetime(updated_at)
+        if stamp is None:
+            return "unknown", None
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone().replace(tzinfo=None)
+        age = max(0.0, (datetime.now() - stamp).total_seconds())
+        if age > 120:
+            return "interrupted", round(age, 3)
+        if age > 30:
+            return "stale", round(age, 3)
+        return "normal", round(age, 3)
+
+    def _latest_live_link(self, session_dir: Path) -> dict[str, Any]:
+        db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        if not db_path.is_file() or db_path.is_symlink():
+            return {}
+        try:
+            with closing(self._connect_readonly(db_path)) as conn:
+                tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                if not {"live_samples", "live_mesh_links"}.issubset(tables):
+                    return {}
+                sample = conn.execute(
+                    "SELECT id, collected_at FROM live_samples WHERE task_type = 'mesh_link' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if not sample:
+                    return {}
+                row = conn.execute(
+                    """
+                    SELECT radio, link_state, resolved_peer_name, peer_name, peer_mac_normalized,
+                           peer_mac_raw, belong_station, belong_section, local_signal_dbm, local_rssi_db
+                    FROM live_mesh_links
+                    WHERE sample_id = ?
+                    ORDER BY CASE WHEN UPPER(link_state) = 'ACTIVE' THEN 0 ELSE 1 END, radio
+                    LIMIT 1
+                    """,
+                    (sample["id"],),
+                ).fetchone()
+                if not row:
+                    return {}
+                peer_name = str(row["resolved_peer_name"] or row["peer_name"] or "")
+                peer_mac = str(row["peer_mac_normalized"] or row["peer_mac_raw"] or "")
+                rssi = self._preview_rssi_dbm(row["local_signal_dbm"], row["local_rssi_db"])
+                return {
+                    "status": str(row["link_state"] or "unknown").lower(),
+                    "updated_at": self._text_or_none(sample["collected_at"]),
+                    "master": peer_name,
+                    "peer_name": peer_name,
+                    "peer_mac": peer_mac,
+                    "rssi_dbm": rssi,
+                    "radio": row["radio"],
+                    "display_context": {
+                        "station": str(row["belong_station"] or ""),
+                        "section": str(row["belong_section"] or ""),
+                    },
+                }
+        except (OnlineMrQueryError, sqlite3.Error):
+            LOGGER.debug("读取 Online MR 轻量链路预览失败：%s", session_dir.name, exc_info=True)
+            return {}
+
+    def _latest_raw_link(self, session_dir: Path) -> dict[str, Any]:
+        path = self._safe_session_file(session_dir, self._WEB_RAW_SOURCES["mesh_link"])
+        if path is None or not path.is_file() or path.is_symlink():
+            return {}
+        try:
+            stat = path.stat()
+            raw_text = self._read_tail_text(path, MAX_PREVIEW_RAW_TAIL_BYTES)
+            if not raw_text:
+                return {}
+            collected_at = datetime.fromtimestamp(stat.st_mtime)
+            records, _status, _error = parse_mesh_link_text(raw_text, collected_at)
+            active = next((record for record in reversed(records) if record.link_state == "ACTIVE"), None)
+            if active is None:
+                return {}
+            metrics = active.metrics
+            peer_name = str(metrics.get("resolved_peer_name") or metrics.get("peer_name") or "")
+            peer_mac = str(active.peer_mac_normalized or active.peer_mac_raw or "")
+            master_ap = peer_name or peer_mac
+            rssi = self._preview_rssi_dbm(active.local_signal_dbm, metrics.get("local_rssi_db"))
+            return {
+                "status": "active",
+                "updated_at": collected_at.isoformat(sep=" ", timespec="seconds"),
+                "master": master_ap,
+                "master_ap": master_ap,
+                "peer_name": peer_name,
+                "peer_mac": peer_mac,
+                "rssi_dbm": rssi,
+                "radio": active.radio,
+                "source": "raw_tail",
+            }
+        except OSError:
+            LOGGER.debug("读取 Online MR 原始链路尾部失败：%s", session_dir.name, exc_info=True)
+            return {}
+
+    @staticmethod
+    def _preview_rssi_dbm(signal_dbm: object, raw_rssi: object) -> float | int | None:
+        if isinstance(signal_dbm, (int, float)):
+            return signal_dbm
+        if not isinstance(raw_rssi, (int, float)):
+            return None
+        # H3C 的在线 Peer 表以正数幅值展示 RSSI；详细 Mesh 记录有噪声时
+        # 已由 parser 计算 signal_dbm，只有缺少该值时才按幅值转为 dBm。
+        return -abs(raw_rssi) if raw_rssi > 0 else raw_rssi
+
+    @staticmethod
+    def _read_tail_text(path: Path, maximum_bytes: int) -> str:
+        size = max(1, int(maximum_bytes))
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            end = handle.tell()
+            start = max(0, end - size)
+            handle.seek(start)
+            data = handle.read(size)
+        if start:
+            separator = data.find(b"\n")
+            data = data[separator + 1 :] if separator >= 0 else b""
+        return data.decode("utf-8", errors="replace")
 
     def read_raw_tail(self, site_id: str, session_id: str, name: str, *, tail: int = 200) -> OnlineMrRawTailDTO:
         if name not in self._WEB_RAW_SOURCES:

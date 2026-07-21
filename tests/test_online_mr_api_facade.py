@@ -28,8 +28,8 @@ class _Query:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
 
-    def get_current_session(self, site_id: str):
-        self.calls.append(("current", site_id))
+    def get_current_session(self, site_id: str, *, session_id: str | None = None):
+        self.calls.append(("current", site_id, session_id))
         return None
 
 

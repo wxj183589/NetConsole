@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.ping.fping_v5_runner import run_fping_v5_json
@@ -15,7 +17,9 @@ from netconsole.services.network_tools.iperf_runner import (
     IperfClientConfig,
     IperfProcessRunner,
     IperfResultStore,
+    IperfServerConfig,
     build_iperf_client_args,
+    build_iperf_server_args,
 )
 from netconsole.services.network_tools.iperf_tool_service import find_iperf_tool
 from netconsole.services.online_mr_session_store import OnlineMrSession
@@ -32,6 +36,8 @@ class _TrafficState:
     fping_status: str = "disabled"
     iperf_runner: IperfProcessRunner | None = None
     iperf_thread: threading.Thread | None = None
+    iperf_server_runner: IperfProcessRunner | None = None
+    iperf_server_thread: threading.Thread | None = None
     iperf_status: str = "disabled"
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -69,6 +75,9 @@ class OnlineMrTrafficCoordinator:
         runner = state.iperf_runner
         if runner is not None:
             runner.stop("STOPPED_BY_COLLECTION")
+        server = state.iperf_server_runner
+        if server is not None:
+            server.stop("STOPPED_BY_COLLECTION")
 
     def force_stop_traffic_for_session(self, session_id: str) -> None:
         state = self._state(session_id)
@@ -79,13 +88,16 @@ class OnlineMrTrafficCoordinator:
         runner = state.iperf_runner
         if runner is not None:
             runner.stop("FORCED_STOPPED_BY_COLLECTION")
+        server = state.iperf_server_runner
+        if server is not None:
+            server.stop("FORCED_STOPPED_BY_COLLECTION")
 
     def flush_traffic_outputs(self, session_id: str, *, timeout_seconds: float = 8.0) -> list[str]:
         state = self._state(session_id)
         if state is None:
             return []
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-        for name, thread in (("fping", state.fping_thread), ("iperf", state.iperf_thread)):
+        for name, thread in self._traffic_threads(state):
             if thread is None:
                 continue
             remaining = max(0.0, deadline - time.monotonic())
@@ -99,7 +111,7 @@ class OnlineMrTrafficCoordinator:
         state = self._state(session_id)
         if state is None:
             return summary
-        threads = (state.fping_thread, state.iperf_thread)
+        threads = tuple(thread for _, thread in self._traffic_threads(state))
         if not any(thread is not None and thread.is_alive() for thread in threads):
             with self._lock:
                 self._states.pop(session_id, None)
@@ -120,7 +132,7 @@ class OnlineMrTrafficCoordinator:
                 "warnings": list(state.warnings),
                 "flush_complete": not any(
                     thread is not None and thread.is_alive()
-                    for thread in (state.fping_thread, state.iperf_thread)
+                    for _, thread in self._traffic_threads(state)
                 ),
             }
 
@@ -142,6 +154,7 @@ class OnlineMrTrafficCoordinator:
             return
 
         state.fping_status = "running"
+        self._write_fping_snapshot(state, target=fping.target)
 
         def run() -> None:
             try:
@@ -161,6 +174,7 @@ class OnlineMrTrafficCoordinator:
                     fping_path=tool,
                 ):
                     state.fping_stats.add(sample)
+                    self._write_fping_snapshot(state, target=fping.target, latest=sample.as_dict())
                 state.fping_status = "stopped" if state.stop_requested.is_set() else "completed"
             except Exception as exc:
                 state.fping_status = "failed"
@@ -179,6 +193,7 @@ class OnlineMrTrafficCoordinator:
                     "avg_latency_ms": stats["avg_rtt_ms"],
                 }
                 state.session.write_fping_final_summary(json.dumps(summary, ensure_ascii=False, indent=2))
+                self._write_fping_snapshot(state, target=fping.target)
 
         state.fping_thread = threading.Thread(
             target=run,
@@ -201,7 +216,21 @@ class OnlineMrTrafficCoordinator:
             self._warn(state, "iPerf3 工具不可用")
             return
 
+        if traffic.server_ip == "127.0.0.1" and not self._ensure_loopback_iperf_server(
+            state,
+            tool=tool,
+            port=traffic.port,
+            interval_seconds=traffic.interval_seconds,
+        ):
+            state.iperf_status = "failed"
+            self._warn(state, "本地回环 iPerf 服务端启动失败")
+            self._write_iperf_snapshot(state, traffic)
+            return
+
         client = self._iperf_client_config(traffic)
+        def on_line(_line: str, row: dict[str, object] | None, error: dict[str, object] | None = None) -> None:
+            self._write_iperf_snapshot(state, traffic, row=row, error=error)
+
         runner = IperfProcessRunner(
             tool,
             build_iperf_client_args(tool, client),
@@ -212,9 +241,11 @@ class OnlineMrTrafficCoordinator:
             config=client,
             mode="client",
             context={"source": "online_mr_application"},
+            line_callback=on_line,
         )
         state.iperf_runner = runner
         state.iperf_status = "running"
+        self._write_iperf_snapshot(state, traffic)
 
         def run() -> None:
             try:
@@ -226,6 +257,8 @@ class OnlineMrTrafficCoordinator:
             except Exception as exc:
                 state.iperf_status = "failed"
                 self._warn(state, f"iPerf 运行失败：{exc}")
+            finally:
+                self._write_iperf_snapshot(state, traffic)
 
         state.iperf_thread = threading.Thread(
             target=run,
@@ -233,6 +266,103 @@ class OnlineMrTrafficCoordinator:
             daemon=True,
         )
         state.iperf_thread.start()
+
+    def _ensure_loopback_iperf_server(
+        self,
+        state: _TrafficState,
+        *,
+        tool,
+        port: int,
+        interval_seconds: int,
+    ) -> bool:
+        if self._is_tcp_listener("127.0.0.1", port):
+            return True
+        config = IperfServerConfig(
+            bind_ip="127.0.0.1",
+            port=port,
+            interval_seconds=interval_seconds,
+        )
+        runner = IperfProcessRunner(
+            tool,
+            build_iperf_server_args(tool, config),
+            state.session.session_dir / "raw" / "iperf_server_raw.log",
+            mode="server",
+            context={"source": "online_mr_application", "scope": "loopback_only"},
+        )
+        state.iperf_server_runner = runner
+        state.iperf_server_thread = threading.Thread(
+            target=runner.start,
+            name=f"online-mr-iperf-server-{state.session.meta.session_id}",
+            daemon=True,
+        )
+        state.iperf_server_thread.start()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if self._is_tcp_listener("127.0.0.1", port):
+                return True
+            if state.iperf_server_thread is not None and not state.iperf_server_thread.is_alive():
+                break
+            time.sleep(0.05)
+        runner.stop("START_FAILED")
+        return False
+
+    @staticmethod
+    def _is_tcp_listener(host: str, port: int) -> bool:
+        try:
+            with socket.create_connection((host, int(port)), timeout=0.15):
+                return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _traffic_threads(state: _TrafficState) -> tuple[tuple[str, threading.Thread | None], ...]:
+        return (
+            ("fping", state.fping_thread),
+            ("iperf", state.iperf_thread),
+            ("iperf_server", state.iperf_server_thread),
+        )
+
+    @staticmethod
+    def _write_fping_snapshot(
+        state: _TrafficState,
+        *,
+        target: str,
+        latest: dict[str, object] | None = None,
+    ) -> None:
+        state.session.write_view_snapshot(
+            "live_fping_status",
+            {
+                "status": state.fping_status,
+                "updated_at": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                "target": target,
+                "summary": state.fping_stats.as_dict(),
+                "latest": latest or {},
+            },
+        )
+
+    @staticmethod
+    def _write_iperf_snapshot(
+        state: _TrafficState,
+        config: IperfTrafficConfig,
+        *,
+        row: dict[str, object] | None = None,
+        error: dict[str, object] | None = None,
+    ) -> None:
+        normalized = config.normalized()
+        state.session.write_view_snapshot(
+            "live_iperf_status",
+            {
+                "status": state.iperf_status,
+                "updated_at": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                "server_ip": normalized.server_ip,
+                "port": normalized.port,
+                "protocol": normalized.protocol,
+                "target_bandwidth": normalized.target_bandwidth,
+                "bitrate_mbps": row.get("bitrate_mbps") if row else None,
+                "role": row.get("role") if row else None,
+                "error_code": error.get("error_code") if error else "",
+            },
+        )
 
     @staticmethod
     def _iperf_client_config(config: IperfTrafficConfig) -> IperfClientConfig:

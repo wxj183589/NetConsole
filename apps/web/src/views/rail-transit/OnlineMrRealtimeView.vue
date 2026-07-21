@@ -1,108 +1,72 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { CopyDocument, Refresh } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
+import { Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
-import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
-import { addOnlineMrNote, listOnlineMrNotes } from '../../api/onlineMr'
-import { getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import { getTrainCommunicationSummary, listTrainCommunications } from '../../api/trainCommunication'
-import { isFeatureEnabled } from '../../features'
 import { useOnlineMrStore } from '../../stores/onlineMr'
-import type { OnlineMrCollectorStatus, OnlineMrManualNote } from '../../types/onlineMr'
-import type { RailTransitTask } from '../../types/railTransitWeb'
+import type { OnlineMrCollectorStatus, OnlineMrRawFile } from '../../types/onlineMr'
 import type { MrCommunicationStatus } from '../../types/trainCommunication'
 
 const store = useOnlineMrStore()
 const route = useRoute()
-const router = useRouter()
-const { confirm } = useConfirm()
-const expanded = ref('')
-const rawTab = ref('mesh_link')
-const fpingSource = ref('fping_summary')
+const expanded = ref<string[]>([])
+const rawSource = ref('mesh_link')
 const controlMrs = ref<MrCommunicationStatus[]>([])
 const controlMrId = ref('')
 const controlError = ref('')
 const controlSiteId = ref('')
 const executorTab = ref('local')
-const noteText = ref('')
-const notes = ref<OnlineMrManualNote[]>([])
-const noteLoading = ref(false)
-const parseTask = ref<RailTransitTask | null>(null)
-const parseLoading = ref(false)
-let parseTimer: number | null = null
-const terminalTaskStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const parseTaskStorageKey = 'netconsole.online-mr.parse-task'
+
 const collectorColumns: NcTableColumn<OnlineMrCollectorStatus>[] = [
   { key: 'label', label: '采集项', valueType: 'name' },
-  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
-  { key: 'raw_file', label: 'Raw', valueType: 'description', align: 'left', alignmentReason: 'path' },
+  { key: 'health_status', label: '状态', valueType: 'status', cellKind: 'tag', displayValue: collectorStatusLabel },
   { key: 'size_bytes', label: '大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
   { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
 ]
-const noteColumns: NcTableColumn<OnlineMrManualNote>[] = [
-  { key: 'local_time', label: '时间', valueType: 'datetime' },
-  { key: 'title', label: '备注', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
-  { key: 'audit_source', label: '审计来源', valueType: 'status', displayValue: (row) => noteAuditSource(row) },
+const rawFileColumns: NcTableColumn<OnlineMrRawFile>[] = [
+  { key: 'name', label: '采集文件', valueType: 'name', displayValue: (row) => rawFileLabel(row.name) },
+  { key: 'size_bytes', label: '当前大小', valueType: 'number', displayValue: (row) => formatBytes(row.size_bytes) },
+  { key: 'modified_at', label: '最近增长', valueType: 'datetime' },
 ]
 const controlMr = computed(() => controlMrs.value.find((item) => item.mr_id === controlMrId.value) || null)
-const selectedId = computed({
-  get: () => store.selected?.session_id || '',
-  set: (value: string) => value && void store.selectSession(value),
-})
-const fpingSummary = computed(() => {
-  const summary = store.preview?.fping?.summary
-  if (!summary || typeof summary !== 'object') return {}
-  const result = summary as Record<string, unknown>
-  const targets = result.targets
-  if (!targets || typeof targets !== 'object') return result
-  const first = Object.values(targets as Record<string, unknown>).find((item) => item && typeof item === 'object')
-  return first ? { ...result, ...first as Record<string, unknown> } : result
-})
-const fpingTarget = computed(() => {
-  const targets = store.preview?.fping?.summary && typeof store.preview.fping.summary === 'object'
-    ? (store.preview.fping.summary as Record<string, unknown>).targets
-    : null
-  return targets && typeof targets === 'object' ? Object.keys(targets as Record<string, unknown>)[0] || '--' : '--'
-})
 const link = computed(() => store.preview?.link || {})
 const displayContext = computed(() => store.preview?.display_context || {})
-const acceptanceCommand = computed(() => {
-  if (!store.selected) return ''
-  return `python -m scripts.maintenance.check_online_mr_session_state --site "${store.selected.site_id}" --session-id "${store.selected.session_id}"`
+const fping = computed(() => store.preview?.fping || {})
+const fpingSummary = computed(() => {
+  const value = fping.value.summary
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
 })
-const parseActive = computed(() => Boolean(parseTask.value && !terminalTaskStates.has(parseTask.value.status)))
+const iperf = computed(() => store.preview?.iperf || {})
 
-watch(() => store.rawFiles, (files) => {
-  if (!files.length) return
-  const selected = files.find((item) => item.name === fpingSource.value)
-  if (selected?.size_bytes) return
-  fpingSource.value = ['fping_summary', 'fping_samples', 'fping_raw'].find((name) => files.some((item) => item.name === name && item.size_bytes > 0)) || 'fping_raw'
-}, { immediate: true })
-
-watch([expanded, rawTab, fpingSource], ([section, tab, selectedFping]) => {
-  if (section === 'raw') {
-    store.setRawSource(tab === 'fping' ? selectedFping : tab)
-  } else if (section === 'logs') {
-    store.setRawSource('collector_output')
-  }
-  store.setRawExpanded(Boolean(section))
+watch(expanded, (sections) => {
+  const logsExpanded = sections.includes('logs')
+  store.setRawExpanded(logsExpanded)
+  if (logsExpanded) store.setRawSource(rawSource.value)
 })
-
-watch(() => store.selected?.session_id, () => { void loadNotes() })
+watch(rawSource, (source) => {
+  if (expanded.value.includes('logs')) store.setRawSource(source)
+})
 
 function field(value: Record<string, unknown>, ...names: string[]): string {
   for (const name of names) {
     const candidate = value[name]
     if (candidate !== undefined && candidate !== null && candidate !== '') return String(candidate)
   }
-  return '--'
+  return '—'
+}
+
+function numberField(value: Record<string, unknown>, names: string[], suffix: string): string {
+  for (const name of names) {
+    const candidate = value[name]
+    if (candidate !== undefined && candidate !== null && candidate !== '') return `${candidate}${suffix}`
+  }
+  return '—'
 }
 
 function formatBytes(value: number): string {
@@ -112,139 +76,25 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MiB`
 }
 
-function collectorType(status: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
-  const value = status.toLowerCase()
-  if (['running', 'completed', 'stopped'].includes(value)) return 'success'
-  if (['failed', 'error', 'missing'].includes(value)) return 'danger'
-  if (['starting', 'stopping', 'warning'].includes(value)) return 'warning'
-  return 'info'
+function collectorStatusLabel(row: OnlineMrCollectorStatus): string {
+  if (!row.enabled) return '未启用'
+  if (row.health_status === 'stale') return '异常'
+  if (row.health_status === 'interrupted') return '采集中断'
+  if (row.health_status === 'normal') return '采集中'
+  return ({ starting: '启动中', stopped: '已停止', completed: '已完成', failed: '失败', missing: '无数据' } as Record<string, string>)[row.status] || '等待数据'
 }
 
-async function copyAcceptanceCommand(): Promise<void> {
-  if (!acceptanceCommand.value) return
-  await navigator.clipboard.writeText(acceptanceCommand.value)
-  ElMessage.success('验收命令已复制')
+function rawFileLabel(name: string): string {
+  return ({
+    terminal_monitor: '终端实时日志', mesh_link: '主链路信息', channel_busy: '空口负载', fping_samples: 'fping 样本',
+    fping_summary: 'fping 汇总', fping_raw: 'fping 原始输出', iperf_client: 'iPerf 客户端',
+    switch_history: '切换历史', collector_output: '采集器输出', wireless_status: '无线状态',
+  } as Record<string, string>)[name] || name
 }
 
 function handleVisibility(): void {
   if (document.hidden) store.stopPolling()
   else store.startPolling()
-}
-
-function noteAuditSource(note: OnlineMrManualNote): string {
-  const audit = note.payload.audit
-  return audit && typeof audit === 'object'
-    ? String((audit as Record<string, unknown>).source || 'legacy_qt')
-    : 'legacy_qt'
-}
-
-async function loadNotes(): Promise<void> {
-  if (!store.selected) {
-    notes.value = []
-    return
-  }
-  const sessionId = store.selected.session_id
-  noteLoading.value = true
-  try {
-    const loaded = await listOnlineMrNotes(sessionId)
-    if (store.selected?.session_id === sessionId) notes.value = loaded
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '备注加载失败')
-  } finally {
-    noteLoading.value = false
-  }
-}
-
-async function addNote(): Promise<void> {
-  if (!store.selected || !noteText.value.trim()) return
-  const sessionId = store.selected.session_id
-  noteLoading.value = true
-  try {
-    if (!await confirm({ type: 'WARNING', title: '记录采集备注', message: `确认把备注写入会话 ${sessionId}？`, confirmText: '确认记录' })) return
-    const saved = await addOnlineMrNote(sessionId, noteText.value.trim())
-    if (store.selected?.session_id !== sessionId) return
-    notes.value.push(saved)
-    noteText.value = ''
-    await store.refreshOverview()
-    ElMessage.success('备注已写入会话并保留审计来源')
-  } catch (cause) {
-    if (cause !== 'cancel' && cause !== 'close') {
-      ElMessage.error(cause instanceof Error ? cause.message : '备注保存失败')
-    }
-  } finally {
-    noteLoading.value = false
-  }
-}
-
-function stopParsePolling(): void {
-  if (parseTimer !== null) window.clearTimeout(parseTimer)
-  parseTimer = null
-}
-
-function rememberParseTask(value: RailTransitTask | null): void {
-  parseTask.value = value
-  if (value) localStorage.setItem(parseTaskStorageKey, value.task_id)
-  else localStorage.removeItem(parseTaskStorageKey)
-}
-
-function pollParseTask(): void {
-  stopParsePolling()
-  if (!parseTask.value || terminalTaskStates.has(parseTask.value.status)) {
-    if (parseTask.value?.status === 'COMPLETED') void store.refreshOverview()
-    return
-  }
-  parseTimer = window.setTimeout(async () => {
-    try {
-      rememberParseTask(await getRailTransitTask(parseTask.value!.task_id))
-      pollParseTask()
-    } catch (cause) {
-      ElMessage.error(cause instanceof Error ? cause.message : '解析任务状态读取失败')
-    }
-  }, 1000)
-}
-
-async function startParse(forceReparse: boolean): Promise<void> {
-  if (!store.selected || parseActive.value || !isFeatureEnabled('web.online_mr_parse')) return
-  const sessionId = store.selected.session_id
-  parseLoading.value = true
-  try {
-    if (forceReparse) {
-      if (!await confirm({ type: 'WARNING', title: '强制重新解析', message: '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？', confirmText: '重新解析' })) return
-    }
-    rememberParseTask(await parseOnlineMrSession(sessionId, forceReparse))
-    pollParseTask()
-    openTaskWindow()
-  } catch (cause) {
-    if (cause !== 'cancel' && cause !== 'close') {
-      ElMessage.error(cause instanceof Error ? cause.message : '解析任务启动失败')
-    }
-  } finally {
-    parseLoading.value = false
-  }
-}
-
-async function recoverParse(): Promise<void> {
-  try {
-    const saved = localStorage.getItem(parseTaskStorageKey) || ''
-    const rows = await recoverRailTransitTasks()
-    rememberParseTask(
-      rows.find((item) => item.task_id === saved && item.action === 'online_mr_parse')
-      || rows.find((item) => item.action === 'online_mr_parse' && !terminalTaskStates.has(item.status))
-      || null,
-    )
-    pollParseTask()
-  } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '解析任务恢复失败')
-  }
-}
-
-function openTaskWindow(): void {
-  const taskId = parseTask.value?.task_id || ''
-  if (window.netconsoleDesktop) {
-    void window.netconsoleDesktop.openTaskWindow({ module: 'rail', ...(taskId ? { taskId } : {}) })
-    return
-  }
-  void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
 
 async function loadControlMrs(): Promise<void> {
@@ -271,253 +121,139 @@ async function loadControlMrs(): Promise<void> {
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibility)
   await loadControlMrs()
-  const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
-  if (requestedSession) await store.selectSession(requestedSession)
-  await Promise.all([loadNotes(), recoverParse()])
   store.startPolling()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
   store.stopPolling()
-  stopParsePolling()
 })
 </script>
 
 <template>
   <div class="online-mr-web" v-loading="store.loading">
-    <div class="mr-toolbar">
+    <header class="page-heading">
       <div>
-        <p class="eyebrow">RAIL TRANSIT · ONLINE MR COLLECTION</p>
+        <p class="eyebrow">轨道交通</p>
         <h2>车载 MR 实时收集</h2>
-        <p>配置、启动、SSH 采集、fping/iPerf、正常停止、强停、恢复与会话交付。</p>
+        <p>仅展示当前正在运行的实时采集任务；历史 Session、日志下载和分析报告统一进入“车载 MR 收集分析”。</p>
       </div>
-      <div class="mr-toolbar-actions">
-        <el-select v-model="selectedId" filterable placeholder="选择最近会话" style="width: 310px">
-          <el-option
-            v-for="item in store.recent"
-            :key="item.session_id"
-            :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`"
-            :value="item.session_id"
-          />
-        </el-select>
-        <el-button :icon="Refresh" @click="store.refreshOverview">刷新</el-button>
-      </div>
-    </div>
+      <el-button :icon="Refresh" @click="store.refreshOverview">刷新当前任务</el-button>
+    </header>
 
-    <section class="content-card collection-control">
-      <div class="control-selector">
+    <section class="content-section collection-control">
+      <div class="section-heading">
         <div><h3>采集控制</h3><p>从基础资料选择正式 MR；连接凭据由后端设备库受控读取。</p></div>
-        <div class="mr-toolbar-actions"><el-select v-model="controlMrId" filterable placeholder="选择列车 MR" style="width: 330px"><el-option v-for="mr in controlMrs" :key="mr.mr_id" :label="`${mr.train_name} · ${mr.mr_role} · ${mr.mr_name}`" :value="mr.mr_id" /></el-select><el-button :icon="Refresh" @click="loadControlMrs">刷新 MR</el-button></div>
+        <div class="control-selector">
+          <el-select v-model="controlMrId" filterable placeholder="选择列车 MR" style="width: 330px">
+            <el-option v-for="mr in controlMrs" :key="mr.mr_id" :label="`${mr.train_name} · ${mr.mr_role} · ${mr.mr_name}`" :value="mr.mr_id" />
+          </el-select>
+          <el-button :icon="Refresh" @click="loadControlMrs">刷新 MR</el-button>
+        </div>
       </div>
       <el-alert v-if="controlError" :title="controlError" type="error" :closable="false" show-icon />
-      <el-tabs v-if="controlMr && controlSiteId" v-model="executorTab" type="border-card"><el-tab-pane label="LOCAL 本地执行" name="local"><OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" /></el-tab-pane><el-tab-pane label="AGENT 远程执行" name="agent"><OnlineMrAgentControlPanel :site-id="controlSiteId" :mr="controlMr" /></el-tab-pane></el-tabs>
+      <el-tabs v-if="controlMr && controlSiteId" v-model="executorTab" type="border-card">
+        <el-tab-pane label="LOCAL 本地执行" name="local">
+          <OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" @refresh="store.refreshOverview" />
+        </el-tab-pane>
+        <el-tab-pane label="AGENT 远程执行" name="agent">
+          <OnlineMrAgentControlPanel :site-id="controlSiteId" :mr="controlMr" />
+        </el-tab-pane>
+      </el-tabs>
       <el-empty v-else description="当前局点没有已登记且绑定设备的 MR" />
     </section>
 
-    <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="mr-error" />
-    <el-empty v-if="!store.selected && !store.loading" description="当前局点暂无 Online MR 会话" />
+    <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon />
+    <el-empty v-if="!store.current && !store.loading" description="当前无实时采集任务，请选择列车启动采集" class="current-empty" />
 
-    <template v-if="store.selected">
-      <section class="mr-status-grid">
-        <article class="mr-status-card primary">
-          <span>会话状态</span>
-          <NcStatusTag :status="store.selected.status" />
-          <small>{{ store.selected.phase || '无阶段信息' }}</small>
-        </article>
-        <article class="mr-status-card">
-          <span>车辆 / MR</span>
-          <strong>{{ store.selected.device_name || store.selected.mr_name }}</strong>
-          <small>{{ store.selected.mr_name }} · {{ store.selected.executor_kind || '--' }}</small>
-        </article>
-        <article class="mr-status-card">
-          <span>运行时长</span>
-          <strong>{{ (store.selected.duration_minutes || 0).toFixed(1) }} min</strong>
-          <small>{{ store.selected.started_at || '--' }}</small>
-        </article>
-        <article class="mr-status-card">
-          <span>Task / Mapping</span>
-          <strong>{{ store.selected.task_status || '--' }}</strong>
-          <small>{{ store.selected.mapping_state || '无映射' }}</small>
-        </article>
-        <article class="mr-status-card">
-          <span>数据完整性</span>
-          <strong>{{ store.selected.data_integrity }}</strong>
-          <small>{{ store.selected.stop_reason || '运行中或未记录停止原因' }}</small>
-        </article>
-      </section>
-      <el-alert v-if="store.selected.error_message" :title="store.selected.error_message" type="error" :closable="false" show-icon class="mr-error" />
-
-      <section class="mr-two-column">
-        <div class="content-card mr-panel">
-          <div class="mr-panel-title">
-            <div><h3>采集器状态</h3><p>终态会话会校正过期的 running 视图状态</p></div>
-            <span>{{ store.collectors.filter((item) => item.enabled).length }} 项启用</span>
-          </div>
-          <NcDataTable table-id="online-mr-collectors" route-key="/rail-transit/online-mr" :data="store.collectors" :columns="collectorColumns" compact max-height="360">
-            <template #cell-status="{ row }"><el-tag :type="collectorType(row.status)" effect="light">{{ row.status }}</el-tag></template>
-            <template #cell-raw_file="{ row }"><code>{{ row.raw_file }}</code></template>
-          </NcDataTable>
+    <template v-if="store.current">
+      <section class="content-section current-session">
+        <div class="section-heading">
+          <div><h3>当前 Session</h3><p>{{ store.current.device_name || store.current.mr_name }}</p></div>
+          <NcStatusTag :status="store.current.status" />
         </div>
-
-        <div class="content-card mr-panel">
-          <div class="mr-panel-title">
-            <div><h3>轻量实时预览</h3><p>{{ store.preview?.updated_at || '尚未更新时间' }}</p></div>
-            <el-tag :type="store.preview?.available ? 'success' : 'info'">{{ store.preview?.available ? '可用' : '暂无数据' }}</el-tag>
-          </div>
-          <div class="mr-preview-grid">
-            <div><span>站点</span><strong>{{ field(displayContext, 'station', 'site') }}</strong></div>
-            <div><span>区间</span><strong>{{ field(displayContext, 'section') }}</strong></div>
-            <div><span>主链路</span><strong>{{ field(link, 'peer_name', 'resolved_peer_name', 'main_link') }}</strong></div>
-            <div><span>Peer MAC</span><strong>{{ field(link, 'peer_mac', 'peer_mac_normalized', 'bssid') }}</strong></div>
-            <div><span>RSSI</span><strong>{{ field(link, 'rssi', 'mr_rssi', 'local_rssi_db') }}</strong></div>
-            <div><span>链路状态</span><strong>{{ field(link, 'link_state', 'status') }}</strong></div>
-            <div><span>Ping 目标</span><strong>{{ fpingTarget }}</strong></div>
-            <div><span>Ping 已发</span><strong>{{ field(fpingSummary, 'sent') }}</strong></div>
-            <div><span>最新延迟</span><strong>{{ field(fpingSummary, 'latest_latency_ms') }} ms</strong></div>
-            <div><span>Ping 丢包</span><strong>{{ field(fpingSummary, 'loss_percent') }}%</strong></div>
-            <div><span>平均延迟</span><strong>{{ field(fpingSummary, 'avg_latency_ms') }} ms</strong></div>
-            <div><span>最大延迟</span><strong>{{ field(fpingSummary, 'max_latency_ms') }} ms</strong></div>
-            <div><span>iPerf</span><strong>{{ field(store.preview?.iperf || {}, 'bitrate_mbps', 'status') }}</strong></div>
-          </div>
-          <el-alert :title="store.preview?.message || '暂无实时预览数据'" type="info" :closable="false" class="mr-preview-message" />
-        </div>
+        <el-descriptions :column="4" border>
+          <el-descriptions-item label="列车 / MR">{{ store.current.mr_name }}</el-descriptions-item>
+          <el-descriptions-item label="Session">{{ store.current.session_id }}</el-descriptions-item>
+          <el-descriptions-item label="开始时间">{{ store.current.started_at || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="运行时间">{{ (store.current.duration_minutes || 0).toFixed(1) }} 分钟</el-descriptions-item>
+          <el-descriptions-item label="Task 状态">{{ store.current.task_status || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="采集阶段">{{ store.current.phase || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="执行端">{{ store.current.executor_kind || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="数据更新时间">{{ store.preview?.updated_at || '—' }}</el-descriptions-item>
+        </el-descriptions>
       </section>
 
-      <el-collapse v-model="expanded" accordion class="mr-collapse">
-        <el-collapse-item name="raw" title="原始日志动态查看（展开后每秒刷新）">
-          <div class="mr-raw-toolbar">
-            <el-tabs v-model="rawTab" class="mr-raw-tabs">
-              <el-tab-pane label="主链路 mesh-link" name="mesh_link" />
-              <el-tab-pane label="信道繁忙度" name="channel_busy" />
-              <el-tab-pane label="高频 Ping" name="fping" />
-              <el-tab-pane label="主链路切换" name="switch_history" />
-            </el-tabs>
-            <el-select v-if="rawTab === 'fping'" v-model="fpingSource" size="small" style="width: 170px">
-              <el-option label="最终摘要" value="fping_summary" />
-              <el-option label="最近样本" value="fping_samples" />
-              <el-option label="原始输出" value="fping_raw" />
-            </el-select>
-            <el-button size="small" :icon="Refresh" @click="store.refreshRawTail">刷新</el-button>
-            <span>{{ store.rawTail?.message || store.rawTail?.modified_at || '选择日志来源' }}</span>
-          </div>
-          <pre class="mr-raw-log">{{ store.rawTail?.lines.join('\n') || (store.rawSource === 'switch_history' ? '暂无主链路切换日志' : '文件不存在、尚未生成或暂无内容。') }}</pre>
-        </el-collapse-item>
-        <el-collapse-item name="logs" title="采集输出日志 tail（展开后每秒刷新）">
-          <div class="mr-raw-toolbar">
-            <span>raw/collector_output_raw.log · 最后 200 行</span>
-            <el-button size="small" :icon="Refresh" @click="store.refreshRawTail">刷新</el-button>
-          </div>
-          <pre class="mr-raw-log">{{ store.rawTail?.lines.join('\n') || '采集输出日志不存在或尚未生成。' }}</pre>
-        </el-collapse-item>
-      </el-collapse>
-
-      <section class="content-card mr-session-actions">
-        <div class="session-action-heading">
-          <div>
-            <h3>采集备注与会话解析</h3>
-            <p>备注持久化到会话；解析使用现有 Job Center，停止、日志和结果统一在任务窗口处理。</p>
-          </div>
-          <el-tag v-if="parseTask">{{ parseTask.status }}</el-tag>
-        </div>
-        <div class="note-actions">
-          <el-input
-            v-model="noteText"
-            maxlength="500"
-            show-word-limit
-            clearable
-            placeholder="输入现场备注、站点或异常说明"
-            @keyup.enter="addNote"
+      <div class="runtime-grid">
+        <section class="content-section runtime-status">
+          <div class="section-heading"><div><h3>当前采集状态</h3><p>更新时间超过 30 秒标记异常，超过 120 秒标记采集中断。</p></div></div>
+          <NcDataTable
+            table-id="online-mr-collectors"
+            route-key="/rail-transit/online-mr"
+            :preference-scope="store.current.session_id"
+            :data="store.collectors"
+            :columns="collectorColumns"
+            max-height="360"
+            empty-text="采集项尚未初始化"
           />
-          <el-button
-            :loading="noteLoading"
-            :disabled="!noteText.trim() || !isFeatureEnabled('online_mr.collection_notes')"
-            @click="addNote"
-          >记录备注</el-button>
-          <el-button @click="noteText = ''">清空输入</el-button>
+        </section>
+
+        <section class="content-section runtime-log-growth">
+          <div class="section-heading"><div><h3>当前日志增长情况</h3><p>仅显示本次活动 Session 的文件大小和最近增长时间。</p></div></div>
+          <el-collapse v-model="expanded" class="log-growth-collapse">
+            <el-collapse-item title="文件增长明细" name="growth">
+              <NcDataTable table-id="online-mr-raw-growth" route-key="/rail-transit/online-mr" :preference-scope="store.current.session_id" :data="store.rawFiles" :columns="rawFileColumns" max-height="320" empty-text="尚未生成采集文件" />
+            </el-collapse-item>
+            <el-collapse-item title="原始日志动态查看" name="logs">
+              <el-select v-model="rawSource" data-testid="raw-source" style="width: 240px">
+                <el-option label="采集器输出" value="collector_output" />
+                <el-option label="终端实时日志" value="terminal_monitor" />
+                <el-option label="主链路" value="mesh_link" />
+                <el-option label="无线状态" value="wireless_status" />
+                <el-option label="空口负载" value="channel_busy" />
+                <el-option label="iPerf 客户端" value="iperf_client" />
+                <el-option label="fping v5 原始输出" value="fping_raw" />
+              </el-select>
+              <pre class="raw-output">{{ store.rawTail?.lines.join('\n') || '暂无数据' }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </section>
+      </div>
+
+      <section class="content-section">
+        <div class="section-heading"><div><h3>轻量实时预览</h3><p>每 5 秒读取最新快照，不扫描完整原始日志。</p></div></div>
+        <div v-if="store.preview?.available" class="preview-grid">
+          <div class="preview-block"><h4>当前无线状态</h4><dl><dt>站点</dt><dd>{{ field(displayContext, 'station', 'site') }}</dd><dt>区间</dt><dd>{{ field(displayContext, 'section') }}</dd><dt>主链路</dt><dd>{{ field(link, 'master', 'peer_name', 'resolved_peer_name') }}</dd><dt>RSSI</dt><dd>{{ numberField(link, ['rssi_dbm', 'local_signal_dbm', 'local_rssi_db'], ' dBm') }}</dd><dt>Peer MAC</dt><dd>{{ field(link, 'peer_mac') }}</dd></dl></div>
+          <div class="preview-block"><h4>fping</h4><dl><dt>目标</dt><dd>{{ field(fping, 'target') }}</dd><dt>最新延迟</dt><dd>{{ numberField(fpingSummary, ['last_rtt_ms'], ' ms') }}</dd><dt>丢包</dt><dd>{{ numberField(fpingSummary, ['loss_rate_percent'], '%') }}</dd><dt>平均延迟</dt><dd>{{ numberField(fpingSummary, ['avg_rtt_ms'], ' ms') }}</dd><dt>状态</dt><dd>{{ field(fping, 'status') }}</dd></dl></div>
+          <div class="preview-block"><h4>iPerf 本地回环</h4><dl><dt>目标</dt><dd>{{ field(iperf, 'server_ip') }}</dd><dt>协议</dt><dd>{{ field(iperf, 'protocol') }}</dd><dt>限速</dt><dd>{{ field(iperf, 'target_bandwidth') }}</dd><dt>当前速率</dt><dd>{{ numberField(iperf, ['bitrate_mbps'], ' Mbps') }}</dd><dt>状态</dt><dd>{{ field(iperf, 'status') }}</dd></dl></div>
         </div>
-        <NcDataTable v-loading="noteLoading" table-id="online-mr-notes" route-key="/rail-transit/online-mr" :preference-scope="store.selected.session_id" :data="notes" :columns="noteColumns" max-height="230" empty-text="当前会话暂无备注" />
-        <div class="parse-actions">
-          <el-button
-            type="primary"
-            :loading="parseLoading"
-            :disabled="parseActive || !isFeatureEnabled('web.online_mr_parse')"
-            @click="startParse(false)"
-          >解析当前会话</el-button>
-          <el-button
-            type="warning"
-            plain
-            :disabled="parseActive || !isFeatureEnabled('web.online_mr_parse')"
-            @click="startParse(true)"
-          >强制重新解析</el-button>
-          <el-button @click="recoverParse">恢复任务状态</el-button>
-          <el-button @click="openTaskWindow">打开任务窗口</el-button>
-          <span v-if="parseTask">{{ parseTask.error_message || parseTask.message || parseTask.task_id }}</span>
-        </div>
+        <el-empty v-else description="当前采集尚未产生轻量预览" />
       </section>
 
-      <section class="content-card mr-delivery">
-        <div>
-          <h3>会话交付</h3>
-          <p><b>Session ID：</b><code>{{ store.selected.session_id }}</code></p>
-          <p><b>Task ID：</b><code>{{ store.selected.controller_task_id || '无 Controller Task' }}</code></p>
-          <p><b>Session：</b><code>{{ store.selected.session_path_reference }}</code></p>
-          <p><b>Package：</b><code>{{ store.selected.package_reference || '尚未生成' }}</code></p>
-        </div>
-        <div class="mr-command">
-          <code>{{ acceptanceCommand }}</code>
-          <el-button :icon="CopyDocument" @click="copyAcceptanceCommand">复制验收命令</el-button>
-        </div>
-      </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-.online-mr-web { max-width: 1680px; margin: 0 auto; }.eyebrow { margin: 0 0 4px !important; color: var(--el-color-primary) !important; font-size: 12px !important; font-weight: 700; letter-spacing: .08em; }
-.mr-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 18px 0; }
-.mr-toolbar h2, .mr-panel-title h3, .mr-delivery h3 { margin: 0; }
-.mr-toolbar p, .mr-panel-title p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
-.mr-toolbar-actions { display: flex; gap: 10px; }
-.collection-control { margin-bottom: 16px; padding: 16px; }.control-selector { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }.control-selector h3 { margin: 0 0 5px; }.control-selector p { margin: 0; color: var(--el-text-color-secondary); }.collection-control .el-alert { margin-bottom: 12px; }
-.mr-error { margin-bottom: 16px; }
-.mr-status-grid { display: grid; grid-template-columns: repeat(5, minmax(160px, 1fr)); gap: 14px; margin-bottom: 16px; }
-.mr-status-card { min-height: 116px; padding: 17px 18px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-top: 3px solid var(--nc-border-strong); border-radius: 10px; }
-.mr-status-card.primary { border-top-color: var(--nc-primary); }
-.mr-status-card > span { display: block; margin-bottom: 12px; color: var(--nc-text-secondary); font-size: 12px; }
-.mr-status-card strong { display: block; overflow: hidden; color: var(--nc-text-primary); font-size: 19px; text-overflow: ellipsis; white-space: nowrap; }
-.mr-status-card small { display: block; margin-top: 10px; overflow: hidden; color: var(--nc-text-tertiary); text-overflow: ellipsis; white-space: nowrap; }
-.mr-two-column { display: grid; grid-template-columns: minmax(560px, 1.15fr) minmax(440px, .85fr); gap: 16px; }
-.mr-panel { min-width: 0; }
-.mr-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 19px; border-bottom: 1px solid var(--nc-divider); }
-.mr-panel-title > span { color: var(--nc-text-secondary); font-size: 12px; }
-.mr-preview-grid { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 1px; background: var(--nc-divider); }
-.mr-preview-grid div { min-height: 84px; padding: 16px; background: var(--nc-bg-panel); }
-.mr-preview-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
-.mr-preview-grid strong { display: block; margin-top: 8px; overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
-.mr-preview-message { margin: 14px; width: auto; }
-.mr-collapse { margin-top: 16px; padding: 0 18px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
-.mr-session-actions { margin-top: 16px; padding: 18px 20px; }
-.session-action-heading, .note-actions, .parse-actions { display: flex; align-items: center; gap: 12px; }
-.session-action-heading { justify-content: space-between; }
-.session-action-heading h3 { margin: 0; }
-.session-action-heading p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
-.note-actions, .parse-actions { margin-top: 14px; }
-.note-actions .el-input { max-width: 900px; }
-.parse-actions { flex-wrap: wrap; }
-.parse-actions span { color: var(--el-text-color-secondary); font-size: 12px; }
-.mr-raw-toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; color: var(--nc-text-secondary); font-size: 12px; }
-.mr-raw-toolbar > span { margin-left: auto; }
-.mr-raw-tabs { min-width: 560px; }
-.mr-raw-log { min-height: 240px; max-height: 420px; margin: 0 0 18px; padding: 15px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); border-radius: 8px; font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
-.mr-delivery { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 16px; padding: 18px 20px; }
-.mr-delivery p { margin: 8px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
-.mr-delivery code { overflow-wrap: anywhere; }
-.mr-command { display: flex; align-items: center; justify-content: flex-end; gap: 12px; max-width: 58%; }
-.mr-command code { padding: 9px 11px; color: var(--nc-text-code); background: var(--nc-bg-code); border-radius: 6px; font-size: 11px; }
-@media (max-width: 1380px) {
-  .mr-status-grid { grid-template-columns: repeat(3, 1fr); }
-  .mr-two-column { grid-template-columns: 1fr; }
-}
-@media (max-width: 900px) { .mr-toolbar,.control-selector { align-items: flex-start; flex-direction: column; }.mr-toolbar-actions { flex-wrap: wrap; } }
+.online-mr-web { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.page-heading,.section-heading,.control-selector { display: flex; align-items: center; gap: 12px; }
+.page-heading,.section-heading { justify-content: space-between; }
+.page-heading h2,.section-heading h3 { margin: 0 0 4px; }
+.page-heading p,.section-heading p { margin: 0; color: var(--el-text-color-secondary); }
+.eyebrow { color: var(--el-color-primary) !important; font-size: 12px; }
+.content-section { padding: 16px 0; border-top: 1px solid var(--el-border-color-light); }
+.collection-control { padding-top: 0; border-top: 0; }
+.collection-control :deep(.el-tabs) { margin-top: 12px; }
+.current-empty { min-height: 220px; border-top: 1px solid var(--el-border-color-light); }
+.runtime-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 20px; min-width: 0; }
+.runtime-grid .content-section { min-width: 0; }
+.preview-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
+.preview-block { padding: 14px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-fill-color-extra-light); }
+.preview-block h4 { margin: 0 0 10px; }
+.preview-block dl { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 7px 12px; margin: 0; }
+.preview-block dt { color: var(--el-text-color-secondary); }
+.preview-block dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+.log-growth-collapse { margin-top: 12px; }
+.raw-output { min-height: 160px; max-height: 360px; margin: 12px 0 0; padding: 12px; overflow: auto; background: var(--el-fill-color-darker); color: var(--el-text-color-primary); white-space: pre-wrap; }
+@media (max-width: 1100px) { .runtime-grid,.preview-grid { grid-template-columns: 1fr; }.page-heading,.section-heading { align-items: flex-start; flex-direction: column; }.control-selector { flex-wrap: wrap; } }
 </style>

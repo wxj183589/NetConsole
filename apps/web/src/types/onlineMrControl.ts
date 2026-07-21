@@ -5,6 +5,7 @@ export type OnlineMrControlState = 'idle' | 'preparing' | 'starting' | 'running'
 export interface OnlineMrCollectorStatus {
   name: string; label: string; status: string; enabled: boolean; raw_file: string
   exists: boolean; size_bytes: number; error: string; started_at: string | null; ended_at: string | null; updated_at: string | null
+  health_status: 'normal' | 'stale' | 'interrupted' | 'unknown'; stale_seconds: number | null
 }
 
 export interface OnlineMrControlOperation {
@@ -17,7 +18,10 @@ export interface OnlineMrControlOperation {
   package_status: string; package_path_reference: string | null; error_code: string; error_summary: string; data_integrity: string
 }
 
-export interface OnlineMrControlStatus { enabled: boolean; local_only: true; site_id: string; operations: OnlineMrControlOperation[] }
+export interface OnlineMrControlStatus {
+  enabled: boolean; local_only: true; site_id: string; operations: OnlineMrControlOperation[]
+  real_device_test: boolean; safety_constraints: Record<string, unknown>
+}
 
 export interface OnlineMrStartConfig {
   site_id: string; device_id: string | number; mr_id: string; executor: 'LOCAL'; duration_minutes: number

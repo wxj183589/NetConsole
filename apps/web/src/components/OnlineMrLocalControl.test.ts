@@ -31,4 +31,14 @@ describe('Online MR local control', () => {
     expect(source).toContain('package_path_reference')
     expect(source).toContain('复制验收命令')
   })
+
+  it('locks the authorized real-device traffic parameters', () => {
+    expect(source).toContain('real_device_test')
+    expect(source).toContain("config.fping.interval_ms = 1000")
+    expect(source).toContain("config.fping.timeout_ms = 4000")
+    expect(source).toContain("config.iperf.server_ip = '127.0.0.1'")
+    expect(source).toContain("config.iperf.protocol = 'TCP'")
+    expect(source).toContain('iPerf 固定 127.0.0.1、TCP、2M')
+    expect(source).toContain("emit('refresh')")
+  })
 })

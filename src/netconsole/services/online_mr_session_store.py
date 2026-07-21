@@ -358,6 +358,23 @@ class OnlineMrSession:
         path.write_text(raw_text.rstrip() + "\n", encoding="utf-8")
         return path
 
+    def write_view_snapshot(self, name: str, payload: dict[str, object]) -> Path:
+        if name not in {"live_fping_status", "live_iperf_status"}:
+            raise ValueError("unsupported Online MR view snapshot")
+        path = self.session_dir / "view" / f"{name}.json"
+        temporary = path.with_suffix(".json.tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        return path
+
     def update_config_collect(
         self,
         *,

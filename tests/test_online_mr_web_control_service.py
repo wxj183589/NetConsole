@@ -11,6 +11,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.online_mr.real_device_test_policy import OnlineMrRealDeviceTestPolicy
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
@@ -174,3 +175,67 @@ def test_web_control_start_failure_does_not_persist_or_return_repository_passwor
     assert "private-pass" not in raised.value.message
     assert "private-pass" not in mapping.error_summary
     assert "<redacted>" in mapping.error_summary
+
+
+class _AllowedRealDevicePolicy:
+    enabled = True
+
+    @staticmethod
+    def require_allowed_target(*, site_id: str, train_no: str) -> None:
+        assert site_id == "demo"
+        assert train_no == "01"
+
+    @staticmethod
+    def constraints() -> dict[str, object]:
+        return {"site": "宁波12号线", "train": "01车"}
+
+
+def test_real_device_mode_forces_safe_traffic_parameters(tmp_path: Path) -> None:
+    control, _application, adapter, device_id = _service(tmp_path)
+    control.real_device_policy = _AllowedRealDevicePolicy()  # type: ignore[assignment]
+
+    started = control.start(
+        _request(
+            device_id,
+            fping={"enabled": False, "target": "192.0.2.99", "interval_ms": 10, "timeout_ms": 10},
+            iperf={"enabled": False, "server_ip": "192.0.2.10", "port": 6201, "protocol": "UDP", "parallel": 8, "reverse": True},
+        ),
+        current_site_id="demo",
+    )
+
+    config = adapter.jobs[0].params["config"]
+    assert started.state in {"preparing", "starting"}
+    assert config["fping"]["enabled"] is True
+    assert config["fping"]["target"] == "10.10.0.1"
+    assert config["fping"]["interval_ms"] == 1000
+    assert config["fping"]["timeout_ms"] == 4000
+    assert config["iperf"]["enabled"] is True
+    assert config["iperf"]["server_ip"] == "127.0.0.1"
+    assert config["iperf"]["port"] == 5201
+    assert config["iperf"]["protocol"] == "TCP"
+    assert config["iperf"]["parallel"] == 1
+    assert config["iperf"]["target_bandwidth"] == "2M"
+    assert config["iperf"]["tcp_pacing_enabled"] is True
+    assert config["iperf"]["tcp_pacing_mbps"] == 2.0
+
+
+@pytest.mark.parametrize(
+    ("site_id", "train_no", "allowed"),
+    [
+        ("宁波地铁12号线", "01", True),
+        ("宁波12号线", "01车", True),
+        ("宁波地铁12号线", "02", False),
+        ("其他局点", "01", False),
+    ],
+)
+def test_real_device_policy_allows_only_ningbo_line_12_train_01(
+    site_id: str,
+    train_no: str,
+    allowed: bool,
+) -> None:
+    policy = OnlineMrRealDeviceTestPolicy(enabled=True)
+    if allowed:
+        policy.require_allowed_target(site_id=site_id, train_no=train_no)
+    else:
+        with pytest.raises(OnlineMrWebControlError, match="仅允许宁波12号线01车"):
+            policy.require_allowed_target(site_id=site_id, train_no=train_no)

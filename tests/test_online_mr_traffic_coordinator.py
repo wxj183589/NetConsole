@@ -116,6 +116,10 @@ def test_traffic_coordinator_stops_and_flushes_fping_and_iperf(
     assert "final sample" in (session.session_dir / "raw" / "fping_v5_raw.log").read_text(encoding="utf-8")
     assert "final interval" in (session.session_dir / "raw" / "iperf_client_raw.log").read_text(encoding="utf-8")
     assert json.loads((session.session_dir / "raw" / "fping_v5_final_summary.json").read_text(encoding="utf-8"))["sent"] == 1
+    fping_view = json.loads((session.session_dir / "view" / "live_fping_status.json").read_text(encoding="utf-8"))
+    iperf_view = json.loads((session.session_dir / "view" / "live_iperf_status.json").read_text(encoding="utf-8"))
+    assert fping_view["summary"]["sent_count"] == 1
+    assert iperf_view["status"] == "stopped_by_collection"
 
 
 def test_traffic_flush_timeout_records_warning_and_never_waits_forever(
@@ -149,3 +153,46 @@ def test_traffic_flush_timeout_records_warning_and_never_waits_forever(
     assert coordinator.get_traffic_summary(session.meta.session_id)["flush_complete"] is False
     release.set()
     coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=1)
+
+
+def test_loopback_iperf_starts_and_stops_managed_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config()
+    config.fping = FpingConfig(enabled=False)
+    config.iperf = IperfTrafficConfig(
+        enabled=True,
+        server_ip="127.0.0.1",
+        protocol="TCP",
+        target_bandwidth="2M",
+        tcp_pacing_enabled=True,
+        tcp_pacing_mbps=2,
+        follow_collection=True,
+    )
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    _FakeIperfRunner.instances.clear()
+    listener_checks = iter([False, True])
+
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.IperfProcessRunner", _FakeIperfRunner)
+    monkeypatch.setattr(
+        OnlineMrTrafficCoordinator,
+        "_is_tcp_listener",
+        staticmethod(lambda _host, _port: next(listener_checks, True)),
+    )
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    coordinator.start_for_session(session, config)
+    coordinator.stop_traffic_for_session(session.meta.session_id)
+    coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=2)
+    coordinator.finalize_traffic_outputs(session.meta.session_id)
+
+    assert len(_FakeIperfRunner.instances) == 2
+    assert (session.session_dir / "raw" / "iperf_server_raw.log").is_file()
+    assert (session.session_dir / "raw" / "iperf_client_raw.log").is_file()
+    assert all(instance.last_status == "STOPPED_BY_COLLECTION" for instance in _FakeIperfRunner.instances)
+    view = json.loads((session.session_dir / "view" / "live_iperf_status.json").read_text(encoding="utf-8"))
+    assert view["server_ip"] == "127.0.0.1"
+    assert view["protocol"] == "TCP"
+    assert view["target_bandwidth"] == "2M"

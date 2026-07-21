@@ -6,17 +6,13 @@ import {
   getCurrentOnlineMrSession,
   getOnlineMrPreview,
   getOnlineMrRawTail,
-  getOnlineMrSession,
   listOnlineMrCollectors,
   listOnlineMrRawFiles,
-  listRecentOnlineMrSessions,
 } from '../api/onlineMr'
 import type { OnlineMrSessionDetail } from '../types/onlineMr'
 
 vi.mock('../api/onlineMr', () => ({
   getCurrentOnlineMrSession: vi.fn(),
-  listRecentOnlineMrSessions: vi.fn(),
-  getOnlineMrSession: vi.fn(),
   listOnlineMrCollectors: vi.fn(),
   getOnlineMrPreview: vi.fn(),
   listOnlineMrRawFiles: vi.fn(),
@@ -43,8 +39,6 @@ describe('Online MR polling store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.mocked(getCurrentOnlineMrSession).mockReset().mockResolvedValue(session)
-    vi.mocked(listRecentOnlineMrSessions).mockReset().mockResolvedValue([session])
-    vi.mocked(getOnlineMrSession).mockReset().mockResolvedValue(session)
     vi.mocked(listOnlineMrCollectors).mockReset().mockResolvedValue([])
     vi.mocked(getOnlineMrPreview).mockReset().mockResolvedValue({
       session_id: 'session-1', available: true, updated_at: null, message: '', display_context: {}, link: {}, fping: {}, iperf: {},
@@ -65,11 +59,16 @@ describe('Online MR polling store', () => {
     store.startPolling()
     store.setRawExpanded(true)
     await vi.runAllTicks()
+    await vi.advanceTimersByTimeAsync(0)
 
-    await vi.advanceTimersByTimeAsync(1000)
-    expect(getOnlineMrRawTail).toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(1000)
-    expect(getOnlineMrPreview).toHaveBeenCalled()
+    const initialTailCalls = vi.mocked(getOnlineMrRawTail).mock.calls.length
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(getOnlineMrRawTail).toHaveBeenCalledTimes(initialTailCalls)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getOnlineMrRawTail).toHaveBeenCalledTimes(initialTailCalls + 1)
+    const previewCalls = vi.mocked(getOnlineMrPreview).mock.calls.length
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(getOnlineMrPreview).toHaveBeenCalledTimes(previewCalls + 1)
 
     const calls = vi.mocked(getOnlineMrRawTail).mock.calls.length
     store.stopPolling()
@@ -92,6 +91,21 @@ describe('Online MR polling store', () => {
     vi.mocked(getCurrentOnlineMrSession).mockRejectedValue(new Error('offline'))
     await store.refreshOverview()
     await store.refreshOverview()
-    expect(store.error).toBe('状态刷新失败，请检查主程序服务或会话是否仍存在。')
+    expect(store.error).toBe('状态刷新失败，请检查主程序服务或当前采集任务。')
+  })
+
+  it('clears realtime state when there is no active session and never loads history', async () => {
+    const store = useOnlineMrStore()
+    await store.refreshOverview()
+    expect(store.current?.session_id).toBe('session-1')
+
+    vi.mocked(getCurrentOnlineMrSession).mockResolvedValue(null)
+    await store.refreshOverview()
+
+    expect(store.current).toBeNull()
+    expect(store.selected).toBeNull()
+    expect(store.collectors).toEqual([])
+    expect(store.preview).toBeNull()
+    expect(store.rawFiles).toEqual([])
   })
 })

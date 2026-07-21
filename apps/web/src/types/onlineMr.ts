@@ -53,6 +53,8 @@ export interface OnlineMrCollectorStatus {
   started_at: string | null
   ended_at: string | null
   updated_at: string | null
+  health_status: 'normal' | 'stale' | 'interrupted' | 'unknown'
+  stale_seconds: number | null
 }
 
 export interface OnlineMrRealtimePreview {

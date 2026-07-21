@@ -35,11 +35,6 @@
   {"path":"apps/web/src/views/job-center/JobCenterView.vue","symbol":"matchesFilter","classification":"DISPLAY_ONLY","reason":"执行 Job 表格本地展示筛选。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue","symbol":"clearDerivedData","classification":"DISPLAY_ONLY","reason":"在会话和筛选边界清空 Renderer 展示缓存，不计算或修改业务事实。","test":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.test.ts"},
   {"path":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue","symbol":"startParse","classification":"FALSE_POSITIVE","reason":"仅确认并发起 Backend Job Center 解析任务。","test":"apps/web/src/views/rail-transit/OnlineMrAnalysisView.test.ts"},
-  {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"stopParsePolling","classification":"FALSE_POSITIVE","reason":"停止页面轮询计时器。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"rememberParseTask","classification":"FALSE_POSITIVE","reason":"记录 Backend 解析任务标识。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"pollParseTask","classification":"FALSE_POSITIVE","reason":"轮询 Backend Task 状态。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"startParse","classification":"FALSE_POSITIVE","reason":"发起 Backend 解析任务。","test":"tests/architecture/test_architecture_guards.py"},
-  {"path":"apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue","symbol":"recoverParse","classification":"FALSE_POSITIVE","reason":"恢复 Backend 任务状态绑定。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"mergeType","classification":"DISPLAY_ONLY","reason":"将导入合并类型映射为展示文本。","test":"tests/architecture/test_architecture_guards.py"},
   {"path":"apps/web/src/components/feedback/useConfirm.ts","symbol":"resolveConfirm","classification":"DISPLAY_ONLY","reason":"解析统一确认服务的用户选择并完成 Promise 收敛，不执行业务操作。","test":"tests/architecture/test_architecture_guards.py"}
 ]

@@ -125,6 +125,8 @@ class OnlineMrCollectorStatusDTO(ApiModel):
     started_at: str | None = None
     ended_at: str | None = None
     updated_at: str | None = None
+    health_status: str = "unknown"
+    stale_seconds: float | None = None
 
 
 class OnlineMrRealtimePreviewDTO(ApiModel):

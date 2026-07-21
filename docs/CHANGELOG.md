@@ -8,9 +8,16 @@
 - 链路明细导出增加导出前参数配置、局点默认保存、PIS/CBTC 模板和“分析参数”Sheet，导出与综合报告记录同一组有效参数。
 - 报告与来源列表增加派生报告删除，删除前必须确认且只清理 `outputs` 中的报告/sidecar/临时文件，原始 MESH 日志、parsed SQLite 和 catalog 保留。
 
+### Online MR 实时收集
+
+- 实时页只展示活动 Task/Session Mapping 对应的唯一当前 Session，不再回退最近历史 Session，也不接受历史 `session_id` 路由；终态后立即清空，历史查询、解析和报告统一进入“车载 MR 收集分析”。
+- 当前 Session、采集项、轻量 preview 和日志增长每 5 秒更新；采集项由 Python 按 30/120 秒阈值标记异常和采集中断，fping/iPerf 写入原子轻量快照。主链路 view/结构化 sample 缺失时仅解析 raw 尾部 128 KiB，原始日志展开后每 3 秒读取一次；H3C 正数 RSSI 幅值由 Python 规范化为负 dBm。
+- 增加 `REAL_DEVICE_TEST=true` 服务端保护：仅允许宁波12号线01车，fping 固定 1000/4000 ms，iPerf 固定本地回环 TCP 2 Mbps；本地 server 随采集生命周期托管，历史业务数据保持只追加、禁止清理或覆盖。
+
 ### 验证范围
 
 - 已执行 Mesh Python 定向测试、Mesh Vue 视图测试、Ruff 和 Web 生产构建；真实设备、真实 Electron 窗口和正式业务数据未在本轮操作。
+- 已执行 Online MR Query/Web Control/Traffic 定向 Python 测试、实时 Store/页面/控制组件 Vue 测试和 TypeScript 检查；真实 01 车结果以本轮现场验收记录为准。
 
 ## v1.3.9 - 2026-07-18
 

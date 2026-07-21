@@ -46,11 +46,26 @@ Traffic 停止与 flush
 → Task / Session / Mapping 终态
 ```
 
-同一局点、同一设备已有活动 Mapping 时，重复启动返回既有 operation；这也覆盖应用重启后恢复的活动会话。重复停止由 Application Service 终态判断幂等，不重复生成 ZIP 或改写终态。页面卸载、切换路由或隐藏只停止前端轮询，不停止后台采集。
+同一局点最多允许一个活动 Mapping：同一设备重复启动返回既有 operation，不同设备启动返回冲突并要求先正常停止当前任务；这也覆盖应用重启后恢复的活动会话。重复停止由 Application Service 终态判断幂等，不重复生成 ZIP 或改写终态。页面卸载、切换路由或隐藏只停止前端轮询，不停止后台采集。
 
 强停先走既有有界协作停止，再由 Application Service 决定是否强制终止。无法确认 writer flush 或文件稳定时保留 raw，返回 `data_integrity=partial`，不伪造正常完成或正式完整 ZIP。恢复只核对持久 Mapping/Task/Session，不删除 raw，不从前端路径重建会话。
 
-前端状态映射为 `preparing / starting / running / stopping / stopped / completed_with_warnings / failed / aborted`。活动 operation 每 1.5 秒刷新，非活动状态每 5 秒刷新；停止中明确提示正在等待 Traffic flush 与原子打包。
+前端状态映射为 `preparing / starting / running / stopping / stopped / completed_with_warnings / failed / aborted`。控制组件的活动 operation 每 1.5 秒刷新，空闲时每 5 秒刷新；状态接口只返回活动 LOCAL operation，不再把终态 operation 作为当前任务。停止中明确提示正在等待 Traffic flush 与原子打包，终态数据转入“车载 MR 收集分析”。
+
+同一局点只允许一个活动 Online MR operation。重复启动同一 LOCAL 设备返回现有 operation；存在其他 LOCAL 或 AGENT 活动 operation 时拒绝新启动，避免实时页出现多个“当前 Session”。`GET /api/online-mr/sessions/current` 按该活动 Mapping 的 `session_id` 定位，不按目录时间猜测。
+
+## 真实设备保护模式
+
+`REAL_DEVICE_TEST=true` 只用于取得明确现场授权后的短时验收。该模式由 Python 服务端强制执行，Renderer 中的禁用控件只作提示，不能放宽限制：
+
+- 局点只允许“宁波12号线”或“宁波地铁12号线”；
+- 列车编号只允许 `01`/`01车`；
+- fping 强制启用，目标固定为所选 01 车 MR 的正式管理 IP，间隔 1000 ms、超时/统计窗口 4000 ms；
+- iPerf 强制启用，目标 `127.0.0.1:5201`、TCP、单流、upload、2 Mbps pacing；
+- 回环端口没有 listener 时启动受管本地 iPerf server，正常停止或强停时同时回收 client/server；
+- 历史业务 Session、raw、metadata、报告和 SQLite 不删除、不清理、不覆盖，本次测试只新增 Session。
+
+本地回环 iPerf 只能证明工具、preview 和启停生命周期可用，不能作为车地无线链路吞吐结论。真实验收必须正常停止并执行只读 Session 检查器，确认 Traffic flush、SSH 关闭、metadata、raw 和 ZIP 已落盘。
 
 ## 验证边界
 

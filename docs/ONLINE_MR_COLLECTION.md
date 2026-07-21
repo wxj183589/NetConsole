@@ -345,13 +345,17 @@ python -m scripts.maintenance.download_import_agent_online_mr_package `
 
 自检固定使用 fping `interval_ms=1000 / timeout_ms=4000 / packet_size=64 / count=10`；iPerf 使用回环 TCP、单流和 10 秒。当前 TCP 2 Mbps 仅为期望记录，不能当作车地链路限速或性能结论。
 
-## 17. Web 实时展示（5C-2，只读）
+## 17. Web 实时展示
 
-Vue 路由 `/rail-transit/online-mr` 只展示当前局点的运行中或最近会话。FastAPI 的 `/api/online-mr/sessions/...` 仅提供 GET：当前/最近会话、详情、采集器状态、`view/*.json` 轻量预览、raw 白名单尾部和 raw 摘要。缺失或尚未生成的 raw 返回成功空结果，不创建文件、不回填 metadata，也不触发解析、打包或数据库迁移。
+Vue 路由 `/rail-transit/online-mr` 只展示当前局点唯一的活动 Session。`GET /api/online-mr/sessions/current` 先从活动 Task/Session Mapping 取得 `session_id`，再读取该 Session；没有活动 operation 时返回空，不扫描或回退到最近历史 Session。历史 Session、日志下载、解析和报告统一进入 `/rail-transit/online-mr-analysis`，Task Center 的 Session 跳转也进入分析页。
 
-raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`iperf_client`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
+FastAPI 的 `/api/online-mr/sessions/...` 继续提供只读详情、采集器状态、`view/*.json` 轻量预览、raw 白名单尾部和 raw 摘要。缺失或尚未生成的 raw 返回成功空结果，不创建文件、不回填 metadata，也不触发解析、打包或数据库迁移。
 
-页面状态和轻量预览每 2 秒刷新，最近会话、采集器与 raw 摘要每 5 秒刷新；原始日志只有展开后才每秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。终态会话若遗留 `view/live_mr_status.json` 的 `running` 采集器状态，查询层以 `session_meta.json` 终态校正为停止，事实文件本身保持不变。
+raw 尾部白名单固定为 `terminal_monitor`、`mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`iperf_client`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
+
+当前 Session、采集器、轻量预览和 raw 摘要每 5 秒刷新；原始日志只有展开后才每 3 秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。当前 operation 进入终态后页面立即清空实时状态，历史数据仍由分析页读取。
+
+采集项更新时间综合使用采集器 view、`live_samples` 最新事实时间和 raw 文件 mtime。活动 Session 中更新时间不超过 30 秒为 `normal`，超过 30 秒为 `stale`，超过 120 秒为 `interrupted`；判定由 Python Query Service 返回，Vue 不自行推导。fping/iPerf 在采集过程中原子更新 `view/live_fping_status.json` 与 `view/live_iperf_status.json`；主链路 view 缺失时，查询层先只读最新一个 `mesh_link` sample，再降级读取 `mesh_link_raw.log` 最后 128 KiB 并复用既有 parser，不扫描完整日志。H3C 在线 Peer 表只有正数 RSSI 幅值而缺少已计算信号值时，由 Python 规范化为负 dBm，Vue 不猜测转换。
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 
@@ -369,4 +373,6 @@ raw 尾部白名单固定为 `mesh_link`、`channel_busy`、`fping_samples`、`f
 
 Web 控制仅在显式启用、Desktop 模式、严格 `127.0.0.1` 和已认证 Host 短期 Cookie 同时满足时可用。正式 Electron Runtime 显式启用；其他宿主未显式传参时仍由默认关闭的 `ONLINE_MR_WEB_CONTROL_ENABLED` 控制。启动 DTO 不接受凭据、命令、Agent URL 或路径；后端从正式 MR 资料和当前局点设备库补齐连接配置，并固定 `owner=web_local`、`executor=LOCAL`。
 
-启动、正常停止、强停和恢复分别复用 `OnlineMrApplicationService.start_local_collection()`、`stop_operation()`、`force_stop_operation()` 与 `recover_mappings()`。同 MR 重复启动返回现有活动 Mapping，重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。AGENT 控制继续使用独立契约，且不提供强停。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
+启动、正常停止、强停和恢复分别复用 `OnlineMrApplicationService.start_local_collection()`、`stop_operation()`、`force_stop_operation()` 与 `recover_mappings()`。同一局点最多一个活动 Mapping；同 MR 重复启动返回现有 Mapping，其他 MR 返回冲突。重复停止沿用 ApplicationService 终态幂等；Web 不直接操作 fping/iPerf、SSH、metadata、ZIP 或 Task 数据库。AGENT 控制继续使用独立契约，且不提供强停。完整契约见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)。
+
+显式设置 `REAL_DEVICE_TEST=true` 时，服务端额外启用真实设备保护策略：仅允许宁波 12 号线 01 车，fping 强制 `interval_ms=1000 / timeout_ms=4000`，iPerf 强制 `127.0.0.1 / TCP / 2M / 单流 / upload`。回环 iPerf 在本机没有 listener 时启动受管 server，并随采集停止；该结果只验证工具与生命周期，不代表真实车地无线链路性能。保护模式只允许新增采集和只读核验，不提供历史 Session 删除、清理或覆盖入口。

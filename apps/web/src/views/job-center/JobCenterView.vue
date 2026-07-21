@@ -166,7 +166,7 @@ function acceptanceCommand(task: TaskItem): string {
 }
 
 function openOnlineMr(task: TaskItem): void {
-  void router.push({ name: 'online-mr-realtime', query: { session_id: task.session_id } })
+  void router.push({ name: 'online-mr-analysis', query: { session_id: task.session_id } })
 }
 
 async function cancelSelected(): Promise<void> {
@@ -316,7 +316,7 @@ const revealSaved = () => runSavedAction('reveal')
         </el-descriptions>
 
         <div v-if="store.selected.session_id" class="association-actions">
-          <el-button type="primary" @click="openOnlineMr(store.selected)">查看 Online MR 实时展示</el-button>
+          <el-button type="primary" @click="openOnlineMr(store.selected)">查看 Online MR 收集分析</el-button>
           <el-button :icon="CopyDocument" @click="copyText(store.selected.session_id, 'Session ID 已复制')">复制 Session ID</el-button>
           <el-button :icon="CopyDocument" @click="copyText(acceptanceCommand(store.selected), '验收命令已复制')">复制验收命令</el-button>
         </div>

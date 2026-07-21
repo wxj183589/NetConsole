@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -188,6 +190,36 @@ def test_get_session_prefers_finalized_traffic_summary(tmp_path: Path) -> None:
     assert detail.traffic_summary["fping"]["sent_count"] == 10
 
 
+def test_current_session_uses_explicit_active_operation_session(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _session(service, "older-active", started_at="2026-07-13 09:00:00", status="COLLECTING")
+    _session(service, "selected-active", started_at="2026-07-13 10:00:00", status="COLLECTING")
+
+    assert service.get_current_session("site-a", session_id=None) is None
+    current = service.get_current_session("site-a", session_id="older-active")
+
+    assert current is not None and current.session_id == "older-active"
+
+
+def test_collectors_report_fresh_stale_and_interrupted_from_fact_timestamps(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "freshness", status="COLLECTING")
+    raw = session / "raw" / "mesh_link_raw.log"
+    raw.write_text("sample", encoding="utf-8")
+
+    os.utime(raw, ((datetime.now() - timedelta(seconds=10)).timestamp(),) * 2)
+    fresh = next(row for row in service.list_collectors("site-a", "freshness") if row.name == "mesh_link")
+    os.utime(raw, ((datetime.now() - timedelta(seconds=60)).timestamp(),) * 2)
+    stale = next(row for row in service.list_collectors("site-a", "freshness") if row.name == "mesh_link")
+    os.utime(raw, ((datetime.now() - timedelta(seconds=180)).timestamp(),) * 2)
+    interrupted = next(row for row in service.list_collectors("site-a", "freshness") if row.name == "mesh_link")
+
+    assert fresh.health_status == "normal"
+    assert stale.health_status == "stale"
+    assert interrupted.health_status == "interrupted"
+    assert interrupted.stale_seconds is not None and interrupted.stale_seconds >= 179
+
+
 def test_missing_and_invalid_metadata_have_domain_errors(tmp_path: Path) -> None:
     service = _service(tmp_path)
     missing = service.paths.online_mr_session_dir("site-a", "MR-01", "missing")
@@ -245,6 +277,13 @@ def test_artifacts_exclude_symlinks(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("当前 Windows 环境不允许创建符号链接")
     assert "raw/outside.log" not in {row.relative_name for row in service.list_artifacts("site-a", "symlink")}
+
+
+def test_preview_rssi_prefers_signal_dbm_and_normalizes_positive_h3c_magnitude() -> None:
+    assert OnlineMrQueryService._preview_rssi_dbm(-52, 36) == -52
+    assert OnlineMrQueryService._preview_rssi_dbm(None, 52) == -52
+    assert OnlineMrQueryService._preview_rssi_dbm(None, -51) == -51
+    assert OnlineMrQueryService._preview_rssi_dbm(None, None) is None
 
 
 def test_log_chunks_use_byte_cursor_tail_and_utf8_replacement(tmp_path: Path) -> None:

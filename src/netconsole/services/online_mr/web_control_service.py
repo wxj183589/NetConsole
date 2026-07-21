@@ -36,6 +36,13 @@ from netconsole.services.online_mr.errors import (
     OnlineMrWebControlErrorCode,
 )
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.online_mr.real_device_test_policy import (
+    OnlineMrRealDeviceTestPolicy,
+    REAL_DEVICE_FPING_INTERVAL_MS,
+    REAL_DEVICE_FPING_TIMEOUT_MS,
+    REAL_DEVICE_IPERF_BANDWIDTH,
+    REAL_DEVICE_IPERF_SERVER,
+)
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
@@ -57,19 +64,21 @@ class OnlineMrWebControlService:
         query_service: OnlineMrQueryService,
         *,
         enabled: bool = False,
+        real_device_policy: OnlineMrRealDeviceTestPolicy | None = None,
     ) -> None:
         self.paths = paths
         self._application_service = application_service
         self.base_query = base_query
         self.query_service = query_service
         self.enabled = bool(enabled)
+        self.real_device_policy = real_device_policy or OnlineMrRealDeviceTestPolicy.from_environment()
 
     def status(self, site_id: str) -> OnlineMrWebControlStatusDTO:
         operations = (
             [
                 item
                 for item in self.application_service.list_operations(site_id=site_id, limit=50)
-                if item.executor_kind is OnlineMrExecutorKind.LOCAL
+                if item.executor_kind is OnlineMrExecutorKind.LOCAL and item.phase is not OnlineMrPhase.TERMINAL
             ]
             if self.enabled
             else []
@@ -78,6 +87,8 @@ class OnlineMrWebControlService:
             enabled=self.enabled,
             site_id=site_id,
             operations=[self._operation_dto(item) for item in operations],
+            real_device_test=self.real_device_policy.enabled,
+            safety_constraints=self.real_device_policy.constraints(),
         )
 
     def get_operation(self, operation_id: str, *, site_id: str | None = None) -> OnlineMrWebOperationDTO:
@@ -109,9 +120,18 @@ class OnlineMrWebControlService:
                 status_code=422,
             )
         with ONLINE_MR_WEB_START_LOCK:
-            existing = self._active_for_device(current_site_id, request.device_id)
+            existing = self._active_for_site(current_site_id)
             if existing is not None:
-                return self._operation_dto(existing)
+                if (
+                    existing.executor_kind is OnlineMrExecutorKind.LOCAL
+                    and str(existing.device_id) == str(request.device_id)
+                ):
+                    return self._operation_dto(existing)
+                raise OnlineMrWebControlError(
+                    OnlineMrWebControlErrorCode.ALREADY_RUNNING,
+                    "当前局点已有实时采集任务，请先正常停止后再启动新任务",
+                    status_code=409,
+                )
             start_request = self.build_start_request(request)
             try:
                 return self._operation_dto(self.application_service.start_local_collection(start_request))
@@ -181,6 +201,10 @@ class OnlineMrWebControlService:
                 "所选 MR 不存在或未绑定正式设备资料",
                 status_code=404,
             )
+        self.real_device_policy.require_allowed_target(
+            site_id=request.site_id,
+            train_no=detail.mr.train_no,
+        )
         device = self._device(request.site_id, detail.mr.device_id)
         protocol, port, username, password = self._connection_fields(device)
         host = str(device.primary_address or "").strip()
@@ -190,11 +214,19 @@ class OnlineMrWebControlService:
                 "所选 MR 缺少可用的受控连接凭据",
                 status_code=409,
             )
-        fping_target = request.fping.target.strip() or detail.mr.management_ip.strip()
-        if request.fping.enabled:
+        real_test = self.real_device_policy.enabled
+        fping_enabled = request.fping.enabled or real_test
+        iperf_enabled = request.iperf.enabled or real_test
+        fping_target = (
+            detail.mr.management_ip.strip()
+            if real_test
+            else request.fping.target.strip() or detail.mr.management_ip.strip()
+        )
+        if fping_enabled:
             self._validated_ip(fping_target, "fping 目标")
-        if request.iperf.enabled:
-            self._validated_ip(request.iperf.server_ip, "iPerf 服务端")
+        iperf_server = REAL_DEVICE_IPERF_SERVER if real_test else request.iperf.server_ip.strip()
+        if iperf_enabled:
+            self._validated_ip(iperf_server, "iPerf 服务端")
         config = OnlineMrConnectionConfig(
             site=request.site_id,
             mr_id=detail.mr.id,
@@ -213,7 +245,9 @@ class OnlineMrWebControlService:
                 ap_radio_statistics=request.intervals.ap_radio_statistics,
                 switch_history=request.intervals.switch_history,
                 interface_rate=request.intervals.interface_rate,
-                fping_interval_ms=request.fping.interval_ms,
+                fping_interval_ms=(
+                    REAL_DEVICE_FPING_INTERVAL_MS if real_test else request.fping.interval_ms
+                ),
                 wireless_status=request.intervals.wireless_status,
             ),
             tasks=OnlineMrTaskToggles(
@@ -226,28 +260,31 @@ class OnlineMrWebControlService:
             ),
             radio=OnlineMrRadioConfig(**request.radio.model_dump()),
             fping=FpingConfig(
-                enabled=request.fping.enabled,
-                target=fping_target if request.fping.enabled else "",
-                preset_key="web_local",
-                preset_name="Web 本地受控",
+                enabled=fping_enabled,
+                target=fping_target if fping_enabled else "",
+                preset_key="real_device_test" if real_test else "web_local",
+                preset_name="真实设备保护模式" if real_test else "Web 本地受控",
                 packet_size=request.fping.packet_size,
-                interval_ms=request.fping.interval_ms,
-                loss_threshold_ms=request.fping.timeout_ms,
+                interval_ms=REAL_DEVICE_FPING_INTERVAL_MS if real_test else request.fping.interval_ms,
+                loss_threshold_ms=REAL_DEVICE_FPING_TIMEOUT_MS if real_test else request.fping.timeout_ms,
                 loss_warn_percent=request.fping.loss_warn_percent,
                 latency_warn_ms=request.fping.latency_warn_ms,
             ),
             iperf=IperfTrafficConfig(
-                enabled=request.iperf.enabled,
-                server_ip=request.iperf.server_ip.strip(),
-                port=request.iperf.port,
-                preset_key="web_local",
-                preset_name="Web 本地受控",
-                protocol=request.iperf.protocol,
-                direction="download" if request.iperf.reverse else "upload",
-                parallel=request.iperf.parallel,
+                enabled=iperf_enabled,
+                server_ip=iperf_server,
+                port=5201 if real_test else request.iperf.port,
+                preset_key="real_device_test" if real_test else "web_local",
+                preset_name="真实设备保护模式" if real_test else "Web 本地受控",
+                protocol="TCP" if real_test else request.iperf.protocol,
+                direction="upload" if real_test else "download" if request.iperf.reverse else "upload",
+                parallel=1 if real_test else request.iperf.parallel,
                 interval_seconds=request.iperf.interval_seconds,
                 tcp_report_threshold_mbps=request.iperf.tcp_report_threshold_mbps,
-                udp_bitrate_mbps=request.iperf.udp_bitrate_mbps,
+                target_bandwidth=REAL_DEVICE_IPERF_BANDWIDTH if real_test else None,
+                tcp_pacing_enabled=real_test,
+                tcp_pacing_mbps=2.0 if real_test else None,
+                udp_bitrate_mbps=None if real_test else request.iperf.udp_bitrate_mbps,
                 follow_collection=True,
             ),
             duration_minutes=request.duration_minutes or None,
@@ -263,21 +300,26 @@ class OnlineMrWebControlService:
             owner=owner,
         )
 
-    def _active_for_device(self, site_id: str, device_id: int | str) -> OnlineMrOperationSnapshotDTO | None:
+    def _active_for_site(self, site_id: str) -> OnlineMrOperationSnapshotDTO | None:
         rows = self.application_service.list_operations(
             site_id=site_id,
             states=ONLINE_MR_ACTIVE_MAPPING_STATES,
-            device_id=device_id,
-            limit=10,
+            limit=50,
         )
         return next(
             (
                 item
                 for item in rows
-                if item.executor_kind is OnlineMrExecutorKind.LOCAL and item.phase is not OnlineMrPhase.TERMINAL
+                if item.phase is not OnlineMrPhase.TERMINAL
             ),
             None,
         )
+
+    def current_session_id(self, site_id: str) -> str | None:
+        if self._application_service is None:
+            return None
+        operation = self._active_for_site(site_id)
+        return operation.session_id if operation is not None else None
 
     def _operation_dto(self, operation: OnlineMrOperationSnapshotDTO) -> OnlineMrWebOperationDTO:
         if operation.executor_kind is not OnlineMrExecutorKind.LOCAL:

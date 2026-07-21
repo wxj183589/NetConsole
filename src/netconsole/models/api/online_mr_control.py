@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -110,6 +110,8 @@ class OnlineMrWebControlStatusDTO(ApiModel):
     local_only: bool = True
     site_id: str
     operations: list[OnlineMrWebOperationDTO] = Field(default_factory=list)
+    real_device_test: bool = False
+    safety_constraints: dict[str, Any] = Field(default_factory=dict)
 
 
 __all__ = [name for name in globals() if name.startswith("OnlineMrWeb")]

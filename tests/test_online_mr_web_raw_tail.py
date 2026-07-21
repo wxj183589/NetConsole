@@ -105,3 +105,21 @@ def test_empty_raw_file_is_reported_as_not_generated(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["data"]["exists"] is False
     assert response.json()["data"]["message"] == "文件不存在或尚未生成"
+
+
+def test_terminal_monitor_uses_existing_bounded_raw_tail_api(tmp_path: Path) -> None:
+    client, session = _app_with_session(tmp_path)
+    raw = session / "raw" / "terminal_monitor_raw.log"
+    raw.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    before = (session / "session_meta.json").read_bytes()
+
+    with client:
+        response = client.get(
+            "/api/online-mr/sessions/session-4/raw-tail",
+            params={"name": "terminal_monitor", "tail": 2},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["lines"] == ["second", "third"]
+    assert str(tmp_path) not in response.text
+    assert (session / "session_meta.json").read_bytes() == before

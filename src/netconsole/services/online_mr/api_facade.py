@@ -84,7 +84,12 @@ class OnlineMrApiFacade:
         return site_id
 
     def current_session(self):
-        return self.query_service.get_current_session(self.current_site_id())
+        site_id = self.current_site_id()
+        current_session_id = getattr(self.local_control, "current_session_id", None)
+        return self.query_service.get_current_session(
+            site_id,
+            session_id=current_session_id(site_id) if callable(current_session_id) else None,
+        )
 
     def recent_sessions(self, *, limit: int):
         return self.query_service.list_sessions(self.current_site_id(), limit=limit)

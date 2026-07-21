@@ -59,8 +59,8 @@
 | `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:289` | `online-mr-analysis-iperf` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:290` | `online-mr-analysis-diagnosis` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/online-mr-analysis` | `apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue:291` | `online-mr-analysis-raw` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:357` | `online-mr-collectors` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:439` | `online-mr-notes` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:191` | `online-mr-collectors` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
+| `/rail-transit/online-mr` | `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue:205` | `online-mr-raw-growth` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:771` | `rail-base-stations` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:782` | `rail-base-sections` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/rail-transit/base-data` | `apps/web/src/views/rail-transit/RailTransitBaseDataView.vue:804` | `rail-base-trackside-aps` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |

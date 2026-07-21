@@ -336,9 +336,15 @@ def test_online_mr_collection_service_emits_session_created_before_connection_fa
 ) -> None:
     paths = PathResolver(tmp_path)
     progress: list[tuple[str, str]] = []
+    order: list[str] = []
 
     def fail_connection(_config: OnlineMrConnectionConfig):
+        order.append("connect")
         raise RuntimeError("connection refused")
+
+    def record_progress(stage: str, _current: int, _total: int, message: str) -> None:
+        order.append(stage)
+        progress.append((stage, message))
 
     store = OnlineMrSessionStore(paths)
     service = OnlineMrCollectionService(
@@ -349,9 +355,7 @@ def test_online_mr_collection_service_emits_session_created_before_connection_fa
         service.run(
             _config(),
             controller_task_id="controller-1",
-            progress=lambda stage, _current, _total, message: progress.append(
-                (stage, message)
-            ),
+            progress=record_progress,
         )
 
     stage, message = progress[0]
@@ -370,6 +374,7 @@ def test_online_mr_collection_service_emits_session_created_before_connection_fa
     }
     assert payload["controller_task_id"] == "controller-1"
     assert payload["session_id"]
+    assert order[:2] == ["online_mr_session_created", "connect"]
     assert meta["status"] == "FAILED"
     assert session_dir.is_dir()
 

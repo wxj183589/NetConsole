@@ -297,7 +297,12 @@ def test_start_indexes_mapping_before_early_session_event(tmp_path: Path) -> Non
 
     operation = service.start_local_collection(_request("site-a"))
 
+    persisted = service.repository("site-a").get_by_task(operation.controller_task_id)
     assert operation.session_id == "early-session"
+    assert persisted is not None
+    assert persisted.session_id == "early-session"
+    assert persisted.phase == OnlineMrPhase.CONNECTING
+    assert persisted.mapping_state == OnlineMrMappingState.LINKED
     assert service.get_operation_by_session("early-session").controller_task_id == operation.controller_task_id
 
 
