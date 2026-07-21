@@ -17,6 +17,7 @@ import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
 const router = useRouter()
 const trainOptions = ref<TrainCommunicationRow[]>([])
 const selectedTrainId = ref('')
+const selectedTrain = computed(() => trainOptions.value.find((item) => item.train_id === selectedTrainId.value) ?? null)
 const siteId = ref('')
 const topology = ref<TrainCommunicationTopology | null>(null)
 const loading = ref(false)
@@ -66,19 +67,21 @@ async function loadTrainOptions(): Promise<void> {
   try {
     const [summary, page] = await Promise.all([
       getTrainCommunicationSummary(),
-      listTrainCommunications({ page: 1, page_size: 200, sort_by: 'train_no', sort_order: 'asc' }),
+      listTrainCommunications({ page: 1, page_size: 200, active_only: true, sort_by: 'updated_at', sort_order: 'desc' }),
     ])
     siteId.value = summary.site_id
     trainOptions.value = page.items
-    if (!selectedTrainId.value && page.items[0]) selectedTrainId.value = page.items[0].train_id
+    const nextSelected = page.items.find((item) => item.train_id === selectedTrainId.value)?.train_id || page.items[0]?.train_id || ''
+    if (selectedTrainId.value !== nextSelected) selectedTrainId.value = nextSelected
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '列车列表加载失败'
+    error.value = cause instanceof Error ? cause.message : '在线列车列表加载失败'
   }
 }
 
 async function loadTopology(): Promise<void> {
   if (!selectedTrainId.value) {
     topology.value = null
+    lastUpdatedAt.value = ''
     return
   }
   loading.value = true
@@ -87,7 +90,7 @@ async function loadTopology(): Promise<void> {
     topology.value = await getTrainCommunicationTopology(selectedTrainId.value)
     lastUpdatedAt.value = topology.value.checked_at || ''
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '拓扑状态加载失败'
+    error.value = cause instanceof Error ? cause.message : '在线列车车内通信拓扑状态加载失败'
   } finally {
     loading.value = false
   }
@@ -119,7 +122,7 @@ function scheduleCheck(taskId: string): void {
       const status = task.status.toUpperCase()
       const terminal = ['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(status)
       checkFailed.value = terminal && status !== 'COMPLETED'
-      checkMessage.value = checkFailed.value ? task.error_message || task.message || '车内通信检测失败' : task.message || ''
+      checkMessage.value = checkFailed.value ? task.error_message || task.message || '在线列车车内通信检测失败' : task.message || ''
       if (terminal) {
         checking.value = false
         await loadTopology()
@@ -128,7 +131,7 @@ function scheduleCheck(taskId: string): void {
       scheduleCheck(taskId)
     } catch (cause) {
       checking.value = false
-      error.value = cause instanceof Error ? cause.message : '检测任务状态读取失败'
+      error.value = cause instanceof Error ? cause.message : '在线列车车内通信检测任务状态读取失败'
     }
   }, 1000)
 }
@@ -143,12 +146,12 @@ async function runCheck(): Promise<void> {
   try {
     const task = await startTrainCommunicationCheck(selectedTrainId.value)
     lastCheckTaskId.value = task.task_id
-    checkMessage.value = task.message || '车内通信检测已提交'
+    checkMessage.value = task.message || '在线列车车内通信检测已提交'
     scheduleCheck(task.task_id)
   } catch (cause) {
     checking.value = false
     checkFailed.value = true
-    error.value = cause instanceof Error ? cause.message : '车内通信检测提交失败'
+    error.value = cause instanceof Error ? cause.message : '在线列车车内通信检测提交失败'
   }
 }
 
@@ -161,6 +164,8 @@ watch(selectedTrainId, async () => {
   clearTimer('check')
   checking.value = false
   lastCheckTaskId.value = ''
+  topology.value = null
+  lastUpdatedAt.value = ''
   await loadTopology()
   scheduleRefresh()
 })
@@ -178,8 +183,8 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
     <header class="page-heading">
       <div>
         <p class="eyebrow">轨道交通 / 车内通信</p>
-        <h1>在线列车车地通信检测</h1>
-        <p>固定展示 TC1 / TC2 两端车载通信拓扑、节点状态、VRRP 和跨 TC 通信状态。</p>
+        <h1>在线列车车内通信检测</h1>
+        <p>检测在线列车 TC1 / TC2 两端车内有线通信拓扑，包括 MR、三层交换机、服务器、VRRP 和跨 TC 通信。AC、Mesh-Link 和核心侧检测仅作为辅助接入证据。</p>
       </div>
       <div class="heading-actions">
         <el-tag type="info">固定六节点</el-tag>
@@ -199,11 +204,12 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
       <el-button link type="primary" @click="pointTableVisible = true">配置点表</el-button>
     </el-alert>
 
-    <section class="control-bar" aria-label="车内通信检测控制">
+    <section class="control-bar" aria-label="在线列车车内通信检测控制">
       <el-select v-model="selectedTrainId" filterable clearable placeholder="选择列车" class="train-select">
-        <el-option v-for="train in trainOptions" :key="train.train_id" :label="`${train.train_no} / ${train.train_name}`" :value="train.train_id" />
+        <el-option v-for="train in trainOptions" :key="train.train_id" :label="`${train.train_id} / ${train.train_no} / ${train.train_name}`" :value="train.train_id" />
       </el-select>
       <span class="site-label">当前局点：{{ siteId || '未配置' }}</span>
+      <span class="train-label">当前列车：{{ selectedTrain ? `${selectedTrain.train_id} / ${selectedTrain.train_no} / ${selectedTrain.train_name}` : '未选择在线列车' }}</span>
       <el-tag type="info">状态：{{ topology ? statusLabel(topology.train_status) : '未检测' }}</el-tag>
       <el-button :loading="loading" @click="loadTopology">刷新</el-button>
       <el-button type="primary" :loading="checking" :disabled="!canStart" @click="runCheck">立即检测</el-button>
@@ -216,14 +222,14 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
       <span class="updated-label">最近更新：{{ formatTime(lastUpdatedAt) }}</span>
     </section>
 
-    <el-alert v-if="checking || checkMessage" :title="checkMessage || '车内通信检测进行中'" :type="checking ? 'info' : checkFailed ? 'error' : 'success'" show-icon :closable="false" />
+    <el-alert v-if="checking || checkMessage" :title="checkMessage || '在线列车车内通信检测进行中'" :type="checking ? 'info' : checkFailed ? 'error' : 'success'" show-icon :closable="false" />
     <FixedTrainTopology :topology="topology" :checking="checking" @select-node="selectNode" />
 
     <section class="state-legend" aria-label="状态图例">
       <span v-for="status in (['normal', 'abnormal', 'checking', 'stale', 'not_detected', 'not_configured'] as TopologyStatus[])" :key="status"><i :class="`legend-dot ${status}`"></i>{{ statusLabel(status) }}</span>
       <span v-if="lastCheckTaskId" class="task-reference">检测任务：{{ lastCheckTaskId }}</span>
     </section>
-    <CarNetworkPointTableDialog v-model="pointTableVisible" />
+    <CarNetworkPointTableDialog v-model="pointTableVisible" :train="selectedTrain" />
   </section>
 </template>
 
@@ -237,7 +243,7 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
 .control-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 14px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: var(--el-bg-color); }
 .train-select { width: 270px; }
 .refresh-select { width: 150px; }
-.site-label, .updated-label { color: var(--el-text-color-secondary); font-size: 13px; }
+.site-label, .train-label, .updated-label { color: var(--el-text-color-secondary); font-size: 13px; }
 .updated-label { margin-left: auto; }
 .state-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; color: var(--el-text-color-secondary); font-size: 12px; }
 .legend-dot { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; background: var(--el-text-color-placeholder); }

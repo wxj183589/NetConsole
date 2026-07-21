@@ -1,10 +1,10 @@
-# 在线列车车地通信检测
+# 在线列车车内通信检测
 
 点表、固定拓扑、VRRP、跨 TC 和迁移事实源的详细说明见 [专题文档目录](rail-transit/train-communication/README.md)。
 
 ## 定位
 
-`/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面只展示列车选择、TC1/TC2 两端固定六节点、节点和链路状态、VRRP、跨 TC 通信、刷新与“立即检测”。
+`/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面正式名称为“在线列车车内通信检测”，只展示当前在线列车选择、TC1/TC2 两端固定六节点、节点和链路状态、VRRP、跨 TC 通信、刷新与“立即检测”。
 
 固定节点为：
 
@@ -48,8 +48,10 @@ Python `TrainCommunicationQueryService` 返回稳定状态，Vue 只映射中文
 GET  /api/rail-transit/train-communication/summary
 GET  /api/rail-transit/train-communication/trains
 GET  /api/rail-transit/train-communication/trains/{train_id}/topology
-POST /api/rail-transit/train-communication/trains/{train_id}/checks
-GET  /api/rail-transit/train-communication/checks/{task_id}
+POST /api/rail-transit/train-communication/trains/{train_id}/diagnostics
+GET  /api/rail-transit/train-communication/diagnostics/{task_id}
+POST /api/rail-transit/train-communication/diagnostics/{task_id}/cancel
+POST /api/rail-transit/train-communication/diagnostics/recover
 ```
 
 `summary` 和 `trains` 只为当前局点及列车选择提供来源。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用，但不再驱动本页 UI。

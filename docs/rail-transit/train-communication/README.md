@@ -1,6 +1,6 @@
-# 在线列车车地通信检测
+# 在线列车车内通信检测
 
-`/rail-transit/train-communication` 是固定拓扑状态页。页面展示 TC1/TC2 两端的六个固定节点、节点链路、VRRP 与跨 TC 状态；检测任务复用现有 Task Center，不在页面内直接连接设备。
+`/rail-transit/train-communication` 是固定拓扑状态页。正式业务名称为“在线列车车内通信检测”。页面展示 TC1/TC2 两端的六个固定节点、节点链路、VRRP 与跨 TC 状态；检测任务复用现有 Task Center，不在页面内直接连接设备。
 
 ## 文档
 

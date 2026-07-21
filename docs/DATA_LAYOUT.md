@@ -135,7 +135,7 @@ files/rail_transit/
 
 ### 5.1 车内通信点表
 
-在线列车车地通信检测的点表按局点保存于：
+在线列车车内通信检测的点表按局点保存于：
 
 ```text
 files/rail_transit/car_network/parsed/point_table.json

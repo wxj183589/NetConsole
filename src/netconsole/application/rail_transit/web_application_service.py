@@ -121,7 +121,7 @@ class RailTransitWebApplicationService:
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
-        "car_network_diagnostic": "车内通信检测",
+        "car_network_diagnostic": "在线列车车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
         "trackside_ap_optical_update": "轨旁 AP 光衰更新",
@@ -768,7 +768,7 @@ class RailTransitWebApplicationService:
     def get_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         task = self.get_task(site_id, task_id)
         if task.action != "car_network_diagnostic":
-            raise RailTransitWebError("TASK_NOT_FOUND", "车内通信检测任务不存在")
+            raise RailTransitWebError("TASK_NOT_FOUND", "在线列车车内通信检测任务不存在")
         return task
 
     def cancel_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:

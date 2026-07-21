@@ -47,8 +47,9 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '轨道交通无线看板', '基础资料', '列车在线情况', '车内通信检测', '在线列车车地通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
+      '轨道交通无线看板', '基础资料', '列车在线情况', '在线列车车内通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
     ])
+    expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.trackside-ap-plan')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'network')?.children.map((item) => item.title)).toEqual([
       '流量测试', '小工具与连通性检测', '无线扫描',

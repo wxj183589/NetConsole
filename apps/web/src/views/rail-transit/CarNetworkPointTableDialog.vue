@@ -13,9 +13,10 @@ import {
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
+import type { TrainCommunicationRow } from '../../types/trainCommunication'
 import type { CarNetworkPointPreview, CarNetworkPointRow, RailTransitTask } from '../../types/railTransitWeb'
 
-const props = defineProps<{ modelValue: boolean }>()
+const props = defineProps<{ modelValue: boolean; train?: Pick<TrainCommunicationRow, 'train_id' | 'train_no' | 'train_name'> | null }>()
 const router = useRouter()
 const { confirm } = useConfirm()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -29,20 +30,20 @@ const pointTableFields: readonly {
   label: string
   longText?: boolean
 }[] = [
-  { key: 'tc', label: 'TC' },
-  { key: 'end', label: '端位' },
+  { key: 'tc', label: 'TC端' },
+  { key: 'end', label: '端别' },
   { key: 'node_name', label: '节点名称' },
   { key: 'node_type', label: '节点类型' },
   { key: 'device_id', label: '设备ID' },
   { key: 'device_name', label: '设备名称' },
   { key: 'device_group', label: '设备组' },
-  { key: 'station', label: '站点' },
+  { key: 'station', label: '归属站点/位置' },
   { key: 'primary_address', label: '主用地址' },
   { key: 'backup_address', label: '备用地址' },
   { key: 'ip_vehicle', label: '车内IP' },
   { key: 'ip_uplink', label: '落地IP' },
   { key: 'ssh_host', label: 'SSH地址' },
-  { key: 'vrrp_ip', label: 'VRRP IP' },
+  { key: 'vrrp_ip', label: 'VRRP地址' },
   { key: 'primary_address_role', label: '主用角色' },
   { key: 'backup_address_role', label: '备用角色' },
   { key: 'remark', label: '备注', longText: true },
@@ -61,7 +62,7 @@ const pointTableColumns: NcTableColumn<CarNetworkPointRow>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 46, fixed: 'left', hideable: false },
   { key: 'train_id', label: '列车ID', valueType: 'name', fixed: 'left' },
   { key: 'train_no', label: '车号', valueType: 'name' },
-  { key: 'display_name', label: '显示名', valueType: 'name' },
+  { key: 'display_name', label: '显示名称', valueType: 'name' },
   ...pointTableFields.map(editablePointColumn),
   { key: 'address_mapping_mode', label: '映射模式', valueType: 'status' },
 ]
@@ -95,7 +96,7 @@ const canWrite = computed(() => isFeatureEnabled('web.rail_car_network_point_tab
 const taskRunning = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
 const trainOptions = computed(() => [...new Set(rows.value.map((row) => row.train_no || row.train_id).filter(Boolean))].sort())
 const nodeOptions = computed(() => [...new Set(rows.value.map((row) => row.node_type).filter(Boolean))].sort())
-const filteredRows = computed(() => rows.value.filter((row) => (!trainFilter.value || (row.train_no || row.train_id) === trainFilter.value) && (!nodeFilter.value || row.node_type === nodeFilter.value)))
+const filteredRows = computed(() => rows.value.filter((row) => (!trainFilter.value || row.train_id === trainFilter.value || row.train_no === trainFilter.value) && (!nodeFilter.value || row.node_type === nodeFilter.value)))
 const addressMapping = computed<Record<string, Record<string, unknown>>>(() => {
   const value = globalConfig.value.address_mapping
   if (!value || typeof value !== 'object' || Array.isArray(value)) globalConfig.value.address_mapping = {}
@@ -210,14 +211,29 @@ async function closeDialog(): Promise<void> {
   visible.value = false
 }
 
-watch(() => props.modelValue, (value) => { if (value) void Promise.all([loadPointTable(true), recoverTasks()]); else stopPolling() })
+watch(() => props.modelValue, (value) => {
+  if (value) {
+    trainFilter.value = props.train ? (props.train.train_no || props.train.train_id || '') : ''
+    void Promise.all([loadPointTable(true), recoverTasks()])
+  } else {
+    stopPolling()
+  }
+})
+watch(() => props.train, (value) => {
+  if (props.modelValue) trainFilter.value = value ? (value.train_no || value.train_id || '') : ''
+})
 onBeforeUnmount(stopPolling)
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="车内通信点表" width="96vw" top="2vh" :close-on-click-modal="false" :before-close="closeDialog" destroy-on-close>
+  <el-dialog v-model="visible" title="在线列车车内通信点表" width="96vw" top="2vh" :close-on-click-modal="false" :before-close="closeDialog" destroy-on-close>
     <div class="dialog-body">
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTasks">恢复任务状态</el-button></el-alert>
+      <el-descriptions v-if="props.train" :column="3" border size="small" class="train-context">
+        <el-descriptions-item label="train_id">{{ props.train.train_id }}</el-descriptions-item>
+        <el-descriptions-item label="车号">{{ props.train.train_no }}</el-descriptions-item>
+        <el-descriptions-item label="显示名称">{{ props.train.train_name }}</el-descriptions-item>
+      </el-descriptions>
       <div class="filters">
         <el-select v-model="trainFilter" clearable placeholder="全部列车" style="width:150px"><el-option v-for="value in trainOptions" :key="value" :label="value" :value="value" /></el-select>
         <el-select v-model="nodeFilter" clearable placeholder="全部节点类型" style="width:160px"><el-option v-for="value in nodeOptions" :key="value" :label="value" :value="value" /></el-select>
@@ -246,7 +262,7 @@ onBeforeUnmount(stopPolling)
         <el-select v-model="exportFormat" style="width:95px"><el-option label="XLSX" value="xlsx" /><el-option label="CSV" value="csv" /></el-select><el-button :disabled="!isFeatureEnabled('web.rail_car_network_point_table_export') || taskRunning" @click="exportTable">导出</el-button>
         <el-button type="primary" :disabled="locked || !canWrite || !dirty || taskRunning" @click="save()">保存点表</el-button><el-button @click="closeDialog">取消</el-button>
       </div>
-      <NcDataTable v-loading="loading" table-id="car-network-point-table" route-key="/rail-transit/car-network-diagnostic" :data="filteredRows" :columns="pointTableColumns" border height="42vh" empty-text="暂无点表数据，可从设备管理生成、新增或导入" @selection-change="(value: CarNetworkPointRow[]) => selectedRows = value">
+      <NcDataTable v-loading="loading" table-id="car-network-point-table" route-key="/rail-transit/train-communication" :data="filteredRows" :columns="pointTableColumns" border height="42vh" empty-text="暂无点表数据，可从设备管理生成、新增或导入" @selection-change="(value: CarNetworkPointRow[]) => selectedRows = value">
         <template #cell-train_id="{ row }"><el-input v-model="row.train_id" :disabled="locked" @input="markDirty" /></template>
         <template #cell-train_no="{ row }"><el-input v-model="row.train_no" :disabled="locked" @input="markDirty" /></template>
         <template #cell-display_name="{ row }"><el-input v-model="row.display_name" :disabled="locked" @input="markDirty" /></template>
@@ -256,12 +272,12 @@ onBeforeUnmount(stopPolling)
       <div v-if="task" class="task-bar"><span>任务 {{ task.task_id }}</span><el-tag>{{ task.status }}</el-tag><span>{{ task.error_message || task.message }}</span><el-button @click="openTaskWindow">打开任务窗口</el-button></div>
     </div>
     <el-dialog v-model="previewVisible" title="点表导入预览" width="900px" append-to-body>
-      <div v-if="preview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><NcDataTable table-id="car-network-point-table-import-preview" route-key="/rail-transit/car-network-diagnostic" :data="preview.rows" :columns="previewColumns" border height="350" :show-column-settings="false" /><el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div>
+      <div v-if="preview" class="preview"><el-descriptions :column="5" border><el-descriptions-item label="总行数">{{ preview.total_count }}</el-descriptions-item><el-descriptions-item label="有效">{{ preview.valid_count }}</el-descriptions-item><el-descriptions-item label="重复">{{ preview.duplicate_count }}</el-descriptions-item><el-descriptions-item label="错误">{{ preview.error_count }}</el-descriptions-item><el-descriptions-item label="SHA-256">{{ preview.file_sha256.slice(0, 12) }}…</el-descriptions-item></el-descriptions><NcDataTable table-id="car-network-point-table-import-preview" route-key="/rail-transit/train-communication" :data="preview.rows" :columns="previewColumns" border height="350" :show-column-settings="false" /><el-alert v-if="!preview.can_apply" title="预览存在阻断错误，请修正文件或重复策略后重新导入" type="error" :closable="false" /></div>
       <template #footer><el-button @click="previewVisible = false">取消</el-button><el-button type="primary" :disabled="!preview?.can_apply" @click="applyPreview">应用到编辑区</el-button></template>
     </el-dialog>
   </el-dialog>
 </template>
 
 <style scoped>
-.dialog-body,.preview{display:flex;flex-direction:column;gap:12px;min-width:0}.filters,.actions,.toolbar,.task-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.filters span{color:var(--el-text-color-secondary)}.rule-grid{display:grid;grid-template-columns:70px repeat(4,minmax(150px,1fr));gap:8px;align-items:center;margin-bottom:10px}.task-bar{padding:10px 12px;border:1px solid var(--el-border-color-lighter);border-radius:8px}.hidden{display:none}@media(max-width:1000px){.rule-grid{grid-template-columns:70px minmax(150px,1fr)}}
+.dialog-body,.preview{display:flex;flex-direction:column;gap:12px;min-width:0}.filters,.actions,.toolbar,.task-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.filters span{color:var(--el-text-color-secondary)}.train-context{margin-bottom:2px}.rule-grid{display:grid;grid-template-columns:70px repeat(4,minmax(150px,1fr));gap:8px;align-items:center;margin-bottom:10px}.task-bar{padding:10px 12px;border:1px solid var(--el-border-color-lighter);border-radius:8px}.hidden{display:none}@media(max-width:1000px){.rule-grid{grid-template-columns:70px minmax(150px,1fr)}}
 </style>

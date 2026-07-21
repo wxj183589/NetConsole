@@ -133,7 +133,6 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
     assert write_routes
     assert {route.path for route in write_routes} == {
         "/rail-transit/train-communication/trains/{train_id}/diagnostics",
-        "/rail-transit/train-communication/trains/{train_id}/checks",
         "/rail-transit/train-communication/diagnostics/{task_id}/cancel",
         "/rail-transit/train-communication/diagnostics/recover",
         "/rail-transit/train-communication/point-table/import/preview",
@@ -147,13 +146,13 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
     assert not any("delete" in route.path for route in routes)
 
 
-def test_topology_and_check_routes_use_query_and_application_services(tmp_path: Path) -> None:
+def test_topology_and_diagnostic_routes_use_query_and_application_services(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
     app.state.train_communication_query_service = _ApiService()
     app.state.rail_transit_web_application_service = _ApplicationService()
     for feature_id in (
-        "web.rail_car_network_diagnostic",
+        "web.train_communication_monitoring",
         "web.rail_car_network_diagnostic_execute",
         "web.rail_task_control",
     ):
@@ -167,8 +166,8 @@ def test_topology_and_check_routes_use_query_and_application_services(tmp_path: 
     with TestClient(app) as client:
         topology = client.get("/api/rail-transit/train-communication/trains/01/topology")
         missing = client.get("/api/rail-transit/train-communication/trains/missing/topology")
-        started = client.post("/api/rail-transit/train-communication/trains/01/checks")
-        completed = client.get("/api/rail-transit/train-communication/checks/task-1")
+        started = client.post("/api/rail-transit/train-communication/trains/01/diagnostics")
+        completed = client.get("/api/rail-transit/train-communication/diagnostics/task-1")
 
     assert topology.status_code == 200
     assert topology.json()["train_name"] == "01车"

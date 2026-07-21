@@ -403,38 +403,6 @@ def train_topology(
     return result
 
 
-@router.post(
-    "/trains/{train_id}/checks",
-    response_model=RailTransitTaskDTO,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="提交车内通信检测任务",
-    responses={404: {"description": "功能未启用或列车不存在"}, 503: {"description": "轨交应用服务不可用"}},
-    dependencies=[
-        Depends(require_feature("web.rail_car_network_diagnostic_execute")),
-        Depends(require_feature("web.rail_task_control")),
-    ],
-)
-def start_train_communication_check(request: Request, train_id: str) -> RailTransitTaskDTO:
-    try:
-        return _application_service(request).start_car_network_diagnostic(_site_id(request, ""), train_id=train_id)
-    except RailTransitWebError as exc:
-        _raise_application_error(exc)
-
-
-@router.get(
-    "/checks/{task_id}",
-    response_model=RailTransitTaskDTO,
-    summary="查询车内通信检测任务",
-    responses={404: {"description": "功能未启用或任务不存在"}},
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
-)
-def train_communication_check(request: Request, task_id: str) -> RailTransitTaskDTO:
-    try:
-        return _application_service(request).get_car_network_diagnostic(_site_id(request, ""), task_id)
-    except RailTransitWebError as exc:
-        _raise_application_error(exc)
-
-
 @router.get("/mrs/{mr_id}", response_model=MrCommunicationDetailDTO)
 def mr_detail(
     request: Request,

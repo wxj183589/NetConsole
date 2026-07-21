@@ -52,7 +52,6 @@ from netconsole.repositories.ac_repository import AcRepository
 
 
 RAIL_FEATURE_IDS = (
-    "web.rail_car_network_diagnostic",
     "web.train_communication_monitoring",
     "web.online_mr_report_export",
     "web.online_mr_parse",

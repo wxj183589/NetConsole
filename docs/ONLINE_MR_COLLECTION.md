@@ -371,7 +371,7 @@ LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping
 
 `/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 和 5B-13A 远端执行结果都可按 `executor=AGENT` 只读显示；当前 Web 不提供 AGENT 控制入口。
 
-聚合页不修改本节任何采集命令、raw、Traffic flush、最终化或打包契约。5C-10A 只在 MR 详情增加受四重安全条件保护的 LOCAL start/normal stop；原始片段继续通过逻辑名称白名单读取 tail。详细控制边界见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)，聚合优先级、状态和刷新规则见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
+聚合页不修改本节任何采集命令、raw、Traffic flush、最终化或打包契约。5C-10A 只在 MR 详情增加受四重安全条件保护的 LOCAL start/normal stop；原始片段继续通过逻辑名称白名单读取 tail。详细控制边界见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)，聚合优先级、状态和刷新规则见 [在线列车车内通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
 ## 19. Web LOCAL 受控启停（5C-10A）
 

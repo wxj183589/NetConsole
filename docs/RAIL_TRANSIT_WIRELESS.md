@@ -22,11 +22,11 @@ NetConsole 的轨道交通无线能力不采用企业 WLAN 的“AP—客户端�
 
 Web 入口 `/rail-transit/wireless-dashboard` 通过薄聚合 Query Service 复用基础资料、AC/FIT-AP、Mesh-Link、在线列车通信、Online MR、Job Center、Agent Controller 缓存和 Mesh 离线分析。它只展示既有状态、告警、时效与详情跳转，不连接设备、不创建 Task、不控制 Agent、不修改数据库或 raw，也不新增任何无线质量阈值。详细契约见 [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md)。
 
-## 在线列车车地通信检测
+## 在线列车车内通信检测
 
 Web 入口 `/rail-transit/train-communication` 是 TC1/TC2 固定六节点拓扑状态页，只展示 MR、交换机、服务器、节点链路、VRRP 和跨 TC 通信。状态由 Python Service 返回；缺少明确关联或检测结果时分别显示“未配置”和“未检测”，不按名称、地址或前端规则猜测。
 
-“立即检测”只复用现有车内通信诊断 Task，不启动 Online MR、持续 fping/iPerf 或轨旁采集。列车 Mesh-Link、当前轨旁 AP、RSSI 和两侧收光由“列车在线情况”承载；Agent、Online MR 和其他轨旁业务继续使用各自页面。详细契约见 [在线列车车地通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
+“立即检测”只复用现有车内通信诊断 Task，不启动 Online MR、持续 fping/iPerf 或轨旁采集。列车 Mesh-Link、当前轨旁 AP、RSSI 和两侧收光由“列车在线情况”承载；Agent、Online MR 和其他轨旁业务继续使用各自页面。详细契约见 [在线列车车内通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
 ## 5C-8 Mesh 原始日志分析结果 Web 化
 

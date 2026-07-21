@@ -19,7 +19,7 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
     site_id = str(context.params.get("site_name") or "").strip()
     train_id = str(context.params.get("train_id") or "").strip()
     if not site_id or not train_id:
-        raise ValueError("车内通信检测缺少局点或列车标识")
+        raise ValueError("在线列车车内通信检测缺少局点或列车标识")
 
     repository = DeviceRepository(Database(context.params["db_path"]))
     trains = build_car_network_trains(repository, site_id)

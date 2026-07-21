@@ -55,7 +55,7 @@
 - 使用开发数据只读核验杭州地铁 4 号线 A/B 网与宁波地铁 12 号线共 22 个 Online MR 会话，覆盖 STOPPED、ABORTED、强停及 ready/legacy/missing parsed，基础详情失败为 `0`。宁波地铁 12 号线 `列车07-MR-CT` 旧 MESH 结果可读取 `113,954` 条链路并识别迁移后的 parsed 路径。
 - Electron 亮色/暗色真实窗口截图和现场交互仍需本机人工确认；自动化结果不替代视觉验收。
 
-### 在线列车车地通信检测
+### 在线列车车内通信检测
 
 - 恢复点表驱动的固定六节点拓扑配置，增加点表缺失、无效、重复和 revision 冲突校验。
 - 将点表维护和检测执行挂接到正式在线列车车地通信页面，并保留 Task Center 任务链路。
@@ -90,7 +90,7 @@
 - 修复局点 Registry 只显示 `demo` 的问题：启动时幂等补登记已有的中文/历史局点目录，生成稳定内部 ID 并保留原目录；切换和 Backend 重启按 Registry 解析真实目录，不重命名、不重建旧局点数据库。
 - 打通 MR 原始 MESH 日志正式导入闭环：导入弹窗从当前局点 VehicleMr 显式幂等准备内部归属，修复 500/200 分页不一致和双数据源互相拖垮；ZIP、LOG/GZ 与文件夹统一安全预览并自动匹配 CT/CW，确认后由 Job 原子归档、解析并返回新 Session。来源保存相对 raw/parsed 与 bundle provenance，主按钮只恢复/重建当前来源；真实 12 文件包复验 353,035 条解析记录、12/12 raw/parsed 与重复 SHA 幂等，宁波 1 号线 06/34 四个 missing 来源从现存 raw 修复为 ready。
 - AC 管理下独立 Mesh-Link 在线监控已合并到“轨道交通 / 列车在线情况”：每列车一行聚合 CT/TC 两端 MR、当前轨旁 AP、MAC、Radio、RSSI、站点/区间/里程、方向、匹配状态、两侧收光和更新时间；综合状态、数据过期和匹配结论由 Python Query Service 返回。旧页面、Store、导航和页面 API Client 已删除，旧 URL 重定向；Parser、Repository、历史快照、raw、Query Service 和受控 `ac_mesh_link_refresh` Task 保留，底层旧 API 标记 deprecated。
-- 在线列车车地通信检测收口为 TC1/TC2 固定六节点拓扑状态页，只保留节点/链路、VRRP、跨 TC、刷新和车内通信诊断 Task；移除本页的轨旁 AP、RSSI、fping/iPerf、光衰、Online MR、Agent、Mesh-Link 及综合统计入口。缺少 SW/SRV 关联或检测事实时明确显示“未配置/未检测”，不由 Vue 猜测正常状态；独立底层业务模块不删除。
+- 在线列车车内通信检测收口为 TC1/TC2 固定六节点拓扑状态页，只保留节点/链路、VRRP、跨 TC、刷新和车内通信诊断 Task；移除本页的轨旁 AP、RSSI、fping/iPerf、光衰、Online MR、Agent、Mesh-Link 及综合统计入口。缺少 SW/SRV 关联或检测事实时明确显示“未配置/未检测”，不由 Vue 猜测正常状态；独立底层业务模块不删除。
 - 配置采集完成真实采集/保存、跨设备快照选择、左右双栏差异、删除回滚、导出 Artifact、取消和恢复；文件管理完成本地/设备双栏、受控 SFTP、持久下载队列、重试/清理/恢复、MR 日志归档与导入。
 - 设备文件下载完成 Qt 历史 SFTP 行为取证、主备地址/凭据复用、受控命令 Profile 和设备侧只读边界；新增应用内主机密钥首次信任/仅本次信任/密钥变更阻止、数据根下原子 known_hosts、结构化错误和下载页兼容重定向。SFTP 自动启用固定为独立 `config_write` 操作，仅在用户授权、SSH 登录成功、明确确认子系统不可用且命中 H3C Comware V7 精确 Profile 时进入统一任务链；交换机、无线 AC 和车载 MR 均保持 `REAL_DEVICE_PENDING`，Huawei/ZTE/未知版本失败关闭。全局确认统一收口到 `NcConfirmDialog/useConfirm`，外部终端密码传递使用 `SECURITY` 确认；自动启用、真实 SFTP、主机密钥和桌面动作仍待现场验收。
 - 网络工具完成 Ping/fping/TCP、持续探测增量结果、iPerf、无线扫描分页/状态/详情和安全导出；命令参考完成实时搜索、共享任务窗口导出和取消收敛。
