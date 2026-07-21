@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
-  getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
+  getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
   previewMeshBundle, saveMeshAnalysisParams,
 } from './meshAnalysis'
 
@@ -68,11 +68,13 @@ describe('Mesh profile API', () => {
 
     await listMeshActiveBuildOrder('session/1', { page: 2, page_size: 500, sort_order: 'desc', radio: 1, pingpong_only: true })
     await getMeshActivePathChart('session/1', { radio: 1, time_from: '2026-07-20 10:00:00.123', time_to: '2026-07-20 10:02:00.456', max_points: 600 })
+    await getMeshTracksideSignalChart('session/1', { radio: 1, time_from: '2026-07-20 10:00:00.123', time_to: '2026-07-20 10:02:00.456', max_points: 600, include_standby: true, top_n: 12 })
     await getMeshPeerSegmentChart('session/1', { anchor_link_id: 42, time_from: '2026-07-20 10:00:00.123', time_to: '2026-07-20 10:02:00.456', max_points: 300, all_visits: true })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/active-build-order?page=2&page_size=500&sort_order=desc&radio=1&pingpong_only=true',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/active-path?radio=1&time_from=2026-07-20+10%3A00%3A00.123&time_to=2026-07-20+10%3A02%3A00.456&max_points=600',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/trackside-signal?radio=1&time_from=2026-07-20+10%3A00%3A00.123&time_to=2026-07-20+10%3A02%3A00.456&max_points=600&include_standby=true&top_n=12',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/charts/peer-segment?anchor_link_id=42&time_from=2026-07-20+10%3A00%3A00.123&time_to=2026-07-20+10%3A02%3A00.456&max_points=300&all_visits=true',
     ])
   })

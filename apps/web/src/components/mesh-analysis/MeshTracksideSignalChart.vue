@@ -9,32 +9,57 @@ import {
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
-import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
-import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
+import type {
+  MeshChartEvent,
+  MeshLocationSegment,
+  MeshTracksideSignalPointData,
+  MeshTracksideSignalSeriesData,
+} from '../../types/meshAnalysis'
+import { buildMeshLocationBands } from './chartSeries'
 import {
   createFullMeshViewport,
   normalizeMeshViewport,
   viewportFromDataZoom,
   type MeshChartViewport,
 } from './meshChartViewport'
-import { buildMeshRssiTooltip } from './meshRssiTooltip'
+import { buildSwitchSection, escapeMeshTooltipHtml } from './meshRssiTooltip'
+
+interface RenderedSignalPoint {
+  value: [string, number | null]
+  meta: MeshTracksideSignalPointData
+  seriesMeta: MeshTracksideSignalSeriesData
+}
+
+interface RenderedSignalSeries {
+  name: string
+  data: RenderedSignalPoint[]
+  meta: MeshTracksideSignalSeriesData
+}
 
 const props = withDefaults(defineProps<{
-  points: MeshChartPoint[]
+  series: MeshTracksideSignalSeriesData[]
   events?: MeshChartEvent[]
   locationSegments?: MeshLocationSegment[]
-  showPeer?: boolean
   showSwitchLines?: boolean
   showSwitchPoints?: boolean
   showLocationBand?: boolean
-  scope?: 'active' | 'peer'
   active?: boolean
-  focusTimestamp?: string
   initialViewport?: MeshChartViewport | null
   syncViewport?: MeshChartViewport | null
   lockedViewport?: MeshChartViewport | null
   preserveViewport?: boolean
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true })
+}>(), {
+  events: () => [],
+  locationSegments: () => [],
+  showSwitchLines: false,
+  showSwitchPoints: true,
+  showLocationBand: true,
+  active: true,
+  initialViewport: null,
+  syncViewport: null,
+  lockedViewport: null,
+  preserveViewport: true,
+})
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
@@ -45,7 +70,6 @@ const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
-let primarySeriesData: Array<{ value: [string, number | null]; meta: MeshChartPoint }> = []
 let initialization: Promise<boolean> | null = null
 let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
@@ -54,40 +78,113 @@ let currentViewport: MeshChartViewport | null = null
 let applyingViewport = false
 let viewportReady = false
 let viewportTimer: ReturnType<typeof setTimeout> | null = null
+let renderedSeries: RenderedSignalSeries[] = []
 
-const timestamps = (): string[] => props.points.map((point) => point.timestamp)
+const timestamps = (): string[] => props.series.flatMap((item) => item.points.map((point) => point.timestamp))
+const hasData = () => props.series.some((item) => item.points.some((point) => point.peer_rssi != null || point.peer_signal != null))
 
-function findRenderedSwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
-  if (event.render_aligned === false) return undefined
-  const timestamp = event.render_point_timestamp || event.point_timestamp
-  if (!timestamp) return undefined
-  const context = event.point_context
-  return props.points.find((point) => (
-    point.timestamp === timestamp
-    && (context?.link_id == null || point.link_id === context.link_id)
-    && (context?.timestamp_tag == null || point.timestamp_tag === context.timestamp_tag)
-    && (event.local_radio == null || point.local_radio === event.local_radio)
-    && point.local_rssi != null
-    && point.local_rssi !== 0
-    && !point.is_anomaly
-  ))
-}
-
-function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent; symbol: string }> {
-  return events.flatMap((event) => {
-    const point = findRenderedSwitchPoint(event)
-    if (!point || point.local_rssi == null) return []
-    return [{
-      value: [point.timestamp, point.local_rssi],
-      meta: point,
-      meshEvent: event,
-      symbol: event.after_rssi != null && point.local_rssi === event.after_rssi ? 'circle' : 'emptyCircle',
-    }]
-  })
+function sameViewport(left: MeshChartViewport | null, right: MeshChartViewport | null): boolean {
+  return Boolean(left && right && left.start_time === right.start_time && left.end_time === right.end_time)
 }
 
 function hasRenderableSize(): boolean {
   return Boolean(container.value && container.value.clientWidth > 0 && container.value.clientHeight > 0)
+}
+
+function metric(value: number | null | undefined, unit = ''): string {
+  return value == null ? '—' : `${value}${unit}`
+}
+
+function seriesLabel(series: MeshTracksideSignalSeriesData): string {
+  const base = series.peer_name || series.peer_mac || '轨旁 AP 未知'
+  const radio = series.radio == null ? '—' : series.radio
+  return `${base} · Radio ${radio} · ${series.role}`
+}
+
+function pointLabel(point: MeshTracksideSignalPointData): string {
+  return point.peer_ap_name || point.peer_mac || '轨旁 AP 未知'
+}
+
+function pointSeriesValue(point: MeshTracksideSignalPointData): number | null {
+  return point.peer_rssi ?? point.peer_signal ?? null
+}
+
+function renderSeries(): RenderedSignalSeries[] {
+  return props.series.map((series) => ({
+    name: seriesLabel(series),
+    meta: series,
+    data: [...series.points]
+      .sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))
+      .map((point) => ({
+        value: [point.timestamp, pointSeriesValue(point)],
+        meta: point,
+        seriesMeta: series,
+      })),
+  }))
+}
+
+function findRenderedSwitchPoint(event: MeshChartEvent): RenderedSignalPoint | undefined {
+  if (event.render_aligned === false) return undefined
+  const timestamp = event.render_point_timestamp || event.point_timestamp || event.timestamp
+  if (!timestamp) return undefined
+  const context = event.point_context
+  const exactMatch = renderedSeries.flatMap((item) => item.data).find((point) => (
+    point.value[0] === timestamp
+    && (context?.link_id == null || point.meta.link_id === context.link_id)
+    && (context?.timestamp_tag == null || point.meta.timestamp_tag === context.timestamp_tag)
+    && (event.local_radio == null || point.meta.local_radio === event.local_radio)
+    && pointSeriesValue(point.meta) != null
+    && pointSeriesValue(point.meta) !== 0
+  ))
+  if (exactMatch) return exactMatch
+  return renderedSeries.flatMap((item) => item.data).find((point) => (
+    point.value[0] === timestamp
+    && (event.local_radio == null || point.meta.local_radio === event.local_radio)
+    && pointSeriesValue(point.meta) != null
+    && pointSeriesValue(point.meta) !== 0
+  ))
+}
+
+function switchNodeData(events: MeshChartEvent[]): Array<RenderedSignalPoint & { meshEvent: MeshChartEvent; symbol: string }> {
+  return events.flatMap((event) => {
+    const point = findRenderedSwitchPoint(event)
+    if (!point || point.value[1] == null) return []
+    return [{
+      ...point,
+      meshEvent: event,
+      symbol: 'circle',
+    }]
+  })
+}
+
+function buildTooltipPointSection(point: RenderedSignalPoint, index: number): string {
+  const meta = point.meta
+  const series = point.seriesMeta
+  return [
+    index === 0 ? '<strong>轨旁信号</strong>' : '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35">',
+    `序列：${escapeMeshTooltipHtml(seriesLabel(series))}`,
+    `采样时间：${escapeMeshTooltipHtml(point.value[0])}`,
+    `轨旁 AP：${escapeMeshTooltipHtml(pointLabel(meta))}`,
+    `AP MAC：${escapeMeshTooltipHtml(meta.peer_ap_mac || series.ap_mac)}`,
+    `Peer RSSI / MR RSSI：${metric(meta.peer_rssi)} / ${metric(meta.local_rssi)}`,
+    `Peer Signal / MR Signal：${metric(meta.peer_signal)} / ${metric(meta.local_signal)}`,
+    `站点 / 区间：${escapeMeshTooltipHtml(meta.station)} / ${escapeMeshTooltipHtml(meta.section)}`,
+    `建链持续时间：${metric(meta.segment_duration_seconds, ' s')}`,
+    `数据来源：${escapeMeshTooltipHtml(meta.data_source)}`,
+  ].join('<br>')
+}
+
+function buildTooltip(points: RenderedSignalPoint[], event?: MeshChartEvent): string {
+  if (!points.length) {
+    return `<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">采样时间：${escapeMeshTooltipHtml(event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
+  }
+  return [
+    '<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">',
+    `采样时间：${escapeMeshTooltipHtml(points[0].value[0])}`,
+    points.map((point, index) => buildTooltipPointSection(point, index)).join(''),
+    buildSwitchSection(event),
+    '</div>',
+  ].join('<br>')
 }
 
 async function ensureChart(): Promise<boolean> {
@@ -96,7 +193,10 @@ async function ensureChart(): Promise<boolean> {
   if (initialization) return initialization
   initialization = (async () => {
     const [core, charts, components, renderers] = await Promise.all([
-      import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers'),
     ])
     core.use([
       charts.LineChart,
@@ -134,15 +234,12 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       pendingRenderReason = null
       if (renderReason || !chartExisted) render(renderReason || 'data')
       chart?.resize()
-      focusCurrentPoint()
     })
   })
 }
 
-function handleWindowResize(): void { scheduleChartUpdate() }
-
-function sameViewport(left: MeshChartViewport | null, right: MeshChartViewport | null): boolean {
-  return Boolean(left && right && left.start_time === right.start_time && left.end_time === right.end_time)
+function handleWindowResize(): void {
+  scheduleChartUpdate()
 }
 
 onMounted(() => {
@@ -152,6 +249,7 @@ onMounted(() => {
   window.addEventListener('resize', handleWindowResize)
   scheduleChartUpdate('data')
 })
+
 onBeforeUnmount(() => {
   disposed = true
   window.removeEventListener('resize', handleWindowResize)
@@ -170,34 +268,27 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-watch(() => props.points, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => props.series, () => scheduleChartUpdate('data'), { deep: true })
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
-watch(() => [props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
-watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
+watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
-watch(() => props.focusTimestamp, () => { void nextTick(() => scheduleChartUpdate()) })
 watch(() => props.lockedViewport, (viewport, previous) => {
   if (viewport) void nextTick(() => applyViewport(viewport))
   else if (previous) { currentViewport = null; scheduleChartUpdate('reset') }
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
-watch(() => props.syncViewport, (viewport) => {
+watch(() => props.syncViewport, (viewport, previous) => {
   if (viewport && !sameViewport(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  else if (!viewport && previous) { currentViewport = null; scheduleChartUpdate('reset') }
 }, { deep: true })
 
 function handleChartClick(raw: unknown): void {
-  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
+  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshTracksideSignalPointData } }).data
   const event = data?.meshEvent || props.events.find((item) => (
-    (item.render_point_timestamp || item.point_timestamp) === data?.meta?.timestamp
+    (item.render_point_timestamp || item.point_timestamp || item.timestamp) === data?.meta?.timestamp
     || item.timestamp === data?.meta?.timestamp
   ))
   if (event) emit('selectSwitch', event)
-}
-
-function focusCurrentPoint(): void {
-  if (!props.focusTimestamp) return
-  const dataIndex = primarySeriesData.findIndex((point) => point.meta.timestamp === props.focusTimestamp && point.value[1] !== null)
-  if (dataIndex >= 0) chart?.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex })
 }
 
 function handleDataZoom(raw: unknown): void {
@@ -239,8 +330,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
   const theme = readNetConsoleChartTokens()
   const axisStyle = createNetConsoleAxisStyle(theme)
-  const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
-  primarySeriesData = series[0]?.data || []
+  renderedSeries = renderSeries()
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
@@ -255,23 +345,23 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   } : undefined
   chart.setOption({
     animation: false,
-    color: [theme.primary, theme.info, theme.warning, theme.danger],
+    color: theme.series,
     textStyle: { color: theme.text },
     tooltip: {
       trigger: 'axis',
       ...createNetConsoleTooltipStyle(theme),
       formatter: (rawParams: unknown) => {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-        const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
-        const pointParam = params.find((item) => (item as { data?: { meta?: MeshChartPoint } }).data?.meta) as { data?: { meta?: MeshChartPoint } } | undefined
+        const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent } } | undefined
         const event = eventParam?.data?.meshEvent
-        const point = pointParam?.data?.meta
-          || eventParam?.data?.meta
-          || (event ? findRenderedSwitchPoint(event) : undefined)
-        return buildMeshRssiTooltip(point, event)
+        const pointItems = params.flatMap((item) => {
+          const candidate = item as { data?: RenderedSignalPoint }
+          return candidate.data?.meta ? [candidate.data] : []
+        }).filter((item): item is RenderedSignalPoint => Boolean(item?.meta && Array.isArray(item.value) && item.value[1] != null)).slice(0, 8)
+        return buildTooltip(pointItems, event)
       },
     },
-    legend: { bottom: 4, textStyle: { color: theme.textSecondary } },
+    legend: { type: 'scroll', bottom: 4, textStyle: { color: theme.textSecondary } },
     toolbox: { right: 16, feature: { saveAsImage: { title: '保存图像', pixelRatio: 2 } } },
     grid: { left: 54, right: 22, top: 42, bottom: 74, containLabel: true },
     xAxis: {
@@ -286,20 +376,21 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
     ],
     series: [
-      ...series.map((item, index) => ({
-      name: item.name,
-      type: 'line',
-      showSymbol: false,
-      connectNulls: false,
-      data: item.data,
-      markArea: index === 0 ? markArea : undefined,
-      markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
-        silent: false,
-        symbol: 'none',
-        label: { show: false },
-        lineStyle: { color: theme.warning, type: 'dashed' },
-        data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
-      } : undefined,
+      ...renderedSeries.map((item, index) => ({
+        name: item.name,
+        type: 'line',
+        showSymbol: false,
+        connectNulls: false,
+        data: item.data,
+        lineStyle: { width: 2, type: item.meta.role === 'STANDBY' ? 'dashed' : 'solid' },
+        markArea: index === 0 ? markArea : undefined,
+        markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
+          silent: false,
+          symbol: 'none',
+          label: { show: false },
+          lineStyle: { color: theme.warning, type: 'dashed' },
+          data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
+        } : undefined,
       })),
       ...(nodes.length ? [{
         name: '切换节点',
@@ -309,7 +400,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       }] : []),
     ],
   }, { notMerge: true })
-  const target = props.lockedViewport || previous || props.initialViewport || createFullMeshViewport(timestamps())
+  const target = props.lockedViewport || previous || props.syncViewport || props.initialViewport || createFullMeshViewport(timestamps())
   if (target) {
     applyViewport(target)
     if (!viewportReady && currentViewport) {
@@ -317,7 +408,6 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       emit('viewport-ready', { ...currentViewport })
     }
   }
-  focusCurrentPoint()
 }
 
 defineExpose({
@@ -331,7 +421,7 @@ defineExpose({
 <template>
   <div class="chart-shell">
     <div ref="container" class="chart"></div>
-    <el-empty v-if="!points.length" class="empty" description="暂无 RSSI 数据" :image-size="60" />
+    <el-empty v-if="!hasData()" class="empty" description="暂无轨旁信号数据" :image-size="60" />
   </div>
 </template>
 

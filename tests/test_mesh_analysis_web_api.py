@@ -37,6 +37,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/links?site_id=demo&page_size=2",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/active-build-order?site_id=demo&page_size=2",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path?site_id=demo&radio=1&max_points=10",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/trackside-signal?site_id=demo&radio=1&max_points=10&top_n=4",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/peer-segment?site_id=demo&anchor_link_id=1&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/timeline?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/switch-events?site_id=demo",
@@ -85,6 +86,11 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         )
         assert key in returned_points
         assert event["render_point_rssi"] == returned_points[key]
+    trackside_chart = responses[6].json()
+    assert trackside_chart["series"]
+    assert trackside_chart["series"][0]["data_source"] == "peer_rssi_db"
+    assert trackside_chart["series"][0]["points"]
+    assert "events" in trackside_chart
     assert removed_alignment.status_code == 404
     assert download.status_code == 200
     assert source["source_file_id"] == 1

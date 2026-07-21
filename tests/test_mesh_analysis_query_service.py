@@ -282,14 +282,14 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
     assert tagged.link_state == "ACTIVE"
     assert tagged.local_rssi == 44
     assert tagged.peer_rssi == 46
-    assert tagged.local_signal is None
-    assert tagged.peer_signal is None
+    assert tagged.local_signal == -50
+    assert tagged.peer_signal == -48
     assert [item.link_id for item in tagged.backups] == [7]
     assert all(item.source_file_id == 1 and item.timestamp_tag == "(2)" for item in tagged.backups)
     assert tagged.backups[0].local_rssi == 38
     assert tagged.backups[0].peer_rssi == 40
-    assert tagged.backups[0].local_signal is None
-    assert tagged.backups[0].peer_signal is None
+    assert tagged.backups[0].local_signal == -56
+    assert tagged.backups[0].peer_signal == -54
     assert before == _fingerprint(detail)
 
 
@@ -393,6 +393,53 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
         assert event.busy_point_context is not None
         assert event.busy_point_context.local_tx_busy is not None or event.busy_point_context.local_rx_busy is not None
         assert event.render_busy_point_timestamp in {point.timestamp for point in chart.points}
+
+
+def test_trackside_signal_chart_groups_active_and_standby_peer_rssi(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10, top_n=10)
+    active_only = service.get_trackside_signal_chart(
+        "demo",
+        session_id,
+        radio=1,
+        max_points=10,
+        include_standby=False,
+        top_n=10,
+    )
+
+    assert chart.source_id == session_id
+    assert chart.radio == 1
+    assert chart.total_series >= len(chart.series) >= 1
+    assert chart.returned_points == sum(len(item.points) for item in chart.series)
+    assert any(item.role == "ACTIVE" and item.points[0].peer_rssi is not None for item in chart.series)
+    assert any(item.role == "STANDBY" for item in chart.series)
+    assert {item.data_source for item in chart.series} <= {"peer_rssi_db", "peer_signal_dbm"}
+    assert {point.data_source for item in chart.series for point in item.points} <= {"peer_rssi_db", "peer_signal_dbm"}
+    assert any(point.data_source == "peer_signal_dbm" for item in chart.series for point in item.points)
+    assert all(item.role != "STANDBY" for item in active_only.series)
+    assert active_only.include_standby is False
+
+
+def test_trackside_signal_chart_falls_back_to_peer_signal_not_local_rssi(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute(
+            "UPDATE mesh_links SET peer_rssi_db = NULL, peer_signal_dbm = -57, local_rssi_db = -21 WHERE id = 1"
+        )
+        conn.execute(
+            "UPDATE active_points SET peer_rssi_db = NULL, peer_signal_dbm = -57, local_rssi_db = -21 WHERE link_id = 1"
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10, top_n=10)
+
+    point = next(point for series in chart.series for point in series.points if point.link_id == 1)
+    assert point.peer_rssi is None
+    assert point.peer_signal == -57
+    assert point.local_rssi == -21
+    assert point.data_source == "peer_signal_dbm"
 
 
 def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:

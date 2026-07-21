@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
-  MeshTimelineItem, MeshProfile, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, Page,
+  MeshTimelineItem, MeshProfile, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, Page,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -41,6 +41,7 @@ export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysis
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshActiveBuildOrder>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/active-build-order${qs(values)}`)
 export const getMeshActivePathChart = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/charts/active-path${qs(values)}`)
+export const getMeshTracksideSignalChart = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshTracksideSignalChartData> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/charts/trackside-signal${qs(values)}`)
 export const getMeshPeerSegmentChart = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/charts/peer-segment${qs(values)}`)
 export const getMeshTimeline = (id: string): Promise<{ items: MeshTimelineItem[]; total: number }> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/timeline`)
 export const listMeshSwitchEvents = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<Page<MeshSwitchEvent>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/switch-events${qs(values)}`)

@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import MeshChannelBusyChart from './MeshChannelBusyChart.vue'
 import MeshRssiChart from './MeshRssiChart.vue'
+import MeshTracksideSignalChart from './MeshTracksideSignalChart.vue'
 import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
-import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
+import type { MeshChartEvent, MeshChartPoint, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
 
 const echartsMock = vi.hoisted(() => {
   const chart = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn(), dispatchAction: vi.fn(), on: vi.fn(), off: vi.fn() }
@@ -48,6 +49,66 @@ const chartPointAfterGap: MeshChartPoint = {
   timestamp: '2026-07-20T10:00:10.123Z',
   gap_before: true,
 }
+const tracksideChartPoint: MeshTracksideSignalPointData = {
+  timestamp: chartPoint.timestamp,
+  timestamp_tag: chartPoint.timestamp_tag || '',
+  source_file_id: 1,
+  link_id: 1,
+  sample_id: 1,
+  local_radio: 1,
+  role: 'ACTIVE',
+  peer_mac: 'peer-1',
+  peer_ap_name: 'AP-1',
+  peer_ap_mac: 'ap-1',
+  peer_radio: 'Radio 1',
+  peer_radio_mac: null,
+  station: '站点一',
+  section: '区间一',
+  peer_rssi: -45,
+  local_rssi: -40,
+  peer_signal: -55,
+  local_signal: -50,
+  segment_duration_seconds: 1_000,
+  data_source: 'peer_rssi_db',
+}
+const tracksideStandbyPoint: MeshTracksideSignalPointData = {
+  ...tracksideChartPoint,
+  timestamp: chartPointAfterGap.timestamp,
+  timestamp_tag: chartPointAfterGap.timestamp_tag || '',
+  role: 'STANDBY',
+  peer_mac: 'backup',
+  peer_ap_name: '备链 AP',
+  peer_ap_mac: 'ap-backup',
+  peer_rssi: -62,
+  local_rssi: -60,
+}
+const tracksideSeries: MeshTracksideSignalSeriesData[] = [{
+  series_id: 'ap-1:radio:1',
+  peer_name: 'AP-1',
+  peer_mac: 'peer-1',
+  ap_mac: 'ap-1',
+  radio: 1,
+  station: '站点一',
+  section: '区间一',
+  role: 'ACTIVE',
+  data_source: 'peer_rssi_db',
+  total_points: 1,
+  returned_points: 1,
+  points: [tracksideChartPoint],
+}, {
+  series_id: 'backup:radio:1',
+  peer_name: '备链 AP',
+  peer_mac: 'backup',
+  ap_mac: 'ap-backup',
+  radio: 1,
+  station: '站点一',
+  section: '区间一',
+  role: 'STANDBY',
+  data_source: 'peer_rssi_db',
+  total_points: 1,
+  returned_points: 1,
+  points: [tracksideStandbyPoint],
+}]
 
 describe('MESH charts mount and render', () => {
   beforeEach(() => {
@@ -98,6 +159,58 @@ describe('MESH charts mount and render', () => {
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
     expect(echartsMock.chart.off).toHaveBeenCalledTimes(4)
+  })
+
+  it('renders the trackside signal chart with peer RSSI series and switch markers', async () => {
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: tracksideSeries,
+        events: [chartEvent],
+        locationSegments: [{ start_time: chartPoint.timestamp, end_time: chartPointAfterGap.timestamp, station: '站点一', section: '区间一', label: '站点一 / 区间一' }],
+        showSwitchLines: true,
+        showSwitchPoints: true,
+      },
+    })
+    await flushPromises()
+
+    expect(echartsMock.init).toHaveBeenCalledTimes(1)
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ name: string; data?: Array<{ value: [string, number | null]; meta?: MeshTracksideSignalPointData; meshEvent?: MeshChartEvent }> }>
+      tooltip: { formatter: (params: unknown) => string }
+    }
+    expect(option.series.map((item) => item.name)).toEqual([
+      'AP-1 · Radio 1 · ACTIVE',
+      '备链 AP · Radio 1 · STANDBY',
+      '切换节点',
+    ])
+    expect(option.series[0].data?.[0]?.value).toEqual([tracksideChartPoint.timestamp, -45])
+    expect(option.series[1].data?.[0]?.value).toEqual([tracksideStandbyPoint.timestamp, -62])
+    expect(option.series[2].data?.[0]?.meshEvent).toEqual(chartEvent)
+    expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('Peer RSSI / MR RSSI：-45 / -40')
+    const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
+    click({ data: { meshEvent: chartEvent, meta: tracksideChartPoint } })
+    expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([chartEvent])
+
+    wrapper.unmount()
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders trackside peer signal fallback without using local RSSI', async () => {
+    const fallbackPoint = { ...tracksideChartPoint, peer_rssi: null, peer_signal: -55, local_rssi: -40, data_source: 'peer_signal_dbm' }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{ ...tracksideSeries[0], data_source: 'peer_signal_dbm', points: [fallbackPoint] }],
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ data?: Array<{ value: [string, number | null] }> }>
+    }
+    expect(option.series[0].data?.[0]?.value).toEqual([fallbackPoint.timestamp, -55])
+    expect(option.series[0].data?.[0]?.value[1]).not.toBe(-40)
+
+    wrapper.unmount()
   })
 
   it('waits for a visible active container before initializing ECharts', async () => {

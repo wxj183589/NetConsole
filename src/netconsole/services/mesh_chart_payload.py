@@ -574,7 +574,11 @@ def _sort_rssi(value: object) -> float:
 def _metrics(row: dict[str, object]) -> dict[str, object]:
     metrics = row.get("metrics")
     if isinstance(metrics, dict) and metrics:
-        return metrics
+        merged = dict(metrics)
+        for key in _METRIC_KEYS:
+            if key not in merged and row.get(key) is not None:
+                merged[key] = row.get(key)
+        return merged
     metrics_json = row.get("metrics_json")
     if isinstance(metrics_json, str) and metrics_json.strip():
         try:
@@ -582,7 +586,11 @@ def _metrics(row: dict[str, object]) -> dict[str, object]:
         except json.JSONDecodeError:
             parsed = {}
         if isinstance(parsed, dict):
-            return parsed
+            merged = dict(parsed)
+            for key in _METRIC_KEYS:
+                if key not in merged and row.get(key) is not None:
+                    merged[key] = row.get(key)
+            return merged
     return {key: row.get(key) for key in _METRIC_KEYS if row.get(key) is not None}
 
 

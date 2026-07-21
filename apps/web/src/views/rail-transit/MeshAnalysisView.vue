@@ -6,14 +6,15 @@ import { ArrowDown, ArrowRight, Delete, Document, Download, Hide, Lock, Refresh,
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
-import { visibleMeshSamples, type MeshChartHandle, type MeshChartViewport } from '../../components/mesh-analysis/meshChartViewport'
+import MeshTracksideSignalChart from '../../components/mesh-analysis/MeshTracksideSignalChart.vue'
+import { meshTimestampMillis, visibleMeshSamples, type MeshChartHandle, type MeshChartViewport } from '../../components/mesh-analysis/meshChartViewport'
 import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
   listMeshActiveBuildOrder, listMeshAnalysisSessions,
   listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams,
@@ -25,6 +26,7 @@ import { isFeatureEnabled } from '../../features'
 import type {
   MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
+  MeshTracksideSignalChartData,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -48,7 +50,7 @@ const links = ref<MeshLinkDetail[]>([])
 const linkTotal = ref(0)
 const switches = ref<MeshSwitchEvent[]>([])
 const rssiActivePath = ref<MeshPathChart | null>(null)
-const rssiPeerPath = ref<MeshPathChart | null>(null)
+const tracksideSignal = ref<MeshTracksideSignalChartData | null>(null)
 const busyActivePath = ref<MeshPathChart | null>(null)
 const busyPeerPath = ref<MeshPathChart | null>(null)
 const artifacts = ref<MeshArtifact[]>([])
@@ -94,7 +96,6 @@ const busyChartRef = ref<MeshChartHandle | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
 const activeTab = ref('build-order')
-const rssiMode = ref<'peer' | 'active'>('active')
 const busyMode = ref<'active' | 'peer'>('active')
 const showRssiPeer = ref(false)
 const showSwitchLines = ref(false)
@@ -110,12 +111,19 @@ const selectedSegment = ref<MeshActiveBuildOrder | null>(null)
 const allPeerVisits = ref(false)
 const selectedChartEvent = ref<MeshChartEvent | null>(null)
 const focusTimestamp = ref('')
+const rssiFocusLabel = ref('')
 const rssiViewport = ref<MeshChartViewport | null>(null)
 const busyViewport = ref<MeshChartViewport | null>(null)
-interface MeshLockedAnalysisRange extends MeshChartViewport {
+interface MeshChartWindowRange extends MeshChartViewport {
+  radio: number | null
+  mode?: 'active' | 'peer'
+  anchor_link_id?: number | null
+  all_visits?: boolean
+}
+
+interface MeshLockedAnalysisRange extends MeshChartWindowRange {
   session_id: string
   source_file_id: number
-  radio: number | null
   mode: 'active' | 'peer'
   anchor_link_id: number | null
   all_visits: boolean
@@ -181,7 +189,7 @@ const bundleValidationMessage = computed(() => {
 })
 const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => `${row.timestamp}::${row.timestamp_tag || ''}`))
 const switchTimeGroups = computed(() => buildMeshTimeGroupClasses(switches.value, (row) => row.timestamp))
-const chartData = computed(() => rssiMode.value === 'peer' ? rssiPeerPath.value : rssiActivePath.value)
+const chartData = computed(() => rssiActivePath.value)
 const busyChartData = computed(() => busyMode.value === 'peer' ? busyPeerPath.value : busyActivePath.value)
 const busyValidSampleCount = computed(() => (busyChartData.value?.points || []).filter((point) => (
   point.local_tx_busy != null || point.local_rx_busy != null || point.peer_tx_busy != null || point.peer_rx_busy != null
@@ -404,8 +412,8 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
   const generation = ++detailGeneration
   detailLoading.value = true
   selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []
-  rssiActivePath.value = null; rssiPeerPath.value = null; busyActivePath.value = null; busyPeerPath.value = null
-  selectedSegment.value = null; focusTimestamp.value = ''; chartRadio.value = null; rssiViewport.value = null; busyViewport.value = null
+  rssiActivePath.value = null; tracksideSignal.value = null; busyActivePath.value = null; busyPeerPath.value = null
+  selectedSegment.value = null; focusTimestamp.value = ''; rssiFocusLabel.value = ''; chartRadio.value = null; rssiViewport.value = null; busyViewport.value = null
   lockedAnalysisRange.value = null; allPeerVisits.value = false; selectedChartEvent.value = null; rssiChartGeneration += 1; busyChartGeneration += 1
   artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   for (const key of Object.keys(loadedTabs)) delete loadedTabs[key]
@@ -481,7 +489,7 @@ async function loadTab(tab: string): Promise<void> {
     return
   }
   if (!selected.value || loadedTabs[tab]) {
-    if (tab === 'rssi' && !(rssiMode.value === 'peer' ? rssiPeerPath.value : rssiActivePath.value)) await loadCurrentMetricChart('rssi')
+    if (tab === 'rssi' && (!rssiActivePath.value || !tracksideSignal.value)) await loadCurrentMetricChart('rssi')
     if (tab === 'busy' && !(busyMode.value === 'peer' ? busyPeerPath.value : busyActivePath.value)) await loadCurrentMetricChart('busy', lockedAnalysisRange.value)
     return
   }
@@ -520,9 +528,26 @@ function isLatestChartRequest(metric: MeshChartMetric, generation: number): bool
   return generation === (metric === 'rssi' ? rssiChartGeneration : busyChartGeneration)
 }
 
+async function loadTracksideSignal(
+  range: MeshChartWindowRange | null = null,
+  generation = detailGeneration,
+): Promise<void> {
+  if (!selected.value) return
+  const result = await getMeshTracksideSignalChart(selected.value.session.session_id, {
+    max_points: visiblePoints.value,
+    radio: range?.radio ?? chartRadio.value,
+    time_from: range?.start_time,
+    time_to: range?.end_time,
+    include_standby: true,
+    top_n: 12,
+  })
+  if (generation !== detailGeneration) return
+  tracksideSignal.value = result
+}
+
 async function loadActivePath(
   metric: MeshChartMetric,
-  range: MeshLockedAnalysisRange | null = null,
+  range: MeshChartWindowRange | null = null,
   generation = detailGeneration,
 ): Promise<void> {
   if (!selected.value) return
@@ -539,9 +564,9 @@ async function loadActivePath(
 }
 
 async function loadPeerPath(
-  metric: MeshChartMetric,
+  metric: 'busy',
   anchorLinkId = selectedSegment.value?.anchor_link_id,
-  range: MeshLockedAnalysisRange | null = null,
+  range: MeshChartWindowRange | null = null,
   generation = detailGeneration,
 ): Promise<void> {
   if (!selected.value || !anchorLinkId) return
@@ -556,18 +581,52 @@ async function loadPeerPath(
     time_to: range?.end_time ?? (allVisits ? null : segment?.build_end_time),
   })
   if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
-  if (metric === 'rssi') rssiPeerPath.value = result
-  else busyPeerPath.value = result
+  busyPeerPath.value = result
 }
 
 async function loadCurrentMetricChart(
   metric: MeshChartMetric,
-  range: MeshLockedAnalysisRange | null = null,
+  range: MeshChartWindowRange | null = null,
   generation = detailGeneration,
 ): Promise<void> {
-  const mode = range?.mode ?? (metric === 'rssi' ? rssiMode.value : busyMode.value)
+  if (metric === 'rssi') {
+    await Promise.all([
+      loadActivePath('rssi', range, generation),
+      loadTracksideSignal(range, generation),
+    ])
+    return
+  }
+  const mode = range?.mode ?? busyMode.value
   if (mode === 'peer') await loadPeerPath(metric, range?.anchor_link_id ?? selectedSegment.value?.anchor_link_id, range, generation)
   else await loadActivePath(metric, range, generation)
+}
+
+function formatMeshTimestamp(value: number): string {
+  const date = new Date(value)
+  const pad = (number: number, size = 2): string => String(number).padStart(size, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`
+}
+
+function buildRssiWindowRange(startTime: string, endTime: string | null, radio: number | null): MeshChartWindowRange | null {
+  const start = meshTimestampMillis(startTime)
+  const end = endTime ? meshTimestampMillis(endTime) : null
+  if (start === null || (endTime && end === null) || (end !== null && end <= start)) return null
+  const duration = end === null ? null : end - start
+  const buffer = end === null
+    ? 30_000
+    : Math.min(300_000, Math.max(30_000, Math.round((duration || 0) * 0.2)))
+  const windowStart = start - buffer
+  const windowEnd = end === null ? start + 120_000 : end + buffer
+  return {
+    start_time: formatMeshTimestamp(windowStart),
+    end_time: formatMeshTimestamp(windowEnd),
+    start_percent: 0,
+    end_percent: 100,
+    full_start_time: formatMeshTimestamp(windowStart),
+    full_end_time: formatMeshTimestamp(windowEnd),
+    source: 'programmatic',
+    radio,
+  }
 }
 
 async function reloadCurrentChart(): Promise<void> {
@@ -615,9 +674,9 @@ function lockCurrentRssiRange(): void {
     session_id: selected.value.session.session_id,
     source_file_id: selectedSource.value.source_file_id,
     radio: chartRadio.value,
-    mode: rssiMode.value,
-    anchor_link_id: rssiMode.value === 'peer' ? selectedSegment.value?.anchor_link_id ?? null : null,
-    all_visits: rssiMode.value === 'peer' && allPeerVisits.value,
+    mode: 'active',
+    anchor_link_id: null,
+    all_visits: false,
     first_sample_time: samples[0]?.timestamp || null,
     last_sample_time: samples.at(-1)?.timestamp || null,
     sample_count: samples.length,
@@ -679,12 +738,11 @@ async function unlockAndShowAll(): Promise<void> {
 
 async function selectSegmentByAnchor(value: string | number): Promise<void> {
   clearTimeLock()
-  rssiPeerPath.value = null
   busyPeerPath.value = null
   if (value === 'all-visits') {
     if (!selectedSegment.value && buildOrderOptions.value[0]) selectedSegment.value = buildOrderOptions.value[0]
     allPeerVisits.value = true
-    await loadPeerPath(activeTab.value === 'busy' ? 'busy' : 'rssi')
+    await loadPeerPath('busy')
     return
   }
   const row = buildOrderOptions.value.find((item) => item.anchor_link_id === Number(value))
@@ -693,17 +751,7 @@ async function selectSegmentByAnchor(value: string | number): Promise<void> {
   allPeerVisits.value = false
   chartRadio.value = row.local_radio
   focusTimestamp.value = row.build_start_time
-  await loadPeerPath(activeTab.value === 'busy' ? 'busy' : 'rssi', row.anchor_link_id)
-}
-
-async function changeRssiMode(value: string | number): Promise<void> {
-  clearTimeLock()
-  rssiViewport.value = null
-  if (value !== 'peer') { await loadActivePath('rssi'); return }
-  await loadBuildOrderVisits()
-  if (!selectedSegment.value && buildOrderOptions.value[0]) selectedSegment.value = buildOrderOptions.value[0]
-  allPeerVisits.value = false
-  await loadPeerPath('rssi')
+  await loadPeerPath('busy', row.anchor_link_id)
 }
 
 async function changeBusyMode(value: string | number): Promise<void> {
@@ -725,6 +773,7 @@ async function changeChartRadio(): Promise<void> {
   rssiViewport.value = null
   busyViewport.value = null
   rssiActivePath.value = null
+  tracksideSignal.value = null
   busyActivePath.value = null
   await reloadCurrentChart()
 }
@@ -736,10 +785,15 @@ async function selectBuildOrder(row: MeshActiveBuildOrder, showChart = false): P
   chartRadio.value = row.local_radio
   focusTimestamp.value = row.build_start_time
   if (!showChart) return
-  rssiMode.value = 'peer'
   activeTab.value = 'rssi'
-  await loadBuildOrderVisits()
-  await loadPeerPath('rssi', row.anchor_link_id)
+  const range = buildRssiWindowRange(row.build_start_time, row.build_end_time || null, row.local_radio)
+  if (!range) {
+    ElMessage.warning('当前建链时间无效，无法打开动态图')
+    return
+  }
+  rssiViewport.value = range
+  rssiFocusLabel.value = `已定位：主链路建链顺序 #${row.sequence} · ${row.build_start_time} — ${row.build_end_time}`
+  await loadCurrentMetricChart('rssi', range)
   await nextTick()
   document.querySelector('.detail-tabs')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -749,10 +803,15 @@ async function showLinkChart(row: MeshLinkDetail): Promise<void> {
   focusTimestamp.value = row.timestamp
   allPeerVisits.value = false
   chartRadio.value = row.local_radio
-  rssiMode.value = 'peer'
   activeTab.value = 'rssi'
-  await loadBuildOrderVisits()
-  await loadPeerPath('rssi', row.record_id)
+  const range = buildRssiWindowRange(row.timestamp, null, row.local_radio)
+  if (!range) {
+    ElMessage.warning('当前链路时间无效，无法打开动态图')
+    return
+  }
+  rssiViewport.value = range
+  rssiFocusLabel.value = `已定位：链路明细 #${row.record_id} · ${row.timestamp}`
+  await loadCurrentMetricChart('rssi', range)
 }
 
 function selectChartSwitch(event: MeshChartEvent): void {
@@ -1270,16 +1329,8 @@ function buildResultLabel(value: string): string {
         </div>
 
         <div v-show="activeTab === 'rssi'" id="pane-rssi" class="chart-pane">
-          <el-tabs v-model="rssiMode" class="analysis-subtabs" @tab-change="changeRssiMode">
-            <el-tab-pane label="单 AP / 分时段" name="peer" />
-            <el-tab-pane label="全部 ACTIVE 主链路" name="active" />
-          </el-tabs>
           <div class="chart-toolbar">
-            <el-select v-if="rssiMode === 'peer'" :model-value="selectedVisitValue" filterable placeholder="选择 AP / 经过时段" @change="selectSegmentByAnchor">
-              <el-option v-if="selectedSegment" label="全部经过时段（各区段断开）" value="all-visits" />
-              <el-option v-for="row in buildOrderOptions" :key="row.anchor_link_id" :label="`第 ${row.sequence} 次 · Radio ${row.local_radio ?? '—'} · ${row.peer_ap_name || row.active_peer_mac} · ${row.build_start_time} — ${row.build_end_time}`" :value="row.anchor_link_id" />
-            </el-select>
-            <el-select v-if="rssiMode === 'active'" v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
+            <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
             <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
             <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
             <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
@@ -1293,14 +1344,21 @@ function buildResultLabel(value: string): string {
               <el-button type="primary" @click="openLockedBusyRange">查看同期空口负载</el-button>
             </template>
           </div>
+          <el-alert v-if="rssiFocusLabel" :title="rssiFocusLabel" type="success" :closable="false" show-icon />
           <el-alert v-if="lockedAnalysisRange" :title="`已锁定 ${lockedRangeLabel} · Radio ${lockedAnalysisRange.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.sample_count} 点`" type="info" :closable="false" show-icon />
           <el-alert v-if="chartData?.downsample_warning" :title="chartData.downsample_warning" type="warning" :closable="false" show-icon />
           <div class="mini-summary"><span>当前 PeerMac <strong>{{ chartData?.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData?.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData?.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData?.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData?.summary.sample_count ?? 0 }}</strong></span><span>ACTIVE <strong>{{ chartData?.summary.active_count ?? 0 }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData?.summary.standby_context_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData?.summary.switch_count ?? 0 }}</strong></span><span>最早 <strong>{{ chartData?.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData?.summary.last_sample_time || '—' }}</strong></span></div>
+          <h3 class="chart-section-title">全部 ACTIVE 主链路</h3>
           <div ref="rssiChartHost" class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
-            <MeshRssiChart ref="rssiChartRef" :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :scope="rssiMode" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" @viewport-change="updateRssiViewport" @viewport-ready="updateRssiViewport" @select-switch="selectChartSwitch" />
+            <MeshRssiChart ref="rssiChartRef" :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" @viewport-change="updateRssiViewport" @viewport-ready="updateRssiViewport" @select-switch="selectChartSwitch" />
+          </div>
+          <h3 class="chart-section-title">轨旁信号图</h3>
+          <el-alert v-if="tracksideSignal?.warnings?.length" :title="tracksideSignal.warnings.join('；')" type="warning" :closable="false" show-icon />
+          <div class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
+            <MeshTracksideSignalChart :series="tracksideSignal?.series || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" @viewport-change="updateRssiViewport" @viewport-ready="updateRssiViewport" @select-switch="selectChartSwitch" />
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `后端从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；不同经过时段和无 ACTIVE 处保持断线，同采样点备链已预载到 Tooltip。</p>
+          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 AP / Peer / Radio 分组，使用 Peer 侧 RSSI 字段并按 series 独立降采样。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">

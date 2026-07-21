@@ -490,6 +490,66 @@ class MeshPathChartDTO(ApiModel):
     total_points_in_range: int = 0
 
 
+class MeshTracksideSignalPointDTO(ApiModel):
+    timestamp: str
+    timestamp_tag: str = ""
+    source_file_id: int | None = None
+    link_id: int | None = None
+    sample_id: int | None = None
+    local_radio: int | None = None
+    role: str = ""
+    peer_mac: str | None = None
+    peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
+    peer_radio: str | None = None
+    peer_radio_mac: str | None = None
+    station: str | None = None
+    section: str | None = None
+    peer_rssi: float | None = None
+    local_rssi: float | None = None
+    peer_signal: float | None = None
+    local_signal: float | None = None
+    segment_duration_seconds: float | None = None
+    data_source: str = ""
+
+
+class MeshTracksideSignalSeriesDTO(ApiModel):
+    series_id: str
+    peer_name: str | None = None
+    peer_mac: str | None = None
+    ap_mac: str | None = None
+    radio: int | None = None
+    station: str | None = None
+    section: str | None = None
+    role: Literal["ACTIVE", "STANDBY", "MIXED", "UNKNOWN"] = "UNKNOWN"
+    data_source: str = "peer_rssi_db"
+    total_points: int = 0
+    returned_points: int = 0
+    points: list[MeshTracksideSignalPointDTO] = Field(default_factory=list)
+
+
+class MeshTracksideSignalRangeDTO(ApiModel):
+    start: str | None = None
+    end: str | None = None
+
+
+class MeshTracksideSignalChartDTO(ApiModel):
+    source_id: str
+    radio: int | None = None
+    time_range: MeshTracksideSignalRangeDTO = Field(default_factory=MeshTracksideSignalRangeDTO)
+    series: list[MeshTracksideSignalSeriesDTO] = Field(default_factory=list)
+    events: list[MeshChartEventDTO] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    total_series: int = 0
+    returned_series: int = 0
+    total_points: int = 0
+    returned_points: int = 0
+    downsampled: bool = False
+    requested_max_points: int = 0
+    top_n: int = 0
+    include_standby: bool = True
+
+
 class MeshLinkTimelineDTO(ApiModel):
     segment_id: int
     start_time: str

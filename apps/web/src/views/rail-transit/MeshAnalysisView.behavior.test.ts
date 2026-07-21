@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   listBuildOrder: vi.fn(),
   getActivePath: vi.fn(),
   getPeerPath: vi.fn(),
+  getTracksideSignal: vi.fn(),
   getRateSeries: vi.fn(),
   getCounterDeltas: vi.fn(),
   listAnomalies: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   getMeshAnalysisSession: mocks.getSession,
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
   getMeshPeerSegmentChart: mocks.getPeerPath,
+  getMeshTracksideSignalChart: mocks.getTracksideSignal,
   getMeshRawTail: vi.fn(),
   getMeshCounterDeltas: mocks.getCounterDeltas,
   getMeshRateSeries: mocks.getRateSeries,
@@ -129,6 +131,7 @@ const stubs: Record<string, Component | boolean> = {
   ElTag: passthrough,
   MeshChannelBusyChart: meshChartStub,
   MeshRssiChart: meshChartStub,
+  MeshTracksideSignalChart: meshChartStub,
   MeshSwitchRssiChart: true,
   NcDataTable: dataTableStub,
 }
@@ -144,6 +147,7 @@ beforeEach(() => {
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
+  mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, top_n: 12, include_standby: true })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
 })
 
@@ -245,8 +249,8 @@ describe('Mesh analysis detail behavior', () => {
     mocks.listSessions.mockResolvedValue({ items: [session, otherSession], total: 2, page: 1, page_size: 50 })
     mocks.getSession.mockImplementation(async (id: string) => ({ session: id === session.session_id ? session : otherSession, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: id === session.session_id ? 7 : 8 }] }))
     mocks.listBuildOrder.mockResolvedValue({ items: [build], total: 1, page: 1, page_size: 100 })
-    mocks.getPeerPath.mockResolvedValue({
-      mode: 'peer_segment', anchor: null, points, events: [], location_segments: [], total_points: 3, returned_points: 3,
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path', anchor: null, points, events: [], location_segments: [], total_points: 3, returned_points: 3,
       downsampled: false, summary: { sample_count: 3 }, time_from: build.build_start_time, time_to: build.build_end_time,
     })
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
@@ -264,10 +268,9 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看同期空口负载')!.trigger('click')
     await flushPromises()
 
-    expect(mocks.getPeerPath).toHaveBeenLastCalledWith('session-locked', {
-      anchor_link_id: 10,
+    expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
-      all_visits: null,
+      radio: 1,
       time_from: chartViewport.start_time,
       time_to: chartViewport.end_time,
     })
@@ -312,19 +315,21 @@ describe('Mesh analysis detail behavior', () => {
     const chartButton = wrapper.findAll('button').find((button) => button.text() === '查看动态图')
     await chartButton!.trigger('click')
     await flushPromises()
-    expect(mocks.getPeerPath).toHaveBeenCalledWith('session-1', {
-      anchor_link_id: 10,
+    expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
-      all_visits: null,
-      time_from: '2026-07-20 10:00:00.000',
-      time_to: '2026-07-20 10:00:10.000',
+      radio: undefined,
+      time_from: '2026-07-20 09:59:30.000',
+      time_to: '2026-07-20 10:00:40.000',
     })
 
-    mocks.listBuildOrder.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 100 })
-    const queryButtons = wrapper.findAll('button').filter((button) => button.text() === '查询')
-    await queryButtons[1].trigger('click')
-    await flushPromises()
-    expect(wrapper.findAll('[data-option-label]').some((option) => option.text().includes('第 1 次 · Radio'))).toBe(true)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
+      max_points: 600,
+      radio: undefined,
+      time_from: '2026-07-20 09:59:30.000',
+      time_to: '2026-07-20 10:00:40.000',
+      include_standby: true,
+      top_n: 12,
+    })
 
     const openAgain = wrapper.findAll('button').find((button) => button.text() === '查看')
     await openAgain!.trigger('click')

@@ -44,6 +44,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshArtifactDeleteResultDTO,
     MeshRssiDTO,
     MeshSwitchEventPageDTO,
+    MeshTracksideSignalChartDTO,
     MeshTimelineDTO,
 )
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
@@ -470,6 +471,37 @@ def active_path_chart(
             time_from=time_from,
             time_to=time_to,
             max_points=max_points,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/charts/trackside-signal",
+    response_model=MeshTracksideSignalChartDTO,
+    summary="读取轨旁 AP 信号组合图数据",
+    responses={404: {"description": "分析会话或 compact v3 结果不存在"}, 422: {"description": "时间范围无效"}},
+)
+def trackside_signal_chart(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    time_from: str = Query(default="", max_length=40),
+    time_to: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1_000, ge=10, le=2_000),
+    include_standby: bool = Query(default=True),
+    top_n: int = Query(default=12, ge=1, le=50),
+) -> MeshTracksideSignalChartDTO:
+    return _query(
+        lambda: _service(request).get_trackside_signal_chart(
+            _site_id(request, site_id),
+            session_id,
+            radio=radio,
+            time_from=time_from,
+            time_to=time_to,
+            max_points=max_points,
+            include_standby=include_standby,
+            top_n=top_n,
         )
     )
 
