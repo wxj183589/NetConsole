@@ -110,9 +110,9 @@ function task(
 
 const NcDataTableStub = defineComponent({
   name: 'NcDataTable',
-  props: { data: { type: Array, default: () => [] } },
+  props: { data: { type: Array, default: () => [] }, height: String, tableId: String },
   template: `
-    <div class="nc-data-table">
+    <div class="nc-data-table" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
         <slot name="cell-switch_rx_power" :row="row" />
         <slot name="cell-switch_optical_status" :row="row" />
@@ -181,14 +181,37 @@ describe('TracksideApBusinessView mounted behavior', () => {
     vi.useRealTimers()
   })
 
-  it('submits all, station and AP update requests with stable scope payloads', async () => {
+  it('renders the business table without the removed task card', async () => {
     const wrapper = await mountView()
 
-    expect(button(wrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('轨旁 AP 任务')
+    expect(wrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
+    expect(wrapper.text()).not.toContain('保存导出表格')
+    expect(wrapper.text()).not.toContain('结果项')
+    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
+    expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('calc(100vh - 330px)')
+    expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('submits an update task, opens the task window and keeps only a light notice', async () => {
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
+    const wrapper = await mountView()
+
     await button(wrapper, '更新全部光衰').trigger('click')
     await flushPromises()
+
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({})
-    expect(wrapper.text()).toContain('任务已提交：范围 全部；目标 当前局点')
+    expect(routerPush).toHaveBeenLastCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'update-running' } })
+    expect(wrapper.text()).toContain('任务已提交，详细进度请查看任务窗口')
+    expect(wrapper.text()).not.toContain('轨旁 AP 任务')
+    expect(wrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
+    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('submits station and AP update requests with stable scope payloads', async () => {
+    const wrapper = await mountView()
 
     await buttons(wrapper, '更新站点')[0].trigger('click')
     await flushPromises()
@@ -217,7 +240,22 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('后端拒绝：功能未启用')
+    expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     wrapper.unmount()
+  })
+
+  it('recovers active tasks with the top task-window entry only', async () => {
+    api.recoverTracksideApTasks.mockResolvedValueOnce([task('update-running', 'RUNNING', 'trackside_ap_optical_update')])
+    localStorage.setItem(storageKey, 'update-running')
+    const activeWrapper = await mountView()
+
+    expect(button(activeWrapper, '更新全部光衰').attributes('disabled')).toBeDefined()
+    expect(activeWrapper.text()).toContain('检测到正在运行的轨旁 AP 任务，详细进度请查看任务窗口')
+    expect(activeWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
+    expect(buttons(activeWrapper, '打开任务窗口')).toHaveLength(1)
+    await button(activeWrapper, '打开任务窗口').trigger('click')
+    expect(routerPush).toHaveBeenLastCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'update-running' } })
+    activeWrapper.unmount()
   })
 
   it('does not let an export task lock update buttons and clears stale recovered tasks', async () => {
@@ -226,6 +264,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const exportWrapper = await mountView()
 
     expect(button(exportWrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
+    expect(buttons(exportWrapper, '打开任务窗口')).toHaveLength(1)
+    expect(exportWrapper.text()).not.toContain('停止、日志和恢复统一在任务窗口处理')
     exportWrapper.unmount()
 
     api.recoverTracksideApTasks.mockResolvedValueOnce([])
@@ -234,6 +274,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(localStorage.getItem(storageKey)).toBeNull()
     expect(button(staleWrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
+    expect(staleWrapper.text()).not.toContain('检测到正在运行的轨旁 AP 任务')
+    expect(staleWrapper.text()).not.toContain('轨旁 AP 任务')
     staleWrapper.unmount()
   })
 
@@ -265,30 +307,37 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 2,
       page_size: 50,
     })
-    expect(wrapper.text()).toContain('更新成功')
+    expect(wrapper.text()).toContain('轨旁 AP 光衰数据已刷新')
+    expect(wrapper.text()).not.toContain('结果项')
+    expect(wrapper.text()).not.toContain('target_count')
     wrapper.unmount()
   })
 
-  it('saves completed business exports with the backend artifact name', async () => {
+  it('auto-saves completed business exports with the backend artifact name without a page save button', async () => {
+    vi.useFakeTimers()
     const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'
-    api.startTracksideApBusinessExport.mockResolvedValueOnce({
+    api.startTracksideApBusinessExport.mockResolvedValueOnce(task('export-running', 'RUNNING', 'trackside_ap_business_export'))
+    api.getTracksideApTask.mockResolvedValueOnce({
       ...task('export-complete', 'COMPLETED', 'trackside_ap_business_export'),
       artifact_id: 'artifact-1',
       artifact_name: expectedName,
       available: true,
     })
-    localStorage.setItem('netconsole.trackside-ap-business.auto-saved-task-ids', JSON.stringify(['export-complete']))
     const wrapper = await mountView()
 
     await button(wrapper, '导出表格').trigger('click')
     await flushPromises()
-    await button(wrapper, '保存导出表格').trigger('click')
+    await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
 
     expect(platformMocks.downloadBackendResource).toHaveBeenCalledWith({
       apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download',
       suggestedName: expectedName,
     })
+    expect(wrapper.text()).toContain('轨旁 AP 业务表格已生成')
+    expect(wrapper.text()).not.toContain('保存导出表格')
+    expect(wrapper.text()).not.toContain('轨旁 AP 任务')
+    expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
     wrapper.unmount()
   })
 })

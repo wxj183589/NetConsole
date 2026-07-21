@@ -33,13 +33,13 @@ const taskSubmitting = ref(false)
 const pendingScopeKey = ref('')
 const error = ref('')
 const taskNotice = ref('')
+const taskNoticeType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 const page = ref<TracksideApBusinessPage | null>(null)
 const task = ref<TracksideApTask | null>(null)
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 let pollTimer: number | undefined
+let taskNoticeTimer: number | undefined
 let loadGeneration = 0
-
-interface TaskResultRow { name: string; value: string }
 
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
@@ -60,37 +60,24 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'updated_at', label: '更新时间', valueType: 'datetime' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
 ]
-const taskResultColumns: NcTableColumn<TaskResultRow>[] = [
-  { key: 'name', label: '结果项', valueType: 'name' },
-  { key: 'value', label: '值', valueType: 'description', align: 'left', alignmentReason: 'long-text' },
-]
-const taskRows = computed<TaskResultRow[]>(() => Object.entries(task.value?.result_summary || {}).map(([name, value]) => ({ name, value: typeof value === 'string' ? value : JSON.stringify(value) })))
 const updateTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === 'trackside_ap_optical_update')
 const exportTaskRunning = computed(() => isActiveTask(task.value) && task.value?.action === TRACKSIDE_AP_BUSINESS_EXPORT_ACTION)
 const updateFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_update') && isFeatureEnabled('web.rail_task_control'))
-const taskOutcome = computed(() => {
-  if (!task.value || task.value.action !== 'trackside_ap_optical_update' || isActiveTask(task.value)) return null
-  const summary = task.value.result_summary || {}
-  const status = String(summary.status || task.value.status || '').toUpperCase()
-  const targetCount = Number(summary.target_count ?? 0)
-  const successCount = Number(summary.success_count ?? 0)
-  const failedCount = Number(summary.failed_count ?? 0)
-  const skippedCount = Number(summary.skipped_count ?? 0)
-  if (status === 'NO_TARGET' || targetCount === 0) return { type: 'info', title: '未找到目标' }
-  if (task.value.status === 'FAILED' || failedCount > 0 && successCount === 0) return { type: 'error', title: '更新失败' }
-  if (failedCount > 0 || skippedCount > 0 || status === 'CANCELLED') return { type: 'warning', title: '部分成功' }
-  return { type: 'success', title: '更新成功' }
-})
-const exportArtifactAvailable = computed(() => (
-  task.value?.status === 'COMPLETED'
-  && isTracksideApBusinessArtifactTask(task.value)
-  && task.value.available
-  && Boolean(task.value.artifact_id)
-  && Boolean(task.value.artifact_name)
-))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
+function clearTaskNotice(): void {
+  if (taskNoticeTimer !== undefined) window.clearTimeout(taskNoticeTimer)
+  taskNoticeTimer = undefined
+  taskNotice.value = ''
+  taskNoticeType.value = 'info'
+}
+function setTaskNotice(message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info', autoHideMs = 0): void {
+  clearTaskNotice()
+  taskNotice.value = message
+  taskNoticeType.value = type
+  if (autoHideMs > 0) taskNoticeTimer = window.setTimeout(clearTaskNotice, autoHideMs)
+}
 function rememberTask(value: TracksideApTask | null): void { task.value = value; if (value) localStorage.setItem(storageKey, value.task_id); else localStorage.removeItem(storageKey) }
 function isActiveTask(value: TracksideApTask | null): boolean { return Boolean(value && activeStates.has(value.status)) }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
@@ -112,6 +99,17 @@ function autoSavedTaskIds(): string[] {
     return []
   }
 }
+function updateFinishedNotice(value: TracksideApTask): { message: string; type: 'success' | 'info' | 'warning' | 'error'; autoHideMs: number } {
+  const summary = value.result_summary || {}
+  const status = String(summary.status || value.status || '').toUpperCase()
+  const failedCount = Number(summary.failed_count ?? 0)
+  const skippedCount = Number(summary.skipped_count ?? 0)
+  if (value.status === 'FAILED' || status === 'FAILED') return { message: '轨旁 AP 光衰更新失败，请在任务窗口查看原因', type: 'error', autoHideMs: 0 }
+  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: '轨旁 AP 光衰更新已取消，请在任务窗口查看详情', type: 'warning', autoHideMs: 0 }
+  if (status === 'NO_TARGET') return { message: '轨旁 AP 光衰更新未找到目标，请在任务窗口查看详情', type: 'info', autoHideMs: 4000 }
+  if (failedCount > 0 || skippedCount > 0 || status === 'PARTIAL_SUCCESS') return { message: '轨旁 AP 光衰数据已刷新，部分目标未成功，请在任务窗口查看详情', type: 'warning', autoHideMs: 0 }
+  return { message: '轨旁 AP 光衰数据已刷新', type: 'success', autoHideMs: 4000 }
+}
 function rememberAutoSavedTask(taskId: string): void {
   const values = [...autoSavedTaskIds().filter((item) => item !== taskId), taskId].slice(-50)
   try { localStorage.setItem(autoSaveStorageKey, JSON.stringify(values)) } catch { /* ignore quota errors */ }
@@ -127,13 +125,30 @@ async function maybeAutoSaveExport(value: TracksideApTask | null): Promise<void>
   try { await saveTracksideApBusinessArtifact(value) }
   finally { autoSaveInFlight.delete(value.task_id) }
 }
-function taskSubmitNotice(started: TracksideApTask, scope: string, target: string): string {
-  return `任务已提交：范围 ${scope}；目标 ${target}；状态 ${started.status}`
-}
 
 function handleTerminalTask(value: TracksideApTask | null): void {
-  if (value?.status === 'COMPLETED' && value.action === 'trackside_ap_optical_update') void loadRows()
-  if (shouldAutoSaveExport(value)) void maybeAutoSaveExport(value)
+  if (!value) return
+  if (value.action === 'trackside_ap_optical_update') {
+    const notice = updateFinishedNotice(value)
+    if (value.status === 'COMPLETED') {
+      void loadRows().then((succeeded) => {
+        if (succeeded) setTaskNotice(notice.message, notice.type, notice.autoHideMs)
+      })
+      return
+    }
+    if (!isActiveTask(value)) setTaskNotice(notice.message, notice.type, notice.autoHideMs)
+    return
+  }
+  if (isTracksideApBusinessArtifactTask(value)) {
+    if (value.status === 'COMPLETED') {
+      const done = () => setTaskNotice('轨旁 AP 业务表格已生成', 'success', 4000)
+      if (shouldAutoSaveExport(value)) void maybeAutoSaveExport(value).finally(done)
+      else done()
+      return
+    }
+    if (value.status === 'FAILED') setTaskNotice('轨旁 AP 业务导出失败，请在任务窗口查看原因', 'error')
+    else if (value.status === 'CANCELLED') setTaskNotice('轨旁 AP 业务导出已取消，请在任务窗口查看详情', 'warning')
+  }
 }
 
 function poll(): void {
@@ -148,16 +163,20 @@ function poll(): void {
   }, 1000)
 }
 
-async function loadRows(reset = false): Promise<void> {
+async function loadRows(reset = false): Promise<boolean> {
   if (reset) filters.page = 1
   const generation = ++loadGeneration
   const firstLoad = page.value === null
   if (firstLoad) initialLoading.value = true
   else refreshing.value = true
   error.value = ''
+  let succeeded = false
   try {
     const nextPage = await listTracksideApBusiness({ ...filters })
-    if (generation === loadGeneration) page.value = nextPage
+    if (generation === loadGeneration) {
+      page.value = nextPage
+      succeeded = true
+    }
   } catch (reason) {
     if (generation === loadGeneration) error.value = failure(reason, '轨旁 AP 业务加载失败')
   } finally {
@@ -166,16 +185,17 @@ async function loadRows(reset = false): Promise<void> {
       refreshing.value = false
     }
   }
+  return succeeded
 }
 
-async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string, scope: string, target: string, notice = ''): Promise<void> {
+async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string, notice = '任务已提交，详细进度请查看任务窗口'): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
-  taskSubmitting.value = true; error.value = ''
+  taskSubmitting.value = true; error.value = ''; clearTaskNotice()
   try {
     const started = await factory()
     rememberTask(started)
-    taskNotice.value = notice || taskSubmitNotice(started, scope, target)
+    setTaskNotice(notice, 'info')
     poll()
     openTaskWindow()
   }
@@ -183,8 +203,8 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
   finally { taskSubmitting.value = false; pendingScopeKey.value = '' }
 }
 
-function updateAll(): void { void startTask(() => startTracksideApUpdate({}), '轨旁 AP 光衰更新启动失败', 'update:all', '全部', '当前局点') }
-function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败', `update:station:${row.site}`, '站点', row.site) }
+function updateAll(): void { void startTask(() => startTracksideApUpdate({}), '轨旁 AP 光衰更新启动失败', 'update:all') }
+function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败', `update:station:${row.site}`) }
 function updateAp(row: TracksideApBusinessRow): void {
   const payload = singleApUpdatePayload(row)
   if (!payload) { error.value = '缺少 AP 身份，无法定向更新'; return }
@@ -194,15 +214,9 @@ function updateAp(row: TracksideApBusinessRow): void {
     () => startTracksideApUpdate(payload),
     'AP 更新启动失败',
     `update:ap:${scopeValue}`,
-    'AP',
-    target,
   )
 }
-function exportBusiness(): void { void startTask(() => startTracksideApBusinessExport(), '轨旁 AP 业务导出启动失败', 'export:business', '导出', '轨旁 AP 业务表格', '轨旁 AP 业务表格正在生成') }
-async function downloadExport(): Promise<void> {
-  if (!task.value || !exportArtifactAvailable.value) return
-  await saveTracksideApBusinessArtifact(task.value)
-}
+function exportBusiness(): void { void startTask(() => startTracksideApBusinessExport(), '轨旁 AP 业务导出启动失败', 'export:business', '轨旁 AP 业务表格正在生成，详细进度请查看任务窗口') }
 function openTaskWindow(): void {
   const taskId = task.value?.task_id || ''
   if (window.netconsoleDesktop) {
@@ -220,12 +234,16 @@ async function recoverTasks(): Promise<void> {
     const savedTask = rows.find((item) => item.task_id === saved)
     const activeUpdate = rows.find((item) => item.action === 'trackside_ap_optical_update' && isActiveTask(item))
     const activeAny = rows.find((item) => isActiveTask(item))
-    rememberTask(savedTask && isActiveTask(savedTask) ? savedTask : activeUpdate || activeAny || null); poll()
+    const recovered = savedTask && isActiveTask(savedTask) ? savedTask : activeUpdate || activeAny || null
+    rememberTask(recovered)
+    if (recovered) setTaskNotice('检测到正在运行的轨旁 AP 任务，详细进度请查看任务窗口', 'info')
+    else clearTaskNotice()
+    poll()
   } catch (reason) { error.value = failure(reason, '轨旁 AP 任务恢复失败') }
 }
 
 onMounted(() => { void Promise.all([loadRows(), recoverTasks()]) })
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 </script>
 
 <template>
@@ -248,8 +266,8 @@ onBeforeUnmount(stopPolling)
         <el-button @click="openTaskWindow">打开任务窗口</el-button>
       </div>
     </header>
-    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
-    <el-alert v-if="taskNotice" :title="taskNotice" type="success" show-icon :closable="false" />
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" @close="error = ''"><el-button link @click="recoverTasks">恢复任务</el-button></el-alert>
+    <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" show-icon :closable="taskNoticeType === 'error'" @close="clearTaskNotice" />
     <div v-if="page" class="summary-grid">
       <article><span>站点交换机</span><strong>{{ page.device_count }}</strong></article><article><span>候选 AP 端口</span><strong>{{ page.candidate_interface_count }}</strong></article><article><span>光衰异常</span><strong>{{ page.optical_abnormal_count }}</strong></article><article><span>FIT-AP 资源</span><strong>{{ page.fit_ap_resource_count }}</strong></article><article><span>查询 / 构建</span><strong>{{ page.query_ms }} / {{ page.build_ms }} ms</strong></article>
     </div>
@@ -267,7 +285,7 @@ onBeforeUnmount(stopPolling)
         route-key="/rail-transit/trackside-ap-business"
         :data="page?.items || []"
         :columns="businessColumns"
-        height="calc(100vh - 470px)"
+        height="calc(100vh - 330px)"
         :empty-text="page?.empty_reason || '暂无轨旁 AP 业务数据'"
       >
         <template #cell-switch_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
@@ -279,10 +297,9 @@ onBeforeUnmount(stopPolling)
       </NcDataTable>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" /></div>
     </div>
-    <div v-if="task" class="content-card task-card"><div class="task-heading"><div><h2>轨旁 AP 任务</h2><p>{{ task.task_id }}</p></div><div class="task-actions"><el-tag>{{ task.status }}</el-tag><el-button v-if="exportArtifactAvailable" type="primary" @click="downloadExport">保存导出表格</el-button></div></div><el-alert v-if="taskOutcome" :title="taskOutcome.title" :type="taskOutcome.type" :closable="false" show-icon /><el-alert v-if="task.error_message" :title="task.error_message" type="error" :closable="false" /><NcDataTable v-if="taskRows.length" table-id="trackside-ap-business-task-result" route-key="/rail-transit/trackside-ap-business" :data="taskRows" :columns="taskResultColumns" max-height="300" :show-column-settings="false" /><el-alert title="停止、日志和恢复统一在任务窗口处理" type="info" :closable="false"><el-button link @click="openTaskWindow">打开任务窗口</el-button></el-alert></div>
   </section>
 </template>
 
 <style scoped>
-.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination,.task-heading,.task-actions{display:flex;align-items:center;gap:12px}.page-heading,.pagination,.task-heading{justify-content:space-between}.page-heading h1,.task-heading h2{margin:2px 0 6px}.page-heading p,.task-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.task-card{display:flex;flex-direction:column;gap:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>
