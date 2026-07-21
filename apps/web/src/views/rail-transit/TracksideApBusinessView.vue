@@ -81,6 +81,7 @@ function setTaskNotice(message: string, type: 'success' | 'info' | 'warning' | '
 function rememberTask(value: TracksideApTask | null): void { task.value = value; if (value) localStorage.setItem(storageKey, value.task_id); else localStorage.removeItem(storageKey) }
 function isActiveTask(value: TracksideApTask | null): boolean { return Boolean(value && activeStates.has(value.status)) }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
+function handleStationChange(): void { filters.page = 1; void loadRows() }
 function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
   const apUuid = cleanIdentity(row.ap_uuid)
   if (apUuid) return { ap_uuid: apUuid }
@@ -166,6 +167,7 @@ function poll(): void {
 async function loadRows(reset = false): Promise<boolean> {
   if (reset) filters.page = 1
   const generation = ++loadGeneration
+  const selectedStation = cleanIdentity(filters.station)
   const firstLoad = page.value === null
   if (firstLoad) initialLoading.value = true
   else refreshing.value = true
@@ -184,6 +186,11 @@ async function loadRows(reset = false): Promise<boolean> {
       initialLoading.value = false
       refreshing.value = false
     }
+  }
+  if (succeeded && selectedStation && !(page.value?.station_options || []).includes(selectedStation)) {
+    filters.station = ''
+    filters.page = 1
+    void loadRows(true)
   }
   return succeeded
 }
@@ -274,7 +281,23 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
     <div class="content-card">
       <div class="toolbar">
         <el-input v-model="filters.query" clearable placeholder="交换机、接口、AP、MAC" @keyup.enter="loadRows(true)" />
-        <el-input v-model="filters.station" clearable placeholder="站点" />
+        <el-select
+          v-model="filters.station"
+          class="station-select"
+          clearable
+          filterable
+          placeholder="全部站点"
+          :title="filters.station || '全部站点'"
+          @change="handleStationChange"
+        >
+          <el-option
+            v-for="station in page?.station_options || []"
+            :key="station"
+            :label="station"
+            :value="station"
+            :title="station"
+          />
+        </el-select>
         <el-checkbox v-model="filters.optical_anomaly_only">仅光衰异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
@@ -301,5 +324,5 @@ onBeforeUnmount(() => { stopPolling(); clearTaskNotice() })
 </template>
 
 <style scoped>
-.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.trackside-page{display:flex;flex-direction:column;gap:16px;min-width:0}.page-heading,.actions,.toolbar,.pagination{display:flex;align-items:center;gap:12px}.page-heading,.pagination{justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.actions,.toolbar{flex-wrap:wrap}.summary-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:12px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.toolbar{margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.pagination{padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
 </style>

@@ -66,6 +66,41 @@ def _snapshot() -> TracksideApBusinessLoadResult:
     )
 
 
+def _station_option_snapshot() -> TracksideApBusinessLoadResult:
+    def row(site: str, ap_name: str, ap_mac: str, switch_status: str = "normal") -> dict[str, object | None]:
+        return {
+            "site": site,
+            "device_name": f"SW-{ap_name}",
+            "interface_name": "XGE1/0/1",
+            "link_status": "UP",
+            "switch_optical_status": switch_status,
+            "ap_name": ap_name,
+            "ap_mac": ap_mac,
+            "ap_side_has_data": True,
+        }
+
+    rows = [
+        row("02-云龙火车站", "AP-YL-01", "00:11:22:33:44:01", "warning"),
+        row(" 02-云龙火车站 ", "AP-YL-02", "00:11:22:33:44:02"),
+        row("01-小洋江站", "AP-XYJ-01", "00:11:22:33:44:03"),
+        row("10-站点", "AP-10-01", "00:11:22:33:44:10"),
+        row("", "AP-BLANK-01", "00:11:22:33:44:fe"),
+        row("   ", "AP-BLANK-02", "00:11:22:33:44:ff"),
+    ]
+    return TracksideApBusinessLoadResult(
+        generation=0,
+        site_name="demo",
+        rows=rows,
+        device_count=4,
+        query_ms=3,
+        build_ms=4,
+        candidate_ap_interface_count=6,
+        row_count=len(rows),
+        fit_ap_resource_count=4,
+        identity_shadow={"status": "matched"},
+    )
+
+
 def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
     monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
@@ -108,6 +143,32 @@ def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeyp
 
     assert page.total == 2
     assert page.optical_abnormal_count == 1
+
+
+def test_trackside_query_station_options_use_full_snapshot_before_filters(monkeypatch, tmp_path: Path) -> None:
+    snapshot = _station_option_snapshot()
+    monkeypatch.setattr(trackside_ap_business_query_service, "Database", lambda _path: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "DeviceRepository", lambda _database: object())
+    monkeypatch.setattr(trackside_ap_business_query_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
+    service = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    expected = ["01-小洋江站", "02-云龙火车站", "10-站点"]
+
+    paged = service.list_rows("demo", page_size=1)
+    assert paged.station_options == expected
+    assert len(paged.items) == 1
+
+    station_filtered = service.list_rows("demo", station="02-云龙火车站")
+    assert station_filtered.station_options == expected
+    assert station_filtered.total == 2
+    assert {item.site.strip() for item in station_filtered.items} == {"02-云龙火车站"}
+
+    anomaly_filtered = service.list_rows("demo", optical_anomaly_only=True)
+    assert anomaly_filtered.station_options == expected
+
+    query_filtered = service.list_rows("demo", query="AP-10")
+    assert query_filtered.station_options == expected
 
 
 def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp_path: Path) -> None:

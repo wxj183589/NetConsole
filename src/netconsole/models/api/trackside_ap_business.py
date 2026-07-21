@@ -33,6 +33,7 @@ class TracksideApBusinessPageDTO(ApiModel):
     page: int = 1
     page_size: int = 50
     site_id: str
+    station_options: list[str] = Field(default_factory=list)
     device_count: int = 0
     candidate_interface_count: int = 0
     optical_abnormal_count: int = 0

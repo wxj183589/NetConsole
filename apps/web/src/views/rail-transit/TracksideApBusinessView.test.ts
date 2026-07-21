@@ -69,13 +69,18 @@ const rows: TracksideApBusinessRow[] = [
   },
 ]
 
-function page(items = rows, pageNo = 1): TracksideApBusinessPage {
+function stationOptionsFor(items: TracksideApBusinessRow[]): string[] {
+  return [...new Set(items.map((item) => item.site.trim()).filter(Boolean))]
+}
+
+function page(items = rows, pageNo = 1, stationOptions = stationOptionsFor(items)): TracksideApBusinessPage {
   return {
     items,
     total: items.length,
     page: pageNo,
     page_size: 50,
     site_id: 'demo',
+    station_options: stationOptions,
     device_count: 2,
     candidate_interface_count: 2,
     optical_abnormal_count: 1,
@@ -135,10 +140,24 @@ const ElementStubs = {
     emits: ['click'],
     template: '<button :disabled="disabled || loading" @click="$emit(\'click\')"><slot /></button>',
   }),
+  ElSelect: defineComponent({
+    props: { modelValue: String, placeholder: String, clearable: Boolean, filterable: Boolean },
+    emits: ['update:modelValue', 'change'],
+    template: `
+      <select :value="modelValue || ''" @change="$emit('update:modelValue', $event.target.value); $emit('change', $event.target.value)">
+        <option value="">{{ placeholder || '全部站点' }}</option>
+        <slot />
+      </select>
+    `,
+  }),
   ElCheckbox: defineComponent({
     props: { modelValue: Boolean },
     emits: ['update:modelValue'],
     template: '<label><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" /><slot /></label>',
+  }),
+  ElOption: defineComponent({
+    props: { label: String, value: String, title: String },
+    template: '<option :value="value" :title="title">{{ label }}</option>',
   }),
   ElInput: defineComponent({
     props: { modelValue: String, placeholder: String },
@@ -191,6 +210,83 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('calc(100vh - 330px)')
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
+    expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
+    expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows station options from the backend page and queries immediately when changed', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(page(rows.slice(0, 1), 1, ['01-小洋江站', '02-云龙火车站']))
+    const wrapper = await mountView()
+    const stationSelect = wrapper.find('select')
+    expect(stationSelect.attributes('allow-create')).toBeUndefined()
+
+    expect(wrapper.findAll('option').map((item) => item.text())).toEqual(expect.arrayContaining([
+      '全部站点',
+      '01-小洋江站',
+      '02-云龙火车站',
+    ]))
+
+    api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    api.listTracksideApBusiness.mockClear()
+    ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 3
+    await stationSelect.setValue('02-云龙火车站')
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '02-云龙火车站',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
+    })
+    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
+
+    api.listTracksideApBusiness.mockClear()
+    await stationSelect.setValue('')
+    await flushPromises()
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
+    })
+    wrapper.unmount()
+  })
+
+  it('clears a station that disappears after reload and retries from the full dataset', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    const wrapper = await mountView()
+    const stationSelect = wrapper.find('select')
+
+    api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    await stationSelect.setValue('02-云龙火车站')
+    await flushPromises()
+
+    api.listTracksideApBusiness.mockClear()
+    api.listTracksideApBusiness.mockResolvedValueOnce(page(rows.slice(0, 1), 1, ['01-小洋江站']))
+    api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站']))
+
+    await button(wrapper, '刷新').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(1, {
+      station: '02-云龙火车站',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
+    })
+    expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(2, {
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
+    })
+    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('')
     wrapper.unmount()
   })
 
@@ -281,6 +377,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
   it('refreshes completed update tasks without resetting filters or page', async () => {
     vi.useFakeTimers()
+    api.listTracksideApBusiness.mockResolvedValueOnce(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
     api.getTracksideApTask.mockResolvedValueOnce(task('update-running', 'COMPLETED', 'trackside_ap_optical_update', {
       status: 'DONE',
@@ -289,9 +386,11 @@ describe('TracksideApBusinessView mounted behavior', () => {
       failed_count: 0,
     }))
     const wrapper = await mountView()
-    ;(wrapper.vm as unknown as { filters: { station: string; query: string; page: number } }).filters.station = '站点A'
-    ;(wrapper.vm as unknown as { filters: { station: string; query: string; page: number } }).filters.query = 'AP-A'
-    ;(wrapper.vm as unknown as { filters: { station: string; query: string; page: number } }).filters.page = 2
+    api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    await wrapper.find('select').setValue('02-云龙火车站')
+    await flushPromises()
+    ;(wrapper.vm as unknown as { filters: { query: string; page: number } }).filters.query = 'AP-A'
+    ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 2
     api.listTracksideApBusiness.mockClear()
 
     await button(wrapper, '更新全部光衰').trigger('click')
@@ -301,7 +400,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(api.getTracksideApTask).toHaveBeenCalledWith('update-running')
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
-      station: '站点A',
+      station: '02-云龙火车站',
       query: 'AP-A',
       optical_anomaly_only: false,
       page: 2,
@@ -310,6 +409,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('轨旁 AP 光衰数据已刷新')
     expect(wrapper.text()).not.toContain('结果项')
     expect(wrapper.text()).not.toContain('target_count')
+    expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
     wrapper.unmount()
   })
 

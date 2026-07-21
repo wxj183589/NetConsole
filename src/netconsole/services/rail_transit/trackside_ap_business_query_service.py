@@ -12,6 +12,7 @@ from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
     filter_trackside_ap_business_rows,
     is_current_optical_abnormal_row,
+    trackside_station_options,
     trackside_row_status,
 )
 from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
@@ -42,6 +43,7 @@ class TracksideApBusinessQueryService:
             site_id,
             generation=0,
         )
+        station_options = trackside_station_options(snapshot.rows)
         rows = filter_trackside_ap_business_rows(snapshot.rows, station, query)
         enriched = [(row, trackside_row_status(row)) for row in rows]
         if optical_anomaly_only:
@@ -56,6 +58,7 @@ class TracksideApBusinessQueryService:
             page=current_page,
             page_size=size,
             site_id=site_id,
+            station_options=station_options,
             device_count=snapshot.device_count,
             candidate_interface_count=snapshot.candidate_ap_interface_count,
             optical_abnormal_count=count_current_optical_abnormal_aps(snapshot.rows),

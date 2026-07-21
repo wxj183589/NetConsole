@@ -9,6 +9,7 @@ export interface TracksideApBusinessRow {
 
 export interface TracksideApBusinessPage {
   items: TracksideApBusinessRow[]; total: number; page: number; page_size: number; site_id: string
+  station_options: string[]
   device_count: number; candidate_interface_count: number; optical_abnormal_count: number
   fit_ap_resource_count: number; query_ms: number; build_ms: number; empty_reason: string
   identity_shadow: Record<string, unknown>

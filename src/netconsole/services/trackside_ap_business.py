@@ -25,6 +25,7 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.utils.interface_normalize import display_interface_name, normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
+from netconsole.utils.natural_sort import natural_text_key
 from netconsole.utils.station_normalize import normalize_station_value
 
 
@@ -1452,15 +1453,22 @@ def filter_trackside_ap_business_rows(rows: list[dict[str, object | None]], site
     search_text = str(search or "").strip().casefold()
     result = rows
     if site_text:
-        result = [row for row in result if str(row.get("site") or "") == site_text]
+        result = [row for row in result if str(row.get("site") or "").strip() == site_text]
     if search_text:
         fields = ("ap_name", "ap_mac", "device_name", "interface_name", "site", "match_source", "pvid", "vlan")
         result = [row for row in result if any(search_text in str(row.get(field) or "").casefold() for field in fields)]
     return result
 
 
+def trackside_station_options(rows: list[dict[str, object | None]]) -> list[str]:
+    return sorted(
+        {site for site in (str(row.get("site") or "").strip() for row in rows) if site},
+        key=natural_text_key,
+    )
+
+
 def build_trackside_site_filter_items(rows: list[dict[str, object | None]], all_label: str) -> list[tuple[str, str]]:
-    sites = sorted({str(row.get("site") or "").strip() for row in rows if str(row.get("site") or "").strip()})
+    sites = trackside_station_options(rows)
     return [(all_label, ""), *[(site, site) for site in sites]]
 
 
