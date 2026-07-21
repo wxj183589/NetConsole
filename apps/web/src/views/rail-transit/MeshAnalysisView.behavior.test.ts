@@ -147,7 +147,7 @@ beforeEach(() => {
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
-  mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, top_n: 12, include_standby: true })
+  mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], estimated_interval_seconds: null, continuity_gap_seconds: null, total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, top_n: 3, include_standby: true })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
 })
 
@@ -328,7 +328,7 @@ describe('Mesh analysis detail behavior', () => {
       time_from: '2026-07-20 09:59:30.000',
       time_to: '2026-07-20 10:00:40.000',
       include_standby: true,
-      top_n: 12,
+      top_n: 3,
     })
 
     const openAgain = wrapper.findAll('button').find((button) => button.text() === '查看')

@@ -490,7 +490,7 @@ def trackside_signal_chart(
     time_to: str = Query(default="", max_length=40),
     max_points: int = Query(default=1_000, ge=10, le=2_000),
     include_standby: bool = Query(default=True),
-    top_n: int = Query(default=12, ge=1, le=50),
+    top_n: int = Query(default=3, ge=1, le=50),
 ) -> MeshTracksideSignalChartDTO:
     return _query(
         lambda: _service(request).get_trackside_signal_chart(

@@ -26,8 +26,8 @@ import { buildSwitchSection, escapeMeshTooltipHtml } from './meshRssiTooltip'
 
 interface RenderedSignalPoint {
   value: [string, number | null]
-  meta: MeshTracksideSignalPointData
-  seriesMeta: MeshTracksideSignalSeriesData
+  meta?: MeshTracksideSignalPointData
+  seriesMeta?: MeshTracksideSignalSeriesData
 }
 
 interface RenderedSignalSeries {
@@ -47,6 +47,7 @@ const props = withDefaults(defineProps<{
   initialViewport?: MeshChartViewport | null
   syncViewport?: MeshChartViewport | null
   lockedViewport?: MeshChartViewport | null
+  continuityGapSeconds?: number | null
   preserveViewport?: boolean
 }>(), {
   events: () => [],
@@ -58,6 +59,7 @@ const props = withDefaults(defineProps<{
   initialViewport: null,
   syncViewport: null,
   lockedViewport: null,
+  continuityGapSeconds: null,
   preserveViewport: true,
 })
 const emit = defineEmits<{
@@ -109,17 +111,45 @@ function pointSeriesValue(point: MeshTracksideSignalPointData): number | null {
   return point.peer_rssi ?? point.peer_signal ?? null
 }
 
+function pointTimeMillis(point: MeshTracksideSignalPointData): number | null {
+  const millis = Date.parse(point.timestamp.replace(' ', 'T'))
+  return Number.isNaN(millis) ? null : millis
+}
+
+function continuityGapMillis(): number {
+  const seconds = props.continuityGapSeconds
+  const numericSeconds = Number(seconds)
+  if (seconds == null || Number.isNaN(numericSeconds) || numericSeconds <= 0) return 30_000
+  return Math.max(1_000, numericSeconds * 1000)
+}
+
 function renderSeries(): RenderedSignalSeries[] {
   return props.series.map((series) => ({
     name: seriesLabel(series),
     meta: series,
-    data: [...series.points]
-      .sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))
-      .map((point) => ({
-        value: [point.timestamp, pointSeriesValue(point)],
-        meta: point,
-        seriesMeta: series,
-      })),
+    data: (() => {
+      const gapMillis = continuityGapMillis()
+      const rendered: RenderedSignalPoint[] = []
+      let previousTime: number | null = null
+      for (const point of [...series.points].sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))) {
+        const currentTime = pointTimeMillis(point)
+        if (
+          rendered.length
+          && previousTime != null
+          && currentTime != null
+          && currentTime - previousTime > gapMillis
+        ) {
+          rendered.push({ value: [point.timestamp, null] })
+        }
+        rendered.push({
+          value: [point.timestamp, pointSeriesValue(point)],
+          meta: point,
+          seriesMeta: series,
+        })
+        if (currentTime != null) previousTime = currentTime
+      }
+      return rendered
+    })(),
   }))
 }
 
@@ -129,19 +159,21 @@ function findRenderedSwitchPoint(event: MeshChartEvent): RenderedSignalPoint | u
   if (!timestamp) return undefined
   const context = event.point_context
   const exactMatch = renderedSeries.flatMap((item) => item.data).find((point) => (
-    point.value[0] === timestamp
-    && (context?.link_id == null || point.meta.link_id === context.link_id)
-    && (context?.timestamp_tag == null || point.meta.timestamp_tag === context.timestamp_tag)
-    && (event.local_radio == null || point.meta.local_radio === event.local_radio)
-    && pointSeriesValue(point.meta) != null
-    && pointSeriesValue(point.meta) !== 0
+    Boolean(point.meta)
+    && point.value[0] === timestamp
+    && (context?.link_id == null || point.meta!.link_id === context.link_id)
+    && (context?.timestamp_tag == null || point.meta!.timestamp_tag === context.timestamp_tag)
+    && (event.local_radio == null || point.meta!.local_radio === event.local_radio)
+    && pointSeriesValue(point.meta!) != null
+    && pointSeriesValue(point.meta!) !== 0
   ))
   if (exactMatch) return exactMatch
   return renderedSeries.flatMap((item) => item.data).find((point) => (
-    point.value[0] === timestamp
-    && (event.local_radio == null || point.meta.local_radio === event.local_radio)
-    && pointSeriesValue(point.meta) != null
-    && pointSeriesValue(point.meta) !== 0
+    Boolean(point.meta)
+    && point.value[0] === timestamp
+    && (event.local_radio == null || point.meta!.local_radio === event.local_radio)
+    && pointSeriesValue(point.meta!) != null
+    && pointSeriesValue(point.meta!) !== 0
   ))
 }
 
@@ -160,6 +192,7 @@ function switchNodeData(events: MeshChartEvent[]): Array<RenderedSignalPoint & {
 function buildTooltipPointSection(point: RenderedSignalPoint, index: number): string {
   const meta = point.meta
   const series = point.seriesMeta
+  if (!meta || !series) return ''
   return [
     index === 0 ? '<strong>轨旁信号</strong>' : '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35">',
     `序列：${escapeMeshTooltipHtml(seriesLabel(series))}`,

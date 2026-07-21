@@ -540,6 +540,8 @@ class MeshTracksideSignalChartDTO(ApiModel):
     series: list[MeshTracksideSignalSeriesDTO] = Field(default_factory=list)
     events: list[MeshChartEventDTO] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    estimated_interval_seconds: float | None = None
+    continuity_gap_seconds: float | None = None
     total_series: int = 0
     returned_series: int = 0
     total_points: int = 0

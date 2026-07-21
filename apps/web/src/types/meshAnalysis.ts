@@ -185,6 +185,7 @@ export interface MeshTracksideSignalSeriesData {
 export interface MeshTracksideSignalChartData {
   source_id: string; radio: number | null; time_range: { start: string | null; end: string | null }
   series: MeshTracksideSignalSeriesData[]; events: MeshChartEvent[]; warnings: string[]
+  estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
   total_series: number; returned_series: number; total_points: number; returned_points: number
   downsampled: boolean; requested_max_points: number; top_n: number; include_standby: boolean
 }

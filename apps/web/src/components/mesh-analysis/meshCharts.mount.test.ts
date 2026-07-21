@@ -168,6 +168,7 @@ describe('MESH charts mount and render', () => {
         events: [chartEvent],
         locationSegments: [{ start_time: chartPoint.timestamp, end_time: chartPointAfterGap.timestamp, station: '站点一', section: '区间一', label: '站点一 / 区间一' }],
         showSwitchLines: true,
+        continuityGapSeconds: 5,
         showSwitchPoints: true,
       },
     })
@@ -193,6 +194,33 @@ describe('MESH charts mount and render', () => {
 
     wrapper.unmount()
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('breaks a trackside series after a long time gap instead of bridging the same AP', async () => {
+    const nextPoint = {
+      ...tracksideChartPoint,
+      timestamp: '2026-07-20T10:00:30.123Z',
+      peer_rssi: -41,
+      local_rssi: -36,
+    }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{ ...tracksideSeries[0], points: [tracksideChartPoint, nextPoint] }],
+        continuityGapSeconds: 5,
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ data?: Array<{ value: [string, number | null] }> }>
+    }
+    expect(option.series[0].data?.map((item) => item.value)).toEqual([
+      [tracksideChartPoint.timestamp, -45],
+      [nextPoint.timestamp, null],
+      [nextPoint.timestamp, -41],
+    ])
+
+    wrapper.unmount()
   })
 
   it('renders trackside peer signal fallback without using local RSSI', async () => {

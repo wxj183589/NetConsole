@@ -880,7 +880,7 @@ class MeshAnalysisQueryService:
         time_to: str = "",
         max_points: int = 1_000,
         include_standby: bool = True,
-        top_n: int = 12,
+        top_n: int = 3,
     ) -> MeshTracksideSignalChartDTO:
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
@@ -2309,6 +2309,8 @@ class MeshAnalysisQueryService:
             series=series,
             events=chart.events,
             warnings=warnings,
+            estimated_interval_seconds=chart.summary.estimated_interval_seconds,
+            continuity_gap_seconds=chart.summary.continuity_gap_seconds,
             total_series=total_series,
             returned_series=len(series),
             total_points=total_points,
