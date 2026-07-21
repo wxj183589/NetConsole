@@ -84,6 +84,10 @@ describe('rail transit Web parity API client', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-4' }) })
     vi.stubGlobal('fetch', fetchMock)
     const override = {
+      link_time_window: 4000,
+      link_switch_threshold: 10,
+      link_hold_rssi: 22,
+      link_establish_threshold: 4,
       main_link_switch_time_ms: 3000,
       short_link_tolerance_ms: 250,
       pingpong_tolerance_ms: 500,

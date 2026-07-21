@@ -53,14 +53,14 @@ class MeshReportOptions:
     switch_late_window_seconds: int = 5
     switch_target_window_seconds: int = 5
     flap_window_seconds: int = 30
-    main_link_switch_time_ms: int = 2500
+    main_link_switch_time_ms: int = 4000
     short_link_tolerance_ms: int = 500
     pingpong_tolerance_ms: int = 500
-    pingpong_return_window_ms: int | None = None
+    pingpong_return_window_ms: int | None = 500
     merge_same_physical_ap_dual_radio: bool = True
     include_log_boundary_segments: bool = False
     sample_interval_ms: int | None = None
-    short_active_segment_seconds: float = 2.0
+    short_active_segment_seconds: float = 3.5
     include_raw_evidence: bool = True
     include_all_link_details: bool = False
     include_busy_analysis: bool = True
@@ -174,8 +174,6 @@ class MeshAnalysisReportService:
         self._raise_if_cancelled(should_cancel)
 
         progress(25, "active_segments")
-        active_segments = build_active_segments(links)
-        switch_sequence = build_switch_sequence(active_segments)
         active_build_order = repository.query_active_link_build_order(
             options.source_file_id,
             options.radio_filter,
@@ -184,6 +182,8 @@ class MeshAnalysisReportService:
         )
         active_build_order = [_with_ap_location(row, location_snapshot) for row in active_build_order]
         active_build_order = _filter_active_build_order(active_build_order, options.start_time, options.end_time)
+        active_segments = _active_build_order_segments(active_build_order)
+        switch_sequence = build_switch_sequence(active_segments)
         chart_segments = repository.query_active_link_chart_segments(
             options.source_file_id,
             options.radio_filter,
@@ -256,7 +256,7 @@ class MeshAnalysisReportService:
             source_files=quality_report.source_files,
             score_rows=quality_report.score_rows,
             sample_quality=quality_report.sample_quality,
-            active_segments=quality_report.active_segments or active_segments,
+            active_segments=active_segments,
             switch_events=quality_report.switch_events,
             anomaly_events=quality_report.anomaly_events,
             no_backup_risks=quality_report.no_backup_risks,
@@ -503,6 +503,20 @@ def build_analysis_parameter_rows(
             }
         )
 
+    add("统一链路模型", "基准时间", "link_time_window", "ms", params.link_time_window, "判断一次链路事件持续范围")
+    add("统一链路模型", "切换阈值", "link_switch_threshold", "RSSI", params.link_switch_threshold, "主链路候选切换的信号差阈值")
+    add("统一链路模型", "维持链路阈值", "link_hold_rssi", "RSSI", params.link_hold_rssi, "维持当前链路的信号基线")
+    add("统一链路模型", "发现链路阈值", "link_establish_threshold", "RSSI", params.link_establish_threshold, "发现新链路所需的附加信号")
+    add(
+        "统一链路模型",
+        "建链信号阈值",
+        "link_establish_rssi",
+        "RSSI",
+        params.link_establish_rssi,
+        "除第一个主链路外，实际信号需达到维持阈值与发现阈值之和",
+        current_value=None,
+        remark="link_hold_rssi + link_establish_threshold",
+    )
     add("主链路与切换", "主链路切换基准时间", "main_link_switch_time_ms", "ms", params.main_link_switch_time_ms, "主链路正常切换的基准时间")
     add("主链路与切换", "短时判定容差", "short_link_tolerance_ms", "ms", params.short_link_tolerance_ms, "从切换基准中扣除的短时容差")
     add(
@@ -628,6 +642,45 @@ def _report_sample_interval_ms(rows: list[dict[str, object]], configured_ms: int
     intervals = _sample_interval_by_scope(rows).values()
     values = [interval for interval in intervals if interval > 0]
     return int(round(median(values) * 1000)) if values else None
+
+
+def _active_build_order_segments(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Project the shared active-build result into the report segment contract."""
+    segments: list[dict[str, object]] = []
+    for index, row in enumerate(rows, 1):
+        segments.append(
+            {
+                "segment_id": index,
+                "source_file_id": row.get("source_file_id"),
+                "radio": row.get("radio"),
+                "active_peer_mac": row.get("active_peer_mac") or "",
+                "active_peer": format_mac_h3c(str(row.get("active_peer_mac") or "")),
+                "peer_ap_name": row.get("peer_ap_name") or "",
+                "peer_ap_mac": row.get("peer_ap_mac") or "",
+                "peer_site": row.get("peer_site") or "",
+                "peer_radio": row.get("peer_radio") or "",
+                "peer_radio_mac": row.get("peer_radio_mac") or "",
+                "physical_ap_key": row.get("physical_ap_key") or "",
+                "sample_interval_seconds": row.get("main_link_duration_seconds") or 1.0,
+                "start_time": row.get("build_start_time") or "",
+                "end_time": row.get("build_end_time") or "",
+                "sample_count": row.get("sample_count") or 0,
+                "duration_seconds": row.get("main_link_duration_seconds"),
+                "avg_mr_rssi": row.get("avg_mr_rssi"),
+                "min_mr_rssi": row.get("min_mr_rssi"),
+                "max_mr_rssi": row.get("max_mr_rssi"),
+                "p10_mr_rssi": row.get("p10_mr_rssi"),
+                "avg_tx_busy": row.get("avg_tx_busy"),
+                "avg_rx_busy": row.get("avg_rx_busy"),
+                "avg_peer_tx_busy": row.get("avg_peer_tx_busy"),
+                "avg_peer_rx_busy": row.get("avg_peer_rx_busy"),
+                "build_result": row.get("build_result") or "",
+                "judge_reason": row.get("judge_reason") or "",
+                "link_establishment_accepted": row.get("link_establishment_accepted"),
+                "link_establishment_reason": row.get("link_establishment_reason") or "",
+            }
+        )
+    return segments
 
 
 def build_active_segments(rows: list[dict[str, object]]) -> list[dict[str, object]]:

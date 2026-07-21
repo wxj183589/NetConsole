@@ -17,6 +17,8 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
+    MeshAnalysisParamsDTO,
+    MeshAnalysisParamsSaveRequestDTO,
     MeshAnalysisSessionPageDTO,
     MeshAnalysisSummaryDTO,
     MeshActiveBuildOrderPageDTO,
@@ -38,6 +40,8 @@ from netconsole.models.api.mesh_analysis import (
     MeshReportRequestDTO,
     MeshRatePageDTO,
     MeshReportArtifactDTO,
+    MeshArtifactDeleteRequestDTO,
+    MeshArtifactDeleteResultDTO,
     MeshRssiDTO,
     MeshSwitchEventPageDTO,
     MeshTimelineDTO,
@@ -552,6 +556,28 @@ def artifacts(request: Request, session_id: str, site_id: str = Query(default=""
     return _query(lambda: _service(request).list_report_artifacts(_site_id(request, site_id), session_id))
 
 
+@router.delete(
+    "/sessions/{session_id}/artifacts/{artifact_id}",
+    response_model=MeshArtifactDeleteResultDTO,
+    summary="删除派生 MESH 报告或导出文件",
+    responses={404: {"description": "派生文件不存在"}, 422: {"description": "未确认或原始日志不可删除"}},
+    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+)
+def delete_artifact(
+    request: Request,
+    session_id: str,
+    artifact_id: str,
+    payload: MeshArtifactDeleteRequestDTO,
+    site_id: str = Query(default="", max_length=100),
+) -> MeshArtifactDeleteResultDTO:
+    if not payload.explicit_confirmation:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "CONFIRMATION_REQUIRED", "message": "删除分析报告前必须明确确认"})
+    try:
+        return _rail_service(request).delete_mesh_artifact(_site_id(request, site_id), session_id, artifact_id)
+    except RailTransitWebError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
 @router.get("/sessions/{session_id}/artifacts/{artifact_id}/download", response_class=FileResponse)
 def download_artifact(request: Request, session_id: str, artifact_id: str, site_id: str = Query(default="", max_length=100)) -> FileResponse:
     path, name = _query(lambda: _service(request).open_artifact(_site_id(request, site_id), session_id, artifact_id))
@@ -653,6 +679,7 @@ def start_link_detail_export(
             _current_site_id(request),
             session_id,
             source_file_id=payload.source_file_id,
+            analysis_params_override=payload.analysis_params_override.model_dump(exclude_none=True) if payload.analysis_params_override else None,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -675,6 +702,30 @@ def download_generated_report(request: Request, artifact_id: str) -> FileRespons
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     return FileResponse(path, filename=name)
+
+
+@router.get("/analysis-params", response_model=MeshAnalysisParamsDTO, summary="读取当前局点 MESH 分析默认参数")
+def get_analysis_params(request: Request, site_id: str = Query(default="", max_length=100)) -> MeshAnalysisParamsDTO:
+    try:
+        return _rail_service(request).get_mesh_analysis_params(_site_id(request, site_id))
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/analysis-params/templates/{service_type}", response_model=MeshAnalysisParamsDTO, summary="读取 MESH 业务参数模板")
+def get_analysis_params_template(request: Request, service_type: str) -> MeshAnalysisParamsDTO:
+    try:
+        return _rail_service(request).get_mesh_analysis_params_template(_current_site_id(request), service_type)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.put("/analysis-params", response_model=MeshAnalysisParamsDTO, summary="保存当前局点 MESH 分析默认参数")
+def save_analysis_params(request: Request, payload: MeshAnalysisParamsSaveRequestDTO, site_id: str = Query(default="", max_length=100)) -> MeshAnalysisParamsDTO:
+    try:
+        return _rail_service(request).save_mesh_analysis_params(_site_id(request, site_id), payload.params.model_dump())
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

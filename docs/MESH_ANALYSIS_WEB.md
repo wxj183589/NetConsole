@@ -43,6 +43,7 @@ GET /api/rail-transit/mesh-analysis/sessions/{session_id}/anomalies
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/ap-statistics
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/artifacts
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/artifacts/{artifact_id}/download
+DELETE /api/rail-transit/mesh-analysis/sessions/{session_id}/artifacts/{artifact_id}
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/raw-sources
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/raw-sources/{source_id}/tail
 ```
@@ -52,16 +53,19 @@ POST /api/rail-transit/mesh-analysis/import-preview
 POST /api/rail-transit/mesh-analysis/bundles/import
 POST /api/rail-transit/mesh-analysis/sessions/{session_id}/rebuild
 POST /api/rail-transit/mesh-analysis/sessions/{session_id}/report
+GET /api/rail-transit/mesh-analysis/analysis-params
+GET /api/rail-transit/mesh-analysis/analysis-params/templates/{service_type}
+PUT /api/rail-transit/mesh-analysis/analysis-params
 
 不存在任意 SQL、任意命令或直接文件系统写入路由；长任务统一进入 Task Center，报告统一进入 Export Process。
 
 ## 文件安全
 
-报告和 raw 先由服务端在当前 MR 的 `raw/outputs` 受控目录枚举，再生成不可逆 `artifact_id/source_id`。下载和 tail 只接受该 ID，不接受相对路径、绝对路径、UNC 或 `..`；响应不包含本机绝对路径。压缩 raw 仅显示 metadata，不在请求线程在线解压 tail。
+报告和 raw 先由服务端在当前 MR 的 `raw/outputs` 受控目录枚举，再生成不可逆 `artifact_id/source_id`。下载和 tail 只接受该 ID，不接受相对路径、绝对路径、UNC 或 `..`；响应不包含本机绝对路径。删除只接受显式确认的派生报告/导出文件，并限制在当前 MR `outputs` 白名单目录；同名 sidecar 和临时文件可一并清理，原始导入日志、parsed SQLite、catalog 和 raw 永不由该入口删除。压缩 raw 仅显示 metadata，不在请求线程在线解压 tail。
 
 ## 性能和生命周期
 
-- Web 详情页签固定为“主链路建链顺序、链路明细、RSSI 分析、空口负载、切换事件、AP 统计、报告与来源”；Rate 原始值、Retry/Error 增量和异常摘要不再作为独立页面页签，也不会在打开会话时发起对应请求。底层结构化字段、查询 API 和报告数据保持不变；
+- Web 详情页签固定为“主链路建链顺序、链路明细、RSSI 分析、空口负载、切换事件、报告与来源”；Rate 原始值、Retry/Error 增量、AP 统计和异常摘要不再作为独立页面页签，也不会在打开会话时发起对应请求。底层结构化字段、查询 API 和报告数据保持不变；
 - 主链路建链顺序、链路明细、RSSI 和空口图表使用同一可视区域高度计算，监听窗口与容器尺寸变化；分页保留在表格下方，表格内部滚动。嵌套 RSSI/空口模式 Tab 不再占据独立内容高度；
 - 链路明细使用后端分页和时间/AP/MR 条件；
 - 主链路时间线读取既有区间，不返回全部采样；
@@ -77,6 +81,6 @@ POST /api/rail-transit/mesh-analysis/sessions/{session_id}/report
 - Job/Application Service 继续负责导入、重建、解析和报告；
 - Web 不连接 AC、不控制 Agent、不开放 `executor=AGENT`，也不修改 Online MR 生命周期；
 - 页面和报告共用 `MeshApLocationSnapshot`；无法唯一匹配 AP 时保持原始值和空归属，不猜测站点、区间、里程或方向。
-- 报告对话框默认沿用来源快照；显式启用时可提交 typed 临时分析参数，优先级为 `temporary > source snapshot > site > default`，不会写回来源或局点配置。
-- Excel/WPS 报告由 Export Process 生成，包含主链路建链顺序、链路明细、全部 ACTIVE RSSI/空口负载、单 AP 经过时段统计、切换事件和异常摘要；嵌入图表硬上限 5,000 点，完整业务 Sheet 不截断。
+- 报告和链路明细弹窗默认沿用来源快照；临时参数优先级为 `temporary > source snapshot > site > default`，可保存为当前局点默认但不会改写来源或 parsed 数据库。统一链路模型默认基准时间 4000ms、切换阈值 10、维持链路 22、发现链路 4，建链信号阈值为 26，首个主链路忽略信号阈值。
+- Excel/WPS 报告由 Export Process 生成，包含主链路建链顺序、链路明细、全部 ACTIVE RSSI/空口负载、单 AP 经过时段统计、切换事件和异常摘要；链路明细导出额外包含“分析参数”Sheet，嵌入图表硬上限 5,000 点，完整业务 Sheet 不截断。
 - [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只复用本服务的摘要和最近会话，不读取明细表、不触发重解析，正式分析详情仍由本页面承担。

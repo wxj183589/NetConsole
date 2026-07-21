@@ -6,16 +6,20 @@ from typing import Mapping
 
 
 MESH_ANALYSIS_PARAMS_METADATA_KEY = "mesh_analysis_params"
-SERVICE_TYPE_CHOICES = ("PIS", "信号", "其他")
+SERVICE_TYPE_CHOICES = ("PIS", "CBTC", "信号", "其他")
 WIFI_TYPE_CHOICES = ("WiFi5", "WiFi6", "其他")
 
 
 @dataclass(frozen=True)
 class MeshAnalysisParams:
-    main_link_switch_time_ms: int = 2500
+    link_time_window: int = 4000
+    link_switch_threshold: int = 10
+    link_hold_rssi: int = 22
+    link_establish_threshold: int = 4
+    main_link_switch_time_ms: int = 4000
     short_link_tolerance_ms: int = 500
     pingpong_tolerance_ms: int = 500
-    pingpong_return_window_ms: int | None = None
+    pingpong_return_window_ms: int | None = 500
     merge_same_physical_ap_dual_radio: bool = True
     include_log_boundary_segments: bool = False
     sample_interval_ms: int | None = None
@@ -34,8 +38,16 @@ class MeshAnalysisParams:
         floor = 10000 if self.service_type == "PIS" else 8000
         return max(floor, 3 * (int(self.main_link_switch_time_ms) + int(self.pingpong_tolerance_ms)))
 
+    @property
+    def link_establish_rssi(self) -> int:
+        return int(self.link_hold_rssi) + int(self.link_establish_threshold)
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "link_time_window": int(self.link_time_window),
+            "link_switch_threshold": int(self.link_switch_threshold),
+            "link_hold_rssi": int(self.link_hold_rssi),
+            "link_establish_threshold": int(self.link_establish_threshold),
             "main_link_switch_time_ms": int(self.main_link_switch_time_ms),
             "short_link_tolerance_ms": int(self.short_link_tolerance_ms),
             "pingpong_tolerance_ms": int(self.pingpong_tolerance_ms),
@@ -62,6 +74,16 @@ def normalize_mesh_analysis_params(value: object | None) -> MeshAnalysisParams:
     data = value if isinstance(value, Mapping) else {}
     default = DEFAULT_MESH_ANALYSIS_PARAMS
     return MeshAnalysisParams(
+        link_time_window=_positive_int(_value(data, "link_time_window", "link-time-window"), default.link_time_window),
+        link_switch_threshold=_non_negative_int(
+            _value(data, "link_switch_threshold", "link-switch-threshold"),
+            default.link_switch_threshold,
+        ),
+        link_hold_rssi=_non_negative_int(_value(data, "link_hold_rssi", "link-hold-rssi"), default.link_hold_rssi),
+        link_establish_threshold=_non_negative_int(
+            _value(data, "link_establish_threshold", "link-establish-threshold"),
+            default.link_establish_threshold,
+        ),
         main_link_switch_time_ms=_positive_int(data.get("main_link_switch_time_ms"), default.main_link_switch_time_ms),
         short_link_tolerance_ms=_non_negative_int(data.get("short_link_tolerance_ms"), default.short_link_tolerance_ms),
         pingpong_tolerance_ms=_non_negative_int(data.get("pingpong_tolerance_ms"), default.pingpong_tolerance_ms),
@@ -123,3 +145,10 @@ def _bool(value: object, default: bool) -> bool:
 def _choice(value: object, choices: tuple[str, ...], default: str) -> str:
     text = str(value or "").strip()
     return text if text in choices else default
+
+
+def _value(data: Mapping[str, object], *keys: str) -> object | None:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None

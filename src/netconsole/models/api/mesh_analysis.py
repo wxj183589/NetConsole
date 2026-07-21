@@ -89,14 +89,18 @@ class MeshRebuildRequestDTO(ApiModel):
 
 
 class MeshAnalysisParamsDTO(ApiModel):
+    link_time_window: int = Field(default=4000, gt=0, le=600_000)
+    link_switch_threshold: int = Field(default=10, ge=0, le=200)
+    link_hold_rssi: int = Field(default=22, ge=0, le=200)
+    link_establish_threshold: int = Field(default=4, ge=0, le=200)
     main_link_switch_time_ms: int = Field(gt=0, le=600_000)
     short_link_tolerance_ms: int = Field(ge=0, le=600_000)
     pingpong_tolerance_ms: int = Field(ge=0, le=600_000)
-    pingpong_return_window_ms: int | None = Field(default=None, gt=0, le=3_600_000)
+    pingpong_return_window_ms: int | None = Field(default=500, gt=0, le=3_600_000)
     merge_same_physical_ap_dual_radio: bool = True
     include_log_boundary_segments: bool = False
     sample_interval_ms: int | None = Field(default=None, gt=0, le=600_000)
-    service_type: Literal["PIS", "信号", "其他"] = "PIS"
+    service_type: Literal["PIS", "CBTC", "信号", "其他"] = "PIS"
     wifi_type: Literal["WiFi5", "WiFi6", "其他"] = "WiFi6"
 
 
@@ -110,6 +114,15 @@ class MeshReportRequestDTO(ApiModel):
 
 class MeshLinkDetailExportRequestDTO(ApiModel):
     source_file_id: int = Field(gt=0)
+    analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
+
+
+class MeshAnalysisParamsSaveRequestDTO(ApiModel):
+    params: MeshAnalysisParamsDTO
+
+
+class MeshArtifactDeleteRequestDTO(ApiModel):
+    explicit_confirmation: bool = False
 
 
 class MeshAnalysisSummaryDTO(ApiModel):
@@ -303,6 +316,14 @@ class MeshActiveBuildOrderDTO(ApiModel):
     avg_rx_busy: float | None = None
     avg_peer_tx_busy: float | None = None
     avg_peer_rx_busy: float | None = None
+    link_time_window: int | None = None
+    link_switch_threshold: int | None = None
+    link_hold_rssi: int | None = None
+    link_establish_threshold: int | None = None
+    link_establish_rssi: int | None = None
+    link_establishment_accepted: bool = False
+    link_establishment_signal: float | None = None
+    link_establishment_reason: str = ""
     main_link_switch_time_ms: int | None = None
     short_link_tolerance_ms: int | None = None
     pingpong_tolerance_ms: int | None = None
@@ -644,6 +665,13 @@ class MeshReportArtifactDTO(ApiModel):
     status: str = "available"
     source: str = "existing_file"
     downloadable: bool = True
+    deletable: bool = False
+
+
+class MeshArtifactDeleteResultDTO(ApiModel):
+    artifact_id: str
+    name: str
+    deleted_files: int = 0
 
 
 class MeshRawTailDTO(ApiModel):

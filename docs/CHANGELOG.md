@@ -1,11 +1,23 @@
 # NetConsole 更新日志
 
+## v1.4.0 - 2026-07-21
+
+### Mesh 原始日志分析
+
+- 新增统一 `MeshLinkAnalyzer` 入口，报告、主链路建链顺序和链路明细导出共享同一参数快照；默认基准时间 4000ms、切换阈值 10、维持链路 22、发现链路 4，首个主链路忽略建链信号阈值。
+- 链路明细导出增加导出前参数配置、局点默认保存、PIS/CBTC 模板和“分析参数”Sheet，导出与综合报告记录同一组有效参数。
+- 报告与来源列表增加派生报告删除，删除前必须确认且只清理 `outputs` 中的报告/sidecar/临时文件，原始 MESH 日志、parsed SQLite 和 catalog 保留。
+
+### 验证范围
+
+- 已执行 Mesh Python 定向测试、Mesh Vue 视图测试、Ruff 和 Web 生产构建；真实设备、真实 Electron 窗口和正式业务数据未在本轮操作。
+
 ## v1.3.9 - 2026-07-18
 
 ### MR 分析可用性修复
 
 - MESH 离线分析表格改用跨日志稳定列偏好；Electron 通过受控 UI preference Bridge 持久化，Browser 保留本地 fallback。RSSI 图将切换时刻线与真实切换节点拆为独立开关，并增加来源/Radio/时间间隙严格分段的站点区间带和基于接收信号事实字段的安全 Tooltip。
-- 移除 MESH 页面 AP 统计入口和请求；新增独立链路明细 Export Job，工作簿严格只有“链路明细”“主链路明细”。综合报告移除全量链路及全局 AP/Peer 聚合，新增逐参数展示报告覆盖、来源快照、局点配置和默认值的“分析参数与阈值”大表。
+- 移除 MESH 页面 AP 统计入口和请求；新增独立链路明细 Export Job。综合报告移除全量链路及全局 AP/Peer 聚合，新增逐参数展示报告覆盖、来源快照、局点配置和默认值的“分析参数与阈值”大表。
 - 修复车载 MR 收集分析页中裸 `Search`/`Document` SVG 被全局样式放大、覆盖页面的问题；内联图标统一使用有界 `el-icon`，报告区限制为局部滚动的紧凑卡片。
 - Online MR 会话详情不再依赖 parsed SQLite 成功：STOPPED、ABORTED、强停、partial、缺库、旧库或损坏库仍可查看 metadata、原始日志和采集日志；解析状态明确区分 `ready/missing/legacy/stale/unreadable/parsing`，报告仅在 `ready` 时进入 Export Process。
 - Online MR 分析页增加请求 generation 与 AbortController，切换会话、局点或查询窗口时先清空指标、时间线、切换窗口、raw tail 和报告任务展示，迟到请求不能把旧会话曲线写回新会话。

@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight, Document, Download, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Delete, Document, Download, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
@@ -13,17 +13,17 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import {
-  applyMeshBundleImport, createMeshProfile, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshAnalysisSummary, getMeshPeerSegmentChart, getMeshRawTail,
   listMeshActiveBuildOrder, listMeshAnalysisSessions,
   listMeshArtifacts, listMeshLinks, listMeshProfiles, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
-  prepareMeshImportContext,
+  prepareMeshImportContext, saveMeshAnalysisParams,
 } from '../../api/meshAnalysis'
 import { listVehicleMrs } from '../../api/railTransitBaseData'
 import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
 import { isFeatureEnabled } from '../../features'
 import type {
-  MeshActiveBuildOrder, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
+  MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
@@ -57,18 +57,24 @@ const profiles = ref<MeshProfile[]>([])
 const baseMrs = ref<VehicleMr[]>([])
 const importVisible = ref(false)
 const reportVisible = ref(false)
+const linkExportVisible = ref(false)
 const useTemporaryReportParams = ref(false)
 const reportParams = reactive<MeshAnalysisParamsOverride>({
-  main_link_switch_time_ms: 2500,
+  link_time_window: 4000,
+  link_switch_threshold: 10,
+  link_hold_rssi: 22,
+  link_establish_threshold: 4,
+  main_link_switch_time_ms: 4000,
   short_link_tolerance_ms: 500,
   pingpong_tolerance_ms: 500,
-  pingpong_return_window_ms: null,
+  pingpong_return_window_ms: 500,
   merge_same_physical_ap_dual_radio: true,
   include_log_boundary_segments: false,
   sample_interval_ms: null,
   service_type: 'PIS',
   wifi_type: 'WiFi6',
 })
+const linkExportParams = reactive<MeshAnalysisParams>({ ...reportParams })
 const importContextLoading = ref(false)
 const importContextError = ref('')
 const profileLoadError = ref('')
@@ -229,6 +235,8 @@ const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'p10_mr_rssi', label: 'P10 RSSI', valueType: 'number', width: 100 },
   { key: 'avg_tx_busy', label: '平均 TxBusy', valueType: 'percentage', minWidth: 115 },
   { key: 'avg_rx_busy', label: '平均 RxBusy', valueType: 'percentage', minWidth: 115 },
+  { key: 'link_establishment_accepted', label: '建链门限', valueType: 'status', minWidth: 105, displayValue: (row) => row.link_establishment_accepted ? '通过' : '未通过' },
+  { key: 'link_establishment_reason', label: '建链门限原因', align: 'left', alignmentReason: 'long-text', minWidth: 320 },
   { key: 'build_result', label: '建链结果', valueType: 'status', minWidth: 125 },
   { key: 'judge_reason', label: '判定原因', align: 'left', alignmentReason: 'long-text', minWidth: 260 },
   { key: 'pingpong_type', label: '乒乓类型', minWidth: 120 },
@@ -318,7 +326,7 @@ const artifactColumns: NcTableColumn<MeshArtifact>[] = [
   { key: 'name', label: '文件名', align: 'left', alignmentReason: 'path', minWidth: 260 },
   { key: 'size_bytes', label: '大小', valueType: 'number', width: 110, displayValue: (row) => formatBytes(row.size_bytes) },
   { key: 'modified_at', label: '生成时间', valueType: 'datetime', widthMode: 'content', minWidth: 215 },
-  { key: 'actions', label: '操作', valueType: 'actions', width: 90, hideable: false },
+  { key: 'actions', label: '操作', valueType: 'actions', width: 140, hideable: false },
 ]
 const sourceColumns: NcTableColumn<MeshRawSource>[] = [
   { key: 'name', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 260 },
@@ -932,6 +940,24 @@ async function startTask(factory: () => Promise<RailTransitTask>, fallback: stri
   }
   finally { taskLoading.value = false }
 }
+
+async function deleteArtifact(artifact: MeshArtifact): Promise<void> {
+  if (!selected.value || !artifact.deletable) return
+  const accepted = await confirm({
+    type: 'DESTRUCTIVE',
+    title: '删除分析报告',
+    message: `确认删除该分析报告？\n\n文件：${artifact.name}\n\n删除后不可恢复；原始导入日志不会删除。`,
+    confirmText: '确认删除',
+  })
+  if (!accepted) return
+  try {
+    await deleteMeshArtifact(selected.value.session.session_id, artifact.artifact_id)
+    artifacts.value = await listMeshArtifacts(selected.value.session.session_id)
+    ElMessage.success('分析报告已删除，原始导入日志已保留')
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '分析报告删除失败')
+  }
+}
 function startBundleImport(): void {
   if (!bundlePreview.value || !bundleCanApply.value) return
   const payload: MeshBundleImportRequest = {
@@ -942,9 +968,33 @@ function startBundleImport(): void {
   void startTask(() => applyMeshBundleImport(payload), 'MESH ZIP 导入启动失败')
   importVisible.value = false
 }
+function assignAnalysisParams(target: MeshAnalysisParams, value: MeshAnalysisParams): void {
+  Object.assign(target, value)
+}
+
+async function applyAnalysisTemplate(target: MeshAnalysisParams, serviceType: string): Promise<void> {
+  try {
+    assignAnalysisParams(target, await getMeshAnalysisParamsTemplate(serviceType))
+    ElMessage.success(`${serviceType} 参数模板已载入`)
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '参数模板加载失败')
+  }
+}
+
+async function saveSiteAnalysisParams(target: MeshAnalysisParams): Promise<void> {
+  try {
+    const saved = await saveMeshAnalysisParams({ ...target })
+    assignAnalysisParams(target, saved)
+    if (selected.value) assignAnalysisParams(selected.value.analysis_params, saved)
+    ElMessage.success('已保存为当前局点默认参数')
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '局点参数保存失败')
+  }
+}
+
 function openReportDialog(): void {
   if (!selected.value) return
-  Object.assign(reportParams, selected.value.analysis_params)
+  assignAnalysisParams(reportParams, selected.value.analysis_params)
   useTemporaryReportParams.value = false
   reportVisible.value = true
 }
@@ -955,15 +1005,22 @@ function generateReport(): void {
   reportVisible.value = false
   void startTask(() => exportMeshAnalysisReport(selected.value!.session.session_id, override), 'MESH 分析报告生成启动失败')
 }
+function openLinkExportDialog(): void {
+  if (!selected.value) return
+  assignAnalysisParams(linkExportParams, selected.value.analysis_params)
+  linkExportVisible.value = true
+}
+
 function exportLinkDetails(): void {
   const sourceFileId = selectedSource.value?.source_file_id
   if (!selected.value || typeof sourceFileId !== 'number' || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
     ElMessage.error('当前来源缺少正式 source_file_id，请刷新或重新解析后再试。')
     return
   }
+  linkExportVisible.value = false
   ElMessage.info('正在提交链路明细导出任务')
   void startTask(
-    () => exportMeshLinkDetails(selected.value!.session.session_id, sourceFileId),
+    () => exportMeshLinkDetails(selected.value!.session.session_id, sourceFileId, { ...linkExportParams }),
     'MESH 链路明细导出启动失败',
   ).then((created) => {
     if (created) ElMessage.success(`链路明细导出任务已创建：${created.task_id}`)
@@ -1038,7 +1095,7 @@ function buildResultLabel(value: string): string {
   <section class="mesh-page">
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>选择日志后自动匹配当前局点车载 MR，并完成归档、解析、分析和报告交付。</p></div>
-      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="exportLinkDetails">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
+      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
@@ -1079,18 +1136,40 @@ function buildResultLabel(value: string): string {
         <el-form-item><el-checkbox v-model="useTemporaryReportParams">本次报告使用临时分析参数</el-checkbox></el-form-item>
         <template v-if="useTemporaryReportParams">
           <div class="report-params-grid">
+            <el-form-item label="业务模板"><el-select :model-value="reportParams.service_type" @change="(value: string) => applyAnalysisTemplate(reportParams, value)"><el-option label="PIS" value="PIS" /><el-option label="CBTC（待现场标定）" value="CBTC" /></el-select></el-form-item>
+            <el-form-item label="基准时间 (ms)"><el-input-number v-model="reportParams.link_time_window" :min="1" :max="600000" /></el-form-item>
+            <el-form-item label="切换阈值 (RSSI)"><el-input-number v-model="reportParams.link_switch_threshold" :min="0" :max="200" /></el-form-item>
+            <el-form-item label="维持链路阈值 (RSSI)"><el-input-number v-model="reportParams.link_hold_rssi" :min="0" :max="200" /></el-form-item>
+            <el-form-item label="发现链路阈值 (RSSI)"><el-input-number v-model="reportParams.link_establish_threshold" :min="0" :max="200" /></el-form-item>
             <el-form-item label="主链路切换基准 (ms)"><el-input-number v-model="reportParams.main_link_switch_time_ms" :min="1" :max="600000" /></el-form-item>
             <el-form-item label="短时建链容差 (ms)"><el-input-number v-model="reportParams.short_link_tolerance_ms" :min="0" :max="600000" /></el-form-item>
             <el-form-item label="乒乓容差 (ms)"><el-input-number v-model="reportParams.pingpong_tolerance_ms" :min="0" :max="600000" /></el-form-item>
             <el-form-item label="乒乓返回窗口 (ms)"><el-input-number v-model="reportParams.pingpong_return_window_ms" :min="1" :max="3600000" clearable /></el-form-item>
-            <el-form-item label="业务类型"><el-select v-model="reportParams.service_type"><el-option label="PIS" value="PIS" /><el-option label="信号" value="信号" /><el-option label="其他" value="其他" /></el-select></el-form-item>
             <el-form-item label="无线类型"><el-select v-model="reportParams.wifi_type"><el-option label="WiFi 5" value="WiFi5" /><el-option label="WiFi 6" value="WiFi6" /><el-option label="其他" value="其他" /></el-select></el-form-item>
           </div>
           <el-checkbox v-model="reportParams.merge_same_physical_ap_dual_radio">合并同一物理 AP 双射频</el-checkbox>
           <el-checkbox v-model="reportParams.include_log_boundary_segments">包含日志边界区段</el-checkbox>
         </template>
       </el-form>
-      <template #footer><el-button @click="reportVisible = false">取消</el-button><el-button type="primary" :loading="taskLoading" @click="generateReport">开始生成</el-button></template>
+      <template #footer><el-button @click="reportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(reportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="generateReport">开始生成</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="linkExportVisible" title="导出链路明细：分析参数" width="min(720px, 94vw)">
+      <div v-if="linkExportVisible">
+      <el-form label-position="top">
+        <el-alert title="链路明细与综合报告使用同一链路分析参数；本次覆盖不会修改来源快照。" type="info" :closable="false" show-icon />
+        <div class="report-params-grid">
+          <el-form-item label="业务模板"><el-select :model-value="linkExportParams.service_type" @change="(value: string) => applyAnalysisTemplate(linkExportParams, value)"><el-option label="PIS" value="PIS" /><el-option label="CBTC（待现场标定）" value="CBTC" /></el-select></el-form-item>
+          <el-form-item label="基准时间 (ms)"><el-input-number v-model="linkExportParams.link_time_window" :min="1" :max="600000" /></el-form-item>
+          <el-form-item label="切换阈值 (RSSI)"><el-input-number v-model="linkExportParams.link_switch_threshold" :min="0" :max="200" /></el-form-item>
+          <el-form-item label="维持链路阈值 (RSSI)"><el-input-number v-model="linkExportParams.link_hold_rssi" :min="0" :max="200" /></el-form-item>
+          <el-form-item label="发现链路阈值 (RSSI)"><el-input-number v-model="linkExportParams.link_establish_threshold" :min="0" :max="200" /></el-form-item>
+          <el-form-item label="无线类型"><el-select v-model="linkExportParams.wifi_type"><el-option label="WiFi 5" value="WiFi5" /><el-option label="WiFi 6" value="WiFi6" /><el-option label="其他" value="其他" /></el-select></el-form-item>
+        </div>
+        <p class="hint">建链信号阈值 = {{ linkExportParams.link_hold_rssi + linkExportParams.link_establish_threshold }}；第一个主链路忽略信号阈值。</p>
+      </el-form>
+      </div>
+      <template #footer><el-button @click="linkExportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(linkExportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="exportLinkDetails">开始导出</el-button></template>
     </el-dialog>
 
     <section class="content-card sessions-panel" v-loading="loading">
@@ -1239,7 +1318,7 @@ function buildResultLabel(value: string): string {
         <div v-show="activeTab === 'switches'" id="pane-switches"><NcDataTable table-id="mesh-analysis-switch-events:v3" route-key="/rail-transit/mesh-analysis" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border height="430" /></div>
 
         <div v-show="activeTab === 'artifacts'" id="pane-artifacts">
-          <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts:v2" route-key="/rail-transit/mesh-analysis" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button></template></NcDataTable>
+          <h3>已有报告与文件</h3><NcDataTable table-id="mesh-analysis-artifacts:v2" route-key="/rail-transit/mesh-analysis" :data="artifacts" :columns="artifactColumns" border><template #cell-actions="{ row }"><el-button v-if="row.downloadable" link type="primary" @click="downloadArtifact(row)">下载</el-button><el-button v-if="row.deletable" link type="danger" :icon="Delete" @click="deleteArtifact(row)">删除</el-button><span v-if="!row.deletable" class="hint">原始日志保留</span></template></NcDataTable>
           <h3>原始数据来源</h3><NcDataTable table-id="mesh-analysis-sources:v2" route-key="/rail-transit/mesh-analysis" :data="selected.sources" :columns="sourceColumns" border><template #cell-tail="{ row }"><el-button link type="primary" :disabled="!row.tail_available" @click="loadRawTail(row.source_action_id, row.tail_available)">查看 tail</el-button></template></NcDataTable>
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </div>

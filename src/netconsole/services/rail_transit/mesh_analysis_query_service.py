@@ -567,6 +567,14 @@ class MeshAnalysisQueryService:
                     avg_rx_busy=self._number(row.get("avg_rx_busy")),
                     avg_peer_tx_busy=self._number(row.get("avg_peer_tx_busy")),
                     avg_peer_rx_busy=self._number(row.get("avg_peer_rx_busy")),
+                    link_time_window=self._int(row.get("link_time_window")),
+                    link_switch_threshold=self._int(row.get("link_switch_threshold")),
+                    link_hold_rssi=self._int(row.get("link_hold_rssi")),
+                    link_establish_threshold=self._int(row.get("link_establish_threshold")),
+                    link_establish_rssi=self._int(row.get("link_establish_rssi")),
+                    link_establishment_accepted=bool(row.get("link_establishment_accepted")),
+                    link_establishment_signal=self._number(row.get("link_establishment_signal")),
+                    link_establishment_reason=str(row.get("link_establishment_reason") or ""),
                     main_link_switch_time_ms=self._int(row.get("main_link_switch_time_ms")),
                     short_link_tolerance_ms=self._int(row.get("short_link_tolerance_ms")),
                     pingpong_tolerance_ms=self._int(row.get("pingpong_tolerance_ms")),
@@ -1330,6 +1338,37 @@ class MeshAnalysisQueryService:
         for candidate in self._artifact_candidates(self._context(site_id, session_id)):
             if candidate.dto.artifact_id == artifact_id:
                 return candidate.path, candidate.dto.name
+        raise MeshAnalysisQueryError("文件不存在或不属于当前分析会话")
+
+    def artifact_delete_targets(self, site_id: str, session_id: str, artifact_id: str) -> tuple[str, list[Path]]:
+        context = self._context(site_id, session_id)
+        output_root = self.paths.mesh_mr_export_dir(context.site_id, context.safe_folder_name).resolve()
+        for candidate in self._artifact_candidates(context):
+            if candidate.dto.artifact_id != artifact_id:
+                continue
+            if not candidate.dto.deletable or not self._within(candidate.path, output_root):
+                raise MeshAnalysisQueryError("原始导入日志不允许从报告列表删除")
+            stem = candidate.path.stem
+            related_names = {
+                candidate.path.name,
+                f"{stem}.json",
+                f"{stem}.manifest.json",
+                f"{candidate.path.name}.json",
+                f"{candidate.path.name}.manifest.json",
+                f"{stem}.tmp{candidate.path.suffix}",
+                f".{stem}.tmp{candidate.path.suffix}",
+                f"{candidate.path.name}.part",
+                f"{candidate.path.name}.partial",
+            }
+            targets = [
+                path.resolve()
+                for path in output_root.iterdir()
+                if path.name in related_names
+                and path.is_file()
+                and not path.is_symlink()
+                and self._within(path, output_root)
+            ]
+            return candidate.dto.name, targets
         raise MeshAnalysisQueryError("文件不存在或不属于当前分析会话")
 
     def get_raw_source_summary(self, site_id: str, session_id: str) -> list[MeshDataSourceDTO]:
@@ -2218,7 +2257,13 @@ class MeshAnalysisQueryService:
         output_root = self.paths.mesh_mr_export_dir(context.site_id, context.safe_folder_name).resolve()
         if output_root.is_dir():
             for path in output_root.iterdir():
-                if path.is_file() and not path.is_symlink() and path.suffix.lower() in _ALLOWED_OUTPUT_SUFFIXES and self._within(path, output_root):
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and path.suffix.lower() in _ALLOWED_OUTPUT_SUFFIXES
+                    and not self._temporary_artifact_name(path.name)
+                    and self._within(path, output_root)
+                ):
                     rows.append(("analysis_report" if path.suffix.lower() == ".xlsx" else "package", path.resolve()))
         result: list[_ArtifactCandidate] = []
         for kind, path in rows:
@@ -2230,6 +2275,7 @@ class MeshAnalysisQueryService:
                 name=path.name,
                 size_bytes=stat.st_size,
                 modified_at=self._mtime(stat.st_mtime),
+                deletable=kind != "raw_mesh_log",
             )
             result.append(_ArtifactCandidate(dto=dto, path=path))
         return sorted(result, key=lambda item: (item.dto.artifact_type, item.dto.name))
@@ -2314,6 +2360,11 @@ class MeshAnalysisQueryService:
     @staticmethod
     def _artifact_id(session_id: str, kind: str, relative: str) -> str:
         return hashlib.sha256(f"{session_id}|{kind}|{relative}".encode("utf-8")).hexdigest()[:24]
+
+    @staticmethod
+    def _temporary_artifact_name(name: str) -> bool:
+        lowered = str(name or "").casefold()
+        return lowered.startswith(".") or lowered.endswith((".part", ".partial")) or ".tmp." in lowered
 
     @staticmethod
     def _within(path: Path, root: Path) -> bool:

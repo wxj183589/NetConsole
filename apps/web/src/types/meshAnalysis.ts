@@ -78,9 +78,10 @@ export interface MeshRawSource {
   package_name: string; package_sha256: string; bundle_member_id: string
 }
 export interface MeshAnalysisParams {
+  link_time_window: number; link_switch_threshold: number; link_hold_rssi: number; link_establish_threshold: number
   main_link_switch_time_ms: number; short_link_tolerance_ms: number; pingpong_tolerance_ms: number; pingpong_return_window_ms: number | null
   merge_same_physical_ap_dual_radio: boolean; include_log_boundary_segments: boolean; sample_interval_ms: number | null
-  service_type: 'PIS' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
+  service_type: 'PIS' | 'CBTC' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
 }
 export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; sources: MeshRawSource[] }
 
@@ -109,6 +110,8 @@ export interface MeshActiveBuildOrder {
   build_start_time: string; build_end_time: string; main_link_duration_seconds: number | null; reported_duration_seconds: number | null
   sample_count: number; avg_mr_rssi: number | null; min_mr_rssi: number | null; max_mr_rssi: number | null; p10_mr_rssi: number | null
   avg_tx_busy: number | null; avg_rx_busy: number | null; avg_peer_tx_busy: number | null; avg_peer_rx_busy: number | null
+  link_time_window?: number | null; link_switch_threshold?: number | null; link_hold_rssi?: number | null; link_establish_threshold?: number | null
+  link_establish_rssi?: number | null; link_establishment_accepted?: boolean; link_establishment_signal?: number | null; link_establishment_reason?: string
   build_result: string; judge_reason: string; pingpong_type: string; source_file: string
   main_link_switch_time_ms?: number | null; short_link_tolerance_ms?: number | null; pingpong_tolerance_ms?: number | null; pingpong_return_window_ms?: number | null; short_threshold_seconds?: number | null
   physical_ap_key?: string
@@ -170,5 +173,5 @@ export interface MeshRatePage { items: MeshRatePoint[]; total: number; downsampl
 export interface MeshCounterDeltaPoint { timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_retry_delta: number | null; peer_retry_delta: number | null; local_error_delta: number | null; peer_error_delta: number | null }
 export interface MeshCounterDeltaPage { items: MeshCounterDeltaPoint[]; total: number; downsampled: boolean }
 export interface MeshAnomaly { anomaly_id: string; severity: string; anomaly_type: string; start_time: string | null; end_time: string | null; train_name: string; mr_name: string; peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; description: string; evidence_reference: string | null; rule_version: string | null }
-export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean }
+export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean; deletable?: boolean }
 export interface MeshRawTail { source_action_id: string; source_id?: string; available: boolean; lines: string[]; message: string }

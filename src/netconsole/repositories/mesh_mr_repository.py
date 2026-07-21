@@ -27,6 +27,7 @@ from netconsole.models.mesh_log_models import (
     format_mac_h3c,
 )
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
+from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.repositories.mesh_catalog_repository import dt_text
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
@@ -2952,30 +2953,35 @@ def _active_build_order_rows_from_points(
         interval_by_scope[scope] = (float(interval or 1.0), threshold)
 
     result: list[dict[str, object]] = []
-    current: list[dict[str, object]] = []
-    last_key: tuple[object, object, str] | None = None
-    last_time = ""
-
-    def flush_segment() -> None:
-        nonlocal current
-        if not current:
-            return
-        scope = (current[0].get("source_file_id"), current[0].get("radio"))
+    gap_seconds = {scope: values[1] for scope, values in interval_by_scope.items()}
+    time_windows = {scope: params.link_time_window / 1000.0 for scope, params in params_by_scope.items()}
+    segments = MeshLinkAnalyzer().group_active_points(rows, gap_seconds, time_windows)
+    first_link_by_scope: set[tuple[object, object]] = set()
+    previous_signal_by_scope: dict[tuple[object, object], float | None] = {}
+    for segment in segments:
+        scope = (segment[0].get("source_file_id"), segment[0].get("radio"))
         sample_interval, _threshold = interval_by_scope.get(scope, (1.0, 5.0))
-        params = params_by_scope.get(scope) or _analysis_params_for_row(current[0], override_params, fallback_params)
-        result.append(_active_build_order_row(len(result) + 1, current, sample_interval, params))
-        current = []
-
-    for row in rows:
-        sample_time = str(row.get("sample_time") or "")
-        key = (row.get("source_file_id"), row.get("radio"), _canonical_mac(row.get("peer_mac_normalized") or row.get("peer_mac_raw") or row.get("peer_mac")))
-        _interval, threshold = interval_by_scope.get((row.get("source_file_id"), row.get("radio")), (1.0, 5.0))
-        if current and (key != last_key or _seconds_between(last_time, sample_time) > threshold):
-            flush_segment()
-        current.append(row)
-        last_key = key
-        last_time = sample_time
-    flush_segment()
+        params = params_by_scope.get(scope) or _analysis_params_for_row(segment[0], override_params, fallback_params)
+        item = _active_build_order_row(len(result) + 1, segment, sample_interval, params)
+        decision = MeshLinkAnalyzer(params).evaluate_establishment(
+            item,
+            first_link=scope not in first_link_by_scope,
+            previous_signal=previous_signal_by_scope.get(scope),
+        )
+        item.update(
+            link_time_window=params.link_time_window,
+            link_switch_threshold=params.link_switch_threshold,
+            link_hold_rssi=params.link_hold_rssi,
+            link_establish_threshold=params.link_establish_threshold,
+            link_establish_rssi=params.link_establish_rssi,
+            link_establishment_accepted=decision.accepted,
+            link_establishment_signal=decision.signal,
+            link_establishment_reason=decision.reason,
+        )
+        result.append(item)
+        first_link_by_scope.add(scope)
+        if decision.accepted:
+            previous_signal_by_scope[scope] = decision.signal
     _mark_same_physical_ap_radio_switches(result)
     _mark_pingpong_events(result)
     return result

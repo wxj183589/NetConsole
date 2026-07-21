@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
-  MeshTimelineItem, MeshProfile, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, Page,
+  MeshTimelineItem, MeshProfile, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, Page,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -37,7 +37,7 @@ export const applyMeshBundleImport = (payload: MeshBundleImportRequest): Promise
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
 export const getMeshAnalysisSession = (id: string): Promise<MeshSessionDetail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}`)
 export const rebuildMeshAnalysis = (id: string): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/rebuild`, { method: 'POST', body: JSON.stringify({ explicit_confirmation: true }) })
-export const exportMeshLinkDetails = (id: string, sourceFileId: number): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId }) })
+export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshActiveBuildOrder>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/active-build-order${qs(values)}`)
 export const getMeshActivePathChart = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/charts/active-path${qs(values)}`)
@@ -50,6 +50,10 @@ export const getMeshRateSeries = (id: string, values: Record<string, string | nu
 export const getMeshCounterDeltas = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshCounterDeltaPage> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/counter-deltas${qs(values)}`)
 export const listMeshAnomalies = (id: string): Promise<Page<MeshAnomaly>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/anomalies`)
 export const listMeshArtifacts = (id: string): Promise<MeshArtifact[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/artifacts`)
+export const deleteMeshArtifact = (id: string, artifactId: string): Promise<{ artifact_id: string; name: string; deleted_files: number }> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE', body: JSON.stringify({ explicit_confirmation: true }) })
+export const getMeshAnalysisParams = (): Promise<MeshAnalysisParams> => apiRequest(`${root}/analysis-params`)
+export const getMeshAnalysisParamsTemplate = (serviceType: string): Promise<MeshAnalysisParams> => apiRequest(`${root}/analysis-params/templates/${encodeURIComponent(serviceType)}`)
+export const saveMeshAnalysisParams = (params: MeshAnalysisParams): Promise<MeshAnalysisParams> => apiRequest(`${root}/analysis-params`, { method: 'PUT', body: JSON.stringify({ params }) })
 export const listMeshRawSources = (id: string): Promise<MeshRawSource[]> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources`)
 export const getMeshRawTail = (id: string, sourceActionId: string): Promise<MeshRawTail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/raw-sources/${encodeURIComponent(sourceActionId)}/tail`)
 export const meshArtifactDownloadRequest = (

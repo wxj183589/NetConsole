@@ -16,10 +16,11 @@ from netconsole.parsers import mesh_log_parser
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
-from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json, normalize_mesh_analysis_params
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
+from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.network_tools.trackside_bssid_resolver import TracksideApBssidResolver
 
@@ -29,6 +30,36 @@ from netconsole.services.network_tools.trackside_bssid_resolver import Trackside
 LINE_A = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
 LINE_B = "[1] Active 30f5-277a-5a3f 2025/12/03 10:12:30 0d 00h 00m 03s 1 37/44 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
 LINE_STANDBY = "[1] Standy 30f5-277a-5a4f 2025/12/03 10:12:30 0d 00h 00m 03s 1 30/31 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 314/0 0/93 0/0 0/0 0/0"
+
+
+def test_mesh_link_parameters_use_v140_defaults_and_hyphen_aliases() -> None:
+    params = normalize_mesh_analysis_params({
+        "link-time-window": 5000,
+        "link-switch-threshold": 12,
+        "link-hold-rssi": 30,
+        "link-establish-threshold": 5,
+    })
+    assert params.link_time_window == 5000
+    assert params.link_switch_threshold == 12
+    assert params.link_hold_rssi == 30
+    assert params.link_establish_threshold == 5
+    assert params.link_establish_rssi == 35
+    defaults = normalize_mesh_analysis_params(None)
+    assert defaults.link_time_window == 4000
+    assert defaults.link_establish_rssi == 26
+
+
+def test_mesh_link_analyzer_accepts_first_link_and_applies_establishment_threshold() -> None:
+    analyzer = MeshLinkAnalyzer({"link_hold_rssi": 22, "link_establish_threshold": 4})
+    first = analyzer.evaluate_establishment({"avg_mr_rssi": 10}, first_link=True)
+    below = analyzer.evaluate_establishment({"avg_mr_rssi": 25}, first_link=False)
+    accepted = analyzer.evaluate_establishment({"avg_mr_rssi": 26}, first_link=False)
+    switch_rejected = analyzer.evaluate_establishment({"avg_mr_rssi": 30}, first_link=False, previous_signal=25)
+    assert first.accepted is True
+    assert below.accepted is False
+    assert accepted.accepted is True
+    assert accepted.threshold == 26
+    assert switch_rejected.accepted is False
 
 
 def test_parse_timestamp_and_standy(tmp_path):

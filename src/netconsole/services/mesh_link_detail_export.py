@@ -137,6 +137,9 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("Peer接收繁忙度", "avg_peer_rx_busy"),
     ("配置切换时间(ms)", "main_link_switch_time_ms"),
     ("短时判定容差(ms)", "short_link_tolerance_ms"),
+    ("建链门限通过", "link_establishment_accepted"),
+    ("建链信号", "link_establishment_signal"),
+    ("建链门限原因", "link_establishment_reason"),
     ("是否同AP射频切换", "is_same_physical_ap_radio_switch"),
     ("建链结果", "build_result"),
     ("判定原因", "judge_reason"),
@@ -222,6 +225,8 @@ ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("P10 RSSI", "p10_mr_rssi"),
     ("平均 TxBusy", "avg_tx_busy"),
     ("平均 RxBusy", "avg_rx_busy"),
+    ("建链门限通过", "link_establishment_accepted"),
+    ("建链门限原因", "link_establishment_reason"),
     ("建链结果", "build_result"),
     ("判定原因", "judge_reason"),
     ("乒乓类型", "pingpong_type"),
@@ -321,6 +326,9 @@ def active_build_order_row_values(row: dict[str, object]) -> list[object]:
         row.get("avg_peer_rx_busy") or "",
         row.get("main_link_switch_time_ms") or "",
         row.get("short_link_tolerance_ms") or "",
+        "是" if row.get("link_establishment_accepted") else "否",
+        _rssi_stat_value(row.get("link_establishment_signal")),
+        row.get("link_establishment_reason") or "",
         "是" if row.get("is_same_physical_ap_radio_switch") else "否",
         _build_result_text(result),
         row.get("judge_reason") or "",
@@ -411,6 +419,8 @@ def active_build_order_export_row_values(row: dict[str, object]) -> list[object]
         _rssi_stat_value(row.get("p10_mr_rssi")),
         row.get("avg_tx_busy") if row.get("avg_tx_busy") is not None else "",
         row.get("avg_rx_busy") if row.get("avg_rx_busy") is not None else "",
+        _yes_no(row.get("link_establishment_accepted")),
+        row.get("link_establishment_reason") or "",
         _build_result_text(str(row.get("build_result") or "")),
         row.get("judge_reason") or "",
         row.get("pingpong_type") or "",
@@ -465,6 +475,7 @@ def export_mesh_link_details_xlsx(
         })
         link_sheet = workbook.add_worksheet("链路明细")
         active_sheet = workbook.add_worksheet("主链路明细")
+        params_sheet = workbook.add_worksheet("分析参数")
 
         _write_link_detail_sheet_xlsx(
             link_sheet,
@@ -486,6 +497,13 @@ def export_mesh_link_details_xlsx(
             formats=formats,
             empty_message="未生成主链路建链顺序；请确认当前日志存在 ACTIVE 主链路采样。",
             should_cancel=should_cancel,
+        )
+        _write_params_sheet_xlsx(
+            params_sheet,
+            analysis_params or {},
+            export_context or {},
+            formats,
+            should_cancel,
         )
         _raise_if_cancelled(should_cancel)
         workbook.close()
@@ -641,12 +659,23 @@ def _write_params_sheet_xlsx(worksheet, analysis_params: dict[str, object], cont
         {"key": "当前局点/线路", "value": context.get("site_name") or "-", "remark": "导出上下文"},
         {"key": "MR名称", "value": context.get("mr_name") or "-", "remark": "导出对象"},
         {"key": "导出类型", "value": "链路明细", "remark": "MR原始MESH日志分析"},
-        {"key": "切换时间阈值(ms)", "value": analysis_params.get("main_link_switch_time_ms", 2500), "remark": "主链路建链顺序和短时建链判断"},
+        {"key": "基准时间(ms)", "value": analysis_params.get("link_time_window", 4000), "remark": "判断一次链路事件持续范围"},
+        {"key": "切换阈值(RSSI)", "value": analysis_params.get("link_switch_threshold", 10), "remark": "主链路候选切换信号差"},
+        {"key": "维持链路阈值(RSSI)", "value": analysis_params.get("link_hold_rssi", 22), "remark": "维持当前链路信号基线"},
+        {"key": "发现链路阈值(RSSI)", "value": analysis_params.get("link_establish_threshold", 4), "remark": "新链路附加信号"},
+        {
+            "key": "建链信号阈值(RSSI)",
+            "value": int(analysis_params.get("link_hold_rssi") or 22) + int(analysis_params.get("link_establish_threshold") or 4),
+            "remark": "首个主链路除外；维持链路阈值 + 发现链路阈值",
+        },
+        {"key": "切换时间阈值(ms)", "value": analysis_params.get("main_link_switch_time_ms", 4000), "remark": "主链路建链顺序和短时建链判断"},
         {"key": "短时判定容差(ms)", "value": analysis_params.get("short_link_tolerance_ms", analysis_params.get("pingpong_tolerance_ms", 500)), "remark": "短时/临界判断容差"},
         {"key": "乒乓切换判断间隔(ms)", "value": analysis_params.get("pingpong_return_window_ms", "自动"), "remark": "未配置时按切换时间自动计算"},
         {"key": "同AP双射频合并", "value": _yes_no(analysis_params.get("merge_same_physical_ap_dual_radio", True)), "remark": "同一物理AP radio1/radio2 切换不计入AP乒乓"},
         {"key": "日志边界段纳入短时统计", "value": _yes_no(analysis_params.get("include_log_boundary_segments", False)), "remark": "边界段默认不计入短时建链异常"},
         {"key": "采样间隔(ms)", "value": analysis_params.get("sample_interval_ms") or "自动识别", "remark": "分析参数快照"},
+        {"key": "业务类型", "value": analysis_params.get("service_type", "PIS"), "remark": "局点/本次导出参数"},
+        {"key": "无线类型", "value": analysis_params.get("wifi_type", "WiFi6"), "remark": "局点/本次导出参数"},
         {"key": "单AP详情图表窗口(秒)", "value": 120, "remark": "当前点左右各60秒"},
         {"key": "AP扩展信息匹配", "value": "启用", "remark": "使用当前解析结果中的AP归属字段"},
         {"key": "FIT-AP资源匹配", "value": "如当前解析已补齐则使用", "remark": "无法匹配时显示 - 或 未匹配"},

@@ -83,6 +83,10 @@ const dataTableStub = defineComponent({
     ]))
   },
 })
+const dialogStub = defineComponent({
+  inheritAttrs: false,
+  setup(_props, { slots }) { const attrs = useAttrs(); return () => h('div', attrs, [slots.default?.(), slots.footer?.()]) },
+})
 const chartViewport = {
   start_time: '2026-07-20 10:00:01.123',
   end_time: '2026-07-20 10:00:03.456',
@@ -110,11 +114,12 @@ const stubs: Record<string, Component | boolean> = {
   ElCheckbox: passthrough,
   ElCollapse: passthrough,
   ElCollapseItem: passthrough,
-  ElDialog: passthrough,
+  ElDialog: dialogStub,
   ElDivider: passthrough,
   ElForm: passthrough,
   ElFormItem: passthrough,
   ElInput: passthrough,
+  ElInputNumber: passthrough,
   ElIcon: passthrough,
   ElOption: optionStub,
   ElPagination: passthrough,
@@ -214,8 +219,10 @@ describe('Mesh analysis detail behavior', () => {
 
     await wrapper.findAll('button').find((button) => button.text() === '导出链路明细')!.trigger('click')
     await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '开始导出')!.trigger('click')
+    await flushPromises()
 
-    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1)
+    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }))
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
     wrapper.unmount()
   })

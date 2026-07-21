@@ -954,19 +954,42 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
 def test_mesh_link_detail_export_binds_selected_source_and_uses_export_process(
     tmp_path: Path,
 ) -> None:
-    paths, session_id, detail_db, _raw, _existing = create_mesh_analysis_fixture(tmp_path)
+    paths, session_id, detail_db, raw, existing = create_mesh_analysis_fixture(tmp_path)
     paths.ensure_site_dirs("demo")
     mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())
     service, _normal, export, _tasks = _service(paths, mesh_query)
 
-    started = service.start_mesh_link_detail_export("demo", session_id, source_file_id=1)
+    override = {
+        "link_time_window": 5000,
+        "link_switch_threshold": 12,
+        "link_hold_rssi": 30,
+        "link_establish_threshold": 5,
+    }
+    started = service.start_mesh_link_detail_export(
+        "demo",
+        session_id,
+        source_file_id=1,
+        analysis_params_override=override,
+    )
     job = export.jobs[started.task_id]
 
     assert started.action == "mesh_link_detail_export"
     assert job.job_type == "mesh_link_detail_export"
     assert Path(job.db_path) == detail_db
     assert job.filters == {"source_file_id": 1}
+    assert job.params["analysis_params"] == override
     assert "链路明细" in Path(job.output_path).name
+
+    saved = service.save_mesh_analysis_params("demo", override)
+    assert saved.link_time_window == 5000
+    assert saved.link_hold_rssi + saved.link_establish_threshold == 35
+    assert service.get_mesh_analysis_params_template("demo", "PIS").main_link_switch_time_ms == 4000
+
+    artifact = next(item for item in mesh_query.list_report_artifacts("demo", session_id) if item.deletable)
+    deleted = service.delete_mesh_artifact("demo", session_id, artifact.artifact_id)
+    assert deleted.deleted_files == 1
+    assert existing.exists() is False
+    assert raw.exists() is True
 
     with pytest.raises(RailTransitWebError) as mismatch:
         service.start_mesh_link_detail_export("demo", session_id, source_file_id=2)

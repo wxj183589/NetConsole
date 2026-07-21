@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  applyMeshBundleImport, createMeshProfile, exportMeshLinkDetails, getMeshActivePathChart, getMeshCounterDeltas, getMeshPeerSegmentChart,
-  getMeshRateSeries, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents, previewMeshBundle,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
+  getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
+  previewMeshBundle, saveMeshAnalysisParams,
 } from './meshAnalysis'
 
 describe('Mesh profile API', () => {
@@ -76,13 +77,62 @@ describe('Mesh profile API', () => {
     ])
   })
 
-  it('starts the formal two-sheet link detail export for a selected source', async () => {
+  it('starts the parameterized link detail export for a selected source', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-1' }) })
     vi.stubGlobal('fetch', fetchMock)
+    const params = {
+      link_time_window: 4000,
+      link_switch_threshold: 10,
+      link_hold_rssi: 22,
+      link_establish_threshold: 4,
+      main_link_switch_time_ms: 4000,
+      short_link_tolerance_ms: 500,
+      pingpong_tolerance_ms: 500,
+      pingpong_return_window_ms: 500,
+      merge_same_physical_ap_dual_radio: true,
+      include_log_boundary_segments: false,
+      sample_interval_ms: null,
+      service_type: 'PIS' as const,
+      wifi_type: 'WiFi6' as const,
+    }
 
-    await exportMeshLinkDetails('mr-id:1', 7)
+    await exportMeshLinkDetails('mr-id:1', 7, params)
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/link-details/export')
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7 })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7, analysis_params_override: params })
+  })
+
+  it('uses typed site parameter and derived artifact delete endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const params = {
+      link_time_window: 4000,
+      link_switch_threshold: 10,
+      link_hold_rssi: 22,
+      link_establish_threshold: 4,
+      main_link_switch_time_ms: 4000,
+      short_link_tolerance_ms: 500,
+      pingpong_tolerance_ms: 500,
+      pingpong_return_window_ms: 500,
+      merge_same_physical_ap_dual_radio: true,
+      include_log_boundary_segments: false,
+      sample_interval_ms: null,
+      service_type: 'CBTC' as const,
+      wifi_type: 'WiFi6' as const,
+    }
+
+    await getMeshAnalysisParamsTemplate('CBTC')
+    await saveMeshAnalysisParams(params)
+    await deleteMeshArtifact('session/1', 'artifact/1')
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/mesh-analysis/analysis-params/templates/CBTC',
+      '/api/rail-transit/mesh-analysis/analysis-params',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/artifacts/artifact%2F1',
+    ])
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ params })
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'DELETE' })
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ explicit_confirmation: true })
   })
 })

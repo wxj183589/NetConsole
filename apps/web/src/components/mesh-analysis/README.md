@@ -6,7 +6,7 @@
 
 ## 页面与报告口径
 
-- 主链路建链顺序由 `MeshMrRepository.query_active_link_build_order` 生成，页面 API 和正式 Excel 报告不得各自重算区段、短时建链或乒乓结论。
+- 主链路建链顺序由 `MeshLinkAnalyzer` 经 `MeshMrRepository.query_active_link_build_order` 生成，页面 API、综合报告和链路明细导出不得各自重算区段、短时建链或乒乓结论。
 - 链路明细由 `MeshMrRepository.iter_link_details` 读取 compact v3 标量列；`timestamp_tag` 是采样身份的一部分，报告不得合并同毫秒的不同采样块。
 - 全部 ACTIVE RSSI 和空口负载复用 `mesh_chart_payload` 的唯一 ACTIVE 路径结果。RSSI 图固定为 MR/Peer 两条序列，空口负载图固定为 MR 侧 TxBusy/RxBusy 两条序列，不按 AP 数量扩增图例，也不伪造 CtlBusy。
 - 页面与报告通过 `MeshApLocationSnapshot` 共享 AP 名称、MAC、站点、区间、里程和线路方向解析；Export Job 只携带该快照的受控字符串字段。Excel 工作表保留完整业务数据，嵌入图表使用关键点和极值降采样，空 ACTIVE 不创建空图。
@@ -18,5 +18,6 @@
 - 切换事件由 Query Service 按估算采样间隔映射到真实 ACTIVE 点；无有效采样间隔时只接受精确时间，找不到真实 RSSI 时不绘制节点。切换时刻线与切换节点分别控制，默认关闭时刻线、开启节点。
 - RSSI 与空口负载直接消费 Query Service 生成的连续位置区段；区段按来源、Radio、时间间隙和站点/区间边界拆分，同一站点的多次经过不会跨时间合并。
 - MESH 表格使用不含 session/source/MR/site 的稳定 ID。Browser 使用 `localStorage`，Electron 通过白名单 Bridge 写入当前 `userData` 下的受控 UI 偏好文件；恢复默认只清理当前表。
-- 链路明细通过独立 `mesh_link_detail_export` Export Job 输出“链路明细”“主链路明细”两张工作表；综合报告不承载全量链路明细或全局 AP/Peer 聚合。
-- 报告按钮默认沿用来源参数，显式启用临时参数时通过 `MeshReportRequestDTO` 进入 Export Process，不修改来源快照、局点配置或 parsed 数据库。
+- 链路明细通过独立 `mesh_link_detail_export` Export Job 输出“链路明细”“主链路明细”“分析参数”三张工作表；综合报告不承载全量链路明细或全局 AP/Peer 聚合。
+- 报告和链路明细导出使用同一分析参数快照（本次覆盖 > 来源快照 > 局点默认 > 系统默认），参数写入“分析参数”Sheet，并可由页面保存为当前局点默认。
+- 报告列表中的删除只允许派生 `outputs` 文件；原始 raw、parsed SQLite 和 catalog 不可删除。删除由 Application Service 做路径白名单复验，前端只提交 opaque `artifact_id`。

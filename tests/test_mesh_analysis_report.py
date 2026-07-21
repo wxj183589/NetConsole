@@ -375,7 +375,7 @@ def test_formal_report_reuses_repository_results_and_exports_fixed_active_series
         for row in parameter_sheet.iter_rows(min_row=3)
     }
     assert parameter_rows["主链路切换基准时间"]["参数来源"] == "source_snapshot"
-    assert parameter_rows["实际短时建链阈值"]["计算后有效值"] == 2000
+    assert parameter_rows["实际短时建链阈值"]["计算后有效值"] == 3500
     assert parameter_rows["同物理 AP 双射频合并"]["当前值"] == "是"
     assert parameter_rows["乒乓返回窗口"]["Source 快照值"] == "未配置"
 
@@ -534,7 +534,7 @@ def test_report_analysis_params_keep_override_source_site_default_priority():
     assert resolved.short_link_tolerance_ms == 444
     assert resolved.pingpong_tolerance_ms == 777
     assert _analysis_params_for_report(MeshReportOptions(site_analysis_params=site), {}).main_link_switch_time_ms == 3333
-    assert _analysis_params_for_report(MeshReportOptions(), {}).main_link_switch_time_ms == 2500
+    assert _analysis_params_for_report(MeshReportOptions(), {}).main_link_switch_time_ms == 4000
 
 
 def test_analysis_parameter_rows_show_each_candidate_and_final_source():
@@ -560,7 +560,7 @@ def test_analysis_parameter_rows_show_each_candidate_and_final_source():
     assert switch["report_override"] == 1111
     assert switch["source_snapshot"] == 2222
     assert switch["site_config"] is None
-    assert switch["global_default"] == 2500
+    assert switch["global_default"] == 4000
     assert by_name["短时判定容差"]["parameter_source"] == "source_snapshot"
     assert by_name["乒乓判定容差"]["parameter_source"] == "site_config"
     assert by_name["RSSI 优"]["parameter_source"] == "report_override"

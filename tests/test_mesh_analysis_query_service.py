@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisQueryError,
     MeshAnalysisQueryService,
     MeshAnalysisTimeRangeError,
 )
@@ -93,6 +94,17 @@ def test_link_pagination_and_existing_artifact_metadata(tmp_path: Path) -> None:
     assert page.items[0].sample_group_index == page.items[1].sample_group_index
     assert {item.artifact_type for item in artifacts} == {"raw_mesh_log", "analysis_report"}
     assert all(":" not in item.name for item in artifacts)
+    assert next(item for item in artifacts if item.artifact_type == "raw_mesh_log").deletable is False
+    report_artifact = next(item for item in artifacts if item.artifact_type == "analysis_report")
+    assert report_artifact.deletable is True
+    sidecar = _report.with_name(f"{_report.name}.manifest.json")
+    sidecar.write_text("{}", encoding="utf-8")
+    name, targets = service.artifact_delete_targets("demo", session_id, report_artifact.artifact_id)
+    assert name == report_artifact.name
+    assert set(targets) == {_report.resolve(), sidecar.resolve()}
+    raw_artifact = next(item for item in artifacts if item.artifact_type == "raw_mesh_log")
+    with pytest.raises(MeshAnalysisQueryError, match="原始导入日志不允许"):
+        service.artifact_delete_targets("demo", session_id, raw_artifact.artifact_id)
 
 
 def test_legacy_missing_diagnosis_table_keeps_summary_available(tmp_path: Path) -> None:

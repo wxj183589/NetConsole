@@ -1,3 +1,7 @@
+v1.4.0
+- MESH 原始日志分析统一使用 MeshLinkAnalyzer，报告和链路明细导出共享局点/来源/临时参数快照；链路明细导出增加参数配置和“分析参数”Sheet。
+- 报告与来源列表只允许删除 outputs 派生文件，原始导入日志、parsed SQLite 和 catalog 保留。
+
 v1.3.9
 - Electron 第二波 Qt 功能对等整改完成集成：系统设置、中央功能 profile、网络工具、命令说明、应用日志与安全维护统一进入 Vue + FastAPI + Application Service 正式链路。
 - 统一任务窗口、Artifact 和 Desktop Bridge 收口取消、终态、脱敏、下载、打开文件/目录和子窗口恢复；Electron 开发/生产资源启动及无效 Python 失败冒烟通过。

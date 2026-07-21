@@ -133,7 +133,7 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
     assert sheet.auto_filter.ref
 
 
-def test_mesh_link_detail_export_has_only_the_two_formal_sheets(tmp_path: Path) -> None:
+def test_mesh_link_detail_export_includes_analysis_parameters_sheet(tmp_path: Path) -> None:
     target = tmp_path / "mesh-link-detail.xlsx"
     active_row = {
         "sequence": 1,
@@ -165,11 +165,13 @@ def test_mesh_link_detail_export_has_only_the_two_formal_sheets(tmp_path: Path) 
     export_mesh_link_details_xlsx(target, [_mesh_row()], [active_row], total_rows=1)
 
     workbook = load_workbook(target)
-    assert workbook.sheetnames == ["链路明细", "主链路明细"]
+    assert workbook.sheetnames == ["链路明细", "主链路明细", "分析参数"]
     assert [cell.value for cell in workbook["链路明细"][1]] == [header for header, _field in LINK_DETAIL_EXPORT_COLUMNS]
     assert [cell.value for cell in workbook["主链路明细"][1]] == [header for header, _field in ACTIVE_BUILD_ORDER_EXPORT_COLUMNS]
     assert workbook["链路明细"].max_row == 2
     assert workbook["主链路明细"].max_row == 2
+    assert workbook["分析参数"]["A5"].value == "基准时间(ms)"
+    assert workbook["分析参数"]["B5"].value == 4000
     assert "_netconsole_meta" not in workbook.sheetnames
     workbook.close()
 

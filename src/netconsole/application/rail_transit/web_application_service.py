@@ -22,6 +22,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrMetricType,
     OnlineMrSwitchRssiSource,
 )
+from netconsole.models.api.mesh_analysis import MeshAnalysisParamsDTO, MeshArtifactDeleteResultDTO
 from netconsole.models.api.rail_transit_web import (
     CarNetworkPointPreviewDTO,
     CarNetworkPointPreviewRowDTO,
@@ -58,7 +59,12 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
+from netconsole.services.mesh_analysis_params_service import (
+    load_site_mesh_analysis_params,
+    mesh_analysis_params_template,
+    save_site_mesh_analysis_params,
+)
+from netconsole.models.mesh_analysis_params import normalize_mesh_analysis_params
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.car_network_diagnostic import (
@@ -1143,12 +1149,27 @@ class RailTransitWebApplicationService:
         )
         return self._start_export(site_id, job, "mesh_analysis_report", reservation)
 
+    def get_mesh_analysis_params(self, site_id: str) -> MeshAnalysisParamsDTO:
+        return MeshAnalysisParamsDTO(**load_site_mesh_analysis_params(self.paths, self._site(site_id)).to_dict())
+
+    def get_mesh_analysis_params_template(self, site_id: str, service_type: str) -> MeshAnalysisParamsDTO:
+        self._site(site_id)
+        return MeshAnalysisParamsDTO(**mesh_analysis_params_template(service_type).to_dict())
+
+    def save_mesh_analysis_params(self, site_id: str, values: dict[str, object]) -> MeshAnalysisParamsDTO:
+        site_id = self._site(site_id)
+        params = normalize_mesh_analysis_params(values)
+        save_site_mesh_analysis_params(self.paths, site_id, params)
+        self.mesh_query_service._build_rows_cached.cache_clear()
+        return MeshAnalysisParamsDTO(**params.to_dict())
+
     def start_mesh_link_detail_export(
         self,
         site_id: str,
         session_id: str,
         *,
         source_file_id: int,
+        analysis_params_override: dict[str, object] | None = None,
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         try:
@@ -1183,7 +1204,10 @@ class RailTransitWebApplicationService:
             output_path=str(reservation.output_path),
             db_path=str(context.detail_db),
             filters={"source_file_id": context.detail_source_id},
-            params={"fallback_analysis_params": site_analysis_params},
+            params={
+                "analysis_params": analysis_params_override,
+                "fallback_analysis_params": site_analysis_params,
+            },
             context={
                 "source_file_id": context.detail_source_id,
                 "site_name": site_id,
@@ -1196,6 +1220,25 @@ class RailTransitWebApplicationService:
             },
         )
         return self._start_export(site_id, job, "mesh_link_detail_export", reservation)
+
+    def delete_mesh_artifact(self, site_id: str, session_id: str, artifact_id: str) -> MeshArtifactDeleteResultDTO:
+        site_id = self._site(site_id)
+        try:
+            name, targets = self.mesh_query_service.artifact_delete_targets(site_id, session_id, artifact_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_ARTIFACT_NOT_FOUND", str(exc)) from exc
+        deleted = 0
+        for target in targets:
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise RailTransitWebError("MESH_ARTIFACT_DELETE_FAILED", f"删除分析报告失败：{exc}") from exc
+            deleted += 1
+        if deleted == 0:
+            raise RailTransitWebError("MESH_ARTIFACT_NOT_FOUND", "分析报告已不存在")
+        return MeshArtifactDeleteResultDTO(artifact_id=artifact_id, name=name, deleted_files=deleted)
 
     def start_mesh_rebuild(self, site_id: str, session_id: str, *, explicit_confirmation: bool) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
