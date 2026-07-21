@@ -67,10 +67,11 @@ export interface FileDownloadResult {
   device_id: string
   remote_entry_id: string
   target_kind: 'device_file' | 'mr_raw' | ''
-  mesh_import_status: '' | 'completed' | 'duplicate' | 'failed'
+  mesh_import_status: '' | 'completed' | 'duplicate' | 'failed' | 'rebuild_required'
   mesh_imported_count: number
   mesh_duplicate_count: number
   mesh_parsed_record_count: number
+  mesh_import_error_code?: string
   mesh_import_error: string
 }
 

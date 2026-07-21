@@ -64,6 +64,13 @@ describe('file management API contract', () => {
     expect(source).not.toContain('localStorage.setItem(\'netconsole.file-management.sftp')
   })
 
+  it('exposes a direct mesh download action and a readable mesh import state label', () => {
+    expect(source).toContain('downloadAndImportMesh')
+    expect(source).toContain('downloadMeshLogsAndImport')
+    expect(source).toContain('rebuild_required')
+    expect(source).toContain('meshImportStatusText(row.result.mesh_import_status)')
+  })
+
   it('maps stable SFTP setup errors and exposes an existing task id', () => {
     for (const code of [
       'DEVICE_FILE_SFTP_UNAVAILABLE',

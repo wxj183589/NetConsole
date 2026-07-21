@@ -168,6 +168,7 @@ class FileDownloadResultDTO(ApiModel):
     mesh_imported_count: int = Field(default=0, ge=0)
     mesh_duplicate_count: int = Field(default=0, ge=0)
     mesh_parsed_record_count: int = Field(default=0, ge=0)
+    mesh_import_error_code: str = ""
     mesh_import_error: str = ""
 
 

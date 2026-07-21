@@ -42,6 +42,7 @@ from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.mesh_mr_repository import MeshSchemaRebuildRequired
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.file_transfer_service import (
@@ -1234,6 +1235,7 @@ class FileManagementApplicationService:
                         mesh_imported_count=max(0, int(result.get("mesh_imported_count") or 0)),
                         mesh_duplicate_count=max(0, int(result.get("mesh_duplicate_count") or 0)),
                         mesh_parsed_record_count=max(0, int(result.get("mesh_parsed_record_count") or 0)),
+                        mesh_import_error_code=str(result.get("mesh_import_error_code") or ""),
                         mesh_import_error=str(result.get("mesh_import_error") or ""),
                     )
                 except (TypeError, ValueError):
@@ -1243,6 +1245,8 @@ class FileManagementApplicationService:
             message = "文件下载失败"
         elif snapshot.status is TaskState.CANCELLED:
             message = "文件下载已取消"
+        elif result_dto is not None and result_dto.mesh_import_status == "rebuild_required":
+            message = "文件下载完成，MESH 派生数据库需要重建"
         elif result_dto is not None and result_dto.mesh_import_status == "failed":
             message = "文件下载完成，MESH 自动导入失败"
         total = max(0, int(snapshot.total or descriptor.get("remote_size") or 0))
@@ -1421,7 +1425,7 @@ class FileManagementApplicationService:
             return {}
         try:
             context.check_cancelled()
-            profile = MeshStorageService(site, context.paths).ensure_mr_profile_for_device(device)
+            profile = MeshStorageService(site, context.paths).ensure_mr_profile_identity_for_device(device)
             context.progress("mesh_auto_import", 0, 1, "正在自动导入 MESH 日志")
 
             def should_cancel() -> bool:
@@ -1441,6 +1445,13 @@ class FileManagementApplicationService:
                 "mesh_imported_count": result.imported_count,
                 "mesh_duplicate_count": result.duplicate_count,
                 "mesh_parsed_record_count": result.parsed_record_count,
+            }
+        except MeshSchemaRebuildRequired:
+            context.progress("mesh_auto_import", 1, 1, "MESH 派生数据库需要重建，原始日志已保留")
+            return {
+                "mesh_import_status": "rebuild_required",
+                "mesh_import_error_code": "MESH_SCHEMA_REBUILD_REQUIRED",
+                "mesh_import_error": "MESH 派生数据库需要重建，版本不兼容；原始日志已下载，请在应用内启动 MESH 派生数据库重建任务。",
             }
         except Exception as exc:
             from netconsole.services.job_center.job_context import BackgroundTaskCancelled
@@ -1590,7 +1601,7 @@ class FileManagementApplicationService:
         local_directory_id: str,
     ) -> tuple[Path, str]:
         if is_mesh_log_file(remote_file.name) and self._is_vehicle_mr_device(device):
-            profile = MeshStorageService(site, self.paths).ensure_mr_profile_for_device(device)
+            profile = MeshStorageService(site, self.paths).ensure_mr_profile_identity_for_device(device)
             directory = self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
             target_kind = "mr_raw"
         elif local_directory_id:

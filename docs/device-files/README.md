@@ -23,9 +23,14 @@ Application Service -> DeviceOperationService -> Task Center -> Command Profile
 启用操作独立记录授权、Profile、任务终态和去敏结果；成功后重新建立 SFTP 会话，失败或取消不得
 把设备文件页面误报为已连接。当前自动启用和真实设备执行状态仍为 `REAL_DEVICE_PENDING`。
 
+车载 MR 的 `meshlog.log` 和 `YYYY_MM_DD_Nmeshlog.log.gz` 下载只准备 MR Profile 身份、catalog 与 raw/parsed/export
+目录，不打开或初始化可重建的 MESH 派生 SQLite。旧派生 schema 不再阻断原始日志下载；下载任务完成后，
+自动导入若遇到旧 schema，会单独记录 `MESH_SCHEMA_REBUILD_REQUIRED` / `rebuild_required`，由 MESH 分析页或
+任务中心的 `mesh_schema_rebuild` Job 从受保护 raw 日志重建。
+
 ## 状态
 
-页面和下载队列已接入 Electron，但自动启用、真实设备 SFTP、主机密钥和大文件异常仍需现场验收，不能仅凭 Fake 测试标记为 `COMPLETE`。
+页面和下载队列已接入 Electron，车载 MR 已提供“下载并传入 MESH 分析”的批量动作；自动启用、真实设备 SFTP、主机密钥和大文件异常仍需现场验收，不能仅凭 Fake 测试标记为 `COMPLETE`。
 
 专题说明：
 

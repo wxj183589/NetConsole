@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 import threading
 from dataclasses import replace
@@ -21,6 +22,7 @@ from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.file_transfer_service import (
     FileTransferService,
@@ -38,6 +40,7 @@ from netconsole.services.external_terminal import WinScpLaunchResult
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.job_registry import dispatch_job
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.mesh_storage_service import MeshStorageService
 
 
 def _fixture(tmp_path: Path) -> tuple[PathResolver, Path]:
@@ -932,6 +935,35 @@ def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_pat
     assert paths.file_downloads_root("demo").resolve() in regular_target.parents
 
 
+def test_remote_mesh_download_target_does_not_open_incompatible_parsed_db(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(Device(name="MR-old-schema", device_type="MR", primary_address="192.0.2.54"))
+    profile = MeshStorageService("demo", paths).create_mr_profile(
+        "MR-old-schema",
+        linked_device_id=device.id,
+        linked_device_uuid=device.device_uuid,
+    )
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    with sqlite3.connect(index_path) as connection:
+        connection.execute("UPDATE schema_meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.execute("UPDATE meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.commit()
+    with pytest.raises(MeshSchemaRebuildRequired):
+        MeshMrRepository(index_path)
+
+    target, target_kind = FileManagementApplicationService(paths)._download_target(
+        "demo",
+        device,
+        RemoteDeviceFile("2026_07_21_1meshlog.log.gz", "flash:/2026_07_21_1meshlog.log.gz", 1024, None, "meshlog"),
+        "",
+    )
+
+    assert target_kind == "mr_raw"
+    assert paths.mesh_mr_raw_dir("demo", profile.safe_folder_name).resolve() in target.parents
+
+
 def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
@@ -995,6 +1027,69 @@ def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monke
     assert result["mesh_imported_count"] == 1
     assert result["mesh_parsed_record_count"] == 7
     assert imported == [target.resolve()]
+
+
+def test_mr_mesh_download_marks_rebuild_required_when_auto_import_needs_rebuild(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-03", device_type="MR", primary_address="192.0.2.55")
+    )
+
+    class FakeTransfer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def connect(self, _device):
+            return "flash:/"
+
+        def disconnect(self):
+            pass
+
+        def download(self, _remote_path, local_path, progress_callback=None, **_kwargs):
+            target = Path(local_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("mesh", encoding="utf-8")
+            if progress_callback:
+                progress_callback(4, 4)
+            return target
+
+    class FakeImport:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def import_files(self, *_args, **_kwargs):
+            raise MeshSchemaRebuildRequired("MESH 派生数据库版本不兼容")
+
+    monkeypatch.setattr("netconsole.services.file_management_service.FileTransferService", FakeTransfer)
+    monkeypatch.setattr("netconsole.services.file_management_service.MeshImportService", FakeImport)
+    target = paths.site_mesh_root("demo") / "MR-03" / "raw" / "MR-03-2026_07_16-meshlog.log"
+    relative = target.relative_to(paths.site_dir("demo")).as_posix()
+    job = BackgroundJob(
+        job_id="mesh-auto-import-rebuild",
+        task_type="file_management_download",
+        params={
+            "site_name": "demo",
+            "device_id": device.device_uuid,
+            "remote_entry_id": "fe1_" + "2" * 32,
+            "remote_path": "flash:/meshlog.log",
+            "remote_name": "meshlog.log",
+            "remote_category": "meshlog",
+            "target_relative_path": relative,
+            "target_kind": "mr_raw",
+            "mesh_auto_import": True,
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+        },
+    )
+
+    result = run_file_management_download(JobContext.from_job(job))
+
+    assert result["mesh_import_status"] == "rebuild_required"
+    assert result["mesh_import_error_code"] == "MESH_SCHEMA_REBUILD_REQUIRED"
+    assert "需要重建" in result["mesh_import_error"]
+    assert target.read_text(encoding="utf-8") == "mesh"
 
 
 def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:

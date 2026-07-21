@@ -220,7 +220,7 @@ def test_file_transfer_reports_sftp_unavailable_without_invoking_shell(
             connect_hosts.append(str(kwargs["hostname"]))
 
         def get_transport(self):
-            return FakeTransport(self.index != 1)
+            return FakeTransport(True)
 
         def open_sftp(self):
             raise RuntimeError("sftp subsystem disabled")
@@ -256,6 +256,111 @@ def test_file_transfer_reports_sftp_unavailable_without_invoking_shell(
     assert connect_hosts == ["10.0.0.1"]
     assert invoked_on_clients == []
     assert shell_commands == []
+
+
+def test_open_sftp_channel_closed_is_sftp_unavailable_only_when_transport_active(
+    tmp_path, monkeypatch
+):
+    class FakeSSHException(Exception):
+        pass
+
+    class FakeTransport:
+        def __init__(self, active: bool):
+            self.active = active
+
+        def is_active(self):
+            return self.active
+
+    class FakeSSHClient:
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            pass
+
+        def get_transport(self):
+            return FakeTransport(True)
+
+        def open_sftp(self):
+            raise FakeSSHException("Channel closed.")
+
+        def invoke_shell(self):
+            raise AssertionError("open_sftp failure must not open an interactive shell")
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(
+            SSHClient=FakeSSHClient,
+            SSHException=FakeSSHException,
+            AutoAddPolicy=lambda: object(),
+        ),
+    )
+    device = Device(
+        id=1,
+        name="H3C-SW",
+        device_vendor="H3C",
+        primary_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    with pytest.raises(SftpUnavailableError, match="未启用 SFTP"):
+        service.connect(device)
+
+
+def test_open_sftp_channel_closed_keeps_transport_inactive_as_connect_error(
+    tmp_path, monkeypatch
+):
+    class FakeSSHException(Exception):
+        pass
+
+    class FakeSSHClient:
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            pass
+
+        def get_transport(self):
+            return SimpleNamespace(is_active=lambda: False)
+
+        def open_sftp(self):
+            raise FakeSSHException("Channel closed.")
+
+        def invoke_shell(self):
+            raise AssertionError("inactive transport must not open an interactive shell")
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "paramiko",
+        SimpleNamespace(
+            SSHClient=FakeSSHClient,
+            SSHException=FakeSSHException,
+            AutoAddPolicy=lambda: object(),
+        ),
+    )
+    device = Device(
+        id=1,
+        name="H3C-SW",
+        device_vendor="H3C",
+        primary_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+    )
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    with pytest.raises(RuntimeError, match="Channel closed"):
+        service.connect(device)
 
 
 def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(

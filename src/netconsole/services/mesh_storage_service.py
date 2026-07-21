@@ -38,6 +38,23 @@ class MeshStorageService:
         linked_device_id: int | None = None,
         linked_device_uuid: str | None = None,
     ) -> MeshMrProfile:
+        profile = self._create_mr_profile_identity(
+            display_name,
+            notes=notes,
+            linked_device_id=linked_device_id,
+            linked_device_uuid=linked_device_uuid,
+        )
+        MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
+        return profile
+
+    def _create_mr_profile_identity(
+        self,
+        display_name: str,
+        *,
+        notes: str = "",
+        linked_device_id: int | None = None,
+        linked_device_uuid: str | None = None,
+    ) -> MeshMrProfile:
         name = display_name.strip()
         if not name:
             raise ValueError("MR name cannot be empty")
@@ -64,10 +81,11 @@ class MeshStorageService:
         self.ensure_mr_dirs(profile)
         self.catalog.create_profile(profile)
         self.write_mr_json(profile)
-        MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
         return profile
 
-    def ensure_mr_profile_for_device(self, device: Device) -> MeshMrProfile:
+    def ensure_mr_profile_identity_for_device(self, device: Device) -> MeshMrProfile:
+        """确保车载 MR 身份、目录与 catalog，不打开可重建的派生 SQLite。"""
+
         if device.id is None:
             raise ValueError("device id is required for MESH MR profile")
         device_uuid = str(device.device_uuid or "").strip() or None
@@ -79,7 +97,6 @@ class MeshStorageService:
                 self.catalog.update_profile_identity(existing)
             self.ensure_mr_dirs(existing)
             self.write_mr_json(existing)
-            MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, existing.safe_folder_name))
             return existing
         display_name = _device_display_name(device)
         by_name = self.catalog.get_by_display_name(display_name)
@@ -88,11 +105,15 @@ class MeshStorageService:
             self.catalog.update_profile_identity(linked)
             self.ensure_mr_dirs(linked)
             self.write_mr_json(linked)
-            MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, linked.safe_folder_name))
             return linked
         if by_name is not None:
             display_name = self._unique_auto_profile_name(display_name, int(device.id))
-        return self.create_mr_profile(display_name, linked_device_id=int(device.id), linked_device_uuid=device_uuid)
+        return self._create_mr_profile_identity(display_name, linked_device_id=int(device.id), linked_device_uuid=device_uuid)
+
+    def ensure_mr_profile_for_device(self, device: Device) -> MeshMrProfile:
+        profile = self.ensure_mr_profile_identity_for_device(device)
+        MeshMrRepository(self.paths.mesh_mr_db_path(self.site_name, profile.safe_folder_name))
+        return profile
 
     def ensure_mr_profile_for_asset(self, *, device_id: int, device_uuid: str, display_name: str) -> MeshMrProfile:
         return self.ensure_mr_profile_for_device(Device(id=device_id, device_uuid=device_uuid, name=display_name))
@@ -113,7 +134,7 @@ class MeshStorageService:
         for device in sorted(devices, key=_vehicle_mr_device_sort_key):
             if device.id is None:
                 continue
-            profiles.append(self.ensure_mr_profile_for_device(device))
+            profiles.append(self.ensure_mr_profile_identity_for_device(device))
         return profiles
 
     def ensure_mr_dirs(self, profile: MeshMrProfile) -> Path:

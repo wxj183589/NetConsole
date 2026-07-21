@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Download } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 import {
@@ -74,6 +75,7 @@ const sftpSetupTaskId = ref('')
 const connection = ref<FileConnection | null>(null)
 const remotePage = ref<RemoteFilePage | null>(null)
 const remoteLoading = ref(false)
+const downloadLoading = ref(false)
 const remotePageNumber = ref(1)
 const remoteSelected = ref<RemoteFileEntry[]>([])
 const remoteTable = ref<{ clearSelection(): void; toggleRowSelection(row: RemoteFileEntry, selected: boolean): void } | null>(null)
@@ -83,7 +85,15 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => activeDownloadTasks(tasks.value))
 const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) || null)
+const isVehicleMrDevice = computed(() => {
+  const device = selectedDevice.value
+  if (!device) return false
+  const deviceType = String(device.device_type || '').trim().toUpperCase()
+  const groupName = String(device.group_name || '')
+  return deviceType === 'MR' || deviceType === 'MOBILE_ROUTER' || groupName.includes('车载-MR')
+})
 const deviceGroups = computed(() => [...new Set(devices.value.map((device) => device.group_name || '未分组'))].sort((a, b) => a.localeCompare(b)))
+const meshRemoteFiles = computed(() => selectableRemoteFiles(remotePage.value?.items || [], true))
 const filteredDevices = computed(() => {
   const query = deviceSearch.value.trim().toLocaleLowerCase()
   return devices.value.filter((device) => {
@@ -127,6 +137,12 @@ const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
   DEVICE_FILE_SFTP_ENABLE_PENDING: '启用设备 SFTP 的受控任务仍在运行，请稍候后从任务中心查看结果。',
   DEVICE_FILE_SFTP_ENABLE_FAILED: '设备 SFTP 自动启用失败。请查看任务日志，并检查设备权限和 Command Profile。',
   DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED: '设备侧 SFTP 已启用，但重新连接失败。请查看任务，并检查 SFTP 服务和网络连通性。',
+}
+const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
+  completed: '完成',
+  duplicate: '重复',
+  failed: '失败',
+  rebuild_required: '重建待处理',
 }
 
 function openTaskWindow(taskId = ''): void {
@@ -365,12 +381,41 @@ async function openRemote(row: RemoteFileEntry): Promise<void> {
 }
 
 async function downloadRemote(): Promise<void> {
-  if (!connection.value || !remoteSelected.value.length || !localPage.value) return
+  await downloadRemoteEntries(remoteSelected.value)
+}
+
+async function downloadMeshLogsAndImport(): Promise<void> {
+  if (!connection.value || !localPage.value || !isVehicleMrDevice.value) return
+  const rows = meshRemoteFiles.value
+  if (!rows.length) {
+    remoteError.value = '当前目录没有可下载的 MESH 日志'
+    return
+  }
+  const totalBytes = rows.reduce((sum, row) => sum + Math.max(0, Number(row.size_bytes || 0)), 0)
+  const accepted = await confirm({
+    type: 'INFO',
+    title: '确认下载并传入 MESH 分析',
+    message: [
+      `目标车载 MR：${selectedDevice.value?.name || connection.value.device_name}`,
+      `文件数量：${rows.length}`,
+      `总大小：${formatBytes(totalBytes)}`,
+      '归档目录：对应车载 MR 的 raw 目录',
+      '下载完成后将自动尝试导入；若派生库需要重建，系统会单独标记该状态。',
+    ].join('\n'),
+    confirmText: '下载并导入',
+  })
+  if (!accepted) return
+  await downloadRemoteEntries(rows)
+}
+
+async function downloadRemoteEntries(rows: RemoteFileEntry[]): Promise<void> {
+  if (!connection.value || !localPage.value || !rows.length) return
+  downloadLoading.value = true
   remoteError.value = ''
   try {
     const batch = await startRemoteFileDownloadBatch(
       connection.value.connection_id,
-      remoteSelected.value.map((row) => row.entry_id),
+      rows.map((row) => row.entry_id),
       siteId.value,
       localPage.value.current_entry_id,
     )
@@ -380,7 +425,13 @@ async function downloadRemote(): Promise<void> {
     scheduleTaskRefresh()
   } catch (reason) {
     remoteError.value = messageOf(reason, '批量下载创建失败')
+  } finally {
+    downloadLoading.value = false
   }
+}
+
+function meshImportStatusText(status: string): string {
+  return MESH_IMPORT_STATUS_LABELS[status] || status
 }
 
 async function prepareWinscp(): Promise<void> {
@@ -571,7 +622,8 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button :disabled="!connection" @click="selectAllRemote(false)">{{ t('selectAll') }}</el-button>
           <el-button :disabled="!connection" @click="clearRemoteSelection">{{ t('clearSelection') }}</el-button>
           <el-button :disabled="!connection" @click="selectAllRemote(true)">{{ t('meshLogs') }}</el-button>
-          <el-button type="primary" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">{{ t('downloadSelected') }}（{{ remoteSelected.length }}）</el-button>
+          <el-button :icon="Download" :loading="downloadLoading" :disabled="!connection || !localPage || !isVehicleMrDevice || !meshRemoteFiles.length || !isFeatureEnabled('web.file_management_download')" @click="downloadMeshLogsAndImport">{{ t('downloadAndImportMesh') }}</el-button>
+          <el-button type="primary" :loading="downloadLoading" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">{{ t('downloadSelected') }}（{{ remoteSelected.length }}）</el-button>
         </div>
         <NcDataTable
           ref="remoteTable" :data="remotePage?.items || []" border stripe height="430" row-key="entry_id"
@@ -606,7 +658,7 @@ function messageOf(reason: unknown, fallback: string): string {
         </el-tag>
       </div>
       <NcDataTable :data="tasks" :columns="downloadTaskColumns" table-id="file-download-queue" route-key="/file-management" empty-text="暂无下载任务">
-        <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${row.result.mesh_import_status}` : '' }}</small></template>
+        <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${meshImportStatusText(row.result.mesh_import_status)}` : '' }}</small></template>
         <template #cell-status="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template>
         <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template>
         <template #cell-actions="{ row }">

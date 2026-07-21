@@ -142,7 +142,25 @@ class FileTransferService:
                 try:
                     self._sftp = client.open_sftp()
                 except Exception as sftp_exc:
-                    if not self._is_sftp_unavailable_error(sftp_exc):
+                    transport_active = self._transport_is_active(client)
+                    sftp_unavailable = self._is_sftp_subsystem_unavailable(
+                        sftp_exc,
+                        failure_stage="open_sftp",
+                        transport_active=transport_active,
+                        ssh_authenticated=True,
+                    )
+                    app_logger.log_error(
+                        "SFTP_OPEN_FAILED",
+                        (
+                            f"device={device.name}, target={prepared.host}:{prepared.port}, "
+                            f"failure_stage=open_sftp, ssh_authenticated=True, "
+                            f"transport_active={transport_active}, "
+                            f"exception_type={sftp_exc.__class__.__name__}, "
+                            f"sftp_subsystem_unavailable={sftp_unavailable}, "
+                            f"error={sanitize_sensitive_text(str(sftp_exc), device)}"
+                        ),
+                    )
+                    if not sftp_unavailable:
                         raise
                     raise SftpUnavailableError() from sftp_exc
                 self._device = device
@@ -273,16 +291,72 @@ class FileTransferService:
     def _is_sftp_unavailable_error(exc: BaseException) -> bool:
         """仅识别明确的 SFTP 子系统拒绝，避免网络/认证错误触发写操作。"""
 
+        return FileTransferService._is_sftp_subsystem_unavailable(
+            exc,
+            failure_stage="open_sftp",
+            transport_active=True,
+            ssh_authenticated=True,
+        )
+
+    @staticmethod
+    def _is_sftp_subsystem_unavailable(
+        exc: BaseException,
+        *,
+        failure_stage: str,
+        transport_active: bool,
+        ssh_authenticated: bool,
+    ) -> bool:
+        """在 open_sftp 上下文中识别设备拒绝 SFTP 子系统。"""
+
+        if failure_stage != "open_sftp" or not ssh_authenticated or not transport_active:
+            return False
         name = exc.__class__.__name__.casefold()
         text = str(exc or "").casefold()
+        if "channel closed" in text:
+            return True
         if name == "channelexception" and any(
-            marker in text for marker in ("administratively prohibited", "open failed", "unknown channel type")
+            marker in text
+            for marker in (
+                "administratively prohibited",
+                "open failed",
+                "unknown channel type",
+                "subsystem request rejected",
+                "subsystem unavailable",
+            )
         ):
             return True
         return (
-            "sftp" in text
-            and any(marker in text for marker in ("disabled", "not enabled", "not found", "subsystem", "unavailable"))
+            (
+                "sftp" in text
+                and any(
+                    marker in text
+                    for marker in ("disabled", "not enabled", "not found", "subsystem", "unavailable")
+                )
+            )
+            or "subsystem request rejected" in text
+            or "subsystem unavailable" in text
         )
+
+    @staticmethod
+    def _transport_is_active(client) -> bool:
+        getter = getattr(client, "get_transport", None)
+        if not callable(getter):
+            return True
+        try:
+            transport = getter()
+        except Exception:
+            return False
+        if transport is None:
+            return False
+        is_active = getattr(transport, "is_active", None)
+        if callable(is_active):
+            try:
+                return bool(is_active())
+            except Exception:
+                return False
+        if is_active is None:
+            return True
+        return bool(is_active)
 
     @staticmethod
     def _emit_progress(progress_callback: SftpProgressCallback | None, status_key: str) -> None:
