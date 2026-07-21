@@ -288,7 +288,7 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
                 "ac_device_uuid": "ac-1",
                 "ap_uuid": "ap-1",
                 "ap_name": "AP-A",
-                "ap_mac": "00:11:22:33:44:55",
+                "ap_mac": "0011-2233-4455",
                 "ap_ip": "10.0.0.1",
                 "site": "站点A",
             }
@@ -339,14 +339,19 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             json={"rows": [], "explicit_confirmation": True},
         )
         update_all = client.post("/api/rail-transit/trackside-ap-business/update", json={})
+        update_all_job = normal.jobs[update_all.json()["task_id"]]
+        normal.complete(update_all.json()["task_id"], {"success_count": 1})
         update_station = client.post(
             "/api/rail-transit/trackside-ap-business/update",
             json={"station": "站点A"},
         )
+        update_station_job = normal.jobs[update_station.json()["task_id"]]
+        normal.complete(update_station.json()["task_id"], {"success_count": 1})
         update_ap = client.post(
             "/api/rail-transit/trackside-ap-business/update",
-            json={"ap_uuid": "ap-1", "ap_mac": "00:11:22:33:44:55", "ap_name": "AP-A"},
+            json={"ap_uuid": "ap-1", "ap_mac": "0011-2233-4455", "ap_name": "AP-A"},
         )
+        update_ap_job = normal.jobs[update_ap.json()["task_id"]]
         scope_conflict = client.post(
             "/api/rail-transit/trackside-ap-business/update",
             json={"station": "站点A", "ap_uuid": "ap-1"},
@@ -370,11 +375,12 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
         normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
     )
     assert update_all.status_code == 202
-    assert normal.jobs[update_all.json()["task_id"]].params["station"] == ""
+    assert update_all_job.params["station"] == ""
     assert update_station.status_code == 202
-    assert normal.jobs[update_station.json()["task_id"]].params["station"] == "站点A"
+    assert update_station_job.params["station"] == "站点A"
     assert update_ap.status_code == 202
-    assert normal.jobs[update_ap.json()["task_id"]].params["ap_uuid"] == "ap-1"
+    assert update_ap_job.params["ap_uuid"] == "ap-1"
+    assert update_ap_job.params["ap_mac"] == "00:11:22:33:44:55"
     assert update_ap.json()["action"] == "trackside_ap_optical_update"
     assert scope_conflict.status_code == 422
     assert scope_conflict.json()["detail"]["message"] == "站点范围和 AP 身份不能同时提交"
@@ -403,11 +409,12 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
     assert started.action == "mesh_log_import"
     assert set(started.model_dump()) == {
         "task_id",
-        "status",
-        "action",
-        "artifact_id",
-        "available",
-        "sha256",
+            "status",
+            "action",
+            "artifact_id",
+            "artifact_name",
+            "available",
+            "sha256",
         "size_bytes",
         "message",
         "error_message",

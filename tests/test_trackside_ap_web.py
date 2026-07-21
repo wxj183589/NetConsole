@@ -281,9 +281,22 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
                 "ac_device_uuid": ac_uuid_1,
                 "ap_uuid": "ap-1",
                 "ap_name": "AP-A",
-                "ap_mac": "00:11:22:33:44:55",
+                "ap_mac": "bc5a-3457-8cc0",
                 "ap_ip": "10.0.0.1",
                 "site": "站点A",
+            }
+        ],
+    )
+    repository.replace_fit_ap_resources(
+        ac_uuid_2,
+        [
+            {
+                "ac_device_uuid": ac_uuid_2,
+                "ap_uuid": "ap-2",
+                "ap_name": "AP-B",
+                "ap_mac": "305f-277a-1880",
+                "ap_ip": "10.0.0.2",
+                "site": "站点B",
             }
         ],
     )
@@ -304,8 +317,18 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     station_update = service.start_trackside_ap_update("demo", station="站点A")
     station_job = process.jobs[station_update.task_id]
     process.complete(station_update.task_id, {"success_count": 1})
-    ap_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="00:11:22:33:44:55", ap_name="AP-A")
+    uuid_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1")
+    uuid_job = process.jobs[uuid_update.task_id]
+    process.complete(uuid_update.task_id, {"success_count": 1})
+    mac_update = service.start_trackside_ap_update("demo", ap_mac="BC5A-3457-8CC0")
+    mac_job = process.jobs[mac_update.task_id]
+    process.complete(mac_update.task_id, {"success_count": 1})
+    name_update = service.start_trackside_ap_update("demo", ap_name="AP-A")
+    name_job = process.jobs[name_update.task_id]
+    process.complete(name_update.task_id, {"success_count": 1})
+    ap_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="bc5a-3457-8cc0", ap_name="AP-A")
     ap_job = process.jobs[ap_update.task_id]
+    process.complete(ap_update.task_id, {"success_count": 1})
 
     assert all_job.params["station"] == ""
     assert all_job.params["ap_uuid"] == ""
@@ -318,21 +341,65 @@ def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: 
     assert station_job.params["resource_keys"] == [
         f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
     ]
-    assert ap_job.params["station"] == ""
-    assert ap_job.params["ap_uuid"] == "ap-1"
-    assert ap_job.params["ap_mac"] == "00:11:22:33:44:55"
-    assert ap_job.params["ap_name"] == "AP-A"
-    assert ap_job.params["resource_keys"] == [
-        f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
-    ]
+    for job in (uuid_job, mac_job, name_job, ap_job):
+        assert job.params["station"] == ""
+        assert job.params["ap_uuid"] == "ap-1"
+        assert job.params["ap_mac"] == "bc:5a:34:57:8c:c0"
+        assert job.params["ap_name"] == "AP-A"
+        assert job.params["ac_uuid"] == ac_uuid_1
+        assert job.params["device_uuid"] == ac_uuid_1
+        assert job.params["resource_keys"] == [
+            f"site:demo|ac:{ac_uuid_1}|fit_ap_optical"
+        ]
 
     with pytest.raises(RailTransitWebError) as scope_conflict:
         service.start_trackside_ap_update("demo", station="站点A", ap_uuid="ap-1")
     assert scope_conflict.value.code == "TRACKSIDE_UPDATE_SCOPE_CONFLICT"
 
     with pytest.raises(RailTransitWebError) as ap_conflict:
-        service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="00:11:22:33:44:66", ap_name="AP-A")
+        service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="305f-277a-1880", ap_name="AP-A")
     assert ap_conflict.value.code == "TRACKSIDE_UPDATE_AP_CONFLICT"
+
+    with pytest.raises(RailTransitWebError) as ap_not_found:
+        service.start_trackside_ap_update("demo", ap_mac="ffff-ffff-ffff")
+    assert ap_not_found.value.code == "TRACKSIDE_UPDATE_AP_NOT_FOUND"
+    assert process.jobs == {}
+
+    with pytest.raises(RailTransitWebError) as invalid_mac:
+        service.start_trackside_ap_update("demo", ap_mac="0011-2233-G455")
+    assert invalid_mac.value.code == "AP_MAC_INVALID"
+
+
+def test_trackside_application_rejects_unbound_ap_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_resolve_trackside_ap_update_target",
+        lambda *_args, **_kwargs: {
+            "ap_uuid": "ap-1",
+            "ap_mac": "bc5a-3457-8cc0",
+            "ap_name": "AP-A",
+            "ac_device_uuid": "",
+        },
+    )
+
+    with pytest.raises(RailTransitWebError) as exc_info:
+        service.start_trackside_ap_update("demo", ap_uuid="ap-1")
+
+    assert exc_info.value.code == "TRACKSIDE_UPDATE_AP_AC_MISSING"
+    assert process.jobs == {}
 
 
 def test_trackside_collection_no_target_does_not_fake_success(tmp_path: Path) -> None:

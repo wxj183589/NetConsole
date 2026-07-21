@@ -842,13 +842,17 @@ class RailTransitWebApplicationService:
             ap_mac=selected_mac,
             ap_name=selected_name,
         )
+        matched_ac_uuid = str(matched.get("ac_device_uuid") or "").strip()
+        if not matched_ac_uuid:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_AC_MISSING", "目标 AP 未绑定 AC，无法定向更新")
+        matched_mac = normalize_mac(matched.get("ap_mac")) or selected_mac or ""
         return {
             "station": "",
             "ap_uuid": str(matched.get("ap_uuid") or selected_uuid),
-            "ap_mac": str(matched.get("ap_mac") or selected_mac_text),
+            "ap_mac": matched_mac,
             "ap_name": str(matched.get("ap_name") or selected_name),
-            "ac_uuid": str(matched.get("ac_device_uuid") or ""),
-            "device_uuid": str(matched.get("ac_device_uuid") or ""),
+            "ac_uuid": matched_ac_uuid,
+            "device_uuid": matched_ac_uuid,
         }
 
     def _trackside_ap_optical_ac_uuids(
@@ -895,6 +899,10 @@ class RailTransitWebApplicationService:
             matched_ac_uuids.append(ac_uuid)
         if matched_ac_uuids:
             return list(dict.fromkeys(matched_ac_uuids))
+        if has_ap_identity:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_AC_MISSING", "目标 AP 未绑定 AC，无法定向更新")
+        if selected_station:
+            return []
         return self._h3c_ac_device_uuids(database)
 
     def _h3c_ac_device_uuids(self, database: Database) -> list[str]:

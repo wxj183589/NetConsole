@@ -60,6 +60,12 @@ def candidate(
         ("aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:ff"),
         ("AA-BB-CC-DD-EE-FF", "aa:bb:cc:dd:ee:ff"),
         ("aabb.ccdd.eeff", "aa:bb:cc:dd:ee:ff"),
+        ("bc5a-3457-8cc0", "bc:5a:34:57:8c:c0"),
+        ("BC5A-3457-8CC0", "bc:5a:34:57:8c:c0"),
+        ("bc5a.3457.8cc0", "bc:5a:34:57:8c:c0"),
+        ("bc:5a:34:57:8c:c0", "bc:5a:34:57:8c:c0"),
+        ("bc-5a-34-57-8c-c0", "bc:5a:34:57:8c:c0"),
+        ("bc5a34578cc0", "bc:5a:34:57:8c:c0"),
         ("aabbccddeeff", "aa:bb:cc:dd:ee:ff"),
         ("AABBCCDDEEFF", "aa:bb:cc:dd:ee:ff"),
     ],
@@ -69,7 +75,7 @@ def test_normalize_mac_accepts_supported_formats(raw, expected):
     assert is_mac_like(raw)
 
 
-@pytest.mark.parametrize("raw", [None, "", "N/A", "--", "unknown", "None", "bad-mac", "aa:bb:cc:dd:ee"])
+@pytest.mark.parametrize("raw", [None, "", "N/A", "--", "unknown", "None", "bad-mac", "aa:bb:cc:dd:ee", "0011-2233-445", "0011-2233-G455", "0011/2233/4455", "0011-2233-445566"])
 def test_normalize_mac_rejects_empty_sentinels_and_invalid_values(raw):
     assert normalize_mac(raw) is None
     assert not is_mac_like(raw)

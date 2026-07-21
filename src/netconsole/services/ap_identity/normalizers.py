@@ -8,6 +8,7 @@ from netconsole.utils.mileage import parse_track_mileage
 EMPTY_VALUES = {"", "-", "--", "n/a", "na", "none", "null", "unknown", "未知", "无"}
 _MAC_COLON_OR_HYPHEN = re.compile(r"^(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$")
 _MAC_DOTTED = re.compile(r"^(?:[0-9a-fA-F]{4}\.){2}[0-9a-fA-F]{4}$")
+_MAC_H3C_HYPHEN = re.compile(r"^(?:[0-9a-fA-F]{4}-){2}[0-9a-fA-F]{4}$")
 _MAC_PLAIN = re.compile(r"^[0-9a-fA-F]{12}$")
 
 
@@ -15,7 +16,12 @@ def normalize_mac(value: object) -> str | None:
     text = _clean_text(value)
     if text is None:
         return None
-    if not (_MAC_COLON_OR_HYPHEN.fullmatch(text) or _MAC_DOTTED.fullmatch(text) or _MAC_PLAIN.fullmatch(text)):
+    if not (
+        _MAC_COLON_OR_HYPHEN.fullmatch(text)
+        or _MAC_DOTTED.fullmatch(text)
+        or _MAC_H3C_HYPHEN.fullmatch(text)
+        or _MAC_PLAIN.fullmatch(text)
+    ):
         return None
     compact = re.sub(r"[-:.]", "", text).casefold()
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))

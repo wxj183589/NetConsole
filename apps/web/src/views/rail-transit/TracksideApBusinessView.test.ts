@@ -41,7 +41,7 @@ const rows: TracksideApBusinessRow[] = [
     switch_rx_power: '-10.1',
     switch_optical_status: 'normal',
     ap_uuid: 'ap-1',
-    ap_mac: '00:11:22:33:44:55',
+    ap_mac: 'bc5a-3457-8cc0',
     ap_name: 'AP-A',
     ap_rx_power: '-11.2',
     ap_optical_status: 'normal',
@@ -60,7 +60,7 @@ const rows: TracksideApBusinessRow[] = [
     switch_rx_power: '-12.1',
     switch_optical_status: 'warning',
     ap_uuid: '',
-    ap_mac: '00:11:22:33:44:66',
+    ap_mac: '305f-277a-1880',
     ap_name: '',
     ap_rx_power: '',
     ap_optical_status: 'not_collected',
@@ -181,7 +181,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     vi.useRealTimers()
   })
 
-  it('submits all, station and AP update requests with the real scope payloads', async () => {
+  it('submits all, station and AP update requests with stable scope payloads', async () => {
     const wrapper = await mountView()
 
     expect(button(wrapper, '更新全部光衰').attributes('disabled')).toBeUndefined()
@@ -198,17 +198,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({
       ap_uuid: 'ap-1',
-      ap_mac: '00:11:22:33:44:55',
-      ap_name: 'AP-A',
     })
 
     expect(buttons(wrapper, '更新 AP')[1].attributes('disabled')).toBeUndefined()
     await buttons(wrapper, '更新 AP')[1].trigger('click')
     await flushPromises()
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({
-      ap_uuid: '',
-      ap_mac: '00:11:22:33:44:66',
-      ap_name: '',
+      ap_mac: '305f-277a-1880',
     })
     wrapper.unmount()
   })

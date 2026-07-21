@@ -25,6 +25,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - FIT-AP：后端搜索、筛选、排序和分页，默认按连接交换机自然升序、其次按归一化端口自然升序，缺失项后置；前端通过统一 `NcDataTable` 保存列显隐、顺序、手工列宽和固定位置，物理接口统一显示 `GE/XGE/25GE/40GE/100GE` 简称；FIT-AP、配置、Radio、历史、Mesh-Link、AP 扩展和规划页面不再各自维护列宽算法；
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
+- 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 默认关闭，启用后必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。

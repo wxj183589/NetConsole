@@ -12,7 +12,7 @@ import {
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
-import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask } from '../../types/tracksideApBusiness'
+import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask, TracksideApUpdateRequest } from '../../types/tracksideApBusiness'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   isTracksideApBusinessArtifactTask,
@@ -93,7 +93,17 @@ function failure(reason: unknown, fallback: string): string { return reason inst
 function stopPolling(): void { if (pollTimer !== undefined) window.clearTimeout(pollTimer); pollTimer = undefined }
 function rememberTask(value: TracksideApTask | null): void { task.value = value; if (value) localStorage.setItem(storageKey, value.task_id); else localStorage.removeItem(storageKey) }
 function isActiveTask(value: TracksideApTask | null): boolean { return Boolean(value && activeStates.has(value.status)) }
-function hasApIdentity(row: TracksideApBusinessRow): boolean { return Boolean(row.ap_uuid || row.ap_mac || row.ap_name) }
+function cleanIdentity(value: string): string { return String(value || '').trim() }
+function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
+  const apUuid = cleanIdentity(row.ap_uuid)
+  if (apUuid) return { ap_uuid: apUuid }
+  const apMac = cleanIdentity(row.ap_mac)
+  if (apMac) return { ap_mac: apMac }
+  const apName = cleanIdentity(row.ap_name)
+  if (apName) return { ap_name: apName }
+  return null
+}
+function hasApIdentity(row: TracksideApBusinessRow): boolean { return singleApUpdatePayload(row) !== null }
 function autoSavedTaskIds(): string[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(autoSaveStorageKey) || '[]')
@@ -176,13 +186,16 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
 function updateAll(): void { void startTask(() => startTracksideApUpdate({}), '轨旁 AP 光衰更新启动失败', 'update:all', '全部', '当前局点') }
 function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败', `update:station:${row.site}`, '站点', row.site) }
 function updateAp(row: TracksideApBusinessRow): void {
-  if (!hasApIdentity(row)) { error.value = '缺少 AP 身份，无法定向更新'; return }
+  const payload = singleApUpdatePayload(row)
+  if (!payload) { error.value = '缺少 AP 身份，无法定向更新'; return }
+  const target = cleanIdentity(row.ap_name) || cleanIdentity(row.ap_mac) || cleanIdentity(row.ap_uuid)
+  const scopeValue = payload.ap_uuid || payload.ap_mac || payload.ap_name || target
   void startTask(
-    () => startTracksideApUpdate({ ap_uuid: row.ap_uuid, ap_mac: row.ap_mac, ap_name: row.ap_name }),
+    () => startTracksideApUpdate(payload),
     'AP 更新启动失败',
-    `update:ap:${row.ap_uuid || row.ap_mac || row.ap_name}`,
+    `update:ap:${scopeValue}`,
     'AP',
-    row.ap_name || row.ap_mac || row.ap_uuid,
+    target,
   )
 }
 function exportBusiness(): void { void startTask(() => startTracksideApBusinessExport(), '轨旁 AP 业务导出启动失败', 'export:business', '导出', '轨旁 AP 业务表格', '轨旁 AP 业务表格正在生成') }
