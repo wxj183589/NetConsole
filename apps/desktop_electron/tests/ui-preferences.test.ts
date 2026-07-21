@@ -17,10 +17,10 @@ describe('UI preference store', () => {
     const root = await fs.mkdtemp(join(tmpdir(), 'netconsole-ui-preferences-'))
     temporaryRoots.push(root)
     const first = new UiPreferenceStore(root)
-    await first.set('mesh-analysis-rssi.show-switch-points', false)
+    await first.set('mesh-analysis-airload.show-switch-points', true)
 
     const second = new UiPreferenceStore(root)
-    await expect(second.get('mesh-analysis-rssi.show-switch-points')).resolves.toBe(false)
+    await expect(second.get('mesh-analysis-airload.show-switch-points')).resolves.toBe(true)
     expect(await fs.readFile(join(root, 'ui-preferences.json'), 'utf8')).toContain('show-switch-points')
   })
 

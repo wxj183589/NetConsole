@@ -427,6 +427,12 @@ class MeshChartEventDTO(ApiModel):
     render_point_timestamp: str | None = None
     render_point_rssi: float | None = None
     render_aligned: bool = False
+    render_busy_point_timestamp: str | None = None
+    render_busy_point_index: int | None = None
+    render_busy_tx_busy: float | None = None
+    render_busy_rx_busy: float | None = None
+    render_busy_aligned: bool = False
+    busy_point_context: MeshChartPointDTO | None = None
     before_rssi: float | None = None
     after_rssi: float | None = None
     station: str | None = None

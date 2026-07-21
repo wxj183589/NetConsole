@@ -23,13 +23,15 @@ const props = withDefaults(defineProps<{
   events?: MeshChartEvent[]
   locationSegments?: MeshLocationSegment[]
   showPeer?: boolean
+  showSwitchLines?: boolean
+  showSwitchPoints?: boolean
   showLocationBand?: boolean
   scope?: 'active' | 'peer'
   active?: boolean
   initialViewport?: MeshChartViewport | null
   lockedViewport?: MeshChartViewport | null
   preserveViewport?: boolean
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showLocationBand: true, scope: 'active', active: true, initialViewport: null, lockedViewport: null, preserveViewport: true })
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: false, showLocationBand: true, scope: 'active', active: true, initialViewport: null, lockedViewport: null, preserveViewport: true })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
@@ -58,8 +60,22 @@ function escapeHtml(value: unknown): string {
 }
 function metric(value: number | null | undefined, unit = '%'): string { return value == null ? '—' : `${value}${unit}` }
 
-function tooltip(point: MeshChartPoint | undefined): string {
-  if (!point) return '暂无采样上下文'
+function switchSection(event: MeshChartEvent | undefined): string {
+  if (!event) return ''
+  return [
+    '<hr>',
+    '<strong>切换事件</strong>',
+    `切换时间：${escapeHtml(event.timestamp)}`,
+    `切出：${escapeHtml(event.from_ap_name || event.from_peer_mac)}`,
+    `切入：${escapeHtml(event.to_ap_name || event.to_peer_mac)}`,
+    event.render_busy_aligned && event.render_busy_point_timestamp
+      ? `对齐空口采样时间：${escapeHtml(event.render_busy_point_timestamp)}`
+      : '该切换事件无可对齐空口负载采样点，未作为折线节点显示。',
+  ].join('<br>')
+}
+
+function tooltip(point: MeshChartPoint | undefined, event?: MeshChartEvent): string {
+  if (!point) return `暂无采样上下文${switchSection(event)}`
   const backups = point.backups?.length
     ? point.backups.map((item) => `· ${escapeHtml(item.peer_ap_name || item.peer_mac)} / MR Tx ${metric(item.local_tx_busy)} / MR Rx ${metric(item.local_rx_busy)}`)
     : ['无']
@@ -72,7 +88,32 @@ function tooltip(point: MeshChartPoint | undefined): string {
     `MR / Peer RSSI：${metric(point.local_rssi, '')} / ${metric(point.peer_rssi, '')}`,
     `站点 / 区间：${escapeHtml(point.station)} / ${escapeHtml(point.section)}`,
     `同采样点备链：${backups.join('<br>')}`,
+    switchSection(event),
   ].join('<br>')
+}
+
+function findRenderedBusySwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
+  if (event.render_busy_aligned === false) return undefined
+  const timestamp = event.render_busy_point_timestamp || event.render_point_timestamp || event.point_timestamp
+  if (!timestamp) return undefined
+  const context = event.busy_point_context || event.point_context
+  return props.points.find((point) => (
+    point.timestamp === timestamp
+    && (context?.link_id == null || point.link_id === context.link_id)
+    && (context?.timestamp_tag == null || point.timestamp_tag === context.timestamp_tag)
+    && (event.local_radio == null || point.local_radio === event.local_radio)
+    && (point.local_tx_busy != null || point.local_rx_busy != null)
+    && !point.is_anomaly
+  ))
+}
+
+function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent }> {
+  return events.flatMap((event) => {
+    const point = findRenderedBusySwitchPoint(event)
+    const value = point?.local_tx_busy ?? point?.local_rx_busy
+    if (!point || value == null) return []
+    return [{ value: [point.timestamp, value], meta: point, meshEvent: event }]
+  })
 }
 
 function hasRenderableSize(): boolean {
@@ -88,7 +129,7 @@ async function ensureChart(): Promise<boolean> {
       import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
     ])
     core.use([
-      charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
+      charts.LineChart, charts.ScatterChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
       components.DataZoomComponent, components.MarkLineComponent, components.MarkAreaComponent, components.ToolboxComponent, renderers.CanvasRenderer,
     ])
     await nextTick()
@@ -149,7 +190,7 @@ onBeforeUnmount(() => {
 
 watch(() => props.points, () => scheduleChartUpdate('data'), { deep: true })
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
-watch(() => [props.showPeer, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
+watch(() => [props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
 watch(() => props.lockedViewport, (viewport, previous) => {
@@ -160,7 +201,10 @@ watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewp
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
-  const event = data?.meshEvent || props.events.find((item) => item.timestamp === data?.meta?.timestamp)
+  const event = data?.meshEvent || props.events.find((item) => (
+    (item.render_busy_point_timestamp || item.render_point_timestamp || item.point_timestamp) === data?.meta?.timestamp
+    || item.timestamp === data?.meta?.timestamp
+  ))
   if (event) emit('selectSwitch', event)
 }
 
@@ -205,6 +249,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   const axisStyle = createNetConsoleAxisStyle(theme)
   const series = buildMeshBusySeries(props.points, props.showPeer, props.scope)
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
+  const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {
     silent: true,
@@ -224,7 +269,13 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       ...createNetConsoleTooltipStyle(theme),
       formatter: (rawParams: unknown) => {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-        return tooltip((params[0] as { data?: { meta?: MeshChartPoint } } | undefined)?.data?.meta)
+        const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
+        const pointParam = params.find((item) => (item as { data?: { meta?: MeshChartPoint } }).data?.meta) as { data?: { meta?: MeshChartPoint } } | undefined
+        const event = eventParam?.data?.meshEvent
+        const point = pointParam?.data?.meta
+          || eventParam?.data?.meta
+          || (event ? findRenderedBusySwitchPoint(event) : undefined)
+        return tooltip(point, event)
       },
     },
     legend: { bottom: 4, textStyle: { color: theme.textSecondary } },
@@ -241,14 +292,22 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       { type: 'inside', filterMode: 'none' },
       { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
     ],
-    series: series.map((item, index) => ({
-      name: item.name, type: 'line', showSymbol: false, connectNulls: false, data: item.data,
-      markArea: index === 0 ? markArea : undefined,
-      markLine: index === 0 && switchEvents.length ? {
-        silent: false, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning, type: 'dashed' },
-        data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
-      } : undefined,
-    })),
+    series: [
+      ...series.map((item, index) => ({
+        name: item.name, type: 'line', showSymbol: false, connectNulls: false, data: item.data,
+        markArea: index === 0 ? markArea : undefined,
+        markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
+          silent: false, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning, type: 'dashed' },
+          data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
+        } : undefined,
+      })),
+      ...(nodes.length ? [{
+        name: '切换节点',
+        type: 'scatter',
+        symbolSize: 10,
+        data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
+      }] : []),
+    ],
   }, { notMerge: true })
   const target = props.lockedViewport || previous || props.initialViewport || createFullMeshViewport(timestamps())
   if (target) {

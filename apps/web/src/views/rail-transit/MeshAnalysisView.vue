@@ -102,6 +102,8 @@ const showSwitchPoints = ref(true)
 const showLocationBand = ref(true)
 const meshPreferenceReady = ref(false)
 const showBusyPeer = ref(false)
+const showBusySwitchLines = ref(false)
+const showBusySwitchPoints = ref(false)
 const visiblePoints = ref(600)
 const chartRadio = ref<number | null>(null)
 const selectedSegment = ref<MeshActiveBuildOrder | null>(null)
@@ -337,24 +339,30 @@ const sourceColumns: NcTableColumn<MeshRawSource>[] = [
 ]
 
 async function restoreMeshPreferences(): Promise<void> {
-  const [lines, points, band] = await Promise.all([
+  const [lines, points, band, busyLines, busyPoints] = await Promise.all([
     loadUiPreference('mesh-analysis-rssi.show-switch-lines', false),
     loadUiPreference('mesh-analysis-rssi.show-switch-points', true),
     loadUiPreference('mesh-analysis-rssi.show-location-band', true),
+    loadUiPreference('mesh-analysis-airload.show-switch-lines', false),
+    loadUiPreference('mesh-analysis-airload.show-switch-points', false),
   ])
   showSwitchLines.value = typeof lines === 'boolean' ? lines : false
   showSwitchPoints.value = typeof points === 'boolean' ? points : true
   showLocationBand.value = typeof band === 'boolean' ? band : true
+  showBusySwitchLines.value = typeof busyLines === 'boolean' ? busyLines : false
+  showBusySwitchPoints.value = typeof busyPoints === 'boolean' ? busyPoints : false
   meshPreferenceReady.value = true
 }
 
-watch([showSwitchLines, showSwitchPoints, showLocationBand], ([lines, points, band]) => {
+watch([showSwitchLines, showSwitchPoints, showLocationBand, showBusySwitchLines, showBusySwitchPoints], ([lines, points, band, busyLines, busyPoints]) => {
   if (!meshPreferenceReady.value) return
   void Promise.all([
     saveUiPreference('mesh-analysis-rssi.show-switch-lines', lines),
     saveUiPreference('mesh-analysis-rssi.show-switch-points', points),
     saveUiPreference('mesh-analysis-rssi.show-location-band', band),
-  ]).catch(() => ElMessage.warning('RSSI 图显示偏好保存失败，当前设置仅保留在本次运行。'))
+    saveUiPreference('mesh-analysis-airload.show-switch-lines', busyLines),
+    saveUiPreference('mesh-analysis-airload.show-switch-points', busyPoints),
+  ]).catch(() => ElMessage.warning('图表显示偏好保存失败，当前设置仅保留在本次运行。'))
 })
 
 onMounted(async () => { await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()]); scheduleRefresh() })
@@ -1301,7 +1309,11 @@ function buildResultLabel(value: string): string {
             <el-select v-if="busyMode === 'peer'" :model-value="selectedVisitValue" filterable placeholder="选择 AP / 经过时段" @change="selectSegmentByAnchor"><el-option v-if="selectedSegment" label="全部经过时段（各区段断开）" value="all-visits" /><el-option v-for="row in buildOrderOptions" :key="row.anchor_link_id" :label="`第 ${row.sequence} 次 · Radio ${row.local_radio ?? '—'} · ${row.peer_ap_name || row.active_peer_mac} · ${row.build_start_time} — ${row.build_end_time}`" :value="row.anchor_link_id" /></el-select>
             <el-select v-if="busyMode === 'active'" v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
             <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
-            <el-checkbox v-model="showBusyPeer">显示 Peer 侧 Tx/Rx Busy</el-checkbox><el-button @click="resetCurrentChartViewport">重置视图</el-button>
+            <el-checkbox v-model="showBusyPeer">显示 Peer 侧 Tx/Rx Busy</el-checkbox>
+            <el-button :icon="showBusySwitchLines ? View : Hide" @click="showBusySwitchLines = !showBusySwitchLines">显示切换时刻线</el-button>
+            <el-button :icon="showBusySwitchPoints ? View : Hide" @click="showBusySwitchPoints = !showBusySwitchPoints">显示切换节点</el-button>
+            <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
+            <el-button @click="resetCurrentChartViewport">重置视图</el-button>
             <template v-if="lockedAnalysisRange">
               <el-button @click="returnToRssi">返回 RSSI</el-button>
               <el-button :icon="Refresh" @click="updateLockedRangeFromBusy">使用当前空口范围更新锁定</el-button>
@@ -1311,7 +1323,7 @@ function buildResultLabel(value: string): string {
           <el-alert v-if="lockedAnalysisRange" :title="`已使用 RSSI 锁定时间 ${lockedRangeLabel} · RSSI 可见采样 ${lockedAnalysisRange.sample_count} 点 · 空口有效采样 ${busyValidSampleCount} 点`" type="info" :closable="false" show-icon />
           <el-alert v-if="lockedAnalysisRange && busyChartData && busyValidSampleCount === 0" title="当前 RSSI 锁定时间范围内没有有效 TxBusy/RxBusy 样本。" type="warning" :closable="false" show-icon />
           <div ref="busyChartHost" class="chart-host" :style="{ height: `${busyPanel.height.value}px` }">
-            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-location-band="showLocationBand" :scope="busyMode" :active="activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" />
+            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-switch-lines="showBusySwitchLines" :show-switch-points="showBusySwitchPoints" :show-location-band="showLocationBand" :scope="busyMode" :active="activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" />
           </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
         </div>

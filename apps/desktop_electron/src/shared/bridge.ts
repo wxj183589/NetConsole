@@ -130,6 +130,8 @@ export const UI_PREFERENCE_KEYS = Object.freeze([
   'mesh-analysis-rssi.show-switch-lines',
   'mesh-analysis-rssi.show-switch-points',
   'mesh-analysis-rssi.show-location-band',
+  'mesh-analysis-airload.show-switch-lines',
+  'mesh-analysis-airload.show-switch-points',
   'mesh-analysis.table.sessions:v2',
   'mesh-analysis.table.active-build-order:v2',
   'mesh-analysis.table.link-details:v2',

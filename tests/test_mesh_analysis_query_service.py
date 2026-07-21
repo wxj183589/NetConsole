@@ -369,6 +369,14 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
     assert first.render_aligned is True
     assert first.render_point_timestamp == first.point_timestamp
     assert first.render_point_rssi == first.point_rssi
+    assert first.render_busy_aligned is True
+    assert first.render_busy_point_timestamp == "2026-07-14 10:00:01.000"
+    assert first.render_busy_tx_busy == 3
+    assert first.render_busy_rx_busy == 80
+    assert first.busy_point_context is not None
+    assert first.busy_point_context.timestamp == first.render_busy_point_timestamp
+    assert first.busy_point_context.local_tx_busy == first.render_busy_tx_busy
+    assert first.busy_point_context.local_rx_busy == first.render_busy_rx_busy
     assert second.before_rssi is None
     assert second.after_rssi == 43
     assert second.point_timestamp == "2026-07-14 10:00:02.000"
@@ -381,6 +389,10 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
         assert event.render_aligned is True
         assert (event.render_point_timestamp, event.point_context.link_id) in returned
         assert returned[(event.render_point_timestamp, event.point_context.link_id)] == event.render_point_rssi
+        assert event.render_busy_aligned is True
+        assert event.busy_point_context is not None
+        assert event.busy_point_context.local_tx_busy is not None or event.busy_point_context.local_rx_busy is not None
+        assert event.render_busy_point_timestamp in {point.timestamp for point in chart.points}
 
 
 def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:
@@ -438,6 +450,10 @@ def test_chart_does_not_render_zero_rssi_switch_anchor(tmp_path: Path) -> None:
     assert first.render_point_timestamp is None
     assert first.render_point_rssi is None
     assert first.point_context is None
+    assert first.render_busy_aligned is True
+    assert first.render_busy_point_timestamp == "2026-07-14 10:00:01.000"
+    assert first.render_busy_tx_busy == 3
+    assert first.busy_point_context is not None
 
 
 def test_peer_chart_can_return_all_visits_with_explicit_gaps(tmp_path: Path) -> None:

@@ -35,6 +35,12 @@ const chartEvent: MeshChartEvent = {
   to_ap_name: 'AP-1',
   segment_sequence: 2,
   duration_ms: 1_000,
+  render_busy_point_timestamp: chartPoint.timestamp,
+  render_busy_point_index: 0,
+  render_busy_tx_busy: chartPoint.local_tx_busy,
+  render_busy_rx_busy: chartPoint.local_rx_busy,
+  render_busy_aligned: true,
+  busy_point_context: chartPoint,
 }
 const chartPointAfterGap: MeshChartPoint = {
   ...chartPoint,
@@ -65,6 +71,8 @@ describe('MESH charts mount and render', () => {
     expect(options[1].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI'])
     expect(options[2].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 TxBusy', '当前 ACTIVE MR 侧 RxBusy'])
     expect((echartsMock.chart.setOption.mock.calls[1][0] as { series: Array<{ markLine?: { silent: boolean }; markArea?: unknown }> }).series[0].markLine).toBeUndefined()
+    expect((echartsMock.chart.setOption.mock.calls[2][0] as { series: Array<{ markLine?: { silent: boolean }; markArea?: unknown }> }).series[0].markLine).toBeUndefined()
+    expect((echartsMock.chart.setOption.mock.calls[2][0] as { series: Array<{ name: string }> }).series.map((item) => item.name)).not.toContain('切换节点')
     expect((echartsMock.chart.setOption.mock.calls[1][0] as { series: Array<{ markArea?: unknown }> }).series[0].markArea).toBeDefined()
 
     const rssiOption = echartsMock.chart.setOption.mock.calls[1][0] as { dataZoom: unknown[]; toolbox: { feature: { saveAsImage: unknown } }; tooltip: { formatter: (params: unknown) => string } }
@@ -135,6 +143,75 @@ describe('MESH charts mount and render', () => {
     expect(tooltip).toContain('<strong>主链路</strong>')
     expect(tooltip).toContain('<strong>备份链路</strong>')
     expect(tooltip).toContain('<strong>切换事件</strong>')
+    wrapper.unmount()
+  })
+
+  it('draws channel busy switch lines and anchors switch nodes to returned Busy samples', async () => {
+    const event: MeshChartEvent = {
+      ...chartEvent,
+      render_busy_point_timestamp: chartPoint.timestamp,
+      render_busy_tx_busy: 20,
+      render_busy_rx_busy: 25,
+      render_busy_aligned: true,
+      busy_point_context: chartPoint,
+      point_timestamp: '2026-07-20T10:00:01.123Z',
+      point_rssi: -99,
+      render_point_timestamp: '2026-07-20T10:00:01.123Z',
+      render_point_rssi: -99,
+      render_aligned: true,
+    }
+    const wrapper = mount(MeshChannelBusyChart, { props: { points: [chartPoint], events: [event], showPeer: true, showSwitchLines: true, showSwitchPoints: true } })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as { tooltip: { formatter: (params: unknown) => string }; series: Array<{ name: string; data?: Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent?: MeshChartEvent }> ; markLine?: unknown }> }
+    expect(option.series.map((item) => item.name)).toEqual([
+      '当前 ACTIVE MR 侧 TxBusy',
+      '当前 ACTIVE MR 侧 RxBusy',
+      '当前 ACTIVE Peer 侧 TxBusy',
+      '当前 ACTIVE Peer 侧 RxBusy',
+      '切换节点',
+    ])
+    expect(option.series[0].markLine).toBeDefined()
+    const nodes = option.series.find((item) => item.name === '切换节点')!
+    expect(nodes.data).toHaveLength(1)
+    expect(nodes.data?.[0]?.value).toEqual([chartPoint.timestamp, chartPoint.local_tx_busy])
+    expect(nodes.data?.[0]?.meta).toEqual(chartPoint)
+    expect(nodes.data?.[0]?.value[1]).not.toBe(-99)
+    const tooltip = option.tooltip.formatter([{ data: nodes.data?.[0] }])
+    expect(tooltip).toContain('<strong>切换事件</strong>')
+    expect(tooltip).toContain('对齐空口采样时间')
+    expect(tooltip).not.toContain('切换耗时')
+    expect(tooltip).not.toContain('切换类型')
+    wrapper.unmount()
+  })
+
+  it('preserves channel busy viewport when toggling switch presentation options', async () => {
+    const points = [0, 1, 2, 3].map((index) => ({
+      ...chartPoint,
+      link_id: index + 1,
+      timestamp: `2026-07-20T10:0${index}:00.123Z`,
+    }))
+    const wrapper = mount(MeshChannelBusyChart, { props: { points } })
+    await flushPromises()
+    const dataZoomHandler = echartsMock.chart.on.mock.calls.find(([event]) => event === 'datazoom')?.[1] as (payload: unknown) => void
+    dataZoomHandler({ startValue: points[1].timestamp, endValue: points[2].timestamp })
+    echartsMock.chart.dispatchAction.mockClear()
+
+    await wrapper.setProps({ showSwitchLines: true, showSwitchPoints: true, showPeer: true })
+    await flushPromises()
+
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: points[1].timestamp,
+        endValue: points[2].timestamp,
+      })),
+    })
+    expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
+      start_time: points[1].timestamp,
+      end_time: points[2].timestamp,
+    })
     wrapper.unmount()
   })
 

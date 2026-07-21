@@ -1866,10 +1866,11 @@ class MeshAnalysisQueryService:
         total_points = len(point_rows)
         prepared_events = self._prepare_chart_events(point_rows, events_by_index)
         valid_switch_indices = {
-            int(row["point_index"])
+            int(index)
             for row in prepared_events
+            for index in (row.get("point_index"), row.get("busy_point_index"))
             if str(row["event"].get("event_type") or "") == "ACTIVE_SWITCH"
-            and row.get("point_index") is not None
+            and index is not None
         }
         requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
             self._chart_render_budget(total_points, max_points, valid_switch_indices)
@@ -1925,7 +1926,11 @@ class MeshAnalysisQueryService:
             point_index = self._int(prepared.get("point_index"))
             render_aligned = point_index is not None and point_index in returned_indices
             render_point = event_point if render_aligned else None
-            event_location = self._locate_ap(ap_map, dict((event_point or {}).get("item") or {}))
+            busy_point = prepared.get("busy_event_point")
+            busy_point_index = self._int(prepared.get("busy_point_index"))
+            busy_render_aligned = busy_point_index is not None and busy_point_index in returned_indices
+            busy_render_point = busy_point if busy_render_aligned else None
+            event_location = self._locate_ap(ap_map, dict((event_point or busy_point or {}).get("item") or {}))
             events.append(
                 MeshChartEventDTO(
                     event_id=event_id,
@@ -1948,6 +1953,16 @@ class MeshAnalysisQueryService:
                     render_point_timestamp=str((render_point or {}).get("timestamp") or "") or None,
                     render_point_rssi=self._number((render_point or {}).get("local_rssi")),
                     render_aligned=render_aligned,
+                    render_busy_point_timestamp=str((busy_render_point or {}).get("timestamp") or "") or None,
+                    render_busy_point_index=busy_point_index if busy_render_aligned else None,
+                    render_busy_tx_busy=self._number((busy_render_point or {}).get("local_tx_busy")),
+                    render_busy_rx_busy=self._number((busy_render_point or {}).get("local_rx_busy")),
+                    render_busy_aligned=busy_render_aligned,
+                    busy_point_context=(
+                        self._materialize_chart_point(ap_map, context, busy_render_point)
+                        if busy_render_point is not None
+                        else None
+                    ),
                     before_rssi=self._number((before_point or {}).get("local_rssi")),
                     after_rssi=self._number((after_point or {}).get("local_rssi")),
                     station=event_location.station or None,
@@ -2028,6 +2043,19 @@ class MeshAnalysisQueryService:
                     expected_peer_mac=str(event.get("to_peer_mac") or ""),
                 )
                 event_point = after_point or before_point
+                busy_before_point = self._chart_busy_event_point(
+                    point_rows,
+                    event_index,
+                    step=-1,
+                    expected_peer_mac=str(event.get("from_peer_mac") or ""),
+                )
+                busy_after_point = self._chart_busy_event_point(
+                    point_rows,
+                    event_index,
+                    step=1,
+                    expected_peer_mac=str(event.get("to_peer_mac") or ""),
+                )
+                busy_event_point = busy_after_point or busy_before_point
                 prepared.append(
                     {
                         "event": event,
@@ -2035,6 +2063,8 @@ class MeshAnalysisQueryService:
                         "after_point": after_point,
                         "event_point": event_point,
                         "point_index": self._int((event_point or {}).get("index")),
+                        "busy_event_point": busy_event_point,
+                        "busy_point_index": self._int((busy_event_point or {}).get("index")),
                     }
                 )
         return prepared
@@ -2165,6 +2195,33 @@ class MeshAnalysisQueryService:
             peer_matches = not expected_peer_mac or self._mac_key(item.get("peer_mac")) == self._mac_key(expected_peer_mac)
             rssi = self._number(row.get("local_rssi"))
             if peer_matches and str(item.get("status") or "") == "ACTIVE" and rssi not in {None, 0}:
+                return row
+            index += step
+        return None
+
+    def _chart_busy_event_point(
+        self,
+        point_rows: list[dict[str, Any]],
+        event_index: int | None,
+        *,
+        step: int,
+        expected_peer_mac: str,
+    ) -> dict[str, Any] | None:
+        if event_index is None or not point_rows:
+            return None
+        start = event_index if step > 0 else event_index - 1
+        reference = point_rows[event_index] if 0 <= event_index < len(point_rows) else None
+        reference_source = str((reference or {}).get("source") or "")
+        reference_radio = (reference or {}).get("radio")
+        index = start
+        while 0 <= index < len(point_rows):
+            row = point_rows[index]
+            if str(row.get("source") or "") != reference_source or row.get("radio") != reference_radio:
+                break
+            item = dict(row.get("item") or {})
+            peer_matches = not expected_peer_mac or self._mac_key(item.get("peer_mac")) == self._mac_key(expected_peer_mac)
+            has_busy = row.get("local_tx_busy") is not None or row.get("local_rx_busy") is not None
+            if peer_matches and str(item.get("status") or "") == "ACTIVE" and has_busy:
                 return row
             index += step
         return None

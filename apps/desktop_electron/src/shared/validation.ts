@@ -73,7 +73,7 @@ export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
 
 export function validateUiPreferenceValue(key: UiPreferenceKey, value: unknown): unknown | null {
   if (value === null) return null
-  if (key.startsWith('mesh-analysis-rssi.')) {
+  if (key.startsWith('mesh-analysis-rssi.') || key.startsWith('mesh-analysis-airload.')) {
     if (typeof value !== 'boolean') throw new TypeError('UI chart preference must be a boolean')
     return value
   }

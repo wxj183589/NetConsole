@@ -142,6 +142,8 @@ export interface MeshChartEvent {
   duration_ms: number | null; from_ap_name?: string | null; to_ap_name?: string | null; segment_sequence?: number | null
   point_timestamp?: string | null; point_rssi?: number | null; point_context?: MeshChartPoint | null
   render_point_timestamp?: string | null; render_point_rssi?: number | null; render_aligned?: boolean
+  render_busy_point_timestamp?: string | null; render_busy_point_index?: number | null; render_busy_tx_busy?: number | null
+  render_busy_rx_busy?: number | null; render_busy_aligned?: boolean; busy_point_context?: MeshChartPoint | null
   before_rssi?: number | null; after_rssi?: number | null
   station?: string | null; section?: string | null
 }
