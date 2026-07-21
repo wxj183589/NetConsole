@@ -106,7 +106,11 @@ def identify_device_platform(
             break
 
     role = normalize_device_role(device_type)
-    if platform == "unknown" and vendor_text.casefold() == "h3c" and role == "switch":
+    if (
+        platform == "unknown"
+        and vendor_text.casefold() == "h3c"
+        and role in {"switch", "mobile_router"}
+    ):
         platform = "comware"
         source = "verified_command_profile_selector"
         confidence = "medium"

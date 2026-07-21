@@ -42,10 +42,10 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 ## 厂商、角色和 Command Profile 边界
 
 - 当前设备详情能够展示已入库的多厂商快照，并由 Python 对 H3C/Comware、Huawei/VRP、ZTE/ZXR10 等平台事实和接口名称做归一化。
-- 通用设备详情刷新目前只允许 H3C、`switch`、Comware 且命中可执行 Command Profile 的组合。
-- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 是 `h3c.comware.switch.generic.device-inventory.v1`。
+- 通用设备详情刷新目前只允许 H3C、`switch` / `mobile_router`、Comware 且命中可执行 Command Profile 的组合。
+- 当前唯一稳定 Operation ID 是 `device.inventory.collect`；对应资源为 `resources/device_command_profiles.json`，已登记的通用只读 Profile 包括 `h3c.comware.switch.generic.device-inventory.v1` 和 `h3c.comware.mobile_router.generic.device-inventory.v1`。
 - 未知或未验证厂商、角色、平台、Profile 必须失败关闭，不能回退执行 H3C 命令。软件版本未知时，也只有厂商、角色、平台精确匹配且资源明确允许的只读通用 Profile 才能执行。
-- H3C AC 和 H3C MR 的关联信息分别只读复用 AC 与 Online MR Query Service；设备详情刷新不会把 AC/MR 当作通用交换机执行命令。
+- H3C AC 的关联信息只读复用 AC Query Service，暂不开放通用设备详情刷新；H3C MR 的关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 `mobile_router` Profile，不会把 MR 当作通用交换机执行命令。
 - Huawei、ZTE 等交换机目前只承诺展示已有快照和归一化结果，不代表设备命令已经验证。V5/V9 等未有真实 fixture/现场证据的版本不得标记为已支持。
 
 ## API 与 DTO

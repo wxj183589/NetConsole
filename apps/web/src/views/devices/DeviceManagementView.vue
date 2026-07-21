@@ -80,6 +80,7 @@ interface TableSelectionController<Row> {
 }
 
 const emptyPage = (): DevicePage => ({ items: [], groups: [], total: 0, page: 1, page_size: 50, total_pages: 1 })
+const DEVICE_TYPE_OPTIONS = ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'MR', 'Other'] as const
 const router = useRouter()
 const { confirm } = useConfirm()
 const taskStore = useTaskStore()
@@ -101,6 +102,8 @@ const writeConnectionLoading = ref(false)
 const writeConnectionTest = ref<DeviceConnectionTest | null>(null)
 const writeTestProtocol = ref<DeviceConnectionProtocol>('SSH')
 const selectedUuids = ref<string[]>([])
+const batchRefreshSubmitting = ref(false)
+const batchRefreshTargetCount = ref(0)
 const deviceTable = ref<TableSelectionController<DeviceListItem>>()
 const groupVisible = ref(false)
 const groupName = ref('')
@@ -1012,15 +1015,33 @@ async function exportOmniPeek(): Promise<void> {
 }
 
 async function refreshSelectedDetails(): Promise<void> {
-  if (!selectedUuids.value.length) {
+  const targets = [...selectedUuids.value]
+  if (!targets.length) {
     ElMessage.warning('请先选择设备')
     return
   }
+  if (batchRefreshSubmitting.value) return
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '批量更新详情',
+    message: `确定更新选中的 ${targets.length} 台设备详情吗？`,
+    confirmText: '确认更新',
+  })
+  if (!accepted) return
+  batchRefreshSubmitting.value = true
+  batchRefreshTargetCount.value = targets.length
+  ElMessage.info(`正在提交 ${targets.length} 台设备详情更新任务...`)
   try {
-    const result = await startBatchRefreshDetails(selectedUuids.value)
-    await presentTasks(result.tasks, '批量详情刷新任务已提交')
+    const result = await startBatchRefreshDetails(targets)
+    if (!componentActive) return
+    await presentTasks(result.tasks, `已提交 ${result.tasks.length} 台设备详情刷新任务`)
   } catch (cause) {
-    ElMessage.error(errorMessage(cause, '批量刷新失败'))
+    if (componentActive) ElMessage.error(errorMessage(cause, '批量刷新失败'))
+  } finally {
+    if (componentActive) {
+      batchRefreshSubmitting.value = false
+      batchRefreshTargetCount.value = 0
+    }
   }
 }
 
@@ -1191,7 +1212,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         <el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="String(group.id)" />
       </el-select>
       <el-select v-model="filters.device_type" clearable placeholder="全部类型" @change="loadDevices(true)">
-        <el-option v-for="type in ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'Other']" :key="type" :label="type" :value="type" />
+        <el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" />
       </el-select>
       <el-select v-model="filters.vendor" clearable placeholder="全部厂商" @change="loadDevices(true)">
         <el-option v-for="vendor in ['H3C', 'Huawei', 'Ruijie', 'Cisco', 'Other']" :key="vendor" :label="vendor" :value="vendor" />
@@ -1221,7 +1242,8 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-button :icon="Plus" :disabled="!isFeatureEnabled('web.device_management_write')" @click="groupVisible = true">分组管理</el-button>
       <el-button :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
       <el-button :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('web.device_management_desktop')" @click="requestTerminal()">外部终端</el-button>
-      <el-button :icon="Refresh" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <el-button data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('web.device_management_collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <span v-if="batchRefreshSubmitting">正在提交 {{ batchRefreshTargetCount }} 台设备详情更新任务...</span>
       <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('web.device_management_collect')" @click="downloadDiagnostics">下载诊断</el-button>
       <el-button :icon="Upload" :disabled="!isFeatureEnabled('web.device_management_import')" @click="importVisible = true">导入 CSV</el-button>
       <el-dropdown>
@@ -1340,7 +1362,7 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="系统名"><el-input v-model="writeForm.system_name" /></el-form-item>
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
             <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in ['H3C', 'Huawei', 'Ruijie', 'Cisco', 'Other']" :key="vendor" :label="vendor" :value="vendor" /></el-select></el-form-item>
-            <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'Other']" :key="type" :label="type" :value="type" /></el-select></el-form-item>
+            <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
             <el-form-item label="站点"><el-input v-model="writeForm.station" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
           </section>

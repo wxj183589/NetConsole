@@ -36,8 +36,18 @@ DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE = (
     "display lldp neighbor-information list",
     "display lldp neighbor-information verbose",
 )
+DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE = (
+    "screen-length disable",
+    "display current-configuration | include sysname",
+    "display version",
+    "display device",
+    "display device manuinfo",
+    "display boot-loader",
+    "display interface",
+)
 SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
     DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE
+    + DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE
 )
 
 SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
@@ -181,7 +191,10 @@ PROFILE_MANAGED_OPERATIONS = {
     "sftp_enable": "device.sftp.enable",
 }
 PROFILE_OPERATION_COMMAND_SEQUENCES = {
-    "device.inventory.collect": DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE,
+    "device.inventory.collect": (
+        DEVICE_INVENTORY_COLLECT_COMMAND_SEQUENCE,
+        DEVICE_INVENTORY_MOBILE_ROUTER_COMMAND_SEQUENCE,
+    ),
 }
 
 DANGEROUS_PATTERNS = (
@@ -289,8 +302,8 @@ def validate_operation_commands(
             f"operation does not match command context: operation={normalized_operation or 'empty'}, context={context}"
         )
     normalized_commands = tuple(normalize_command(command) for command in commands)
-    expected_commands = PROFILE_OPERATION_COMMAND_SEQUENCES.get(normalized_operation)
-    if expected_commands is None or normalized_commands != expected_commands:
+    expected_sequences = PROFILE_OPERATION_COMMAND_SEQUENCES.get(normalized_operation)
+    if expected_sequences is None or normalized_commands not in expected_sequences:
         raise CommandRejected(
             f"command sequence does not match operation profile: {normalized_operation}"
         )

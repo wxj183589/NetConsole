@@ -40,9 +40,10 @@ def test_demo_seed_uses_current_schema_without_legacy_credentials(tmp_path: Path
     DemoSiteSeedService(paths).seed()
 
     with Database(paths.site_db_path("demo")).connect() as connection:
-        rows = connection.execute("SELECT name, snmp_v1_enabled, snmp_v2c_enabled, ssh_password, telnet_password FROM devices ORDER BY name").fetchall()
+        rows = connection.execute("SELECT name, device_type, snmp_v1_enabled, snmp_v2c_enabled, ssh_password, telnet_password FROM devices ORDER BY name").fetchall()
 
-    assert [str(row["name"]) for row in rows] == ["AC", "SW01", "SW02", "列车01-MR-CT", "列车01-MR-TC"]
+    assert [str(row["name"]) for row in rows] == ["AC", "SW01", "SW02", "列车01-MR-CT", "列车01-MR-CW"]
+    assert [str(row["device_type"]) for row in rows[-2:]] == ["MR", "MR"]
     assert all(int(row["snmp_v1_enabled"] or 0) == 0 and int(row["snmp_v2c_enabled"] or 0) == 0 for row in rows)
     assert all(not row["ssh_password"] and not row["telnet_password"] for row in rows)
 

@@ -36,7 +36,7 @@
 
 超过 300ms 的 IO/CPU/网络工作进入 Task Center，导出进入 Export Process；生产设备命令最终通过 Operation ID 和版本化 Command Profile 执行。
 
-设备详情当前只为 `device.inventory.collect` 登记 `h3c.comware.switch.generic.device-inventory.v1`。执行边界是 H3C + `switch` + Comware 且 Profile 明确可执行；未知/未验证厂商、角色、平台或 Profile 不得回退执行 H3C 命令。软件版本未知时只允许资源显式声明的通用只读匹配。H3C AC 和 MR 仍由各自领域 Service 负责，设备详情仅查询关联事实；Huawei/ZTE 当前只支持已入库快照展示和接口归一化，不代表命令已验证。真实设备状态保持 `REAL_DEVICE_PENDING`。
+设备详情当前为 `device.inventory.collect` 登记 H3C Comware `switch` 和 `mobile_router` 通用只读 Profile。执行边界是 H3C + 已支持角色 + Comware 且 Profile 明确可执行；未知/未验证厂商、角色、平台或 Profile 不得回退执行 H3C 命令。软件版本未知时只允许资源显式声明的通用只读匹配。H3C AC 仍由 AC 领域 Service 负责；MR 关联信息只读复用 Online MR Query Service，基础设备详情刷新使用独立 mobile_router Profile。Huawei/ZTE 当前只支持已入库快照展示和接口归一化，不代表命令已验证。真实设备状态保持 `REAL_DEVICE_PENDING`。
 
 设备详情 LLDP Query 映射不得公开邻居 `capabilities`、`model`，即使历史 Repository 行仍包含这些兼容字段；其余 LLDP 公开字段和底层历史数据保持不变。
 

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 
 DEVICE_VENDORS = ("H3C", "Huawei", "Ruijie", "Cisco", "Other")
-DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "Other")
+DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "MR", "Other")
 
 
 @dataclass(init=False)

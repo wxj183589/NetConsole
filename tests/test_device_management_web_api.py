@@ -2487,6 +2487,105 @@ def test_batch_refresh_and_external_terminal_are_controlled_contracts(tmp_path: 
     assert len(desktop_adapter.terminal_calls) == 3
 
 
+def test_batch_refresh_supports_h3c_mobile_router_profile(tmp_path: Path) -> None:
+    client, _service, adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+    mr = devices.create(
+        Device(
+            name="列车01-MR-CT",
+            primary_address="192.0.2.249",
+            device_vendor="H3C",
+            device_type="MR",
+        )
+    )
+
+    response = client.post(
+        "/api/device-management/devices/batch-refresh-details",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+
+    assert response.status_code == 202, response.text
+    params = adapter.jobs[-1].params
+    assert params["operation_id"] == "device.inventory.collect"
+    assert params["profile_id"] == "h3c.comware.mobile_router.generic.device-inventory.v1"
+    assert params["platform_role"] == "mobile_router"
+    assert params["platform"] == "comware"
+    assert "commands" not in params
+
+
+def test_vehicle_mr_legacy_cloud_ap_migration_is_strict_and_backed_up(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+    database = Database(service.paths.site_db_path("demo"))
+    groups = DeviceGroupRepository(database, "demo")
+    onboard = groups.find_by_name("车载-MR")
+    assert onboard is not None
+    other = groups.create("轨旁-AP")
+    eligible_ct = devices.create(
+        Device(
+            name="列车01-MR-CT",
+            primary_address="192.0.2.31",
+            group_id=onboard.id,
+            device_type="Cloud-AP",
+        )
+    )
+    eligible_cw = devices.create(
+        Device(
+            name="列车01-MR-CW",
+            primary_address="192.0.2.32",
+            group_id=onboard.id,
+            device_type="Cloud-AP",
+        )
+    )
+    bad_name = devices.create(
+        Device(
+            name="列车01-MR-TC",
+            primary_address="192.0.2.33",
+            group_id=onboard.id,
+            device_type="Cloud-AP",
+        )
+    )
+    real_ap = devices.create(
+        Device(
+            name="AP-01",
+            primary_address="192.0.2.34",
+            group_id=other.id,
+            device_type="Cloud-AP",
+        )
+    )
+    already_mr = devices.create(
+        Device(
+            name="列车02-MR-CT",
+            primary_address="192.0.2.35",
+            group_id=onboard.id,
+            device_type="MR",
+        )
+    )
+
+    response = client.get("/api/device-management/devices")
+
+    assert response.status_code == 200, response.text
+    assert devices.get(int(eligible_ct.id or 0)).device_type == "MR"
+    assert devices.get(int(eligible_cw.id or 0)).device_type == "MR"
+    assert devices.get(int(bad_name.id or 0)).device_type == "Cloud-AP"
+    assert devices.get(int(real_ap.id or 0)).device_type == "Cloud-AP"
+    assert devices.get(int(already_mr.id or 0)).device_type == "MR"
+    backups = list(
+        (
+            service.paths.site_backups_dir("demo") / "device-type-migrations"
+        ).glob("vehicle-mr-device-type-*.sqlite")
+    )
+    assert len(backups) == 1
+
+    assert client.get("/api/device-management/devices").status_code == 200
+    backups_after_second_scan = list(
+        (
+            service.paths.site_backups_dir("demo") / "device-type-migrations"
+        ).glob("vehicle-mr-device-type-*.sqlite")
+    )
+    assert backups_after_second_scan == backups
+
+
 def test_large_external_terminal_batch_requires_scoped_single_use_confirmation(
     tmp_path: Path,
 ) -> None:

@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from netconsole.services import device_command_profile_service
 from netconsole.core.paths import PathResolver
-from netconsole.models.device import Device
-from netconsole.models.device_detail import identify_device_platform
+from netconsole.models.device import DEVICE_TYPES, Device
+from netconsole.models.device_detail import (
+    identify_device_platform,
+    normalize_device_role,
+)
+from netconsole.services import device_command_profile_service
 from netconsole.services.device_command_profile_service import (
     DEVICE_INVENTORY_OPERATION_ID,
     DEVICE_SFTP_ENABLE_OPERATION_ID,
@@ -44,6 +47,15 @@ EXPECTED_COMMANDS = (
     "display transceiver diagnosis interface",
     "display lldp neighbor-information list",
     "display lldp neighbor-information verbose",
+)
+EXPECTED_MR_COMMANDS = (
+    "screen-length disable",
+    "display current-configuration | include sysname",
+    "display version",
+    "display device",
+    "display device manuinfo",
+    "display boot-loader",
+    "display interface",
 )
 
 
@@ -119,17 +131,28 @@ def test_command_audit_recognizes_profiles_by_exact_command_only() -> None:
     )
 
 
-def test_device_resolution_only_accepts_h3c_switch() -> None:
+def test_device_types_keep_cloud_ap_and_mobile_router_roles_distinct() -> None:
+    assert "MR" in DEVICE_TYPES
+    assert normalize_device_role("MR") == "mobile_router"
+    assert normalize_device_role("Cloud-AP") == "access_point"
+    assert normalize_device_role("FAT-AP") == "access_point"
+
+
+def test_device_resolution_accepts_h3c_switch_and_mobile_router_only() -> None:
     h3c_switch = Device(name="SW", device_vendor="H3C", device_type="SW")
     assert resolve_device_inventory_profile(h3c_switch).selector.platform == "comware"
+    h3c_mr = Device(name="MR", device_vendor="H3C", device_type="MR")
+    mr_profile = resolve_device_inventory_profile(h3c_mr)
+    assert mr_profile.selector.role == "mobile_router"
+    assert mr_profile.profile_id == "h3c.comware.mobile_router.generic.device-inventory.v1"
 
     with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
         resolve_device_inventory_profile(
             Device(name="HW", device_vendor="Huawei", device_type="SW")
         )
-    with pytest.raises(DeviceCommandProfileNotFound, match="仅支持交换机"):
+    with pytest.raises(DeviceCommandProfileNotFound, match="不支持当前设备角色"):
         resolve_device_inventory_profile(
-            Device(name="AC", device_vendor="H3C", device_type="AC")
+            Device(name="AP", device_vendor="H3C", device_type="Cloud-AP")
         )
     conflicting_facts = identify_device_platform(
         vendor="H3C",
@@ -140,6 +163,37 @@ def test_device_resolution_only_accepts_h3c_switch() -> None:
         resolve_device_inventory_profile(
             h3c_switch, platform_facts=conflicting_facts
         )
+
+
+def test_mobile_router_inventory_profile_uses_core_read_only_contract() -> None:
+    profile = resolve_device_command_profile(
+        operation_id=DEVICE_INVENTORY_OPERATION_ID,
+        vendor="H3C",
+        role="mobile_router",
+        platform="comware",
+    )
+
+    assert profile.profile_id == "h3c.comware.mobile_router.generic.device-inventory.v1"
+    assert profile.selector.software_version == "*"
+    assert profile.compatibility == "generic_read_only"
+    assert profile.risk == "read_only"
+    assert profile.commands == EXPECTED_MR_COMMANDS
+    assert [step.order for step in profile.steps] == list(range(10, 71, 10))
+    assert all(step.guard_context == DEVICE_INVENTORY_OPERATION_ID for step in profile.steps)
+
+
+def test_h3c_mobile_router_platform_inference_is_scoped() -> None:
+    h3c_mr = identify_device_platform(vendor="H3C", device_type="MR")
+    huawei_mr = identify_device_platform(vendor="Huawei", device_type="MR")
+    cloud_ap = identify_device_platform(vendor="H3C", device_type="Cloud-AP")
+
+    assert h3c_mr.role == "mobile_router"
+    assert h3c_mr.platform == "comware"
+    assert h3c_mr.confidence == "medium"
+    assert huawei_mr.role == "mobile_router"
+    assert huawei_mr.platform == "unknown"
+    assert cloud_ap.role == "access_point"
+    assert cloud_ap.platform == "unknown"
 
 
 def test_unified_loader_exposes_exact_v7_sftp_profiles_for_supported_roles() -> None:

@@ -33,7 +33,7 @@
 
 历史 Repository 行也必须经过后端 DTO 白名单映射，组件不得从任意原始对象透传到表格、历史详情或导出。
 
-命令执行状态只消费后端返回的 `command_profile.executable`。当前通用刷新仅允许已验证边界内的 H3C/Comware 交换机 Profile；H3C AC/MR 只读关联各自业务 Query Service，Huawei、ZTE、未知或未验证 Profile 不得由组件回退执行 H3C 命令。
+命令执行状态只消费后端返回的 `command_profile.executable`。当前通用刷新仅允许已验证边界内的 H3C/Comware `switch` 与 `mobile_router` Profile；H3C AC 只读关联 AC Query Service，H3C MR 关联信息只读复用 Online MR Query Service，基础详情刷新走独立 `mobile_router` Profile。Huawei、ZTE、未知或未验证 Profile 不得由组件回退执行 H3C 命令。
 
 ## 测试
 

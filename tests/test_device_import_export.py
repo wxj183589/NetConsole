@@ -411,6 +411,32 @@ def test_csv_import_supports_current_template_fields(tmp_path):
     assert imported.ssh_password == "ssh-pwd"
 
 
+def test_csv_import_accepts_mobile_router_device_type(tmp_path):
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "mr.csv"
+    write_dict_rows(
+        csv_path,
+        EXPORT_FIELDS,
+        [
+            {
+                "设备名称": "列车01-MR-CT",
+                "主用地址": "10.122.1.249",
+                "备用地址": "10.122.89.101",
+                "协议": "SSH",
+                "厂商": "H3C",
+                "设备类型": "MR",
+            }
+        ],
+    )
+
+    result = service.import_csv(csv_path)
+    imported = repository.list()[0]
+
+    assert result.created == 1
+    assert imported.device_type == "MR"
+    assert imported.backup_address == "10.122.89.101"
+
+
 def test_import_rejects_invalid_device_type_without_modifying_data(tmp_path):
     repository, service = make_service(tmp_path)
     csv_path = tmp_path / "bad.csv"

@@ -14,6 +14,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain('connection_status')
     expect(source).toContain('group_id')
     expect(source).toContain('device_type')
+    expect(source).toContain('DEVICE_TYPE_OPTIONS')
+    expect(source).toContain('MR')
     expect(source).toContain('filters.vendor')
     expect(source).toContain('openDetail(row)')
     expect(source).toContain('detailDeviceUuid.value = item.device_uuid')
@@ -53,6 +55,15 @@ describe('Device Management Web view', () => {
     expect(source).toContain('任务状态刷新失败')
     expect(source).toContain('任务窗口打开失败')
     expect(source).toContain('openTaskWindow(publicTask || null, task.task_id, false)')
+  })
+
+  it('uses a dedicated batch refresh confirmation and loading state', () => {
+    expect(source).toContain('batchRefreshSubmitting')
+    expect(source).toContain('batchRefreshTargetCount')
+    expect(source).toContain(':loading="batchRefreshSubmitting"')
+    expect(source).toContain('正在提交 {{ batchRefreshTargetCount }} 台设备详情更新任务...')
+    expect(source).toContain('确定更新选中的')
+    expect(source).toContain('startBatchRefreshDetails(targets)')
   })
 
   it('matches current-page selection and row operations', () => {

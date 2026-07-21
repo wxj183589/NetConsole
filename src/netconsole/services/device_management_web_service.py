@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -159,6 +160,10 @@ DEVICE_SECRET_FIELD_NAMES = (
     "tunnel2_password",
     "snmp_ro_community",
 )
+VEHICLE_MR_GROUP_NAME = "车载-MR"
+VEHICLE_MR_LEGACY_TYPE = "Cloud-AP"
+VEHICLE_MR_DEVICE_TYPE = "MR"
+VEHICLE_MR_NAME_PATTERN = re.compile(r"^列车\d{1,3}-MR-(?:CT|CW)$", re.IGNORECASE)
 DEVICE_TASK_TYPES = frozenset(
     {
         DEVICE_CONNECTION_TEST_TASK_TYPE,
@@ -215,11 +220,15 @@ class DeviceManagementWebService:
         self._export_processes: dict[str, subprocess.Popen[str]] = {}
         self._export_artifacts: dict[str, dict[str, object]] = {}
         self._reconciled_import_sites: set[str] = set()
+        self._reconciled_vehicle_mr_sites: set[str] = set()
 
     def current_site_id(self) -> str:
         site = self.site_name or SiteManager(self.paths).get_current_site()
         selected = SiteManager(self.paths).validate_site_name(str(site or "demo"))
         with self._mutation_lock:
+            if selected not in self._reconciled_vehicle_mr_sites:
+                self._migrate_vehicle_mr_device_types(selected)
+                self._reconciled_vehicle_mr_sites.add(selected)
             if selected not in self._reconciled_import_sites:
                 self._reconcile_import_audits(selected)
                 self._cleanup_expired_import_previews(selected)
@@ -227,6 +236,78 @@ class DeviceManagementWebService:
                 self._cleanup_unowned_diagnostic_temps(selected)
                 self._reconciled_import_sites.add(selected)
         return selected
+
+    def _migrate_vehicle_mr_device_types(self, site: str) -> None:
+        """修正早期把车载 MR 保存为 Cloud-AP 的受控历史数据。"""
+
+        database = Database(self.paths.site_db_path(site))
+        if not database.exists():
+            return
+        with database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.id, d.device_uuid, d.name, d.device_type, g.name AS group_name
+                FROM devices d
+                JOIN device_groups g ON g.id = d.group_id
+                WHERE d.device_type = ? AND g.name = ?
+                ORDER BY d.id
+                """,
+                (VEHICLE_MR_LEGACY_TYPE, VEHICLE_MR_GROUP_NAME),
+            ).fetchall()
+        candidates = [dict(row) for row in rows]
+        matched = [
+            row
+            for row in candidates
+            if VEHICLE_MR_NAME_PATTERN.fullmatch(str(row.get("name") or "").strip())
+        ]
+        skipped_count = len(candidates) - len(matched)
+        if not matched:
+            app_logger.log_info(
+                "DEVICE_TYPE_MIGRATION_SKIPPED",
+                (
+                    f"site_name={site}, scanned_count={len(candidates)}, "
+                    f"migrated_count=0, skipped_count={skipped_count}"
+                ),
+            )
+            return
+        backup_dir = self.paths.site_backups_dir(site) / "device-type-migrations"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / (
+            "vehicle-mr-device-type-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.sqlite"
+        )
+        DeviceRepository(database).backup_to(backup_path)
+        now = datetime.now().isoformat(timespec="seconds")
+        ids = [int(row["id"]) for row in matched]
+        placeholders = ", ".join("?" for _ in ids)
+        with database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                f"""
+                UPDATE devices
+                SET device_type = ?, updated_at = ?
+                WHERE id IN ({placeholders}) AND device_type = ?
+                """,
+                [VEHICLE_MR_DEVICE_TYPE, now, *ids, VEHICLE_MR_LEGACY_TYPE],
+            )
+            conn.commit()
+        migrated_count = int(cursor.rowcount or 0)
+        for row in matched:
+            app_logger.log_info(
+                "DEVICE_TYPE_MIGRATION_ITEM",
+                (
+                    f"site_name={site}, device_uuid={row.get('device_uuid')}, "
+                    f"old_type={VEHICLE_MR_LEGACY_TYPE}, new_type={VEHICLE_MR_DEVICE_TYPE}"
+                ),
+            )
+        app_logger.log_info(
+            "DEVICE_TYPE_MIGRATION_COMPLETED",
+            (
+                f"site_name={site}, scanned_count={len(candidates)}, "
+                f"migrated_count={migrated_count}, skipped_count={skipped_count}, "
+                f"backup={backup_path.name}"
+            ),
+        )
 
     def list_devices(
         self,

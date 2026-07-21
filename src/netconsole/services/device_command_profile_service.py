@@ -56,7 +56,7 @@ _STEP_KEYS = frozenset(
 _COMPATIBILITY_LEVELS = frozenset({"fixture_verified", "generic_read_only"})
 _PROFILE_RISK_LEVELS = frozenset({"read_only", "controlled_write"})
 _VERIFICATION_STATUSES = frozenset({"fixture_verified", "behavior_preservation_only"})
-_DEVICE_INVENTORY_STEP_CONTRACT = (
+_SWITCH_DEVICE_INVENTORY_STEP_CONTRACT = (
     ("terminal.pagination.disable", "session.pagination"),
     ("device.sysname.collect", "inventory.sysname"),
     ("device.version.collect", "inventory.version"),
@@ -70,6 +70,19 @@ _DEVICE_INVENTORY_STEP_CONTRACT = (
     ("device.lldp-summary.collect", "inventory.lldp_list"),
     ("device.lldp-detail.collect", "inventory.lldp_verbose"),
 )
+_MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT = (
+    ("terminal.pagination.disable", "session.pagination"),
+    ("device.sysname.collect", "inventory.sysname"),
+    ("device.version.collect", "inventory.version"),
+    ("device.slot.collect", "inventory.device"),
+    ("device.manufacturing.collect", "inventory.manuinfo"),
+    ("device.boot-loader.collect", "inventory.boot_loader"),
+    ("device.interfaces.collect", "inventory.interfaces"),
+)
+_DEVICE_INVENTORY_STEP_CONTRACTS = {
+    "switch": _SWITCH_DEVICE_INVENTORY_STEP_CONTRACT,
+    "mobile_router": _MOBILE_ROUTER_DEVICE_INVENTORY_STEP_CONTRACT,
+}
 _DEVICE_SFTP_STEP_CONTRACT = (
     ("sftp.mode.enter", "system-view", "sftp.mode.enter"),
     ("sftp.server.enable", "sftp server enable", "sftp.server.enable"),
@@ -230,9 +243,10 @@ def resolve_device_inventory_profile(
         raise DeviceCommandProfileNotFound(
             f"设备详情采集仅支持 H3C: vendor={vendor or 'unknown'}"
         )
-    if role != "switch":
+    supported_roles = {"switch", "mobile_router"}
+    if role not in supported_roles:
         raise DeviceCommandProfileNotFound(
-            f"设备详情采集仅支持交换机: role={role or 'unknown'}"
+            f"设备详情采集不支持当前设备角色: role={role or 'unknown'}"
         )
     if platform != "comware":
         raise DeviceCommandProfileNotFound(
@@ -602,7 +616,10 @@ def _validate_catalog(profiles: tuple[DeviceCommandProfile, ...]) -> None:
             actual_contract = tuple(
                 (step.step_id, step.selector) for step in profile.steps
             )
-            if actual_contract != _DEVICE_INVENTORY_STEP_CONTRACT:
+            expected_contract = _DEVICE_INVENTORY_STEP_CONTRACTS.get(
+                profile.selector.role
+            )
+            if expected_contract is None or actual_contract != expected_contract:
                 raise DeviceCommandProfileError(
                     f"{profile.profile_id}: device.inventory.collect step 契约不完整或顺序错误"
                 )

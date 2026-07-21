@@ -143,6 +143,97 @@
       ]
     },
     {
+      "operation_id": "device.inventory.collect",
+      "profile_id": "h3c.comware.mobile_router.generic.device-inventory.v1",
+      "profile_version": 1,
+      "selector": {
+        "vendor": "H3C",
+        "role": "mobile_router",
+        "platform": "comware",
+        "software_version": "*"
+      },
+      "compatibility": "generic_read_only",
+      "risk": "read_only",
+      "parser_contract": "netconsole.h3c.mobile-router-device-inventory.v1",
+      "dto_contract": "netconsole.device-inventory.v1",
+      "verification": {
+        "fixture_versions": ["7.1.070-mobile-router-core"],
+        "real_device_status": "REAL_DEVICE_PENDING"
+      },
+      "steps": [
+        {
+          "order": 10,
+          "step_id": "terminal.pagination.disable",
+          "command": "screen-length disable",
+          "selector": "session.pagination",
+          "parser_contract": "raw.passthrough.v1",
+          "dto_contract": "none.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "behavior_preservation_only", "evidence": "tests/test_device_command_profile_service.py::test_mobile_router_inventory_profile_uses_core_read_only_contract"}
+        },
+        {
+          "order": 20,
+          "step_id": "device.sysname.collect",
+          "command": "display current-configuration | include sysname",
+          "selector": "inventory.sysname",
+          "parser_contract": "netconsole.h3c.sysname.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_current_configuration_sysname.txt"}
+        },
+        {
+          "order": 30,
+          "step_id": "device.version.collect",
+          "command": "display version",
+          "selector": "inventory.version",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_version.txt"}
+        },
+        {
+          "order": 40,
+          "step_id": "device.slot.collect",
+          "command": "display device",
+          "selector": "inventory.device",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_device.txt"}
+        },
+        {
+          "order": 50,
+          "step_id": "device.manufacturing.collect",
+          "command": "display device manuinfo",
+          "selector": "inventory.manuinfo",
+          "parser_contract": "netconsole.h3c.device.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_device_manuinfo.txt"}
+        },
+        {
+          "order": 60,
+          "step_id": "device.boot-loader.collect",
+          "command": "display boot-loader",
+          "selector": "inventory.boot_loader",
+          "parser_contract": "netconsole.h3c.boot-loader.v1",
+          "dto_contract": "netconsole.device-fact.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_boot_loader_sw.txt"}
+        },
+        {
+          "order": 70,
+          "step_id": "device.interfaces.collect",
+          "command": "display interface",
+          "selector": "inventory.interfaces",
+          "parser_contract": "netconsole.h3c.interfaces.v1",
+          "dto_contract": "netconsole.device-interface.v1",
+          "risk": {"level": "read_only", "guard_context": "device.inventory.collect"},
+          "verification": {"status": "fixture_verified", "evidence": "tests/fixtures/h3c/display_interface.txt"}
+        }
+      ]
+    },
+    {
       "operation_id": "device.sftp.enable",
       "profile_id": "h3c.comware.switch.v7.sftp-enable.v1",
       "profile_version": 1,

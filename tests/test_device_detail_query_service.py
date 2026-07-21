@@ -407,8 +407,10 @@ def test_overview_resolves_role_platform_capability_and_null_snapshot_counts(
     )
     mr_overview = query.overview(str(mr.device_uuid))
     assert mr_overview.platform_facts.role == "mobile_router"
+    assert mr_overview.platform_facts.platform == "comware"
     assert "business" in mr_overview.visible_sections
-    assert mr_overview.command_profile.executable is False
+    assert mr_overview.command_profile.executable is True
+    assert mr_overview.command_profile.profile_id == "h3c.comware.mobile_router.generic.device-inventory.v1"
     huawei_overview = query.overview(str(huawei.device_uuid))
     assert huawei_overview.platform_facts.platform == "vrp"
     assert huawei_overview.snapshot.available is True

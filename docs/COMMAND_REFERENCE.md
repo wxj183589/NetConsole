@@ -48,13 +48,13 @@
 | 字段 | 当前值 |
 | --- | --- |
 | Operation ID | `device.inventory.collect` |
-| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` |
-| Selector | H3C / switch / Comware / `*` |
+| Profile ID | `h3c.comware.switch.generic.device-inventory.v1` / `h3c.comware.mobile_router.generic.device-inventory.v1` |
+| Selector | H3C / switch / Comware / `*`；H3C / mobile_router / Comware / `*` |
 | 风险 | `read_only` |
 | 兼容等级 | `generic_read_only` |
-| Parser contract | `netconsole.h3c.device-inventory.v1` |
+| Parser contract | `netconsole.h3c.device-inventory.v1` / `netconsole.h3c.mobile-router-device-inventory.v1` |
 | DTO contract | `netconsole.device-inventory.v1` |
-| 样例证据 | Comware `7.1.070` fixture |
+| 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同 |
 | 真实设备状态 | `REAL_DEVICE_PENDING` |
 
 `device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
