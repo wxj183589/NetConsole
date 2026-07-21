@@ -12,6 +12,7 @@ class RailTransitTaskDTO(ApiModel):
     status: str = "PENDING"
     action: str
     artifact_id: str = ""
+    artifact_name: str = ""
     available: bool = False
     sha256: str = ""
     size_bytes: int = 0

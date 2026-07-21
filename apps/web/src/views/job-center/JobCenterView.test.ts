@@ -219,6 +219,25 @@ function task(id: string): TaskItem {
   }
 }
 
+function tracksideExportTask(id: string): TaskItem {
+  const base = task(id)
+  return {
+    ...base,
+    type: 'web_export_trackside_ap_business',
+    name: '轨旁 AP 业务导出',
+    owner: 'web_rail_transit',
+    module: 'rail',
+    artifact_download: {
+      artifact_id: `artifact-${id}`,
+      display_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+      size_bytes: 128,
+      media_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      api_path: `/api/job-center/artifacts/artifact-${id}`,
+      query: {},
+    },
+  }
+}
+
 function descendants(root: HostNode): HostNode[] {
   return root.children.flatMap((child) => [child, ...descendants(child)])
 }
@@ -365,6 +384,36 @@ describe('Job Center saved artifact capability lifecycle', () => {
     await click(findButton(root, '停止 / 取消')!)
     expect(findButton(root, '打开文件')).toBeUndefined()
 
+    app.unmount()
+  })
+
+  it('uses the trackside AP business save endpoint from the task window', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    store.selected = tracksideExportTask('rail-1')
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+    const drawer = descendants(root).find((target) => target.type === 'drawer')
+    const showDrawer = drawer?.props['onUpdate:modelValue'] as ((value: boolean) => void) | undefined
+    showDrawer?.(true)
+    await nextTick()
+
+    expect(findButton(root, 'Artifact 下载')).toBeUndefined()
+    platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-trackside' })
+    await click(findButton(root, '保存导出表格')!)
+
+    expect(platformMocks.download).toHaveBeenCalledWith({
+      apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact-rail-1/download',
+      suggestedName: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
+    expect(messageMocks.success).toHaveBeenCalledWith('轨旁 AP 业务表格已保存')
+    expect(findButton(root, '打开文件')).toBeDefined()
     app.unmount()
   })
 

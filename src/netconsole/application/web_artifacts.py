@@ -33,6 +33,7 @@ class ReservedWebArtifact:
     task_type: str
     task_source: str
     output_path: Path
+    display_name: str
 
 
 class WebArtifactStore:
@@ -53,6 +54,7 @@ class WebArtifactStore:
         task_type: str,
         output_root: Path,
         preferred_name: str,
+        use_display_name_as_file_name: bool = False,
     ) -> ReservedWebArtifact:
         site_id = self._site(site_id)
         root = self._controlled_root(site_id, source, output_root)
@@ -68,7 +70,11 @@ class WebArtifactStore:
         stem = _SAFE_STEM.sub("_", Path(preferred_name).stem).strip(" ._") or "report"
         root.mkdir(parents=True, exist_ok=True)
         display_name = f"{stem}{suffix}"
-        output_path = (root / f"{stem}-{artifact_id[:12]}{suffix}").resolve()
+        output_path = (
+            root / artifact_id / display_name
+            if use_display_name_as_file_name
+            else root / f"{stem}-{artifact_id[:12]}{suffix}"
+        ).resolve()
         self._require_within(output_path, root)
         manifest = {
             "artifact_id": artifact_id,
@@ -97,6 +103,7 @@ class WebArtifactStore:
             task_type=task_type,
             task_source="local",
             output_path=output_path,
+            display_name=display_name,
         )
 
     def complete(self, reservation: ReservedWebArtifact) -> dict[str, object]:
@@ -140,6 +147,7 @@ class WebArtifactStore:
                     path.unlink()
             except OSError:
                 pass
+        self._remove_empty_artifact_dir(reservation)
         try:
             self._manifest_path(reservation.site_id, reservation.artifact_id).unlink(missing_ok=True)
         except OSError:
@@ -395,6 +403,7 @@ class WebArtifactStore:
             task_type=str(manifest.get("task_type") or ""),
             task_source=str(manifest.get("task_source") or ""),
             output_path=output,
+            display_name=str(manifest.get("display_name") or manifest.get("file_name") or ""),
         )
 
     def _controlled_root(self, site_id: str, source: str, requested: Path) -> Path:
@@ -478,6 +487,16 @@ class WebArtifactStore:
                 digest.update(chunk)
                 size += len(chunk)
         return digest.hexdigest(), size
+
+    @staticmethod
+    def _remove_empty_artifact_dir(reservation: ReservedWebArtifact) -> None:
+        parent = reservation.output_path.parent
+        if parent.name != reservation.artifact_id:
+            return
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
 
 
 __all__ = ["ReservedWebArtifact", "WebArtifactError", "WebArtifactStore"]

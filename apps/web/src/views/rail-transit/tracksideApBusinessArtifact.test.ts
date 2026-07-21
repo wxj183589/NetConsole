@@ -38,31 +38,46 @@ describe('trackside AP business artifact helper', () => {
 
   it('uses the business download endpoint and reports saved or browser-started states', async () => {
     platformMocks.download.mockResolvedValueOnce({ status: 'saved', capabilityId: 'cap-1' })
-    const saved = await saveTracksideApBusinessArtifact({ artifact_id: 'artifact / 1' })
+    const saved = await saveTracksideApBusinessArtifact({
+      artifact_id: 'artifact / 1',
+      artifact_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
 
     expect(platformMocks.download).toHaveBeenCalledWith({
       apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact%20%2F%201/download',
-      suggestedName: '轨旁AP业务.xlsx',
+      suggestedName: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
     })
     expect(saved).toEqual({ status: 'saved', capabilityId: 'cap-1' })
     expect(messageMocks.success).toHaveBeenCalledWith('轨旁 AP 业务表格已保存')
 
     platformMocks.download.mockResolvedValueOnce({ status: 'started' })
-    await saveTracksideApBusinessArtifact('artifact-2')
+    await saveTracksideApBusinessArtifact({
+      artifact_id: 'artifact-2',
+      artifact_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     expect(messageMocks.success).toHaveBeenCalledWith('浏览器已开始下载')
   })
 
   it('does not report cancellation and surfaces failed or thrown errors', async () => {
     platformMocks.download.mockResolvedValueOnce({ status: 'cancelled' })
-    await saveTracksideApBusinessArtifact('artifact-3')
+    await saveTracksideApBusinessArtifact({
+      artifact_id: 'artifact-3',
+      artifact_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     expect(messageMocks.error).not.toHaveBeenCalled()
 
     platformMocks.download.mockResolvedValueOnce({ status: 'failed', error: '磁盘空间不足' })
-    await saveTracksideApBusinessArtifact('artifact-4')
+    await saveTracksideApBusinessArtifact({
+      artifact_id: 'artifact-4',
+      artifact_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     expect(messageMocks.error).toHaveBeenCalledWith('磁盘空间不足')
 
     platformMocks.download.mockRejectedValueOnce(new Error('下载桥不可用'))
-    const thrown = await saveTracksideApBusinessArtifact('artifact-5')
+    const thrown = await saveTracksideApBusinessArtifact({
+      artifact_id: 'artifact-5',
+      artifact_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     expect(thrown).toEqual({ status: 'failed', error: '下载桥不可用' })
     expect(messageMocks.error).toHaveBeenCalledWith('下载桥不可用')
   })

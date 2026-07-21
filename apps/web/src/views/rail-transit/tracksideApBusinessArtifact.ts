@@ -13,7 +13,8 @@ export interface TracksideApBusinessArtifactLike {
   status?: string
   available?: boolean
   artifact_id?: string
-  artifact_download?: { artifact_id: string } | null
+  artifact_name?: string
+  artifact_download?: { artifact_id: string; display_name?: string } | null
 }
 
 export function isTracksideApBusinessArtifactTask(task: TracksideApBusinessArtifactLike | null | undefined): boolean {
@@ -25,17 +26,28 @@ export function tracksideApBusinessArtifactId(target: TracksideApBusinessArtifac
   return String(target?.artifact_id || target?.artifact_download?.artifact_id || '').trim()
 }
 
+export function tracksideApBusinessArtifactName(target: TracksideApBusinessArtifactLike | string | null | undefined): string {
+  if (typeof target === 'string') return ''
+  return String(target?.artifact_name || target?.artifact_download?.display_name || '').trim()
+}
+
 export async function saveTracksideApBusinessArtifact(
   target: TracksideApBusinessArtifactLike | string | null | undefined,
 ): Promise<BackendDownloadResult> {
   const artifactId = tracksideApBusinessArtifactId(target)
+  const artifactName = tracksideApBusinessArtifactName(target)
   if (!artifactId) {
     const error = '轨旁 AP 业务表格 Artifact 不可用'
     ElMessage.error(error)
     return { status: 'failed', error }
   }
+  if (!artifactName) {
+    const error = '轨旁 AP 业务表格名称不可用'
+    ElMessage.error(error)
+    return { status: 'failed', error }
+  }
   try {
-    const result = await downloadBackendResource(tracksideApBusinessDownloadRequest(artifactId))
+    const result = await downloadBackendResource(tracksideApBusinessDownloadRequest(artifactId, artifactName))
     if (result.status === 'saved') ElMessage.success('轨旁 AP 业务表格已保存')
     else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
     else if (result.status === 'failed') ElMessage.error(result.error || '轨旁 AP 业务表格保存失败')

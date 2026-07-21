@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Callable
@@ -42,6 +44,10 @@ from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCheck = Callable[[], bool]
+_WINDOWS_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]+')
+_TRACKSIDE_AP_BUSINESS_SUFFIX = ".xlsx"
+_TRACKSIDE_AP_BUSINESS_MARK = "_轨旁AP业务_"
+_MAX_TRACKSIDE_AP_BUSINESS_NAME_LENGTH = 180
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,31 @@ class TracksideApBusinessLoadResult:
     row_count: int = 0
     empty_reason: str = ""
     identity_shadow: dict[str, object] = field(default_factory=dict)
+
+
+def build_trackside_ap_business_export_name(site_display_name: str, created_at: datetime) -> str:
+    site_name = _safe_trackside_site_name(site_display_name)
+    timestamp = created_at.strftime("%Y%m%d_%H%M%S")
+    fixed_tail = f"{_TRACKSIDE_AP_BUSINESS_MARK}{timestamp}{_TRACKSIDE_AP_BUSINESS_SUFFIX}"
+    max_site_length = _MAX_TRACKSIDE_AP_BUSINESS_NAME_LENGTH - len(fixed_tail)
+    if max_site_length <= 0:
+        raise ValueError("轨旁 AP 业务导出文件名规则无效")
+    if len(site_name) > max_site_length:
+        site_name = site_name[:max_site_length].rstrip(" .")
+    if not site_name:
+        raise ValueError("轨旁 AP 业务导出缺少局点名称")
+    return f"{site_name}{fixed_tail}"
+
+
+def _safe_trackside_site_name(value: str) -> str:
+    site_name = str(value or "").strip(" .")
+    if not site_name:
+        raise ValueError("轨旁 AP 业务导出缺少局点名称")
+    site_name = _WINDOWS_INVALID_FILENAME_CHARS.sub("_", site_name)
+    site_name = re.sub(r"_+", "_", site_name).strip(" .")
+    if not site_name:
+        raise ValueError("轨旁 AP 业务导出缺少局点名称")
+    return site_name
 
 
 def load_trackside_ap_business_snapshot(repository: DeviceRepository, site_name: str, generation: int) -> TracksideApBusinessLoadResult:

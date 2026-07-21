@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from netconsole.application.rail_transit import web_application_service as rail_transit_web_application_service
 from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
 )
@@ -15,6 +18,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
 from netconsole.services.export.export_job import ExportJob
@@ -31,6 +35,7 @@ from netconsole.services.trackside_ap_business import (
     TracksideApExportCancelled,
     export_trackside_ap_business_xlsx,
 )
+from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
 from netconsole.utils.interface_normalize import display_interface_name
 
 
@@ -51,13 +56,36 @@ def _enable_feature(app, feature_id: str) -> None:
     }
 
 
+def test_trackside_business_export_name_uses_site_display_name_and_sanitizes_windows_chars() -> None:
+    created_at = datetime(2026, 7, 21, 23, 45, 1)
+    assert (
+        build_trackside_ap_business_export_name("宁波地铁12号线", created_at)
+        == "宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx"
+    )
+    special = build_trackside_ap_business_export_name("测试/线路:A网", created_at)
+    assert special == "测试_线路_A网_轨旁AP业务_20260721_234501.xlsx"
+    assert all(char not in special for char in '<>:"/\\|?*')
+    assert ".xlsx.xlsx" not in build_trackside_ap_business_export_name("测试.xlsx", created_at)
+    with pytest.raises(ValueError, match="缺少局点名称"):
+        build_trackside_ap_business_export_name("", created_at)
+
+
 def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     Database(paths.site_db_path("demo")).initialize()
+    SiteManager(paths).save_site_metadata("demo", {"display_name": "宁波地铁12号线"})
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 21, 23, 45, 1, tzinfo=tz)
+
+    monkeypatch.setattr(rail_transit_web_application_service, "datetime", FrozenDateTime)
     app = create_app(
         RuntimeMode.SERVER,
         paths=paths,
@@ -80,8 +108,10 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         started = client.post("/api/rail-transit/trackside-ap-business/export")
         assert started.status_code == 202
         payload = started.json()
+        expected_name = "宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx"
         assert payload["action"] == "trackside_ap_business_export"
         assert payload["artifact_id"]
+        assert payload["artifact_name"] == expected_name
         assert str(tmp_path) not in json.dumps(payload, ensure_ascii=False)
 
         task_id = payload["task_id"]
@@ -90,7 +120,7 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert job.site_name == "demo"
         assert job.db_path == str(paths.site_db_path("demo"))
         assert job.params == {"language": "zh_CN"}
-        assert Path(job.output_path).name.startswith("轨旁AP业务_")
+        assert Path(job.output_path).name == expected_name
 
         export.complete(task_id, b"xlsx-fixture")
         completed = client.get(
@@ -99,6 +129,7 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert completed.status_code == 200
         completed_payload = completed.json()
         assert completed_payload["available"] is True
+        assert completed_payload["artifact_name"] == expected_name
         assert str(tmp_path) not in json.dumps(completed_payload, ensure_ascii=False)
 
         download = client.get(
@@ -107,6 +138,22 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         )
         assert download.status_code == 200
         assert download.content == b"xlsx-fixture"
+        assert expected_name in unquote(download.headers["content-disposition"])
+
+        recovered = client.post("/api/rail-transit/trackside-ap-business/export")
+        recovered_payload = recovered.json()
+        recovered_name = "宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx"
+        export.callbacks.pop(recovered_payload["task_id"])
+        export.complete(recovered_payload["task_id"], b"recovered-fixture")
+        recovered_tasks = client.post("/api/rail-transit/trackside-ap-business/tasks/recover")
+        assert recovered_tasks.status_code == 200
+        recovered_items = recovered_tasks.json()
+        recovered_item = next(item for item in recovered_items if item["task_id"] == recovered_payload["task_id"])
+        assert recovered_item["artifact_name"] == recovered_name
+        recovered_detail = client.get(
+            f"/api/rail-transit/trackside-ap-business/tasks/{recovered_payload['task_id']}"
+        )
+        assert recovered_detail.json()["artifact_name"] == recovered_name
 
         cancelling = client.post("/api/rail-transit/trackside-ap-business/export")
         cancelling_payload = cancelling.json()

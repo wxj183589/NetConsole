@@ -86,6 +86,7 @@ const exportArtifactAvailable = computed(() => (
   && isTracksideApBusinessArtifactTask(task.value)
   && task.value.available
   && Boolean(task.value.artifact_id)
+  && Boolean(task.value.artifact_name)
 ))
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
@@ -106,7 +107,7 @@ function rememberAutoSavedTask(taskId: string): void {
   try { localStorage.setItem(autoSaveStorageKey, JSON.stringify(values)) } catch { /* ignore quota errors */ }
 }
 function shouldAutoSaveExport(value: TracksideApTask | null): value is TracksideApTask {
-  if (!value || value.status !== 'COMPLETED' || !value.available || !isTracksideApBusinessArtifactTask(value) || !value.artifact_id) return false
+  if (!value || value.status !== 'COMPLETED' || !value.available || !isTracksideApBusinessArtifactTask(value) || !value.artifact_id || !value.artifact_name) return false
   return !autoSavedTaskIds().includes(value.task_id) && !autoSaveInFlight.has(value.task_id)
 }
 async function maybeAutoSaveExport(value: TracksideApTask | null): Promise<void> {

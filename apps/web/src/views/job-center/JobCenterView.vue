@@ -11,6 +11,10 @@ import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import {
+  isTracksideApBusinessArtifactTask,
+  saveTracksideApBusinessArtifact,
+} from '../rail-transit/tracksideApBusinessArtifact'
 
 const store = useTaskStore()
 const router = useRouter()
@@ -36,6 +40,9 @@ const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return store.tasks.filter((task) => matchesFilter(task) && (moduleFilter.value === 'all' || task.module === moduleFilter.value) && (!search || taskSearchText(task).includes(search)))
 })
+const artifactDownloadLabel = computed(() => (
+  isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : 'Artifact 下载'
+))
 const columns: NcTableColumn<TaskItem>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
   { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
@@ -180,17 +187,20 @@ async function downloadArtifact(): Promise<void> {
   const taskId = store.selected.id
   clearSavedCapability()
   const generation = downloadGeneration
+  const tracksideArtifact = isTracksideApBusinessArtifactTask(store.selected)
   const artifact = store.selected.artifact_download
-  const result = await downloadBackendResource({
-    apiPath: artifact.api_path,
-    query: artifact.query,
-    suggestedName: artifact.display_name,
-  })
+  const result = tracksideArtifact
+    ? await saveTracksideApBusinessArtifact(store.selected)
+    : await downloadBackendResource({
+      apiPath: artifact.api_path,
+      query: artifact.query,
+      suggestedName: artifact.display_name,
+    })
   if (generation !== downloadGeneration || store.selected?.id !== taskId || !drawerVisible.value) return
   if (result.status === 'saved') {
     lastSavedCapability.value = result.capabilityId || ''
-    ElMessage.success('Artifact 已保存')
-  } else if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
+    if (!tracksideArtifact) ElMessage.success('Artifact 已保存')
+  } else if (result.status === 'failed' && !tracksideArtifact) ElMessage.error(result.error || 'Artifact 下载失败')
 }
 
 function nativeFailureMessage(action: 'open' | 'reveal', error = ''): string {
@@ -323,7 +333,7 @@ const revealSaved = () => runSavedAction('reveal')
         <div class="association-actions">
           <el-tooltip :content="store.selected.cancel_reason" :disabled="store.selected.cancellable"><span><el-button type="danger" :disabled="!store.selected.cancellable" @click="cancelSelected">停止 / 取消</el-button></span></el-tooltip>
           <el-tooltip :content="store.selected.retry_reason" :disabled="store.selected.retryable"><span><el-button :disabled="!store.selected.retryable">重试</el-button></span></el-tooltip>
-          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">Artifact 下载</el-button></span></el-tooltip>
+          <el-tooltip :content="store.selected.artifact_reason" :disabled="Boolean(store.selected.artifact_download)"><span><el-button :disabled="!store.selected.artifact_download" @click="downloadArtifact">{{ artifactDownloadLabel }}</el-button></span></el-tooltip>
           <template v-if="lastSavedCapability">
             <el-button @click="openSaved">打开文件</el-button>
             <el-button @click="revealSaved">打开所在目录</el-button>

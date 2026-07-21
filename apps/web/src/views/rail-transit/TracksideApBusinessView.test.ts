@@ -16,10 +16,13 @@ const api = vi.hoisted(() => ({
   startTracksideApUpdate: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
 }))
+const platformMocks = vi.hoisted(() => ({
+  downloadBackendResource: vi.fn(),
+}))
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('../../api/tracksideApBusiness', () => api)
-vi.mock('../../platform/runtime', () => ({ downloadBackendResource: vi.fn() }))
+vi.mock('../../platform/runtime', () => ({ downloadBackendResource: platformMocks.downloadBackendResource }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
 
@@ -95,6 +98,7 @@ function task(
     status,
     action,
     artifact_id: '',
+    artifact_name: '',
     available: false,
     sha256: '',
     size_bytes: 0,
@@ -162,6 +166,11 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.getTracksideApTask.mockResolvedValue(task('task-complete', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
     api.startTracksideApBusinessExport.mockResolvedValue(task('export-task', 'RUNNING', 'trackside_ap_business_export'))
     api.startTracksideApUpdate.mockResolvedValue(task('update-task', 'COMPLETED', 'trackside_ap_optical_update', { status: 'DONE', target_count: 1, success_count: 1 }))
+    api.tracksideApBusinessDownloadRequest.mockImplementation((artifactId: string, artifactName: string) => ({
+      apiPath: `/api/rail-transit/trackside-ap-business/artifacts/${encodeURIComponent(artifactId)}/download`,
+      suggestedName: artifactName,
+    }))
+    platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
     localStorage.clear()
     routerPush.mockReset()
     delete (window as Window & { netconsoleDesktop?: unknown }).netconsoleDesktop
@@ -261,6 +270,29 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page_size: 50,
     })
     expect(wrapper.text()).toContain('更新成功')
+    wrapper.unmount()
+  })
+
+  it('saves completed business exports with the backend artifact name', async () => {
+    const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'
+    api.startTracksideApBusinessExport.mockResolvedValueOnce({
+      ...task('export-complete', 'COMPLETED', 'trackside_ap_business_export'),
+      artifact_id: 'artifact-1',
+      artifact_name: expectedName,
+      available: true,
+    })
+    localStorage.setItem('netconsole.trackside-ap-business.auto-saved-task-ids', JSON.stringify(['export-complete']))
+    const wrapper = await mountView()
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+    await button(wrapper, '保存导出表格').trigger('click')
+    await flushPromises()
+
+    expect(platformMocks.downloadBackendResource).toHaveBeenCalledWith({
+      apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download',
+      suggestedName: expectedName,
+    })
     wrapper.unmount()
   })
 })

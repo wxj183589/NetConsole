@@ -6,6 +6,8 @@ import type {
 } from '../types/tracksideApBusiness'
 
 const root = '/api/rail-transit/trackside-ap-business'
+const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
+const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xlsx$/
 
 export function listTracksideApBusiness(params: {
   station?: string; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number
@@ -61,7 +63,23 @@ export const tracksideApPlanDownloadRequest = (artifactId: string, template = fa
   suggestedName: template ? '轨旁AP规划模板.xlsx' : '轨旁AP规划.xlsx',
 })
 
-export const tracksideApBusinessDownloadRequest = (artifactId: string): BackendDownloadRequest => ({
+function normalizeTracksideApBusinessArtifactName(value: string): string {
+  const suggestedName = value.trim()
+  if (
+    !suggestedName
+    || suggestedName.length > 180
+    || suggestedName === '.'
+    || suggestedName === '..'
+    || suggestedName.endsWith('.')
+    || invalidArtifactNamePattern.test(suggestedName)
+    || !tracksideBusinessArtifactNamePattern.test(suggestedName)
+  ) {
+    throw new TypeError('artifactName must be a safe file name')
+  }
+  return suggestedName
+}
+
+export const tracksideApBusinessDownloadRequest = (artifactId: string, artifactName: string): BackendDownloadRequest => ({
   apiPath: `${root}/artifacts/${encodeURIComponent(artifactId)}/download`,
-  suggestedName: '轨旁AP业务.xlsx',
+  suggestedName: normalizeTracksideApBusinessArtifactName(artifactName),
 })

@@ -39,9 +39,11 @@ describe('trackside AP business API', () => {
       '/api/rail-transit/trackside-ap-business/plan/save',
       '/api/rail-transit/trackside-ap-business/plan/export',
     ])
-    expect(tracksideApBusinessDownloadRequest('artifact / 1')).toEqual({
+    expect(tracksideApBusinessDownloadRequest('artifact / 1', '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx')).toEqual({
       apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact%20%2F%201/download',
-      suggestedName: '轨旁AP业务.xlsx',
+      suggestedName: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
     })
+    expect(() => tracksideApBusinessDownloadRequest('artifact-1', '轨旁AP业务.xlsx')).toThrow('artifactName')
+    expect(() => tracksideApBusinessDownloadRequest('artifact-1', '../宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx')).toThrow('artifactName')
   })
 })

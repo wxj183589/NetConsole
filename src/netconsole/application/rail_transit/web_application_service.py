@@ -94,6 +94,7 @@ from netconsole.services.trackside_ap_plan_io import (
     normalize_trackside_plan_rows,
     read_trackside_plan_file,
 )
+from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
 from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
 from netconsole.services.rail_transit.vehicle_mr_mapping_io import (
     VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
@@ -524,6 +525,14 @@ class RailTransitWebApplicationService:
 
     def start_trackside_ap_business_export(self, site_id: str) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
+        created_at = datetime.now()
+        try:
+            preferred_name = build_trackside_ap_business_export_name(
+                self._site_display_name(site_id),
+                created_at,
+            )
+        except ValueError as exc:
+            raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
         task_id = f"rail-export-{uuid4().hex}"
         try:
             reservation = self.artifact_store.reserve(
@@ -534,7 +543,8 @@ class RailTransitWebApplicationService:
                 task_id=task_id,
                 task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_business"],
                 output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_business",
-                preferred_name=f"轨旁AP业务_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+                preferred_name=preferred_name,
+                use_display_name_as_file_name=True,
             )
         except WebArtifactError as exc:
             self._task_window_blocked("轨旁 AP 业务导出", exc)
@@ -1526,7 +1536,7 @@ class RailTransitWebApplicationService:
                 owner=self._OWNER,
                 public_result={
                     "artifact_id": reservation.artifact_id,
-                    "artifact_name": reservation.output_path.name,
+                    "artifact_name": reservation.display_name,
                     "artifact_source": reservation.source,
                     "artifact_type": reservation.artifact_type,
                 },
@@ -1541,6 +1551,7 @@ class RailTransitWebApplicationService:
             status=snapshot.status.value,
             action=action,
             artifact_id=reservation.artifact_id,
+            artifact_name=reservation.display_name,
         )
 
     def _snapshot(self, site_id: str, task_id: str):
@@ -1571,6 +1582,7 @@ class RailTransitWebApplicationService:
             status=snapshot.status.value,
             action=action,
             artifact_id=str((metadata or {}).get("artifact_id") or ""),
+            artifact_name=str((metadata or {}).get("display_name") or ""),
             available=bool(metadata and metadata.get("completed") is True),
             sha256=str((metadata or {}).get("sha256") or ""),
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
@@ -1818,6 +1830,16 @@ class RailTransitWebApplicationService:
         if not root.is_dir():
             raise RailTransitWebError("SITE_CONTEXT_INVALID", "当前局点不存在")
         return value
+
+    def _site_display_name(self, site_id: str) -> str:
+        try:
+            metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        except ValueError as exc:
+            raise RailTransitWebError("SITE_CONTEXT_INVALID", "局点标识无效") from exc
+        display_name = str(metadata.get("display_name") or "").strip()
+        if not display_name:
+            raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", "当前局点缺少显示名称")
+        return display_name
 
     @classmethod
     def _safe_name(cls, value: str) -> str:

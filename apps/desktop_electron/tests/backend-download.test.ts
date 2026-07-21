@@ -118,6 +118,27 @@ describe('backend download manager', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('uses the trackside AP artifact name as the save dialog default', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    const showSaveDialog = vi.fn(async () => ({ canceled: true }))
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:43123', apiToken: 'x'.repeat(48) }) },
+      dialog: { showSaveDialog },
+      window: {},
+      pathRegistry: new GrantedPathRegistry(),
+      fetchImpl,
+    })
+    const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'
+    const taskWindow = { kind: 'trackside-task' }
+
+    await expect(manager.download({
+      apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download',
+      suggestedName: expectedName,
+    }, taskWindow)).resolves.toEqual({ status: 'cancelled' })
+    expect(showSaveDialog).toHaveBeenCalledWith(taskWindow, expect.objectContaining({ defaultPath: expectedName }))
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('preserves an existing target when HTTP fails', async () => {
     const server = await loopbackServer((_request, response) => {
       response.writeHead(503)
