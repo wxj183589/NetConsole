@@ -5,6 +5,7 @@ import type { EChartsType } from 'echarts/core'
 import {
   createNetConsoleAxisStyle,
   createNetConsoleDataZoomStyle,
+  createNetConsoleLegendStyle,
   createNetConsoleTooltipStyle,
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
@@ -207,6 +208,19 @@ function buildTooltipPointSection(point: RenderedSignalPoint, index: number): st
   ].join('<br>')
 }
 
+function renderedPointKey(point: RenderedSignalPoint): string {
+  const meta = point.meta
+  const series = point.seriesMeta
+  if (!meta || !series) return ''
+  return [
+    series.series_id,
+    point.value[0],
+    meta.link_id ?? '',
+    meta.timestamp_tag,
+    meta.peer_mac ?? '',
+  ].join('|')
+}
+
 function buildTooltip(points: RenderedSignalPoint[], event?: MeshChartEvent): string {
   if (!points.length) {
     return `<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">采样时间：${escapeMeshTooltipHtml(event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
@@ -248,6 +262,7 @@ async function ensureChart(): Promise<boolean> {
     chart = core.init(container.value)
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
+    chart.on('restore', handleRestore)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
     return true
   })().finally(() => { initialization = null })
@@ -297,6 +312,7 @@ onBeforeUnmount(() => {
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
   chart?.off('datazoom', handleDataZoom)
+  chart?.off('restore', handleRestore)
   chart?.dispose()
   chart = null
 })
@@ -331,6 +347,13 @@ function handleDataZoom(raw: unknown): void {
   currentViewport = viewport
   if (viewportTimer) clearTimeout(viewportTimer)
   viewportTimer = setTimeout(() => emit('viewport-change', { ...viewport }), 100)
+}
+
+function handleRestore(): void {
+  const viewport = createFullMeshViewport(timestamps(), 'user_zoom')
+  if (!viewport) return
+  currentViewport = viewport
+  emit('viewport-change', { ...viewport })
 }
 
 function getViewport(): MeshChartViewport | null {
@@ -387,16 +410,29 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
         const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent } } | undefined
         const event = eventParam?.data?.meshEvent
+        const seen = new Set<string>()
         const pointItems = params.flatMap((item) => {
           const candidate = item as { data?: RenderedSignalPoint }
-          return candidate.data?.meta ? [candidate.data] : []
-        }).filter((item): item is RenderedSignalPoint => Boolean(item?.meta && Array.isArray(item.value) && item.value[1] != null)).slice(0, 8)
+          const point = candidate.data
+          if (!point?.meta || !point.seriesMeta || !Array.isArray(point.value) || point.value[1] == null) return []
+          const key = renderedPointKey(point)
+          if (!key || seen.has(key)) return []
+          seen.add(key)
+          return [point]
+        }).slice(0, 8)
         return buildTooltip(pointItems, event)
       },
     },
-    legend: { type: 'scroll', bottom: 4, textStyle: { color: theme.textSecondary } },
-    toolbox: { right: 16, feature: { saveAsImage: { title: '保存图像', pixelRatio: 2 } } },
-    grid: { left: 54, right: 22, top: 42, bottom: 74, containLabel: true },
+    legend: { type: 'scroll', bottom: 4, ...createNetConsoleLegendStyle(theme) },
+    toolbox: {
+      right: 16,
+      feature: {
+        dataZoom: { yAxisIndex: 'none', title: { zoom: '框选缩放', back: '还原缩放' } },
+        restore: { title: '恢复视图' },
+        saveAsImage: { title: '保存图像', pixelRatio: 2 },
+      },
+    },
+    grid: { left: 54, right: 22, top: 24, bottom: 74, containLabel: true },
     xAxis: {
       type: 'time',
       min: props.lockedViewport?.start_time,

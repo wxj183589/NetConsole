@@ -613,10 +613,10 @@ function buildRssiWindowRange(startTime: string, endTime: string | null, radio: 
   if (start === null || (endTime && end === null) || (end !== null && end <= start)) return null
   const duration = end === null ? null : end - start
   const buffer = end === null
-    ? 30_000
-    : Math.min(300_000, Math.max(30_000, Math.round((duration || 0) * 0.2)))
+    ? 15_000
+    : Math.min(15_000, Math.max(5_000, Math.round((duration || 0) * 0.2)))
   const windowStart = start - buffer
-  const windowEnd = end === null ? start + 120_000 : end + buffer
+  const windowEnd = end === null ? start + buffer : end + buffer
   return {
     start_time: formatMeshTimestamp(windowStart),
     end_time: formatMeshTimestamp(windowEnd),

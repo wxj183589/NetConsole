@@ -318,15 +318,15 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: undefined,
-      time_from: '2026-07-20 09:59:30.000',
-      time_to: '2026-07-20 10:00:40.000',
+      time_from: '2026-07-20 09:59:55.000',
+      time_to: '2026-07-20 10:00:15.000',
     })
 
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: undefined,
-      time_from: '2026-07-20 09:59:30.000',
-      time_to: '2026-07-20 10:00:40.000',
+      time_from: '2026-07-20 09:59:55.000',
+      time_to: '2026-07-20 10:00:15.000',
       include_standby: true,
       top_n: 3,
     })

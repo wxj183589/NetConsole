@@ -178,6 +178,7 @@ describe('MESH charts mount and render', () => {
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       series: Array<{ name: string; data?: Array<{ value: [string, number | null]; meta?: MeshTracksideSignalPointData; meshEvent?: MeshChartEvent }> }>
       tooltip: { formatter: (params: unknown) => string }
+      toolbox: { feature: { dataZoom?: unknown; restore?: unknown; saveAsImage?: unknown } }
     }
     expect(option.series.map((item) => item.name)).toEqual([
       'AP-1 · Radio 1 · ACTIVE',
@@ -187,10 +188,25 @@ describe('MESH charts mount and render', () => {
     expect(option.series[0].data?.[0]?.value).toEqual([tracksideChartPoint.timestamp, -45])
     expect(option.series[1].data?.[0]?.value).toEqual([tracksideStandbyPoint.timestamp, -62])
     expect(option.series[2].data?.[0]?.meshEvent).toEqual(chartEvent)
+    expect(option.toolbox.feature.dataZoom).toBeDefined()
+    expect(option.toolbox.feature.restore).toBeDefined()
+    expect(option.toolbox.feature.saveAsImage).toBeDefined()
     expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('Peer RSSI / MR RSSI：-45 / -40')
+    const dedupedTooltip = option.tooltip.formatter([
+      { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } },
+      { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0], meshEvent: chartEvent } },
+    ])
+    expect(dedupedTooltip.split('AP-1 · Radio 1 · ACTIVE').length - 1).toBe(1)
     const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
     click({ data: { meshEvent: chartEvent, meta: tracksideChartPoint } })
     expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([chartEvent])
+    const restore = echartsMock.chart.on.mock.calls.find(([event]) => event === 'restore')?.[1] as () => void
+    restore()
+    expect(wrapper.emitted('viewport-change')?.at(-1)?.[0]).toMatchObject({
+      start_time: tracksideChartPoint.timestamp,
+      end_time: tracksideStandbyPoint.timestamp,
+      source: 'user_zoom',
+    })
 
     wrapper.unmount()
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
