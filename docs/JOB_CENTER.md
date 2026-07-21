@@ -193,6 +193,8 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - `ac_fit_ap_optical_refresh` 与轨旁 `trackside_ap_optical_update` 对同一 `site_id + ac_device_uuid + fit_ap_optical` 写入 `resource_keys`，`TaskApplicationService` 通过所属局点 `tasks.db` 的 `BEGIN IMMEDIATE` 原子检查和保存阻止同一 AC 重复光衰任务；任务进入 completed/failed/cancelled 或重启 orphan reconcile 后即释放占用，不使用永久文件锁。
 - 轨旁 `trackside_ap_optical_update` 的业务结果 `status` 使用 `SUCCESS / PARTIAL_SUCCESS / FAILED / NO_TARGET / CANCELLED`；其中 `FAILED/CANCELLED` 通过 `finished.terminal_state` 映射为 Task 终态，仍保留 `success_count/failed_count/target_count` 等统计。
 - 光衰采集结果的 `collection` 会返回 `requested_concurrency`、`effective_concurrency`、`platform_concurrency_limit` 和 `round_summaries`，用于诊断旧并发配置是否被裁剪以及重试轮次是否下降。
+- FIT-AP/AP 侧光衰采集会通过同一 `progress.details` 携带单 AP 结构化事件，不新增事件类型。轨旁 `trackside_ap_optical_update` 和 AC `ac_fit_ap_optical_refresh` 均可收到 `plan_ready / ap_started / ap_completed / ap_retry_started`，字段包含 `phase/event/round/index/total/completed/ap_uuid/ap_name/ap_mac/ap_ip/station/status/reason_code/error_message/rx_power/tx_power/elapsed_ms/success_count/failed_count/effective_concurrency`。任务窗口只展示阶段、当前 AP、单 AP 结果、重试、摘要和必要失败原因；原始 CLI 回显继续写入采集 raw log，不灌入任务中心日志。
+- 轨旁光衰更新的总体进度由交换机分支、FIT-AP 分支和最终保存/聚合步骤共同聚合；FIT-AP 目标数未确认前不能只按交换机数报满，运行态快照带 `prevent_running_100` 时最多显示 99%，只有任务终态事件才显示 100%。
 - 本阶段不修改数据库 schema、AP 统一模型、轨旁 AP 业务或 MR/Mesh；旧 MIB/SNMP Collection 已在后续 E6A 阶段删除。
 
 ## AC 命令动作 Job

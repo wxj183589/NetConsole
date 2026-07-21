@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from threading import Event
 
 from netconsole.core.database import Database
@@ -19,11 +20,28 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
     snapshot = load_trackside_ap_business_snapshot(repository, site_id, generation=0)
     cancel_event = Event()
 
-    def cancelled_progress(current: int, total: int) -> None:
+    def cancelled_progress(current: int, total: int, details: Mapping[str, object] | None = None) -> None:
         if context.should_cancel is not None and context.should_cancel():
             cancel_event.set()
             context.check_cancelled()
+        if isinstance(details, Mapping):
+            payload = dict(details)
+            stage = str(payload.pop("stage", "") or "trackside_ap_optical_update")
+            message = str(payload.pop("message", "") or "正在更新轨旁 AP 光衰")
+            context.structured_progress(stage, current, total, message, **payload)
+            return
         context.progress("trackside_ap_optical_update", current, total, "正在更新轨旁 AP 光衰")
+
+    def stage_progress(stage: str, message: str | None = None, details: Mapping[str, object] | None = None) -> None:
+        payload = dict(details or {})
+        payload.pop("message", None)
+        context.structured_progress(
+            stage,
+            0,
+            0,
+            str(message or "正在更新轨旁 AP 光衰"),
+            **payload,
+        )
 
     result = collect_trackside_optical(
         repository,
@@ -32,12 +50,19 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         snapshot.rows,
         cancel_event=cancel_event,
         progress_callback=cancelled_progress,
-        stage_callback=lambda stage: context.progress(stage, 0, 0, stage),
+        stage_callback=stage_progress,
         target_station=str(context.params.get("station") or "") or None,
         target_ap_uuid=str(context.params.get("ap_uuid") or "") or None,
         target_ap_mac=str(context.params.get("ap_mac") or "") or None,
         target_ap_name=str(context.params.get("ap_name") or "") or None,
     )
+    switch_results = list(getattr(result, "results", []) or [])
+    station_switch_total = int(getattr(result, "station_switch_total", len(switch_results)) or 0)
+    fit_ap_total = int(getattr(result, "fit_ap_total", getattr(result, "fit_ap_resource_count", 0)) or 0)
+    switch_failed_count = sum(1 for item in switch_results if not item.success)
+    switch_success_count = max(station_switch_total - switch_failed_count, 0)
+    switch_missing_count = max(station_switch_total - len(switch_results), 0)
+    fit_ap_skipped_count = max(int(getattr(result, "skipped_count", 0) or 0) - switch_missing_count, 0)
     return {
         "session_id": result.session_id,
         "status": result.status,
@@ -48,6 +73,14 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "failed_count": result.failed_count,
         "skipped_count": result.skipped_count,
         "target_count": result.target_count,
+        "switch_total": station_switch_total,
+        "switch_success_count": switch_success_count,
+        "switch_failed_count": switch_failed_count,
+        "fit_ap_total": fit_ap_total,
+        "fit_ap_success_count": result.fit_ap_optical_success_count,
+        "fit_ap_failed_count": result.fit_ap_optical_failed_count,
+        "fit_ap_skipped_count": fit_ap_skipped_count,
+        "failure_reason_counts": {},
         "concurrency": result.concurrency,
         "requested_concurrency": result.requested_concurrency,
         "effective_concurrency": result.effective_concurrency,
