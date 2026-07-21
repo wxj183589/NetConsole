@@ -53,6 +53,16 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.network_tools"].parent_id == "module.network_tools"
     assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].parent_id == "web.rail_transit_base_data"
     assert FEATURE_BY_ID["web.rail_trackside_ap_plan"].item_type == "tab"
+    trackside_business = FEATURE_BY_ID["web.rail_trackside_ap_business"]
+    assert trackside_business.parent_id == "module.rail_transit"
+    assert trackside_business.status is FeatureStatus.ENABLED
+    assert trackside_business.default_client_package is True
+    trackside_update = FEATURE_BY_ID["web.rail_trackside_ap_business_update"]
+    assert trackside_update.parent_id == "web.rail_trackside_ap_business"
+    assert trackside_update.status is FeatureStatus.ENABLED
+    assert trackside_update.default_visible is True
+    assert trackside_update.default_enabled is True
+    assert trackside_update.default_client_package is True
     assert "web.ac_mesh_links" not in feature_ids
     assert FEATURE_BY_ID["ac.mesh_link.refresh"].parent_id == "web.rail_train_online"
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
@@ -201,6 +211,31 @@ def test_feature_gate_customer_profile_hides_config_and_disabled_feature(tmp_pat
     assert not gate.is_visible("system.feature_flags")
     with pytest.raises(FeatureDisabledError):
         gate.assert_enabled("rail.online_mr_collection")
+
+
+def test_trackside_ap_business_legacy_runtime_state_is_upgraded(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.core import feature_flags
+
+    write_runtime(
+        tmp_path,
+        "customer",
+        "customer",
+        {
+            "module.rail_transit": {"visible": True, "enabled": True, "client_package": True, "internal_only": False},
+            "web.rail_trackside_ap_business": {"visible": False, "enabled": False, "client_package": False, "internal_only": False},
+            "web.rail_trackside_ap_business_update": {"visible": False, "enabled": False, "client_package": False, "internal_only": False},
+        },
+    )
+    monkeypatch.setattr(feature_flags, "is_packaged_runtime", lambda: True)
+
+    gate = FeatureGate(tmp_path)
+
+    assert gate.is_visible("web.rail_trackside_ap_business")
+    assert gate.is_enabled("web.rail_trackside_ap_business")
+    assert gate.is_in_client_package("web.rail_trackside_ap_business")
+    assert gate.is_visible("web.rail_trackside_ap_business_update")
+    assert gate.is_enabled("web.rail_trackside_ap_business_update")
+    assert gate.is_in_client_package("web.rail_trackside_ap_business_update")
 
 
 def test_internal_profile_cannot_hide_feature_switch_entry(tmp_path: Path) -> None:
@@ -388,6 +423,8 @@ def test_default_profiles_have_complete_boolean_state() -> None:
         assert all(isinstance(value, bool) for value in state.values()), feature_id
     assert payload["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
     assert payload["features"]["rail.online_mr_collection"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
+    assert payload["features"]["web.rail_trackside_ap_business"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
+    assert payload["features"]["web.rail_trackside_ap_business_update"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert payload["features"]["online_mr.advanced_ping"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert payload["features"]["online_mr.iperf_test"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert payload["features"]["mesh.generate_report"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}

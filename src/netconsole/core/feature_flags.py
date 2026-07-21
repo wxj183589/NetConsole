@@ -21,6 +21,12 @@ class FeatureDisabledError(RuntimeError):
 
 PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
+LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
+    {
+        "web.rail_trackside_ap_business",
+        "web.rail_trackside_ap_business_update",
+    }
+)
 
 
 def project_root() -> Path:
@@ -244,7 +250,10 @@ class FeatureGate:
             missing = [key for key in FEATURE_STATE_KEYS if key not in raw_state or _bool_override(raw_state.get(key)) is None]
             if missing:
                 normalized_count += len(missing)
-            self.features[feature_id] = normalize_feature_state(FEATURE_BY_ID[feature_id], raw_state)
+            self.features[feature_id] = normalize_feature_state(
+                FEATURE_BY_ID[feature_id],
+                _migrate_legacy_formalized_feature_state(feature_id, raw_state),
+            )
         if normalized_count:
             _feature_switch_log(f"normalized missing booleans: {normalized_count}")
 
@@ -344,6 +353,19 @@ def default_feature_state(item: FeatureItem) -> dict[str, bool]:
             "internal_only": internal_only,
         },
     )
+
+
+def _migrate_legacy_formalized_feature_state(feature_id: str, raw_state: dict[str, Any]) -> dict[str, Any]:
+    if feature_id not in LEGACY_FORMALIZED_FEATURE_IDS:
+        return raw_state
+    values = {key: _bool_override(raw_state.get(key)) for key in FEATURE_STATE_KEYS}
+    if values["internal_only"] is True or values["client_package"] not in {False, None}:
+        return raw_state
+    old_disabled_default = values["visible"] is False and values["enabled"] is False
+    old_development_default = values["visible"] is True and values["enabled"] is True
+    if not (old_disabled_default or old_development_default):
+        return raw_state
+    return {**raw_state, **default_feature_state(FEATURE_BY_ID[feature_id])}
 
 
 def normalize_feature_state(item: FeatureItem, raw_state: dict[str, Any] | None = None) -> dict[str, bool]:

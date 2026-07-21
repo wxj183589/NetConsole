@@ -48,6 +48,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     CarNetworkNode,
     CarNetworkPointTableStore,
 )
+from netconsole.repositories.ac_repository import AcRepository
 
 
 RAIL_FEATURE_IDS = (
@@ -62,6 +63,8 @@ RAIL_FEATURE_IDS = (
     "web.rail_task_control",
     "web.rail_car_network_point_table_write",
     "web.rail_car_network_point_table_export",
+    "web.rail_trackside_ap_business",
+    "web.rail_trackside_ap_business_update",
 )
 
 
@@ -275,7 +278,22 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
-    Database(paths.site_db_path("demo")).initialize()
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    ac_repository = AcRepository(database)
+    ac_repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-A",
+                "ap_mac": "00:11:22:33:44:55",
+                "ap_ip": "10.0.0.1",
+                "site": "站点A",
+            }
+        ],
+    )
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
     app = create_app(
@@ -320,6 +338,19 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             "/api/rail-transit/trackside-ap-business/plan/save",
             json={"rows": [], "explicit_confirmation": True},
         )
+        update_all = client.post("/api/rail-transit/trackside-ap-business/update", json={})
+        update_station = client.post(
+            "/api/rail-transit/trackside-ap-business/update",
+            json={"station": "站点A"},
+        )
+        update_ap = client.post(
+            "/api/rail-transit/trackside-ap-business/update",
+            json={"ap_uuid": "ap-1", "ap_mac": "00:11:22:33:44:55", "ap_name": "AP-A"},
+        )
+        scope_conflict = client.post(
+            "/api/rail-transit/trackside-ap-business/update",
+            json={"station": "站点A", "ap_uuid": "ap-1"},
+        )
         blocked_export = client.post(
             "/api/rail-transit/trackside-ap-business/plan/export",
             json={"template": True},
@@ -338,6 +369,15 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
     assert (
         normal.jobs[plan_save.json()["task_id"]].task_type == "trackside_ap_plan_save"
     )
+    assert update_all.status_code == 202
+    assert normal.jobs[update_all.json()["task_id"]].params["station"] == ""
+    assert update_station.status_code == 202
+    assert normal.jobs[update_station.json()["task_id"]].params["station"] == "站点A"
+    assert update_ap.status_code == 202
+    assert normal.jobs[update_ap.json()["task_id"]].params["ap_uuid"] == "ap-1"
+    assert update_ap.json()["action"] == "trackside_ap_optical_update"
+    assert scope_conflict.status_code == 422
+    assert scope_conflict.json()["detail"]["message"] == "站点范围和 AP 身份不能同时提交"
     assert blocked_export.status_code == 503
     assert blocked_export.json()["detail"]["code"] == "BLOCKED_ON_TASK_WINDOW"
 
@@ -1139,6 +1179,13 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
         blocked_mesh_report = client.post(
             "/api/rail-transit/mesh-analysis/sessions/missing/report"
         )
+        client.app.state.feature_gate.features["web.rail_trackside_ap_business_update"].update(
+            visible=False, enabled=False, client_package=False
+        )
+        blocked_trackside_update = client.post(
+            "/api/rail-transit/trackside-ap-business/update",
+            json={},
+        )
         client.app.state.feature_gate.features["web.rail_task_control"].update(
             visible=False, enabled=False, client_package=False
         )
@@ -1200,6 +1247,8 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     assert blocked_mesh.status_code == 404
     assert blocked_online_report.json()["detail"] == "功能未启用"
     assert blocked_mesh_report.json()["detail"] == "功能未启用"
+    assert blocked_trackside_update.status_code == 404
+    assert blocked_trackside_update.json()["detail"] == "功能未启用"
     assert blocked_task_recovery.json()["detail"] == "功能未启用"
     assert blocked_car_without_control.status_code == 404
     assert blocked_mesh_without_control.status_code == 404

@@ -224,6 +224,18 @@
       "client_package": false,
       "internal_only": false
     },
+    "web.rail_trackside_ap_business": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_business_update": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.job_center": {
       "visible": true,
       "enabled": true,

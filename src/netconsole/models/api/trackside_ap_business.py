@@ -18,6 +18,7 @@ class TracksideApBusinessRowDTO(ApiModel):
     vlan: Any = None
     switch_rx_power: Any = None
     switch_optical_status: str = ""
+    ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
     ap_rx_power: Any = None

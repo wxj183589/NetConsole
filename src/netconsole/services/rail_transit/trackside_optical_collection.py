@@ -320,9 +320,14 @@ def collect_trackside_optical(
     target_ap_update = bool(target_ap_uuid or target_ap_mac or target_ap_name)
     if not effective_station and target_ap_update:
         effective_station = _station_for_target_ap(ac_repository, target_ap_uuid, target_ap_mac, target_ap_name)
-    switch_targets, switch_skipped = build_station_switch_targets(repository, site_name, effective_station or None)
-    switch_scope = "station" if effective_station else "all"
-    switch_scope_reason = "station_scope" if effective_station else "full_scope"
+    if target_ap_update and not effective_station:
+        switch_targets, switch_skipped = [], []
+        switch_scope = "ap_switch"
+        switch_scope_reason = "target_station_unresolved"
+    else:
+        switch_targets, switch_skipped = build_station_switch_targets(repository, site_name, effective_station or None)
+        switch_scope = "station" if effective_station else "all"
+        switch_scope_reason = "station_scope" if effective_station else "full_scope"
     if target_ap_update:
         switch_targets, switch_scope, switch_scope_reason = _scope_switch_targets_for_target_ap(
             repository,
@@ -332,7 +337,6 @@ def collect_trackside_optical(
             target_ap_uuid=target_ap_uuid,
             target_ap_mac=target_ap_mac,
             target_ap_name=target_ap_name,
-            fallback_scope=switch_scope,
         )
     targets = dedupe_targets(switch_targets)
     skipped = [*switch_skipped]
@@ -403,9 +407,9 @@ def collect_trackside_optical(
     if progress_callback is not None:
         progress_callback(total_units, total_units)
     stage("trackside_ap.stage_write_database")
-    status = "CANCELLED" if cancel_event.is_set() else "DONE"
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
+    status = "CANCELLED" if cancel_event.is_set() else ("NO_TARGET" if total_units == 0 else "DONE")
     coverage = _trackside_update_coverage(
         repository,
         ac_repository,
@@ -634,7 +638,6 @@ def _scope_switch_targets_for_target_ap(
     target_ap_uuid: str | None = None,
     target_ap_mac: str | None = None,
     target_ap_name: str | None = None,
-    fallback_scope: str = "station",
 ) -> tuple[list[TracksideOpticalTarget], str, str]:
     matched_rows = [
         row
@@ -680,7 +683,7 @@ def _scope_switch_targets_for_target_ap(
     if scoped:
         return scoped, "ap_switch", "historical_lldp_device_alias"
 
-    return switch_targets, fallback_scope, "fallback_station_or_all"
+    return [], "ap_switch", "no_matching_switch"
 
 
 def _filter_switch_targets_by_identity(
@@ -728,13 +731,17 @@ def _row_matches_target_ap(
     ap_uuid = str(target_ap_uuid or "").strip()
     ap_mac = _normalize_mac_text(target_ap_mac)
     ap_name = str(target_ap_name or "").strip().casefold()
-    if ap_uuid and str(row.get("ap_uuid") or "").strip() == ap_uuid:
-        return True
-    if ap_mac and _normalize_mac_text(row.get("ap_mac")) == ap_mac:
-        return True
-    if ap_name and str(row.get("ap_name") or "").strip().casefold() == ap_name:
-        return True
-    return False
+    checks: list[bool] = []
+    row_uuid = str(row.get("ap_uuid") or "").strip()
+    row_mac = _normalize_mac_text(row.get("ap_mac"))
+    row_name = str(row.get("ap_name") or "").strip().casefold()
+    if ap_uuid and row_uuid:
+        checks.append(row_uuid == ap_uuid)
+    if ap_mac and row_mac:
+        checks.append(row_mac == ap_mac)
+    if ap_name and row_name:
+        checks.append(row_name == ap_name)
+    return bool(checks) and all(checks)
 
 
 def _find_scoped_fit_ap_resource(
@@ -787,16 +794,14 @@ def _filter_scoped_fit_ap_resources(
     has_ap_identity = bool(ap_uuid or ap_mac or ap_name)
     result: list[dict[str, object | None]] = []
     for row in rows:
-        if ap_uuid and str(row.get("ap_uuid") or "").strip() == ap_uuid:
-            result.append(row)
-            continue
-        if ap_mac and _normalize_mac_text(row.get("ap_mac")) == ap_mac:
-            result.append(row)
-            continue
-        if ap_name and str(row.get("ap_name") or "").strip().casefold() == ap_name:
-            result.append(row)
-            continue
         if has_ap_identity:
+            if ap_uuid and str(row.get("ap_uuid") or "").strip() != ap_uuid:
+                continue
+            if ap_mac and _normalize_mac_text(row.get("ap_mac")) != ap_mac:
+                continue
+            if ap_name and str(row.get("ap_name") or "").strip().casefold() != ap_name:
+                continue
+            result.append(row)
             continue
         row_station = str(row.get("site") or row.get("site_name") or row.get("station") or "").strip().casefold()
         if station and row_station == station:

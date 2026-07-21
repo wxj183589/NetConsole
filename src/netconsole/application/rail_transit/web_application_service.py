@@ -43,6 +43,7 @@ from netconsole.models.api.vehicle_mr_online import (
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_job import ExportJob
@@ -773,16 +774,106 @@ class RailTransitWebApplicationService:
         ap_mac: str = "",
         ap_name: str = "",
     ) -> RailTransitTaskDTO:
-        return self._start_task(
-            self._site(site_id),
-            "trackside_ap_optical_update",
-            {
-                "station": str(station or "").strip(),
-                "ap_uuid": str(ap_uuid or "").strip(),
-                "ap_mac": str(ap_mac or "").strip(),
-                "ap_name": str(ap_name or "").strip(),
-            },
+        site_id = self._site(site_id)
+        params = self._trackside_ap_update_scope_params(
+            site_id,
+            station=station,
+            ap_uuid=ap_uuid,
+            ap_mac=ap_mac,
+            ap_name=ap_name,
         )
+        return self._start_task(
+            site_id,
+            "trackside_ap_optical_update",
+            params,
+        )
+
+    def _trackside_ap_update_scope_params(
+        self,
+        site_id: str,
+        *,
+        station: str = "",
+        ap_uuid: str = "",
+        ap_mac: str = "",
+        ap_name: str = "",
+    ) -> dict[str, str]:
+        selected_station = str(station or "").strip()
+        selected_uuid = str(ap_uuid or "").strip()
+        selected_mac_text = str(ap_mac or "").strip()
+        selected_name = str(ap_name or "").strip()
+        selected_mac = normalize_mac(selected_mac_text) if selected_mac_text else None
+        if selected_mac_text and selected_mac is None:
+            raise RailTransitWebError("AP_MAC_INVALID", "AP MAC 格式无效，无法定向更新")
+        has_ap_identity = bool(selected_uuid or selected_mac or selected_name)
+        if selected_station and has_ap_identity:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_SCOPE_CONFLICT", "站点范围和 AP 身份不能同时提交")
+        if not has_ap_identity:
+            return {"station": selected_station, "ap_uuid": "", "ap_mac": "", "ap_name": ""}
+
+        matched = self._resolve_trackside_ap_update_target(
+            site_id,
+            ap_uuid=selected_uuid,
+            ap_mac=selected_mac,
+            ap_name=selected_name,
+        )
+        return {
+            "station": "",
+            "ap_uuid": str(matched.get("ap_uuid") or selected_uuid),
+            "ap_mac": str(matched.get("ap_mac") or selected_mac_text),
+            "ap_name": str(matched.get("ap_name") or selected_name),
+        }
+
+    def _resolve_trackside_ap_update_target(
+        self,
+        site_id: str,
+        *,
+        ap_uuid: str,
+        ap_mac: str | None,
+        ap_name: str,
+    ) -> dict[str, object | None]:
+        rows = AcRepository(Database(self.paths.site_db_path(site_id))).list_all_fit_ap_resources_with_metadata()
+        matches_by_field: dict[str, list[dict[str, object | None]]] = {}
+        if ap_uuid:
+            matches_by_field["ap_uuid"] = [
+                row for row in rows if str(row.get("ap_uuid") or "").strip() == ap_uuid
+            ]
+        if ap_mac:
+            matches_by_field["ap_mac"] = [
+                row for row in rows if normalize_mac(row.get("ap_mac")) == ap_mac
+            ]
+        if ap_name:
+            folded = ap_name.casefold()
+            matches_by_field["ap_name"] = [
+                row for row in rows if str(row.get("ap_name") or "").strip().casefold() == folded
+            ]
+        missing_fields = [field for field, values in matches_by_field.items() if not values]
+        if missing_fields and len(matches_by_field) > 1:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_CONFLICT", "AP UUID、MAC 或名称不一致，已拒绝更新")
+        if missing_fields:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_NOT_FOUND", "未找到目标 AP，无法定向更新")
+
+        candidates = [row for values in matches_by_field.values() for row in values]
+        by_key: dict[str, dict[str, object | None]] = {}
+        for row in candidates:
+            key = self._trackside_ap_identity_key(row)
+            if key:
+                by_key[key] = row
+        if not by_key:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_NOT_FOUND", "未找到目标 AP，无法定向更新")
+        if len(by_key) > 1:
+            raise RailTransitWebError("TRACKSIDE_UPDATE_AP_CONFLICT", "AP UUID、MAC 或名称命中了不同 AP，已拒绝更新")
+        return next(iter(by_key.values()))
+
+    @staticmethod
+    def _trackside_ap_identity_key(row: dict[str, object | None]) -> str:
+        ap_uuid = str(row.get("ap_uuid") or "").strip()
+        if ap_uuid:
+            return f"uuid:{ap_uuid.casefold()}"
+        ap_mac = normalize_mac(row.get("ap_mac"))
+        if ap_mac:
+            return f"mac:{ap_mac}"
+        ap_name = str(row.get("ap_name") or "").strip()
+        return f"name:{ap_name.casefold()}" if ap_name else ""
 
     def start_vehicle_mr_online_refresh(self, site_id: str) -> RailTransitTaskDTO:
         return self._start_task(self._site(site_id), "vehicle_mr_online_refresh_all", {})
@@ -1496,6 +1587,9 @@ class RailTransitWebApplicationService:
             "imported_count", "duplicate_count", "parsed_record_count", "member_count",
             "raw_archived_count", "parsed_source_count",
             "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
+            "session_id", "status", "scope", "target_label", "target_count", "skipped_count",
+            "fit_ap_resource_count", "fit_ap_optical_success_count", "fit_ap_optical_failed_count",
+            "candidate_ap_interface_count", "current_lldp_port_count", "preserved_lldp_port_count",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):

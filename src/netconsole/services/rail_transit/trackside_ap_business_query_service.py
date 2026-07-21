@@ -79,6 +79,7 @@ class TracksideApBusinessQueryService:
             vlan=row.get("vlan"),
             switch_rx_power=row.get("switch_rx_power"),
             switch_optical_status=str(row.get("switch_optical_status") or ""),
+            ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
             ap_name=str(row.get("ap_name") or ""),
             ap_rx_power=row.get("ap_rx_power"),

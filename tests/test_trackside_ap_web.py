@@ -9,10 +9,12 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job
 from netconsole.services.trackside_ap_export_service import TracksideApBusinessLoadResult
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
+from netconsole.repositories.device_repository import DeviceRepository
 
 
 def _snapshot() -> TracksideApBusinessLoadResult:
@@ -27,6 +29,7 @@ def _snapshot() -> TracksideApBusinessLoadResult:
                 "link_status": "UP",
                 "switch_rx_power": -10.5,
                 "switch_optical_status": "normal",
+                "ap_uuid": "ap-uuid-a",
                 "ap_mac": "0011-2233-4455",
                 "ap_name": "AP-A",
                 "ap_rx_power": -11.2,
@@ -38,6 +41,7 @@ def _snapshot() -> TracksideApBusinessLoadResult:
                 "device_name": "SW-B",
                 "interface_name": "XGE1/0/2",
                 "switch_optical_status": "warning",
+                "ap_uuid": "ap-uuid-b",
                 "ap_mac": "0011-2233-4456",
                 "ap_name": "AP-B",
                 "ap_side_has_data": False,
@@ -72,6 +76,7 @@ def test_trackside_query_reuses_snapshot_filter_and_optical_status(monkeypatch, 
 
     assert page.total == 1
     assert page.items[0].device_name == "SW-B"
+    assert page.items[0].ap_uuid == "ap-uuid-b"
     assert page.items[0].optical_severity == "warning"
     assert page.optical_abnormal_count == 1
     assert page.identity_shadow == {"status": "matched"}
@@ -85,6 +90,7 @@ def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeyp
             "device_name": "SW-B",
             "interface_name": "XGE1/0/3",
             "switch_optical_status": "critical",
+            "ap_uuid": "ap-uuid-b",
             "ap_mac": "0011-2233-4456",
             "ap_name": "AP-B",
             "ap_side_has_data": False,
@@ -167,6 +173,81 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     update_job = process.jobs[update.task_id]
     assert update_job.task_type == "trackside_ap_optical_update"
     assert update_job.params["station"] == "站点A"
+
+
+def test_trackside_application_validates_update_scope_and_ap_identity(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-A",
+                "ap_mac": "00:11:22:33:44:55",
+                "ap_ip": "10.0.0.1",
+                "site": "站点A",
+            }
+        ],
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    process = FakeLocalProcessAdapter(tasks)
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=process,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    assert "trackside_ap_optical_update" in registered_task_types()
+
+    all_update = service.start_trackside_ap_update("demo")
+    station_update = service.start_trackside_ap_update("demo", station="站点A")
+    ap_update = service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="00:11:22:33:44:55", ap_name="AP-A")
+
+    assert process.jobs[all_update.task_id].params["station"] == ""
+    assert process.jobs[all_update.task_id].params["ap_uuid"] == ""
+    assert process.jobs[station_update.task_id].params["station"] == "站点A"
+    assert process.jobs[station_update.task_id].params["ap_uuid"] == ""
+    assert process.jobs[ap_update.task_id].params["station"] == ""
+    assert process.jobs[ap_update.task_id].params["ap_uuid"] == "ap-1"
+    assert process.jobs[ap_update.task_id].params["ap_mac"] == "00:11:22:33:44:55"
+    assert process.jobs[ap_update.task_id].params["ap_name"] == "AP-A"
+
+    with pytest.raises(RailTransitWebError) as scope_conflict:
+        service.start_trackside_ap_update("demo", station="站点A", ap_uuid="ap-1")
+    assert scope_conflict.value.code == "TRACKSIDE_UPDATE_SCOPE_CONFLICT"
+
+    with pytest.raises(RailTransitWebError) as ap_conflict:
+        service.start_trackside_ap_update("demo", ap_uuid="ap-1", ap_mac="00:11:22:33:44:66", ap_name="AP-A")
+    assert ap_conflict.value.code == "TRACKSIDE_UPDATE_AP_CONFLICT"
+
+
+def test_trackside_collection_no_target_does_not_fake_success(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+
+    result = trackside_ap_update_job.collect_trackside_optical(
+        repository,
+        "demo",
+        paths,
+        [],
+        target_ap_uuid="ap-1",
+        target_ap_mac="00:11:22:33:44:55",
+        target_ap_name="AP-A",
+    )
+
+    assert result.status == "NO_TARGET"
+    assert result.target_count == 0
+    assert result.success_count == 0
+    assert result.failed_count == 0
 
 
 def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> None:
