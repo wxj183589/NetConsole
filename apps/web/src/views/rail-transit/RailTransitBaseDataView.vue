@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -69,6 +69,7 @@ const apRows = computed(() => editingDraft.value?.aps ?? store.aps)
 const mrRows = computed(() => editingDraft.value?.mrs ?? store.mrs)
 const dirty = computed(() => Object.keys(pendingChanges.value).length > 0 || planningDirty.value)
 const canUnlock = computed(() => Boolean(store.editSession?.can_write))
+const writeDeniedReason = computed(() => store.editSession?.write_denial_reason || '')
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
@@ -254,7 +255,7 @@ async function toggleLock(): Promise<void> {
       const session = await loadConsistentEditSnapshot()
       if (!session.can_write) {
         store.startPolling()
-        ElMessage.warning('当前局点基础资料写入未授权')
+        ElMessage.warning(session.write_denial_reason || '当前局点基础资料写入未授权')
         return
       }
       captureBaselines()
@@ -404,13 +405,13 @@ function captureBaselines(): void {
       network_domain: store.summary?.network_type || 'default',
       remark: store.summary?.remark || '',
     },
-    stations: structuredClone(store.stations),
-    sections: structuredClone(store.sections),
-    aps: structuredClone(store.aps),
-    mrs: structuredClone(store.mrs),
+    stations: cloneDto(store.stations),
+    sections: cloneDto(store.sections),
+    aps: cloneDto(store.aps),
+    mrs: cloneDto(store.mrs),
   }
   serverSnapshot.value = snapshot
-  editingDraft.value = structuredClone(serverSnapshot.value)
+  editingDraft.value = cloneDto(serverSnapshot.value)
   baselines.set(changeKey('site_metadata', 'current'), metadataValues(snapshot.metadata))
   for (const row of serverSnapshot.value.stations) baselines.set(changeKey('station', row.id), stationValues(row))
   for (const row of serverSnapshot.value.sections) baselines.set(changeKey('section', row.id), sectionValues(row))
@@ -440,7 +441,7 @@ function recordChange(entityType: BaseDataChange['entity_type'], entityId: strin
   const key = changeKey(entityType, entityId)
   const baseline = baselines.get(key)
   if (!baseline) {
-    baselines.set(key, structuredClone(values))
+    baselines.set(key, cloneDto(values))
     if (!entityId.startsWith('new:')) return
   }
   const action = entityId.startsWith('new:') ? 'create' : 'update'
@@ -659,6 +660,7 @@ function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   return 'info'
 }
 function display(value: unknown): string { return value === null || value === undefined || value === '' ? '--' : String(value) }
+function cloneDto<T>(value: T): T { return structuredClone(toRaw(value)) }
 function mileageRange(minimum: number | null, maximum: number | null): string {
   if (minimum === null && maximum === null) return '--'
   if (minimum === maximum || maximum === null) return `${minimum} m`
@@ -696,6 +698,7 @@ function formatBytes(value: number): string {
       </div>
     </div>
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
+    <el-alert v-if="locked && writeDeniedReason" :title="writeDeniedReason" type="warning" :closable="false" show-icon class="page-error" />
     <el-alert v-if="saveIssues.length" title="基础资料校验失败" type="error" :closable="false" show-icon class="page-error">
       <ul class="validation-list"><li v-for="issue in saveIssues" :key="`${issue.change_index}:${issue.code}:${issue.field_name}`">{{ issue.message }}</li></ul>
     </el-alert>

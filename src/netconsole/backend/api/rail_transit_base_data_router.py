@@ -393,6 +393,7 @@ def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) ->
         "BASE_DATA_WRITE_DISABLED",
         "BASE_DATA_COPY_WRITE_NOT_AUTHORIZED",
         "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED",
+        "ISOLATED_TEST_READONLY",
         "BASE_DATA_ROLLBACK_DISABLED",
     }:
         status_code = status.HTTP_403_FORBIDDEN
@@ -414,6 +415,7 @@ def _raise_application_error(exc: RailTransitBaseDataApplicationError) -> None:
         "BASE_DATA_WRITE_DISABLED",
         "BASE_DATA_COPY_WRITE_NOT_AUTHORIZED",
         "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED",
+        "ISOLATED_TEST_READONLY",
     }:
         status_code = status.HTTP_403_FORBIDDEN
     elif exc.code in {"BASE_DATA_REVISION_CONFLICT", "BASE_DATA_REFERENCE_CONFLICT"}:

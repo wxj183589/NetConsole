@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import desktop_storage_mode
 from netconsole.core.sites import SiteManager
 
 
@@ -31,6 +32,7 @@ class BaseDataWriteStatus:
     real_write_authorized: bool
     rollback_enabled: bool
     scope: str
+    storage_mode: str
 
 
 class BaseDataWriteGuard:
@@ -48,6 +50,7 @@ class BaseDataWriteGuard:
         rollback_enabled: bool | None = None,
     ) -> None:
         self.paths = paths
+        self.storage_mode = desktop_storage_mode()
         self.feature_enabled = bool(feature_enabled)
         self.write_enabled = _env_enabled(WRITE_ENABLED_ENV) if write_enabled is None else bool(write_enabled)
         self.copy_write_enabled = (
@@ -63,7 +66,9 @@ class BaseDataWriteGuard:
 
     def status(self, site_id: str) -> BaseDataWriteStatus:
         scope = self._scope(site_id)
-        write_enabled = self.write_enabled or (scope != COPY_SCOPE and self.desktop_session_write_enabled)
+        write_enabled = self.storage_mode == "persistent" and (
+            self.write_enabled or (scope != COPY_SCOPE and self.desktop_session_write_enabled)
+        )
         base = self.feature_enabled and write_enabled
         return BaseDataWriteStatus(
             feature_enabled=self.feature_enabled,
@@ -74,18 +79,28 @@ class BaseDataWriteGuard:
             and (self.real_write_enabled or self.desktop_session_write_enabled),
             rollback_enabled=self.rollback_enabled,
             scope=scope,
+            storage_mode=self.storage_mode,
         )
+
+    @staticmethod
+    def write_denial(status: BaseDataWriteStatus) -> tuple[str, str]:
+        if status.storage_mode == "isolated_test":
+            return "ISOLATED_TEST_READONLY", "隔离测试模式下禁止修改正式局点数据。"
+        if not status.write_enabled:
+            return "BASE_DATA_WRITE_DISABLED", "轨道交通基础资料正式写入未启用"
+        if not status.feature_enabled:
+            return "BASE_DATA_WRITE_DISABLED", "轨道交通基础资料写入 Feature 未启用"
+        if status.scope == COPY_SCOPE and not status.copy_write_authorized:
+            return "BASE_DATA_COPY_WRITE_NOT_AUTHORIZED", "基础资料副本写入未授权"
+        if status.scope != COPY_SCOPE and not status.real_write_authorized:
+            return "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED", "真实局点基础资料写入未授权"
+        return "", ""
 
     def authorize_apply(self, site_id: str, *, explicit_confirmation: bool) -> BaseDataWriteStatus:
         status = self.status(site_id)
-        if not status.write_enabled:
-            raise BaseDataWriteGuardError("BASE_DATA_WRITE_DISABLED", "轨道交通基础资料正式写入未启用")
-        if not status.feature_enabled:
-            raise BaseDataWriteGuardError("BASE_DATA_WRITE_DISABLED", "轨道交通基础资料写入 Feature 未启用")
-        if status.scope == COPY_SCOPE and not status.copy_write_authorized:
-            raise BaseDataWriteGuardError("BASE_DATA_COPY_WRITE_NOT_AUTHORIZED", "基础资料副本写入未授权")
-        if status.scope != COPY_SCOPE and not status.real_write_authorized:
-            raise BaseDataWriteGuardError("BASE_DATA_REAL_WRITE_NOT_AUTHORIZED", "真实局点基础资料写入未授权")
+        denial_code, denial_reason = self.write_denial(status)
+        if denial_code:
+            raise BaseDataWriteGuardError(denial_code, denial_reason)
         if not explicit_confirmation:
             raise BaseDataWriteGuardError("BASE_DATA_IMPORT_CONFLICT", "正式写入需要明确确认")
         self._validated_database_path(site_id)

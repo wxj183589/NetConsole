@@ -110,6 +110,34 @@ def test_electron_session_can_update_site_metadata_and_preserve_unknown_fields(t
     assert metadata["custom_owner"] == "保留字段"
 
 
+def test_isolated_electron_session_explains_read_only_and_rejects_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_STORAGE_MODE", "isolated_test")
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    with TestClient(_desktop_app(paths, tmp_path)) as client:
+        client.post("/__desktop_session", data={"token": "d" * 40}, follow_redirects=False)
+        session = client.get("/api/rail-transit/base-data/revision")
+        response = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session.json()["base_revision"],
+                "changes": [],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert session.status_code == 200
+    assert session.json()["storage_mode"] == "isolated_test"
+    assert session.json()["can_write"] is False
+    assert session.json()["write_denial_code"] == "ISOLATED_TEST_READONLY"
+    assert session.json()["write_denial_reason"] == "隔离测试模式下禁止修改正式局点数据。"
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "ISOLATED_TEST_READONLY"
+
+
 def test_server_session_defaults_to_reject_real_site_write(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", raising=False)
     monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)

@@ -19,6 +19,9 @@ class BaseDataEditSessionDTO(ApiModel):
     loaded_at: str
     can_write: bool = False
     write_scope: str = "real"
+    storage_mode: Literal["persistent", "isolated_test"] = "persistent"
+    write_denial_code: str = ""
+    write_denial_reason: str = ""
 
 
 class BaseDataChangeDTO(ApiModel):

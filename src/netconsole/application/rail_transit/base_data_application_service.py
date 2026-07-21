@@ -59,12 +59,16 @@ class RailTransitBaseDataApplicationService:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
         status = self.guard.status(site_id)
         can_write = status.copy_write_authorized if status.scope == "copy_validation" else status.real_write_authorized
+        denial_code, denial_reason = self.guard.write_denial(status)
         return BaseDataEditSessionDTO(
             site_id=site_id,
             base_revision=self.repository.base_data_revision(site_id),
             loaded_at=datetime.now(timezone.utc).isoformat(),
             can_write=can_write,
             write_scope=status.scope,
+            storage_mode=status.storage_mode,
+            write_denial_code=denial_code,
+            write_denial_reason=denial_reason,
         )
 
     def validate_changes(

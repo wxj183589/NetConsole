@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-`/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；只有 `web.rail_transit_base_data_write`、环境开关和目标范围全部授权后才允许解锁。宁波地铁 12 号线等未授权真实局点仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
+`/rail-transit/base-data` 是站点、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一维护入口，Feature key 为 `web.rail_transit_base_data`。页面默认锁定；正常 `persistent` Electron 受管会话可解锁并维护当前局点，`isolated_test` 始终只读并显示明确原因。普通 Server、未认证浏览器和未授权副本仍保持锁定。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
 原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询、导入预览、导出和 Task Center 继续复用现有能力，规划编辑由基础资料统一保存事务提交。
 
@@ -28,7 +28,7 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 - 页面初始状态为 `LOCKED`，解锁后停止轮询，避免服务端刷新覆盖编辑区。
 - 编辑会话记录 `site_id`、`base_revision` 和 `loaded_at`；`base_revision` 同时覆盖当前 SQLite 逻辑内容和 `site_meta.json` 的规范化内容。
-- 修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
+- 点击解锁时先把 Pinia 查询结果转换为纯 DTO 草稿，禁止直接克隆或修改 Vue reactive proxy；修改只保存在 Renderer 编辑区，不自动写库。保存前先调用校验接口，保存时后端在 `BEGIN IMMEDIATE` 后再次核对 revision。
 - revision 不一致返回 `BASE_DATA_REVISION_CONFLICT`，不得以后提交静默覆盖先提交。
 - 锁定、刷新、顶层页签切换、离开路由和关闭窗口均保护未保存修改；全局确认框提供取消、放弃并锁定、保存并锁定。
 - 保存失败保留编辑区和 dirty 状态；成功后刷新服务端事实并自动锁定。
@@ -145,7 +145,7 @@ NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1       # 正式局点脚本额外授权
 RAIL_TRANSIT_BASE_DATA_ROLLBACK_ENABLED=1     # 回滚独立开关
 ```
 
-Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正式局点写入，不依赖环境变量；普通 Server/浏览器不会因为 Electron 参数获得该能力。副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
+Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正式局点写入，不依赖环境变量；该能力只在 `NETCONSOLE_STORAGE_MODE=persistent` 时成立。`isolated_test` 即使存在桌面会话令牌也返回 `ISOLATED_TEST_READONLY`，不得写入测试局点。普通 Server/浏览器不会因为 Electron 参数获得该能力。副本还必须在局点 `site_meta.json` 中保存 `base_data_write_scope=copy_validation` 与真实源库 SHA-256。只有环境双开关不能把正式局点伪装为副本。
 
 普通维护一次保存固定满足：
 
@@ -179,10 +179,10 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 
 ## 当前限制
 
-- 真实局点写入仍需明确授权；站点/区间存在 AP 引用时不能删除，车载 MR 存在 Online MR 历史时不能直接删除；
+- 真实局点维护只允许正常持久化 Electron 受管会话；站点/区间存在 AP 引用时不能删除，车载 MR 存在 Online MR 历史时不能直接删除；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
 - AP Identity 生产接管；
 - 离线分析和正式报告 Web 化。
 
-宁波地铁 12 号线真实库在未启用正式局点授权前继续锁定；验收优先复制到隔离目录后执行保存、导入和回滚。源库前后 `devices.db` SHA-256/mtime、`tasks.db` Task 数和正式导入目录必须不变。
+自动测试只在临时局点副本验证保存、导入和回滚；宁波地铁 12 号线等正式局点的内容修改仍须在正常持久化 Electron 中人工确认。自动测试前后应核对正式 `devices.db`、bootstrap 和当前局点未变化。

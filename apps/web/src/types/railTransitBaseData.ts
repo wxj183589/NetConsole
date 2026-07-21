@@ -26,6 +26,9 @@ export interface BaseDataEditSession {
   loaded_at: string
   can_write: boolean
   write_scope: 'copy_validation' | 'real'
+  storage_mode: 'persistent' | 'isolated_test'
+  write_denial_code: string
+  write_denial_reason: string
 }
 
 export interface BaseDataChange {

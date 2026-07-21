@@ -67,6 +67,8 @@ describe('Rail Transit base data polling store', () => {
     })
     vi.mocked(getRailTransitBaseDataEditSession).mockReset().mockResolvedValue({
       site_id: 'demo', base_revision: 'a'.repeat(64), loaded_at: '', can_write: false, write_scope: 'real',
+      storage_mode: 'persistent', write_denial_code: 'BASE_DATA_WRITE_DISABLED',
+      write_denial_reason: '轨道交通基础资料正式写入未启用',
     })
     vi.mocked(listRailTransitImportOperations).mockReset().mockResolvedValue([])
     vi.mocked(listRailTransitImportChanges).mockReset().mockResolvedValue([])
