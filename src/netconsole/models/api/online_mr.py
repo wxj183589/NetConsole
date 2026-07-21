@@ -36,6 +36,19 @@ class OnlineMrSwitchRssiSource(StrEnum):
     REALTIME = "realtime"
 
 
+class OnlineMrBusinessTable(StrEnum):
+    MESH_LINK = "mesh_link"
+    MESH_DETAIL = "mesh_detail"
+    CHANNEL_BUSY = "channel_busy"
+    RADIO_STATISTICS = "radio_statistics"
+    SWITCH_HISTORY = "switch_history"
+    SWITCH_REALTIME = "switch_realtime"
+    INTERFACE_RATE = "interface_rate"
+    FPING_1S = "fping_1s"
+    IPERF = "iperf"
+    DIAGNOSTICS = "diagnostics"
+
+
 class OnlineMrDataIntegrity(StrEnum):
     COMPLETE = "complete"
     PARTIAL = "partial"
@@ -240,6 +253,47 @@ class OnlineMrSwitchRssiPageDTO(ApiModel):
     items: list[OnlineMrSwitchRssiWindowDTO] = Field(default_factory=list)
     limit: int
     offset: int
+    has_more: bool = False
+
+
+class OnlineMrBusinessSummaryDTO(ApiModel):
+    session_id: str
+    sample_count: int = 0
+    active_count: int = 0
+    standby_count: int = 0
+    active_segment_count: int = 0
+    switch_count: int = 0
+    fping_point_count: int = 0
+    iperf_point_count: int = 0
+    channel_busy_count: int = 0
+    interface_pps_count: int = 0
+    diagnosis_count: int = 0
+    first_sample_time: str | None = None
+    last_sample_time: str | None = None
+    estimated_interval_seconds: float | None = None
+    time_sync_status: str = "unknown"
+    time_sync_avg_offset_ms: float | None = None
+    current_radio: int | None = None
+    current_link_state: str = ""
+    current_peer_mac: str = ""
+    current_peer_name: str = ""
+    current_ap_mac: str = ""
+    current_peer_radio_mac: str = ""
+    current_station: str = ""
+    current_section: str = ""
+    current_rssi: float | None = None
+    current_segment_start: str | None = None
+    current_segment_end: str | None = None
+    current_segment_duration_seconds: float | None = None
+
+
+class OnlineMrBusinessTablePageDTO(ApiModel):
+    table: OnlineMrBusinessTable
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int
+    offset: int
+    returned_count: int = 0
+    next_offset: int
     has_more: bool = False
 
 

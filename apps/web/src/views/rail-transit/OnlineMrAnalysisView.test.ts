@@ -5,9 +5,11 @@ import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
+  getOnlineMrBusinessSummary: vi.fn(),
   getOnlineMrSession: vi.fn(),
   listRecentOnlineMrSessions: vi.fn(),
   queryOnlineMrMetrics: vi.fn(),
+  queryOnlineMrBusinessTable: vi.fn(),
   queryOnlineMrSwitchRssiWindows: vi.fn(),
   queryOnlineMrTimeline: vi.fn(),
   recoverRailTransitTasks: vi.fn(),
@@ -17,10 +19,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../api/onlineMr', () => ({
   getOnlineMrRawTail: vi.fn(),
+  getOnlineMrBusinessSummary: mocks.getOnlineMrBusinessSummary,
   getOnlineMrSession: mocks.getOnlineMrSession,
   listOnlineMrRawFiles: vi.fn(),
   listRecentOnlineMrSessions: mocks.listRecentOnlineMrSessions,
   queryOnlineMrMetrics: mocks.queryOnlineMrMetrics,
+  queryOnlineMrBusinessTable: mocks.queryOnlineMrBusinessTable,
   queryOnlineMrSwitchRssiWindows: mocks.queryOnlineMrSwitchRssiWindows,
   queryOnlineMrTimeline: mocks.queryOnlineMrTimeline,
 }))
@@ -93,7 +97,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.listRecentOnlineMrSessions.mockResolvedValue([{ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', started_at: '2026-07-20 10:00:00' }])
   mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', data_integrity: 'complete', has_raw_data: true, database_summary: { status: 'ready', compatible: true, parser_version: 'v8', missing_capabilities: [], message: '解析数据库可用。' } })
+  mocks.getOnlineMrBusinessSummary.mockResolvedValue({ session_id: 'session-1', sample_count: 0, active_count: 0, standby_count: 0, active_segment_count: 0, switch_count: 0, fping_point_count: 0, iperf_point_count: 0, channel_busy_count: 0, interface_pps_count: 0, diagnosis_count: 0, first_sample_time: null, last_sample_time: null, estimated_interval_seconds: null, time_sync_status: 'unknown', time_sync_avg_offset_ms: null, current_radio: null, current_link_state: '', current_peer_mac: '', current_peer_name: '', current_ap_mac: '', current_peer_radio_mac: '', current_station: '', current_section: '', current_rssi: null, current_segment_start: null, current_segment_end: null, current_segment_duration_seconds: null })
   mocks.queryOnlineMrMetrics.mockResolvedValue({ series: [], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 0, has_more: false })
+  mocks.queryOnlineMrBusinessTable.mockResolvedValue({ table: 'radio_statistics', rows: [], limit: 500, offset: 0, returned_count: 0, next_offset: 500, has_more: false })
   mocks.queryOnlineMrSwitchRssiWindows.mockResolvedValue({ items: [], limit: 200, offset: 0, has_more: false })
   mocks.queryOnlineMrTimeline.mockResolvedValue([])
   mocks.recoverRailTransitTasks.mockResolvedValue([])
@@ -122,7 +128,7 @@ describe('Online MR analysis view behavior', () => {
     await wrapper.get('[data-testid="statistics-tab"]').trigger('click')
     await flushPromises()
 
-    expect(mocks.queryOnlineMrMetrics).toHaveBeenCalledWith('session-1', ['radio_statistics'], expect.objectContaining({ limit: 1000, offset: 0 }))
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledWith('session-1', 'radio_statistics', expect.objectContaining({ limit: 500, offset: 0 }))
     expect(wrapper.text()).toContain('暂无统计数据')
     wrapper.unmount()
   })

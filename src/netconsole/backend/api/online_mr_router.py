@@ -10,6 +10,9 @@ from netconsole.models.api.common import ApiResponse
 from netconsole.models.api.online_mr import (
     OnlineMrCollectorStatusDTO,
     OnlineMrArtifactDTO,
+    OnlineMrBusinessSummaryDTO,
+    OnlineMrBusinessTable,
+    OnlineMrBusinessTablePageDTO,
     OnlineMrMetricPageDTO,
     OnlineMrMetricSeriesDTO,
     OnlineMrManualNoteDTO,
@@ -86,6 +89,33 @@ def raw_tail(
 @router.get("/sessions/{session_id}/raw-summary", response_model=ApiResponse[list[OnlineMrRawFileDTO]])
 def raw_summary(request: Request, session_id: str) -> ApiResponse[list[OnlineMrRawFileDTO]]:
     return ApiResponse(data=_facade(request).raw_summary(session_id))
+
+
+@router.get("/sessions/{session_id}/business-summary", response_model=ApiResponse[OnlineMrBusinessSummaryDTO])
+def business_summary(request: Request, session_id: str) -> ApiResponse[OnlineMrBusinessSummaryDTO]:
+    return ApiResponse(data=_facade(request).business_summary(session_id))
+
+
+@router.get("/sessions/{session_id}/business-table", response_model=ApiResponse[OnlineMrBusinessTablePageDTO])
+def business_table(
+    request: Request,
+    session_id: str,
+    table: OnlineMrBusinessTable,
+    start_time: str = Query(default="", max_length=40),
+    end_time: str = Query(default="", max_length=40),
+    limit: int = Query(default=500, ge=1, le=2_000),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+) -> ApiResponse[OnlineMrBusinessTablePageDTO]:
+    return ApiResponse(
+        data=_facade(request).business_table(
+            session_id,
+            table,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.get("/sessions/{session_id}/logs", response_model=ApiResponse[OnlineMrRawTailDTO])

@@ -1,7 +1,7 @@
 {
   "name": "netconsole-desktop-electron",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "NetConsole Electron desktop host",
   "author": "WXJ",
   "type": "module",

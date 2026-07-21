@@ -15,6 +15,9 @@ from netconsole.models.api.online_mr import (
     OnlineMrArtifactDTO,
     OnlineMrCollectorStatusDTO,
     OnlineMrDatabaseSummaryDTO,
+    OnlineMrBusinessSummaryDTO,
+    OnlineMrBusinessTable,
+    OnlineMrBusinessTablePageDTO,
     OnlineMrDataIntegrity,
     OnlineMrDownsampleMode,
     OnlineMrLogChunkDTO,
@@ -68,6 +71,15 @@ _PARSED_CAPABILITY_TABLES = {
 _CURRENT_PARSED_TABLES = frozenset().union(
     *_PARSED_CAPABILITY_TABLES.values(),
     {"online_parse_metadata", "online_parse_issues", "time_sync_samples", "active_segments", "active_segment_metrics"},
+)
+_RADIO_STAT_METRIC_NAMES = (
+    "TxFrameAllCnt",
+    "TxFrameAllBytes",
+    "RxFrameAllCnt",
+    "RxFrameAllBytes",
+    "TxRetryFrmCnt",
+    "TxErrFrmCnt",
+    "TxDiscardFrmCnt",
 )
 
 
@@ -201,12 +213,46 @@ class OnlineMrQueryService:
         self,
         site_id: str,
         *,
-        session_id: str | None,
+        session_id: str | None = None,
     ) -> OnlineMrSessionDetailDTO | None:
+        if not session_id:
+            session_id = self._current_session_id_from_task_mapping(site_id)
         if not session_id:
             return None
         detail = self.get_session(site_id, session_id)
         return detail if detail.status.upper() in self._ACTIVE_WEB_STATES else None
+
+    def _current_session_id_from_task_mapping(self, site_id: str) -> str | None:
+        path = self.paths.site_tasks_db_path(site_id)
+        if not path.is_file():
+            return None
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                columns = self._table_columns(conn, "online_mr_task_sessions")
+                if not columns or "session_id" not in columns or "mapping_state" not in columns:
+                    return None
+                if "updated_at" in columns:
+                    order = "updated_at DESC, controller_task_id DESC"
+                elif "created_at" in columns:
+                    order = "created_at DESC, controller_task_id DESC"
+                else:
+                    order = "controller_task_id DESC"
+                row = conn.execute(
+                    f"""
+                    SELECT session_id
+                    FROM online_mr_task_sessions
+                    WHERE site_id = ?
+                      AND session_id IS NOT NULL
+                      AND session_id <> ''
+                      AND mapping_state IN ('PENDING_SESSION', 'LINKED')
+                    ORDER BY {order}
+                    LIMIT 1
+                    """,
+                    (site_id,),
+                ).fetchone()
+        except OnlineMrQueryError:
+            return None
+        return self._text_or_none(row[0]) if row and row[0] not in (None, "") else None
 
     def list_collectors(self, site_id: str, session_id: str) -> list[OnlineMrCollectorStatusDTO]:
         session_dir = self._find_session(site_id, session_id)
@@ -900,6 +946,59 @@ class OnlineMrQueryService:
             has_more=has_more,
         )
 
+    def get_business_summary(self, site_id: str, session_id: str) -> OnlineMrBusinessSummaryDTO:
+        path = self._parsed_database_path(site_id, session_id)
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                return self._business_summary(conn, session_id)
+        except OnlineMrQueryError:
+            raise
+        except sqlite3.Error as exc:
+            raise self._database_error(exc) from exc
+
+    def query_business_table(
+        self,
+        site_id: str,
+        session_id: str,
+        table: OnlineMrBusinessTable | str,
+        *,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 1_000,
+        offset: int = 0,
+    ) -> OnlineMrBusinessTablePageDTO:
+        limit, offset = self._pagination(limit, offset)
+        try:
+            business_table = OnlineMrBusinessTable(table)
+        except ValueError as exc:
+            raise OnlineMrQueryError(OnlineMrQueryErrorCode.METRIC_UNSUPPORTED, "不支持的 Online MR 业务表") from exc
+        path = self._parsed_database_path(site_id, session_id)
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                rows = self._business_table_rows(
+                    conn,
+                    business_table,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=limit + 1,
+                    offset=offset,
+                )
+        except OnlineMrQueryError:
+            raise
+        except sqlite3.Error as exc:
+            raise self._database_error(exc) from exc
+        items = rows[:limit]
+        next_offset = offset + len(items)
+        return OnlineMrBusinessTablePageDTO(
+            table=business_table,
+            rows=items,
+            limit=limit,
+            offset=offset,
+            returned_count=len(items),
+            next_offset=next_offset,
+            has_more=len(rows) > limit,
+        )
+
     def _parsed_database_path(self, site_id: str, session_id: str) -> Path:
         path = self._find_session(site_id, session_id) / "parsed" / "online_diagnosis.sqlite"
         if not path.is_file():
@@ -923,6 +1022,1139 @@ class OnlineMrQueryService:
     def _validate_bucket_seconds(bucket_seconds: int) -> None:
         if bucket_seconds < 1:
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, "降采样时间桶必须大于 0")
+
+    def _business_summary(self, conn: sqlite3.Connection, session_id: str) -> OnlineMrBusinessSummaryDTO:
+        main_columns = self._table_columns(conn, "main_link_samples")
+        sample_time_expr = self._time_expr(main_columns, ("collector_time", "device_time", "device_clock"))
+        first_sample_time, last_sample_time = self._time_bounds(conn, "main_link_samples", sample_time_expr)
+        estimated_interval_seconds = self._estimated_interval_seconds(
+            conn,
+            "main_link_samples",
+            sample_time_expr,
+        )
+        current = self._latest_active_link_row(conn, main_columns, sample_time_expr)
+        segment_columns = self._table_columns(conn, "active_segments")
+        current_segment = self._latest_segment_row(conn, segment_columns)
+        time_sync_status, time_sync_avg_offset_ms = self._time_sync_summary(conn)
+        sample_count = self._count_rows(conn, "main_link_samples")
+        if "link_state" in main_columns:
+            active_count = self._count_rows(conn, "main_link_samples", "UPPER(link_state) LIKE 'ACTIVE%'")
+            standby_count = self._count_rows(conn, "main_link_samples", "UPPER(link_state) LIKE 'STANDBY%'")
+        else:
+            active_count = 0
+            standby_count = 0
+        active_segment_count = self._count_rows(conn, "active_segments")
+        switch_count = self._count_rows(conn, "switch_history_events") + self._count_rows(conn, "switch_realtime_events")
+        fping_point_count = self._count_rows(conn, "fping_1s_summary") or self._count_rows(conn, "fping_samples")
+        iperf_point_count = self._count_rows(conn, "iperf_intervals")
+        channel_busy_columns = self._table_columns(conn, "channel_busy_records")
+        channel_busy_count = (
+            self._count_rows(conn, "channel_busy_records", "COALESCE(row_index, 1) = 1")
+            if "row_index" in channel_busy_columns
+            else self._count_rows(conn, "channel_busy_records")
+        )
+        interface_pps_count = self._count_rows(conn, "interface_rate_samples")
+        diagnosis_count = (
+            self._count_rows(conn, "analysis_events")
+            + self._count_rows(conn, "online_parse_issues")
+            + active_segment_count
+        )
+        return OnlineMrBusinessSummaryDTO(
+            session_id=session_id,
+            sample_count=sample_count,
+            active_count=active_count,
+            standby_count=standby_count,
+            active_segment_count=active_segment_count,
+            switch_count=switch_count,
+            fping_point_count=fping_point_count,
+            iperf_point_count=iperf_point_count,
+            channel_busy_count=channel_busy_count,
+            interface_pps_count=interface_pps_count,
+            diagnosis_count=diagnosis_count,
+            first_sample_time=first_sample_time,
+            last_sample_time=last_sample_time,
+            estimated_interval_seconds=estimated_interval_seconds,
+            time_sync_status=time_sync_status,
+            time_sync_avg_offset_ms=time_sync_avg_offset_ms,
+            current_radio=int(current.get("radio")) if current.get("radio") is not None else None,
+            current_link_state=str(current.get("link_state") or ""),
+            current_peer_mac=str(current.get("peer_mac") or ""),
+            current_peer_name=str(current.get("peer_name") or ""),
+            current_ap_mac=str(current.get("peer_mac") or current.get("peer_mac_normalized") or ""),
+            current_peer_radio_mac=str(current.get("bssid") or ""),
+            current_station=str(current.get("belong_station") or ""),
+            current_section=str(current.get("belong_section") or ""),
+            current_rssi=float(current["mr_rssi"]) if current.get("mr_rssi") is not None else None,
+            current_segment_start=str(current_segment.get("start_time") or "") or None,
+            current_segment_end=str(current_segment.get("end_time") or "") or None,
+            current_segment_duration_seconds=self._duration_seconds(
+                current_segment.get("start_time"),
+                current_segment.get("end_time"),
+            ),
+        )
+
+    def _business_table_rows(
+        self,
+        conn: sqlite3.Connection,
+        table: OnlineMrBusinessTable,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        if table == OnlineMrBusinessTable.MESH_LINK:
+            return self._business_mesh_link_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.MESH_DETAIL:
+            return self._business_mesh_detail_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.CHANNEL_BUSY:
+            return self._business_channel_busy_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.RADIO_STATISTICS:
+            return self._business_radio_statistics_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.SWITCH_HISTORY:
+            return self._business_switch_rows(conn, "switch_history_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset, source="switch_history")
+        if table == OnlineMrBusinessTable.SWITCH_REALTIME:
+            return self._business_switch_rows(conn, "switch_realtime_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset, source="switch_realtime")
+        if table == OnlineMrBusinessTable.INTERFACE_RATE:
+            return self._business_interface_rate_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.FPING_1S:
+            return self._business_fping_1s_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.IPERF:
+            return self._business_iperf_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.DIAGNOSTICS:
+            return self._business_diagnostics_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        return []
+
+    def _business_mesh_link_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "active_segments")
+        if columns:
+            time_expr = self._time_expr(columns, ("start_time", "end_time"))
+            rows = self._fetch_active_segment_rows(conn, time_expr, start_time, end_time, limit, offset)
+            if rows:
+                return rows
+        return self._business_mesh_link_fallback_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+
+    def _business_mesh_link_fallback_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "main_link_samples")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("collector_time", "device_time", "device_clock"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+
+        def make_item(row_data: dict[str, Any]) -> dict[str, Any]:
+            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
+            peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized") or row_data.get("peer_name"))
+            peer_name = self._text_or_none(row_data.get("resolved_peer_name") or row_data.get("peer_name") or peer_mac)
+            rssi = row_data.get("mr_rssi")
+            return {
+                "sample_time": sample_time,
+                "radio": row_data.get("radio"),
+                "link_state": self._text_or_none(row_data.get("link_state")) or "ACTIVE",
+                "active_peer_mac": peer_mac,
+                "active_peer_name": peer_name,
+                "ap_mac": peer_mac,
+                "peer_radio_mac": self._text_or_none(row_data.get("bssid")),
+                "peer_radio": row_data.get("radio"),
+                "belong_station": self._text_or_none(row_data.get("belong_station")),
+                "belong_section": self._text_or_none(row_data.get("belong_section")),
+                "start_time": sample_time,
+                "end_time": sample_time,
+                "duration_seconds": 0.0,
+                "log_duration_seconds": 0.0,
+                "sample_count": 1,
+                "avg_mr_rssi": rssi,
+                "min_mr_rssi": rssi,
+                "max_mr_rssi": rssi,
+                "avg_tx_busy": None,
+                "max_tx_busy": None,
+                "avg_rx_busy": None,
+                "max_rx_busy": None,
+                "ping_sent": None,
+                "ping_received": None,
+                "ping_lost": None,
+                "ping_loss_percent": None,
+                "avg_latency_ms": None,
+                "max_latency_ms": None,
+                "avg_mbps": None,
+                "min_mbps": None,
+                "max_mbps": None,
+                "p95_mbps": None,
+                "total_retransmits": None,
+                "event_type": self._text_or_none(row_data.get("link_state")) or "ACTIVE",
+                "decision_reason": "",
+                "raw_file": self._text_or_none(row_data.get("raw_file")),
+                "raw_line_start": row_data.get("raw_line_start"),
+                "raw_line_end": row_data.get("raw_line_end"),
+            }
+
+        peer_key_columns = [name for name in ("peer_mac_normalized", "peer_mac", "resolved_peer_name", "peer_name") if name in columns]
+        if "link_state" not in columns or not peer_key_columns:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM main_link_samples
+                WHERE {where}
+                ORDER BY {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ).fetchall()
+            return [make_item(dict(row)) for row in rows]
+
+        def peer_key_expr(prefix: str = "") -> str:
+            parts = [f"NULLIF({prefix}{name}, '')" for name in peer_key_columns]
+            return f"COALESCE({', '.join(parts)}, '')"
+
+        grouped_order = "g.sample_time ASC, s.radio ASC, s.id ASC" if "id" in columns else "g.sample_time ASC, s.radio ASC"
+        rows = conn.execute(
+            f"""
+            WITH grouped AS (
+                SELECT
+                    {time_expr} AS sample_time,
+                    {peer_key_expr()} AS active_peer_key,
+                    radio
+                FROM main_link_samples
+                WHERE {where}
+                  AND UPPER(link_state) LIKE 'ACTIVE%'
+                GROUP BY sample_time, active_peer_key, radio
+                ORDER BY sample_time ASC, radio ASC
+                LIMIT ? OFFSET ?
+            )
+            SELECT
+                s.*
+            FROM main_link_samples s
+            JOIN grouped g
+              ON {time_expr} = g.sample_time
+             AND s.radio = g.radio
+             AND {peer_key_expr("s.")} = g.active_peer_key
+            WHERE {where}
+            ORDER BY {grouped_order}
+            """,
+            (*params, limit, offset, *params),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            row_data = dict(row)
+            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
+            key = (sample_time or "", str(row_data.get("radio") or ""), str(row_data.get("peer_mac") or row_data.get("peer_name") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(make_item(row_data))
+        return self._apply_business_paging(items, limit, offset)
+
+    def _fetch_active_segment_rows(
+        self,
+        conn: sqlite3.Connection,
+        time_expr: str | None,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "active_segments")
+        if not columns:
+            return []
+        where, params = self._time_where(time_expr or "start_time", start_time, end_time)
+        rows = conn.execute(
+            f"""
+            SELECT
+                s.id,
+                s.session_id,
+                s.radio,
+                s.active_peer_mac,
+                s.start_time,
+                s.end_time,
+                s.sample_count,
+                s.avg_mr_rssi,
+                s.min_mr_rssi,
+                s.max_mr_rssi,
+                s.event_type,
+                s.details_json,
+                m.ping_sent,
+                m.ping_success,
+                m.ping_lost,
+                m.ping_loss_percent,
+                m.avg_latency_ms,
+                m.max_latency_ms,
+                m.iperf_sample_count,
+                m.avg_mbps,
+                m.min_mbps,
+                m.max_mbps,
+                m.p95_mbps,
+                m.total_retransmits,
+                m.avg_tx_busy,
+                m.max_tx_busy,
+                m.avg_rx_busy,
+                m.max_rx_busy
+            FROM active_segments s
+            LEFT JOIN active_segment_metrics m ON m.segment_id = s.id
+            WHERE {where}
+            ORDER BY COALESCE(NULLIF(s.end_time, ''), NULLIF(s.start_time, '')) ASC, s.id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            details = self._json_object(row["details_json"])
+            start_time_text = self._text_or_none(row["start_time"])
+            end_time_text = self._text_or_none(row["end_time"])
+            items.append(
+                {
+                    "sample_time": end_time_text or start_time_text,
+                    "radio": row["radio"],
+                    "link_state": "ACTIVE",
+                    "active_peer_mac": self._text_or_none(row["active_peer_mac"]),
+                    "active_peer_name": self._text_or_none(details.get("active_peer_name") or details.get("peer_name") or row["active_peer_mac"]),
+                    "ap_mac": self._text_or_none(details.get("ap_mac") or row["active_peer_mac"]),
+                    "peer_radio_mac": self._text_or_none(details.get("peer_radio_mac") or details.get("bssid")),
+                    "peer_radio": row["radio"],
+                    "belong_station": self._text_or_none(details.get("belong_station")),
+                    "belong_section": self._text_or_none(details.get("belong_section")),
+                    "start_time": start_time_text,
+                    "end_time": end_time_text,
+                    "duration_seconds": self._duration_seconds(start_time_text, end_time_text),
+                    "log_duration_seconds": self._duration_seconds(
+                        details.get("first_sample_time") or start_time_text,
+                        details.get("last_sample_time") or end_time_text,
+                    ),
+                    "sample_count": row["sample_count"],
+                    "avg_mr_rssi": row["avg_mr_rssi"],
+                    "min_mr_rssi": row["min_mr_rssi"],
+                    "max_mr_rssi": row["max_mr_rssi"],
+                    "avg_tx_busy": row["avg_tx_busy"],
+                    "max_tx_busy": row["max_tx_busy"],
+                    "avg_rx_busy": row["avg_rx_busy"],
+                    "max_rx_busy": row["max_rx_busy"],
+                    "ping_sent": row["ping_sent"],
+                    "ping_received": row["ping_success"],
+                    "ping_lost": row["ping_lost"],
+                    "ping_loss_percent": row["ping_loss_percent"],
+                    "avg_latency_ms": row["avg_latency_ms"],
+                    "max_latency_ms": row["max_latency_ms"],
+                    "avg_mbps": row["avg_mbps"],
+                    "min_mbps": row["min_mbps"],
+                    "max_mbps": row["max_mbps"],
+                    "p95_mbps": row["p95_mbps"],
+                    "total_retransmits": row["total_retransmits"],
+                    "event_type": self._text_or_none(row["event_type"]) or "ACTIVE",
+                    "decision_reason": self._text_or_none(details.get("reason") or details.get("event_reason") or details.get("decision_reason")),
+                    "raw_file": self._text_or_none(details.get("raw_file") or row["id"]),
+                    "raw_line_start": details.get("raw_line_start"),
+                    "raw_line_end": details.get("raw_line_end"),
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_mesh_detail_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "main_link_samples")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("collector_time", "device_time", "device_clock"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM main_link_samples
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
+            peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized"))
+            peer_name = self._text_or_none(row_data.get("resolved_peer_name") or row_data.get("peer_name") or peer_mac)
+            items.append(
+                {
+                    "sample_time": sample_time,
+                    "device_time": self._text_or_none(row_data.get("device_time")),
+                    "collector_time": self._text_or_none(row_data.get("collector_time")),
+                    "radio": row_data.get("radio"),
+                    "link_state": self._text_or_none(row_data.get("link_state")),
+                    "peer_mac": peer_mac,
+                    "peer_name": peer_name,
+                    "ap_mac": peer_mac,
+                    "belong_station": self._text_or_none(row_data.get("belong_station")),
+                    "belong_section": self._text_or_none(row_data.get("belong_section")),
+                    "peer_radio_mac": self._text_or_none(row_data.get("bssid")),
+                    "peer_radio": row_data.get("radio"),
+                    "link_start_time": sample_time,
+                    "link_duration_seconds": self._duration_seconds(sample_time, sample_time),
+                    "link_count": row_data.get("link_count") or 1,
+                    "mr_rssi_delta": None,
+                    "peer_rssi_delta": None,
+                    "mr_noise_floor": row_data.get("mr_noise_floor") or row_data.get("local_noise_dbm"),
+                    "peer_noise_floor": row_data.get("peer_noise_floor") or row_data.get("peer_noise_dbm"),
+                    "mr_rx_signal": row_data.get("mr_rssi") or row_data.get("local_signal_dbm"),
+                    "peer_rx_signal": row_data.get("peer_rx_signal") or row_data.get("peer_signal_dbm"),
+                    "mr_rate_raw": row_data.get("mr_rate_raw") or row_data.get("local_rate_raw"),
+                    "peer_rate_raw": row_data.get("peer_rate_raw"),
+                    "l_tx_busy": row_data.get("l_tx_busy") or row_data.get("local_tx_busy"),
+                    "p_tx_busy": row_data.get("p_tx_busy") or row_data.get("peer_tx_busy"),
+                    "l_rx_busy": row_data.get("l_rx_busy") or row_data.get("local_rx_busy"),
+                    "p_rx_busy": row_data.get("p_rx_busy") or row_data.get("peer_rx_busy"),
+                    "raw_file": self._text_or_none(row_data.get("raw_file")),
+                    "raw_line_start": row_data.get("raw_line_start"),
+                    "raw_line_end": row_data.get("raw_line_end"),
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_channel_busy_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "channel_busy_records")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("device_time", "device_clock"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        if "row_index" in columns:
+            where = f"{where} AND COALESCE(row_index, 1) = 1"
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM channel_busy_records
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            sample_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
+            items.append(
+                {
+                    "sample_time": sample_time,
+                    "device_time": self._text_or_none(row_data.get("device_time")),
+                    "radio": row_data.get("radio"),
+                    "ctl_busy": row_data.get("ctl_busy"),
+                    "tx_busy": row_data.get("tx_busy"),
+                    "rx_busy": row_data.get("rx_busy"),
+                    "peer_ap": "",
+                    "belong_station": "",
+                    "belong_section": "",
+                    "structured_source": "channel_busy_records",
+                    "source_file": self._text_or_none(row_data.get("raw_file")),
+                    "raw_file": self._text_or_none(row_data.get("raw_file")),
+                    "raw_line_start": row_data.get("raw_line_start"),
+                    "raw_line_end": row_data.get("raw_line_end"),
+                    "ctl_channel": row_data.get("ctl_channel"),
+                    "bandwidth": row_data.get("bandwidth"),
+                    "record_interval": row_data.get("record_interval"),
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_radio_statistics_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "radio_statistics_samples")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("collector_time", "device_clock"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        rows = conn.execute(
+            f"""
+            WITH grouped AS (
+                SELECT
+                    {time_expr} AS sample_time,
+                    radio
+                FROM radio_statistics_samples
+                WHERE {where}
+                GROUP BY sample_time, radio
+                ORDER BY sample_time ASC, radio ASC
+                LIMIT ? OFFSET ?
+            ),
+            details AS (
+                SELECT
+                    r.collector_time,
+                    r.device_clock,
+                    r.radio,
+                    r.metric_name,
+                    r.metric_value,
+                    r.metric_unit,
+                    r.raw_file,
+                    r.raw_line_start,
+                    r.raw_line_end,
+                    g.sample_time
+                FROM radio_statistics_samples r
+                JOIN grouped g
+                  ON {time_expr} = g.sample_time
+                 AND r.radio = g.radio
+                WHERE {where}
+                ORDER BY g.sample_time ASC, r.radio ASC, r.id ASC
+            )
+            SELECT * FROM details
+            """,
+            (*params, limit + 1, offset, *params),
+        ).fetchall()
+        if not rows:
+            return []
+        groups: dict[tuple[str, object], list[sqlite3.Row]] = defaultdict(list)
+        order: list[tuple[str, object]] = []
+        for row in rows:
+            key = (self._text_or_none(row["sample_time"]) or "", row["radio"])
+            if key not in groups:
+                order.append(key)
+            groups[key].append(row)
+        items: list[dict[str, Any]] = []
+        previous_metrics_by_radio: dict[object, dict[str, float]] = {}
+        for key in order:
+            entries = groups[key]
+            sample_time = key[0] or self._text_or_none(entries[0]["collector_time"] or entries[0]["device_clock"])
+            metrics = {self._text_or_none(entry["metric_name"]) or "": entry["metric_value"] for entry in entries}
+            metric_units = {self._text_or_none(entry["metric_name"]) or "": self._text_or_none(entry["metric_unit"]) or "" for entry in entries}
+            raw_entry = entries[0]
+            previous_metrics = previous_metrics_by_radio.get(raw_entry["radio"], {})
+            retry_delta = self._counter_delta(metrics.get("TxRetryFrmCnt"), previous_metrics.get("TxRetryFrmCnt"))
+            error_delta = self._counter_delta(
+                self._counter_sum(metrics, ("TxErrFrmCnt", "TxDiscardFrmCnt")),
+                self._counter_sum(previous_metrics, ("TxErrFrmCnt", "TxDiscardFrmCnt")),
+            )
+            items.append(
+                {
+                    "sample_time": sample_time,
+                    "radio": raw_entry["radio"],
+                    "peer_ap": "",
+                    "belong_station": "",
+                    "channel": "",
+                    "bandwidth": "",
+                    "tx": metrics.get("TxFrameAllCnt"),
+                    "rx": metrics.get("RxFrameAllCnt"),
+                    "retry": retry_delta,
+                    "error": error_delta,
+                    "tx_busy": None,
+                    "rx_busy": None,
+                    "ctl_busy": None,
+                    "source_file": self._text_or_none(raw_entry["raw_file"]),
+                    "raw_file": self._text_or_none(raw_entry["raw_file"]),
+                    "raw_line_start": raw_entry["raw_line_start"],
+                    "raw_line_end": raw_entry["raw_line_end"],
+                    "metrics": metrics,
+                    "metric_units": metric_units,
+                }
+            )
+            previous_metrics_by_radio[raw_entry["radio"]] = {
+                name: number
+                for name, value in metrics.items()
+                if (number := self._float_or_none(value)) is not None
+            }
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_switch_rows(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, table)
+        if not columns:
+            return []
+        time_candidates = ("event_time_local", "event_time_device", "snapshot_collector_time") if table == "switch_history_events" else ("device_time",)
+        time_expr = self._time_expr(columns, time_candidates)
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+        sql = f"""
+            SELECT *
+            FROM {table}
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+        """
+        rows = conn.execute(sql, (*params, limit, offset)).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            event_time = self._text_or_none(
+                row_data.get("event_time_local")
+                or row_data.get("event_time_device")
+                or row_data.get("snapshot_collector_time")
+                or row_data.get("device_time")
+            )
+            reason_text = self._text_or_none(row_data.get("switch_reason_text"))
+            reason_code = row_data.get("switch_reason_code")
+            if table == "switch_history_events":
+                items.append(
+                    {
+                        "sample_time": event_time,
+                        "device_time": self._text_or_none(row_data.get("event_time_device")) or event_time,
+                        "source": source,
+                        "event": "主链路切换",
+                        "severity": self._switch_severity(reason_text, reason_code),
+                        "description": reason_text,
+                        "radio": row_data.get("radio"),
+                        "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
+                        "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
+                        "from_rssi": row_data.get("old_rssi"),
+                        "from_station": self._text_or_none(row_data.get("old_belong_station")),
+                        "from_section": self._text_or_none(row_data.get("old_belong_section")),
+                        "to_peer_name": self._text_or_none(row_data.get("new_peer_name")),
+                        "to_peer_mac": self._text_or_none(row_data.get("new_peer_mac")),
+                        "to_rssi": row_data.get("new_rssi"),
+                        "to_station": self._text_or_none(row_data.get("new_belong_station")),
+                        "to_section": self._text_or_none(row_data.get("new_belong_section")),
+                        "peer_quantity": row_data.get("peer_quantity"),
+                        "link_quantity": row_data.get("link_quantity"),
+                        "reason_code": reason_code,
+                        "reason_text": reason_text,
+                        "active_duration": self._text_or_none(row_data.get("active_duration")),
+                        "raw_file": self._text_or_none(row_data.get("raw_file")),
+                        "raw_line_start": row_data.get("raw_line_start"),
+                        "raw_line_end": row_data.get("raw_line_end"),
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "sample_time": event_time,
+                        "device_time": event_time,
+                        "source": source,
+                        "event": "实时主链路切换",
+                        "severity": self._switch_severity(reason_text, reason_code),
+                        "description": reason_text,
+                        "radio": row_data.get("radio"),
+                        "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
+                        "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
+                        "from_rssi": row_data.get("old_rssi"),
+                        "from_station": self._text_or_none(row_data.get("old_belong_station")),
+                        "from_section": self._text_or_none(row_data.get("old_belong_section")),
+                        "to_peer_name": self._text_or_none(row_data.get("new_peer_name")),
+                        "to_peer_mac": self._text_or_none(row_data.get("new_peer_mac")),
+                        "to_rssi": row_data.get("new_rssi"),
+                        "to_station": self._text_or_none(row_data.get("new_belong_station")),
+                        "to_section": self._text_or_none(row_data.get("new_belong_section")),
+                        "peer_quantity": row_data.get("peer_quantity"),
+                        "link_quantity": row_data.get("link_quantity"),
+                        "reason_code": reason_code,
+                        "reason_text": reason_text,
+                        "device_name": self._text_or_none(row_data.get("device_name")),
+                        "raw_file": self._text_or_none(row_data.get("raw_file")),
+                        "raw_line_start": row_data.get("raw_line_start"),
+                        "raw_line_end": row_data.get("raw_line_end"),
+                    }
+                )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_interface_rate_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "interface_rate_samples")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("device_time", "device_clock"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM interface_rate_samples
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            items.append(
+                {
+                    "sample_time": self._text_or_none(row_data.get("device_time") or row_data.get("device_clock")),
+                    "device_time": self._text_or_none(row_data.get("device_time")),
+                    "direction": self._text_or_none(row_data.get("direction")),
+                    "interface": self._text_or_none(row_data.get("interface_normalized") or row_data.get("interface_name")),
+                    "usage_percent": row_data.get("usage_percent"),
+                    "total_pps": row_data.get("total_pps"),
+                    "broadcast_pps": row_data.get("broadcast_pps"),
+                    "multicast_pps": row_data.get("multicast_pps"),
+                    "raw_file": self._text_or_none(row_data.get("raw_file")),
+                    "raw_line_start": row_data.get("raw_line_start"),
+                    "raw_line_end": row_data.get("raw_line_end"),
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_fping_1s_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "fping_1s_summary")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("device_bucket_time", "bucket_time", "local_bucket_time"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, target_ip ASC, id ASC" if "id" in columns and "target_ip" in columns else f"{time_expr} ASC"
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM fping_1s_summary
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            sent = row_data.get("sent")
+            received = row_data.get("received")
+            lost = row_data.get("lost")
+            loss_count = lost if lost is not None else (sent - received if sent is not None and received is not None else None)
+            items.append(
+                {
+                    "sample_time": self._text_or_none(row_data.get("device_bucket_time") or row_data.get("bucket_time") or row_data.get("local_bucket_time")),
+                    "device_time": self._text_or_none(row_data.get("device_bucket_time")),
+                    "local_time": self._text_or_none(row_data.get("local_bucket_time")),
+                    "target_ip": self._text_or_none(row_data.get("target_ip")),
+                    "target_name": self._text_or_none(row_data.get("target_name")),
+                    "sent": sent,
+                    "received": received,
+                    "loss_count": loss_count,
+                    "loss_rate": row_data.get("loss_percent"),
+                    "min_rtt": row_data.get("min_latency_ms"),
+                    "avg_rtt": row_data.get("avg_latency_ms"),
+                    "max_rtt": row_data.get("max_latency_ms"),
+                    "latest_rtt": row_data.get("latest_latency_ms") if "latest_latency_ms" in row_data else row_data.get("max_latency_ms"),
+                    "jitter_ms": row_data.get("jitter_ms"),
+                    "status": self._fping_status_label(row_data.get("status")),
+                    "clock_offset_ms": row_data.get("clock_offset_ms"),
+                    "raw_file": "raw/fping_v5_raw.log",
+                    "raw_line_start": None,
+                    "raw_line_end": None,
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_iperf_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        columns = self._table_columns(conn, "iperf_intervals")
+        if not columns:
+            return []
+        time_expr = self._time_expr(columns, ("device_interval_center_time", "device_aligned_time", "interval_center_time", "collector_time"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM iperf_intervals
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        run_rows: dict[str, dict[str, Any]] = {}
+        run_columns = self._table_columns(conn, "iperf_runs")
+        if run_columns and any(row["run_id"] not in (None, "") for row in rows):
+            run_ids = [str(row["run_id"]) for row in rows if row["run_id"] not in (None, "")]
+            placeholders = ",".join("?" for _ in run_ids)
+            for run_row in conn.execute(f"SELECT * FROM iperf_runs WHERE run_id IN ({placeholders})", run_ids):
+                run_rows[str(run_row["run_id"])] = dict(run_row)
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            row_data = dict(row)
+            run_data = run_rows.get(str(row_data.get("run_id") or ""), {})
+            sample_time = self._text_or_none(
+                row_data.get("device_interval_center_time")
+                or row_data.get("device_aligned_time")
+                or row_data.get("interval_center_time")
+                or row_data.get("collector_time")
+            )
+            protocol = self._text_or_none(row_data.get("protocol") or run_data.get("protocol"))
+            direction = self._text_or_none(row_data.get("direction") or row_data.get("role") or run_data.get("direction"))
+            items.append(
+                {
+                    "sample_time": sample_time,
+                    "time": sample_time,
+                    "protocol": protocol,
+                    "direction": direction,
+                    "role": self._text_or_none(row_data.get("role")),
+                    "bitrate_mbps": row_data.get("bitrate_mbps"),
+                    "jitter_ms": row_data.get("jitter_ms"),
+                    "loss_percent": row_data.get("loss_percent"),
+                    "loss_count": row_data.get("lost_packets"),
+                    "retransmits": row_data.get("retransmits"),
+                    "local_endpoint": self._iperf_local_endpoint({**run_data, **row_data}),
+                    "remote_endpoint": self._iperf_remote_endpoint({**run_data, **row_data}),
+                    "server_ip": self._text_or_none(row_data.get("server_ip") or run_data.get("server_ip")),
+                    "port": row_data.get("port") if row_data.get("port") not in (None, "") else run_data.get("port"),
+                    "parallel": row_data.get("parallel") if row_data.get("parallel") not in (None, "") else run_data.get("parallel"),
+                    "target_bandwidth": self._text_or_none(row_data.get("target_bandwidth") or run_data.get("target_bandwidth")),
+                    "started_at": self._text_or_none(row_data.get("started_at") or run_data.get("started_at")),
+                    "ended_at": self._text_or_none(row_data.get("ended_at") or run_data.get("ended_at")),
+                    "status": self._text_or_none(row_data.get("status") or run_data.get("status")),
+                    "raw_file": self._text_or_none(row_data.get("raw_file") or run_data.get("raw_file")),
+                    "raw_line": self._text_or_none(row_data.get("raw_line")),
+                }
+            )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _business_diagnostics_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        analysis_columns = self._table_columns(conn, "analysis_events")
+        if analysis_columns:
+            time_expr = self._time_expr(analysis_columns, ("collector_time",))
+            if time_expr:
+                where, params = self._time_where(time_expr, start_time, end_time)
+                order_by = f"{time_expr} ASC, id ASC" if "id" in analysis_columns else f"{time_expr} ASC"
+                rows = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM analysis_events
+                    WHERE {where}
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                    """,
+                    (*params, limit + 1, offset),
+                ).fetchall()
+                for row in rows:
+                    row_data = dict(row)
+                    details = self._json_object(row_data.get("details_json"))
+                    items.append(
+                        {
+                            "sample_time": self._text_or_none(row_data.get("collector_time")),
+                            "start_time": self._text_or_none(row_data.get("collector_time")),
+                            "end_time": self._text_or_none(details.get("end_time")),
+                            "issue_type": self._text_or_none(row_data.get("event_type")),
+                            "severity": self._text_or_none(row_data.get("severity")),
+                            "summary": self._text_or_none(row_data.get("summary_text")),
+                            "description": self._text_or_none(details.get("description") or details.get("summary") or row_data.get("summary_text")),
+                            "radio": details.get("radio"),
+                            "peer_name": self._text_or_none(details.get("peer_name") or details.get("active_peer") or details.get("peer_mac")),
+                            "peer_mac": self._text_or_none(details.get("peer_mac")),
+                            "station": self._text_or_none(details.get("station")),
+                            "section": self._text_or_none(details.get("section")),
+                            "evidence": self._text_or_none(row_data.get("raw_file")),
+                            "raw_file": self._text_or_none(row_data.get("raw_file")),
+                            "raw_line_start": row_data.get("raw_line_start"),
+                            "raw_line_end": row_data.get("raw_line_end"),
+                            "recommendation": self._text_or_none(details.get("recommendation")),
+                        }
+                    )
+        issue_columns = self._table_columns(conn, "online_parse_issues")
+        if issue_columns:
+            order_by = "raw_file ASC, line_number ASC, id ASC" if "id" in issue_columns else "raw_file ASC, line_number ASC"
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM online_parse_issues
+                ORDER BY {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                (limit + 1, offset),
+            ).fetchall()
+            for row in rows:
+                row_data = dict(row)
+                items.append(
+                    {
+                        "sample_time": None,
+                        "start_time": None,
+                        "end_time": None,
+                        "issue_type": self._text_or_none(row_data.get("issue_type")),
+                        "severity": self._text_or_none(row_data.get("severity")),
+                        "summary": self._text_or_none(row_data.get("message")),
+                        "description": self._text_or_none(row_data.get("raw_text")),
+                        "radio": None,
+                        "peer_name": "",
+                        "peer_mac": "",
+                        "station": "",
+                        "section": "",
+                        "evidence": self._text_or_none(row_data.get("raw_file")),
+                        "raw_file": self._text_or_none(row_data.get("raw_file")),
+                        "raw_line_start": row_data.get("line_number"),
+                        "raw_line_end": row_data.get("line_number"),
+                        "recommendation": "",
+                    }
+                )
+        return self._apply_business_paging(items, limit, offset)
+
+    def _apply_business_paging(self, rows: list[dict[str, Any]], limit: int, offset: int) -> list[dict[str, Any]]:
+        return rows[:limit]
+
+    def _time_expr(self, columns: set[str], candidates: Iterable[str]) -> str | None:
+        parts = [f"NULLIF({name}, '')" for name in candidates if name in columns]
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return f"COALESCE({', '.join(parts)})"
+
+    def _time_bounds(self, conn: sqlite3.Connection, table: str, time_expr: str | None) -> tuple[str | None, str | None]:
+        if not time_expr or not self._table_columns(conn, table):
+            return None, None
+        row = conn.execute(f"SELECT MIN({time_expr}), MAX({time_expr}) FROM {table}").fetchone()
+        return self._text_or_none(row[0]) if row and row[0] is not None else None, self._text_or_none(row[1]) if row and row[1] is not None else None
+
+    def _estimated_interval_seconds(self, conn: sqlite3.Connection, table: str, time_expr: str | None) -> float | None:
+        if not time_expr or not self._table_columns(conn, table):
+            return None
+        rows = conn.execute(
+            f"SELECT {time_expr} AS sample_time FROM {table} WHERE {time_expr} IS NOT NULL ORDER BY sample_time ASC, id ASC LIMIT 2000"
+        ).fetchall()
+        stamps = [self._as_datetime(self._text_or_none(row[0])) for row in rows]
+        values = [stamp for stamp in stamps if stamp is not None]
+        if len(values) < 2:
+            return None
+        deltas = [
+            (right - left).total_seconds()
+            for left, right in zip(values, values[1:])
+            if right > left
+        ]
+        if not deltas:
+            return None
+        return round(sum(deltas) / len(deltas), 3)
+
+    def _time_where(self, time_expr: str, start_time: str | None, end_time: str | None, *, table_alias: str | None = None) -> tuple[str, list[Any]]:
+        prefix = f"{table_alias}." if table_alias else ""
+        where = [f"{prefix}{time_expr} IS NOT NULL"]
+        params: list[Any] = []
+        if start_time:
+            where.append(f"{prefix}{time_expr} >= ?")
+            params.append(start_time)
+        if end_time:
+            where.append(f"{prefix}{time_expr} <= ?")
+            params.append(end_time)
+        return " AND ".join(where), params
+
+    def _count_rows(self, conn: sqlite3.Connection, table: str, where: str | None = None, params: tuple[object, ...] = ()) -> int:
+        if not self._table_columns(conn, table):
+            return 0
+        sql = f"SELECT COUNT(*) FROM {table}"
+        if where:
+            sql = f"{sql} WHERE {where}"
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def _latest_active_link_row(self, conn: sqlite3.Connection, columns: set[str], time_expr: str | None) -> dict[str, Any]:
+        if not columns:
+            return {}
+        select_columns = [
+            name
+            for name in (
+                "collector_time",
+                "device_time",
+                "device_clock",
+                "radio",
+                "link_state",
+                "peer_mac",
+                "peer_mac_normalized",
+                "resolved_peer_name",
+                "peer_name",
+                "mr_rssi",
+                "bssid",
+                "mesh_interface",
+                "belong_station",
+                "belong_section",
+                "belong_type",
+                "belonging_source",
+                "online_time",
+                "raw_file",
+                "raw_line_start",
+                "raw_line_end",
+            )
+            if name in columns
+        ]
+        if not select_columns:
+            return {}
+        time_order = time_expr or ("id" if "id" in columns else select_columns[0])
+        order_by = f"{time_order} DESC, id DESC" if "id" in columns else f"{time_order} DESC"
+        where = "WHERE UPPER(link_state) LIKE 'ACTIVE%'" if "link_state" in columns else ""
+        row = conn.execute(
+            f"""
+            SELECT {', '.join(select_columns)}
+            FROM main_link_samples
+            {where}
+            ORDER BY {order_by}
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return {}
+        return dict(row)
+
+    def _latest_segment_row(self, conn: sqlite3.Connection, columns: set[str]) -> dict[str, Any]:
+        if not columns:
+            return {}
+        row = conn.execute(
+            """
+            SELECT *
+            FROM active_segments
+            ORDER BY COALESCE(NULLIF(end_time, ''), NULLIF(start_time, '')) DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row else {}
+
+    def _time_sync_summary(self, conn: sqlite3.Connection) -> tuple[str, float | None]:
+        columns = self._table_columns(conn, "time_sync_samples")
+        if not columns:
+            return "unknown", None
+        row = conn.execute("SELECT COUNT(*), AVG(offset_ms) FROM time_sync_samples").fetchone()
+        count = int(row[0] or 0) if row else 0
+        avg_offset = float(row[1]) if row and row[1] is not None else None
+        if count <= 0:
+            return "unknown", None
+        return "已建立", avg_offset
+
+    @staticmethod
+    def _duration_seconds(start: object, end: object) -> float | None:
+        start_time = OnlineMrQueryService._as_datetime(start) if not isinstance(start, datetime) else start
+        end_time = OnlineMrQueryService._as_datetime(end) if not isinstance(end, datetime) else end
+        if start_time is None or end_time is None:
+            return None
+        return round(max(0.0, (end_time - start_time).total_seconds()), 3)
+
+    @staticmethod
+    def _switch_severity(reason: object, code: object) -> str:
+        text = str(reason or "").casefold()
+        code_text = str(code or "").strip()
+        if code_text in {"4", "5"} or "fault" in text or "断开" in text or "强制" in text:
+            return "warning"
+        if "better" in text or "rssi" in text:
+            return "info"
+        return "info"
+
+    @staticmethod
+    def _stat_delta(value: object, rows: list[sqlite3.Row], metric_name: str) -> float | None:
+        values = [
+            float(row["metric_value"])
+            for row in rows
+            if str(row["metric_name"] or "") == metric_name and row["metric_value"] is not None
+        ]
+        if not values:
+            return None
+        if len(values) == 1:
+            return values[0]
+        return round(values[-1] - values[0], 3)
+
+    @staticmethod
+    def _float_or_none(value: object) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _counter_sum(cls, values: dict[str, object], keys: Iterable[str]) -> float | None:
+        numbers = [number for key in keys if (number := cls._float_or_none(values.get(key))) is not None]
+        return sum(numbers) if numbers else None
+
+    @classmethod
+    def _counter_delta(cls, current: object, previous: object) -> float | None:
+        current_value = cls._float_or_none(current)
+        previous_value = cls._float_or_none(previous)
+        if current_value is None or previous_value is None:
+            return None
+        delta = current_value - previous_value
+        return round(delta, 3) if delta >= 0 else None
+
+    @staticmethod
+    def _iperf_local_endpoint(row: sqlite3.Row) -> str:
+        parts = [str(value) for value in (row["device_id"], row["parallel"]) if value not in (None, "")]
+        return ":".join(parts) if parts else ""
+
+    @staticmethod
+    def _iperf_remote_endpoint(row: sqlite3.Row) -> str:
+        host = str(row["server_ip"] or "")
+        port = str(row["port"] or "")
+        if host and port:
+            return f"{host}:{port}"
+        return host or port
 
     def query_switch_rssi_windows(
         self,

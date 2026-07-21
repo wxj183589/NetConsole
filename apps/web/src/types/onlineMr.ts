@@ -147,6 +147,49 @@ export interface OnlineMrMetricPage {
 
 export type OnlineMrSwitchRssiSource = 'history' | 'realtime'
 
+export type OnlineMrBusinessTable = 'mesh_link' | 'mesh_detail' | 'channel_busy' | 'radio_statistics' | 'switch_history' | 'switch_realtime' | 'interface_rate' | 'fping_1s' | 'iperf' | 'diagnostics'
+
+export interface OnlineMrBusinessSummary {
+  session_id: string
+  sample_count: number
+  active_count: number
+  standby_count: number
+  active_segment_count: number
+  switch_count: number
+  fping_point_count: number
+  iperf_point_count: number
+  channel_busy_count: number
+  interface_pps_count: number
+  diagnosis_count: number
+  first_sample_time: string | null
+  last_sample_time: string | null
+  estimated_interval_seconds: number | null
+  time_sync_status: string
+  time_sync_avg_offset_ms: number | null
+  current_radio: number | null
+  current_link_state: string
+  current_peer_mac: string
+  current_peer_name: string
+  current_ap_mac: string
+  current_peer_radio_mac: string
+  current_station: string
+  current_section: string
+  current_rssi: number | null
+  current_segment_start: string | null
+  current_segment_end: string | null
+  current_segment_duration_seconds: number | null
+}
+
+export interface OnlineMrBusinessTablePage {
+  table: OnlineMrBusinessTable
+  rows: Array<Record<string, unknown>>
+  limit: number
+  offset: number
+  returned_count: number
+  next_offset: number
+  has_more: boolean
+}
+
 export interface OnlineMrSwitchRssiWindow {
   event_id: string
   source: OnlineMrSwitchRssiSource

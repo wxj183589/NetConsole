@@ -1,6 +1,9 @@
 import { apiRequest } from './client'
 import type {
   OnlineMrCollectorStatus,
+  OnlineMrBusinessSummary,
+  OnlineMrBusinessTable,
+  OnlineMrBusinessTablePage,
   OnlineMrManualNote,
   OnlineMrRawFile,
   OnlineMrRawTail,
@@ -50,6 +53,10 @@ export async function listOnlineMrNotes(sessionId: string): Promise<OnlineMrManu
   return (await apiRequest<ApiResponse<OnlineMrManualNote[]>>(`${root}/${encodeURIComponent(sessionId)}/notes`)).data
 }
 
+export async function getOnlineMrBusinessSummary(sessionId: string): Promise<OnlineMrBusinessSummary> {
+  return (await apiRequest<ApiResponse<OnlineMrBusinessSummary>>(`${root}/${encodeURIComponent(sessionId)}/business-summary`)).data
+}
+
 export interface OnlineMrMetricQuery {
   startTime?: string
   endTime?: string
@@ -60,6 +67,8 @@ export interface OnlineMrMetricQuery {
   signal?: AbortSignal
 }
 
+export interface OnlineMrBusinessQuery extends Pick<OnlineMrMetricQuery, 'startTime' | 'endTime' | 'limit' | 'offset' | 'signal'> {}
+
 export async function queryOnlineMrMetrics(sessionId: string, metricTypes: string[], options: OnlineMrMetricQuery = {}): Promise<OnlineMrMetricPage> {
   const query = new URLSearchParams({ metric_types: metricTypes.join(',') })
   if (options.startTime) query.set('start_time', options.startTime)
@@ -69,6 +78,19 @@ export async function queryOnlineMrMetrics(sessionId: string, metricTypes: strin
   if (options.downsample) query.set('downsample', options.downsample)
   if (options.bucketSeconds) query.set('bucket_seconds', String(options.bucketSeconds))
   return (await apiRequest<ApiResponse<OnlineMrMetricPage>>(`${root}/${encodeURIComponent(sessionId)}/metric-page?${query}`, { signal: options.signal })).data
+}
+
+export async function queryOnlineMrBusinessTable(
+  sessionId: string,
+  table: OnlineMrBusinessTable,
+  options: OnlineMrBusinessQuery = {},
+): Promise<OnlineMrBusinessTablePage> {
+  const query = new URLSearchParams({ table })
+  if (options.startTime) query.set('start_time', options.startTime)
+  if (options.endTime) query.set('end_time', options.endTime)
+  if (options.limit) query.set('limit', String(options.limit))
+  if (options.offset !== undefined) query.set('offset', String(options.offset))
+  return (await apiRequest<ApiResponse<OnlineMrBusinessTablePage>>(`${root}/${encodeURIComponent(sessionId)}/business-table?${query}`, { signal: options.signal })).data
 }
 
 export async function queryOnlineMrSwitchRssiWindows(

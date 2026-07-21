@@ -4,6 +4,7 @@ import json
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.models.api.online_mr import OnlineMrBusinessTable
 from netconsole.models.api.online_mr_agent_control import OnlineMrAgentWebStartRequestDTO
 from netconsole.models.api.online_mr_control import OnlineMrWebStartRequestDTO
 from netconsole.services.online_mr.agent_web_control_service import OnlineMrAgentWebControlService
@@ -108,6 +109,29 @@ class OnlineMrApiFacade:
 
     def raw_summary(self, session_id: str):
         return self.query_service.get_raw_summary(self.current_site_id(), session_id)
+
+    def business_summary(self, session_id: str):
+        return self.query_service.get_business_summary(self.current_site_id(), session_id)
+
+    def business_table(
+        self,
+        session_id: str,
+        table: OnlineMrBusinessTable | str,
+        *,
+        start_time: str = "",
+        end_time: str = "",
+        limit: int = 1_000,
+        offset: int = 0,
+    ):
+        return self.query_service.query_business_table(
+            self.current_site_id(),
+            session_id,
+            table,
+            start_time=start_time or None,
+            end_time=end_time or None,
+            limit=limit,
+            offset=offset,
+        )
 
     def local_status(self):
         return self.local_control.status(self.current_site_id())

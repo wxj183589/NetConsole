@@ -201,6 +201,28 @@ def test_current_session_uses_explicit_active_operation_session(tmp_path: Path) 
     assert current is not None and current.session_id == "older-active"
 
 
+def test_current_session_falls_back_to_active_task_mapping(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _session(service, "mapping-active", started_at="2026-07-13 10:00:00", status="COLLECTING")
+    tasks_db = service.paths.site_tasks_db_path("site-a")
+    tasks_db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(tasks_db) as conn:
+        conn.execute(
+            "CREATE TABLE online_mr_task_sessions ("
+            "controller_task_id TEXT PRIMARY KEY, session_id TEXT, site_id TEXT, mapping_state TEXT, "
+            "updated_at TEXT, created_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO online_mr_task_sessions VALUES (?, ?, ?, ?, ?, ?)",
+            ("task-1", "mapping-active", "site-a", "LINKED", "2026-07-13 10:05:00", "2026-07-13 10:00:00"),
+        )
+
+    current = service.get_current_session("site-a")
+
+    assert current is not None
+    assert current.session_id == "mapping-active"
+
+
 def test_collectors_report_fresh_stale_and_interrupted_from_fact_timestamps(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session = _session(service, "freshness", status="COLLECTING")
