@@ -162,7 +162,7 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
     started = monotonic()
     last_result: ConnectionTestResult | None = None
     for target in targets:
-        app_logger.log_info("TEST_CONNECTION_STARTED", _detail(device, target.protocol, target.port, method=target.method))
+        app_logger.log_debug("TEST_CONNECTION_STARTED", _detail(device, target.protocol, target.port, method=target.method))
         connection: Any | None = None
         try:
             with prepared_connection_target(target) as prepared:

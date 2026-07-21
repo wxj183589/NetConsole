@@ -8,6 +8,8 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.services.site_lifecycle import SiteAuditService
+from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
 
 
 TOKEN = "site-storage-session-token-123456"
@@ -101,7 +103,56 @@ def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:
     paths = schema.json()["paths"]
     assert "/api/v1/sites" in paths
     assert "/api/v1/storage/data-root/migrate" in paths
+    assert "/api/v1/sites/{site_id}/audit" in paths
+    assert "/api/v1/sites/{site_id}/cleanup/prepare" in paths
+    assert "/api/v1/sites/recycle/{cleanup_token}/restore" in paths
     assert "site-and-storage" in paths["/api/v1/sites"]["get"]["tags"]
+
+
+def test_site_audit_and_cleanup_prepare_are_redacted(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    SiteAuditService(paths).audit_all(site_id="demo")
+
+    audit = client.get("/api/v1/sites/demo/audit/latest")
+    plan = client.post("/api/v1/sites/demo/cleanup/prepare")
+
+    assert audit.status_code == 200, audit.text
+    assert "physical_path" not in audit.json()
+    assert "file_manifest" not in audit.json()
+    assert "manifest_path" not in audit.json()
+    assert str(paths.data_root) not in audit.text
+    assert plan.status_code == 200, plan.text
+    assert set(plan.json()) == {"cleanup_token", "site_id", "classification", "blocking_reasons", "recoverable", "can_delete"}
+
+
+def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    shell = paths.ensure_site_dirs("legacy-shell")
+    Database(shell / "db" / "devices.db").initialize()
+    SiteRegistryRepository(paths).register(SiteRecord("legacy-shell-id", "Legacy 空壳", shell))
+
+    missing = client.post("/api/v1/sites/legacy-shell-id/cleanup/prepare")
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["code"] == "SITE_AUDIT_REQUIRED"
+
+    SiteAuditService(paths).audit_all(site_id="legacy-shell-id")
+    prepared = client.post("/api/v1/sites/legacy-shell-id/cleanup/prepare")
+    assert prepared.status_code == 200, prepared.text
+    token = prepared.json()["cleanup_token"]
+    rejected = client.post(
+        "/api/v1/sites/legacy-shell-id/cleanup/apply",
+        json={"cleanup_token": token, "confirmed": False},
+    )
+    assert rejected.status_code == 422
+
+
+def test_demo_rebuild_rejects_user_data_bypass(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    response = client.post("/api/v1/sites/demo/rebuild", json={"confirmed": True, "allow_user_data": True})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DEMO_USER_DATA_EXPORT_REQUIRED"
 
 
 def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch) -> None:
@@ -134,6 +185,10 @@ def test_isolated_storage_is_read_only_and_redacted(tmp_path: Path, monkeypatch)
         ("/api/v1/sites/demo/export", {"destination_path": str(tmp_path / "site.ncsite")}),
         ("/api/v1/sites/import/inspect", {"package_path": str(tmp_path / "site.ncsite")}),
         ("/api/v1/sites/import", {"package_path": str(tmp_path / "site.ncsite")}),
+        ("/api/v1/sites/demo/audit", {}),
+        ("/api/v1/sites/demo/cleanup/prepare", {}),
+        ("/api/v1/sites/demo/rebuild", {"confirmed": True}),
+        ("/api/v1/sites/recycle/1234567890abcdef/restore", {"confirmed": True}),
         ("/api/v1/storage/data-root/validate", {"path": str(tmp_path / "target")}),
         ("/api/v1/storage/data-root/migration-plan", {"path": str(tmp_path / "target")}),
         ("/api/v1/storage/data-root/migrate", {"path": str(tmp_path / "target")}),
@@ -158,3 +213,21 @@ def test_site_storage_tasks_are_visible_as_cancellable_in_job_center(tmp_path: P
 
     assert task.status_code == 200
     assert task.json()["cancellable"] is True
+
+
+def test_site_cleanup_commit_tasks_are_not_cancellable(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.app.state.task_service.create_external_task(
+        task_id="site-cleanup-task",
+        task_type="site_cleanup_apply",
+        task_name="安全清理局点",
+        source="local",
+        owner="site-storage",
+        site_name="demo",
+    )
+
+    task = client.get("/api/job-center/tasks/site-cleanup-task")
+
+    assert task.status_code == 200
+    assert task.json()["cancellable"] is False
+    assert "不可停止" in task.json()["cancel_reason"]

@@ -10,13 +10,19 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.site_storage import (
     DataRootPathRequest,
     SiteActivateRequest,
+    SiteAuditSummaryResponse,
+    SiteCleanupApplyRequest,
+    SiteCleanupPlanResponse,
+    SiteCleanupRestoreRequest,
     SiteCreateRequest,
+    SiteDemoRebuildRequest,
     SiteExportRequest,
     SiteImportInspectRequest,
     SiteImportRequest,
     SiteTaskResponse,
 )
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.site_lifecycle import SiteAuditService, SiteCleanupApplicationService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -91,6 +97,105 @@ def active_site(request: Request) -> dict[str, object]:
 @router.get("/sites/{site_id}", summary="读取局点详情", dependencies=[Depends(_desktop)])
 def get_site(request: Request, site_id: str) -> dict[str, object]:
     return _call(lambda: _sites(request).get_site(site_id))
+
+
+@router.post(
+    "/sites/{site_id}/audit",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="审计局点",
+    description="在 Task Center 中生成只读局点清单、SQLite 完整性和 Legacy/Demo 分类。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def audit_site(request: Request, site_id: str) -> SiteTaskResponse:
+    if not SiteAuditService(request.app.state.paths).site_exists(site_id):
+        raise HTTPException(status_code=404, detail={"code": "SITE_NOT_FOUND", "message": "局点不存在"})
+    return _submit(request, "site_audit", {"site_id": site_id})
+
+
+@router.get("/sites/{site_id}/audit/latest", response_model=SiteAuditSummaryResponse, summary="读取最近局点审计", dependencies=[Depends(_desktop)])
+def latest_site_audit(request: Request, site_id: str) -> SiteAuditSummaryResponse:
+    result = _call(lambda: SiteAuditService(request.app.state.paths).latest(site_id))
+    if not result:
+        raise HTTPException(status_code=404, detail={"code": "SITE_AUDIT_NOT_FOUND", "message": "尚未生成局点审计"})
+    public = dict(result)
+    public.pop("physical_path", None)
+    public.pop("file_manifest", None)
+    return SiteAuditSummaryResponse.model_validate(
+        {name: public[name] for name in SiteAuditSummaryResponse.model_fields if name in public}
+    )
+
+
+@router.post(
+    "/sites/{site_id}/cleanup/prepare",
+    response_model=SiteCleanupPlanResponse,
+    summary="准备局点安全清理",
+    description="只生成二阶段清理 token 和 manifest，不移动或删除目录。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def prepare_site_cleanup(request: Request, site_id: str) -> SiteCleanupPlanResponse:
+    plan = _call(lambda: SiteCleanupApplicationService(request.app.state.paths).prepare_cleanup(site_id))
+    return SiteCleanupPlanResponse.model_validate(
+        {name: plan[name] for name in SiteCleanupPlanResponse.model_fields if name in plan}
+    )
+
+
+@router.post(
+    "/sites/{site_id}/cleanup/apply",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="执行局点安全清理",
+    description="复核 manifest 后注销 Registry，并将目录移入可恢复回收区。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def apply_site_cleanup(request: Request, site_id: str, payload: SiteCleanupApplyRequest) -> SiteTaskResponse:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail={"code": "SITE_CLEANUP_CONFIRMATION_REQUIRED", "message": "清理前必须明确确认"})
+    plan = _call(lambda: SiteCleanupApplicationService(request.app.state.paths).load_plan(payload.cleanup_token))
+    if plan.get("site_id") != site_id:
+        raise HTTPException(status_code=409, detail={"code": "SITE_CLEANUP_TOKEN_INVALID", "message": "清理清单已变化，请重新准备"})
+    _call(_sites(request).ensure_no_active_tasks_anywhere)
+    return _submit(request, "site_cleanup_apply", {"site_id": site_id, "cleanup_token": payload.cleanup_token})
+
+
+@router.post(
+    "/sites/recycle/{cleanup_token}/restore",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="恢复已回收局点",
+    description="在 30 天恢复期内，通过 Task Center 将受控回收区中的局点恢复到原路径。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def restore_site_cleanup(request: Request, cleanup_token: str, payload: SiteCleanupRestoreRequest) -> SiteTaskResponse:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail={"code": "SITE_CLEANUP_CONFIRMATION_REQUIRED", "message": "恢复前必须明确确认"})
+    plan = _call(lambda: SiteCleanupApplicationService(request.app.state.paths).load_plan(cleanup_token))
+    if str(plan.get("status") or "") != "applied":
+        raise HTTPException(status_code=409, detail={"code": "SITE_CLEANUP_RESTORE_INVALID", "message": "该回收记录当前不可恢复"})
+    _call(_sites(request).ensure_no_active_tasks_anywhere)
+    return _submit(request, "site_cleanup_restore", {"site_id": str(plan.get("site_id") or ""), "cleanup_token": cleanup_token})
+
+
+@router.post(
+    "/sites/demo/rebuild",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="重建演示局点",
+    description="在 staging 生成当前 Schema 的受控 Demo，旧 Demo 先移入可恢复回收区。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def rebuild_demo(request: Request, payload: SiteDemoRebuildRequest) -> SiteTaskResponse:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail={"code": "DEMO_REBUILD_CONFIRMATION_REQUIRED", "message": "重建前必须明确确认"})
+    if payload.allow_user_data:
+        raise HTTPException(status_code=409, detail={"code": "DEMO_USER_DATA_EXPORT_REQUIRED", "message": "Demo 存在用户数据时必须先导出或备份，不能绕过审计"})
+    audit = _call(lambda: SiteAuditService(request.app.state.paths).latest("demo"))
+    if not audit:
+        raise HTTPException(status_code=409, detail={"code": "SITE_AUDIT_REQUIRED", "message": "请先完成 Demo 只读审计"})
+    if not bool(audit.get("safe_to_replace")):
+        raise HTTPException(status_code=409, detail={"code": "DEMO_USER_DATA", "message": "Demo 可能包含用户数据，请先导出或备份"})
+    _call(_sites(request).ensure_no_active_tasks_anywhere)
+    return _submit(request, "site_demo_rebuild", {"site_id": "demo", "allow_user_data": False})
 
 
 @router.post(
@@ -206,11 +311,15 @@ def _submit(request: Request, task_type: str, params: dict[str, object]) -> Site
                 **params,
                 "site_name": _sites(request).active_site_directory_name(),
                 "task_name": {
-                    "site_export": "导出局点",
-                    "site_migration": "迁移单个局点",
-                    "site_import": "导入局点",
-                    "site_data_root_migration": "迁移全部数据",
-                }[task_type],
+                "site_export": "导出局点",
+                "site_migration": "迁移单个局点",
+                "site_import": "导入局点",
+                "site_data_root_migration": "迁移全部数据",
+                "site_audit": "审计局点",
+                "site_cleanup_apply": "安全清理局点",
+                "site_cleanup_restore": "恢复局点",
+                "site_demo_rebuild": "重建演示局点",
+            }[task_type],
                 "owner": "site-storage",
             },
         )

@@ -517,14 +517,6 @@ def build_trackside_ap_business_rows(
                     "is_ap_offline": bool(offline_reason),
                 }
             _ensure_ap_optical_status(row)
-            app_logger.log_info(
-                "TRACKSIDE_AP_ROW_SOURCE",
-                (
-                    f"site={row.get('site')}, switch={row.get('device_name')}, interface={row.get('interface_name')}, "
-                    f"switch_status={row.get('switch_optical_status')}, ap={row.get('ap_name') or row.get('ap_mac')}, "
-                    f"ap_status={row.get('ap_optical_status')}, updated_at={row.get('updated_at')}"
-                ),
-            )
             result.append(row)
     result.extend(_offline_ledger_to_trackside_rows(offline_ap_ledger_rows or [], interfaces_by_device, optical_by_device))
     result = _merge_duplicate_trackside_rows(result)
@@ -631,17 +623,13 @@ def _log_trackside_identity_coverage(
             f"rows_with_ap_identity={rows_with_ap_identity}, rows_without_ap_identity={rows_without_ap_identity}"
         ),
     )
-    for row in rows:
-        if normalize_mac(row.get("ap_mac")) or str(row.get("ap_name") or "").strip():
-            continue
+    if rows_without_ap_identity:
         app_logger.log_warning(
             "TRACKSIDE_AP_IDENTITY_MISSING",
             (
-                f"site={row.get('site')}, switch={row.get('device_name')}, interface={row.get('interface_name')}, "
-                f"pvid={row.get('pvid')}, description={row.get('description')}, "
-                f"has_current_lldp={bool(row.get('has_current_lldp'))}, "
-                f"has_historical_lldp={bool(row.get('has_historical_lldp'))}, "
-                f"has_fit_ap_resource={bool(row.get('has_fit_ap_resource'))}"
+                f"missing_count={rows_without_ap_identity}, trackside_rows_total={len(rows)}, "
+                f"current_lldp_port_count={current_lldp_port_count}, "
+                f"fit_ap_resource_count={len(fit_ap_resource_rows)}"
             ),
         )
 

@@ -2,12 +2,15 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { ElMessageBox } from 'element-plus'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/siteStorage'
+import * as tasks from '../../api/tasks'
+import type { SiteRecord } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
 vi.mock('../../api/siteStorage')
+vi.mock('../../api/tasks')
 
 const adapter = {
   hostType: 'electron' as const,
@@ -20,11 +23,34 @@ const adapter = {
 }
 vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => adapter }))
 
+function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
+  return {
+    site_id: 'demo',
+    display_name: '演示局点',
+    created_at: '',
+    updated_at: '',
+    remark: '',
+    active: true,
+    size_bytes: 1024,
+    site_kind: 'demo',
+    classification: 'managed_demo',
+    managed_demo: true,
+    demo_seed_version: '2026.07.21.1',
+    migration_status: 'current',
+    data_integrity: 'ok',
+    recommended_action: 'keep_and_review',
+    audited_at: '2026-07-21T08:00:00+08:00',
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(api.listSites).mockResolvedValue([{ site_id: 'demo', display_name: '演示局点', path: 'C:\\data\\sites\\demo', created_at: '', updated_at: '', remark: '', active: true, size_bytes: 1024 }])
+  vi.mocked(api.listSites).mockResolvedValue([site()])
   vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 })
+
+afterEach(() => { vi.restoreAllMocks() })
 
 describe('SiteStoragePanel', () => {
   it('shows the active site and controlled storage actions', async () => {
@@ -39,8 +65,8 @@ describe('SiteStoragePanel', () => {
 
   it('renders every legacy site returned by the registry API', async () => {
     vi.mocked(api.listSites).mockResolvedValue([
-      { site_id: 'demo', display_name: '演示局点', path: 'C:\\data\\sites\\demo', created_at: '', updated_at: '', remark: '', active: true, size_bytes: 1024 },
-      { site_id: 'legacy-dfd356e96ea0', display_name: '宁波地铁12号线', path: 'C:\\data\\sites\\宁波地铁12号线', created_at: '', updated_at: '', remark: '', active: false, size_bytes: 2048 },
+      site(),
+      site({ site_id: 'legacy-dfd356e96ea0', display_name: '宁波地铁12号线', active: false, size_bytes: 2048, site_kind: 'legacy', classification: 'legacy_valid', managed_demo: false, demo_seed_version: '', migration_status: 'pending', data_integrity: 'unknown', recommended_action: 'audit_required' }),
     ])
     vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 
@@ -56,7 +82,7 @@ describe('SiteStoragePanel', () => {
     vi.spyOn(ElMessageBox, 'prompt')
       .mockResolvedValueOnce({ value: '宁波地铁12号线' } as never)
       .mockResolvedValueOnce({ value: 'ningbo-line-12' } as never)
-    vi.mocked(api.createSite).mockResolvedValue({ site_id: 'ningbo-line-12', display_name: '宁波地铁12号线', path: 'C:\\data\\sites\\ningbo-line-12', created_at: '', updated_at: '', remark: '', active: false, size_bytes: 0 })
+    vi.mocked(api.createSite).mockResolvedValue(site({ site_id: 'ningbo-line-12', display_name: '宁波地铁12号线', active: false, size_bytes: 0, site_kind: 'formal', classification: 'normal_site', managed_demo: false, demo_seed_version: '' }))
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
 
@@ -84,5 +110,89 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('临时测试数据根')
     expect(wrapper.find('[data-testid="create-site"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(false)
+  })
+
+  it('runs the site audit as a task and refreshes the lifecycle summary', async () => {
+    vi.mocked(api.auditSite).mockResolvedValue({ task_id: 'audit-1', task_type: 'site_audit' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="audit-site-demo"]').trigger('click')
+    await flushPromises()
+
+    expect(api.auditSite).toHaveBeenCalledWith('demo')
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'audit-1', module: 'logs' })
+    expect(api.listSites).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows only safe audit facts and does not render server paths', async () => {
+    const alert = vi.spyOn(ElMessageBox, 'alert').mockResolvedValue(undefined as never)
+    vi.mocked(api.getLatestSiteAudit).mockResolvedValue({
+      display_name: '演示局点', site_id: 'demo', total_size: 1024, file_count: 8, directory_count: 4,
+      is_current: false, is_registered: true, is_referenced_by_bootstrap: false, is_demo: true,
+      managed_demo: true, demo_seed_version: '2026.07.21.1', migration_status: 'current',
+      raw_log_count: 1, parsed_database_count: 2, report_count: 0, artifact_count: 0, task_count: 0,
+      online_mr_session_count: 0, mesh_source_count: 1, unique_business_data: false,
+      duplicate_candidates: [], referenced_records: [], classification: 'managed_demo',
+      recommended_action: 'keep_and_review', can_delete: false, safe_to_replace: true,
+      physical_path: 'C:\\private\\sites\\demo', manifest_path: 'C:\\private\\audit.json',
+    } as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="show-audit-demo"]').trigger('click')
+    await flushPromises()
+
+    const content = String(alert.mock.calls[0]?.[0])
+    expect(content).toContain('文件：8 个')
+    expect(content).toContain('唯一业务数据：无')
+    expect(content).not.toMatch(/[A-Z]:\\/i)
+    expect(content).not.toContain('manifest')
+  })
+
+  it('applies cleanup only after prepare and explicit confirmation', async () => {
+    const emptyShell = site({ site_id: 'legacy-empty', display_name: 'Legacy 空壳', active: false, site_kind: 'legacy', classification: 'empty_shell', managed_demo: false, demo_seed_version: '', data_integrity: 'ok', recommended_action: 'safe_delete_to_recycle' })
+    vi.mocked(api.listSites).mockResolvedValue([emptyShell])
+    vi.mocked(api.prepareSiteCleanup).mockResolvedValue({ cleanup_token: '1234567890abcdef', site_id: 'legacy-empty', classification: 'empty_shell', blocking_reasons: [], recoverable: true, can_delete: true })
+    vi.mocked(api.applySiteCleanup).mockResolvedValue({ task_id: 'cleanup-1', task_type: 'site_cleanup_apply' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="cleanup-site-legacy-empty"]').trigger('click')
+    await flushPromises()
+
+    expect(api.prepareSiteCleanup).toHaveBeenCalledWith('legacy-empty')
+    expect(api.applySiteCleanup).toHaveBeenCalledWith('legacy-empty', '1234567890abcdef')
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'cleanup-1', module: 'logs' })
+  })
+
+  it('does not apply a cleanup plan blocked by the backend', async () => {
+    vi.mocked(api.listSites).mockResolvedValue([site({ site_id: 'legacy-current', active: false, site_kind: 'legacy', classification: 'empty_shell', managed_demo: false })])
+    vi.mocked(api.prepareSiteCleanup).mockResolvedValue({ cleanup_token: '1234567890abcdef', site_id: 'legacy-current', classification: 'empty_shell', blocking_reasons: ['当前局点不能清理'], recoverable: true, can_delete: false })
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="cleanup-site-legacy-current"]').trigger('click')
+    await flushPromises()
+
+    expect(api.applySiteCleanup).not.toHaveBeenCalled()
+  })
+
+  it('rebuilds a non-active Demo only after confirmation', async () => {
+    vi.mocked(api.listSites).mockResolvedValue([site({ active: false })])
+    vi.mocked(api.rebuildDemoSite).mockResolvedValue({ task_id: 'demo-1', task_type: 'site_demo_rebuild' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="rebuild-demo-demo"]').trigger('click')
+    await flushPromises()
+
+    expect(api.rebuildDemoSite).toHaveBeenCalledWith(false)
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'demo-1', module: 'logs' })
   })
 })

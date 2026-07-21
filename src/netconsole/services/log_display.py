@@ -8,6 +8,7 @@ LOG_EVENT_ZH_MAP = {
     "APP_AUTO_CLEANUP_FAILED": "自动清理失败",
     "APP_AUTO_CLEANUP_PARTIAL_FAILED": "自动清理部分失败",
     "APP_START": "软件启动",
+    "UI_STARTUP": "应用界面启动",
     "BOOT_START": "启动开始",
     "BOOT_CONFIG_LOADED": "启动配置加载完成",
     "BOOT_DB_CORE_READY": "核心数据库就绪",
@@ -31,6 +32,7 @@ LOG_EVENT_ZH_MAP = {
     "MESH_PROFILE_SYNC": "MR日志性能同步",
     "MESH_PAGE_FIRST_SHOW": "MR日志页面首次显示",
     "FEATURE_GATE_LOADED": "功能开关加载完成",
+    "FEATURE_PROFILE_LOADED": "功能配置加载完成",
     "PAGE_CREATED": "页面创建",
     "PAGE_PRELOADED": "页面预加载完成",
     "PAGE_FIRST_ACTIVATED": "页面首次激活",
@@ -38,6 +40,18 @@ LOG_EVENT_ZH_MAP = {
     "BACKGROUND_TASK_STARTED": "后台任务开始",
     "BACKGROUND_TASK_STOPPED": "后台任务已停止",
     "BACKGROUND_TASK_STOP_FAILED": "后台任务停止失败",
+    "TEST_CONNECTION_STARTED": "开始测试设备连接",
+    "TEST_CONNECTION_ATTEMPT_FAILED": "设备连接尝试失败",
+    "TEST_CONNECTION_SUCCESS": "设备连接测试成功",
+    "TEST_CONNECTION_FAILED": "设备连接测试失败",
+    "OPEN_SOURCE_SCAN_STARTED": "开始扫描开源组件",
+    "OPEN_SOURCE_SCAN_COMPLETED": "开源组件扫描完成",
+    "TASK_STARTED": "任务开始",
+    "TASK_COMPLETED": "任务完成",
+    "TASK_FAILED": "任务失败",
+    "TRACKSIDE_AP_IDENTITY_COVERAGE": "轨旁AP身份覆盖统计",
+    "TRACKSIDE_AP_IDENTITY_MISSING": "轨旁AP身份缺失",
+    "COMMAND_ALLOWED": "设备命令已通过校验",
     "LOGS_CLEARED": "日志中心记录已清空",
     "LOGS_EXPORTED": "日志已导出",
     "LOGS_CURRENT_PAGE_EXPORTED": "当前页日志已导出",
@@ -114,7 +128,7 @@ def display_log_event(event: str) -> str:
     prefix, separator, suffix = code.partition(":")
     if separator and prefix in LOG_EVENT_ZH_MAP:
         return f"{LOG_EVENT_ZH_MAP[prefix]}：{suffix}"
-    return f"未知事件：{code}"
+    return "未分类事件"
 
 
 def display_log_level(level: str) -> str:

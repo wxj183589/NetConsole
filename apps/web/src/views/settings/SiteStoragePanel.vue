@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { activateSite, createSite, exportSite, getDataRoot, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, validateDataRoot, type DataRootSnapshot, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteRecord } from '../../api/siteStorage'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
@@ -46,6 +46,69 @@ async function switchSite(site: SiteRecord): Promise<void> {
     if (!result.success) throw new Error(result.error || 'Backend 重启失败')
     ElMessage.success('局点已切换')
   } catch (cause) { showError(cause, '局点切换失败') }
+  finally { busy.value = false }
+}
+
+async function auditSelectedSite(site: SiteRecord): Promise<void> {
+  busy.value = true
+  try {
+    const task = await auditSite(site.site_id)
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`审计任务状态：${completed}`)
+    await reload()
+    ElMessage.success('局点审计完成')
+  } catch (cause) { showError(cause, '局点审计失败') }
+  finally { busy.value = false }
+}
+
+async function showAudit(site: SiteRecord): Promise<void> {
+  try {
+    const audit = await getLatestSiteAudit(site.site_id)
+    await ElMessageBox.alert([
+      `分类：${classificationLabel(audit.classification)}`,
+      `文件：${audit.file_count} 个，目录：${audit.directory_count} 个`,
+      `任务：${audit.task_count}，原始日志：${audit.raw_log_count}`,
+      `解析库：${audit.parsed_database_count}，报告：${audit.report_count}`,
+      `唯一业务数据：${audit.unique_business_data ? '有' : '无'}`,
+      `建议：${actionLabel(audit.recommended_action)}`,
+    ].join('\n'), `${site.display_name} 审计清单`, { confirmButtonText: '关闭' })
+  } catch (cause) { showError(cause, '审计清单读取失败') }
+}
+
+async function cleanupSite(site: SiteRecord): Promise<void> {
+  busy.value = true
+  try {
+    const plan = await prepareSiteCleanup(site.site_id)
+    if (!plan.can_delete) {
+      ElMessage.warning(plan.blocking_reasons.length ? `不能清理：${plan.blocking_reasons.join('、')}` : '当前局点不能安全清理')
+      return
+    }
+    const confirmed = await confirmAction({ type: 'DANGER', title: '安全清理局点', message: `“${site.display_name}”将从 Registry 注销并移入可恢复回收区，不会永久删除。`, confirmText: '移入回收区' })
+    if (!confirmed) return
+    const task = await applySiteCleanup(site.site_id, plan.cleanup_token)
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`清理任务状态：${completed}`)
+    await reload()
+    ElMessage.success('局点已移入可恢复回收区')
+  } catch (cause) { showError(cause, '局点安全清理失败') }
+  finally { busy.value = false }
+}
+
+async function rebuildDemo(site: SiteRecord): Promise<void> {
+  if (site.active) { ElMessage.warning('请先切换到正式局点，再重建演示局点'); return }
+  const confirmed = await confirmAction({ type: 'WARNING', title: '重建演示局点', message: '旧 Demo 将先完整移入回收区，再生成当前 Schema 的小型演示数据。', confirmText: '确认重建' })
+  if (!confirmed) return
+  busy.value = true
+  try {
+    const task = await rebuildDemoSite(false)
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`Demo 重建任务状态：${completed}`)
+    await reload()
+    ElMessage.success('演示局点已重建')
+  } catch (cause) { showError(cause, '演示局点重建失败') }
   finally { busy.value = false }
 }
 
@@ -130,6 +193,10 @@ async function prompt(message: string, title: string, inputValue = ''): Promise<
 }
 function showError(cause: unknown, fallback: string): void { error.value = cause instanceof Error && cause.message ? cause.message : fallback; ElMessage.error(error.value) }
 function formatBytes(value: number): string { if (!Number.isFinite(value) || value <= 0) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
+function classificationLabel(value: string): string { return ({ active_site: '当前正式局点', normal_site: '正式局点', managed_demo: '演示局点 · 可重建', legacy_demo: '旧版 Demo 待审计', legacy_valid: 'Legacy 待审计', legacy_alias: 'Legacy 别名', legacy_duplicate: 'Legacy 重复', orphan: '孤立目录', empty_shell: '疑似迁移残留', unknown: '未审计' } as Record<string, string>)[value] || value }
+function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
+function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
+function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
 </script>
 
 <template>
@@ -140,8 +207,8 @@ function formatBytes(value: number): string { if (!Number.isFinite(value) || val
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
-        <div class="site-main"><strong>{{ site.display_name }}</strong><el-tag v-if="site.active" type="success">当前</el-tag><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span></div>
-        <div v-if="root?.persistent" class="site-actions"><el-button size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
+        <div class="site-main"><strong>{{ site.display_name }}</strong><el-tag v-if="site.active" type="success">当前</el-tag><el-tag size="small" :type="classificationTag(site)">{{ classificationLabel(site.classification || 'unknown') }}</el-tag><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span><span>完整性：{{ integrityLabel(site.data_integrity) }}</span></div>
+        <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
       </article>
     </div>
   </section>

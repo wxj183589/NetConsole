@@ -46,6 +46,7 @@
 | [Web 双轨迁移第一批更新记录](development/web-migration-wave-1.md) | 当前并行任务、提交、验证、延期项和合并门槛 | Web 迁移指挥与集成 | 独立工作树提交、测试和集成分支 | 第一批任务状态、测试或范围变化 |
 | [Electron 对等迁移第二波归档](development/electron-parity-wave2.md) | 第二波集成、验证、发布边界和任务/worktree 回收记录 | Electron 迁移指挥与集成 | `main` 提交、自动测试与资源清理结果 | 第二波范围、验收或归档状态变化 |
 | [Electron-only 后续开发交接档案](archive/migrations/electron-only/HANDOFF-2026-07-18.md) | Electron-only E1～E6A、命令平台、开发接口和 E2 发布合规的决策、证据与后续门禁 | Electron-only 迁移指挥与后续集成 | 当前 Git 历史、专项归档、生产代码和测试 | 阶段状态、最终提交、发布门或固定产品边界变化 |
+| [局点生命周期与运行日志整改交接](archive/migrations/electron-only/E11-site-lifecycle-runtime-log-2026-07-21.md) | Legacy/Demo 局点审计回收、软件运行日志三天保留、真实清理证据和后续验收顺序 | 存储与系统维护负责人 | 当前代码、定向测试、正式运行日志清理前后快照 | 局点回收执行状态、日志清理边界或真实验收结论变化 |
 | [Electron-only E1 阶段归档](archive/migrations/electron-only/E1-2026-07-18.md) | Qt 启动入口、旧 WebShell、无调用测试和兼容导入回收记录 | Electron-only 迁移指挥与后续开发 | `refactor/electron-only` 提交、定向测试和当前阻塞 | E1 收口、E2 构建链或 Qt 依赖边界变化 |
 | [Electron-only E2 依赖与发布合规归档](archive/migrations/electron-only/E2-dependencies-release-compliance-2026-07-18.md) | Python/Node 依赖分层、锁定环境、SBOM、许可证和 Qt 发布 Guard 的整改记录 | Electron-only 发布、依赖与合规维护 | 依赖清单、约束文件、Notice/SBOM、打包脚本和定向测试 | 运行依赖、第三方组件、许可证事实或发布门变化 |
 | [Electron-only E4 数据目录迁移归档](archive/migrations/electron-only/E4-2026-07-18.md) | 用户应用数据根、历史数据迁移、冲突和测试残留清理记录 | Electron-only 迁移指挥与存储维护 | `PathResolver`、Electron Main、迁移 manifest、定向测试 | 数据根、迁移规则、清理白名单或回退状态变化 |

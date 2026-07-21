@@ -14,9 +14,20 @@
 
 - `migrate_legacy_runtime_data.py`：无覆盖迁移仓库历史运行数据。
 - `clean_test_artifacts.py`：清理明确白名单内的历史测试临时项。
-- `clean_generated_artifacts.py`：回收明确白名单内、可重新生成的构建产物。
+- `clean_generated_artifacts.py`：回收明确白名单内、可重新生成的构建产物；`build-temporary` 只处理 `dist/_build`，默认 dry-run，发布目录和 Electron/Agent 输出不在该目标内。
 - `check_desktop_bootstrap.py`：只读检查 Electron bootstrap；`--repair` 先备份并原子修复临时/失效的数据根和局点引用，不移动业务数据。
+- `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
+
+局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --site-id demo
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --data-root "$env:LOCALAPPDATA\NetConsole\Development" --output "$env:TEMP\netconsole-site-audit.json"
+```
+
+该命令对局点业务数据只读，但会写审计报告。报告中的 `can_delete` 仍不是单阶段删除授权；正式回收必须经过 Application Service 的 prepare/apply、文件哈希复核和受控回收区。
 
 ## 数据与状态
 
@@ -37,5 +48,6 @@
 ## 相关文档
 
 - `docs/DATA_LAYOUT.md`
+- `docs/storage/SITE_MANAGEMENT.md`
 - `docs/BUILD_AND_RELEASE.md`
 - `docs/development/repository-layout.md`

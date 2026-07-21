@@ -18,6 +18,7 @@ from threading import RLock
 from typing import Callable, Iterator
 
 from netconsole.core.database import Database
+from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import persistent_storage
 from netconsole.core.sites import DEFAULT_SITE, SiteManager
@@ -144,7 +145,9 @@ def _lock_for(paths: PathResolver, name: str) -> RLock:
 def storage_lock(paths: PathResolver, name: str) -> Iterator[None]:
     lock = _lock_for(paths, name)
     with lock:
-        yield
+        lock_dir = paths.runtime_dir / "locks"
+        with interprocess_file_lock(lock_dir / f"{name}.lock"):
+            yield
 
 
 class SiteRegistryRepository:
@@ -251,6 +254,27 @@ class SiteRegistryRepository:
         _atomic_json(self.path, {"schema_version": 1, "updated_at": now, "sites": [self._serialize(item) for item in records.values()]})
         return value
 
+    def unregister(self, site_id: str, expected_root: Path) -> None:
+        """Remove one exact registry record without discovering or touching other sites."""
+        wanted = validate_site_id(site_id)
+        expected = Path(expected_root).resolve()
+        raw = self._load()
+        retained: list[dict[str, object]] = []
+        removed = False
+        for item in raw.get("sites", []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("site_id") or "").casefold() != wanted:
+                retained.append(item)
+                continue
+            resolved = self._resolve_root(str(item.get("relative_path") or f"data/sites/{wanted}"))
+            if resolved != expected:
+                raise SiteStorageError("SITE_REGISTRY_CONFLICT", "Registry 局点路径与清理目标不一致")
+            removed = True
+        if not removed:
+            raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
+        _atomic_json(self.path, {"schema_version": 1, "updated_at": _now(), "sites": retained})
+
     def _load(self) -> dict[str, object]:
         if not self.path.exists():
             return {"schema_version": 1, "sites": []}
@@ -326,21 +350,56 @@ class SiteApplicationService:
 
     def list_sites(self) -> list[dict[str, object]]:
         active = self.active_site_id()
+        from netconsole.services.site_lifecycle import SiteAuditService
+
+        latest = SiteAuditService(self.paths).latest() or {}
+        audits = {str(item.get("site_id") or ""): item for item in latest.get("sites", []) if isinstance(item, dict)}
         return [
             {
                 **item.to_public(include_path=persistent_storage()),
                 "active": item.site_id == active,
                 "size_bytes": _directory_size(item.root_path),
+                **self._lifecycle_summary(item, audits.get(item.site_id), str(latest.get("generated_at") or "")),
             }
             for item in self.registry.list()
         ]
 
     def get_site(self, site_id: str) -> dict[str, object]:
         item = self.registry.get(site_id)
+        from netconsole.services.site_lifecycle import SiteAuditService
+
+        latest = SiteAuditService(self.paths).latest() or {}
+        audit = next((value for value in latest.get("sites", []) if isinstance(value, dict) and value.get("site_id") == item.site_id), None)
         return {
             **item.to_public(include_path=persistent_storage()),
             "active": item.site_id == self.active_site_id(),
             "size_bytes": _directory_size(item.root_path),
+            **self._lifecycle_summary(item, audit, str(latest.get("generated_at") or "")),
+        }
+
+    def _lifecycle_summary(self, item: SiteRecord, audit: dict[str, object] | None, audited_at: str) -> dict[str, object]:
+        metadata = self.manager.load_site_metadata(item.root_path.name)
+        managed_demo = bool(metadata.get("managed_demo") is True)
+        if audit:
+            database_files = audit.get("database_files") or []
+            integrity = "ok" if database_files and all(value.get("quick_check") == "ok" for value in database_files if isinstance(value, dict)) else "unknown"
+            classification = str(audit.get("classification") or "unknown")
+            migration_status = str(audit.get("migration_status") or "unknown")
+            recommended_action = str(audit.get("recommended_action") or "keep_and_review")
+        else:
+            integrity = "unknown"
+            classification = "managed_demo" if managed_demo else "legacy_demo" if item.site_id == DEFAULT_SITE else "legacy_valid" if item.site_id.startswith("legacy-") else "normal_site"
+            migration_status = str(metadata.get("migration_status") or ("managed" if managed_demo else "not_audited"))
+            recommended_action = "audit_required"
+        return {
+            "site_kind": "demo" if item.site_id == DEFAULT_SITE else "legacy" if item.site_id.startswith("legacy-") else "formal",
+            "classification": classification,
+            "managed_demo": managed_demo,
+            "demo_seed_version": str(metadata.get("seed_version") or ""),
+            "migration_status": migration_status,
+            "data_integrity": integrity,
+            "recommended_action": recommended_action,
+            "audited_at": audited_at if audit else "",
         }
 
     def active_site_id(self) -> str:

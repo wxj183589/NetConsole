@@ -45,7 +45,64 @@ class SiteTaskResponse(ApiModel):
     task_type: str
 
 
+class SiteCleanupApplyRequest(ApiModel):
+    cleanup_token: str = Field(min_length=16, max_length=128)
+    confirmed: bool = False
+
+
+class SiteCleanupRestoreRequest(ApiModel):
+    confirmed: bool = False
+
+
+class SiteDemoRebuildRequest(ApiModel):
+    confirmed: bool = False
+    allow_user_data: bool = False
+
+
+class SiteAuditSummaryResponse(ApiModel):
+    display_name: str
+    site_id: str
+    total_size: int
+    file_count: int
+    directory_count: int
+    is_current: bool
+    is_registered: bool
+    is_referenced_by_bootstrap: bool
+    is_demo: bool
+    managed_demo: bool
+    demo_seed_version: str
+    migration_status: str
+    raw_log_count: int
+    parsed_database_count: int
+    report_count: int
+    artifact_count: int
+    task_count: int
+    online_mr_session_count: int
+    mesh_source_count: int
+    unique_business_data: bool
+    duplicate_candidates: list[str]
+    referenced_records: list[str]
+    classification: str
+    recommended_action: str
+    can_delete: bool
+    safe_to_replace: bool
+    demo_pristine: bool = False
+    legacy_demo_replaceable: bool = False
+    unsafe_entry_count: int = 0
+    unknown_file_count: int = 0
+
+
+class SiteCleanupPlanResponse(ApiModel):
+    cleanup_token: str
+    site_id: str
+    classification: str
+    blocking_reasons: list[str]
+    recoverable: bool
+    can_delete: bool
+
+
 __all__ = [
     "DataRootPathRequest", "SiteActivateRequest", "SiteCreateRequest", "SiteExportRequest",
     "SiteImportInspectRequest", "SiteImportRequest", "SiteMigrateRequest", "SiteTaskResponse",
+    "SiteCleanupApplyRequest", "SiteCleanupRestoreRequest", "SiteDemoRebuildRequest", "SiteAuditSummaryResponse", "SiteCleanupPlanResponse",
 ]

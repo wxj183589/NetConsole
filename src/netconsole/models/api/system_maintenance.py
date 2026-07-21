@@ -63,6 +63,11 @@ class MaintenanceTaskDTO(ApiModel):
     deleted_files: int = 0
     failed_count: int = 0
     freed_bytes: int = 0
+    deleted_log_records: int = 0
+    scanned_log_records: int = 0
+    malformed_log_records: int = 0
+    rewritten_log_files: int = 0
+    cutoff: str = ""
     components: list[OpenSourceComponentDTO] = Field(default_factory=list)
 
 

@@ -9,3 +9,32 @@ Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解�
 新建流程为：校验 ID/名称、创建 staging、初始化必要数据库和默认设备组、写 `site_meta.json`、执行 SQLite `quick_check`、原子发布、注册 Registry。失败清理 staging，不改变当前局点。
 
 切换前必须确认当前局点没有 `PENDING/STARTING/RUNNING/STOPPING` 任务。切换更新现有应用配置并返回 `restart_required=true`，Electron 随后重启 Backend，使所有 Service 使用同一 SiteContext；不会自动停止任务或连接设备。
+
+## Legacy 与 Demo 审计
+
+局点回收前必须先运行只读审计。审计统计目录与文件大小、逐文件 SHA-256、SQLite `quick_check` 和表行数，并核对 Registry、当前局点、最近局点及 Electron bootstrap 引用；它只生成 manifest，不把“目录很小”或“名称像旧数据”直接解释为可删除授权。系统设置中的“审计”进入 Task Center，维护命令为：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --site-id demo
+```
+
+默认 manifest 写入 `<data_root>/migrations/site-audits/`；也可通过 `--output` 指定报告文件。报告中的 `active_site`、`managed_demo`、`legacy_demo`、`empty_shell`、`legacy_alias`、`legacy_valid` 和 `normal_site` 是审计分类，不是删除指令。存在业务表记录、raw、parsed、报告/Artifact、当前局点或 bootstrap 引用时必须保留并人工复核。
+
+## 二阶段安全回收
+
+只有审计确认无独有业务数据且不属于当前局点、bootstrap 当前引用的局点，才允许进入二阶段回收：
+
+1. `prepare` 只接受最近一次正式审计 manifest，生成一次性 token、文件 manifest、引用清单、阻断原因和审计 manifest 哈希，不在同步请求中重新扫描目录，也不移动目录。
+2. 用户确认后，`apply` 逐文件复核大小与 SHA-256；任一文件变化即拒绝执行，要求重新审计。
+3. 通过复核后，原目录只移动到 `<data_root>/archive/site-recycle/<site_id>-<token>/site/`，同时注销精确 Registry 记录并清理 `recent_sites` 引用，不做永久删除。
+
+回收目录保留 Registry、应用配置备份和 `tombstone.json`。执行中任一步失败会恢复原目录、Registry 和应用配置；成功后的 tombstone 可在 30 天内通过 `POST /api/v1/sites/recycle/{cleanup_token}/restore` 进入 Task Center 恢复，恢复后 token 失效。当前没有“永久清空回收区”或任意路径恢复入口，不得手工删除或移动受控回收目录。
+
+## 受控 Demo
+
+Demo 不是长期业务数据容器。受控重建在 `<data_root>/temp/demo-seed/` staging 中使用当前 SQLite Schema、Repository 和 MESH parser 生成少量脱敏示例，写入 `managed_demo=true` 和 seed 版本，且不预置 Task Center 历史。发布前总大小必须小于 `50 MB`；超过上限即拒绝发布。
+
+旧 Demo 默认先审计。只有已标记的受控 Demo 或命中已知旧 Demo 事实集时才允许直接替换；疑似包含用户数据时默认拒绝，必须先完成独立备份与明确确认。重建时旧 Demo 移入 `<data_root>/archive/demo-recycle/` 并保留 manifest/tombstone 与恢复材料，staging 成功发布后才更新 Registry；失败必须恢复旧 Demo 和配置状态。
+
+局点审计、回收和 Demo 重建只允许在 `persistent` Desktop 会话中调用，且执行写操作前检查全局活动任务。`isolated_test` 只用于临时 UI/API 仿真，相关写 API 返回只读错误，不得读取、修改或借用正式数据根、Registry 与 bootstrap。

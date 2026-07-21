@@ -1,16 +1,36 @@
 from __future__ import annotations
 
+import fnmatch
+import json
+import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
 
 from netconsole.core.paths import PathResolver
+from netconsole.core import app_logger
+from netconsole.core.interprocess_lock import interprocess_file_lock
 
 
 APP_CLEANUP_RETENTION_DAYS = 3
-APP_LOG_PATTERNS = ("*.log", "*.log.*", "netconsole_*.log", "runtime_*.log", "app_*.log", "ui_*.log")
+AUTO_CLEANUP_INTERVAL = timedelta(hours=24)
+AUTO_CLEANUP_RUNNING_TIMEOUT = timedelta(hours=6)
+APP_LOG_PATTERNS = (
+    "app.log",
+    "app-*.log",
+    "app_*.log",
+    "app.log.*",
+    "netconsole_*.log",
+    "runtime_*.log",
+    "ui_*.log",
+    "electron_*.log",
+    "backend_*.log",
+    "renderer_*.log",
+)
 CLEANUP_ITEM_IDS = ("runtime_logs", "runtime_cache", "temporary_files")
+AUTO_CLEANUP_ITEM_IDS = ("runtime_logs",)
 _RUNTIME_CACHE_SUBDIRS = ("thumbnails", "chart_cache", "preview_cache")
 _TEMPORARY_SUBDIRS = ("tmp", "temp", "export_tmp", "download_tmp")
 _PROTECTED_RUNTIME_SUBDIRS = frozenset(
@@ -36,6 +56,8 @@ class CleanupCandidate:
     path: Path
     size: int
     is_log: bool
+    expired_records: int = 0
+    malformed_records: int = 0
 
 
 @dataclass
@@ -63,6 +85,9 @@ class AppCleanupResult:
     deleted_log_files: int = 0
     deleted_cache_files: int = 0
     deleted_log_records: int = 0
+    scanned_log_records: int = 0
+    malformed_log_records: int = 0
+    rewritten_log_files: int = 0
     freed_bytes: int = 0
     processed_files: int = 0
     failures: list[CleanupFailure] = field(default_factory=list)
@@ -79,7 +104,9 @@ class AppCleanupResult:
         return (
             f"retention_days={self.retention_days} cutoff={self.cutoff.strftime('%Y-%m-%d %H:%M:%S')} "
             f"deleted_log_files={self.deleted_log_files} deleted_cache_files={self.deleted_cache_files} "
-            f"deleted_log_records={self.deleted_log_records} failed={self.failed_count} freed_bytes={self.freed_bytes}"
+            f"deleted_log_records={self.deleted_log_records} scanned_log_records={self.scanned_log_records} "
+            f"malformed_log_records={self.malformed_log_records} rewritten_log_files={self.rewritten_log_files} "
+            f"failed={self.failed_count} freed_bytes={self.freed_bytes}"
         )
 
 
@@ -129,40 +156,43 @@ class AppCleanupService:
         should_cancel: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
     ) -> AppCleanupResult:
-        days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
-        cutoff = datetime.now() - timedelta(days=days)
-        result = AppCleanupResult(retention_days=days, cutoff=cutoff)
-        self.validate_item_ids(item.item_id for item in items)
-        allowed_dirs_by_item = {
-            "runtime_logs": _existing_dirs([self.paths.logs_dir]),
-            "runtime_cache": _existing_dirs(self._runtime_cache_dirs()),
-            "temporary_files": _existing_dirs(self._temporary_dirs()),
-        }
-        total = sum(item.file_count for item in items)
-        seen: set[Path] = set()
-        for item in items:
-            allowed_dirs = allowed_dirs_by_item[item.item_id]
-            for candidate in item.candidates:
-                if should_cancel is not None:
-                    should_cancel()
-                resolved = _safe_resolve(candidate.path)
-                if resolved is None or resolved in seen:
-                    continue
-                seen.add(resolved)
-                refreshed = _candidate_for_file(
-                    resolved,
-                    cutoff,
-                    allowed_dirs,
-                    is_log=candidate.is_log,
-                )
-                if refreshed is None:
-                    continue
-                _delete_file(refreshed.path, result, is_log=refreshed.is_log)
-                result.processed_files += 1
-                if progress_callback is not None:
-                    progress_callback(result.processed_files, total, result)
-        _remove_empty_dirs(_existing_dirs([*self._runtime_cache_dirs(), *self._temporary_dirs()]))
-        return result
+        with interprocess_file_lock(_cleanup_operation_lock_path(self.paths)):
+            days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
+            cutoff = datetime.now() - timedelta(days=days)
+            result = AppCleanupResult(retention_days=days, cutoff=cutoff)
+            self.validate_item_ids(item.item_id for item in items)
+            allowed_dirs_by_item = {
+                "runtime_logs": _existing_dirs([self.paths.logs_dir]),
+                "runtime_cache": _existing_dirs(self._runtime_cache_dirs()),
+                "temporary_files": _existing_dirs(self._temporary_dirs()),
+            }
+            total = sum(item.file_count for item in items)
+            seen: set[Path] = set()
+            for item in items:
+                allowed_dirs = allowed_dirs_by_item[item.item_id]
+                for candidate in item.candidates:
+                    if should_cancel is not None:
+                        should_cancel()
+                    resolved = _safe_resolve(candidate.path)
+                    if resolved is None or resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    refreshed = (
+                        _log_candidate_for_file(resolved, cutoff, allowed_dirs)
+                        if candidate.is_log
+                        else _candidate_for_file(resolved, cutoff, allowed_dirs, is_log=False)
+                    )
+                    if refreshed is None:
+                        continue
+                    if refreshed.is_log:
+                        _cleanup_log_file(refreshed.path, cutoff, result, active_log=self.paths.app_log_path)
+                    else:
+                        _delete_file(refreshed.path, result, is_log=False)
+                    result.processed_files += 1
+                    if progress_callback is not None:
+                        progress_callback(result.processed_files, total, result)
+            _remove_empty_dirs(_existing_dirs([*self._runtime_cache_dirs(), *self._temporary_dirs()]))
+            return result
 
     def cleanup_selected(
         self,
@@ -195,8 +225,7 @@ class AppCleanupService:
         return values
 
     def auto_cleanup(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
-        items = self.scan_cleanup_items(retention_days)
-        result = self.cleanup_items(items, retention_days)
+        _items, result = self.cleanup_selected(AUTO_CLEANUP_ITEM_IDS, retention_days)
         _emit_cleanup_log(result)
         return result
 
@@ -204,12 +233,11 @@ class AppCleanupService:
         candidates: list[CleanupCandidate] = []
         seen: set[Path] = set()
         allowed_dirs = _existing_dirs([self.paths.logs_dir])
-        active_log = _safe_resolve(self.paths.app_log_path)
         for directory in allowed_dirs:
             for pattern in APP_LOG_PATTERNS:
                 for file_path in directory.glob(pattern):
-                    candidate = _candidate_for_file(file_path, cutoff, allowed_dirs, is_log=True)
-                    if candidate is None or candidate.path == active_log or candidate.path in seen:
+                    candidate = _log_candidate_for_file(file_path, cutoff, allowed_dirs)
+                    if candidate is None or candidate.path in seen:
                         continue
                     seen.add(candidate.path)
                     candidates.append(candidate)
@@ -245,10 +273,107 @@ class AppCleanupService:
 
 def run_app_auto_cleanup(paths: PathResolver, retention_days: int = APP_CLEANUP_RETENTION_DAYS, *, emit_log: bool = True) -> AppCleanupResult:
     service = AppCleanupService(paths)
-    result = service.cleanup_items(service.scan_cleanup_items(retention_days), retention_days)
+    _items, result = service.cleanup_selected(AUTO_CLEANUP_ITEM_IDS, retention_days)
     if emit_log:
         _emit_cleanup_log(result)
     return result
+
+
+def claim_auto_cleanup(paths: PathResolver, task_id: str, *, now: datetime | None = None) -> bool:
+    current = now or datetime.now()
+    with interprocess_file_lock(_auto_cleanup_schedule_lock_path(paths)):
+        state = _read_auto_cleanup_state(paths)
+        last_success = _parse_state_time(state.get("last_success_time"))
+        if last_success is not None and current - last_success < AUTO_CLEANUP_INTERVAL:
+            return False
+        running_since = _parse_state_time(state.get("running_since"))
+        if (
+            state.get("status") == "running"
+            and running_since is not None
+            and current - running_since < AUTO_CLEANUP_RUNNING_TIMEOUT
+        ):
+            return False
+        _write_auto_cleanup_state(
+            paths,
+            {
+                "schema_version": 1,
+                "status": "running",
+                "task_id": str(task_id),
+                "running_since": current.isoformat(timespec="seconds"),
+                "last_success_time": str(state.get("last_success_time") or ""),
+            },
+        )
+    return True
+
+
+def finish_auto_cleanup(
+    paths: PathResolver,
+    task_id: str,
+    *,
+    succeeded: bool,
+    now: datetime | None = None,
+) -> None:
+    current = now or datetime.now()
+    with interprocess_file_lock(_auto_cleanup_schedule_lock_path(paths)):
+        state = _read_auto_cleanup_state(paths)
+        if str(state.get("task_id") or "") != str(task_id):
+            return
+        _write_auto_cleanup_state(
+            paths,
+            {
+                "schema_version": 1,
+                "status": "succeeded" if succeeded else "failed",
+                "task_id": str(task_id),
+                "finished_time": current.isoformat(timespec="seconds"),
+                "last_success_time": (
+                    current.isoformat(timespec="seconds")
+                    if succeeded
+                    else str(state.get("last_success_time") or "")
+                ),
+            },
+        )
+
+
+def _read_auto_cleanup_state(paths: PathResolver) -> dict[str, object]:
+    try:
+        value = json.loads(_auto_cleanup_state_path(paths).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _write_auto_cleanup_state(paths: PathResolver, value: dict[str, object]) -> None:
+    path = _auto_cleanup_state_path(paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _parse_state_time(value: object) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+
+
+def _auto_cleanup_state_path(paths: PathResolver) -> Path:
+    return paths.runtime_dir / "app_auto_cleanup_state.json"
+
+
+def _auto_cleanup_schedule_lock_path(paths: PathResolver) -> Path:
+    return paths.runtime_dir / "locks" / "app-auto-cleanup-schedule.lock"
+
+
+def _cleanup_operation_lock_path(paths: PathResolver) -> Path:
+    return paths.runtime_dir / "locks" / "app-cleanup-operation.lock"
 
 
 def _existing_dirs(paths: list[Path]) -> list[Path]:
@@ -303,6 +428,107 @@ def _candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path], 
     except OSError:
         size = 0
     return CleanupCandidate(path=resolved, size=size, is_log=is_log)
+
+
+def _log_candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path]) -> CleanupCandidate | None:
+    resolved = _safe_resolve(path)
+    if (
+        resolved is None
+        or not resolved.is_file()
+        or not _is_relative_to_any(resolved, allowed_dirs)
+        or not _is_allowed_runtime_log_name(resolved.name)
+    ):
+        return None
+    scanned, expired, malformed = _scan_log_records(resolved, cutoff)
+    if expired == 0:
+        return None
+    try:
+        size = resolved.stat().st_size
+    except OSError:
+        size = 0
+    return CleanupCandidate(
+        path=resolved,
+        size=size,
+        is_log=True,
+        expired_records=expired,
+        malformed_records=malformed,
+    )
+
+
+def _scan_log_records(path: Path, cutoff: datetime) -> tuple[int, int, int]:
+    scanned = 0
+    expired = 0
+    malformed = 0
+    try:
+        with path.open("rb") as handle:
+            for raw_line in handle:
+                scanned += 1
+                timestamp = _record_time(raw_line)
+                if timestamp is None:
+                    malformed += 1
+                elif timestamp < cutoff:
+                    expired += 1
+    except OSError:
+        return 0, 0, 1
+    return scanned, expired, malformed
+
+
+def _cleanup_log_file(path: Path, cutoff: datetime, result: AppCleanupResult, *, active_log: Path) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    old_size = path.stat().st_size
+    scanned = 0
+    deleted = 0
+    malformed = 0
+    retained = 0
+    lock_path = app_logger.log_lock_path(active_log)
+    try:
+        with interprocess_file_lock(lock_path):
+            with path.open("rb") as source, temporary.open("wb") as target:
+                for raw_line in source:
+                    scanned += 1
+                    timestamp = _record_time(raw_line)
+                    if timestamp is None:
+                        malformed += 1
+                        target.write(raw_line)
+                        retained += len(raw_line)
+                    elif timestamp < cutoff:
+                        deleted += 1
+                    else:
+                        target.write(raw_line)
+                        retained += len(raw_line)
+                target.flush()
+                os.fsync(target.fileno())
+            if deleted == 0:
+                temporary.unlink(missing_ok=True)
+                result.scanned_log_records += scanned
+                result.malformed_log_records += malformed
+                return
+            if path.resolve() != active_log.resolve() and retained == 0:
+                path.unlink()
+                temporary.unlink(missing_ok=True)
+                result.deleted_log_files += 1
+            else:
+                os.replace(temporary, path)
+                result.rewritten_log_files += 1
+            result.scanned_log_records += scanned
+            result.deleted_log_records += deleted
+            result.malformed_log_records += malformed
+            result.freed_bytes += max(0, old_size - retained)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        result.failures.append(CleanupFailure(str(path), str(exc)))
+
+
+def _record_time(raw_line: bytes) -> datetime | None:
+    try:
+        return datetime.strptime(raw_line[:19].decode("ascii"), "%Y-%m-%d %H:%M:%S")
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _is_allowed_runtime_log_name(name: str) -> bool:
+    value = name.casefold()
+    return any(fnmatch.fnmatchcase(value, pattern.casefold()) for pattern in APP_LOG_PATTERNS)
 
 
 def _delete_file(path: Path, result: AppCleanupResult, *, is_log: bool) -> None:

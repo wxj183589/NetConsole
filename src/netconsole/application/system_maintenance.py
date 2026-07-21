@@ -28,7 +28,12 @@ from netconsole.models.api.system_maintenance import (
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.app_auto_cleanup import AppCleanupService, CLEANUP_ITEM_IDS
+from netconsole.services.app_auto_cleanup import (
+    AUTO_CLEANUP_ITEM_IDS,
+    AppCleanupService,
+    claim_auto_cleanup,
+    finish_auto_cleanup,
+)
 from netconsole.services.export.export_task_builders import app_logs_csv_spec, open_source_notices_spec
 from netconsole.services.export.export_task_builders import ExportTaskSpec
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
@@ -165,7 +170,7 @@ class SystemMaintenanceApplicationService:
         selected_item_ids: list[str] | tuple[str, ...] = (),
         confirmed: bool = False,
         automatic: bool = False,
-    ) -> MaintenanceTaskDTO:
+    ) -> MaintenanceTaskDTO | None:
         site_id = self._site(site_id)
         days = int(retention_days)
         if not 1 <= days <= 365:
@@ -174,7 +179,7 @@ class SystemMaintenanceApplicationService:
         if automatic:
             if dry_run:
                 raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "自动清理不能使用扫描模式")
-            selected = list(CLEANUP_ITEM_IDS)
+            selected = list(AUTO_CLEANUP_ITEM_IDS)
             confirmed = True
         if dry_run:
             if selected or confirmed:
@@ -188,26 +193,34 @@ class SystemMaintenanceApplicationService:
                 raise SystemMaintenanceError("CLEANUP_ITEMS_INVALID", str(exc)) from exc
         task_id = f"system-maintenance-{uuid4().hex}"
         action = "cleanup_scan" if dry_run else ("cleanup_auto" if automatic else "cleanup_clean")
-        name = {"cleanup_scan": "扫描日志与缓存", "cleanup_clean": "安全清理日志与缓存", "cleanup_auto": "自动安全清理"}[action]
-        self.process_adapter.start_job(
-            BackgroundJob(
-                job_id=task_id,
-                task_type="system_maintenance_cleanup",
-                params={
-                    "site_name": site_id,
-                    "task_name": name,
-                    "owner": self._OWNER,
-                    "task_source": "local",
-                    "app_root": str(self.paths.app_root),
-                    "data_root": str(self.paths.data_root),
-                    "retention_days": days,
-                    "dry_run": dry_run,
-                    "selected_item_ids": selected,
-                    "confirmed": bool(confirmed),
-                    "_cancel_grace_ms": 3_000,
-                },
+        name = {"cleanup_scan": "扫描日志与缓存", "cleanup_clean": "安全清理日志与缓存", "cleanup_auto": "自动清理软件运行日志"}[action]
+        if automatic and not claim_auto_cleanup(self.paths, task_id):
+            return None
+        try:
+            self.process_adapter.start_job(
+                BackgroundJob(
+                    job_id=task_id,
+                    task_type="system_maintenance_cleanup",
+                    params={
+                        "site_name": site_id,
+                        "task_name": name,
+                        "owner": self._OWNER,
+                        "task_source": "local",
+                        "app_root": str(self.paths.app_root),
+                        "data_root": str(self.paths.data_root),
+                        "retention_days": days,
+                        "dry_run": dry_run,
+                        "selected_item_ids": selected,
+                        "confirmed": bool(confirmed),
+                        "automatic": automatic,
+                        "_cancel_grace_ms": 3_000,
+                    },
+                )
             )
-        )
+        except Exception:
+            if automatic:
+                finish_auto_cleanup(self.paths, task_id, succeeded=False)
+            raise
         return self.get_task(site_id, task_id)
 
     def start_open_source_scan(self, site_id: str) -> MaintenanceTaskDTO:
@@ -247,6 +260,7 @@ class SystemMaintenanceApplicationService:
         spec = app_logs_csv_spec(
             reservation.output_path,
             log_path=self.paths.app_log_path,
+            log_paths=app_logger.log_files(self.paths.app_log_path),
             keyword=keyword or None,
             level=level or None,
             offset=(page - 1) * page_size if scope == "current" else 0,
@@ -469,6 +483,7 @@ class SystemMaintenanceApplicationService:
             "扫描日志与缓存": "cleanup_scan",
             "安全清理日志与缓存": "cleanup_clean",
             "自动安全清理": "cleanup_auto",
+            "自动清理软件运行日志": "cleanup_auto",
             "扫描开源依赖": "open_source_scan",
         }.get(snapshot.task_name, snapshot.task_type)
         return MaintenanceTaskDTO(
@@ -490,6 +505,11 @@ class SystemMaintenanceApplicationService:
             deleted_files=int(result.get("deleted_files") or progress_details.get("deleted_files") or 0),
             failed_count=int(result.get("failed_count") or progress_details.get("failed_count") or 0),
             freed_bytes=int(result.get("freed_bytes") or progress_details.get("freed_bytes") or 0),
+            deleted_log_records=int(result.get("deleted_log_records") or progress_details.get("deleted_log_records") or 0),
+            scanned_log_records=int(result.get("scanned_log_records") or progress_details.get("scanned_log_records") or 0),
+            malformed_log_records=int(result.get("malformed_log_records") or progress_details.get("malformed_log_records") or 0),
+            rewritten_log_files=int(result.get("rewritten_log_files") or progress_details.get("rewritten_log_files") or 0),
+            cutoff=str(result.get("cutoff") or ""),
             components=components,
         )
 
@@ -506,7 +526,16 @@ class SystemMaintenanceApplicationService:
                 continue
             return {
                 key: _nonnegative_int(details.get(key))
-                for key in ("processed_files", "deleted_files", "failed_count", "freed_bytes")
+                for key in (
+                    "processed_files",
+                    "deleted_files",
+                    "failed_count",
+                    "freed_bytes",
+                    "deleted_log_records",
+                    "scanned_log_records",
+                    "malformed_log_records",
+                    "rewritten_log_files",
+                )
             }
         return {}
 

@@ -104,7 +104,7 @@ Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development
 - `<data_root>/tmp`：手工临时样本和一次性导出；
 - 打包态优先使用 `%LOCALAPPDATA%\NetConsole\`，不依赖安装目录或当前工作目录。
 
-正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 只作为历史迁移源保留；活动进程不得读写。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
+正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源；活动进程不得读写，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
 ## 7. 测试目录规则
 

@@ -25,6 +25,7 @@ const api = vi.hoisted(() => ({
 }))
 const confirmDialog = vi.hoisted(() => vi.fn())
 const downloadBackendResource = vi.hoisted(() => vi.fn())
+const openTaskWindow = vi.hoisted(() => vi.fn())
 const messages = vi.hoisted(() => ({
   error: vi.fn(),
   success: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock('../../api/systemMaintenance', async (importOriginal) => ({
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource,
-  getPlatformAdapter: () => ({ openExternalUrl: vi.fn() }),
+  getPlatformAdapter: () => ({ openExternalUrl: vi.fn(), openTaskWindow }),
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmDialog }) }))
 vi.mock('element-plus', async (importOriginal) => ({
@@ -117,6 +118,19 @@ const CheckboxStub = defineComponent({
     })
   },
 })
+const PaginationStub = defineComponent({
+  name: 'ElPagination',
+  props: { currentPage: Number, pageSize: Number, total: Number },
+  emits: ['update:current-page', 'update:page-size', 'change'],
+  setup(props) {
+    return () => h('div', {
+      class: 'el-pagination-stub',
+      'data-current-page': props.currentPage,
+      'data-page-size': props.pageSize,
+      'data-total': props.total,
+    })
+  },
+})
 const SlotStub = defineComponent({
   inheritAttrs: false,
   setup(_props, { attrs, slots }) {
@@ -146,6 +160,7 @@ describe('SystemMaintenanceView mounted workflow', () => {
     })
     confirmDialog.mockResolvedValue(true)
     downloadBackendResource.mockResolvedValue({ status: 'saved' })
+    openTaskWindow.mockResolvedValue({ success: true })
   })
 
   it('scans with retention only and submits selected cleanup after confirmation', async () => {
@@ -206,6 +221,8 @@ describe('SystemMaintenanceView mounted workflow', () => {
     const wrapper = await mountView()
 
     expect(wrapper.text()).toContain('后台任务 · cleanup_clean')
+    expect(wrapper.find('.task-status--active').exists()).toBe(true)
+    expect(wrapper.find('.task-status--terminal').exists()).toBe(false)
     await button(wrapper, '取消').trigger('click')
     await flushPromises()
 
@@ -218,6 +235,10 @@ describe('SystemMaintenanceView mounted workflow', () => {
 
     await button(wrapper, '导出 TXT').trigger('click')
     await flushPromises()
+    expect(wrapper.find('.task-status--terminal').exists()).toBe(true)
+    expect(wrapper.find('.task-status--active').exists()).toBe(false)
+    expect(wrapper.text()).toContain('最近任务 · open_source_txt')
+    expect(wrapper.findAll('button').some((item) => item.text().trim() === '取消')).toBe(false)
     await button(wrapper, '下载 Artifact').trigger('click')
     await flushPromises()
 
@@ -229,6 +250,52 @@ describe('SystemMaintenanceView mounted workflow', () => {
       apiPath: '/api/system-maintenance/artifacts/open_source_txt/artifact-1',
       suggestedName: 'open_source_notices.txt',
     })
+    wrapper.unmount()
+  })
+
+  it('uses the backend-provided Chinese event text and a flexible log table host', async () => {
+    api.getLogs.mockResolvedValueOnce({
+      items: [{
+        time: '2026-07-21T10:00:00+08:00',
+        level: 'INFO',
+        display_level: '信息',
+        display_event: '后端提供的中文事件',
+        display_detail: '界面已启动',
+        raw_event: 'UNMAPPED_EVENT_CODE',
+        raw_detail: 'raw detail',
+      }],
+      page: 1,
+      page_size: 200,
+      total: 1,
+      total_pages: 1,
+    })
+
+    const wrapper = await mountView()
+    const logTable = wrapper.find('.log-table-host .nc-data-table')
+
+    expect(wrapper.text()).toContain('后端提供的中文事件')
+    expect(wrapper.text()).not.toContain('未知事件：UNMAPPED_EVENT_CODE')
+    expect(wrapper.find('.log-table-host').exists()).toBe(true)
+    expect(logTable.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('refreshes logs and corrects an invalid page after cleanup completes', async () => {
+    api.recoverMaintenanceTasks.mockResolvedValue([task({ action: 'cleanup_scan', cleanup_items: cleanupItems })])
+    api.getLogs
+      .mockResolvedValueOnce({ items: [], page: 9, page_size: 200, total: 1800, total_pages: 9 })
+      .mockResolvedValueOnce({ items: [], page: 9, page_size: 200, total: 60, total_pages: 1 })
+      .mockResolvedValueOnce({ items: [], page: 1, page_size: 200, total: 60, total_pages: 1 })
+    api.startCleanup.mockResolvedValueOnce(task({ action: 'cleanup_clean', status: 'COMPLETED' }))
+    const wrapper = await mountView()
+
+    await button(wrapper, '清理所选项目').trigger('click')
+    await flushPromises()
+
+    expect(api.getLogs).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 9 }))
+    expect(api.getLogs).toHaveBeenNthCalledWith(3, expect.objectContaining({ page: 1 }))
+    expect(wrapper.find('.el-pagination-stub').attributes('data-current-page')).toBe('1')
+    expect(wrapper.find('.el-pagination-stub').attributes('data-total')).toBe('60')
     wrapper.unmount()
   })
 })
@@ -247,7 +314,7 @@ async function mountView(): Promise<VueWrapper> {
         ElInput: SlotStub,
         ElInputNumber: SlotStub,
         ElOption: SlotStub,
-        ElPagination: SlotStub,
+        ElPagination: PaginationStub,
         ElProgress: SlotStub,
         ElSelect: SlotStub,
         ElTabPane: SlotStub,
@@ -282,6 +349,11 @@ function task(overrides: Partial<MaintenanceTask> = {}): MaintenanceTask {
     deleted_files: 0,
     failed_count: 0,
     freed_bytes: 0,
+    deleted_log_records: 0,
+    scanned_log_records: 0,
+    malformed_log_records: 0,
+    rewritten_log_files: 0,
+    cutoff: '',
     components: [],
     ...overrides,
   }

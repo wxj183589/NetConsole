@@ -182,7 +182,7 @@ def copy_file_export(path: Path, payload: Mapping[str, Any], progress: ProgressC
 
 def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
     from netconsole.services.log_display import display_log_row
-    from netconsole.core.log_pagination import iter_logs
+    from netconsole.core.log_pagination import iter_logs_from_paths
 
     log_path = Path(str(payload.get("log_path") or ""))
     keyword = str(payload.get("keyword") or "").strip() or None
@@ -191,6 +191,11 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
     limit = max(0, int(payload.get("limit") or 0))
     snapshot_value = payload.get("snapshot_size")
     snapshot_size = None if snapshot_value in (None, "") else max(0, int(snapshot_value))
+    log_paths, snapshot_sizes = _resolve_app_log_snapshots(
+        log_path,
+        payload.get("log_files"),
+        fallback_size=snapshot_size,
+    )
     redact_web = bool(payload.get("redact_web"))
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -199,12 +204,12 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
         writer = csv.writer(handle)
         writer.writerow(["时间", "级别", "事件", "详情", "原始事件", "原始详情"])
         for matched_index, row in enumerate(
-            iter_logs(
-                log_path,
+            iter_logs_from_paths(
+                log_paths,
                 keyword=keyword,
                 level=level,
                 parser=_parse_log_line,
-                max_bytes=snapshot_size,
+                max_bytes_by_path=snapshot_sizes,
             )
         ):
             if matched_index < offset:
@@ -231,6 +236,42 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
                 _emit(progress, "write_logs", count, 0, f"正在导出日志 {count} 条")
                 _check_cancel(should_cancel)
     return count
+
+
+def _resolve_app_log_snapshots(
+    active_path: Path,
+    value: object,
+    *,
+    fallback_size: int | None,
+) -> tuple[list[Path], dict[Path, int | None]]:
+    try:
+        root = active_path.resolve().parent
+    except OSError:
+        root = active_path.parent
+    rows = value if isinstance(value, list) else []
+    paths: list[Path] = []
+    sizes: dict[Path, int | None] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            candidate = Path(str(row.get("path") or "")).resolve()
+        except OSError:
+            continue
+        if candidate.parent != root or not (
+            candidate.name == "app.log"
+            or (candidate.name.startswith("app-") and candidate.name.endswith(".log"))
+        ):
+            continue
+        if candidate in sizes:
+            continue
+        paths.append(candidate)
+        sizes[candidate] = max(0, int(row.get("size") or 0))
+    if not paths:
+        candidate = active_path.resolve()
+        paths = [candidate]
+        sizes[candidate] = fallback_size
+    return paths, sizes
 
 
 def export_open_source_notices(

@@ -127,7 +127,7 @@ def device_status_refresh(context: JobContext) -> dict[str, object]:
 HANDLERS["device_status_refresh"] = device_status_refresh
 ```
 
-应用日志与安全维护复用 `system_maintenance_cleanup`：扫描只返回白名单候选，正式清理必须携带 1～365 天、非空且不重复的类别白名单和明确确认。Worker 删除前重新扫描，并在每项后写带 `details` 的标准进度；取消保留未处理文件。CSV/TXT/XLSX 通过现有 Export Process 和公共 `WebArtifactStore` 最终化，Task DTO 与 Renderer 只获得安全显示名和 Artifact ID，不获得服务端物理路径。
+应用日志与安全维护复用 `system_maintenance_cleanup`：扫描只返回白名单候选，正式清理必须携带 1～365 天、非空且不重复的类别白名单和明确确认。自动模式固定只选择 `runtime_logs`，不自动清理缓存、临时文件或任何局点业务日志；同一数据根使用跨进程认领，成功后 24 小时内不重复提交，持续运行的 Backend 每 24 小时复查。Worker 按每条记录时间流式过滤当前日志，删除前重新扫描，并在每项后写带 `details` 的标准进度；取消保留未处理文件。CSV/TXT/XLSX 通过现有 Export Process 和公共 `WebArtifactStore` 最终化，Task DTO 与 Renderer 只获得安全显示名和 Artifact ID，不获得服务端物理路径。
 
 ## 从 Vue 提交普通任务
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PROTECTED_CATEGORIES = {"database", "config_center", "file_manager", "rail_transit", "network_tools", "backups", "config"}
-CLEANABLE_CATEGORIES = {"cache", "debug_logs"}
+CLEANABLE_CATEGORIES = {"cache"}
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ def scan_data_disk(data_dir: Path, runtime_dir: Path | None = None) -> list[Disk
         DiskCategory("backups", sites_root, _size_site_children(sites_root, "files/backups"), False),
         DiskCategory("config", data_root / "config", _dir_size(data_root / "config"), False),
         DiskCategory("cache", data_root, _size_site_children(sites_root, "cache") + _dir_size(runtime_root / "cache"), True),
-        DiskCategory("debug_logs", data_root, _size_named_dirs(data_root, {"debug", "logs"}), True),
+        DiskCategory("debug_logs", runtime_root / "logs", _dir_size(runtime_root / "logs"), False),
     ]
     return categories
 
@@ -42,8 +42,6 @@ def clean_data_disk(data_dir: Path, runtime_dir: Path | None = None, categories:
     data_root = Path(data_dir)
     runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
     result: dict[str, int] = {}
-    if "debug_logs" in requested:
-        result["debug_logs"] = _remove_named_dirs(data_root, {"debug", "logs"})
     if "cache" in requested:
         removed = _clear_site_children(data_root / "sites", "cache")
         removed += _clear_dir(runtime_root / "cache")
@@ -88,26 +86,6 @@ def _clear_site_children(sites_root: Path, relative: str) -> int:
     for site in sites_root.iterdir():
         if site.is_dir():
             removed += _clear_dir(site.joinpath(*parts))
-    return removed
-
-
-def _size_named_dirs(root: Path, names: set[str]) -> int:
-    if not root.exists():
-        return 0
-    return sum(_dir_size(item) for item in root.rglob("*") if item.is_dir() and item.name.casefold() in names)
-
-
-def _remove_named_dirs(root: Path, names: set[str]) -> int:
-    if not root.exists():
-        return 0
-    removed = 0
-    targets = sorted(
-        [item for item in root.rglob("*") if item.is_dir() and item.name.casefold() in names],
-        key=lambda item: len(item.parts),
-        reverse=True,
-    )
-    for target in targets:
-        removed += _clear_dir(target)
     return removed
 
 

@@ -4,16 +4,20 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
+from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.core.log_pagination import (
     LogPage,
-    get_logs as paginate_log_file,
-    iter_logs as iter_paginated_log_file,
+    get_logs_from_paths,
+    iter_logs_from_paths,
 )
 
 
 _paths = PathResolver()
+APP_LOG_MAX_BYTES = 25 * 1024 * 1024
+_ROTATED_LOG_PATTERN = "app-*.log"
 _SENSITIVE_KEYS = (
     "password",
     "ssh_password",
@@ -46,6 +50,10 @@ def log_error(event: str, detail: str = "", *, log_path: Path | None = None) -> 
     _write_log("ERROR", event, detail, log_path=log_path)
 
 
+def log_debug(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    _write_log("DEBUG", event, detail, log_path=log_path)
+
+
 def read_logs(keyword: str | None = None, level: str | None = None) -> list[dict[str, str]]:
     return get_logs(1, 1000, keyword, level).rows
 
@@ -58,27 +66,45 @@ def get_logs(
     *,
     log_path: Path | None = None,
 ) -> LogPage:
-    return paginate_log_file(log_path or _log_path(), page=page, page_size=page_size, keyword=keyword, level=level, parser=_parse_line)
+    path = log_path or _log_path()
+    return get_logs_from_paths(
+        log_files(path),
+        page=page,
+        page_size=page_size,
+        keyword=keyword,
+        level=level,
+        parser=_parse_line,
+    )
 
 
-def iter_logs(keyword: str | None = None, level: str | None = None):
-    return iter_paginated_log_file(_log_path(), keyword=keyword, level=level, parser=_parse_line)
+def iter_logs(keyword: str | None = None, level: str | None = None) -> Iterator[dict[str, str]]:
+    path = _log_path()
+    return iter_logs_from_paths(log_files(path), keyword=keyword, level=level, parser=_parse_line)
 
 
 def clear_logs(log_path: Path | None = None) -> None:
-    path = log_path or _log_path()
+    path = (log_path or _log_path()).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
+    with interprocess_file_lock(log_lock_path(path)):
+        for rotated in log_files(path):
+            if rotated == path:
+                continue
+            rotated.unlink(missing_ok=True)
+        path.write_text("", encoding="utf-8")
 
 
 def export_logs(target_path: str | Path) -> None:
     source = _log_path()
     source.parent.mkdir(parents=True, exist_ok=True)
-    if not source.exists():
-        source.write_text("", encoding="utf-8")
     target = Path(target_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
+    with interprocess_file_lock(log_lock_path(source)):
+        if not source.exists():
+            source.write_text("", encoding="utf-8")
+        with target.open("wb") as output:
+            for item in reversed(log_files(source)):
+                with item.open("rb") as current:
+                    shutil.copyfileobj(current, output)
 
 
 def sanitize_detail(detail: object) -> str:
@@ -88,15 +114,52 @@ def sanitize_detail(detail: object) -> str:
 def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | None = None) -> None:
     path = log_path or _log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     safe_event = _clean_cell(event).upper()
     safe_detail = _sanitize_detail(detail)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(f"{timestamp} | {level} | {safe_event} | {safe_detail}\n")
+    line = f"{timestamp} | {level} | {safe_event} | {safe_detail}\n"
+    with interprocess_file_lock(log_lock_path(path)):
+        _rotate_if_needed(path, now, len(line.encode("utf-8")))
+        with path.open("a", encoding="utf-8") as file:
+            file.write(line)
 
 
 def _log_path() -> Path:
     return _paths.app_log_path
+
+
+def log_lock_path(path: Path) -> Path:
+    return path.resolve().parent.parent / "locks" / "app-log.lock"
+
+
+def log_files(path: Path | None = None) -> list[Path]:
+    active = (path or _log_path()).resolve()
+    rotated = [item.resolve() for item in active.parent.glob(_ROTATED_LOG_PATTERN) if item.is_file()]
+    rotated.sort(key=lambda item: item.name, reverse=True)
+    return ([active] if active.is_file() else []) + [item for item in rotated if item != active]
+
+
+def _rotate_if_needed(path: Path, now: datetime, incoming_bytes: int) -> None:
+    if not path.is_file():
+        return
+    try:
+        stat = path.stat()
+        changed_date = datetime.fromtimestamp(stat.st_mtime).date()
+    except OSError:
+        return
+    if stat.st_size + incoming_bytes <= APP_LOG_MAX_BYTES and changed_date == now.date():
+        return
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    for sequence in range(1, 10_000):
+        rotated = path.with_name(f"app-{stamp}-{sequence:04d}.log")
+        if rotated.exists():
+            continue
+        try:
+            path.replace(rotated)
+        except OSError:
+            return
+        return
 
 
 def _parse_line(line: str) -> dict[str, str] | None:

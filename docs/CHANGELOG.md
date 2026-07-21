@@ -35,6 +35,9 @@
 
 ### 局点与数据存储
 
+- 修复软件运行日志三天保留失效：自动任务只处理 `runtime/logs` 固定白名单，按记录时间流式清除 72 小时前内容，malformed 行保留，失败不替换原文件；运行日志按跨天或 25 MB 轮转并支持跨文件分页/导出。自动提交增加同数据根单飞、成功后 24 小时节流和持续运行复查；缓存与临时文件只保留手工确认入口，局点业务 `logs/`、MESH/MR raw/parsed、报告和 Artifact 明确禁止自动清理。
+- 新增 Legacy/Demo 局点只读审计、Task Center 审计任务和 `audit_sites` 维护命令；审计记录文件哈希、SQLite 完整性、业务数据及 Registry/bootstrap 引用。空壳回收改为 prepare/apply 二阶段，执行前复核 manifest，只移入带 tombstone 和配置备份的受控回收区；受控 Demo 通过当前 Schema、Repository 与 parser 在 staging 重建，不预置任务历史并强制小于 `50 MB`。`isolated_test` 继续拒绝上述持久写操作，真实数据回收和 Electron 人工验收需单独执行。
+- 完成仓库根历史 `data/` 与正式开发数据根的 dry-run 对照：根目录仅含旧 `demo` 配置、SQLite 和瞬态 sidecar，所有正式目标均已存在且没有仅根端存在文件；旧副本按逐文件 SHA-256 清单移出仓库归档，未覆盖正式数据库。构建清理工具新增 `build-temporary` 固定白名单，只回收可重建的 `dist/_build/`，保留版本 Backend、Electron 和 Agent 交付目录。
 - 修复 Codex、任务窗口和打包冒烟把临时数据根/`demo` 写入正式 Electron bootstrap 的问题：隔离运行现在同时使用独立 data root 与 `userData`，禁止局点/迁移/导入导出写操作，正式 bootstrap 在测试前后保持不变；新增无效临时引用拒绝、字节备份和显式维护修复命令，Python 环境失败不再影响存储状态。
 - 新增 Electron 系统设置中的局点 Registry、稳定 `site_id`、中文显示名称、新建/切换和活动任务门禁。
 - 新增全局数据根校验、staging 迁移、SQLite 完整性检查、旧数据保留和 Electron bootstrap 原子配置。

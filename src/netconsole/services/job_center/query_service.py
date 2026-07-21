@@ -48,7 +48,11 @@ from netconsole.services.network_tools.job_handlers import (
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
-from netconsole.services.job_center.handlers.site_jobs import SITE_STORAGE_OWNER, SITE_STORAGE_TASK_TYPES
+from netconsole.services.job_center.handlers.site_jobs import (
+    SITE_STORAGE_NONCANCELLABLE_TASK_TYPES,
+    SITE_STORAGE_OWNER,
+    SITE_STORAGE_TASK_TYPES,
+)
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -356,6 +360,8 @@ class JobCenterQueryService:
         if owner == SYSTEM_MAINTENANCE_WEB_OWNER and task_type in SYSTEM_MAINTENANCE_TASK_TYPES:
             return True, ""
         if owner == SITE_STORAGE_OWNER and task_type in SITE_STORAGE_TASK_TYPES:
+            if task_type in SITE_STORAGE_NONCANCELLABLE_TASK_TYPES:
+                return False, "数据提交阶段不可停止，以避免局点目录和 Registry 不一致"
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 

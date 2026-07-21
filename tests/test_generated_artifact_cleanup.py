@@ -53,6 +53,38 @@ def test_cleanup_removes_only_allowlisted_legacy_release(tmp_path: Path) -> None
     assert data.exists()
 
 
+def test_cleanup_removes_only_build_temporary_directory(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    temporary = root / "dist" / "_build"
+    retained = [
+        root / "dist" / "v1.3.9",
+        root / "dist" / "electron",
+        root / "dist" / "agent",
+        root / "data",
+    ]
+    temporary.mkdir(parents=True)
+    (temporary / "setuptools-residue").mkdir()
+    (temporary / "setuptools-residue" / "module.py").write_text("generated", encoding="utf-8")
+    for directory in retained:
+        directory.mkdir(parents=True)
+        (directory / "keep.txt").write_text("keep", encoding="utf-8")
+
+    planned = clean_generated_artifacts(root, "build-temporary")
+    applied = clean_generated_artifacts(root, "build-temporary", apply=True)
+
+    assert planned["items"] == [
+        {
+            "relative_path": "dist/_build",
+            "status": "planned",
+            "file_count": 1,
+            "total_bytes": 9,
+        }
+    ]
+    assert applied["items"][0]["status"] == "removed"
+    assert not temporary.exists()
+    assert all(directory.exists() for directory in retained)
+
+
 def test_cleanup_rejects_linked_target(tmp_path: Path) -> None:
     root = _repo(tmp_path / "repo")
     outside = tmp_path / "outside"

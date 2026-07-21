@@ -37,6 +37,28 @@ def test_app_logger_clear_logs(tmp_path):
     assert app_logger.read_logs() == []
 
 
+def test_app_logger_rotates_and_reads_across_runtime_log_files(tmp_path, monkeypatch):
+    paths = configure(tmp_path)
+    monkeypatch.setattr(app_logger, "APP_LOG_MAX_BYTES", 120)
+
+    for index in range(8):
+        app_logger.log_info(f"EVENT_{index}", "x" * 30)
+
+    files = app_logger.log_files(paths.app_log_path)
+    page = app_logger.get_logs(page=1, page_size=200)
+    target = tmp_path / "all-runtime-logs.txt"
+    app_logger.export_logs(target)
+
+    assert len(files) > 1
+    assert page.state.total_items == 8
+    assert page.rows[0]["event"] == "EVENT_7"
+    assert "EVENT_0" in target.read_text(encoding="utf-8")
+
+    app_logger.clear_logs()
+    assert app_logger.read_logs() == []
+    assert not list(paths.logs_dir.glob("app-*.log"))
+
+
 def test_app_logger_sanitizes_sensitive_detail(tmp_path):
     paths = configure(tmp_path)
 

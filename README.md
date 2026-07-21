@@ -132,7 +132,7 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 数据与发布边界
 
-- 开发运行数据默认位于 `.local/data/` 和 `.local/runtime/`；打包程序优先使用 `%LOCALAPPDATA%\NetConsole\`，不会依赖当前工作目录。
+- 源码开发态运行数据默认位于 `%LOCALAPPDATA%\NetConsole\Development\`，打包程序优先使用 `%LOCALAPPDATA%\NetConsole\`，不会依赖当前工作目录；仓库 `.local/` 和根 `data/` 仅作为历史迁移源。
 - 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
 - SNMP Center、通用 MIB/OID 字典与无线勘测已从活动产品、源码资源和发布依赖中删除；历史用户数据库与文件不做破坏性清理。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描仍是独立能力。
 - `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。

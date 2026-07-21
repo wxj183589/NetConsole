@@ -601,6 +601,7 @@ def app_logs_csv_spec(
     output_path: str | Path,
     *,
     log_path: str | Path,
+    log_paths: Iterable[str | Path] | None = None,
     keyword: str | None = None,
     level: str | None = None,
     offset: int = 0,
@@ -616,6 +617,14 @@ def app_logs_csv_spec(
             snapshot_size = source_path.stat().st_size
         except OSError:
             snapshot_size = 0
+    sources = [Path(value) for value in (log_paths or [source_path])]
+    snapshots: list[dict[str, object]] = []
+    for source in sources:
+        try:
+            size = source.stat().st_size
+        except OSError:
+            size = 0
+        snapshots.append({"path": str(source), "size": max(0, int(size))})
     return ExportTaskSpec(
         task_type="app_logs_csv",
         output_path=str(output_path),
@@ -623,6 +632,7 @@ def app_logs_csv_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "log_path": str(source_path),
+            "log_files": snapshots,
             "keyword": keyword or "",
             "level": level or "",
             "offset": max(0, int(offset)),

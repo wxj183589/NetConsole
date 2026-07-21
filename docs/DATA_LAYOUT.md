@@ -8,7 +8,7 @@
 
 Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,electron-user-data}`，并以 `NETCONSOLE_STORAGE_MODE=isolated_test` 与持久模式硬隔离。临时模式不能迁移、导入、导出、切换或持久化局点，不得读取/覆盖正式 `userData/bootstrap.json`；临时路径只以 `<temporary>` 进入公开 DTO。正常 `pnpm dev` 使用 `persistent`，测试变量不能改变其数据根或局点选择。
 
-仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。
+仓库 `.local/{data,runtime}` 和根 `data/` 仅是 2026-07-18 前的历史开发数据源。`scripts/maintenance/migrate_legacy_runtime_data.py` 默认 dry-run，以 `.local` 为优先事实源，使用无覆盖复制、SHA-256、SQLite Backup API 和 `quick_check` 迁往当前开发数据根；冲突必须保留并在 manifest 中显式记录。确认正式数据根已覆盖源端文件后，根 `data/` 应整体移出仓库归档或删除，正常启动、测试和构建不得重新创建它。`scripts/maintenance/clean_test_artifacts.py` 只允许清理仓库 `.local` 顶层明确的 `pytest-*`/Qt 临时产物，不能触及业务数据、验收数据或未知目录。
 
 运行时写入路径不得落入 `docs/`、`tests/` 或项目源码目录。所有源码、JSON、Markdown 和新导出文本使用 UTF-8；外部 H3C 回显和历史日志读取时允许按明确顺序回退编码。
 
@@ -21,6 +21,14 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 │  ├─ global/                    # 跨局点资源
 │  ├─ runtime/                   # 持久运行配置，如网络/路由 profile
 │  └─ sites/<site>/              # 局点隔离数据
+├─ archive/                      # 迁移旧数据和局点回收材料，不参与正常业务读写
+│  ├─ site-recycle/              # Legacy/空壳局点的目录、tombstone 和配置备份
+│  └─ demo-recycle/              # Demo 重建前的旧目录、manifest 和恢复材料
+├─ migrations/
+│  ├─ site-audits/               # 只读局点审计 manifest
+│  └─ site-cleanup/              # 二阶段清理计划与一次性 token
+├─ temp/
+│  └─ demo-seed/                 # 受控 Demo staging；发布或失败后清理
 └─ runtime/                      # 可清理的运行日志、协议和缓存
    ├─ logs/
    ├─ base_data_import_previews/<preview_id>/
@@ -38,6 +46,8 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 ```
 
 注意 `<data_root>/data/runtime/` 与 `<data_root>/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
+
+`archive/site-recycle` 和 `archive/demo-recycle` 属于恢复材料，不是普通缓存，也不在自动/手工磁盘清理白名单内。Legacy 局点只有经过只读审计、二阶段确认和逐文件哈希复核后才能移入回收区；移动成功不代表永久删除。受控 Demo 使用当前 Schema 和少量脱敏 fixture 重建，不写入预置任务历史，发布上限为 `50 MB`。`isolated_test` 使用独立系统临时数据根，不得把审计、清理计划、回收目录或 Demo 写入正式持久数据根。
 
 ## 3. 历史全局资源
 
@@ -57,7 +67,7 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 ## 4. 局点目录
 
 ```text
-.local/data/sites/<site>/
+<data_root>/data/sites/<site>/
 ├─ db/                           # 局点数据库
 │  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
 │  ├─ tasks.db                   # 任务快照、结构化事件与 Online MR Task/Session 映射
@@ -185,7 +195,7 @@ sessions/<session>/
 - 轨道交通基础资料正式写入默认关闭，不新增主表；受控 Service 只允许事务更新既有 `ap_extension_points`，写前备份、操作审计、预览有效期和数据库哈希乐观锁缺一不可。宁波地铁 12 号线真实库在 5C-6B 仍未授权写入。
 - `tasks.db` 由 `TaskRepository` 和 Online MR Task/Session Repository 幂等初始化，使用 WAL/busy timeout/foreign keys；任务快照、事件和映射按各自事务提交，不自动删除业务结果或原始日志。
 - `agents.db` 由 `AgentRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`agent_configs` 与 `agent_runtime_snapshots` 分表，删除入口只归档配置。Token 不落库，只保存不含秘密的 `credential_reference`。
-- `.local/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
+- `<data_root>/data/sites/<site>/files/network_tools/traffic/parsed/traffic_runs.sqlite` 由 `TrafficRunRepository` 幂等初始化，使用 WAL/busy timeout/foreign keys；`traffic_runs` 保存运行索引，`traffic_agent_tasks` 保存 Controller/Agent 任务映射，`traffic_ping_samples` 只保存新的独立高频 Ping 样本。Token、工具路径、输出绝对路径和任意命令不得写入。
 - iPerf interval 的唯一事实源仍是 `files/network_tools/iperf/parsed/iperf_results.sqlite`；Traffic 库只用 `local_iperf_run_id` 关联，不复制 interval。Agent 事件重放通过远端事件键幂等写入既有 interval 表。
 - 每个 Traffic Run 的 `events.jsonl` 使用 Controller 单调序号并单独保留 `remote_sequence`；事件、摘要和远端结果只保存相对引用，绝对路径与敏感字段在写入前脱敏。原始 Traffic 文件和正式摘要不属于自动清理范围。
 - `online_diagnosis.sqlite`、单文件 Mesh parsed SQLite 等会话解析产物原则上可由完整 raw 重建，但当前仍是历史查询、图表和报告的现行数据源；不得无条件清理。schema 调整必须有明确需求，并保留 raw 事实来源、验证可重建性、同步 parser/report 和兼容边界。
@@ -194,12 +204,12 @@ sessions/<session>/
 
 ## 7. 清理策略
 
-自动清理在 Desktop 启动后延时提交既有 `system_maintenance_cleanup` Job，默认保留 3 天。手工清理允许选择 1～365 天并必须先扫描、选择类别和二次确认。两种入口都只处理：
+自动清理在 Desktop 启动后延时提交既有 `system_maintenance_cleanup` Job，默认保留 3 天，并且只处理软件运行日志。页面/图表缓存和临时文件只能由用户扫描后手工选择并二次确认，不属于三天自动清理。允许范围如下：
 
-- `.local/runtime/logs/` 中受认可且不是当前 `app.log` 的旧运行日志；
-- `.local/runtime/cache/{thumbnails,chart_cache,preview_cache}/` 中的旧页面缓存；
-- `.local/runtime/cache/{tmp,temp,export_tmp,download_tmp}/` 与 `.local/runtime/{tmp,temp,export_tmp,download_tmp}/` 中的旧临时文件。
+- `<data_root>/runtime/logs/` 中受认可的软件运行日志；轮转文件按记录时间删除，当前 `app.log` 以流式过滤、`fsync` 和原子替换清除 72 小时前的记录；
+- `<data_root>/runtime/cache/{thumbnails,chart_cache,preview_cache}/` 中的旧页面缓存；
+- `<data_root>/runtime/cache/{tmp,temp,export_tmp,download_tmp}/` 与 `<data_root>/runtime/{tmp,temp,export_tmp,download_tmp}/` 中的旧临时文件。
 
-扫描结果不是删除授权：Worker 删除每个文件前会重新验证年龄、普通文件类型、解析后的真实路径和所属类别。`background_jobs`、`export_jobs`、`ac_web_action_plans`、`config_irreversible`、`rail_web_table_previews`、`rail_web_uploads`、`base_data_import_previews` 以及 `.cancel`、`.json.tmp`、`.part` 协议文件均受保护。清理不得触及局点数据库、配置、业务 raw、正式 outputs/报告或备份；失败日志只记录计数，不记录失败绝对路径和系统异常原文。
+扫描结果不是删除授权：Worker 删除每个文件前会重新验证年龄、普通文件类型、解析后的真实路径和所属类别。`background_jobs`、`export_jobs`、`ac_web_action_plans`、`config_irreversible`、`rail_web_table_previews`、`rail_web_uploads`、`base_data_import_previews` 以及 `.cancel`、`.json.tmp`、`.part` 协议文件均受保护。清理不得触及局点数据库、配置、业务 raw、业务会话中的 `logs/`、正式 outputs/报告或备份；失败日志只记录计数，不记录失败绝对路径和系统异常原文。
 
-系统设置中的手工磁盘清理可管理局点 cache/debug logs，但数据库、配置中心、文件管理、轨道交通、网络工具、备份和配置属于受保护分类。任何扩大清理范围的改动都要有预览、确认、路径约束和测试。
+系统设置中的手工磁盘清理只管理受控 cache；软件运行日志统一由日志中心管理。局点内的 `debug/`、`logs/` 与其他业务目录均不得按目录名递归清理。数据库、配置中心、文件管理、轨道交通、网络工具、备份和配置属于受保护分类。任何扩大清理范围的改动都要有预览、确认、路径约束和测试。

@@ -78,6 +78,7 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.site_lifecycle import DemoSiteSeedService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -315,15 +316,17 @@ def create_app(
 
         async def schedule_auto_cleanup() -> None:
             await asyncio.sleep(8)
-            try:
-                await asyncio.to_thread(
-                    system_maintenance_service.start_cleanup,
-                    site_name,
-                    dry_run=False,
-                    automatic=True,
-                )
-            except Exception as exc:
-                app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
+            while True:
+                try:
+                    await asyncio.to_thread(
+                        system_maintenance_service.start_cleanup,
+                        site_name,
+                        dry_run=False,
+                        automatic=True,
+                    )
+                except Exception as exc:
+                    app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
+                await asyncio.sleep(24 * 60 * 60)
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
@@ -669,6 +672,8 @@ def _current_site_name(paths: PathResolver) -> str:
                 return selected
         except (SiteStorageError, ValueError):
             pass
+    if not any(path.is_dir() and not path.is_symlink() for path in paths.sites_dir.glob("*")):
+        DemoSiteSeedService(paths).seed()
     return SiteManager(paths).get_current_site()
 
 

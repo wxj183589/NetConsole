@@ -105,12 +105,15 @@ def test_application_logs_are_paginated_redacted_and_clearable(tmp_path: Path) -
 
 def test_cleanup_job_only_deletes_existing_whitelist_and_honors_cancel(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    old_log = paths.logs_dir / "old.log"
+    old_log = paths.logs_dir / "app_20260701.log"
     old_cache = paths.runtime_cache_dir / "chart_cache" / "old.cache"
     protected = paths.site_files_dir("demo") / "protected.raw"
     for path in (old_log, old_cache, protected):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("content", encoding="utf-8")
+        path.write_text(
+            "2026-07-01 10:00:00 | INFO | OLD_EVENT | old\n" if path == old_log else "content",
+            encoding="utf-8",
+        )
         os.utime(path, (time() - 10 * 86400, time() - 10 * 86400))
 
     context = JobContext(
@@ -181,6 +184,26 @@ def test_cleanup_worker_rejects_untrusted_contract(tmp_path: Path, params: dict[
     )
 
     with pytest.raises(ValueError):
+        system_maintenance_cleanup(context)
+
+
+def test_cleanup_worker_rejects_automatic_cache_cleanup(tmp_path: Path) -> None:
+    context = JobContext(
+        "cleanup-invalid-auto",
+        "system_maintenance_cleanup",
+        {
+            "retention_days": 3,
+            "dry_run": False,
+            "selected_item_ids": ["runtime_cache"],
+            "confirmed": True,
+            "automatic": True,
+        },
+        None,
+        lambda: False,
+        _paths(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="软件运行日志"):
         system_maintenance_cleanup(context)
 
 
@@ -284,11 +307,11 @@ def test_cleanup_application_rejects_invalid_selection_before_start(tmp_path: Pa
     assert process.jobs == {}
 
 
-def test_automatic_cleanup_keeps_existing_all_category_semantics(tmp_path: Path) -> None:
+def test_automatic_cleanup_selects_only_software_runtime_logs(tmp_path: Path) -> None:
     service, process, _export = _service(_paths(tmp_path))
     task = service.start_cleanup("demo", dry_run=False, automatic=True)
     job = process.jobs[task.task_id]
-    assert job.params["selected_item_ids"] == ["runtime_logs", "runtime_cache", "temporary_files"]
+    assert job.params["selected_item_ids"] == ["runtime_logs"]
     assert job.params["confirmed"] is True
 
 
@@ -473,6 +496,33 @@ def test_export_workers_redact_logs_and_write_txt_xlsx(
     )
     assert "demo-lib" in txt_path.read_text(encoding="utf-8")
     assert xlsx_path.read_bytes().startswith(b"PK")
+
+
+def test_log_export_includes_current_and_rotated_runtime_logs(tmp_path: Path) -> None:
+    active = tmp_path / "app.log"
+    rotated = tmp_path / "app-20260720-120000-0001.log"
+    active.write_text(
+        "2026-07-21 10:00:00 | INFO | CURRENT_EVENT | current\n",
+        encoding="utf-8",
+    )
+    rotated.write_text(
+        "2026-07-20 10:00:00 | WARNING | ROTATED_EVENT | rotated\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "logs.csv"
+    job = app_logs_csv_spec(
+        output,
+        log_path=active,
+        log_paths=[active, rotated],
+    ).to_job("logs-rotated")
+
+    run_generic_export_handler(
+        ExportJob.from_dict({**job.to_dict(), "tmp_path": str(tmp_path / "logs.csv.tmp")})
+    )
+
+    content = output.read_text(encoding="utf-8-sig")
+    assert "CURRENT_EVENT" in content
+    assert "ROTATED_EVENT" in content
 
 
 def test_txt_artifact_download_uses_public_name_extension_and_mime(tmp_path: Path) -> None:

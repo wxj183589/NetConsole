@@ -60,6 +60,11 @@ export interface MaintenanceTask {
   deleted_files: number
   failed_count: number
   freed_bytes: number
+  deleted_log_records: number
+  scanned_log_records: number
+  malformed_log_records: number
+  rewritten_log_files: number
+  cutoff: string
   components: OpenSourceComponent[]
 }
 

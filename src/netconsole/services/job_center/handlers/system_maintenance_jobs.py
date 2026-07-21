@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from netconsole.core import app_logger
-from netconsole.services.app_auto_cleanup import APP_CLEANUP_RETENTION_DAYS, AppCleanupService
+from netconsole.services.app_auto_cleanup import (
+    APP_CLEANUP_RETENTION_DAYS,
+    AUTO_CLEANUP_ITEM_IDS,
+    AppCleanupService,
+    finish_auto_cleanup,
+)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.open_source_notice_service import OpenSourceNoticeService
 
 
 def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
+    automatic = bool(context.params.get("automatic"))
     retention_value = context.params.get("retention_days", APP_CLEANUP_RETENTION_DAYS)
     days = int(retention_value)
     if not 1 <= days <= 365:
@@ -15,6 +21,8 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
     selected_item_ids = context.params.get("selected_item_ids")
     if not isinstance(selected_item_ids, list):
         raise ValueError("清理项目格式无效")
+    if automatic and selected_item_ids != list(AUTO_CLEANUP_ITEM_IDS):
+        raise ValueError("自动清理只允许软件运行日志")
     if dry_run:
         if selected_item_ids or bool(context.params.get("confirmed")):
             raise ValueError("扫描请求不能包含清理选择或确认")
@@ -59,14 +67,23 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
             deleted_files=partial.deleted_files,
             failed_count=partial.failed_count,
             freed_bytes=partial.freed_bytes,
+            deleted_log_records=partial.deleted_log_records,
+            scanned_log_records=partial.scanned_log_records,
+            malformed_log_records=partial.malformed_log_records,
+            rewritten_log_files=partial.rewritten_log_files,
         )
 
-    rescanned_items, cleaned = service.cleanup_selected(
-        selected,
-        days,
-        should_cancel=context.check_cancelled,
-        progress_callback=report_progress,
-    )
+    try:
+        rescanned_items, cleaned = service.cleanup_selected(
+            selected,
+            days,
+            should_cancel=context.check_cancelled,
+            progress_callback=report_progress,
+        )
+    except Exception:
+        if automatic:
+            finish_auto_cleanup(context.paths, context.job_id, succeeded=False)
+        raise
     result.update(
         cleanup_items=[
             {
@@ -84,7 +101,15 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
         deleted_files=cleaned.deleted_files,
         failed_count=cleaned.failed_count,
         freed_bytes=cleaned.freed_bytes,
+        deleted_log_records=cleaned.deleted_log_records,
+        scanned_log_records=cleaned.scanned_log_records,
+        malformed_log_records=cleaned.malformed_log_records,
+        rewritten_log_files=cleaned.rewritten_log_files,
+        cutoff=cleaned.cutoff.isoformat(timespec="seconds"),
+        automatic=automatic,
     )
+    if automatic:
+        finish_auto_cleanup(context.paths, context.job_id, succeeded=cleaned.failed_count == 0)
     log = app_logger.log_warning if cleaned.failed_count else app_logger.log_info
     log("APP_AUTO_CLEANUP_PARTIAL_FAILED" if cleaned.failed_count else "APP_AUTO_CLEANUP_COMPLETED", cleaned.summary_detail(), log_path=context.paths.app_log_path)
     context.progress("clean", cleaned.processed_files, cleaned.processed_files, "安全清理完成")

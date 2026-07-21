@@ -26,7 +26,17 @@ python -m pip check
 python -m scripts.build.build_release --backend pyinstaller
 ```
 
-该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将输出写入 `dist/v1.3.9/pyinstaller/NetConsoleBackend/`。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.3.9/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+
+完成 Backend、Electron 和安装包验收后，可以通过固定白名单清理临时构建区：
+
+```powershell
+python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
+python -m scripts.maintenance.clean_generated_artifacts --target build-temporary --apply `
+  --manifest "$env:LOCALAPPDATA\NetConsole\MigrationReports\generated-cleanup-build-temporary.json"
+```
+
+该目标只允许删除 `dist/_build/`，不会处理 `dist/v1.3.9/`、`dist/electron/`、`dist/agent/`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
 
 默认安装会同时传入 `-c constraints.txt`。无论是否使用 `--skip-install`，构建 preflight 都会从 `requirements-build.txt` 遍历已安装 distribution 的完整依赖闭包，并逐项核对 constraints 的精确版本；缺包、版本漂移、传递依赖未锁定或无效 metadata 均直接失败。Electron `package.mjs` 在调用 `--skip-install` 前还会单独执行同一 Guard，不能把开发机 `.venv` 的偶然可用状态当成发布环境。
 
@@ -78,4 +88,4 @@ apps\agent\scripts\build_windows.bat
 
 ## 不得进入仓库的产物
 
-`dist/`、PyInstaller build/spec 临时目录、Electron unpacked/安装包、`apps/*/node_modules`、虚拟环境、SBOM 临时输出、日志、SQLite 和用户数据均不得提交。开发态运行数据使用 `.local/`；发布态数据由系统应用数据目录管理。
+`dist/`、PyInstaller build/spec 临时目录、Electron unpacked/安装包、`apps/*/node_modules`、虚拟环境、SBOM 临时输出、日志、SQLite 和用户数据均不得提交。源码开发态数据使用 `%LOCALAPPDATA%\NetConsole\Development\`，打包态使用 `%LOCALAPPDATA%\NetConsole\`；仓库根 `data/` 只能作为旧迁移源，迁移核验后应移出仓库归档或删除。

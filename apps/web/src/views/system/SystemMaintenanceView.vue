@@ -54,6 +54,11 @@ const about = ref<AboutInfo>()
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 
 const taskBusy = computed(() => Boolean(currentTask.value && !terminalStates.has(currentTask.value.status)))
+const taskSummary = computed(() => {
+  const task = currentTask.value
+  if (!task) return ''
+  return task.error_message || task.message || task.stage || '任务已提交'
+})
 const logColumns: NcTableColumn<LogEntry>[] = [
   { key: 'time', label: '时间', valueType: 'datetime', fixed: 'left' },
   { key: 'display_level', label: '级别', valueType: 'status' },
@@ -88,9 +93,14 @@ async function loadLogs(reset = false): Promise<void> {
   if (reset) page.value = 1
   loading.value = true
   try {
-    const result = await getLogs({ page: page.value, page_size: pageSize.value, keyword: keyword.value.trim(), level: level.value })
+    const query = { page: page.value, page_size: pageSize.value, keyword: keyword.value.trim(), level: level.value }
+    let result = await getLogs(query)
+    const lastPage = Math.max(1, result.total_pages || Math.ceil(result.total / result.page_size))
+    if (query.page > lastPage && result.page > lastPage) {
+      result = await getLogs({ ...query, page: lastPage })
+    }
     logs.value = result.items
-    page.value = result.page
+    page.value = Math.min(Math.max(1, result.page), Math.max(1, result.total_pages))
     pageSize.value = result.page_size
     total.value = result.total
   } catch (cause) {
@@ -151,6 +161,7 @@ function applyTaskResult(task: MaintenanceTask): void {
     if (task.status === 'FAILED') ElMessage.error(task.error_message || '任务失败')
     else if (task.status === 'CANCELLED') ElMessage.warning('任务已取消')
     else ElMessage.success(task.message || '任务完成')
+    if (['cleanup_clean', 'cleanup_auto'].includes(task.action) && task.status === 'COMPLETED') void loadLogs()
     return
   }
   pollTimer = setTimeout(() => void pollTask(task.task_id), 800)
@@ -255,6 +266,16 @@ async function downloadArtifact(task: MaintenanceTask): Promise<void> {
   else if (result.status !== 'cancelled') ElMessage.success('Artifact 已保存')
 }
 
+async function openTaskWindow(): Promise<void> {
+  if (!currentTask.value) return
+  try {
+    const result = await getPlatformAdapter().openTaskWindow({ taskId: currentTask.value.task_id, module: 'logs' })
+    if (!result.success) ElMessage.error(result.error || '任务窗口打开失败')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause))
+  }
+}
+
 async function openDirectory(kind: 'logs' | 'cache'): Promise<void> {
   try {
     const result = await openMaintenanceDirectory(kind)
@@ -333,17 +354,26 @@ onBeforeUnmount(() => {
       <div class="actions"><el-button :loading="loading" @click="loadLogs()">刷新日志</el-button></div>
     </header>
 
-    <el-alert title="清理仅作用于软件运行日志与缓存白名单；采集数据、MR 原始日志、数据库、报告和导入文件不会被删除。" type="info" show-icon :closable="false" />
+    <el-alert class="maintenance-alert" title="三天自动清理仅处理软件运行日志；缓存和临时文件仅在手工选择确认后清理。业务日志、采集数据、数据库、报告和导入文件不会被删除。" type="info" show-icon :closable="false" />
 
-    <el-card v-if="currentTask" shadow="never" class="task-card">
-      <template #header><div class="card-header"><span>后台任务 · {{ currentTask.action }}</span><el-tag>{{ currentTask.status }}</el-tag></div></template>
-      <el-progress :percentage="currentTask.progress" :status="currentTask.status === 'FAILED' ? 'exception' : undefined" />
-      <p>{{ currentTask.error_message || currentTask.message || currentTask.stage || '任务已提交' }}</p>
-      <div class="actions"><el-button :disabled="!taskBusy" @click="cancelCurrentTask">取消</el-button><el-button v-if="currentTask.available" type="primary" @click="downloadArtifact(currentTask)">下载 Artifact</el-button></div>
-    </el-card>
+    <section v-if="currentTask" :class="['task-status', taskBusy ? 'task-status--active' : 'task-status--terminal']">
+      <div class="task-status__row">
+        <div class="task-status__copy">
+          <strong>{{ taskBusy ? '后台任务' : '最近任务' }} · {{ currentTask.action }}</strong>
+          <span>{{ taskSummary }}</span>
+        </div>
+        <el-tag :type="currentTask.status === 'FAILED' ? 'danger' : currentTask.status === 'COMPLETED' ? 'success' : currentTask.status === 'CANCELLED' ? 'info' : 'primary'">{{ currentTask.status }}</el-tag>
+        <div class="task-status__actions">
+          <el-button v-if="taskBusy" @click="cancelCurrentTask">取消</el-button>
+          <el-button v-if="currentTask.available" type="primary" @click="downloadArtifact(currentTask)">下载 Artifact</el-button>
+          <el-button @click="openTaskWindow">任务中心</el-button>
+        </div>
+      </div>
+      <el-progress v-if="taskBusy" :percentage="currentTask.progress" />
+    </section>
 
-    <el-tabs v-model="activeTab" type="border-card">
-      <el-tab-pane label="运行日志" name="logs">
+    <el-tabs v-model="activeTab" type="border-card" class="maintenance-tabs">
+      <el-tab-pane label="运行日志" name="logs" class="maintenance-tab-pane log-tab-pane">
         <div class="toolbar">
           <el-input v-model="keyword" clearable placeholder="搜索事件或详情" @keyup.enter="loadLogs(true)" />
           <el-select v-model="level" clearable placeholder="全部级别"><el-option label="信息" value="INFO" /><el-option label="警告" value="WARNING" /><el-option label="错误" value="ERROR" /><el-option label="调试" value="DEBUG" /><el-option label="严重" value="CRITICAL" /></el-select>
@@ -353,9 +383,11 @@ onBeforeUnmount(() => {
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('current')">导出当前页</el-button>
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('all')">导出全部筛选结果</el-button>
         </div>
-        <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="520" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
-          <template #cell-actions="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template>
-        </NcDataTable>
+        <div class="log-table-host">
+          <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="100%" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
+            <template #cell-actions="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template>
+          </NcDataTable>
+        </div>
         <div class="pagination"><span>共 {{ total }} 条</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next" :total="total" @change="loadLogs()" /></div>
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>
       </el-tab-pane>
@@ -388,17 +420,33 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.maintenance-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.page-heading, .card-header, .repository, .pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.maintenance-page { display: flex; flex-direction: column; gap: 16px; width: 100%; height: calc(100dvh - var(--nc-shell-header-height) - var(--nc-content-padding) - var(--nc-content-padding)); min-width: 0; min-height: 0; overflow: hidden; }
+.page-heading, .repository, .pagination { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
 .page-heading h1 { margin: 2px 0 6px; }
-.page-heading p, .task-card p, .hint { margin: 0; color: var(--el-text-color-secondary); }
+.page-heading p, .hint { margin: 0; color: var(--el-text-color-secondary); }
 .eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+.maintenance-alert { flex: none; }
+.task-status { flex: none; padding: 10px 12px; overflow: hidden; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-bg-color); }
+.task-status--active { max-height: 140px; }
+.task-status--terminal { padding-block: 8px; }
+.task-status__row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.task-status__copy { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 8px; }
+.task-status__copy strong, .task-status__copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-status__copy span { color: var(--el-text-color-secondary); font-size: 12px; }
+.task-status__actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.task-status :deep(.el-progress) { margin-top: 8px; }
+.maintenance-tabs { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.maintenance-tabs :deep(.el-tabs__header) { flex: none; }
+.maintenance-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; overflow: hidden; }
+.maintenance-tabs :deep(.el-tab-pane) { height: 100%; min-height: 0; overflow: auto; }
+.maintenance-tabs :deep(.log-tab-pane) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .toolbar, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .toolbar .el-input { width: min(360px, 100%); }
 .toolbar .el-select { width: 140px; }
+.log-table-host { flex: 1; min-height: 0; overflow: hidden; }
 .pagination { padding-top: 12px; }
 .document { max-height: 620px; overflow: auto; margin: 0; padding: 18px; border-radius: 8px; background: var(--el-fill-color-light); white-space: pre-wrap; line-height: 1.65; }
 .repository { margin-top: 10px; }
 .hint { padding-top: 8px; font-size: 12px; }
-@media (max-width: 900px) { .page-heading, .repository { align-items: flex-start; flex-direction: column; } .pagination { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 900px) { .page-heading, .repository { align-items: flex-start; flex-direction: column; } .task-status__row, .task-status__copy, .pagination { align-items: flex-start; flex-direction: column; } .task-status--active { max-height: none; } }
 </style>
