@@ -216,6 +216,19 @@ const expectedDeviceInventoryCommands = [
   'display lldp neighbor-information list',
   'display lldp neighbor-information verbose',
 ]
+const expectedMobileRouterDeviceInventoryCommands = [
+  'screen-length disable',
+  'display current-configuration | include sysname',
+  'display version',
+  'display device',
+  'display device manuinfo',
+  'display boot-loader',
+  'display interface',
+]
+const expectedDeviceInventoryProfiles = new Map([
+  ['h3c.comware.switch.generic.device-inventory.v1', expectedDeviceInventoryCommands],
+  ['h3c.comware.mobile_router.generic.device-inventory.v1', expectedMobileRouterDeviceInventoryCommands],
+])
 
 const toolRootArgument = process.argv.indexOf('--validate-tool-root')
 if (toolRootArgument >= 0) {
@@ -655,9 +668,21 @@ function validateDeviceCommandProfiles() {
   if (operations.size !== 1 || !operations.has('device.inventory.collect')) {
     throw new Error('Electron 包命令 Profile 只能包含 device.inventory.collect。')
   }
+  const profileIds = new Set(payload.profiles.map((profile) => profile.profile_id))
+  if (
+    profileIds.size !== payload.profiles.length
+    || profileIds.size !== expectedDeviceInventoryProfiles.size
+    || [...expectedDeviceInventoryProfiles.keys()].some((profileId) => !profileIds.has(profileId))
+  ) {
+    throw new Error('Electron 包命令 Profile 白名单不匹配。')
+  }
   for (const profile of payload.profiles) {
+    const expectedCommands = expectedDeviceInventoryProfiles.get(profile.profile_id)
+    if (!expectedCommands) {
+      throw new Error(`Electron 包命令 Profile 不在白名单内：${profile.profile_id ?? '<unknown>'}`)
+    }
     const commands = Array.isArray(profile.steps) ? profile.steps.map((step) => step.command) : []
-    if (JSON.stringify(commands) !== JSON.stringify(expectedDeviceInventoryCommands)) {
+    if (!isDeepStrictEqual(commands, expectedCommands)) {
       throw new Error(`Electron 包命令 Profile 命令序列不匹配：${profile.profile_id ?? '<unknown>'}`)
     }
   }

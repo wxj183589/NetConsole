@@ -66,7 +66,7 @@ node scripts/package-smoke.mjs
 
 `build.electronDist` 固定为 `apps/desktop_electron/node_modules/electron/dist`。完成锁定依赖安装后，`electron-builder` 必须复用本机已安装的 Electron 43.1.1 分发目录，不再访问 GitHub 获取 Electron ZIP 或 `SHASUMS256.txt`；日志应出现 `using custom unpacked Electron distribution`。这项约束只消除重复下载，不绕过 `pnpm install --frozen-lockfile` 的依赖完整性，也不得通过关闭 `signAndEditExecutable` 丢弃 EXE 资源元数据。
 
-安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 当前受控命令序列。
+安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
 
 正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；单元测试或源码 smoke 不能替代这些验收。`nsis.deleteAppDataOnUninstall=false` 是当前数据保护约束。
 

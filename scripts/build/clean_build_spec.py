@@ -52,6 +52,9 @@ from netconsole.core.version import APP_VERSION, GIT_COMMIT
 CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
 SRC_ROOT = ROOT / "src"
+DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
+PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
+PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
 )
@@ -71,7 +74,7 @@ ALLOWED_DATA = [
         "src/netconsole/assets/licenses/PYINSTALLER_HOOKS_CONTRIB_LICENSE.txt",
         "netconsole/assets/licenses",
     ),
-    ("resources/device_command_profiles.json", "netconsole/assets"),
+    (DEVICE_COMMAND_PROFILES_SOURCE, "netconsole/assets"),
 ]
 FORBIDDEN_DATA = [(item, item) for item in FORBIDDEN_DATAS]
 EXCLUDE_DIRS = [
@@ -330,7 +333,11 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     if changelog.is_file():
         datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
-        source_path = ROOT / source
+        source_path = (
+            write_packaged_device_command_profiles()
+            if source == DEVICE_COMMAND_PROFILES_SOURCE
+            else ROOT / source
+        )
         if (
             source == "apps/web/dist" and source_path.is_dir()
         ) or source_path.is_file():
@@ -338,6 +345,41 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
                 continue
             datas.append((str(source_path), destination))
     return datas
+
+
+def write_packaged_device_command_profiles() -> Path:
+    source_path = ROOT / DEVICE_COMMAND_PROFILES_SOURCE
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CleanBuildLockError("packaged device command profiles cannot be prepared") from exc
+    if payload.get("schema_version") != "2026.07.device-command-profiles.v1":
+        raise CleanBuildLockError("packaged device command profiles schema_version is unsupported")
+    source_profiles = payload.get("profiles")
+    if not isinstance(source_profiles, list):
+        raise CleanBuildLockError("packaged device command profiles source has invalid profiles")
+    profiles = [
+        profile
+        for profile in source_profiles
+        if isinstance(profile, dict)
+        and profile.get("operation_id") == PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION
+    ]
+    if not profiles:
+        raise CleanBuildLockError("packaged device command profiles missing device.inventory.collect")
+    PACKAGED_DEVICE_COMMAND_PROFILES.parent.mkdir(parents=True, exist_ok=True)
+    PACKAGED_DEVICE_COMMAND_PROFILES.write_text(
+        json.dumps(
+            {
+                "schema_version": payload["schema_version"],
+                "profiles": profiles,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return PACKAGED_DEVICE_COMMAND_PROFILES
 
 
 def build_non_runtime_module_excludes() -> list[str]:

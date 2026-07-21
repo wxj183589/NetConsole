@@ -386,6 +386,20 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
         and Path(source).name == "device_command_profiles.json"
         for source, destination in datas
     )
+    profile_source = next(
+        Path(source)
+        for source, destination in datas
+        if destination == "netconsole/assets"
+        and Path(source).name == "device_command_profiles.json"
+    )
+    profile_payload = json.loads(profile_source.read_text(encoding="utf-8"))
+    assert {profile["operation_id"] for profile in profile_payload["profiles"]} == {
+        "device.inventory.collect"
+    }
+    assert {profile["profile_id"] for profile in profile_payload["profiles"]} == {
+        "h3c.comware.switch.generic.device-inventory.v1",
+        "h3c.comware.mobile_router.generic.device-inventory.v1",
+    }
     assert {
         "PYINSTALLER_COPYING.txt",
         "PYINSTALLER_HOOKS_CONTRIB_LICENSE.txt",
