@@ -424,6 +424,9 @@ class MeshChartEventDTO(ApiModel):
     point_timestamp: str | None = None
     point_rssi: float | None = None
     point_context: MeshChartPointDTO | None = None
+    render_point_timestamp: str | None = None
+    render_point_rssi: float | None = None
+    render_aligned: bool = False
     before_rssi: float | None = None
     after_rssi: float | None = None
     station: str | None = None
@@ -467,6 +470,9 @@ class MeshPathChartDTO(ApiModel):
     total_points: int = 0
     returned_points: int = 0
     downsampled: bool = False
+    requested_max_points: int = 0
+    effective_max_points: int = 0
+    downsample_warning: str | None = None
     time_from: str | None = None
     time_to: str | None = None
     requested_time_from: str | None = None

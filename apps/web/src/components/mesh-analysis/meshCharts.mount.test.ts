@@ -108,17 +108,19 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
-  it('renders formal switch points only at backend-provided coordinates', async () => {
+  it('anchors switch points to the rendered line point instead of event RSSI coordinates', async () => {
     const event: MeshChartEvent = {
       ...chartEvent,
-      point_timestamp: chartPoint.timestamp,
-      point_rssi: -40,
+      point_timestamp: chartPointAfterGap.timestamp,
+      point_rssi: 0,
       point_context: chartPoint,
+      render_point_timestamp: chartPoint.timestamp,
+      render_point_rssi: -40,
+      render_aligned: true,
       before_rssi: -40,
       after_rssi: -48,
     }
-    const unrelatedPoint = { ...chartPoint, timestamp: chartPointAfterGap.timestamp }
-    const wrapper = mount(MeshRssiChart, { props: { points: [unrelatedPoint], events: [event], showSwitchLines: true, showSwitchPoints: true } })
+    const wrapper = mount(MeshRssiChart, { props: { points: [chartPoint], events: [event], showSwitchLines: true, showSwitchPoints: true } })
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as { tooltip: { formatter: (params: unknown) => string }; series: Array<{ name: string; data?: Array<{ value: [string, number]; symbol?: string; meta?: MeshChartPoint; meshEvent?: MeshChartEvent }> ; markLine?: unknown }> }
@@ -133,6 +135,20 @@ describe('MESH charts mount and render', () => {
     expect(tooltip).toContain('<strong>主链路</strong>')
     expect(tooltip).toContain('<strong>备份链路</strong>')
     expect(tooltip).toContain('<strong>切换事件</strong>')
+    wrapper.unmount()
+  })
+
+  it('does not render unaligned, missing or zero RSSI switch nodes', async () => {
+    const zeroPoint = { ...chartPoint, local_rssi: 0 }
+    const events: MeshChartEvent[] = [
+      { ...chartEvent, render_aligned: false, point_context: chartPoint, point_timestamp: chartPoint.timestamp, point_rssi: -40 },
+      { ...chartEvent, event_id: 2, render_aligned: true, render_point_timestamp: zeroPoint.timestamp, render_point_rssi: 0, point_context: zeroPoint },
+    ]
+    const wrapper = mount(MeshRssiChart, { props: { points: [zeroPoint], events, showSwitchPoints: true } })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as { series: Array<{ name: string }> }
+    expect(option.series.map((item) => item.name)).not.toContain('切换节点')
     wrapper.unmount()
   })
 

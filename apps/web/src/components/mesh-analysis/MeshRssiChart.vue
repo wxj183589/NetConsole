@@ -56,14 +56,31 @@ let viewportTimer: ReturnType<typeof setTimeout> | null = null
 
 const timestamps = (): string[] => props.points.map((point) => point.timestamp)
 
+function findRenderedSwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
+  if (event.render_aligned === false) return undefined
+  const timestamp = event.render_point_timestamp || event.point_timestamp
+  if (!timestamp) return undefined
+  const context = event.point_context
+  return props.points.find((point) => (
+    point.timestamp === timestamp
+    && (context?.link_id == null || point.link_id === context.link_id)
+    && (context?.timestamp_tag == null || point.timestamp_tag === context.timestamp_tag)
+    && (event.local_radio == null || point.local_radio === event.local_radio)
+    && point.local_rssi != null
+    && point.local_rssi !== 0
+    && !point.is_anomaly
+  ))
+}
+
 function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent; symbol: string }> {
   return events.flatMap((event) => {
-    if (!event.point_timestamp || event.point_rssi == null) return []
+    const point = findRenderedSwitchPoint(event)
+    if (!point || point.local_rssi == null) return []
     return [{
-      value: [event.point_timestamp, event.point_rssi],
-      meta: event.point_context || props.points.find((item) => item.timestamp === event.point_timestamp),
+      value: [point.timestamp, point.local_rssi],
+      meta: point,
       meshEvent: event,
-      symbol: event.after_rssi != null && event.point_rssi === event.after_rssi ? 'circle' : 'emptyCircle',
+      symbol: event.after_rssi != null && point.local_rssi === event.after_rssi ? 'circle' : 'emptyCircle',
     }]
   })
 }
@@ -162,7 +179,10 @@ watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewp
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
-  const event = data?.meshEvent || props.events.find((item) => item.point_timestamp === data?.meta?.timestamp || item.timestamp === data?.meta?.timestamp)
+  const event = data?.meshEvent || props.events.find((item) => (
+    (item.render_point_timestamp || item.point_timestamp) === data?.meta?.timestamp
+    || item.timestamp === data?.meta?.timestamp
+  ))
   if (event) emit('selectSwitch', event)
 }
 
@@ -239,8 +259,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const event = eventParam?.data?.meshEvent
         const point = pointParam?.data?.meta
           || eventParam?.data?.meta
-          || event?.point_context
-          || props.points.find((item) => item.timestamp === (event?.point_timestamp || event?.timestamp))
+          || (event ? findRenderedSwitchPoint(event) : undefined)
         return buildMeshRssiTooltip(point, event)
       },
     },

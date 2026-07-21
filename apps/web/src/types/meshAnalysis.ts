@@ -140,7 +140,9 @@ export interface MeshChartPoint {
 export interface MeshChartEvent {
   event_id: number | null; timestamp: string; event_type: string; local_radio: number | null; from_peer_mac: string | null; to_peer_mac: string | null
   duration_ms: number | null; from_ap_name?: string | null; to_ap_name?: string | null; segment_sequence?: number | null
-  point_timestamp?: string | null; point_rssi?: number | null; point_context?: MeshChartPoint | null; before_rssi?: number | null; after_rssi?: number | null
+  point_timestamp?: string | null; point_rssi?: number | null; point_context?: MeshChartPoint | null
+  render_point_timestamp?: string | null; render_point_rssi?: number | null; render_aligned?: boolean
+  before_rssi?: number | null; after_rssi?: number | null
   station?: string | null; section?: string | null
 }
 
@@ -158,7 +160,8 @@ export interface MeshPathChartSummary {
 export interface MeshPathChart {
   mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
   location_segments: MeshLocationSegment[]
-  total_points: number; returned_points: number; downsampled: boolean; summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
+  total_points: number; returned_points: number; downsampled: boolean; requested_max_points: number; effective_max_points: number; downsample_warning: string | null
+  summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
   requested_time_from: string | null; requested_time_to: string | null; effective_time_from: string | null; effective_time_to: string | null
   first_sample_time: string | null; last_sample_time: string | null; total_points_in_range: number
 }

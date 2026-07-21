@@ -74,6 +74,7 @@ _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9]
 _MR_IDENTITY_RE = re.compile(r"^(?P<train>.+?)[-_ ]*MR[-_ ]*(?P<role>CT|TC|CW)$", re.IGNORECASE)
 _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
 _MAX_PAGE_SIZE = 1_000
+_MAX_CHART_RENDER_POINTS = 2_000
 LOGGER = logging.getLogger(__name__)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
@@ -1837,6 +1838,7 @@ class MeshAnalysisQueryService:
                 peer_signal = self._chart_array_number(peer_series.get("peer_signal"), index)
             point_rows.append(
                 {
+                    "index": index,
                     "item": item,
                     "source": source,
                     "timestamp": str(timestamp),
@@ -1862,11 +1864,31 @@ class MeshAnalysisQueryService:
             previous_time = current_time or previous_time
             previous_segment_sequence = segment_sequence
         total_points = len(point_rows)
-        max_points = min(max(int(max_points), 10), 2_000)
+        prepared_events = self._prepare_chart_events(point_rows, events_by_index)
+        valid_switch_indices = {
+            int(row["point_index"])
+            for row in prepared_events
+            if str(row["event"].get("event_type") or "") == "ACTIVE_SWITCH"
+            and row.get("point_index") is not None
+        }
+        requested_max_points, effective_max_points, rendered_switch_indices, downsample_warning = (
+            self._chart_render_budget(total_points, max_points, valid_switch_indices)
+        )
         important_values = chart.get("important_indices")
         important = {int(value) for value in (important_values if important_values is not None else [])}
         important.update(self._important_chart_row_indices(point_rows))
-        indices = [int(index) for index in render_indices(total_points, 0, 0, important, max_points)]
+        indices = [
+            int(index)
+            for index in render_indices(
+                total_points,
+                0,
+                0,
+                important,
+                effective_max_points,
+                pinned_indices=rendered_switch_indices,
+            )
+        ]
+        returned_indices = set(indices)
         returned = [self._materialize_chart_point(ap_map, context, point_rows[index]) for index in indices]
         location_segments = self._chart_location_segments(ap_map, point_rows)
         anchor_index = self._int(dict(chart.get("metadata") or {}).get("anchor_index"))
@@ -1876,71 +1898,62 @@ class MeshAnalysisQueryService:
             else None
         )
         events: list[MeshChartEventDTO] = []
-        seen_events: set[int] = set()
-        for event_index_value, values in events_by_index.items():
-            event_index = self._int(event_index_value)
-            for event in values:
-                event_id = int(event.get("id") or 0)
-                if event_id in seen_events:
-                    continue
-                seen_events.add(event_id)
-                timestamp = str(event.get("event_time") or event.get("current_sample_time") or "")
-                event_segment = self._chart_segment(
-                    segment_index,
-                    {
-                        "source_file_id": event.get("source_file_id") or context.detail_source_id,
-                        "sample_time": timestamp,
-                        "radio": event.get("radio"),
-                        "peer_mac_normalized": event.get("to_peer_mac"),
-                    },
+        for prepared in prepared_events:
+            event = prepared["event"]
+            event_id = int(event.get("id") or 0)
+            timestamp = str(event.get("event_time") or event.get("current_sample_time") or "")
+            event_segment = self._chart_segment(
+                segment_index,
+                {
+                    "source_file_id": event.get("source_file_id") or context.detail_source_id,
+                    "sample_time": timestamp,
+                    "radio": event.get("radio"),
+                    "peer_mac_normalized": event.get("to_peer_mac"),
+                },
+            )
+            from_location = self._locate_ap(
+                ap_map,
+                {"peer_ap_mac": event.get("from_peer_mac"), "peer_ap_name": event.get("from_peer_ap_name")},
+            )
+            to_location = self._locate_ap(
+                ap_map,
+                {"peer_ap_mac": event.get("to_peer_mac"), "peer_ap_name": event.get("to_peer_ap_name")},
+            )
+            before_point = prepared.get("before_point")
+            after_point = prepared.get("after_point")
+            event_point = prepared.get("event_point")
+            point_index = self._int(prepared.get("point_index"))
+            render_aligned = point_index is not None and point_index in returned_indices
+            render_point = event_point if render_aligned else None
+            event_location = self._locate_ap(ap_map, dict((event_point or {}).get("item") or {}))
+            events.append(
+                MeshChartEventDTO(
+                    event_id=event_id,
+                    timestamp=timestamp,
+                    event_type=str(event.get("event_type") or ""),
+                    local_radio=self._int(event.get("radio")),
+                    from_peer_mac=str(event.get("from_peer_mac") or "") or None,
+                    to_peer_mac=str(event.get("to_peer_mac") or "") or None,
+                    from_ap_name=str(event.get("from_peer_ap_name") or from_location.name or "") or None,
+                    to_ap_name=str(event.get("to_peer_ap_name") or to_location.name or "") or None,
+                    segment_sequence=self._int((event_segment or {}).get("sequence")),
+                    duration_ms=self._int(event.get("observed_window_ms")),
+                    point_timestamp=str((render_point or {}).get("timestamp") or "") or None,
+                    point_rssi=self._number((render_point or {}).get("local_rssi")),
+                    point_context=(
+                        self._materialize_chart_point(ap_map, context, render_point)
+                        if render_point is not None
+                        else None
+                    ),
+                    render_point_timestamp=str((render_point or {}).get("timestamp") or "") or None,
+                    render_point_rssi=self._number((render_point or {}).get("local_rssi")),
+                    render_aligned=render_aligned,
+                    before_rssi=self._number((before_point or {}).get("local_rssi")),
+                    after_rssi=self._number((after_point or {}).get("local_rssi")),
+                    station=event_location.station or None,
+                    section=event_location.section or None,
                 )
-                from_location = self._locate_ap(
-                    ap_map,
-                    {"peer_ap_mac": event.get("from_peer_mac"), "peer_ap_name": event.get("from_peer_ap_name")},
-                )
-                to_location = self._locate_ap(
-                    ap_map,
-                    {"peer_ap_mac": event.get("to_peer_mac"), "peer_ap_name": event.get("to_peer_ap_name")},
-                )
-                before_point = self._chart_event_point(
-                    point_rows,
-                    event_index,
-                    step=-1,
-                    expected_peer_mac=str(event.get("from_peer_mac") or ""),
-                )
-                after_point = self._chart_event_point(
-                    point_rows,
-                    event_index,
-                    step=1,
-                    expected_peer_mac=str(event.get("to_peer_mac") or ""),
-                )
-                event_point = after_point or before_point
-                event_location = self._locate_ap(ap_map, dict((event_point or {}).get("item") or {}))
-                events.append(
-                    MeshChartEventDTO(
-                        event_id=event_id,
-                        timestamp=timestamp,
-                        event_type=str(event.get("event_type") or ""),
-                        local_radio=self._int(event.get("radio")),
-                        from_peer_mac=str(event.get("from_peer_mac") or "") or None,
-                        to_peer_mac=str(event.get("to_peer_mac") or "") or None,
-                        from_ap_name=str(event.get("from_peer_ap_name") or from_location.name or "") or None,
-                        to_ap_name=str(event.get("to_peer_ap_name") or to_location.name or "") or None,
-                        segment_sequence=self._int((event_segment or {}).get("sequence")),
-                        duration_ms=self._int(event.get("observed_window_ms")),
-                        point_timestamp=str((event_point or {}).get("timestamp") or "") or None,
-                        point_rssi=self._number((event_point or {}).get("local_rssi")),
-                        point_context=(
-                            self._materialize_chart_point(ap_map, context, event_point)
-                            if event_point is not None
-                            else None
-                        ),
-                        before_rssi=self._number((before_point or {}).get("local_rssi")),
-                        after_rssi=self._number((after_point or {}).get("local_rssi")),
-                        station=event_location.station or None,
-                        section=event_location.section or None,
-                    )
-                )
+            )
         current_row = next(
             (row for row in reversed(point_rows) if str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE"),
             None,
@@ -1973,6 +1986,9 @@ class MeshAnalysisQueryService:
             total_points=total_points,
             returned_points=len(returned),
             downsampled=len(returned) < total_points,
+            requested_max_points=requested_max_points,
+            effective_max_points=effective_max_points,
+            downsample_warning=downsample_warning,
             time_from=time_from or first_time,
             time_to=time_to or last_time,
             requested_time_from=time_from or None,
@@ -1983,6 +1999,90 @@ class MeshAnalysisQueryService:
             last_sample_time=last_time,
             total_points_in_range=total_points,
         )
+
+    def _prepare_chart_events(
+        self,
+        point_rows: list[dict[str, Any]],
+        events_by_index: dict[object, object],
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        seen_events: set[int] = set()
+        for event_index_value, values in events_by_index.items():
+            event_index = self._int(event_index_value)
+            for value in values if isinstance(values, list) else []:
+                event = dict(value) if isinstance(value, dict) else {}
+                event_id = int(event.get("id") or 0)
+                if event_id in seen_events:
+                    continue
+                seen_events.add(event_id)
+                before_point = self._chart_event_point(
+                    point_rows,
+                    event_index,
+                    step=-1,
+                    expected_peer_mac=str(event.get("from_peer_mac") or ""),
+                )
+                after_point = self._chart_event_point(
+                    point_rows,
+                    event_index,
+                    step=1,
+                    expected_peer_mac=str(event.get("to_peer_mac") or ""),
+                )
+                event_point = after_point or before_point
+                prepared.append(
+                    {
+                        "event": event,
+                        "before_point": before_point,
+                        "after_point": after_point,
+                        "event_point": event_point,
+                        "point_index": self._int((event_point or {}).get("index")),
+                    }
+                )
+        return prepared
+
+    @classmethod
+    def _chart_render_budget(
+        cls,
+        total_points: int,
+        requested_max_points: int,
+        switch_indices: set[int],
+    ) -> tuple[int, int, set[int], str | None]:
+        requested = min(max(int(requested_max_points), 10), _MAX_CHART_RENDER_POINTS)
+        valid_switches = {index for index in switch_indices if 0 <= index < total_points}
+        if total_points <= requested:
+            return requested, requested, valid_switches, None
+        endpoints = {index for index in (0, total_points - 1) if 0 <= index < total_points}
+        required_count = len(valid_switches | endpoints)
+        if required_count <= _MAX_CHART_RENDER_POINTS:
+            effective = max(requested, required_count)
+            warning = None
+            if effective > requested:
+                warning = (
+                    f"为保留全部 {len(valid_switches)} 个有效切换节点，"
+                    f"图表目标点数已从 {requested} 提升到 {effective}。"
+                )
+            return requested, effective, valid_switches, warning
+        available = max(_MAX_CHART_RENDER_POINTS - len(endpoints), 0)
+        sampled_switches = cls._evenly_spread_indices(valid_switches - endpoints, available)
+        rendered = (valid_switches & endpoints) | sampled_switches
+        warning = (
+            f"切换事件过多，已按时间均匀抽样显示 "
+            f"{len(rendered)}/{len(valid_switches)} 个有效切换节点。"
+        )
+        return requested, _MAX_CHART_RENDER_POINTS, rendered, warning
+
+    @staticmethod
+    def _evenly_spread_indices(values: set[int], limit: int) -> set[int]:
+        ordered = sorted(values)
+        if limit <= 0 or not ordered:
+            return set()
+        if len(ordered) <= limit:
+            return set(ordered)
+        if limit == 1:
+            return {ordered[len(ordered) // 2]}
+        return {
+            ordered[round(position * (len(ordered) - 1) / (limit - 1))]
+            for position in range(limit)
+        }
 
     @classmethod
     def _validate_chart_time_range(cls, time_from: str, time_to: str) -> None:
@@ -2063,7 +2163,8 @@ class MeshAnalysisQueryService:
                 break
             item = dict(row.get("item") or {})
             peer_matches = not expected_peer_mac or self._mac_key(item.get("peer_mac")) == self._mac_key(expected_peer_mac)
-            if peer_matches and str(item.get("status") or "") == "ACTIVE" and row.get("local_rssi") is not None:
+            rssi = self._number(row.get("local_rssi"))
+            if peer_matches and str(item.get("status") or "") == "ACTIVE" and rssi not in {None, 0}:
                 return row
             index += step
         return None

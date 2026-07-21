@@ -13,6 +13,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
 )
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.job_center.job_registry import registered_task_types
+from netconsole.services.mesh_chart_payload import render_indices
 from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
@@ -365,6 +366,9 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
     assert first.point_context is not None
     assert first.point_context.timestamp == first.point_timestamp
     assert first.point_context.local_rssi == first.point_rssi
+    assert first.render_aligned is True
+    assert first.render_point_timestamp == first.point_timestamp
+    assert first.render_point_rssi == first.point_rssi
     assert second.before_rssi is None
     assert second.after_rssi == 43
     assert second.point_timestamp == "2026-07-14 10:00:02.000"
@@ -372,6 +376,68 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
     assert second.point_context is not None
     assert second.point_context.timestamp == second.point_timestamp
     assert second.point_context.local_rssi == second.point_rssi
+    returned = {(point.timestamp, point.link_id): point.local_rssi for point in chart.points}
+    for event in chart.events:
+        assert event.render_aligned is True
+        assert (event.render_point_timestamp, event.point_context.link_id) in returned
+        assert returned[(event.render_point_timestamp, event.point_context.link_id)] == event.render_point_rssi
+
+
+def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:
+    switch_indices = set(range(50, 1_000, 95))
+    requested, effective, rendered_switches, warning = MeshAnalysisQueryService._chart_render_budget(
+        1_000,
+        100,
+        switch_indices,
+    )
+    indices = set(render_indices(1_000, 0, 0, set(), effective, pinned_indices=rendered_switches))
+
+    assert requested == effective == 100
+    assert warning is None
+    assert switch_indices <= indices
+
+    many_switches = set(range(100, 808))
+    requested, effective, rendered_switches, warning = MeshAnalysisQueryService._chart_render_budget(
+        54_800,
+        600,
+        many_switches,
+    )
+    indices = set(render_indices(54_800, 0, 0, set(), effective, pinned_indices=rendered_switches))
+
+    assert requested == 600
+    assert effective == 710
+    assert many_switches <= indices
+    assert warning == "为保留全部 708 个有效切换节点，图表目标点数已从 600 提升到 710。"
+
+
+def test_chart_budget_reports_uniform_sampling_when_valid_switches_exceed_safe_cap() -> None:
+    switch_indices = set(range(1, 2_501))
+    requested, effective, rendered_switches, warning = MeshAnalysisQueryService._chart_render_budget(
+        10_000,
+        600,
+        switch_indices,
+    )
+
+    assert requested == 600
+    assert effective == 2_000
+    assert len(rendered_switches) == 1_998
+    assert rendered_switches <= switch_indices
+    assert warning == "切换事件过多，已按时间均匀抽样显示 1998/2500 个有效切换节点。"
+
+
+def test_chart_does_not_render_zero_rssi_switch_anchor(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute("UPDATE mesh_links SET local_rssi_db = 0 WHERE id = 1")
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+    first = chart.events[0]
+
+    assert first.render_aligned is False
+    assert first.render_point_timestamp is None
+    assert first.render_point_rssi is None
+    assert first.point_context is None
 
 
 def test_peer_chart_can_return_all_visits_with_explicit_gaps(tmp_path: Path) -> None:

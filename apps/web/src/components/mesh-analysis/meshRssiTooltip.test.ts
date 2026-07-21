@@ -61,6 +61,9 @@ const event: MeshChartEvent = {
   from_ap_name: '原 AP',
   to_ap_name: '目标 AP',
   duration_ms: 20,
+  render_aligned: true,
+  render_point_timestamp: point.timestamp,
+  render_point_rssi: point.local_rssi,
 }
 
 describe('MESH RSSI tooltip', () => {
@@ -77,6 +80,8 @@ describe('MESH RSSI tooltip', () => {
     expect(html).not.toContain('切换类型')
     expect(html).toContain('&lt;主 AP&gt;')
     expect(html).toContain('站点&amp;一')
+    expect(html).toContain(`切换事件时间：${point.timestamp}`)
+    expect(html).toContain(`对齐采样时间：${point.timestamp}`)
   })
 
   it('keeps missing RSSI values missing without signal fallback or zero fill', () => {
@@ -95,5 +100,10 @@ describe('MESH RSSI tooltip', () => {
     expect(html).not.toContain('ACTIVE_SWITCH')
     expect(html).not.toContain('耗时')
     expect(html).toContain('&lt;原&gt;')
+  })
+
+  it('explains why an event without an aligned RSSI point has no red node', () => {
+    const html = buildMeshRssiTooltip(undefined, { ...event, render_aligned: false, render_point_timestamp: null })
+    expect(html).toContain('该切换事件无有效 RSSI 点，未作为折线节点显示。')
   })
 })

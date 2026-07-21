@@ -208,7 +208,14 @@ def build_chart_payload(peer_segment: dict[str, object], run_segment: dict[str, 
     }
 
 
-def render_indices(total_count: int, start_index: int, visible_count: int, important_indices: Iterable[int], max_points: int) -> np.ndarray:
+def render_indices(
+    total_count: int,
+    start_index: int,
+    visible_count: int,
+    important_indices: Iterable[int],
+    max_points: int,
+    pinned_indices: Iterable[int] = (),
+) -> np.ndarray:
     if total_count <= 0:
         return np.asarray([], dtype=np.int32)
     if visible_count > 0:
@@ -216,12 +223,17 @@ def render_indices(total_count: int, start_index: int, visible_count: int, impor
         end = min(start_index + visible_count + 2, total_count)
         return np.arange(start, end, dtype=np.int32)
     important = {int(index) for index in important_indices if 0 <= int(index) < total_count}
+    pinned = {int(index) for index in pinned_indices if 0 <= int(index) < total_count}
     if total_count <= max_points:
         return np.arange(total_count, dtype=np.int32)
     limit = max(int(max_points), 2)
-    required = sorted({0, total_count - 1, *important})
+    pinned.update({0, total_count - 1})
+    required = sorted({*pinned, *important})
     if len(required) >= limit:
-        return _spread_indices(required, limit, pinned=(0, total_count - 1))
+        if len(pinned) >= limit:
+            return _spread_indices(pinned, limit, pinned=(0, total_count - 1))
+        sampled = _spread_indices((index for index in required if index not in pinned), limit - len(pinned))
+        return np.asarray(sorted({*pinned, *(int(index) for index in sampled)}), dtype=np.int32)
     excluded = set(required)
     candidates = (index for index in range(total_count) if index not in excluded)
     sampled = _spread_indices(candidates, limit - len(required))

@@ -30,17 +30,24 @@ export function buildBackupSection(backups: readonly MeshChartBackupLink[]): str
 
 export function buildSwitchSection(event?: MeshChartEvent): string {
   if (!event) return ''
-  return [
+  const rows = [
     divider(),
     '<strong>切换事件</strong>',
+    `切换事件时间：${escapeMeshTooltipHtml(event.timestamp)}`,
     `切出：${escapeMeshTooltipHtml(event.from_ap_name)} / ${escapeMeshTooltipHtml(event.from_peer_mac)}`,
     `切入：${escapeMeshTooltipHtml(event.to_ap_name)} / ${escapeMeshTooltipHtml(event.to_peer_mac)}`,
-  ].join('<br>')
+  ]
+  if (event.render_aligned && event.render_point_timestamp) {
+    rows.push(`对齐采样时间：${escapeMeshTooltipHtml(event.render_point_timestamp)}`)
+  } else {
+    rows.push('该切换事件无有效 RSSI 点，未作为折线节点显示。')
+  }
+  return rows.join('<br>')
 }
 
 export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEvent): string {
   if (!point) {
-    return `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">采样时间：${escapeMeshTooltipHtml(event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
+    return `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">采样时间：${escapeMeshTooltipHtml(event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
   }
   return [
     `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">`,

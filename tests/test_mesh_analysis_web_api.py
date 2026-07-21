@@ -63,8 +63,28 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
 
     assert all(response.status_code == 200 for response in responses)
     assert invalid_range.status_code == 422
-    assert responses[5].json()["total_points_in_range"] == responses[5].json()["total_points"]
-    assert responses[5].json()["effective_time_from"] == responses[5].json()["first_sample_time"]
+    active_chart = responses[5].json()
+    assert active_chart["total_points_in_range"] == active_chart["total_points"]
+    assert active_chart["effective_time_from"] == active_chart["first_sample_time"]
+    assert active_chart["requested_max_points"] == 10
+    assert active_chart["effective_max_points"] == 10
+    assert active_chart["downsample_warning"] is None
+    returned_points = {
+        (point["timestamp"], point["link_id"], point["timestamp_tag"], point["local_radio"]): point["local_rssi"]
+        for point in active_chart["points"]
+    }
+    for event in active_chart["events"]:
+        if not event["render_aligned"]:
+            continue
+        context = event["point_context"]
+        key = (
+            event["render_point_timestamp"],
+            context["link_id"],
+            context["timestamp_tag"],
+            event["local_radio"],
+        )
+        assert key in returned_points
+        assert event["render_point_rssi"] == returned_points[key]
     assert removed_alignment.status_code == 404
     assert download.status_code == 200
     assert source["source_file_id"] == 1
