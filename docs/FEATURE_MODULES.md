@@ -28,7 +28,7 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 `web.system_settings` 已作为 Electron Desktop 正式设置页启用并进入客户包；Browser 导航隐藏，Server Mode API 拒绝访问。内部 `web.feature_switch` 仅在源码开发态可见、启用且不进入客户包，所有打包态强制关闭。`web.command_reference` 与 `web.logs` 已注册真实页面、Application Service 和 API；日志 CSV 与开源许可 TXT/XLSX 已通过统一 Export Process 和公共 Artifact source whitelist 闭环，安全清理仍需 Electron 人工确认/取消/恢复验收。系统设置当前仍为 `PARTIAL`，本机工具和目录动作仍需桌面人工验收。默认隐藏规划页继续包括 `web.ac_online_overview`、`web.ac_optical`、`web.ac_config_snapshots`、`web.rail_train_online` 和 `web.online_mr_analysis`。轨旁 AP 业务页 `web.rail_trackside_ap_business` 及光衰更新动作 `web.rail_trackside_ap_business_update` 已进入客户包；轨旁 AP 规划只保留 `web.rail_trackside_ap_plan` 基础资料页签，不再登记 AC 重复页面 Feature。`web.ac_extensions`、`web.rail_car_network_diagnostic（隐藏兼容）` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与已删除的无线勘测不是同一模块。完整状态见[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
 
-阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口，不代表 iPerf、Ping 或 Online MR 已迁移。
+阶段 3 新增 Web 页面登记项 `web.agent_management`。它只控制 Agent 配置与健康管理入口；iPerf/fping 和默认关闭的 Online MR AGENT executor 使用各自独立 Feature/服务边界，不能由该页面的启用状态推断。
 
 `module.snmp_center` 与 `module.wifi_survey` 已从 Registry、profile、入口、业务代码和资源中删除，并进入 `REMOVED_FEATURE_IDS` 防御集合。历史 profile 即使仍携带这两个 key，也必须被忽略且不能重新启用。设备管理 SNMP v1/v2c 和网络工具无线扫描分别属于现有模块，不得借此恢复已删除平台。
 
@@ -36,7 +36,7 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 ## 4. 新功能登记流程
 
-### 在线列车车内通信检测
+### 车内通信检测
 
 正式页面使用 `web.train_communication_monitoring`。点表维护、点表导出和检测执行作为该页面的动作能力登记；历史 `web.rail_car_network_diagnostic` 只保留为隐藏兼容事实记录，不进入正式导航。
 

@@ -492,11 +492,15 @@ export interface DeviceConnectionTest {
   protocol: DeviceConnectionProtocol | null
   success: boolean | null
   result_status: string
+  failure_category: string
   message: string
+  safe_message: string
   method: string
   host: string
   port: number | null
   latency_ms: number | null
+  elapsed_ms: number | null
+  tested_at: string
   system_name: string
   model: string
   os_family: string

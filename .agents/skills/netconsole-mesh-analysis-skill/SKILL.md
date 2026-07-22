@@ -45,6 +45,7 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 6. RSSI、最小 RSSI、发送/接收忙度和日志上报时长保持可追溯；显示降采样不得改变统计。
 7. 备份链缺失先检查 parser、归一化、source_file_id 和 Identity shadow；AP Identity 当前只读诊断，不接管生产映射。
 8. 大导入/解析/图表计算进 Job；报告和链路明细进 Export Process，UI 不做全量 SQL 或 Excel。
+9. 每个原始日志/`source_file_id` 独立生成可追溯报告；综合报告与链路明细保持固定工作表边界，并记录最终参数快照。结论面向普通读者且只来自真实 raw/派生数据，不用示例或随机数据填充缺口。
 
 # 验证与失败报告
 
@@ -52,6 +53,7 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 - 验证大数据 UI 非阻塞、单 AP/全量图表、报告表头/关键值/列宽和取消清理。
 - 无真实多版本日志时明确 fixture 覆盖范围，不声称兼容所有 H3C 版本。
 - 输出修改文件、参数来源、数据库/历史导入影响、Identity shadow 影响和测试命令。
+- 常见失败包括：缺 Peer Name 就丢弃合法 Peer MAC、跨来源合并样本、显示降采样改变统计、报告漏发生时间/站点、把 fixture 兼容写成所有设备版本已验证。
 
 # 相关 Skills
 

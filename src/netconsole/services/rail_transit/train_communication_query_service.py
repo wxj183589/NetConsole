@@ -137,6 +137,8 @@ class TrainCommunicationQueryService:
         sort_order: str = "asc",
     ) -> TrainCommunicationPageDTO:
         rows, _ = self._rows(site_id)
+        rows = self._with_online_context(site_id, rows)
+        rows = self._with_latest_diagnostics(site_id, rows)
         if train:
             needle = train.casefold()
             rows = [row for row in rows if needle in f"{row.train_no} {row.train_name}".casefold()]
@@ -287,18 +289,21 @@ class TrainCommunicationQueryService:
         nodes = {item.node_id: item for item in [*tc1_nodes, *tc2_nodes]}
 
         vrrp_payload = result.get("vrrp") if isinstance(result.get("vrrp"), dict) else {}
-        vrrp_status = self._topology_status(str(vrrp_payload.get("status") or "")) if result else "not_detected"
+        vrrp_ip = self._first_present(
+            str(vrrp_payload.get("ip") or ""),
+            *(item.vrrp_ip for item in inspection.nodes),
+        )
+        vrrp_status = "not_detected" if vrrp_ip else "not_configured"
         cross_payload = result.get("cross_tc_ping") if isinstance(result.get("cross_tc_ping"), dict) else {}
         cross_status = self._topology_status(str(cross_payload.get("status") or "")) if result else "not_detected"
         if inspection.status != POINT_TABLE_CONFIGURED:
-            vrrp_status = "not_configured"
             cross_status = "not_configured"
         if result and cross_status == "not_detected":
             cross_values = result.get("cross_train") if isinstance(result.get("cross_train"), dict) else {}
             cross_status = self._combined_topology_status([str(value) for value in cross_values.values()])
 
         def link(link_id: str, source: str, target: str, label: str) -> TrainCommunicationTopologyLinkDTO:
-            status = vrrp_status if link_id == "tc1-sw-tc2-sw" else self._combined_topology_status([nodes[source].status, nodes[target].status])
+            status = self._combined_topology_status([nodes[source].status, nodes[target].status])
             return TrainCommunicationTopologyLinkDTO(link_id=link_id, source=source, target=target, label=label, status=status)
 
         links = [
@@ -306,7 +311,13 @@ class TrainCommunicationQueryService:
             link("tc1-sw-srv", "TC1-SW", "TC1-SRV", "TC1-SW ↔ TC1-SRV"),
             link("tc2-mr-sw", "TC2-MR", "TC2-SW", "TC2-MR ↔ TC2-SW"),
             link("tc2-sw-srv", "TC2-SW", "TC2-SRV", "TC2-SW ↔ TC2-SRV"),
-            link("tc1-sw-tc2-sw", "TC1-SW", "TC2-SW", "VRRP"),
+            TrainCommunicationTopologyLinkDTO(
+                link_id="tc1-sw-tc2-sw",
+                source="TC1-SW",
+                target="TC2-SW",
+                label="TC1-SW ↔ TC2-SW",
+                status="not_detected",
+            ),
         ]
         train_status = self._combined_topology_status([item.status for item in [*tc1_nodes, *tc2_nodes]])
         return TrainCommunicationTopologyDTO(
@@ -323,9 +334,7 @@ class TrainCommunicationQueryService:
             links=links,
             vrrp=TrainCommunicationVrrpDTO(
                 status=vrrp_status,
-                virtual_ip=str(vrrp_payload.get("ip") or "") or None,
-                message="未检测" if vrrp_status == "not_detected" else "检测异常" if vrrp_status == "abnormal" else "",
-                updated_at=checked_at,
+                virtual_ip=vrrp_ip or None,
             ),
             cross_end=TrainCommunicationCrossEndDTO(
                 status=cross_status,
@@ -398,6 +407,120 @@ class TrainCommunicationQueryService:
             if key:
                 counts[key] += 1
         return counts
+
+    def _with_online_context(
+        self,
+        site_id: str,
+        rows: list[TrainCommunicationRowDTO],
+    ) -> list[TrainCommunicationRowDTO]:
+        try:
+            online_rows = self._all_vehicle_online_rows(site_id)
+        except Exception:
+            return rows
+        result: list[TrainCommunicationRowDTO] = []
+        for row in rows:
+            online = next(
+                (
+                    item
+                    for item in online_rows
+                    if self._same_train(
+                        (row.train_id, row.train_no, row.train_name),
+                        (item.train_id, item.train_no, item.train_name),
+                    )
+                ),
+                None,
+            )
+            if online is None:
+                result.append(row)
+                continue
+            ct = getattr(online, "ct", None)
+            tc = getattr(online, "tc", None)
+            endpoint_statuses = {
+                str(getattr(endpoint, "data_status", "") or "").upper()
+                for endpoint in (ct, tc)
+                if endpoint is not None
+            }
+            data_status = (
+                "FRESH"
+                if "FRESH" in endpoint_statuses
+                else "STALE"
+                if "STALE" in endpoint_statuses
+                else "UNKNOWN"
+            )
+            result.append(
+                row.model_copy(
+                    update={
+                        "overall_status": str(getattr(online, "overall_status", "") or "UNKNOWN"),
+                        "ct_online_status": str(getattr(ct, "online_status", "") or "UNKNOWN"),
+                        "tc_online_status": str(getattr(tc, "online_status", "") or "UNKNOWN"),
+                        "ct_mr_id": str(getattr(ct, "mr_id", "") or ""),
+                        "ct_mr_name": str(getattr(ct, "mr_name", "") or ""),
+                        "tc_mr_id": str(getattr(tc, "mr_id", "") or ""),
+                        "tc_mr_name": str(getattr(tc, "mr_name", "") or ""),
+                        "updated_at": str(getattr(online, "updated_at", "") or "") or None,
+                        "data_status": data_status,
+                        "online_reason": str(getattr(online, "reason_text", "") or ""),
+                    }
+                )
+            )
+        return result
+
+    def _with_latest_diagnostics(
+        self,
+        site_id: str,
+        rows: list[TrainCommunicationRowDTO],
+    ) -> list[TrainCommunicationRowDTO]:
+        diagnostics = self.job_query.list_task_results(
+            site_id,
+            task_type="car_network_diagnostic",
+            status="COMPLETED",
+            limit=200,
+        )
+        result: list[TrainCommunicationRowDTO] = []
+        for row in rows:
+            matched = next(
+                (
+                    (payload, updated_at)
+                    for payload, updated_at in diagnostics
+                    if self._same_train(
+                        (row.train_id, row.train_no, row.train_name, row.canonical_train_id),
+                        tuple(
+                            str(payload.get(key) or "")
+                            for key in ("train_id", "train_no", "display_name", "canonical_train_id")
+                        ),
+                    )
+                ),
+                None,
+            )
+            if matched is None:
+                result.append(row)
+                continue
+            payload, updated_at = matched
+            nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+            node_status = {
+                name: self._topology_status(str(nodes.get(name) or ""))
+                for name in ("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV")
+            }
+            tc1_status = self._combined_topology_status(
+                node_status[name] for name in ("TC1-MR", "TC1-SW", "TC1-SRV")
+            )
+            tc2_status = self._combined_topology_status(
+                node_status[name] for name in ("TC2-MR", "TC2-SW", "TC2-SRV")
+            )
+            diagnostic_status = self._combined_topology_status((tc1_status, tc2_status))
+            if diagnostic_status == "not_detected":
+                diagnostic_status = self._topology_status(str(payload.get("status") or ""))
+            result.append(
+                row.model_copy(
+                    update={
+                        "diagnostic_status": diagnostic_status,
+                        "tc1_diagnostic_status": tc1_status,
+                        "tc2_diagnostic_status": tc2_status,
+                        "last_diagnostic_at": str(updated_at or "") or None,
+                    }
+                )
+            )
+        return result
 
     @staticmethod
     def _same_train(left: tuple[object, ...], right: tuple[object, ...]) -> bool:
@@ -557,6 +680,7 @@ class TrainCommunicationQueryService:
         return next((mr for row in rows for mr in row.mrs if mr.mr_id == mr_id), None)
 
     def _rows(self, site_id: str) -> tuple[list[TrainCommunicationRowDTO], list[OnlineMrSessionSummaryDTO]]:
+        base_trains = self.base_query.list_trains(site_id, page=1, page_size=200).items
         base_mrs = self.base_query.list_mrs(site_id, page=1, page_size=200).items
         mesh_page = self.mesh_query.list_mrs(site_id, page=1, page_size=200)
         mesh_summary = self.mesh_query.get_summary(site_id)
@@ -573,8 +697,66 @@ class TrainCommunicationQueryService:
             task = task_by_session.get(session.session_id) if session else None
             task = task or tasks_by_device.get(str(base.device_id or "")) or tasks_by_device.get(base.id)
             task = task or tasks_by_name.get(base.name.casefold())
-            grouped[base.train_id].append(self._mr_status(base, mesh, session, task, mesh_summary.age_seconds))
-        rows = [self._train_row(train_id, mrs) for train_id, mrs in grouped.items()]
+            train_key = canonical_train_id_for(
+                base.train_id,
+                base.train_no,
+                getattr(base, "train_name", ""),
+            ) or str(base.train_id)
+            grouped[train_key].append(
+                self._mr_status(base, mesh, session, task, mesh_summary.age_seconds)
+            )
+
+        point_trains: dict[str, CarNetworkNode] = {}
+        for node in self._point_table_nodes(site_id):
+            key = canonical_train_id_for(node.train_id, node.train_no, node.display_name) or node.train_id
+            point_trains.setdefault(key, node)
+
+        source_order: list[str] = []
+        base_by_key: dict[str, object] = {}
+        for train in base_trains:
+            key = canonical_train_id_for(train.id, train.train_no, train.name) or str(train.id)
+            if key not in base_by_key:
+                base_by_key[key] = train
+                source_order.append(key)
+        for key in point_trains:
+            if key not in source_order:
+                source_order.append(key)
+        for key in grouped:
+            if key not in source_order:
+                source_order.append(key)
+
+        rows: list[TrainCommunicationRowDTO] = []
+        for key in source_order:
+            base_train = base_by_key.get(key)
+            point_train = point_trains.get(key)
+            identity = normalize_train_identity(
+                key,
+                getattr(base_train, "id", ""),
+                getattr(base_train, "train_no", ""),
+                getattr(base_train, "name", ""),
+                point_train.train_id if point_train is not None else "",
+                point_train.train_no if point_train is not None else "",
+                point_train.display_name if point_train is not None else "",
+            )
+            train_no = str(
+                getattr(base_train, "train_no", "")
+                or (point_train.train_no if point_train is not None else "")
+                or identity.train_no
+            )
+            train_name = str(
+                getattr(base_train, "name", "")
+                or (point_train.display_name if point_train is not None else "")
+                or identity.display_name
+                or key
+            )
+            rows.append(
+                self._train_row(
+                    identity.canonical_train_id or key,
+                    grouped.get(key, []),
+                    train_no=train_no,
+                    train_name=train_name,
+                )
+            )
         return rows, sessions
 
     def _mr_status(
@@ -683,7 +865,14 @@ class TrainCommunicationQueryService:
             iperf=iperf,
         )
 
-    def _train_row(self, train_id: str, mrs: list[MrCommunicationStatusDTO]) -> TrainCommunicationRowDTO:
+    def _train_row(
+        self,
+        train_id: str,
+        mrs: list[MrCommunicationStatusDTO],
+        *,
+        train_no: str = "",
+        train_name: str = "",
+    ) -> TrainCommunicationRowDTO:
         statuses = [item.communication_status for item in mrs]
         all_offline = bool(mrs) and all(item.mesh_link_status.casefold() in {"offline", "down", "disconnected"} for item in mrs)
         if all_offline or "critical" in statuses:
@@ -699,8 +888,8 @@ class TrainCommunicationQueryService:
         else:
             status = "unknown"
         identity = normalize_train_identity(train_id, *(item.train_name for item in mrs))
-        train_no = identity.train_no or train_id
-        train_name = mrs[0].train_name if mrs else identity.display_name or train_id
+        train_no = train_no or identity.train_no or train_id
+        train_name = train_name or (mrs[0].train_name if mrs else identity.display_name or train_id)
         return TrainCommunicationRowDTO(
             train_id=train_id,
             train_no=train_no,

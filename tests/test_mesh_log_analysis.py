@@ -315,6 +315,55 @@ def test_mesh_query_sorts_record_seq_as_integer(tmp_path):
 
 
 
+def test_mesh_repository_uses_performance_indexes_and_keyset_iteration(tmp_path):
+    repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
+    _insert_mesh_samples(repo.path, first_count=5, second_count=0)
+
+    with sqlite3.connect(repo.path) as conn:
+        index_names = {row[1] for row in conn.execute("PRAGMA index_list(mesh_links)").fetchall()}
+        assert {
+            "idx_mesh_links_source_radio_time_id",
+            "idx_mesh_links_source_state_radio_time_id",
+            "idx_mesh_links_source_peer_radio_time_id",
+            "idx_mesh_links_record_order",
+        } <= index_names
+        record_order_columns = [
+            row[2]
+            for row in conn.execute("PRAGMA index_info(idx_mesh_links_record_order)").fetchall()
+        ]
+        assert record_order_columns == ["source_file_order", "record_seq", "source_line_number", "id"]
+        radio_plan = "\n".join(
+            str(row[3])
+            for row in conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT id
+                FROM mesh_links
+                WHERE source_file_id = ? AND radio = ? AND sample_time >= ? AND sample_time <= ?
+                ORDER BY source_file_id ASC, radio ASC, sample_time ASC, id ASC
+                """,
+                (1, 1, "2025-12-03 10:00:00.000", "2025-12-03 10:00:10.000"),
+            ).fetchall()
+        )
+        assert "idx_mesh_links_source_radio_time_id" in radio_plan
+        order_plan = "\n".join(
+            str(row[3])
+            for row in conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT id
+                FROM mesh_links
+                ORDER BY source_file_order ASC, record_seq ASC, source_line_number ASC, id ASC
+                LIMIT 5
+                """,
+            ).fetchall()
+        )
+        assert "idx_mesh_links_record_order" in order_plan
+
+    rows = list(repo.iter_link_details(batch_size=2))
+    assert [row["record_seq"] for row in rows] == [1, 2, 3, 4, 5]
+
+
 def test_mesh_peer_mapping_keeps_ap_mac_and_radio_mac_separate(tmp_path):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")

@@ -1,28 +1,34 @@
-# 在线列车车内通信检测
+# 车内通信检测
 
-点表、固定拓扑、VRRP、跨 TC 和迁移事实源的详细说明见 [专题文档目录](rail-transit/train-communication/README.md)。
+点表、固定拓扑、VRRP 静态配置、跨 TC 和迁移事实源的详细说明见 [专题文档目录](rail-transit/train-communication/README.md)。
 
 ## 定位
 
-`/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面正式名称为“在线列车车内通信检测”，只展示当前在线列车选择、TC1/TC2 两端固定六节点、节点和链路状态、VRRP、跨 TC 通信、刷新与“立即检测”。
+`/rail-transit/train-communication` 是固定车载拓扑状态页，不是无线综合看板。页面正式名称为“车内通信检测”，展示当前局点全部已登记列车、TC1/TC2 两端固定六节点、节点和链路状态、VRRP 虚拟 IP 静态配置、跨 TC 通信、刷新与“开始检测”。
 
 固定节点为：
 
 ```text
 TC1-MR -> TC1-SW -> TC1-SRV
              |
-          VRRP / 跨 TC
+       静态拓扑连接
              |
 TC2-MR -> TC2-SW -> TC2-SRV
 ```
 
-轨旁 AP、RSSI、fping、丢包、iPerf、光衰、Online MR、Agent 和原始 Mesh-Link 明细属于各自独立页面，不在本页执行、采集或展示。列车可选状态只读取 `VehicleMrOnlineQueryService` 已计算的正式在线结果，不使用正在运行的 Online MR Session 充当在线状态，也不在前端硬编码列车。
+轨旁 AP、RSSI、持续 fping/iPerf、光衰、Online MR、Agent 和原始 Mesh-Link 明细属于各自独立页面，不在本页执行或采集。列车在线状态只读取 `VehicleMrOnlineQueryService` 已计算的辅助结果，不使用正在运行的 Online MR Session 充当在线状态，也不在前端硬编码列车。
 
-## 在线列车来源
+## 列车来源与在线辅助状态
 
-`GET /api/rail-transit/train-communication/online` 是本页下拉框的正式来源。该接口复用列车在线页的当前状态，只有 `BOTH_ONLINE` 和 `ONE_SIDE_ONLINE` 且至少一个在线端 `data_status == FRESH` 的列车可进入检测页；`BOTH_OFFLINE`、`STALE` 和 `UNKNOWN` 不作为当前在线列车返回。
+本页使用 `GET /api/rail-transit/train-communication/trains`。Query Service 按以下来源合并、统一身份去重并自然排序：
 
-返回行包含 `canonical_train_id`、`display_name`、CT/TC 在线状态、CT/TC MR 身份、更新时间和在线原因。`active_sessions` 仍可展示当前是否存在采集任务，但不参与在线列车判定。
+1. 轨道交通基础资料中的列车；
+2. 车内通信点表中的列车；
+3. 已配置车载 MR 所属列车。
+
+`GET /api/rail-transit/train-communication/online` 继续供“列车在线情况”等需要在线过滤的页面使用，不再驱动车内通信检测页的列车准入。
+
+`trains` 返回行可附带 `canonical_train_id`、`display_name`、CT/TC 在线状态、CT/TC MR 身份、更新时间和在线原因；没有快照时保持未知。双端在线、单端在线、当前离线、数据过期和在线状态未知都只显示为小型辅助标签，不禁用选择或检测。
 
 列车身份统一归一到 `train:<两位车号>`，例如 `列车01`、`01车`、`01`、`1`、`train-01`、`train:01` 和 `LC01` 均匹配同一列车。拓扑查询、点表校验和最新诊断结果查询均使用同一规则。
 
@@ -39,15 +45,17 @@ Python `TrainCommunicationQueryService` 返回稳定状态，Vue 只映射中文
 | `not_detected` | 未检测 | 已配置但没有可用检测结果 |
 | `not_configured` | 未配置 | 当前基础资料未建立对应节点关联 |
 
-缺失值不能显示为 `unknown`、`no_data`、`-` 或数值 `0`。当前基础资料能够明确关联 CT/TC 车载 MR；交换机、服务器、VRRP 和跨端检测没有明确事实时，必须返回“未配置”或“未检测”，不得按名称、地址或前端规则猜测。
+缺失值不能显示为 `unknown`、`no_data`、`-` 或数值 `0`。当前基础资料能够明确关联 CT/TC 车载 MR；交换机、服务器和跨端检测没有明确事实时，必须返回“未配置”或“未检测”，不得按名称、地址或前端规则猜测。VRRP 没有正式状态检测来源，拓扑只在 `vrrp_ip` 有值时展示虚拟 IP，不展示状态、主端、消息或占位文字。
 
 ## 检测任务
 
-“立即检测”复用现有 `RailTransitWebApplicationService.start_car_network_diagnostic()` 和 `car_network_diagnostic` Task：
+“开始检测”复用现有 `RailTransitWebApplicationService.start_car_network_diagnostic()` 和 `car_network_diagnostic` Task：
 
 - Router 只校验 Feature、局点和业务 ID，再调用 Application Service；
-- Application Service 提交任务前再次复核正式在线状态，列车离线或数据过期时返回 409；
-- 任务参数保存 `canonical_train_id`、车号、显示名、CT/TC MR、点表 revision、在线快照时间和在线状态；
+- Application Service 只要求列车身份可由基础资料或点表解析，且当前列车点表存在、完整并含可执行节点；
+- 在线状态查询结果是 Optional。存在时任务参数保存 CT/TC MR、快照时间和原始状态；不存在、离线或过期时仍创建任务；
+- Worker 以点表及其绑定设备作为检测目标，找不到正式 MR 分组时仍按点表地址执行可用步骤；
+- AC/Mesh-Link 没有数据、查询失败或显示双端离线时记录辅助状态并继续 MR SSH、车内 Ping 和跨 TC 检测，不提前生成离线结论；
 - 页面轮询现有任务状态，终态后重新读取拓扑；
 - 页面卸载或切换列车时清理轮询，不停止后台任务；
 - 本入口不启动 Online MR、不启动持续 fping/iPerf、不采集轨旁 AP，也不接受命令、凭据或路径。
@@ -71,11 +79,11 @@ POST /api/rail-transit/train-communication/diagnostics/{task_id}/cancel
 POST /api/rail-transit/train-communication/diagnostics/recover
 ```
 
-`summary` 提供页面摘要，`online` 提供当前可检测列车，`trains` 保留为通用通信聚合列表。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用，但不再驱动本页下拉框。
+`summary` 提供页面摘要，`trains` 提供本页全部列车及最近检测状态，`online` 保留为当前在线列车过滤接口。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用。
 
 ## 刷新与导航
 
-- 手工刷新同时重新读取正式在线列车和当前拓扑；
+- 手工刷新同时重新读取全部列车、辅助在线状态和当前拓扑，并尽量保留当前选择；
 - 自动刷新可关闭，或设置为 10、30、60 秒；
 - 同一页面只维护一个自动刷新定时器和一个检测任务轮询定时器；
 - 点击已有 `device_id` 的节点跳转到 `/devices/{device_id}`，复用设备详情；未配置节点不创建虚假详情；
@@ -83,4 +91,4 @@ POST /api/rail-transit/train-communication/diagnostics/recover
 
 ## 验收边界
 
-自动测试覆盖固定六节点、状态映射、空状态、API DTO、任务路由和定时器清理。交换机/服务器拓扑关联、VRRP、跨 TC 实际检测及真实设备通信仍需点表事实源和现场验收；完成前不得把“未配置/未检测”提升为正常。
+自动测试覆盖固定六节点、状态映射、VRRP 静态展示、空状态、API DTO、任务路由和定时器清理。交换机/服务器拓扑关联、跨 TC 实际检测及真实设备通信仍需点表事实源和现场验收；完成前不得把“未配置/未检测”提升为正常。当前没有 VRRP 主备状态检测能力，不得由节点、Ping 或跨 TC 结果推断。

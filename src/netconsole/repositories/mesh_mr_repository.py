@@ -51,6 +51,50 @@ _MESH_EVENT_CHART_COLUMNS = (
     "id, source_file_id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
     "current_sample_time, observed_window_ms, details_json"
 )
+_MESH_PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    (
+        "idx_mesh_links_source_radio_time_id",
+        "mesh_links",
+        ("source_file_id", "radio", "sample_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_mesh_links_source_radio_time_id "
+        "ON mesh_links(source_file_id, radio, sample_time, id)",
+    ),
+    (
+        "idx_mesh_links_source_state_radio_time_id",
+        "mesh_links",
+        ("source_file_id", "link_state", "radio", "sample_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_mesh_links_source_state_radio_time_id "
+        "ON mesh_links(source_file_id, link_state, radio, sample_time, id)",
+    ),
+    (
+        "idx_mesh_links_source_peer_radio_time_id",
+        "mesh_links",
+        ("source_file_id", "peer_mac_normalized", "radio", "sample_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_mesh_links_source_peer_radio_time_id "
+        "ON mesh_links(source_file_id, peer_mac_normalized, radio, sample_time, id)",
+    ),
+    (
+        "idx_active_points_source_radio_time_id",
+        "active_points",
+        ("source_file_id", "radio", "sample_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_active_points_source_radio_time_id "
+        "ON active_points(source_file_id, radio, sample_time, id)",
+    ),
+    (
+        "idx_switch_events_source_radio_time_id",
+        "switch_events",
+        ("source_file_id", "radio", "event_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_switch_events_source_radio_time_id "
+        "ON switch_events(source_file_id, radio, event_time, id)",
+    ),
+    (
+        "idx_mesh_links_record_order",
+        "mesh_links",
+        ("source_file_order", "record_seq", "source_line_number", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_mesh_links_record_order "
+        "ON mesh_links(source_file_order, record_seq, source_line_number, id)",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -435,6 +479,7 @@ class MeshMrRepository:
             self._ensure_column(conn, "source_files", "analysis_params_json", "TEXT DEFAULT ''")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
+            self._ensure_performance_indexes(conn)
             self._backfill_peer_columns(conn)
             if is_new_database:
                 conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)", (DERIVED_ANALYSIS_KEY, DERIVED_ANALYSIS_VERSION))
@@ -1075,7 +1120,7 @@ class MeshMrRepository:
                 LEFT JOIN samples s ON s.id = ml.sample_id
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
-                ORDER BY ml.record_seq ASC, ml.source_file_order ASC, ml.source_line_number ASC, ml.id ASC
+                ORDER BY ml.source_file_order ASC, ml.record_seq ASC, ml.source_line_number ASC, ml.id ASC
                 LIMIT ? OFFSET ?
                 """,
                 [*values, limit, offset],
@@ -1127,16 +1172,64 @@ class MeshMrRepository:
                     row["source_file_id"] = source_id
                     yield row
             return
-        offset = 0
+        cursor_order: tuple[int, int, int, int] | None = None
+        group_indexes: dict[tuple[object, object, object], int] = {}
         while True:
-            _total, rows = self.query_links(batch_size, offset, filters)
+            clauses, values = self._link_filter_clauses(filters)
+            if cursor_order is not None:
+                source_order, record_seq, source_line_number, link_id = cursor_order
+                clauses.append(
+                    "("
+                    "ml.source_file_order > ? OR "
+                    "(ml.source_file_order = ? AND ml.record_seq > ?) OR "
+                    "(ml.source_file_order = ? AND ml.record_seq = ? AND ml.source_line_number > ?) OR "
+                    "(ml.source_file_order = ? AND ml.record_seq = ? AND ml.source_line_number = ? AND ml.id > ?)"
+                    ")"
+                )
+                values.extend([
+                    source_order,
+                    source_order,
+                    record_seq,
+                    source_order,
+                    record_seq,
+                    source_line_number,
+                    source_order,
+                    record_seq,
+                    source_line_number,
+                    link_id,
+                ])
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT ml.*, s.timestamp_tag, sf.archived_filename, sf.archived_path
+                    FROM mesh_links ml
+                    LEFT JOIN samples s ON s.id = ml.sample_id
+                    LEFT JOIN source_files sf ON sf.id = ml.source_file_id
+                    {where}
+                    ORDER BY ml.source_file_order ASC, ml.record_seq ASC, ml.source_line_number ASC, ml.id ASC
+                    LIMIT ?
+                    """,
+                    [*values, batch_size],
+                ).fetchall()
             if not rows:
                 break
             for row in rows:
-                yield row
+                data = _with_synthetic_payload(row)
+                key = (data.get("source_file_id"), data.get("sample_id"), data.get("radio"))
+                if key not in group_indexes:
+                    group_indexes[key] = len(group_indexes)
+                data["sample_group_index"] = group_indexes[key]
+                yield data
             if len(rows) < batch_size:
                 break
-            offset += len(rows)
+            last_row = rows[-1]
+            cursor_order = (
+                int(last_row["source_file_order"] or 0),
+                int(last_row["record_seq"] or 0),
+                int(last_row["source_line_number"] or 0),
+                int(last_row["id"] or 0),
+            )
 
     def find_sample_row_position(
         self,
@@ -2223,6 +2316,13 @@ class MeshMrRepository:
         existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _ensure_performance_indexes(conn: sqlite3.Connection) -> None:
+        for _index_name, table, columns, sql in _MESH_PERFORMANCE_INDEXES:
+            existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if all(column in existing for column in columns):
+                conn.execute(sql)
 
     @staticmethod
     def _backfill_peer_columns(conn: sqlite3.Connection) -> None:

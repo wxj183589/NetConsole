@@ -1,6 +1,6 @@
 # NetConsole
 
-NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与在线列车车内通信、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
+NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
 当前版本：`v1.4.1`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
@@ -24,10 +24,10 @@ NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，
 | 一级模块 | Feature key | 主要能力 |
 | --- | --- | --- |
 | 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、SecureCRT/OmniPeek 导出 |
-| AC 管理 | `module.ac` | FIT AP 资源、扩展、光衰、历史和命令 |
-| 轨道交通 | `module.rail_transit` | 车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、在线列车车内通信检测与点表 |
-| 配置采集 | `module.config_collection` | 配置快照、比较、批量采集 |
-| 文件管理 | `module.file_management` | 局点文件、下载、复制和整理 |
+| AC 管理 | `module.ac` | FIT-AP 资源、扩展、光衰、受控固化/远程登录动作和 OmniPeek 名称表 |
+| 轨道交通 | `module.rail_transit` | 车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、全列车车内通信检测与点表 |
+| 配置采集 | `module.config_collection` | 配置快照、勾选/左右对比、批量采集和差异导出 |
+| 文件管理 | `module.file_management` | 受控 SFTP 浏览、持久下载队列、MESH 日志归档和本地文件管理 |
 | 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和用户配置的可选外部 IPOP v4.1 |
 | 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
 | 日志 | `module.logs` | 应用日志查看与导出 |
@@ -80,14 +80,14 @@ flowchart LR
 
 - UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
 - 正式桌面后台任务走 `Vue/FastAPI Application Service -> LocalProcessAdapter -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
-- 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。
+- 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。`COMPLETED` 只表示调度生命周期结束，不保证所有业务目标成功；批量任务还需读取结构化业务结果。当前轨旁 AP 光衰任务已在详情中区分部分成功，但列表级通用警告聚合仍是已知缺口。
 - Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。
 - 所有正式导出走独立 Export Process，使用临时文件完成后原子替换目标文件。
 - 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
 - `JobRegistry` 按领域 handler 模块分区；能力集合由测试校验，不再在文档和测试中绑定易漂移的任务总数。多数既有领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
 - 设备批量连接测试和批量详情采集使用永久后台 Worker/进程链；是否已由统一 Job Center 接管以生产 handler 和测试为准。
 - AP Identity 当前仅为只读 shadow/diagnostics，不参与生产匹配、页面展示或业务结论接管。
-- Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Token 始终留在 Controller 进程内。浏览器端通过“网络工具 / 流量测试”调用统一 Traffic API。
+- Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Online MR 也提供默认关闭的单 Agent start/status/normal stop、自动包下载和安全导入。Token 始终留在 Controller 进程内，不提供远端强停、包删除或任意命令。
 
 完整说明见 [当前架构](docs/ARCHITECTURE.md)、[永久架构与后续演进](docs/ARCHITECTURE_NEXT.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[最终迁移矩阵](docs/architecture/MIGRATION_MATRIX.md)、[架构一致性报告](docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
 
@@ -147,6 +147,11 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 - [Agent 流量测试协议](docs/AGENT_TRAFFIC_API.md)
 - [统一流量测试架构](docs/TRAFFIC_TEST_ARCHITECTURE.md)
 - [MR/Mesh 日志分析规则](docs/mr_mesh_log_analysis_rules.md)
+- [AC/FIT-AP 管理](docs/AC_MANAGEMENT.md)
+- [车内通信检测](docs/TRAIN_COMMUNICATION_MONITORING.md)
+- [设备文件下载与 SFTP](docs/device-files/README.md)
+- [配置采集与快照对比](docs/CONFIG_COLLECTION.md)
+- [CBTC 旧 Wireshark DLL 逆向状态](docs/reverse-engineering/CBTC_WIRESHARK_DLL.md)
 - [AP Identity](docs/AP_IDENTITY.md)
 - [表格与 UI 规范](docs/ui_table_guidelines.md)
 - [功能模块与 Feature key](docs/FEATURE_MODULES.md)

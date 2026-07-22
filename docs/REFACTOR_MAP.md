@@ -8,12 +8,12 @@
 
 | 领域 | 当前永久入口 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
-| Job Center | `TaskApplicationService/TaskRuntime/LocalProcessAdapter` | 协议统一；部分领域仍委托 `legacy_tasks.py` | 按生产调用逐项迁出，保留取消/错误/事件契约 |
+| Job Center | `TaskApplicationService/TaskRuntime/LocalProcessAdapter` | 协议统一；部分领域仍委托 `legacy_tasks.py`；业务部分成功尚未通用聚合到列表警告 | 按生产调用逐项迁出，并统一业务结果/列表/详情/筛选语义 |
 | 设备管理 | Device Service -> Router -> Vue | `IMPLEMENTED_UNVERIFIED` | Electron 人工与真实设备 CRUD/连接/导入导出验收 |
-| AC/FIT-AP | AC Application/Query Service -> Router -> Vue | `PARTIAL / REAL_DEVICE_PENDING` | 补齐隐藏缺口并做真实 H3C AC 验收 |
-| 轨道交通 | Rail/Online MR/MESH Service -> Router -> Vue | `PARTIAL` | 按独立业务闭环验收采集、停止、恢复、Artifact 和报告 |
-| 配置采集 | Config Application Service -> Router -> Vue | `IMPLEMENTED_UNVERIFIED` | 真实采集、保存、双栏比较和 Artifact 人工验收 |
-| 设备文件下载 | File Application Service -> Router -> Vue/Bridge | `IMPLEMENTED_UNVERIFIED` | 真实 SFTP、队列恢复和本机动作验收 |
+| AC/FIT-AP | AC Application/Query Service -> Router -> Vue | 受控固化/远程登录与 OmniPeek 已接线，`PARTIAL / REAL_DEVICE_PENDING` | 验证真实 AC 动作、确认/审计、NAM 导入和并发互斥 |
+| 轨道交通 | Rail/Online MR/MESH Service -> Router -> Vue | 车内通信已解除在线硬门槛；AGENT executor 默认关闭；整体 `PARTIAL` | 按 LOCAL/AGENT/车内检测/MESH 独立闭环验收 |
+| 配置采集 | Config Application Service -> Router -> Vue | 两条勾选快照已进入真实对比输入，`IMPLEMENTED_UNVERIFIED` | 验证真实采集、裁剪、空/相同文件、双栏比较和 Artifact |
+| 设备文件下载 | File Application Service -> Router -> Vue/Bridge | SSH/SFTP 能力区分、受控启用与分阶段首屏已实现，`IMPLEMENTED_UNVERIFIED` | 验证 AC/MR/主机密钥、大文件、队列恢复和本机动作 |
 | 网络工具 | Network/Traffic Service -> Router/WS -> Vue | `PARTIAL` | 本地/Agent fping、iPerf、无线扫描实机验收 |
 | 命令平台 | Operation -> Resolver -> Versioned Profile -> Adapter | 首个设备 inventory Profile 已接入 | AC/MR/配置/文件命令按证据逐域接入 |
 | Electron 发布 | Electron Builder + 冻结 Backend + 本地工具/合规门 | 基础链已建立 | 完成 E2 依赖/SBOM/许可证与最终制品 smoke |

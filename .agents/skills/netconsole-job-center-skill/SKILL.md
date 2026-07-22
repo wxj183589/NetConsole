@@ -42,6 +42,7 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 5. stdout 只输出 UTF-8 JSONL 协议事件；普通 print、设备回显和 traceback 进入 stderr/结构化日志。
 6. Application Service 使用 `submit_background_job()`；Vue 通过 Task API 处理 progress、log、finished、error、cancelled 和强制停止，并在终态释放页面订阅。
 7. 覆盖源码与 frozen 启动路径、取消宽限、临时 Job/cancel 文件和进程清理。
+8. 分离七状态调度生命周期与业务结果；`COMPLETED` 只表示 Worker 正常收口。批量任务的部分失败/警告必须使用结构化结果驱动列表、详情、筛选、汇总和页面提示，不从日志文本推断。
 
 # 项目约束
 
@@ -50,13 +51,15 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 - 当前仍有 `handlers/legacy_tasks.py` 兼容实现；它是只迁出、不迁入区域，不得描述为已全部完成迁移。
 - 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署和完整远程 Agent 管理仍未实现。
 - 页面回调只绑定结构化结果，不做重查询、解析或导出。
+- 不新增 `partial`/`warning` 作为第八个 Task 状态；用业务结果字段表达 `PARTIAL_SUCCESS/WARNING`。如果列表 `has_warning` 与详情结果不一致，必须报告为代码缺口，不能只改文案掩盖。
 
 # 验证与失败报告
 
 - 测试成功、空结果、业务失败、异常 traceback、取消唯一终态、强制停止、页面关闭、临时文件清理和 frozen 命令构造。
 - 检查 Job 参数 JSON 序列化、stdout 无污染、数据库连接不跨进程。
 - 无法验证冻结包时明确说明只验证了源码模式。
-- 输出 task_type、注册位置、事件/取消策略、legacy 影响、临时文件和验证命令。
+- 常见失败包括：`COMPLETED` 被误写成全部成功、列表未读取详情结果、取消/强停产生多个终态、stdout 被普通输出污染、SQLite connection 跨进程。
+- 输出 task_type、注册位置、调度状态、业务结果聚合、事件/取消策略、legacy 影响、临时文件、文档同步和验证命令。
 
 # 相关 Skills
 

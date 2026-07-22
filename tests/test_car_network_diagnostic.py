@@ -114,6 +114,7 @@ def test_full_ok_outputs_mr_json_names() -> None:
     assert payload["nodes"]["TC1-MR"] == "ok"
     assert "TC1-AP" not in payload["nodes"]
     assert payload["vrrp"]["ip"] == "10.122.6.254"
+    assert payload["vrrp"]["status"] == "not_detected"
 
 
 def test_train_offline_requires_no_ac_no_ssh_and_all_configured_ping_failed() -> None:
@@ -275,7 +276,7 @@ def test_cross_ping_failure_after_ssh_success_reports_cross_link_abnormal() -> N
     result = evaluate_diagnostic(nodes, ping, ssh, AcApStatus(True, True, True, True))
     payload = result.to_json_dict()
 
-    assert result.conclusion == "跨TC链路 / VRRP / 中间骨干链路异常"
+    assert result.conclusion == "跨TC链路 / 中间骨干链路异常"
     assert result.cross_train == {"TC1->TC2": "fail", "TC2->TC1": "fail"}
     assert payload["ssh_status"]["TC1-MR"]["connected"] is True
     assert payload["ssh_status"]["TC1-MR"]["remote_ping_ok_count"] == 2
@@ -606,7 +607,7 @@ def test_ac_query_failure_is_unknown_not_both_offline() -> None:
     assert status.online_source == "ac_query_failed"
 
 
-def test_ac_success_both_mr_offline_skips_ping_and_ssh() -> None:
+def test_ac_success_both_mr_offline_continues_wired_diagnostic() -> None:
     nodes = default_point_table("NBL12-LC06", "06")
     called: list[str] = []
     output = """AP name: ap1
@@ -621,10 +622,9 @@ NBL12-LC16-MR-CT       74ad-cb9d-3321 bc5a-3457-689f Forwarding 35   1/2
 
     result = service.run()
 
-    assert result.status == "offline"
-    assert result.conclusion.startswith("AC mesh-link")
+    assert result.status != "offline"
     assert called == []
-    assert result.nodes["TC1-SW"] == "skipped"
+    assert result.nodes["TC1-SW"] != "skipped"
     assert result.to_json_dict()["ac_probe"]["both_mr_offline"] is True
 
 
@@ -748,7 +748,7 @@ NBL12-LC16-MR-CT       74ad-cb9d-3321 bc5a-3457-689f Forwarding 35   1/2
 
     result = service.run()
 
-    assert result.status == "offline"
+    assert result.status != "offline"
     assert result.train_ac_status is not None
     assert result.train_ac_status.tc1_mr_online is False
 

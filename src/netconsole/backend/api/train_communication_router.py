@@ -453,7 +453,7 @@ def related_packages(
 
 
 def _query(callback):
-    with map_api_errors("在线列车通信数据暂时不可读"):
+    with map_api_errors("车内通信数据暂时不可读"):
         try:
             return callback()
         except ValueError as exc:
@@ -465,7 +465,6 @@ def _raise_application_error(exc: RailTransitWebError) -> None:
         "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
         "TRAIN_COMMUNICATION_REVISION_CONFLICT": status.HTTP_409_CONFLICT,
-        "TRAIN_COMMUNICATION_OFFLINE": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

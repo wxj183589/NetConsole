@@ -58,7 +58,7 @@ def test_car_network_diagnostic_job_calls_real_service_boundary(monkeypatch, tmp
     assert progress_rows[-1] == ("progress_meta", 2, 3, "跨TC通信")
 
 
-def test_car_network_diagnostic_job_rejects_missing_train(monkeypatch, tmp_path: Path) -> None:
+def test_car_network_diagnostic_job_rejects_missing_point_table(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(car_network_diagnostic_job, "Database", lambda _path: object())
     monkeypatch.setattr(car_network_diagnostic_job, "DeviceRepository", lambda _database: object())
     monkeypatch.setattr(car_network_diagnostic_job, "build_car_network_trains", lambda _repository, _site: [])
@@ -74,6 +74,62 @@ def test_car_network_diagnostic_job_rejects_missing_train(monkeypatch, tmp_path:
     try:
         car_network_diagnostic_job.run_car_network_diagnostic(context)
     except ValueError as exc:
-        assert "列车不存在" in str(exc)
+        assert "车内通信点表" in str(exc)
     else:
-        raise AssertionError("missing train must fail")
+        raise AssertionError("missing point table must fail")
+
+
+def test_car_network_diagnostic_job_uses_point_table_identity_without_registered_mr(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    node = CarNetworkNode(
+        "train:01",
+        "TC1-MR",
+        "MR",
+        train_no="01",
+        display_name="01车",
+        primary_address="10.0.0.1",
+    )
+    repository = type("Repository", (), {"list": lambda self: []})()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(car_network_diagnostic_job, "Database", lambda _path: object())
+    monkeypatch.setattr(car_network_diagnostic_job, "DeviceRepository", lambda _database: repository)
+    monkeypatch.setattr(car_network_diagnostic_job, "build_car_network_trains", lambda _repository, _site: [])
+    monkeypatch.setattr(
+        car_network_diagnostic_job,
+        "CarNetworkPointTableStore",
+        lambda _paths, _site: type("Store", (), {"load": lambda self: [node]})(),
+    )
+    monkeypatch.setattr(car_network_diagnostic_job, "discover_ac_devices", lambda _repository: [])
+    monkeypatch.setattr(car_network_diagnostic_job, "discover_core_switch_candidates", lambda _repository, _site: [])
+
+    class FakeDiagnosticService:
+        def __init__(self, nodes, **kwargs) -> None:
+            captured.update(nodes=nodes, **kwargs)
+
+        def run(self, _progress):
+            return type("Result", (), {"to_json_dict": lambda self: {"status": "partial_fail"}})()
+
+    monkeypatch.setattr(car_network_diagnostic_job, "CarNetworkDiagnosticService", FakeDiagnosticService)
+    context = JobContext(
+        "task-1",
+        "car_network_diagnostic",
+        {
+            "site_name": "demo",
+            "train_id": "train:01",
+            "canonical_train_id": "train:01",
+            "train_no": "01",
+            "display_name": "01车",
+            "db_path": str(tmp_path / "site.sqlite"),
+        },
+        None,
+        None,
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+    )
+
+    result = car_network_diagnostic_job.run_car_network_diagnostic(context)
+
+    assert result["status"] == "partial_fail"
+    assert captured["nodes"] == [node]
+    assert captured["train"] == CarNetworkTrain("train:01", "01", "01车")

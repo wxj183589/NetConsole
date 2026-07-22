@@ -91,16 +91,24 @@ class _CapturingProcessAdapter:
         self.second_start_entered = Event()
         self.release_start = Event()
         self.cancelled: list[str] = []
-        self.bootstrap_buffers: list[bytearray] = []
-        self.pending_bootstraps: dict[str, bytearray] = {}
+        self.bootstrap_buffers: list[dict[str, str]] = []
+        self.pending_bootstraps: dict[str, dict[str, str]] = {}
 
-    def start_job(self, job, *, runtime_bootstrap=None, **kwargs) -> str:
+    def start_job(
+        self,
+        job,
+        *,
+        sensitive_bootstrap=None,
+        runtime_bootstrap=None,
+        **kwargs,
+    ) -> str:
         self.jobs.append(job)
         self.completions.append(kwargs.get("on_complete"))
-        if runtime_bootstrap is not None:
-            assert isinstance(runtime_bootstrap, bytearray)
-            self.bootstrap_buffers.append(runtime_bootstrap)
-            self.pending_bootstraps[job.job_id] = bytearray(runtime_bootstrap)
+        assert runtime_bootstrap is None
+        if sensitive_bootstrap is not None:
+            assert isinstance(sensitive_bootstrap, dict)
+            self.bootstrap_buffers.append(sensitive_bootstrap)
+            self.pending_bootstraps[job.job_id] = dict(sensitive_bootstrap)
         if len(self.jobs) > 1:
             self.second_start_entered.set()
         if self.block_start:
@@ -115,23 +123,23 @@ class _CapturingProcessAdapter:
         self.cancelled.append(task_id)
         bootstrap = self.pending_bootstraps.pop(task_id, None)
         if bootstrap is not None:
-            bootstrap[:] = b"\x00" * len(bootstrap)
+            bootstrap.clear()
         return any(job.job_id == task_id for job in self.jobs)
 
-    def take_bootstrap(self, task_id: str) -> bytearray:
+    def take_bootstrap(self, task_id: str) -> dict[str, str]:
         return self.pending_bootstraps.pop(task_id)
 
 
 class _RuntimeBootstrapContext:
-    def __init__(self, job, paths: PathResolver, bootstrap: bytearray) -> None:
+    def __init__(self, job, paths: PathResolver, bootstrap: dict[str, str]) -> None:
         self.job_id = job.job_id
         self.task_type = job.task_type
         self.params = job.params
         self.paths = paths
-        self._bootstrap: bytearray | None = bootstrap
+        self._bootstrap: dict[str, str] | None = bootstrap
         self.progress_events: list[tuple[object, ...]] = []
 
-    def consume_runtime_bootstrap(self) -> bytearray:
+    def consume_sensitive_bootstrap(self) -> dict[str, str]:
         if self._bootstrap is None:
             raise RuntimeError("bootstrap 已消费")
         bootstrap = self._bootstrap
@@ -712,7 +720,7 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
     progress = []
     monkeypatch.setattr(
         "netconsole.services.netmiko_connection.test_device_connection",
-        lambda _device: SimpleNamespace(
+        lambda _device, **_kwargs: SimpleNamespace(
             success=True,
             status="ok",
             message="connected",
@@ -761,9 +769,100 @@ def test_connection_worker_reuses_existing_ssh_and_snmp_services_without_real_ne
     assert ssh["success"] is True
     assert snmp["model"] == "WA6320"
     assert snmp["success"] is True
-    assert progress[-1][1:3] == (1, 1)
+    assert progress[-1][:3] == ("succeeded", 7, 7)
     assert "secret-password" not in str(ssh)
     assert "private-community" not in str(snmp)
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type", "method", "expected_category"),
+    [
+        ("auth_failed", "NetmikoAuthenticationException", "primary_direct", "authentication_failed"),
+        ("timeout", "TimeoutError", "primary_direct", "tcp_timeout"),
+        ("tcp_failed", "ConnectionRefusedError", "primary_direct", "connection_refused"),
+        ("tcp_failed", "gaierror", "primary_direct", "address_resolution_failed"),
+        ("ssh_banner_failed", "SSHException", "primary_direct", "ssh_handshake_failed"),
+        ("tcp_failed", "TimeoutError", "tunnel1", "jump_host_failed"),
+    ],
+)
+def test_connection_worker_maps_safe_failure_categories_and_phases(
+    tmp_path: Path,
+    monkeypatch,
+    status: str,
+    error_type: str,
+    method: str,
+    expected_category: str,
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    progress: list[tuple[object, ...]] = []
+
+    def failed_connection(_device: Device, *, phase_callback):
+        for stage in ("connecting", "handshaking", "authenticating", "verifying_session"):
+            phase_callback(stage, stage)
+        return SimpleNamespace(
+            success=False,
+            status=status,
+            message="连接失败 secret-password",
+            method=method,
+            host=mr.primary_address,
+            port=22,
+            elapsed_ms=9,
+            prompt="",
+            error_type=error_type,
+            suggestion="检查配置 secret-password",
+        )
+
+    monkeypatch.setattr(
+        "netconsole.services.netmiko_connection.test_device_connection",
+        failed_connection,
+    )
+    result = run_device_connection_test(
+        JobContext(
+            "job-failed",
+            DEVICE_CONNECTION_TEST_TASK_TYPE,
+            {"site_name": "demo", "device_uuid": mr.device_uuid, "protocol": "SSH"},
+            lambda *values: progress.append(values),
+            lambda: False,
+            service.paths,
+        )
+    )
+
+    assert result["success"] is False
+    assert result["failure_category"] == expected_category
+    assert result["terminal_state"] == "FAILED"
+    assert result["elapsed_ms"] == 9
+    assert result["tested_at"]
+    assert "secret-password" not in json.dumps(result, ensure_ascii=False)
+    assert [event[0] for event in progress] == [
+        "validating",
+        "resolving_credential",
+        "connecting",
+        "handshaking",
+        "authenticating",
+        "verifying_session",
+        "failed",
+    ]
+
+
+def test_orphaned_form_connection_test_fails_closed_after_ephemeral_credential_loss(
+    tmp_path: Path,
+) -> None:
+    _client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    snapshot = replace(
+        _task("device-form-test-ssh-orphaned", str(mr.device_uuid), success=False),
+        status=TaskState.RUNNING,
+        finished_time="",
+        owner_pid=987654,
+    )
+    repository = service.task_service.repository("demo")
+    repository.save(snapshot)
+
+    changed = repository.reconcile_orphaned_local_tasks(lambda _pid: False)
+
+    assert len(changed) == 1
+    assert changed[0].status is TaskState.FAILED
+    assert changed[0].message == "临时表单连接测试不可恢复"
+    assert "一次性表单凭据已失效" in changed[0].error_message
 
 
 def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
@@ -775,7 +874,7 @@ def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
     community = "form-community-must-not-be-persisted"
     observed: list[tuple[str, str | None]] = []
 
-    def fake_connection(device: Device):
+    def fake_connection(device: Device, **_kwargs):
         protocol = "SSH" if device.ssh_enabled else "TELNET"
         observed.append(
             (
@@ -820,8 +919,10 @@ def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
         "name": "未保存表单设备",
         "primary_address": "198.51.100.88",
         "ssh_enabled": True,
+        "ssh_username": "admin",
         "ssh_password": ssh_password,
         "telnet_enabled": True,
+        "telnet_username": "admin",
         "telnet_password": telnet_password,
         "snmp_enabled": True,
         "snmp_v2c_enabled": True,
@@ -843,14 +944,14 @@ def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
         assert telnet_password not in serialized_params
         assert community not in serialized_params
         assert "token" not in serialized_params.lower()
-        assert all(value == 0 for value in adapter.bootstrap_buffers[-1])
+        assert adapter.bootstrap_buffers[-1] == {}
         job_file = service.paths.runtime_cache_dir / "background_jobs" / f"{job.job_id}.json"
         disk_job = job_file.read_text(encoding="utf-8")
         assert ssh_password not in disk_job
         assert telnet_password not in disk_job
         assert community not in disk_job
         worker_bootstrap = adapter.take_bootstrap(job.job_id)
-        bootstrap_payload = json.loads(bytes(worker_bootstrap).decode("utf-8"))
+        bootstrap_payload = dict(worker_bootstrap)
         if protocol == "SSH":
             assert "telnet_password" not in bootstrap_payload
             assert "snmp_ro_community" not in bootstrap_payload
@@ -868,9 +969,9 @@ def test_unsaved_form_connection_tests_use_nonserialized_runtime_bootstrap(
         assert telnet_password not in json.dumps(result, ensure_ascii=False)
         assert community not in json.dumps(result, ensure_ascii=False)
         assert context._bootstrap is None
-        assert all(value == 0 for value in worker_bootstrap)
+        assert worker_bootstrap == {}
         with pytest.raises(RuntimeError, match="已消费"):
-            context.consume_runtime_bootstrap()
+            context.consume_sensitive_bootstrap()
 
     assert observed == [
         ("SSH", ssh_password),
@@ -904,6 +1005,7 @@ def test_unsaved_form_connection_test_cancel_clears_runtime_bootstrap(
             "primary_address": "198.51.100.89",
             "protocol": "SSH",
             "ssh_enabled": True,
+            "ssh_username": "admin",
             "ssh_password": secret,
             "telnet_enabled": False,
         },
@@ -919,7 +1021,7 @@ def test_unsaved_form_connection_test_cancel_clears_runtime_bootstrap(
     assert cancelled.status_code == 200
     assert adapter.cancelled == [task_id]
     assert task_id not in adapter.pending_bootstraps
-    assert all(value == 0 for value in pending)
+    assert pending == {}
 
 
 def test_unsaved_form_connection_test_clears_worker_secrets_on_failure(
@@ -929,7 +1031,7 @@ def test_unsaved_form_connection_test_clears_worker_secrets_on_failure(
     secret = "failed-form-secret"
     observed_devices = []
 
-    def fail_connection(device):
+    def fail_connection(device, **_kwargs):
         observed_devices.append(device)
         assert device.ssh_password == secret
         raise TimeoutError(f"connection timed out with {secret}")
@@ -945,6 +1047,7 @@ def test_unsaved_form_connection_test_clears_worker_secrets_on_failure(
             "primary_address": "198.51.100.91",
             "protocol": "SSH",
             "ssh_enabled": True,
+            "ssh_username": "admin",
             "ssh_password": secret,
             "telnet_enabled": False,
         },
@@ -959,7 +1062,7 @@ def test_unsaved_form_connection_test_clears_worker_secrets_on_failure(
         )
 
     assert secret not in str(captured.value)
-    assert all(value == 0 for value in worker_bootstrap)
+    assert worker_bootstrap == {}
     assert observed_devices[0].ssh_password is None
     assert observed_devices[0].password is None
 
@@ -978,6 +1081,7 @@ def test_unsaved_form_connection_test_is_blocked_without_shared_runtime(
             "primary_address": "198.51.100.90",
             "protocol": "SSH",
             "ssh_enabled": True,
+            "ssh_username": "admin",
             "ssh_password": secret,
             "telnet_enabled": False,
         },
@@ -992,13 +1096,13 @@ def test_unsaved_form_connection_test_is_blocked_without_shared_runtime(
             assert secret.encode("utf-8") not in path.read_bytes()
 
 
-def test_edit_form_connection_test_preserves_or_clears_existing_secret(
+def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_writing(
     tmp_path: Path, monkeypatch
 ) -> None:
     client, service, adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
     observed: list[str | None] = []
 
-    def fake_connection(device: Device):
+    def fake_connection(device: Device, **_kwargs):
         observed.append(device.ssh_password)
         return SimpleNamespace(
             success=True,
@@ -1023,24 +1127,42 @@ def test_edit_form_connection_test_preserves_or_clears_existing_secret(
         "primary_address": mr.primary_address,
         "protocol": "SSH",
         "ssh_enabled": True,
+        "ssh_username": "admin",
         "telnet_enabled": False,
     }
 
-    for request_payload in (
-        base,
-        {**base, "clear_secret_fields": ["ssh_password"]},
+    for request_payload, bootstrap in (
+        (base, {}),
+        ({**base, "ssh_password": "temporary-password"}, None),
     ):
         started = client.post(
             "/api/device-management/connection-tests/form", json=request_payload
         )
         assert started.status_code == 202
         job = adapter.jobs[-1]
+        serialized = json.dumps(job.params, ensure_ascii=False)
+        assert "secret-password" not in serialized
+        assert "temporary-password" not in serialized
+        if bootstrap == {}:
+            assert job.params["credential_sources"]["ssh_password"] == "saved_device"
+            assert job.job_id not in adapter.pending_bootstraps
+        else:
+            assert job.params["credential_sources"]["ssh_password"] == "ephemeral"
         context = _RuntimeBootstrapContext(
-            job, service.paths, adapter.take_bootstrap(job.job_id)
+            job,
+            service.paths,
+            adapter.take_bootstrap(job.job_id) if bootstrap is None else bootstrap,
         )
         run_device_connection_test(context)  # type: ignore[arg-type]
 
-    assert observed == ["secret-password", None]
+    cleared = client.post(
+        "/api/device-management/connection-tests/form",
+        json={**base, "clear_secret_fields": ["ssh_password"]},
+    )
+
+    assert cleared.status_code == 422
+    assert "请输入 SSH 密码" in cleared.text
+    assert observed == ["secret-password", "temporary-password"]
     assert _devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
 
 

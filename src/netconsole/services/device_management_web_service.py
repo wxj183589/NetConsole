@@ -152,6 +152,13 @@ DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
 DEVICE_IMPORT_TASK_TYPE = "device_csv_import"
 DEVICE_OMNIPEEK_PREVIEW_TASK_TYPE = "omnipeek_name_table_preview"
 DEVICE_FORM_TEST_BOOTSTRAP_MAX_BYTES = 64 * 1024
+DEVICE_FORM_TEST_SECRET_FIELDS = (
+    "ssh_password",
+    "telnet_password",
+    "tunnel1_password",
+    "tunnel2_password",
+    "snmp_ro_community",
+)
 DEVICE_SECRET_FIELD_NAMES = (
     "password",
     "ssh_password",
@@ -2406,22 +2413,32 @@ class DeviceManagementWebService:
         device = self._device_from_write(write_payload, existing, groups)
         protocol = payload.protocol.upper()
         self._validate_protocol_enabled(device, protocol)
-        if not bool(
+        credential_sources, ephemeral_credentials = _form_test_credentials(
+            payload,
+            existing,
+            device,
+            protocol,
+        )
+        self._validate_form_connection_test(
+            device,
+            protocol,
+            credential_sources,
+        )
+        if ephemeral_credentials and not bool(
             getattr(self.process_adapter, "supports_runtime_bootstrap", False)
         ):
-            raise RuntimeError(
-                "表单连接测试等待共享 Job Runtime 非序列化 bootstrap 接入"
-            )
+            _clear_secret_mapping(ephemeral_credentials)
+            raise RuntimeError("共享 Job Runtime 暂不支持一次性表单凭据")
         task_id = f"device-form-test-{protocol.lower()}-{uuid.uuid4().hex}"
-        bootstrap = bytearray(
+        bootstrap_size = len(
             json.dumps(
-                _form_test_bootstrap(device, protocol),
+                ephemeral_credentials,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
         )
-        if len(bootstrap) > DEVICE_FORM_TEST_BOOTSTRAP_MAX_BYTES:
-            _clear_secret_buffer(bootstrap)
+        if bootstrap_size > DEVICE_FORM_TEST_BOOTSTRAP_MAX_BYTES:
+            _clear_secret_mapping(ephemeral_credentials)
             raise ValueError("表单连接测试参数过大")
         try:
             job = BackgroundJob(
@@ -2441,21 +2458,29 @@ class DeviceManagementWebService:
                     else "",
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
-                    "input_source": "runtime_bootstrap",
+                    "input_source": "form",
+                    "form_device": _form_test_job_payload(device, protocol),
+                    "credential_sources": credential_sources,
+                    "credential_source": credential_sources.get(
+                        _protocol_secret_field(protocol), "none"
+                    ),
+                    "recovery_policy": "fail_closed"
+                    if ephemeral_credentials
+                    else "saved_reference",
                     "_emit_log_events": True,
                     "_cancel_grace_ms": 1000,
                 },
             )
             self.process_adapter.start_job(
                 job,
-                runtime_bootstrap=bootstrap,
+                sensitive_bootstrap=ephemeral_credentials or None,
             )
             snapshot = self.task_service.repository(site).get(task_id)
             if snapshot is None:
                 raise RuntimeError("表单连接测试任务创建后未写入任务中心")
             return self._connection_test_dto(snapshot, device)
         finally:
-            _clear_secret_buffer(bootstrap)
+            _clear_secret_mapping(ephemeral_credentials)
 
     def start_connection_test(self, device_uuid: str, protocol: str) -> DeviceConnectionTestDTO:
         site = self.current_site_id()
@@ -2570,6 +2595,38 @@ class DeviceManagementWebService:
             raise ValueError("不支持的连接测试协议")
         if not enabled[protocol]:
             raise ValueError(f"设备未启用 {protocol}")
+
+    @staticmethod
+    def _validate_form_connection_test(
+        device: Device,
+        protocol: str,
+        credential_sources: dict[str, str],
+    ) -> None:
+        if not str(device.primary_address or "").strip():
+            raise ValueError("请输入设备地址")
+        if protocol == "SSH":
+            if not str(device.ssh_username or "").strip():
+                raise ValueError("请输入 SSH 用户名")
+            if credential_sources.get("ssh_password") == "none":
+                raise ValueError("请输入 SSH 密码")
+        elif protocol == "TELNET":
+            if not str(device.telnet_username or "").strip():
+                raise ValueError("请输入 Telnet 用户名")
+            if credential_sources.get("telnet_password") == "none":
+                raise ValueError("请输入 Telnet 密码")
+        elif credential_sources.get("snmp_ro_community") == "none":
+            raise ValueError("请输入 SNMP 只读团体字")
+        if protocol not in {"SSH", "TELNET"}:
+            return
+        for prefix, label in (("tunnel1", "第一跳"), ("tunnel2", "第二跳")):
+            if not bool(getattr(device, f"{prefix}_enabled")):
+                continue
+            if not str(getattr(device, f"{prefix}_host") or "").strip():
+                raise ValueError(f"请输入 SSH 隧道{label}主机")
+            if not str(getattr(device, f"{prefix}_username") or "").strip():
+                raise ValueError(f"请输入 SSH 隧道{label}用户名")
+            if credential_sources.get(f"{prefix}_password") == "none":
+                raise ValueError(f"请输入 SSH 隧道{label}密码")
 
     @staticmethod
     def _capabilities(device: Device) -> DeviceCapabilityDTO:
@@ -2805,11 +2862,15 @@ class DeviceManagementWebService:
             protocol=protocol or None,
             success=result.get("success") if isinstance(result.get("success"), bool) else None,
             result_status=str(result.get("status") or ""),
+            failure_category=str(result.get("failure_category") or ""),
             message=sanitize_sensitive_text(str(result.get("message") or snapshot.message or snapshot.error_message or ""), device),
+            safe_message=sanitize_sensitive_text(str(result.get("safe_message") or result.get("message") or snapshot.message or snapshot.error_message or ""), device),
             method=str(result.get("method") or ""),
             host=str(result.get("host") or ""),
             port=int(result["port"]) if result.get("port") is not None else None,
             latency_ms=int(result["latency_ms"]) if result.get("latency_ms") is not None else None,
+            elapsed_ms=int(result["elapsed_ms"]) if result.get("elapsed_ms") is not None else None,
+            tested_at=str(result.get("tested_at") or ""),
             system_name=str(result.get("system_name") or ""),
             model=str(result.get("model") or ""),
             os_family=str(result.get("os_family") or ""),
@@ -2828,7 +2889,9 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     site = SiteManager(context.paths).validate_site_name(str(context.params.get("site_name") or ""))
     device_uuid = str(context.params.get("device_uuid") or "")
     protocol = str(context.params.get("protocol") or "").upper()
-    form_input = context.params.get("input_source") == "runtime_bootstrap"
+    form_input = context.params.get("input_source") == "form"
+    context.check_cancelled()
+    context.progress("validating", 1, 7, "正在校验连接参数")
     if form_input:
         device = _consume_form_test_device(context)
     else:
@@ -2840,8 +2903,9 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     try:
         DeviceManagementWebService._validate_protocol_enabled(device, protocol)
         context.check_cancelled()
-        context.progress("connect", 0, 1, f"正在执行 {protocol} 连接测试")
+        context.progress("resolving_credential", 2, 7, "连接凭据已安全解析")
         if protocol == "SNMP":
+            context.progress("connecting", 3, 7, "正在执行 SNMP 连接测试")
             try:
                 result = DeviceSnmpDetectService().detect(
                     device, cancel_checker=context.should_cancel
@@ -2860,6 +2924,7 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 "host": str(device.primary_address or ""),
                 "port": int(device.snmp_port or 161),
                 "latency_ms": int(result.latency_ms or 0),
+                "elapsed_ms": int(result.latency_ms or 0),
                 "system_name": result.sys_name,
                 "model": result.model,
                 "os_family": result.os_family,
@@ -2869,8 +2934,22 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
             selected = Device.from_mapping(device.to_record())
             selected.ssh_enabled = int(protocol == "SSH")
             selected.telnet_enabled = int(protocol == "TELNET")
+
+            def report_phase(stage: str, message: str) -> None:
+                context.check_cancelled()
+                current = {
+                    "connecting": 3,
+                    "handshaking": 4,
+                    "authenticating": 5,
+                    "verifying_session": 6,
+                }.get(stage, 3)
+                context.progress(stage, current, 7, message)
+
             try:
-                result = test_device_connection(selected)
+                result = test_device_connection(
+                    selected,
+                    phase_callback=report_phase,
+                )
             except Exception as exc:
                 raise RuntimeError(
                     _sanitize_device_secret_text(str(exc), device)
@@ -2886,12 +2965,30 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 "host": str(result.host or ""),
                 "port": int(result.port or 0),
                 "latency_ms": int(result.elapsed_ms or 0),
+                "elapsed_ms": int(result.elapsed_ms or 0),
                 "system_name": str(extract_sysname_from_prompt(result.prompt or "") or ""),
                 "error_type": str(result.error_type or ""),
-                "suggestion": str(result.suggestion or ""),
+                "suggestion": _sanitize_device_secret_text(
+                    str(result.suggestion or ""), device
+                ),
             }
+        failure_category = _connection_failure_category(payload)
+        safe_message = (
+            f"{protocol} 连接成功"
+            if bool(payload["success"])
+            else str(payload.get("message") or f"{protocol} 连接失败")
+        )
+        payload.update(
+            failure_category=failure_category,
+            safe_message=safe_message,
+            message=safe_message,
+            tested_at=datetime.now(UTC).isoformat(),
+        )
         context.check_cancelled()
-        context.progress("connect", 1, 1, f"{protocol} 连接测试完成")
+        terminal_stage = "succeeded" if bool(payload["success"]) else "failed"
+        context.progress(terminal_stage, 7, 7, safe_message)
+        if not bool(payload["success"]):
+            payload["terminal_state"] = TaskState.FAILED.value
         return payload
     finally:
         if form_input:
@@ -2901,27 +2998,62 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
 
 
 def _consume_form_test_device(context: JobContext) -> Device:
-    consume = getattr(context, "consume_runtime_bootstrap", None)
-    if not callable(consume):
-        raise RuntimeError("共享 Job Runtime 未提供表单连接测试 bootstrap")
-    encoded = consume()
-    if not isinstance(encoded, bytearray):
-        raise RuntimeError("共享 Job Runtime bootstrap 必须为可清零缓冲区")
+    payload = context.params.get("form_device")
+    sources = context.params.get("credential_sources")
+    if not isinstance(payload, dict) or not isinstance(sources, dict):
+        raise RuntimeError("表单连接测试安全参数不可用")
+    device_values = dict(payload)
+    selected_sources = {
+        str(field): str(source)
+        for field, source in sources.items()
+        if str(field) in DEVICE_FORM_TEST_SECRET_FIELDS
+    }
+    expected_ephemeral = {
+        field for field, source in selected_sources.items() if source == "ephemeral"
+    }
+    ephemeral: dict[str, str] = {}
+    if expected_ephemeral:
+        consume = getattr(context, "consume_sensitive_bootstrap", None)
+        if not callable(consume):
+            raise RuntimeError("临时表单凭据已失效，任务不可恢复，请重新提交")
+        ephemeral = consume()
     try:
-        if not encoded or len(encoded) > DEVICE_FORM_TEST_BOOTSTRAP_MAX_BYTES:
-            raise ValueError("表单连接测试 bootstrap 无效")
-        payload = json.loads(bytes(encoded).decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("表单连接测试 bootstrap 无效")
-        return Device.from_mapping(payload)
+        if set(ephemeral) != expected_ephemeral:
+            raise RuntimeError("临时表单凭据无效，任务不可恢复，请重新提交")
+        saved: Device | None = None
+        if any(source == "saved_device" for source in selected_sources.values()):
+            device_uuid = str(context.params.get("device_uuid") or "")
+            if not device_uuid:
+                raise RuntimeError("已保存凭据引用无效")
+            site = SiteManager(context.paths).validate_site_name(
+                str(context.params.get("site_name") or "")
+            )
+            repository = DeviceRepository(Database(context.paths.site_db_path(site)))
+            saved = repository.get_by_uuid(device_uuid)
+            if saved is None:
+                raise RuntimeError("已保存凭据对应的设备不存在")
+        for field, source in selected_sources.items():
+            if source == "ephemeral":
+                device_values[field] = ephemeral[field]
+            elif source == "saved_device":
+                assert saved is not None
+                device_values[field] = getattr(saved, field)
+            elif source == "none":
+                device_values[field] = None
+            else:
+                raise RuntimeError("表单连接测试凭据来源无效")
+        return Device.from_mapping(device_values)
     finally:
-        _clear_secret_buffer(encoded)
+        _clear_secret_mapping(ephemeral)
+        if saved is not None:
+            _clear_device_secrets(saved)
 
 
-def _form_test_bootstrap(device: Device, protocol: str) -> dict[str, object | None]:
+def _form_test_job_payload(device: Device, protocol: str) -> dict[str, object | None]:
     payload: dict[str, object | None] = {
         "name": device.name,
         "device_vendor": device.device_vendor,
+        "device_type": device.device_type,
         "primary_address": device.primary_address,
         "backup_address": device.backup_address,
     }
@@ -2931,7 +3063,6 @@ def _form_test_bootstrap(device: Device, protocol: str) -> dict[str, object | No
             telnet_enabled=0,
             ssh_port=device.ssh_port,
             ssh_username=device.ssh_username,
-            ssh_password=device.ssh_password,
         )
         _append_tunnel_bootstrap(payload, device)
     elif protocol == "TELNET":
@@ -2940,7 +3071,6 @@ def _form_test_bootstrap(device: Device, protocol: str) -> dict[str, object | No
             telnet_enabled=1,
             telnet_port=device.telnet_port,
             telnet_username=device.telnet_username,
-            telnet_password=device.telnet_password,
         )
         _append_tunnel_bootstrap(payload, device)
     else:
@@ -2952,7 +3082,6 @@ def _form_test_bootstrap(device: Device, protocol: str) -> dict[str, object | No
             snmp_timeout_ms=device.snmp_timeout_ms,
             snmp_retries=device.snmp_retries,
         )
-        payload["snmp_ro_community"] = device.snmp_ro_community
     return payload
 
 
@@ -2965,12 +3094,75 @@ def _append_tunnel_bootstrap(
         payload[f"{prefix}_enabled"] = int(enabled)
         if not enabled:
             continue
-        for suffix in ("host", "port", "username", "password"):
+        for suffix in ("host", "port", "username"):
             payload[f"{prefix}_{suffix}"] = getattr(device, f"{prefix}_{suffix}")
 
 
-def _clear_secret_buffer(buffer: bytearray) -> None:
-    buffer[:] = b"\x00" * len(buffer)
+def _form_test_credentials(
+    payload: DeviceFormConnectionTestRequestDTO,
+    existing: Device | None,
+    device: Device,
+    protocol: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    fields = [_protocol_secret_field(protocol)]
+    if protocol in {"SSH", "TELNET"}:
+        fields.extend(
+            f"{prefix}_password"
+            for prefix in ("tunnel1", "tunnel2")
+            if bool(getattr(device, f"{prefix}_enabled"))
+        )
+    cleared = set(payload.clear_secret_fields)
+    sources: dict[str, str] = {}
+    ephemeral: dict[str, str] = {}
+    for field in fields:
+        secret = getattr(payload, field)
+        raw = secret.get_secret_value() if secret is not None else ""
+        if raw:
+            sources[field] = "ephemeral"
+            ephemeral[field] = raw
+        elif existing is not None and field not in cleared and getattr(existing, field):
+            sources[field] = "saved_device"
+        else:
+            sources[field] = "none"
+    return sources, ephemeral
+
+
+def _protocol_secret_field(protocol: str) -> str:
+    return {
+        "SSH": "ssh_password",
+        "TELNET": "telnet_password",
+        "SNMP": "snmp_ro_community",
+    }[protocol]
+
+
+def _connection_failure_category(payload: dict[str, object]) -> str:
+    if bool(payload.get("success")):
+        return ""
+    method = str(payload.get("method") or "").casefold()
+    if method.startswith("tunnel"):
+        return "jump_host_failed"
+    status = str(payload.get("status") or "").casefold()
+    error_type = str(payload.get("error_type") or "").casefold()
+    message = str(payload.get("message") or "").casefold()
+    if "gaierror" in error_type or "name or service not known" in message:
+        return "address_resolution_failed"
+    if "connectionrefused" in error_type or "connection refused" in message:
+        return "connection_refused"
+    return {
+        "address_resolution_failed": "address_resolution_failed",
+        "connection_refused": "connection_refused",
+        "auth_failed": "authentication_failed",
+        "ssh_banner_failed": "ssh_handshake_failed",
+        "timeout": "tcp_timeout",
+        "tcp_failed": "tcp_connection_failed",
+        "unknown_error": "ssh_connection_failed",
+    }.get(status, status or "connection_failed")
+
+
+def _clear_secret_mapping(values: dict[str, str]) -> None:
+    for key in tuple(values):
+        values[key] = ""
+    values.clear()
 
 
 def _clear_device_secrets(device: Device) -> None:

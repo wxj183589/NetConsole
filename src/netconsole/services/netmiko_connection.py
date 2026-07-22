@@ -46,6 +46,7 @@ VENDOR_ENCODING_POLICY = {
 }
 
 T = TypeVar("T")
+ConnectionPhaseCallback = Callable[[str, str], None]
 
 
 def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公共入口兼容
@@ -152,7 +153,11 @@ class ConnectionErrorClassification:
     suggestion: str
 
 
-def test_device_connection(device: Device) -> ConnectionTestResult:
+def test_device_connection(
+    device: Device,
+    *,
+    phase_callback: ConnectionPhaseCallback | None = None,
+) -> ConnectionTestResult:
     targets = connection_targets(device)
     if not targets:
         result = ConnectionTestResult(False, "", device.primary_address, 0, "No connection method is enabled.", None, None)
@@ -162,11 +167,31 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
     started = monotonic()
     last_result: ConnectionTestResult | None = None
     for target in targets:
+        _report_connection_phase(
+            phase_callback,
+            "connecting",
+            f"正在连接 {target.host}:{target.port}",
+        )
         app_logger.log_debug("TEST_CONNECTION_STARTED", _detail(device, target.protocol, target.port, method=target.method))
         connection: Any | None = None
         try:
             with prepared_connection_target(target) as prepared:
+                _report_connection_phase(
+                    phase_callback,
+                    "handshaking",
+                    f"正在执行 {prepared.protocol.upper()} 握手",
+                )
+                _report_connection_phase(
+                    phase_callback,
+                    "authenticating",
+                    f"正在执行 {prepared.protocol.upper()} 用户认证",
+                )
                 connection = ConnectHandler(**_netmiko_params(prepared))
+                _report_connection_phase(
+                    phase_callback,
+                    "verifying_session",
+                    "正在验证可用会话",
+                )
                 prompt = _safe_find_prompt(connection)
                 screen_output = ""
                 try:
@@ -229,6 +254,15 @@ def test_device_connection(device: Device) -> ConnectionTestResult:
     result = last_result or ConnectionTestResult(False, "", device.primary_address, 0, "All connection attempts failed.", None, _elapsed_ms(started))
     _log_result("TEST_CONNECTION_FAILED", device, result)
     return result
+
+
+def _report_connection_phase(
+    callback: ConnectionPhaseCallback | None,
+    stage: str,
+    message: str,
+) -> None:
+    if callback is not None:
+        callback(stage, message)
 
 
 def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionTarget], T]) -> T:
@@ -361,6 +395,29 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
     text = str(exc or "")
     lowered = text.casefold()
     proto = "Telnet" if str(protocol or "").casefold() == "telnet" else "SSH"
+    if isinstance(exc, socket.gaierror) or any(
+        part in lowered
+        for part in (
+            "name or service not known",
+            "nodename nor servname",
+            "getaddrinfo failed",
+        )
+    ):
+        return ConnectionErrorClassification(
+            "address_resolution_failed",
+            "地址解析失败：无法把设备主机名解析为网络地址。",
+            "地址解析失败：请检查设备地址或 DNS",
+            exc.__class__.__name__,
+            "检查设备地址拼写、DNS 配置和本机网络设置。",
+        )
+    if isinstance(exc, ConnectionRefusedError) or "connection refused" in lowered:
+        return ConnectionErrorClassification(
+            "connection_refused",
+            f"{proto} 连接被拒绝：目标可达，但端口未监听或被设备主动拒绝。",
+            f"{proto} 连接被拒绝：请检查端口和服务状态",
+            exc.__class__.__name__,
+            f"检查{proto}端口、设备服务状态、防火墙和 ACL。",
+        )
     if "error reading ssh protocol banner" in lowered or "ssh protocol banner" in lowered:
         return ConnectionErrorClassification(
             "ssh_banner_failed",

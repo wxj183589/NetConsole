@@ -34,7 +34,7 @@ describe('Web route ownership', () => {
     expect((meshRedirect as (to: { query: Record<string, string> }) => object)({ query: { query: '01' } })).toEqual({ name: 'rail-train-online', query: { query: '01' } })
     expect((monitorRedirect as (to: { query: Record<string, string> }) => object)({ query: {} })).toEqual({ name: 'rail-train-online', query: {} })
     expect(routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toEqual({ name: 'train-communication' })
-    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 在线列车车内通信检测')
+    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 车内通信检测')
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
     expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
       name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },

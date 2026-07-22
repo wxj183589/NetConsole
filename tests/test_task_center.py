@@ -122,6 +122,50 @@ def test_structured_progress_details_persist_and_can_cap_running_progress(tmp_pa
     assert finished is not None and finished.progress == 100
 
 
+def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_leak(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    task_id = "trackside-partial-result"
+    service.prepare(
+        BackgroundJob(
+            job_id=task_id,
+            task_type="trackside_ap_optical_update",
+            params={"task_name": "轨旁 AP 光衰", "site_name": "demo"},
+        )
+    )
+    service.mark_running(task_id)
+    result = {
+        "status": "PARTIAL_SUCCESS",
+        "success_count": 745,
+        "failed_count": 0,
+        "skipped_count": 1,
+        "actionable_skipped_count": 1,
+        "ignored_skipped_count": 0,
+        "target_count": 746,
+        "skipped_reason_counts": {"connection_incomplete": 1},
+        "failure_reason_counts": {},
+        "skipped": [{"name": "AP-A", "host": "10.0.0.1", "reason": "connection_incomplete"}],
+    }
+    service.feed_stdout(task_id, encode_event(finished_event(task_id, result)).encode("utf-8"))
+    service.complete(task_id, 0)
+
+    detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
+
+    assert detail is not None
+    assert detail.status == "COMPLETED"
+    assert detail.details == {
+        "status": "PARTIAL_SUCCESS",
+        "success_count": 745,
+        "failed_count": 0,
+        "skipped_count": 1,
+        "actionable_skipped_count": 1,
+        "ignored_skipped_count": 0,
+        "target_count": 746,
+        "skipped_reason_counts": {"connection_incomplete": 1},
+        "failure_reason_counts": {},
+    }
+    assert "skipped" not in detail.details
+
+
 def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path) -> None:
     db_path = PathResolver(tmp_path).site_tasks_db_path("demo")
     db_path.parent.mkdir(parents=True, exist_ok=True)

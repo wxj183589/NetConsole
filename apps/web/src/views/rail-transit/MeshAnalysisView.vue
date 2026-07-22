@@ -533,11 +533,12 @@ async function loadTracksideSignal(
   generation = detailGeneration,
 ): Promise<void> {
   if (!selected.value) return
+  const effectiveRange = range ?? defaultChartWindowRange('rssi')
   const result = await getMeshTracksideSignalChart(selected.value.session.session_id, {
     max_points: visiblePoints.value,
-    radio: range?.radio ?? chartRadio.value,
-    time_from: range?.start_time,
-    time_to: range?.end_time,
+    radio: effectiveRange?.radio ?? chartRadio.value,
+    time_from: effectiveRange?.start_time,
+    time_to: effectiveRange?.end_time,
     include_standby: true,
     top_n: 3,
   })
@@ -552,11 +553,12 @@ async function loadActivePath(
 ): Promise<void> {
   if (!selected.value) return
   const requestGeneration = nextChartGeneration(metric)
+  const effectiveRange = range ?? defaultChartWindowRange(metric)
   const result = await getMeshActivePathChart(selected.value.session.session_id, {
     max_points: visiblePoints.value,
-    radio: range?.radio ?? chartRadio.value,
-    time_from: range?.start_time,
-    time_to: range?.end_time,
+    radio: effectiveRange?.radio ?? chartRadio.value,
+    time_from: effectiveRange?.start_time,
+    time_to: effectiveRange?.end_time,
   })
   if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
   if (metric === 'rssi') rssiActivePath.value = result
@@ -627,6 +629,27 @@ function buildRssiWindowRange(startTime: string, endTime: string | null, radio: 
     source: 'programmatic',
     radio,
   }
+}
+
+function defaultChartWindowRange(metric: MeshChartMetric): MeshChartWindowRange | null {
+  const viewport = metric === 'busy' ? busyViewport.value : rssiViewport.value
+  if (viewport?.start_time && viewport.end_time) {
+    return {
+      ...viewport,
+      radio: (viewport as MeshChartWindowRange).radio ?? chartRadio.value,
+      mode: metric === 'busy' ? busyMode.value : 'active',
+    }
+  }
+  const segment = selectedSegment.value || buildOrders.value[0]
+  if (segment?.build_start_time) {
+    return buildRssiWindowRange(
+      segment.build_start_time,
+      segment.build_end_time || null,
+      chartRadio.value ?? segment.local_radio ?? null,
+    )
+  }
+  const firstSampleTime = selected.value?.session.first_sample_time || ''
+  return firstSampleTime ? buildRssiWindowRange(firstSampleTime, null, chartRadio.value) : null
 }
 
 async function reloadCurrentChart(): Promise<void> {

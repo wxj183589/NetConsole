@@ -79,6 +79,10 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | --- | --- | --- |
 | `netconsole-job-center-skill` | 普通后台 Job、JSONL、取消和迁移 | 文件导出、轻量 UI |
 | `netconsole-export-report-skill` | ExportJob、本地 XLSX/CSV/PDF/ZIP 报告 | 实时采集、普通表格样式 |
+| `netconsole-ac-management-skill` | AC/FIT-AP、强类型动作、OmniPeek 名称表 | 普通设备管理、无 AC 作用域的 Identity |
+| `netconsole-train-communication-skill` | 车内通信点表、TC1/TC2、离线可测、VRRP 边界 | Online MR 实时采集、列车在线页 |
+| `netconsole-device-files-skill` | 只读 SFTP、主机密钥、下载队列和 `.part` | 普通 SSH、配置采集 |
+| `netconsole-config-collection-skill` | 配置快照、两文件对比、裁剪和差异导出 | AC 快照、普通文本 diff |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、会话打包 | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线分析、图表和报告 | 在线 SSH 采集 |

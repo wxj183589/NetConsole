@@ -7,6 +7,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     NODE_ORDER,
     CarNetworkDiagnosticService,
     CarNetworkPointTableStore,
+    CarNetworkTrain,
     build_car_network_trains,
     discover_ac_devices,
     discover_core_switch_candidates,
@@ -20,9 +21,22 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
     site_id = str(context.params.get("site_name") or "").strip()
     train_id = str(context.params.get("train_id") or "").strip()
     if not site_id or not train_id:
-        raise ValueError("在线列车车内通信检测缺少局点或列车标识")
+        raise ValueError("车内通信检测缺少局点或列车标识")
 
     repository = DeviceRepository(Database(context.params["db_path"]))
+    stored_nodes = CarNetworkPointTableStore(context.paths, site_id).load()
+    by_name = {
+        node.node_name: node
+        for node in stored_nodes
+        if train_identity_matches(
+            (train_id,),
+            (node.train_id, node.train_no, node.display_name),
+        )
+    }
+    nodes = [by_name[name] for name in NODE_ORDER if name in by_name]
+    if not nodes:
+        raise ValueError("所选列车没有可用的车内通信点表")
+
     trains = build_car_network_trains(repository, site_id)
     train = next(
         (
@@ -32,18 +46,34 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
         ),
         None,
     )
-    if train is None:
-        raise ValueError("所选列车不存在或未绑定正式车载 MR 设备")
-
-    stored_nodes = CarNetworkPointTableStore(context.paths, site_id).load()
-    by_name = {
-        node.node_name: node
-        for node in stored_nodes
-        if train_identity_matches((node.train_id, node.train_no, node.display_name), (train.train_id, train.train_no, train.display_name))
+    needs_bound_device = any(
+        node.is_mr
+        and node.device_id
+        and (
+            train is None
+            or (node.normalized_name == "TC1-MR" and train.tc1_device is None)
+            or (node.normalized_name == "TC2-MR" and train.tc2_device is None)
+        )
+        for node in nodes
+    )
+    devices_by_id = {
+        str(device.id): device
+        for device in repository.list()
+        if getattr(device, "id", None) is not None
+    } if needs_bound_device else {}
+    point_devices = {
+        node.normalized_name: devices_by_id.get(str(node.device_id))
+        for node in nodes
+        if node.is_mr and node.device_id
     }
-    nodes = [by_name[name] for name in NODE_ORDER if name in by_name]
-    if not nodes:
-        raise ValueError("所选列车没有可用的车内通信点表")
+    first_node = nodes[0]
+    train = CarNetworkTrain(
+        train_id=train.train_id if train is not None else str(context.params.get("canonical_train_id") or first_node.train_id or train_id),
+        train_no=train.train_no if train is not None else str(context.params.get("train_no") or first_node.train_no or ""),
+        display_name=train.display_name if train is not None else str(context.params.get("display_name") or first_node.display_name or train_id),
+        tc1_device=(train.tc1_device if train is not None else None) or point_devices.get("TC1-MR"),
+        tc2_device=(train.tc2_device if train is not None else None) or point_devices.get("TC2-MR"),
+    )
 
     core_candidates = discover_core_switch_candidates(repository, site_id)
     core_devices = [device for device, candidate in core_candidates if candidate.selected]

@@ -3429,7 +3429,7 @@ TRANSLATIONS["zh_CN"].update(
         "feature_flags.disabled_message": "当前版本未开放此功能",
         "feature_flags.internal_only_hint": "内部版本专用，客户版自动隐藏",
         "rail_transit.train_online": "列车在线情况",
-        "rail_transit.car_network_diagnostic": "在线列车车内通信检测",
+        "rail_transit.car_network_diagnostic": "车内通信检测",
         "car_network.single_entry_active": "车载MR单端激活",
         "car_network.single_entry_verified": "单入口验证通过",
         "car_network.cross_tc_ping": "跨TC通信",

@@ -396,11 +396,15 @@ class DeviceConnectionTestDTO(ApiModel):
     protocol: DeviceConnectionProtocol | None = None
     success: bool | None = None
     result_status: str = ""
+    failure_category: str = ""
     message: str = ""
+    safe_message: str = ""
     method: str = ""
     host: str = ""
     port: int | None = None
     latency_ms: int | None = None
+    elapsed_ms: int | None = None
+    tested_at: str = ""
     system_name: str = ""
     model: str = ""
     os_family: str = ""

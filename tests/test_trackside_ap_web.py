@@ -183,18 +183,22 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
         status = "SUCCESS"
         scope = "station"
         target_label = "站点A"
-        success_count = 2
+        success_count = 746
         failed_count = 0
-        skipped_count = 0
-        target_count = 2
+        skipped_count = 1
+        actionable_skipped_count = 0
+        ignored_skipped_count = 1
+        skipped_reason_counts = {"no_station_switches": 1}
+        skipped = [trackside_optical_collection.TracksideSkippedTarget("车站", "SWITCH", "no_station_switches")]
+        target_count = 746
         concurrency = 64
         requested_concurrency = 1000
         effective_concurrency = 2
         platform_concurrency_limit = 64
         fit_ap_effective_concurrency = 2
         fit_ap_round_summaries = [{"ac_device_uuid": "ac-1", "rounds": []}]
-        fit_ap_resource_count = 1
-        fit_ap_optical_success_count = 1
+        fit_ap_resource_count = 746
+        fit_ap_optical_success_count = 746
         fit_ap_optical_failed_count = 0
         candidate_ap_interface_count = 2
         current_lldp_port_count = 2
@@ -223,7 +227,13 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["session_id"] == "session-1"
     assert result["status"] == "SUCCESS"
     assert result["terminal_state"] == "COMPLETED"
-    assert result["success_count"] == 2
+    assert result["success_count"] == 746
+    assert result["failed_count"] == 0
+    assert result["skipped_count"] == 1
+    assert result["actionable_skipped_count"] == 0
+    assert result["ignored_skipped_count"] == 1
+    assert result["skipped_reason_counts"] == {"no_station_switches": 1}
+    assert result["skipped"][0]["reason"] == "no_station_switches"
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
@@ -487,21 +497,21 @@ def test_trackside_collection_no_target_does_not_fake_success(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    ("success_count", "failed_count", "skipped_count", "target_count", "cancelled", "expected"),
+    ("success_count", "failed_count", "actionable_skipped_count", "cancelled", "expected"),
     [
-        (2, 0, 0, 2, False, "SUCCESS"),
-        (1, 1, 0, 2, False, "PARTIAL_SUCCESS"),
-        (0, 38, 0, 38, False, "FAILED"),
-        (0, 0, 3, 3, False, "FAILED"),
-        (0, 0, 0, 0, False, "NO_TARGET"),
-        (1, 1, 0, 2, True, "CANCELLED"),
+        (746, 0, 0, False, "SUCCESS"),
+        (745, 1, 0, False, "PARTIAL_SUCCESS"),
+        (745, 0, 1, False, "PARTIAL_SUCCESS"),
+        (0, 38, 0, False, "FAILED"),
+        (0, 0, 3, False, "FAILED"),
+        (0, 0, 0, False, "NO_TARGET"),
+        (1, 1, 0, True, "CANCELLED"),
     ],
 )
 def test_trackside_collection_status_classification(
     success_count: int,
     failed_count: int,
-    skipped_count: int,
-    target_count: int,
+    actionable_skipped_count: int,
     cancelled: bool,
     expected: str,
 ) -> None:
@@ -509,12 +519,24 @@ def test_trackside_collection_status_classification(
         trackside_optical_collection._trackside_update_status(
             success_count=success_count,
             failed_count=failed_count,
-            skipped_count=skipped_count,
-            target_count=target_count,
+            actionable_skipped_count=actionable_skipped_count,
             cancelled=cancelled,
         )
         == expected
     )
+
+
+def test_trackside_skipped_classification_ignores_optional_station_switch_branch() -> None:
+    skipped = [
+        trackside_optical_collection.TracksideSkippedTarget("车站", "SWITCH", "no_station_switches"),
+        trackside_optical_collection.TracksideSkippedTarget("AP-A", "FIT_AP", "connection_incomplete"),
+    ]
+
+    actionable, ignored, reason_counts = trackside_optical_collection.classify_trackside_skipped(skipped)
+
+    assert actionable == 1
+    assert ignored == 1
+    assert reason_counts == {"no_station_switches": 1, "connection_incomplete": 1}
 
 
 def test_trackside_plan_preview_save_and_task_window_blocker(tmp_path: Path) -> None:

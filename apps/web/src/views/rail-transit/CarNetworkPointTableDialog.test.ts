@@ -59,6 +59,10 @@ const train: TrainCommunicationRow = {
   updated_at: '2026-07-22T10:00:00+00:00',
   data_status: 'FRESH',
   online_reason: 'CT 端 Mesh-Link 在线',
+  diagnostic_status: 'not_detected',
+  tc1_diagnostic_status: 'not_detected',
+  tc2_diagnostic_status: 'not_detected',
+  last_diagnostic_at: null,
   mrs: [],
   current_mesh_links: 1,
   active_sessions: 0,
@@ -128,7 +132,7 @@ describe('在线列车车内通信点表 Dialog', () => {
     })
   })
 
-  it('从当前在线列车生成六节点预览，保存后通知父页面', async () => {
+  it('从当前列车生成六节点预览，保存后通知父页面', async () => {
     const wrapper = mount(CarNetworkPointTableDialog, {
       props: { modelValue: false, train },
       global: { directives: { loading: () => undefined }, stubs },

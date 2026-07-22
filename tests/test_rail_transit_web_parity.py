@@ -7,6 +7,7 @@ import csv
 import io
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -150,6 +151,84 @@ def _save_complete_point_table(paths: PathResolver, train_id: str) -> None:
             )
         ]
     )
+
+
+def _train_online_snapshot(status: str):
+    endpoint_status = "ONLINE" if status == "BOTH_ONLINE" else "OFFLINE"
+    data_status = "STALE" if status == "STALE" else "FRESH"
+
+    def endpoint(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            online_status=endpoint_status,
+            data_status=data_status,
+            mr_id=f"mr-{name}",
+            mr_name=f"列车01-MR-{name}",
+        )
+
+    return SimpleNamespace(
+        train_id="train:01",
+        train_no="01",
+        train_name="01车",
+        overall_status=status,
+        updated_at="2026-07-22T10:00:00+00:00",
+        ct=endpoint("CT"),
+        tc=endpoint("CW"),
+    )
+
+
+@pytest.mark.parametrize("online_status", [None, "STALE", "BOTH_OFFLINE", "BOTH_ONLINE"])
+def test_car_network_diagnostic_start_treats_online_state_as_optional_context(
+    tmp_path: Path,
+    online_status: str | None,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    _save_complete_point_table(paths, "01")
+    snapshot = _train_online_snapshot(online_status) if online_status else None
+    service.vehicle_mr_online_query_service = SimpleNamespace(
+        get_train_by_identity=lambda _site_id, _train_id: snapshot
+    )
+
+    started = service.start_car_network_diagnostic("demo", train_id="01")
+    params = normal.jobs[started.task_id].params
+
+    assert started.action == "car_network_diagnostic"
+    assert params["train_id"] == "train:01"
+    assert params["online_status"] == (online_status or "UNKNOWN")
+    assert params["online_snapshot_time"] == (
+        "2026-07-22T10:00:00+00:00" if snapshot else ""
+    )
+    assert params["ct_mr_id"] == ("mr-CT" if snapshot else "")
+
+
+def test_car_network_diagnostic_start_still_requires_valid_point_table(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, _tasks = _service(paths)
+    service.vehicle_mr_online_query_service = SimpleNamespace(
+        get_train_by_identity=lambda _site_id, _train_id: None
+    )
+
+    with pytest.raises(RailTransitWebError) as missing:
+        service.start_car_network_diagnostic("demo", train_id="01")
+    assert missing.value.code == "TRAIN_COMMUNICATION_POINT_TABLE_MISSING"
+
+    CarNetworkPointTableStore(paths, "demo").save(
+        [
+            CarNetworkNode(
+                "01",
+                "TC1-MR",
+                "MR",
+                train_no="01",
+                display_name="01车",
+                primary_address="10.0.0.1",
+            )
+        ]
+    )
+    with pytest.raises(RailTransitWebError) as invalid:
+        service.start_car_network_diagnostic("demo", train_id="01")
+    assert invalid.value.code == "TRAIN_COMMUNICATION_POINT_TABLE_INVALID"
 
 
 def _online_mr_session(
@@ -861,7 +940,7 @@ def test_rail_task_dto_redacts_non_export_paths_and_secrets(tmp_path: Path) -> N
     _save_complete_point_table(paths, "列车01")
     started = service.start_car_network_diagnostic("demo", train_id="列车01")
     assert _normal.jobs[started.task_id].task_type == "car_network_diagnostic"
-    assert _normal.jobs[started.task_id].params["train_id"] == "列车01"
+    assert _normal.jobs[started.task_id].params["train_id"] == "train:01"
     repository = tasks.repository("demo")
     snapshot = repository.get(started.task_id)
     assert snapshot is not None

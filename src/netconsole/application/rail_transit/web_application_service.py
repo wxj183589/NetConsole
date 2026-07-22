@@ -127,7 +127,7 @@ class RailTransitWebApplicationService:
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
-        "car_network_diagnostic": "在线列车车内通信检测",
+        "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
         "trackside_ap_optical_update": "轨旁 AP 光衰更新",
@@ -763,23 +763,53 @@ class RailTransitWebApplicationService:
         site_id = self._site(site_id)
         trains = RailTransitBaseDataQueryService(self.paths).list_trains(site_id, page=1, page_size=200).items
         train = next((item for item in trains if train_identity_matches((selected_train,), (item.id, item.train_no, item.name))), None)
-        online = self.vehicle_mr_online_query_service.get_train_by_identity(site_id, selected_train)
-        if online is None or online.overall_status not in {"BOTH_ONLINE", "ONE_SIDE_ONLINE"} or not self._online_train_is_fresh(online):
-            raise RailTransitWebError("TRAIN_COMMUNICATION_OFFLINE", "当前列车已不在线，请刷新后重试")
+        point_nodes = [
+            item
+            for item in TrainCommunicationPointTableService(self.paths).read_nodes(site_id)
+            if train_identity_matches(
+                (selected_train,),
+                (item.train_id, item.train_no, item.display_name),
+            )
+        ]
+        try:
+            online = self.vehicle_mr_online_query_service.get_train_by_identity(
+                site_id, selected_train
+            )
+        except Exception:
+            online = None
+        online_ct = getattr(online, "ct", None)
+        online_tc = getattr(online, "tc", None)
         identity = normalize_train_identity(
             selected_train,
             train.id if train is not None else "",
             train.train_no if train is not None else "",
             train.name if train is not None else "",
-            online.train_id,
-            online.train_no,
-            online.train_name,
+            point_nodes[0].train_id if point_nodes else "",
+            point_nodes[0].train_no if point_nodes else "",
+            point_nodes[0].display_name if point_nodes else "",
+            getattr(online, "train_id", ""),
+            getattr(online, "train_no", ""),
+            getattr(online, "train_name", ""),
+        )
+        train_no = identity.train_no or (
+            train.train_no
+            if train is not None
+            else point_nodes[0].train_no
+            if point_nodes
+            else ""
+        )
+        display_name = (
+            train.name
+            if train is not None
+            else point_nodes[0].display_name
+            if point_nodes
+            else identity.display_name or selected_train
         )
         inspection = TrainCommunicationPointTableService(self.paths).inspect(
             site_id,
             identity.canonical_train_id or selected_train,
-            train_no=identity.train_no or (train.train_no if train is not None else online.train_no),
-            display_name=train.name if train is not None else online.train_name,
+            train_no=train_no,
+            display_name=display_name,
         )
         if inspection.status == POINT_TABLE_MISSING:
             raise RailTransitWebError("TRAIN_COMMUNICATION_POINT_TABLE_MISSING", inspection.message)
@@ -791,22 +821,22 @@ class RailTransitWebApplicationService:
             {
                 "train_id": identity.canonical_train_id or selected_train,
                 "canonical_train_id": identity.canonical_train_id,
-                "train_no": identity.train_no or online.train_no,
-                "display_name": train.name if train is not None else online.train_name,
-                "ct_mr_id": online.ct.mr_id or "",
-                "ct_mr_name": online.ct.mr_name or "",
-                "tc_mr_id": online.tc.mr_id or "",
-                "tc_mr_name": online.tc.mr_name or "",
+                "train_no": train_no,
+                "display_name": display_name,
+                "ct_mr_id": str(getattr(online_ct, "mr_id", "") or ""),
+                "ct_mr_name": str(getattr(online_ct, "mr_name", "") or ""),
+                "tc_mr_id": str(getattr(online_tc, "mr_id", "") or ""),
+                "tc_mr_name": str(getattr(online_tc, "mr_name", "") or ""),
                 "point_table_revision": inspection.revision,
-                "online_snapshot_time": online.updated_at or "",
-                "online_status": online.overall_status,
+                "online_snapshot_time": str(getattr(online, "updated_at", "") or ""),
+                "online_status": str(getattr(online, "overall_status", "UNKNOWN") or "UNKNOWN"),
             },
         )
 
     def get_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         task = self.get_task(site_id, task_id)
         if task.action != "car_network_diagnostic":
-            raise RailTransitWebError("TASK_NOT_FOUND", "在线列车车内通信检测任务不存在")
+            raise RailTransitWebError("TASK_NOT_FOUND", "车内通信检测任务不存在")
         return task
 
     def cancel_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
@@ -1824,13 +1854,6 @@ class RailTransitWebApplicationService:
         return (
             canonical_train_id_for(node.train_id, node.train_no, node.display_name) or str(node.train_no or node.train_id).strip().casefold(),
             node.normalized_name.strip().casefold(),
-        )
-
-    @staticmethod
-    def _online_train_is_fresh(train) -> bool:
-        return any(
-            endpoint.online_status == "ONLINE" and endpoint.data_status == "FRESH"
-            for endpoint in (train.ct, train.tc)
         )
 
     @staticmethod

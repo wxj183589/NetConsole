@@ -4,9 +4,11 @@
 
 ## 本次专题
 
-- [在线列车车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
+- [车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
 - [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
 - [检测任务流程](rail-transit/train-communication/CHECK_WORKFLOW.md)
+- [配置采集与快照对比](CONFIG_COLLECTION.md)
+- [CBTC 旧 Wireshark DLL 逆向状态](reverse-engineering/CBTC_WIRESHARK_DLL.md)
 
 ## 核心文档
 
@@ -29,6 +31,7 @@
 | [设备管理与设备详情](../apps/web/src/views/devices/README.md) | 设备列表、快速详情抽屉、完整详情页、数据来源、Command Profile 与验收边界 | Device/Application/API/Vue 开发 | Device Detail Application/Query Service、DTO/API、版本化 Profile 和 Vue | 设备字段、能力、刷新任务、页签或验收状态变化 |
 | [文件管理对等规格（历史兼容）](development/parity/file-management.md) | 已冻结的双栏/SFTP/下载队列规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [设备文件下载](device-files/README.md) | Electron 设备文件只读浏览、SFTP、主机密钥和下载任务 | File Service/Task Center/Web | 当前代码、历史取证和定向测试 | SFTP、主机密钥、下载或安全边界变化 |
+| [配置采集与快照对比](CONFIG_COLLECTION.md) | 配置采集、快照选择、双栏 Diff、裁剪、导出和恢复 | Config Service/Task Center/Web | 配置 handler、API、Vue 与定向测试 | 快照、对比、裁剪、导出或恢复语义变化 |
 | [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md) | Electron 本机选择器、受控目录/Artifact、终端与通知的严格白名单 | Electron 桌面外壳与本机动作开发 | RuntimeMode、Desktop session、Feature Gate、PathResolver | 新增或修改任一本机 Bridge 动作前 |
 | [外部终端白名单](external-terminal/README.md) | SecureCRT、Xshell、PuTTY 的受控可执行文件名、选择器和启动复验边界 | Desktop/Device/Application 开发 | Shared Bridge、Electron Main、Python Settings Tool Validation | 终端类型、文件名或启动边界变化 |
 | [表单与路径字段](ui/FORM_AND_PATH_FIELDS.md) | 路径输入、按钮组、字段反馈和窄窗口布局规范 | Vue Renderer 开发 | `NcExecutablePathField` 与系统设置页面 | 新增或修改路径选择字段时 |
@@ -39,6 +42,7 @@
 | [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |
 | [导出进程规范](export_process_policy.md) | Export Process、临时文件、取消和 writer 约束 | 报告/导出开发 | `services/export`、`export_worker.py`、export UI helper | 导出类型、协议或文件提交策略变化 |
 | [重构地图](REFACTOR_MAP.md) | 当前接管状态、遗留入口和下一步 | 架构维护者 | Registry、domain handlers、生产调用点 | 任务迁移、兼容层或 legacy 收口 |
+| [CBTC 旧 Wireshark DLL 逆向状态](reverse-engineering/CBTC_WIRESHARK_DLL.md) | RE 证据清单、结论等级、复现要求和当前缺口 | 协议分析与维护人员 | 仓库样本、脚本、CSV、测试包和 Git 历史 | 新增样本、探针、算法证据或结论等级变化 |
 | [数据与路径](DATA_LAYOUT.md) | 全局/局点/会话/运行时目录和清理边界 | Repository/存储开发 | `core/paths.py`、cleanup、disk manager | 路径、数据库或清理策略变化 |
 | [局点与数据存储](storage/README.md) | 局点 Registry、数据根迁移、备份恢复和 `.ncsite` 包 | Storage/Core/Desktop 开发 | `services/site_storage.py`、Electron bootstrap、`/api/v1` | 局点、数据根、迁移或包格式变化 |
 | [仓库目录规范](development/repository-layout.md) | 根目录白名单、应用边界、运行数据和新增文件检查 | 所有开发/维护人员 | `AGENTS.md`、实际目录和构建脚本 | 顶层布局、目录职责或迁移映射变化 |
@@ -70,7 +74,7 @@
 | [AC 管理](AC_MANAGEMENT.md) | Electron AC/FIT-AP 查询、受控更新/写操作、光衰、配置和验收边界 | AC/FIT-AP 开发 | AC Application Service/Repository/API/Vue/Task | AC 命令、查询字段、光衰、配置、写操作或验收状态变化 |
 | [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md) | 轨旁 AP、AC Mesh-Link、Online MR 与离线分析的业务边界和匹配规则 | 轨道交通无线与 AC Mesh-Link 开发 | `src/netconsole/services/vehicle_mr_online.py`、Mesh-Link Query API/Vue | Mesh-Link 字段、匹配、时效性或采集/分析边界变化 |
 | [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) | 基础设施、列车、任务、Agent 与 Mesh 分析只读聚合 | 轨道交通综合监控开发 | `src/netconsole/services/rail_transit/wireless_dashboard_query_service.py`、对应 API/Vue | 聚合来源、告警映射、刷新或只读边界变化 |
-| [在线列车车内通信检测](TRAIN_COMMUNICATION_MONITORING.md) | TC1/TC2 固定六节点拓扑、VRRP、跨端状态和车内通信检测 Task | 轨道交通车内通信开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 节点关联、状态、检测任务或刷新边界变化 |
+| [车内通信检测](TRAIN_COMMUNICATION_MONITORING.md) | TC1/TC2 固定六节点拓扑、VRRP 虚拟 IP 静态配置、跨端状态和车内通信检测 Task | 轨道交通车内通信开发 | `src/netconsole/services/rail_transit/train_communication_query_service.py`、对应 API/Vue | 节点关联、状态、检测任务或刷新边界变化 |
 | [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md) | 默认锁定维护、revision 事务、站点/区间派生、轨旁 AP/规划、列车/MR 与受控导入 | 轨道交通基础资料开发 | `src/netconsole/application/rail_transit/base_data_application_service.py`、Repository、API/Vue | 字段、校验、编辑会话、规划页签或写入边界变化 |
 | [变更记录](CHANGELOG.md) | 用户可见与架构变更摘要 | 发布/模块维护者 | Git 提交、发行版本 | 每次发布及重要未发布变更 |
 

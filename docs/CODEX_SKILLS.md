@@ -27,6 +27,10 @@
 | `windows-encoding-skill` | Windows 控制台、H3C 输出、文件和 JSONL 编码 | “中文乱码”“GBK 日志导入失败” | i18n 设计、纯解析规则 |
 | `netconsole-job-center-skill` | 普通后台 Job、handler、JSONL、进度和取消 | “迁移到 Job Center”“取消后仍运行” | 导出文件、轻量 UI |
 | `netconsole-export-report-skill` | Export Process、本地 XLSX/CSV/PDF/ZIP 与文件恢复 | “导出卡 UI”“Excel 列宽不合适” | 实时采集、普通表格样式 |
+| `netconsole-ac-management-skill` | AC/FIT-AP、强类型动作、确认审计和 OmniPeek 名称表 | “固化新 AP”“导出 .nam” | 普通设备管理、无 AC 作用域的 Identity |
+| `netconsole-train-communication-skill` | 点表、TC1/TC2、离线可测、部分失败与 VRRP 边界 | “离线列车不能检测”“VRRP 主端残留” | Online MR 实时采集、列车在线页 |
+| `netconsole-device-files-skill` | SSH/SFTP 能力、主机密钥、下载队列和 `.part` | “SSH 通但 SFTP 失败”“队列恢复慢” | 普通 SSH、配置采集 |
+| `netconsole-config-collection-skill` | 快照选择、两文件对比、裁剪、双栏 Diff 与导出 | “勾选两个文件不能对比” | AC 快照、普通文本 diff |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、原始日志和会话打包 | “Ping 2 自动填错”“停止采集困难” | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent V1、HTTP API、内嵌 Web、配置/targets、工具、MR sidecar、构建和运行目录 | “修改 Agent API”“Agent 构建失败”“工具路径或运行数据不对” | CentOS 离线部署；纯流量参数；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线解析、主备链、切换、图表和报告 | “备份链为空”“乒乓判定错误” | 在线 MR SSH、普通 SNMP |
@@ -41,6 +45,10 @@
 | --- | --- | --- |
 | 新增普通后台采集 | `netconsole-job-center-skill` | `network-command-parser-skill` |
 | 新增本地报告 | `netconsole-export-report-skill` | `netconsole-data-safety-skill` |
+| AC 受控动作/NAM | `netconsole-ac-management-skill` | `netconsole-job-center-skill`、`netconsole-export-report-skill` |
+| 车内通信检测 | `netconsole-train-communication-skill` | `netconsole-job-center-skill`、`network-command-parser-skill` |
+| 设备文件/SFTP | `netconsole-device-files-skill` | `netconsole-job-center-skill`、`netconsole-data-safety-skill` |
+| 配置快照对比 | `netconsole-config-collection-skill` | `netconsole-job-center-skill`、`netconsole-export-report-skill` |
 | 在线 MR 修改 | `netconsole-online-mr-skill` | `traffic-test-skill`、`network-command-parser-skill` |
 | Agent API/构建/工具路径 | `netconsole-agent-skill` | `netconsole-project-docs-skill` |
 | Agent 流量任务 | `netconsole-agent-skill` | `traffic-test-skill` |
@@ -76,6 +84,7 @@ $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞
 4. 让 description 前半段包含真实触发词、使用场景和不适用范围。
 5. 每个 Skill 保持单一职责，并包含触发/反例、输入输出、生产代码权限、工作流、验证和失败报告。
 6. 只在重复、确定且可安全复用时增加标准库脚本；不创建空资源目录。
+7. Skill 被退役架构或删除模块完全取代、且不再有活动触发面时删除目录；只因内容陈旧不得删除，应原位修正并同步所有索引。
 
 ## 7. 如何验证 Skill
 
@@ -110,11 +119,13 @@ $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞
 
 - `src/netconsole/services/job_center/handlers/legacy_tasks.py` 仍是兼容区，只迁出、不迁入；不能写成全部任务已迁移。
 - AP Identity 当前主要是 canonical 工具、shadow comparison 和只读 diagnostics；不能写成已全面接管生产匹配。
-- Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；Python Controller 与 Agent Traffic Adapter/Supervisor 已接入部分能力。
+- Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；Python Controller 已接入 Traffic，并提供默认关闭的单 Agent Online MR start/status/normal stop 与安全包导入。
 - 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未完成。
 - 本地 XLSX 格式优化在范围内；WPS 云服务、WPS API、KDocs 和在线同步默认不在范围内。
 
-## 10. 后续候选 Skills
+## 10. 过期 Skill 审计与后续候选
+
+2026-07-23 按当前代码路径和触发面审计既有 12 个 Skill：没有 Skill 被退役 Qt 架构、已删除 SNMP Center 或无线勘测完全取代，因此本轮无安全删除项；陈旧内容按原职责更新。新增上述四个重复且高风险的领域 Skill 后，应继续优先扩展现有目录，避免同义 Skill。
 
 当前仅保留以下后续候选：
 

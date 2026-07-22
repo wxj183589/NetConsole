@@ -28,6 +28,15 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 
 测试断言应验证必要能力和业务契约，不硬编码会随正常扩展变化的全局任务总数或路由总数。
 
+近期高风险功能的定向验收至少覆盖：
+
+- AC/FIT-AP：动作计划/确认/执行/审计、`confirm_token` 不进入页面和日志、AC resource key 互斥、当前 AC 范围的 OmniPeek 预览与 `.nam` 导出；
+- 车内通信：无快照/过期/双端离线仍可按有效点表启动，点表缺失/无效/无可执行节点必须拒绝，AC 查询失败后继续 SSH/Ping/跨 TC；
+- 设备文件：SSH 成功但 SFTP 子系统不可用、主机密钥确认后恢复原连接意图、最近 20 条活动优先、24 小时 `.part` 后台清理边界；
+- Job Center：调度 `COMPLETED` 与业务 `PARTIAL_SUCCESS/WARNING` 分离，列表、详情、筛选、顶部计数和页面 toast 一致；
+- 配置采集：两条勾选快照、跨设备左右选择、空/相同/不同文件、裁剪、差异导航和导出；
+- MESH/Online MR/Agent：旧日志/缺 Peer Name、按来源独立报告、参数快照、正常/partial/failed 包、LOCAL/AGENT 停止与恢复、真实 fping 与 TCP connect probe 区分。
+
 ## 合并前
 
 所有并行分支进入同一集成分支后运行：

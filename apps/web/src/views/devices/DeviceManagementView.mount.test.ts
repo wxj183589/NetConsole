@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   listDevices: vi.fn(),
   getDeviceEditProfile: vi.fn(),
+  getDeviceConnectionTest: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/deviceManagement')>(),
   listDevices: mocks.listDevices,
   getDeviceEditProfile: mocks.getDeviceEditProfile,
+  getDeviceConnectionTest: mocks.getDeviceConnectionTest,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
@@ -303,7 +305,12 @@ beforeEach(() => {
   mocks.startBatchRefreshDetails.mockResolvedValue({ action: 'batch_refresh_details', tasks: [] })
   mocks.startDeviceFormConnectionTest.mockResolvedValue({
     task_id: 'form-test-1', task_status: 'PENDING', device_uuid: 'device-1', protocol: 'SSH', success: null,
-    result_status: '', message: '等待执行', method: '', host: '', port: null, latency_ms: null, system_name: '',
+    result_status: '', failure_category: '', message: '等待执行', safe_message: '等待执行', method: '', host: '', port: null, latency_ms: null, elapsed_ms: null, tested_at: '', system_name: '',
+    model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
+  })
+  mocks.getDeviceConnectionTest.mockResolvedValue({
+    task_id: 'form-test-1', task_status: 'COMPLETED', device_uuid: 'device-1', protocol: 'SSH', success: true,
+    result_status: 'ok', failure_category: '', message: 'SSH 连接成功', safe_message: 'SSH 连接成功', method: 'primary_direct', host: '192.0.2.12', port: 22, latency_ms: 3, elapsed_ms: 3, tested_at: '2026-07-22T00:00:00Z', system_name: 'MR-02',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
   })
   const store = reactive({
@@ -408,7 +415,7 @@ describe('DeviceManagementView mounted interactions', () => {
     wrapper.unmount()
   })
 
-  it('submits form testing, delegates cancellation to the task window, and clears form secrets', async () => {
+  it('submits form testing without saving, tracks its result, and keeps a task-window entry', async () => {
     const wrapper = await renderView()
     await openEdit(wrapper)
     await wrapper.get('[data-testid="ssh-password"] input').setValue('ephemeral-form-secret')
@@ -422,9 +429,16 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.startDeviceFormConnectionTest).toHaveBeenCalledWith(expect.objectContaining({
       device_uuid: 'device-1', protocol: 'SSH', ssh_password: 'ephemeral-form-secret',
     }))
+    expect(mocks.updateDevice).not.toHaveBeenCalled()
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
+    expect((wrapper.get('[data-testid="form-connection-test"]').element as HTMLButtonElement).disabled).toBe(true)
+
+    mocks.taskStore!.tasks = [task({ id: 'form-test-1', status: 'COMPLETED', updated_time: 'done' })]
+    await flushPromises()
+    expect(mocks.getDeviceConnectionTest).toHaveBeenCalledWith('form-test-1')
+    expect(mocks.messages.success).toHaveBeenCalledWith('SSH 连接成功')
+    await wrapper.get('[data-testid="form-connection-task"]').trigger('click')
     expect(mocks.openTaskWindow).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'form-test-1', module: 'devices' }))
-    await wrapper.get('[data-testid="form-connection-cancel"]').trigger('click')
-    expect(mocks.openTaskWindow).toHaveBeenCalledTimes(2)
 
     await wrapper.get('[data-testid="device-form-cancel"]').trigger('click')
     await flushPromises()
@@ -433,19 +447,51 @@ describe('DeviceManagementView mounted interactions', () => {
     wrapper.unmount()
   })
 
-  it('keeps task submission successful when task refresh or task window presentation fails', async () => {
+  it('enables SSH form testing only when the current form has usable authentication', async () => {
+    const edited = await renderView()
+    await openEdit(edited)
+    expect((edited.get('[data-testid="form-connection-test"]').element as HTMLButtonElement).disabled).toBe(false)
+
+    await edited.get('[data-testid="ssh-clear"] input').setValue(true)
+    await flushPromises()
+    expect((edited.get('[data-testid="form-connection-test"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(edited.get('[data-testid="form-connection-disabled-reason"]').text()).toContain('请输入 SSH 密码')
+    edited.unmount()
+
+    const created = await renderView()
+    await created.findAll('button').find((button) => button.text() === '新建设备')!.trigger('click')
+    await created.get('[data-testid="device-address"] input').setValue('192.0.2.88')
+    await created.get('[data-testid="ssh-username"] input').setValue('admin')
+    await flushPromises()
+    expect(created.get('[data-testid="form-connection-disabled-reason"]').text()).toContain('缺少认证信息')
+
+    await created.get('[data-testid="ssh-password"] input').setValue('temporary-secret')
+    await flushPromises()
+    expect((created.get('[data-testid="form-connection-test"]').element as HTMLButtonElement).disabled).toBe(false)
+
+    await created.get('[data-testid="ssh-port"] input').setValue('0')
+    await flushPromises()
+    expect(created.get('[data-testid="form-connection-disabled-reason"]').text()).toContain('有效的 SSH 端口')
+
+    await created.get('[data-testid="ssh-enabled"] input').setValue(false)
+    await flushPromises()
+    expect((created.get('[data-testid="form-connection-test"]').element as HTMLButtonElement).disabled).toBe(true)
+    created.unmount()
+  })
+
+  it('keeps task submission successful when task refresh fails', async () => {
     const wrapper = await renderView()
     await openEdit(wrapper)
     mocks.taskStore!.refresh.mockRejectedValueOnce(new Error('task store unavailable'))
-    mocks.openTaskWindow.mockResolvedValueOnce({ success: false, error: 'task window unavailable' })
 
     await wrapper.get('[data-testid="form-connection-test"]').trigger('click')
     await flushPromises()
 
     expect(mocks.startDeviceFormConnectionTest).toHaveBeenCalled()
-    expect(mocks.messages.warning).toHaveBeenCalledWith('任务已提交，但任务状态刷新失败；任务窗口打开失败')
+    expect(mocks.messages.warning).toHaveBeenCalledWith('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务窗口”继续查看')
     expect(mocks.messages.error).not.toHaveBeenCalledWith('表单连接测试任务提交失败')
     expect(mocks.messages.success).not.toHaveBeenCalledWith('SSH 表单连接测试任务已提交')
+    expect(mocks.openTaskWindow).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

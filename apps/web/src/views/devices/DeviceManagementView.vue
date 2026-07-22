@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
@@ -7,6 +7,7 @@ import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Plus, R
 import { isFeatureEnabled } from '../../features'
 import {
   getDeviceEditProfile,
+  getDeviceConnectionTest,
   getExternalTerminalSettings,
   issueExternalTerminalConfirmation,
   getOmniPeekPreview,
@@ -220,7 +221,8 @@ const testActive = computed(() => {
 const writeTestActive = computed(() => {
   const taskId = writeConnectionTest.value?.task_id
   const task = taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) : null
-  return Boolean(task && activeTaskStatuses.has(task.status))
+  if (task) return activeTaskStatuses.has(task.status)
+  return Boolean(writeConnectionTest.value && activeTaskStatuses.has(writeConnectionTest.value.task_status as TaskStatus))
 })
 const availableWriteTestProtocols = computed<DeviceConnectionProtocol[]>(() => {
   const protocols: DeviceConnectionProtocol[] = []
@@ -229,6 +231,68 @@ const availableWriteTestProtocols = computed<DeviceConnectionProtocol[]>(() => {
   if (writeForm.snmp_enabled && (writeForm.snmp_v1_enabled || writeForm.snmp_v2c_enabled)) protocols.push('SNMP')
   return protocols
 })
+const writeConnectionTask = computed(() => {
+  const taskId = writeConnectionTest.value?.task_id
+  return taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) || null : null
+})
+const writeConnectionBusy = computed(() => writeConnectionLoading.value || writeTestActive.value)
+
+function hasUsableWriteSecret(field: DeviceSecretField, configured: boolean): boolean {
+  if (String(writeForm[field] || '').length > 0) return true
+  return writeMode.value === 'edit' && configured && !secretClears[field]
+}
+
+const writeConnectionDisabledReason = computed(() => {
+  if (!isFeatureEnabled('web.device_form_connection_test')) return '当前版本未启用表单连接测试'
+  if (!isFeatureEnabled('web.device_management_write')) return '设备管理写操作未启用'
+  if (editingProfileLoading.value) return '编辑信息仍在加载，请稍候'
+  if (writeConnectionBusy.value) return '连接测试正在执行'
+  const protocol = writeTestProtocol.value
+  if (!availableWriteTestProtocols.value.includes(protocol)) return `请先启用 ${protocol}`
+  if (!writeForm.primary_address.trim()) return '请输入设备地址'
+  const port = protocol === 'SSH' ? writeForm.ssh_port : protocol === 'TELNET' ? writeForm.telnet_port : writeForm.snmp_port
+  if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) return `请输入有效的 ${protocol} 端口`
+  if (protocol === 'SSH') {
+    if (!String(writeForm.ssh_username || '').trim()) return '请输入 SSH 用户名'
+    if (!hasUsableWriteSecret('ssh_password', Boolean(detail.value?.ssh_secret_configured))) return '请输入 SSH 密码（缺少认证信息）'
+  } else if (protocol === 'TELNET') {
+    if (!String(writeForm.telnet_username || '').trim()) return '请输入 Telnet 用户名'
+    if (!hasUsableWriteSecret('telnet_password', Boolean(detail.value?.telnet_secret_configured))) return '请输入 Telnet 密码（缺少认证信息）'
+  } else if (!hasUsableWriteSecret('snmp_ro_community', Boolean(detail.value?.snmp_ro_secret_configured))) {
+    return '请输入 SNMP 只读团体字'
+  }
+  if (protocol === 'SSH' || protocol === 'TELNET') {
+    for (const [prefix, label] of [['tunnel1', '第一跳'], ['tunnel2', '第二跳']] as const) {
+      if (!String(writeForm[`${prefix}_host`] || '').trim()) continue
+      if (!String(writeForm[`${prefix}_username`] || '').trim()) return `请输入 SSH 隧道${label}用户名`
+      if (!hasUsableWriteSecret(`${prefix}_password`, Boolean(detail.value?.[`${prefix}_secret_configured`]))) return `请输入 SSH 隧道${label}密码`
+    }
+  }
+  return ''
+})
+
+watch(
+  () => {
+    const task = writeConnectionTask.value
+    return task && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)
+      ? `${task.id}:${task.status}:${task.updated_time}`
+      : ''
+  },
+  async (terminalKey) => {
+    if (!terminalKey) return
+    const taskId = terminalKey.split(':', 1)[0]
+    try {
+      const result = await getDeviceConnectionTest(taskId)
+      if (writeConnectionTest.value?.task_id !== taskId) return
+      writeConnectionTest.value = result
+      if (result.success === true) ElMessage.success(result.safe_message || 'SSH 连接成功')
+      else if (result.task_status === 'CANCELLED') ElMessage.warning('连接测试已取消')
+      else ElMessage.error(result.safe_message || result.message || 'SSH 连接失败')
+    } catch (cause) {
+      if (writeConnectionTest.value?.task_id === taskId) ElMessage.error(errorMessage(cause, '连接测试结果读取失败'))
+    }
+  },
+)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
@@ -651,6 +715,10 @@ async function testWriteConnection(): Promise<void> {
     ElMessage.error('详情编辑目标已失效，请关闭后重新打开')
     return
   }
+  if (writeConnectionDisabledReason.value) {
+    ElMessage.warning(writeConnectionDisabledReason.value)
+    return
+  }
   writeConnectionLoading.value = true
   try {
     const result = await startDeviceFormConnectionTest({
@@ -659,7 +727,7 @@ async function testWriteConnection(): Promise<void> {
       device_uuid: editTargetUuid || undefined,
     })
     writeConnectionTest.value = result
-    await presentTasks([{
+    lastSubmittedTask.value = {
       task_id: result.task_id,
       task_status: result.task_status,
       action: 'connection_test',
@@ -668,7 +736,13 @@ async function testWriteConnection(): Promise<void> {
       sha256: '',
       size_bytes: 0,
       message: result.message,
-    }], `${writeTestProtocol.value} 表单连接测试任务已提交`)
+    }
+    try {
+      await taskStore.refresh()
+      ElMessage.success(`${writeTestProtocol.value} 表单连接测试任务已提交`)
+    } catch {
+      ElMessage.warning('连接测试任务已提交，但任务状态刷新失败；可使用“打开任务窗口”继续查看')
+    }
   } catch (cause) {
     ElMessage.error(errorMessage(cause, '表单连接测试任务提交失败'))
   } finally {
@@ -1354,7 +1428,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="closeWriteDialog">
       <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
-      <el-alert v-if="writeConnectionTest" :title="`${writeConnectionTest.protocol || writeTestProtocol} · ${writeConnectionTest.task_status} · ${writeConnectionTest.message || '等待结果'}`" :type="writeConnectionTest.success === true ? 'success' : writeConnectionTest.success === false ? 'error' : 'info'" :description="`Task ID: ${writeConnectionTest.task_id}${writeConnectionTest.suggestion ? `；建议：${writeConnectionTest.suggestion}` : ''}`" show-icon :closable="false" />
+      <el-alert v-if="writeConnectionTest" :title="`${writeConnectionTest.protocol || writeTestProtocol} · ${writeConnectionTest.task_status} · ${writeConnectionTest.safe_message || writeConnectionTest.message || '等待结果'}`" :type="writeConnectionTest.success === true ? 'success' : writeConnectionTest.success === false || writeConnectionTest.task_status === 'FAILED' ? 'error' : 'info'" :description="`Task ID: ${writeConnectionTest.task_id}${writeConnectionTest.failure_category ? `；分类：${writeConnectionTest.failure_category}` : ''}${writeConnectionTest.elapsed_ms != null ? `；耗时：${writeConnectionTest.elapsed_ms} ms` : ''}${writeConnectionTest.suggestion ? `；建议：${writeConnectionTest.suggestion}` : ''}`" show-icon :closable="false" />
       <el-form label-width="118px" class="device-write-form">
         <div class="form-grid">
           <section class="form-section"><h3>基础信息</h3>
@@ -1369,11 +1443,11 @@ function errorMessage(cause: unknown, fallback: string): string {
           <section class="form-section"><h3>连接</h3>
             <el-form-item label="主地址 *"><el-input v-model="writeForm.primary_address" data-testid="device-address" /></el-form-item>
             <el-form-item label="备用地址"><el-input v-model="writeForm.backup_address" /></el-form-item>
-            <el-form-item label="SSH"><el-checkbox v-model="writeForm.ssh_enabled">启用</el-checkbox><el-input-number v-model="writeForm.ssh_port" :min="1" :max="65535" controls-position="right" /></el-form-item>
+            <el-form-item label="SSH"><el-checkbox v-model="writeForm.ssh_enabled" data-testid="ssh-enabled">启用</el-checkbox><el-input-number v-model="writeForm.ssh_port" data-testid="ssh-port" :min="1" :max="65535" controls-position="right" /></el-form-item>
             <el-form-item label="Telnet"><el-checkbox v-model="writeForm.telnet_enabled">启用</el-checkbox><el-input-number v-model="writeForm.telnet_port" :min="1" :max="65535" controls-position="right" /></el-form-item>
           </section>
           <section class="form-section"><h3>SSH 认证</h3>
-            <el-form-item label="用户名"><el-input v-model="writeForm.ssh_username" autocomplete="off" /></el-form-item>
+            <el-form-item label="用户名"><el-input v-model="writeForm.ssh_username" data-testid="ssh-username" autocomplete="off" /></el-form-item>
             <el-form-item label="密码"><el-input v-model="writeForm.ssh_password" data-testid="ssh-password" type="password" show-password autocomplete="new-password" :disabled="secretClears.ssh_password" :placeholder="writeMode === 'edit' && detail?.ssh_secret_configured ? '已配置；留空保留' : ''" /><el-checkbox v-if="writeMode === 'edit' && detail?.ssh_secret_configured" data-testid="ssh-clear" :model-value="secretClears.ssh_password" @change="setSecretCleared('ssh_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </section>
           <section class="form-section"><h3>Telnet 认证</h3>
@@ -1397,7 +1471,7 @@ function errorMessage(cause: unknown, fallback: string): string {
           </div>
         </div></section>
       </el-form>
-      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip content="等待共享 Job Runtime 非序列化 bootstrap 接入" :disabled="isFeatureEnabled('web.device_form_connection_test')"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionLoading" :disabled="editingProfileLoading || !availableWriteTestProtocols.length || writeTestActive || !isFeatureEnabled('web.device_form_connection_test') || !isFeatureEnabled('web.device_management_write')" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><el-button v-if="writeConnectionTest && writeTestActive" data-testid="form-connection-cancel" type="danger" plain @click="openWriteConnectionTestTask">在任务窗口停止</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
+      <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip :content="writeConnectionDisabledReason" :disabled="!writeConnectionDisabledReason"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionBusy" :disabled="!!writeConnectionDisabledReason" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><span v-if="writeConnectionDisabledReason && !writeConnectionBusy" data-testid="form-connection-disabled-reason" class="field-warning">{{ writeConnectionDisabledReason }}</span><el-button v-if="writeConnectionTest" data-testid="form-connection-task" plain @click="openWriteConnectionTestTask">打开任务窗口</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('web.device_management_write')" @click="saveWrite">保存</el-button></div></div></template>
     </el-dialog>
 
     <el-dialog v-model="groupVisible" title="分组管理" width="420px">

@@ -164,29 +164,24 @@ Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/
 
 阶段 5B-6 只固化 Controller 侧契约，不调用 Agent HTTP API、不创建远端任务、不下载或导入采集包。`OnlineMrApplicationService.start_collection()` 是 executor 分派入口；`LOCAL` 继续复用已验收的 `start_local_collection()`，`AGENT` 在创建 LOCAL Worker、Task/Session 映射或 TrafficCoordinator 之前稳定返回 `ONLINE_MR_EXECUTOR_UNSUPPORTED`。已有 AGENT 映射也不会被 LOCAL stop/force stop、Task Event Hub 或本地遗留恢复误处理。
 
-### 10.1 当前 Agent 能力与协议缺口
+### 10.1 当前 Agent 能力与保留缺口
 
 Go Agent 已有 `/api/v1/mr/collect/{start,stop,status,live,raw-tail,raw-summary}`、统一任务查询/事件、采集包下载、Netmiko sidecar 和密码脱敏。现有 start 请求已能表达目标、会话归属、采集项、周期、Radio、fping、iPerf 和现场展示上下文；私有 `meta/request.private.json` 只用于 sidecar 连接，任务参数和目标快照使用脱敏副本，最终 ZIP 排除该文件和 `stop.request`。
 
-仍未接通的边界：
+5B-13A/13B 已补齐 Controller/Web 的单 Agent、单 MR 远程生命周期：固定 start/status/normal stop、Controller `deadline_at` 到期停止、终态包轮询、下载、校验、导入及 Task/Session/Mapping 收敛。该能力默认关闭，必须显式设置 `ONLINE_MR_AGENT_EXECUTOR_ENABLED=1`；关闭时不能用历史手工包导入能力冒充远程执行已启用。
 
-- Go MR 请求尚未执行 `duration_minutes` 自动停止；
-- Agent task/status/live 三类响应尚未归一为 Controller 的 start/status/stop DTO；
-- Controller 已能手工查询、下载并导入 Agent ZIP，但尚未接远程任务生命周期；
-- Agent 终态到 Controller Task/Session/Mapping 的自动同步链尚未建立。
-
-因此 5B-6 不把 Agent 已有本地 Web 采集能力描述为 Python Controller 已接入。
+仍保留的缺口：Go MR 请求本身尚不执行 `duration_minutes`，由 Controller Supervisor 负责截止时间；没有 Agent 强停、多 Agent 编排、远端包删除或任意命令；真实 MR 仍待现场验收。Agent 的 live/raw-tail 是只读展示接口，不改变 Controller 的最终化顺序。
 
 ### 10.2 请求与响应模型
 
-`src/netconsole/models/online_mr_agent.py` 定义未来 Controller 边界：
+`src/netconsole/models/online_mr_agent.py` 定义当前 Controller 强类型边界：
 
 - `OnlineMrAgentStartRequest`：`site/device/mr/owner/agent_id`、最小连接目标、采集项、interval、Radio、fping、iPerf、`display_context`、`duration_minutes`、`stop_strategy` 和自动打包策略；
 - `OnlineMrAgentStartResponse`：`agent_task_id/session_id/task_type/status/started_at` 与稳定错误；
 - `OnlineMrAgentStatusResponse`：采集器、fping、iPerf、包、错误摘要和完整性；
 - `OnlineMrAgentStopResponse`：停止结果、原因和包状态。
 
-目标密码使用 `SecretStr`。`transport_payload()` 是未来 HTTP 私有请求，允许为连接临时包含明文密码，但返回值禁止写入日志、事件、数据库和包；`public_payload()`、模型 JSON 和 repr 不含明文密码。主程序映射继续只保存 `agent_id` 和业务摘要，不新增凭据字段。
+目标密码使用 `SecretStr`。`transport_payload()` 只用于单次 HTTP 私有请求，允许为连接临时包含明文密码，但返回值禁止写入日志、事件、数据库和包；`public_payload()`、模型 JSON 和 repr 不含明文密码。主程序映射继续只保存 `agent_id` 和业务摘要，不新增凭据字段。
 
 ### 10.3 状态与交付映射
 
@@ -341,7 +336,7 @@ python -m scripts.maintenance.download_import_agent_online_mr_package `
 
 ## 16. 本地 Agent 自检边界（5B-12A）
 
-维护脚本 `python -m scripts.maintenance.check_local_agent_runtime` 只允许连接 `127.0.0.1` 或 `localhost`，用于验证 Agent 状态、工具、fping/iPerf 任务、日志和终态。它不会调用 MR start/stop，不会下载或删除采集包，也不会改变本节仍为 `ONLINE_MR_EXECUTOR_UNSUPPORTED` 的远程执行边界。
+维护脚本 `python -m scripts.maintenance.check_local_agent_runtime` 只允许连接 `127.0.0.1` 或 `localhost`，用于验证 Agent 状态、工具、fping/iPerf 任务、日志和终态。它不会调用 MR start/stop，不会下载或删除采集包，因此不能作为当前 AGENT executor 的验收；远程 MR 应按 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md) 的 Fake/现场边界单独验证。
 
 自检固定使用 fping `interval_ms=1000 / timeout_ms=4000 / packet_size=64 / count=10`；iPerf 使用回环 TCP、单流和 10 秒。当前 TCP 2 Mbps 仅为期望记录，不能当作车地链路限速或性能结论。
 
@@ -369,9 +364,9 @@ LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 
-`/rail-transit/train-communication` 在 5C-2 查询边界上聚合正式列车/MR、AC Mesh-Link、活动或最近 Online MR Session、fping/iPerf、关联 Task 和采集包。Agent 已导入 Session 和 5B-13A 远端执行结果都可按 `executor=AGENT` 只读显示；当前 Web 不提供 AGENT 控制入口。
+`/rail-transit/train-communication` 现已收口为按点表执行的车内通信检测，不再聚合或控制 Online MR、fping/iPerf、采集包与 Agent。列车在线、过期、离线或无快照只作为辅助状态，不是进入页面或启动检测的硬门槛。
 
-聚合页不修改本节任何采集命令、raw、Traffic flush、最终化或打包契约。5C-10A 只在 MR 详情增加受四重安全条件保护的 LOCAL start/normal stop；原始片段继续通过逻辑名称白名单读取 tail。详细控制边界见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)，聚合优先级、状态和刷新规则见 [在线列车车内通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
+Online MR 的 LOCAL/AGENT 实时控制与历史分析分别留在专用页面；AGENT 已导入 Session 和远端执行结果按 `executor=AGENT` 进入统一历史查询。车内通信页不修改采集命令、raw、Traffic flush、最终化或打包契约。详细控制边界见 [Web 本地 Online MR 受控启停](ONLINE_MR_WEB_CONTROL.md)、[Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md) 和 [车内通信检测](TRAIN_COMMUNICATION_MONITORING.md)。
 
 ## 19. Web LOCAL 受控启停（5C-10A）
 

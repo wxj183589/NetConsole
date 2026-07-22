@@ -35,6 +35,7 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 - `src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py`、`src/netconsole/models/online_mr_models.py`。
 - `src/netconsole/services/job_center/handlers/online_mr_jobs.py`、`src/netconsole/core/mr_collect/`、`src/netconsole/core/ping/`。
 - `tests/test_online_mr_collection.py`、`tests/test_online_mr_collection_job.py`。
+- 使用 AGENT executor 时同时读取 `docs/ONLINE_MR_AGENT_EXECUTOR.md`、`src/netconsole/services/online_mr/agent_executor.py` 和对应 Fake/Importer 测试。
 
 # 业务与生命周期规则
 
@@ -45,6 +46,8 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 5. 设备命令以 `src/netconsole/services/online_mr/collection_commands.py` 为唯一事实源，不改变顺序或文本。
 6. 会话路径以 `src/netconsole/services/online_mr/collection_paths.py` 为事实源；停止后协作取消、关闭 SSH/文件、保存 raw、更新状态并原子打包。
 7. Vue 只提交长运行 Job DTO 和绑定事件；大解析走 `online_mr_parse` Job，报告走 Export Process，Router 不承载采集状态机。
+8. LOCAL 走 prepare/start/stop/force-stop/reconcile/recover 与 Traffic/SSH/ZIP 收口；默认关闭的 AGENT executor 只允许单 Agent start/status/normal stop、Controller 到期停止和包导入，不提供远端强停、删除或任意命令。
+9. 正常包、warning 包、partial/force-stopped 包和 failed 包分别保留完整性/终态语义；强停不得伪造完整 ZIP，Importer 不覆盖既有 Session。
 
 # 必须保护的会话文件
 
@@ -60,6 +63,7 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 - 验证正常停止、取消、强制停止、SSH 清理、raw 文件完整、解析、会话状态和 ZIP 临时文件清理。
 - 缺少真实 MR/服务端时说明只完成 fake connection/本地功能测试，不声称现场稳定。
 - 输出修改文件、命令是否变化、保护的 raw/会话文件、UI/数据库影响和手工步骤。
+- 常见失败包括：把 AGENT 计划写成未实现或无条件启用、Token/设备密码进入 Task、远端已终态但包未导入就标记完成、LOCAL/AGENT 停止路径混用。
 
 # 相关 Skills
 

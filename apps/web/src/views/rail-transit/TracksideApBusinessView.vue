@@ -12,6 +12,7 @@ import {
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
+import { t } from '../../i18n/runtime'
 import type { TracksideApBusinessPage, TracksideApBusinessRow, TracksideApTask, TracksideApUpdateRequest } from '../../types/tracksideApBusiness'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
@@ -100,16 +101,66 @@ function autoSavedTaskIds(): string[] {
     return []
   }
 }
+function summaryCount(summary: Record<string, unknown>, key: string): number {
+  const value = Number(summary[key] ?? 0)
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+function updateReasonLabel(value: string): string {
+  const labels: Record<string, string> = {
+    connection_incomplete: t('trackside.result.reason.connection_incomplete', '连接信息不完整'),
+    no_device_connection: t('trackside.result.reason.no_device_connection', '未配置设备连接'),
+    vendor_not_supported: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
+    unsupported_vendor: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
+    fit_ap_resource_failed: t('trackside.result.reason.fit_ap_resource_failed', 'FIT-AP 资源刷新失败'),
+    cancelled: t('trackside.result.reason.cancelled', '采集已取消'),
+    device_collection_failed: t('trackside.result.reason.device_collection_failed', '交换机采集失败'),
+    fit_ap_collection_failed: t('trackside.result.reason.fit_ap_collection_failed', 'AP 光衰采集失败'),
+  }
+  return labels[value] || value
+}
+function resultMessage(key: string, fallback: string, values: Record<string, number | string> = {}): string {
+  return Object.entries(values).reduce(
+    (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
+    t(key, fallback),
+  )
+}
+function primaryFailureReason(summary: Record<string, unknown>): string {
+  for (const key of ['failure_reason_counts', 'skipped_reason_counts']) {
+    const counts = summary[key]
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue
+    const reason = Object.entries(counts as Record<string, unknown>)
+      .filter(([code, count]) => code !== 'no_station_switches' && Number.isFinite(Number(count)) && Number(count) > 0)
+      .sort((left, right) => Number(right[1]) - Number(left[1]))[0]?.[0]
+    if (reason) return updateReasonLabel(reason)
+  }
+  return ''
+}
 function updateFinishedNotice(value: TracksideApTask): { message: string; type: 'success' | 'info' | 'warning' | 'error'; autoHideMs: number } {
   const summary = value.result_summary || {}
   const status = String(summary.status || value.status || '').toUpperCase()
-  const failedCount = Number(summary.failed_count ?? 0)
-  const skippedCount = Number(summary.skipped_count ?? 0)
-  if (value.status === 'FAILED' || status === 'FAILED') return { message: '轨旁 AP 光衰更新失败，请在任务窗口查看原因', type: 'error', autoHideMs: 0 }
-  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: '轨旁 AP 光衰更新已取消，请在任务窗口查看详情', type: 'warning', autoHideMs: 0 }
-  if (status === 'NO_TARGET') return { message: '轨旁 AP 光衰更新未找到目标，请在任务窗口查看详情', type: 'info', autoHideMs: 4000 }
-  if (failedCount > 0 || skippedCount > 0 || status === 'PARTIAL_SUCCESS') return { message: '轨旁 AP 光衰数据已刷新，部分目标未成功，请在任务窗口查看详情', type: 'warning', autoHideMs: 0 }
-  return { message: '轨旁 AP 光衰数据已刷新', type: 'success', autoHideMs: 4000 }
+  const successCount = summaryCount(summary, 'success_count')
+  const failedCount = summaryCount(summary, 'failed_count')
+  const actionableSkippedCount = summaryCount(summary, 'actionable_skipped_count')
+  const ignoredSkippedCount = summaryCount(summary, 'ignored_skipped_count')
+  if (value.status === 'FAILED' || status === 'FAILED') {
+    const notExecuted = actionableSkippedCount
+      ? resultMessage('trackside.result.notice.not_executed_suffix', '，{count} 个目标未执行', { count: actionableSkippedCount })
+      : ''
+    const reason = primaryFailureReason(summary)
+    const reasonText = reason
+      ? resultMessage('trackside.result.notice.reason_suffix', '；主要原因：{reason}', { reason })
+      : ''
+    return { message: resultMessage('trackside.result.notice.failed', '轨旁 AP 光衰更新失败：成功 {success}，失败 {failed}{not_executed}{reason}，请在任务窗口查看详情', { success: successCount, failed: failedCount, not_executed: notExecuted, reason: reasonText }), type: 'error', autoHideMs: 0 }
+  }
+  if (value.status === 'CANCELLED' || status === 'CANCELLED') return { message: t('trackside.result.notice.cancelled', '轨旁 AP 光衰更新已取消，请在任务窗口查看详情'), type: 'warning', autoHideMs: 0 }
+  if (status === 'NO_TARGET') return { message: t('trackside.result.notice.no_target', '轨旁 AP 光衰更新未找到目标，请在任务窗口查看详情'), type: 'info', autoHideMs: 4000 }
+  if (failedCount > 0) return { message: resultMessage('trackside.result.notice.partial_failed', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 {failed}，请在任务窗口查看详情', { success: successCount, failed: failedCount }), type: 'warning', autoHideMs: 0 }
+  if (actionableSkippedCount > 0) return { message: resultMessage('trackside.result.notice.not_executed', '轨旁 AP 光衰数据已刷新：成功 {success}，{not_executed} 个目标未执行，请在任务窗口查看详情', { success: successCount, not_executed: actionableSkippedCount }), type: 'warning', autoHideMs: 0 }
+  if (status === 'PARTIAL_SUCCESS') return { message: resultMessage('trackside.result.notice.partial', '轨旁 AP 光衰数据已刷新：成功 {success}，业务结果为部分成功，请在任务窗口查看详情', { success: successCount }), type: 'warning', autoHideMs: 0 }
+  const ignored = ignoredSkippedCount
+    ? resultMessage('trackside.result.notice.ignored_suffix', '；另有 {count} 项不适用或已忽略', { count: ignoredSkippedCount })
+    : ''
+  return { message: resultMessage('trackside.result.notice.success', '轨旁 AP 光衰数据已刷新：成功 {success}，失败 0{ignored}', { success: successCount, ignored }), type: 'success', autoHideMs: 4000 }
 }
 function rememberAutoSavedTask(taskId: string): void {
   const values = [...autoSavedTaskIds().filter((item) => item !== taskId), taskId].slice(-50)

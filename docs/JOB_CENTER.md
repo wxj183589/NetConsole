@@ -53,6 +53,24 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
 - 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 4B-2 允许 `TaskApplicationService.create_external_task/record_external_event` 将 Agent Traffic 映射到同一任务中心，但它仍不是独立 Controller daemon。
 
+## 调度状态与业务结果
+
+七状态只描述任务宿主生命周期：`PENDING / STARTING / RUNNING / STOPPING / COMPLETED / FAILED / CANCELLED`。其中 `COMPLETED` 表示 Worker 已正常返回并完成状态收口，不等于所有批量目标成功。业务层还可能返回 `SUCCESS / PARTIAL_SUCCESS / WARNING / FAILED`、成功/失败/跳过数量和原因聚合；页面提示、任务详情与导出摘要必须引用同一份结构化结果。
+
+当前公开 DTO 包含 `status`、`error_code`、`error_summary`、`has_warning` 和按任务白名单返回的 `details`。轨旁 AP 光衰任务 `trackside_ap_optical_update` 已在详情白名单中返回 `status/success_count/failed_count/skipped_count/actionable_skipped_count/ignored_skipped_count/target_count` 及原因计数，Vue 详情可在 `COMPLETED` 旁独立显示“部分成功”。这些字段不是第八个 Task 状态，也不能把 `COMPLETED` 改写为 `FAILED`。
+
+仍有一个明确缺口：任务列表与顶部“警告”计数只根据 `error_summary` 计算 `has_warning`，列表查询又不读取结果详情。因此轨旁 AP 任务即使详情为 `PARTIAL_SUCCESS`，列表仍可能只显示绿色“已完成”，`warning_only` 也可能漏掉它。其他批量 handler 还没有统一 `business_outcome` 契约。本轮文档不把该问题描述为已完全修复。
+
+后续代码收口应满足：
+
+1. 在通用 DTO 中增加稳定的业务结果、成功/失败/跳过/警告计数，或由后端统一聚合为等价字段；
+2. 列表与详情读取同一聚合结果，`has_warning` 覆盖部分失败、可行动跳过和完成警告；
+3. `COMPLETED + PARTIAL_SUCCESS/WARNING` 使用警告样式，完全失败仍为 `FAILED`，取消与强停保持各自终态；
+4. 页面 toast、Job Center、结果摘要、失败数量和详细原因必须一致；
+5. 自动测试覆盖列表、警告筛选、详情、汇总计数和刷新后的持久状态。
+
+排查“页面提示部分失败、任务中心显示全部完成”时，先读取任务详情 `details` 和 `result_json` 的结构化计数，再检查列表 DTO 的 `has_warning`，不要从绿色标签反推业务全部成功。
+
 ## Online MR Application 映射
 
 阶段 5B-2A 的 `OnlineMrApplicationService` 是纯 Python LOCAL 启动边界。它通过 `LocalProcessAdapter` 提交既有 `online_mr_collection_start` Job，并把 `site_name`、`device`、`device_id` 和 owner 作为顶层任务摘要传入，避免 Task Center 从嵌套连接配置推断归属。创建任务前先在所属局点 `tasks.db` 写入可空 Session 映射；采集侧创建会话后发出 `online_mr_session_created`，应用层再幂等关联 Session。
@@ -61,7 +79,7 @@ Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约
 
 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile，重复停止不得二次取消或重复生成 ZIP。
 
-`online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 是两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 只通过受管进程的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载；远程任务 start/stop 不在这两个 handler 中。
+`online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 是两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 只通过受管进程的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载。默认关闭的 AGENT executor 已通过独立 Application Service/Executor 提供固定 start/status/normal stop 和自动包导入，不复用这两个 handler，也不提供远端强停或任意命令。
 
 ## Task Center API
 
@@ -182,7 +200,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - 用户停止由对应 owner Application Service 请求 TaskRuntime 写入协作取消。在线 MR 使用可配置的清理宽限期，让 handler 关闭采集循环、SSH 和文件句柄、更新会话状态并完成打包；超时再由 LocalProcessAdapter 强制回收进程树。
 - 停止后的压缩包原子写入 session 的 `outputs` 目录；失败时删除临时包但保留完整 session/raw 目录。
 - Vue 可通过受控游标轮询或 WebSocket 跟踪日志尾部，但不得在 Renderer 做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
-- 当前执行端仍是本地 Worker Process，未实现 Windows/CentOS Agent；命令、配置、路径、会话与打包均已脱离 UI，为后续替换执行端保留边界。
+- LOCAL 执行端仍是本地 Worker Process；Windows Go Agent 的单 Agent、单 MR 执行器已经实现但默认关闭，只提供固定 start/status/normal stop、Controller 到期停止和安全包导入。CentOS Agent、多 Agent 编排和远端强停尚未实现。
 
 ## AC 资源刷新 Job
 
@@ -202,6 +220,8 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - 采集取消转换为唯一 cancelled 终态；全部失败转换为结构化 error；部分失败以 finished 返回 `partial_success/failed_aps`，便于 UI 保留现有结果并提示。
 - `ac_fit_ap_optical_refresh` 与轨旁 `trackside_ap_optical_update` 对同一 `site_id + ac_device_uuid + fit_ap_optical` 写入 `resource_keys`，`TaskApplicationService` 通过所属局点 `tasks.db` 的 `BEGIN IMMEDIATE` 原子检查和保存阻止同一 AC 重复光衰任务；任务进入 completed/failed/cancelled 或重启 orphan reconcile 后即释放占用，不使用永久文件锁。
 - 轨旁 `trackside_ap_optical_update` 的业务结果 `status` 使用 `SUCCESS / PARTIAL_SUCCESS / FAILED / NO_TARGET / CANCELLED`；其中 `FAILED/CANCELLED` 通过 `finished.terminal_state` 映射为 Task 终态，仍保留 `success_count/failed_count/target_count` 等统计。
+- 轨旁业务结果与 Task 调度终态分层：Worker 正常结束时 `SUCCESS / PARTIAL_SUCCESS / NO_TARGET` 的 Task 均可为 `COMPLETED`，任务详情单独展示业务结果。原始 `skipped_count` 仅用于审计；`actionable_skipped_count` 统计连接信息不完整、无设备连接、厂商不支持、FIT-AP 资源失败、取消等导致计划目标未执行的记录，`ignored_skipped_count` 统计 `no_station_switches` 等不适用或可选分支记录。只有真实失败或可处理跳过会把有成功结果的任务判为 `PARTIAL_SUCCESS`；仅有忽略项不降级 `SUCCESS`。
+- `trackside_ap_optical_update` 的完成结果保留 `skipped` 明细及 `skipped_reason_counts`，统一任务详情 API 只白名单暴露业务状态、成功/失败/未执行/忽略数量和原因统计，不向 Renderer 透传包含目标地址的原始跳过明细。
 - 光衰采集结果的 `collection` 会返回 `requested_concurrency`、`effective_concurrency`、`platform_concurrency_limit` 和 `round_summaries`，用于诊断旧并发配置是否被裁剪以及重试轮次是否下降。
 - FIT-AP/AP 侧光衰采集会通过同一 `progress.details` 携带单 AP 结构化事件，不新增事件类型。轨旁 `trackside_ap_optical_update` 和 AC `ac_fit_ap_optical_refresh` 均可收到 `plan_ready / ap_started / ap_completed / ap_retry_started`，字段包含 `phase/event/round/index/total/completed/ap_uuid/ap_name/ap_mac/ap_ip/station/status/reason_code/error_message/rx_power/tx_power/elapsed_ms/success_count/failed_count/effective_concurrency`。任务窗口只展示阶段、当前 AP、单 AP 结果、重试、摘要和必要失败原因；原始 CLI 回显继续写入采集 raw log，不灌入任务中心日志。
 - 轨旁光衰更新的总体进度由交换机分支、FIT-AP 分支和最终保存/聚合步骤共同聚合；FIT-AP 目标数未确认前不能只按交换机数报满，运行态快照带 `prevent_running_100` 时最多显示 99%，只有任务终态事件才显示 100%。

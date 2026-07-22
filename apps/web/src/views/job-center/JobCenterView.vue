@@ -11,6 +11,7 @@ import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import { t } from '../../i18n/runtime'
 import {
   isTracksideApBusinessArtifactTask,
   saveTracksideApBusinessArtifact,
@@ -57,6 +58,34 @@ const currentApProgress = computed(() => {
   const completed = numberDetail('fit_ap_completed', numberDetail('completed', 0))
   const total = numberDetail('fit_ap_total', numberDetail('total', 0))
   return total ? `${completed} / ${total}` : '--'
+})
+const selectedBusinessStatus = computed(() => String(selectedDetails.value.status || '').toUpperCase())
+const showTracksideBusinessResult = computed(() => (
+  store.selected?.type === 'trackside_ap_optical_update'
+  && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.selected.status)
+  && ['SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'NO_TARGET', 'CANCELLED'].includes(selectedBusinessStatus.value)
+))
+const businessStatusLabel = computed(() => ({
+  SUCCESS: t('job_center.business_result.success', '成功'),
+  PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
+  FAILED: t('job_center.business_result.failed', '失败'),
+  NO_TARGET: t('job_center.business_result.no_target', '未找到目标'),
+  CANCELLED: t('job_center.business_result.cancelled', '已取消'),
+}[selectedBusinessStatus.value] || selectedBusinessStatus.value))
+const businessReasonRows = computed(() => {
+  const rows: Array<{ key: string; label: string; count: number; category: string }> = []
+  for (const [field, category] of [
+    ['failure_reason_counts', t('job_center.business_result.failure_reason', '失败')],
+    ['skipped_reason_counts', t('job_center.business_result.skipped_reason', '跳过')],
+  ] as const) {
+    const counts = selectedDetails.value[field]
+    if (!counts || typeof counts !== 'object' || Array.isArray(counts)) continue
+    for (const [key, value] of Object.entries(counts as Record<string, unknown>)) {
+      const count = Number(value)
+      if (Number.isFinite(count) && count > 0) rows.push({ key, label: reasonLabel(key), count, category })
+    }
+  }
+  return rows
 })
 const columns: NcTableColumn<TaskItem>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
@@ -263,6 +292,14 @@ function reasonLabel(value: unknown): string {
     cancelled: '已取消',
     unexpected_error: '未知异常',
     log_write_failed: '日志写入失败',
+    connection_incomplete: t('trackside.result.reason.connection_incomplete', '连接信息不完整'),
+    no_device_connection: t('trackside.result.reason.no_device_connection', '未配置设备连接'),
+    vendor_not_supported: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
+    unsupported_vendor: t('trackside.result.reason.vendor_not_supported', '厂商暂不支持光衰采集'),
+    fit_ap_resource_failed: t('trackside.result.reason.fit_ap_resource_failed', 'FIT-AP 资源刷新失败'),
+    no_station_switches: t('trackside.result.reason.no_station_switches', '本次无车站交换机采集目标'),
+    device_collection_failed: t('trackside.result.reason.device_collection_failed', '交换机采集失败'),
+    fit_ap_collection_failed: t('trackside.result.reason.fit_ap_collection_failed', 'AP 光衰采集失败'),
   }
   return labels[code] || code
 }
@@ -387,7 +424,10 @@ const revealSaved = () => runSavedAction('reveal')
       <template v-if="store.selected">
         <div class="detail-heading">
           <div><h2>{{ store.selected.name }}</h2><p>{{ store.selected.id }}</p></div>
-          <NcStatusTag :status="store.selected.status" />
+          <div class="detail-status">
+            <NcStatusTag :status="store.selected.status" />
+            <strong v-if="showTracksideBusinessResult">{{ t('job_center.business_result.label', '业务结果') }}：{{ businessStatusLabel }}</strong>
+          </div>
         </div>
 
         <el-alert v-if="store.detailError" :title="store.detailError" type="error" :closable="false" show-icon />
@@ -415,6 +455,24 @@ const revealSaved = () => runSavedAction('reveal')
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
           </template>
         </el-descriptions>
+
+        <section v-if="showTracksideBusinessResult" class="business-result">
+          <div class="current-heading">
+            <h3>{{ t('job_center.business_result.label', '业务结果') }}</h3>
+            <strong>{{ t('job_center.business_result.task_state', '任务状态') }}：{{ store.selected.status === 'COMPLETED' ? t('job_center.business_result.task_completed', '已完成') : store.selected.status }} · {{ businessStatusLabel }}</strong>
+          </div>
+          <div class="current-grid">
+            <article><span>{{ t('job_center.business_result.success', '成功') }}</span><strong>{{ numberDetail('success_count') }}</strong></article>
+            <article><span>{{ t('job_center.business_result.failed', '失败') }}</span><strong>{{ numberDetail('failed_count') }}</strong></article>
+            <article><span>{{ t('job_center.business_result.not_executed', '未执行') }}</span><strong>{{ numberDetail('actionable_skipped_count') }}</strong></article>
+            <article><span>{{ t('job_center.business_result.ignored', '不适用 / 已忽略') }}</span><strong>{{ numberDetail('ignored_skipped_count') }}</strong></article>
+          </div>
+          <ul v-if="businessReasonRows.length" class="business-reasons">
+            <li v-for="row in businessReasonRows" :key="`${row.category}:${row.key}`">
+              <span>{{ row.category }} · {{ row.label }}</span><strong>{{ row.count }}</strong>
+            </li>
+          </ul>
+        </section>
 
         <section v-if="showCurrentProcessing" class="current-processing">
           <div class="current-heading">
@@ -496,8 +554,10 @@ const revealSaved = () => runSavedAction('reveal')
 .cell-title, .cell-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-subtitle { margin-top: 5px; color: var(--nc-text-tertiary); font-size: 11px; }
 .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.detail-status { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.detail-status strong { color: var(--nc-text-primary); font-size: 13px; }
 .detail-alert { margin: 0 0 15px; }
-.current-processing { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--nc-divider); }
+.current-processing, .business-result { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--nc-divider); }
 .current-heading, .log-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .current-heading h3 { margin: 0; font-size: 15px; }
 .current-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
@@ -506,6 +566,9 @@ const revealSaved = () => runSavedAction('reveal')
 .current-grid article.danger { border-color: var(--nc-danger); }
 .current-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
 .current-grid strong { display: block; margin-top: 5px; overflow-wrap: anywhere; color: var(--nc-text-primary); font-size: 13px; font-weight: 600; }
+.business-reasons { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.business-reasons li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--nc-bg-muted); border: 1px solid var(--nc-border); border-radius: 8px; }
+.business-reasons span { color: var(--nc-text-secondary); font-size: 12px; }
 .association-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .native-action-error { margin-top: 12px; }
 .log-section { margin-top: 22px; }

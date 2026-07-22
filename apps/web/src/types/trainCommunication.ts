@@ -32,6 +32,8 @@ export interface TrainCommunicationRow {
   tc_online_status: 'ONLINE' | 'OFFLINE' | 'STALE' | 'UNKNOWN'
   ct_mr_id: string; ct_mr_name: string; tc_mr_id: string; tc_mr_name: string
   updated_at: string | null; data_status: string; online_reason: string
+  diagnostic_status: TopologyStatus; tc1_diagnostic_status: TopologyStatus; tc2_diagnostic_status: TopologyStatus
+  last_diagnostic_at: string | null
   mrs: MrCommunicationStatus[]; current_mesh_links: number; active_sessions: number
   warning_count: number; last_updated_at: string | null
 }
@@ -55,6 +57,7 @@ export interface TrainCommunicationTopology {
   point_table_status: 'configured' | 'missing' | 'invalid'; point_table_message: string; point_table_revision: string; point_table_missing_nodes: string[]
   tc1_nodes: TrainCommunicationTopologyNode[]; tc2_nodes: TrainCommunicationTopologyNode[]
   links: TrainCommunicationTopologyLink[]
+  // 兼容现有 API；当前拓扑没有正式 VRRP 检测来源，页面只展示 virtual_ip 静态配置。
   vrrp: { status: TopologyStatus; master_side: 'TC1' | 'TC2' | null; virtual_ip: string | null; master_device: string | null; backup_device: string | null; message: string; updated_at: string | null }
   cross_end: { status: TopologyStatus; message: string; updated_at: string | null }
 }

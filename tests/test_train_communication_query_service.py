@@ -24,6 +24,7 @@ from netconsole.services.rail_transit.train_identity import canonical_train_id_f
 
 class _BaseQuery:
     def __init__(self) -> None:
+        self.trains = [TrainDTO(id="01", train_no="01", name="01车", mr_count=2)]
         self.mrs = [
             VehicleMrDTO(id="mr-ct", device_id=1, name="列车01-MR-CT", train_id="01", train_no="01", role="CT", management_ip="10.0.0.1"),
             VehicleMrDTO(id="mr-tc", device_id=2, name="列车01-MR-TC", train_id="01", train_no="01", role="TC", management_ip="10.0.0.2"),
@@ -36,9 +37,8 @@ class _BaseQuery:
     def list_mrs(self, *_args, **_kwargs) -> VehicleMrPageDTO:
         return VehicleMrPageDTO(items=self.mrs, total=len(self.mrs))
 
-    @staticmethod
-    def list_trains(*_args, **_kwargs) -> TrainPageDTO:
-        return TrainPageDTO(items=[TrainDTO(id="01", train_no="01", name="01车", mr_count=2)], total=1)
+    def list_trains(self, *_args, **_kwargs) -> TrainPageDTO:
+        return TrainPageDTO(items=self.trains, total=len(self.trains))
 
     def get_mr(self, _site_id: str, mr_id: str) -> VehicleMrDetailDTO | None:
         mr = next((item for item in self.mrs if item.id == mr_id), None)
@@ -270,8 +270,13 @@ def test_fixed_topology_reads_point_table_and_latest_diagnostic_result(tmp_path:
     assert topology.tc1_nodes[1].name == "TC1交换机"
     assert topology.tc1_nodes[1].status == "normal"
     assert topology.tc2_nodes[2].status == "abnormal"
-    assert topology.vrrp.status == "normal"
+    assert topology.vrrp.status == "not_detected"
     assert topology.vrrp.virtual_ip == "10.0.0.254"
+    assert topology.vrrp.message == ""
+    assert topology.vrrp.updated_at is None
+    static_link = next(item for item in topology.links if item.link_id == "tc1-sw-tc2-sw")
+    assert static_link.label == "TC1-SW ↔ TC2-SW"
+    assert static_link.status == "not_detected"
     assert topology.cross_end.status == "abnormal"
     assert topology.cross_end.message == "TC1-SRV 无法访问 TC2-SRV"
     assert topology.checked_at == "2026-07-19T10:01:00Z"
@@ -330,6 +335,82 @@ def test_online_train_list_uses_formal_mesh_status_not_active_sessions(tmp_path:
     service.vehicle_online_query = _VehicleOnlineQuery([_online_train("ONE_SIDE_ONLINE", ct_data="STALE")])  # type: ignore[assignment]
     assert service.list_online_trains("demo").items == []
 
+
+def test_train_list_merges_base_point_table_and_mr_sources_without_online_gate(
+    tmp_path: Path,
+) -> None:
+    base = _BaseQuery()
+    base.trains = [
+        TrainDTO(id=f"{index:02d}", train_no=f"{index:02d}", name=f"{index:02d}车")
+        for index in range(1, 19)
+    ]
+    base.mrs = []
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    CarNetworkPointTableStore(paths, "demo").save(
+        [
+            CarNetworkNode(
+                "19",
+                "TC1-MR",
+                "MR",
+                train_no="19",
+                display_name="19车",
+                primary_address="10.0.0.19",
+            )
+        ]
+    )
+    service = TrainCommunicationQueryService(
+        paths,
+        base_query=base,  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        online_mr_query=_OnlineQuery(),  # type: ignore[arg-type]
+        job_query=_JobQuery(),  # type: ignore[arg-type]
+        vehicle_online_query=_VehicleOnlineQuery([]),  # type: ignore[arg-type]
+    )
+
+    page = service.list_trains(
+        "demo",
+        page=1,
+        page_size=200,
+        sort_by="train_no",
+        sort_order="asc",
+    )
+
+    assert page.total == 19
+    assert [row.train_no for row in page.items] == [f"{index:02d}" for index in range(1, 20)]
+    assert all(row.overall_status in {"", "UNKNOWN"} for row in page.items)
+
+
+def test_train_list_exposes_latest_wired_diagnostic_statuses(tmp_path: Path) -> None:
+    class JobQuery(_JobQuery):
+        @staticmethod
+        def list_task_results(*_args, **_kwargs):
+            return [
+                (
+                    {
+                        "canonical_train_id": "train:01",
+                        "nodes": {
+                            "TC1-MR": "ok",
+                            "TC1-SW": "ok",
+                            "TC1-SRV": "ok",
+                            "TC2-MR": "ok",
+                            "TC2-SW": "ok",
+                            "TC2-SRV": "fail",
+                        },
+                    },
+                    "2026-07-22T10:01:00+00:00",
+                )
+            ]
+
+    service, _online = _service(tmp_path)
+    service.job_query = JobQuery()  # type: ignore[assignment]
+    service.vehicle_online_query = _VehicleOnlineQuery([])  # type: ignore[assignment]
+
+    row = service.list_trains("demo").items[0]
+
+    assert row.diagnostic_status == "abnormal"
+    assert row.tc1_diagnostic_status == "normal"
+    assert row.tc2_diagnostic_status == "abnormal"
+    assert row.last_diagnostic_at == "2026-07-22T10:01:00+00:00"
 
 def test_train_identity_normalizes_common_online_and_point_table_labels() -> None:
     aliases = ["列车01", "01车", "01", "1", "train-01", "train:01", "NBL12-LC01"]

@@ -57,6 +57,7 @@ description: "NetConsole Windows Go Agent、apps/agent、Agent HTTP API、内嵌
 3. 修改路径时同步检查 CLI 参数、环境变量、配置/目标查找顺序、交付包内部路径、启动脚本和运行数据目录。
 4. 不跨进程共享 SQLite connection、Renderer 状态、Repository 或凭据；Agent Token 只由 Controller 在请求时提供。
 5. 保留失败、取消、停止、强制结束和采集包清理语义；不通过吞异常、扩大超时或静默跳过掩盖问题。
+6. 核对能力现状：Traffic 已接入；Online MR 单 Agent executor/Web 入口已实现但默认关闭，只提供固定 start/status/normal stop、截止时间和包导入。不得继续写成“尚未接远程生命周期”，也不得扩写为强停、多 Agent或主动注册。
 
 # 验证
 
@@ -82,6 +83,9 @@ python -m compileall apps/agent src
 
 - Agent V1 已实现的 API、Web、任务、工具、sidecar 和采集包能力；
 - Controller/Traffic 已接入的 REST/WebSocket/Vue 能力与仍待真实环境验收的边界；
+- Online MR AGENT executor 的开关、固定路由、Token 内存边界、包最终化和真实 MR 待验收状态；
 - CentOS 离线部署、主动注册、多 Controller 和完整远程运维等规划项；
 - iPerf3/Cygwin 许可证、NOTICE、来源哈希和对应源码分发责任；
 - 已执行的 Go/Python/compileall/路径检查命令和未执行的构建或现场验证。
+
+常见失败模式：把 `ping_probe` 当作 ICMP、让 Agent 主动注册、把 Token 写入配置/Task、让 Go Agent 执行任意 MR 命令、把远端终态在包导入前标成 Controller 完成。

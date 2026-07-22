@@ -47,6 +47,10 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startDeviceFormConnectionTest')
     expect(source).toContain('测试表单连接')
     expect(source).toContain("isFeatureEnabled('web.device_form_connection_test')")
+    expect(source).toContain('writeConnectionDisabledReason')
+    expect(source).toContain('getDeviceConnectionTest')
+    expect(source).toContain('打开任务窗口')
+    expect(source).not.toContain('等待共享 Job Runtime 非序列化 bootstrap 接入')
   })
 
   it('submits background connection tests to the public task center', () => {

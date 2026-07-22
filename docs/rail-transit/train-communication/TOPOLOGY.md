@@ -3,7 +3,7 @@
 ```text
 TC1-MR -> TC1-SW -> TC1-SRV
               |
-           VRRP / 跨 TC
+        静态拓扑连接
               |
 TC2-MR -> TC2-SW -> TC2-SRV
 ```
@@ -21,4 +21,6 @@ TC2-MR -> TC2-SW -> TC2-SRV
 | `abnormal` | 最近检测失败或异常 |
 | `stale` | 最近结果超过有效期 |
 
-点表缺失或不完整时，VRRP 和跨 TC 状态统一返回 `not_configured`。点表完整但尚未执行检测时，才返回 `not_detected`。
+TC1-SW 与 TC2-SW 之间的中间横线只表示固定拓扑关系，使用中性静态样式，不使用 VRRP、节点或跨 TC 检测状态着色。真实跨 TC 结果仅在“跨 TC 通信”区域展示。
+
+VRRP 卡片只展示点表中的虚拟 IP 静态配置，不展示状态、主端、消息或时间。跨 TC 在点表缺失或不完整时返回 `not_configured`，点表完整但尚未执行检测时返回 `not_detected`。

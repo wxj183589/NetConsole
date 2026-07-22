@@ -34,7 +34,7 @@
 | 交换机配置采集 | 配置采集中心 | 交换机 | CLI | `files/config_center/raw_logs`、配置快照 | `config_lifecycle_service.py` |
 | 交换机诊断信息 | 设备管理诊断下载 | 交换机 | CLI | 诊断下载文本 | `diagnostic_download_service.py` |
 | 交换机文件下载 | 设备文件下载 | 交换机 | CLI、SFTP/SCP | 文件下载队列和本地下载目录 | `file_transfer_service.py` |
-| 交换机连通性检测 | 在线列车车内通信检测 | 交换机 / MR | CLI | 在线列车车内通信检测结果 | `car_network_diagnostic.py` |
+| 交换机连通性检测 | 车内通信检测 | 交换机 / MR | CLI | 车内通信检测结果 | `car_network_diagnostic.py` |
 | 无线 AC 管理 | AC 管理 | 无线 AC | CLI | 轨旁 AP 原始回显 | `h3c_ac_collect_service.py`、AC parser |
 | FIT-AP / MR / Mesh | AC 管理、轨道交通 | FIT-AP / MR | CLI | online_mr raw logs、轨旁 AP raw logs | `online_mr_collector.py`、`vehicle_mr_online.py` |
 | 网络工具 | 网络工具 | 本机 | 本地进程 | network_tools raw/outputs | ping/fping/iperf/netsh parser |

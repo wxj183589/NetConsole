@@ -47,6 +47,7 @@ TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
 TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
 TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
 UNSUPPORTED_VENDOR_REASON = "vendor_not_supported"
+IGNORED_SKIPPED_REASONS = frozenset({"no_station_switches"})
 ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
 STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
 
@@ -152,6 +153,9 @@ class TracksideOpticalSessionResult:
     target_count: int
     concurrency: int
     status: str
+    actionable_skipped_count: int = 0
+    ignored_skipped_count: int = 0
+    skipped_reason_counts: dict[str, int] = field(default_factory=dict)
     skipped: list[TracksideSkippedTarget] = field(default_factory=list)
     results: list[TracksideDeviceCollectionResult] = field(default_factory=list)
     fit_ap_total: int = 0
@@ -659,11 +663,11 @@ def collect_trackside_optical(
     progress_tracker.mark_persisting()
     success_count = fit_success + sum(1 for result in results if result.success)
     failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
+    actionable_skipped_count, ignored_skipped_count, skipped_reason_counts = classify_trackside_skipped(skipped)
     status = _trackside_update_status(
         success_count=success_count,
         failed_count=failed_count,
-        skipped_count=len(skipped),
-        target_count=total_units,
+        actionable_skipped_count=actionable_skipped_count,
         cancelled=cancel_event.is_set(),
     )
     coverage = _trackside_update_coverage(
@@ -693,6 +697,9 @@ def collect_trackside_optical(
             "success_count": success_count,
             "failed_count": failed_count,
             "skipped_count": len(skipped),
+            "actionable_skipped_count": actionable_skipped_count,
+            "ignored_skipped_count": ignored_skipped_count,
+            "skipped_reason_counts": skipped_reason_counts,
             "concurrency": safe_requested_concurrency,
             "requested_concurrency": requested_concurrency,
             "effective_concurrency": max_workers if targets else 0,
@@ -712,38 +719,43 @@ def collect_trackside_optical(
     )
     progress_tracker.mark_completed()
     return TracksideOpticalSessionResult(
-        session_id,
-        session_dir,
-        success_count,
-        failed_count,
-        len(skipped),
-        total_units,
-        safe_requested_concurrency,
-        status,
-        skipped,
-        results,
-        fit_ap_total,
-        len(targets),
-        "ap" if target_ap_update else ("station" if effective_station else "all"),
-        _target_ap_label(target_ap_resource, target_ap_uuid, target_ap_mac, target_ap_name) if target_ap_update else (effective_station or ""),
-        target_ap_offline,
-        switch_scope,
-        switch_scope_reason,
-        int(coverage.get("candidate_ap_interface_count") or 0),
-        int(coverage.get("current_lldp_port_count") or 0),
-        int(coverage.get("preserved_lldp_port_count") or 0),
-        int(coverage.get("fit_ap_resource_count") or 0),
-        int(coverage.get("fit_ap_optical_success_count") or fit_success),
-        int(coverage.get("fit_ap_optical_failed_count") or fit_failed),
-        int(coverage.get("trackside_rows_total") or 0),
-        int(coverage.get("rows_with_ap_identity") or 0),
-        int(coverage.get("rows_without_ap_identity") or 0),
-        int(coverage.get("current_lldp_identity_count") or 0),
-        requested_concurrency,
-        max_workers if targets else 0,
-        platform_concurrency_limit,
-        fit_ap_effective_concurrency,
-        fit_ap_round_summaries,
+        session_id=session_id,
+        session_dir=session_dir,
+        success_count=success_count,
+        failed_count=failed_count,
+        skipped_count=len(skipped),
+        target_count=total_units,
+        concurrency=safe_requested_concurrency,
+        status=status,
+        actionable_skipped_count=actionable_skipped_count,
+        ignored_skipped_count=ignored_skipped_count,
+        skipped_reason_counts=skipped_reason_counts,
+        skipped=skipped,
+        results=results,
+        fit_ap_total=fit_ap_total,
+        station_switch_total=len(targets),
+        scope="ap" if target_ap_update else ("station" if effective_station else "all"),
+        target_label=_target_ap_label(target_ap_resource, target_ap_uuid, target_ap_mac, target_ap_name)
+        if target_ap_update
+        else (effective_station or ""),
+        target_ap_offline=target_ap_offline,
+        switch_scope=switch_scope,
+        switch_scope_reason=switch_scope_reason,
+        candidate_ap_interface_count=int(coverage.get("candidate_ap_interface_count") or 0),
+        current_lldp_port_count=int(coverage.get("current_lldp_port_count") or 0),
+        preserved_lldp_port_count=int(coverage.get("preserved_lldp_port_count") or 0),
+        fit_ap_resource_count=int(coverage.get("fit_ap_resource_count") or 0),
+        fit_ap_optical_success_count=int(coverage.get("fit_ap_optical_success_count") or fit_success),
+        fit_ap_optical_failed_count=int(coverage.get("fit_ap_optical_failed_count") or fit_failed),
+        trackside_rows_total=int(coverage.get("trackside_rows_total") or 0),
+        rows_with_ap_identity=int(coverage.get("rows_with_ap_identity") or 0),
+        rows_without_ap_identity=int(coverage.get("rows_without_ap_identity") or 0),
+        current_lldp_identity_count=int(coverage.get("current_lldp_identity_count") or 0),
+        requested_concurrency=requested_concurrency,
+        effective_concurrency=max_workers if targets else 0,
+        platform_concurrency_limit=platform_concurrency_limit,
+        fit_ap_effective_concurrency=fit_ap_effective_concurrency,
+        fit_ap_round_summaries=fit_ap_round_summaries,
     )
 
 
@@ -835,19 +847,31 @@ def _trackside_update_status(
     *,
     success_count: int,
     failed_count: int,
-    skipped_count: int,
-    target_count: int,
+    actionable_skipped_count: int,
     cancelled: bool,
 ) -> str:
     if cancelled:
         return "CANCELLED"
-    if target_count <= 0:
+    if success_count <= 0 and failed_count <= 0 and actionable_skipped_count <= 0:
         return "NO_TARGET"
     if success_count > 0:
-        if failed_count > 0 or skipped_count > 0:
+        if failed_count > 0 or actionable_skipped_count > 0:
             return "PARTIAL_SUCCESS"
         return "SUCCESS"
     return "FAILED"
+
+
+def classify_trackside_skipped(
+    skipped: list[TracksideSkippedTarget],
+) -> tuple[int, int, dict[str, int]]:
+    reason_counts: dict[str, int] = {}
+    ignored_count = 0
+    for item in skipped:
+        reason = str(item.reason or "unknown").strip() or "unknown"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if reason in IGNORED_SKIPPED_REASONS:
+            ignored_count += 1
+    return len(skipped) - ignored_count, ignored_count, reason_counts
 
 
 def _safe_trackside_concurrency(value: object, platform_limit: int) -> int:

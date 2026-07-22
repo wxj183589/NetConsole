@@ -1363,14 +1363,9 @@ class CarNetworkDiagnosticService:
         else:
             ac_probe = self._probe_ac_mesh_links()
             train_ac_status = match_train_mr_in_mesh_links(self.train, self.nodes, ac_probe)
-        finish_task({"task_id": "ac_status", "layer": "AC层", "status": "ok" if train_ac_status.tc1_mr_online or train_ac_status.tc2_mr_online else "fail" if train_ac_status.both_mr_offline else "unknown", "message": _ac_task_message(train_ac_status)})
+        finish_task({"task_id": "ac_status", "layer": "AC层", "status": "ok" if train_ac_status.tc1_mr_online or train_ac_status.tc2_mr_online else "warning" if train_ac_status.both_mr_offline else "unknown", "message": _ac_task_message(train_ac_status)})
         if progress:
             progress("ac_probe", (ac_probe, train_ac_status))
-        if should_skip_deep_probe_by_ac(train_ac_status):
-            emit("stage", "检测完成")
-            result = build_ac_offline_result(self.nodes, ac_probe, train_ac_status, self.train)
-            result.core_discovery = self.core_discovery
-            return result
 
         ping_results: dict[str, PingResult] = {}
         ac_status = ac_status_from_probe(ac_probe, train_ac_status)
@@ -1749,7 +1744,7 @@ def evaluate_diagnostic(
         conclusion = peer_mr_issue
     elif any(value == "fail" for value in cross.values()):
         status = "partial_fail"
-        conclusion = "跨TC链路 / VRRP / 中间骨干链路异常"
+        conclusion = "跨TC链路 / 中间骨干链路异常"
     elif any_remote_fail:
         status = "partial_fail"
         conclusion = "车内通信异常：MR CLI ping 车内设备存在不通路径，请查看分层检测结果"
@@ -1777,7 +1772,7 @@ def evaluate_diagnostic(
         train_no=train_no,
         display_name=display_name,
         ends=_ends_json(nodes, node_states),
-        vrrp=_vrrp_json(nodes, cross),
+        vrrp=_vrrp_json(nodes),
         ping_results=ping_results,
         core_results=core_results,
         ssh_results=ssh_results,
@@ -2171,7 +2166,7 @@ def _diagnosis_suggestion(layer: str, severity: str) -> str:
     if severity == "ok":
         return ""
     if "跨TC" in layer:
-        return "检查跨TC链路、VRRP 状态、中间骨干链路和两端三层交换机配置"
+        return "检查跨TC链路、中间骨干链路和两端三层交换机配置"
     if layer == "MR远程本端检测":
         return "检查本端三层交换机端口、VLAN、服务器网卡和网关配置"
     if layer == "SSH层":
@@ -2380,17 +2375,6 @@ def _store_match_detail(node: str, state: VehicleMrTrainState, end: str) -> dict
     }
 
 
-def should_skip_deep_probe_by_ac(train_ac_status: TrainAcStatus) -> bool:
-    return (
-        train_ac_status.any_query_success
-        and train_ac_status.ac_output_nonempty
-        and train_ac_status.parse_success
-        and train_ac_status.both_mr_offline
-        and not train_ac_status.parse_warning
-        and not train_ac_status.suspected_current_train_lines
-    )
-
-
 def ac_status_from_probe(ac_probe: AcProbeResult, train_ac_status: TrainAcStatus) -> AcApStatus:
     return AcApStatus(
         mesh_link=train_ac_status.tc1_mr_online or train_ac_status.tc2_mr_online,
@@ -2400,49 +2384,6 @@ def ac_status_from_probe(ac_probe: AcProbeResult, train_ac_status: TrainAcStatus
         raw=ac_probe.raw_outputs,
         error=ac_probe.error,
     )
-
-
-def build_ac_offline_result(
-    nodes: list[CarNetworkNode],
-    ac_probe: AcProbeResult,
-    train_ac_status: TrainAcStatus,
-    train: CarNetworkTrain | None,
-) -> CarNetworkDiagnosticResult:
-    node_states = {node.node_name: ("fail" if node.is_mr else "skipped") for node in nodes}
-    train_id = train.train_id if train is not None else (nodes[0].train_id if nodes else "")
-    train_no = train.train_no if train is not None else (nodes[0].train_no if nodes else normalize_train_no(train_id))
-    display_name = train.display_name if train is not None else (f"{train_no}车" if train_no else train_id)
-    ac_status = ac_status_from_probe(ac_probe, train_ac_status)
-    conclusion = "AC mesh-link 未发现 TC1-MR 和 TC2-MR，无法从地面接入 MR 执行车内链路检测；可能是列车下电、MR射频关闭或地面接入不可达，不能直接判定车内网络故障。"
-    tables = build_ac_offline_tables(nodes)
-    return CarNetworkDiagnosticResult(
-        train_id=train_id,
-        status="offline",
-        nodes=node_states,
-        cross_train={"TC1->TC2": "skipped", "TC2->TC1": "skipped"},
-        ac_status="fail",
-        ssh_status="skipped",
-        conclusion=conclusion,
-        train_no=train_no,
-        display_name=display_name,
-        ends=_ends_json(nodes, node_states),
-        vrrp={"ip": next((node.vrrp_ip for node in nodes if node.vrrp_ip), ""), "status": "skipped"},
-        ac_detail=ac_status,
-        ac_probe=ac_probe,
-        train_ac_status=train_ac_status,
-        tables=tables,
-    )
-
-
-def build_ac_offline_tables(nodes: list[CarNetworkNode]) -> dict[str, list[dict[str, object]]]:
-    tables = {"TC1": [], "TC2": []}
-    for tc in ("TC1", "TC2"):
-        mr = next((node for node in nodes if node.tc == tc and node.is_mr), None)
-        if mr is not None:
-            tables[tc].append(_table_row(mr.node_name, "AC层", "AC离线", "-", "-", "AC mesh-link 离线"))
-        for node in [item for item in nodes if item.tc == tc and not item.is_mr]:
-            tables[tc].append(_table_row(node.node_name, "车内有线层", "跳过", "-", "-", "列车双端MR均离线"))
-    return tables
 
 
 def build_result_tables(
@@ -2570,7 +2511,7 @@ def _remote_ping_note(source: CarNetworkNode, target_node: CarNetworkNode | None
     if target_node is not None and target_node.is_mr:
         return f"{base}。{source.node_name} 到 {target} 不通，可能是 {target} 车内接口、车内IP、VLAN、三层路径或对端 MR 状态异常。"
     if "跨TC" in layer:
-        return f"{base}。推断：跨TC链路、VRRP 或中间骨干链路存在异常，建议检查两端三层交换机、VRRP 状态和跨车骨干链路。"
+        return f"{base}。推断：跨TC链路或中间骨干链路存在异常，建议检查两端三层交换机和跨车骨干链路。"
     return f"{base}。推断：{source.node_name} 到 {target} 的本端车内链路异常，建议检查本端三层交换机端口、VLAN、服务器网卡和网关配置。"
 
 
@@ -3241,10 +3182,9 @@ def _ends_json(nodes: list[CarNetworkNode], node_states: dict[str, str]) -> dict
     return result
 
 
-def _vrrp_json(nodes: list[CarNetworkNode], cross: dict[str, str]) -> dict[str, object]:
+def _vrrp_json(nodes: list[CarNetworkNode]) -> dict[str, object]:
     vrrp_ip = next((node.vrrp_ip for node in nodes if node.vrrp_ip), "")
-    status = "ok" if all(value in {"ok", "not_applicable"} for value in cross.values()) else "fail"
-    return {"ip": vrrp_ip, "status": status}
+    return {"ip": vrrp_ip, "status": "not_detected"}
 
 
 def _device_id(device: Device | None) -> str:

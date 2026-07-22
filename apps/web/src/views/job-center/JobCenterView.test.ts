@@ -494,6 +494,48 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.unmount()
   })
 
+  it('shows completed task state and the independent partial business result with skip reasons', async () => {
+    const root = node('root')
+    const pinia = createPinia()
+    const store = useTaskStore(pinia)
+    vi.spyOn(store, 'acquirePolling').mockImplementation(() => undefined)
+    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
+    store.selected = {
+      ...task('trackside-partial'),
+      type: 'trackside_ap_optical_update',
+      name: '轨旁 AP 光衰更新',
+      status: 'COMPLETED',
+      module: 'rail',
+      details: {
+        status: 'PARTIAL_SUCCESS',
+        success_count: 745,
+        failed_count: 0,
+        skipped_count: 1,
+        actionable_skipped_count: 1,
+        ignored_skipped_count: 0,
+        skipped_reason_counts: { connection_incomplete: 1 },
+        failure_reason_counts: {},
+      },
+    }
+
+    const app = renderer.createApp(JobCenterView)
+    app.use(pinia)
+    app.mount(root)
+    await nextTick()
+    const drawer = descendants(root).find((target) => target.type === 'drawer')
+    const showDrawer = drawer?.props['onUpdate:modelValue'] as ((value: boolean) => void) | undefined
+    showDrawer?.(true)
+    await nextTick()
+
+    const text = textContent(root)
+    expect(text).toContain('业务结果：部分成功')
+    expect(text).toContain('任务状态：已完成 · 部分成功')
+    expect(text).toContain('745')
+    expect(text).toContain('未执行')
+    expect(text).toContain('连接信息不完整')
+    app.unmount()
+  })
+
   it('reports the independent task window as interactive and keeps the list when a task id is missing', async () => {
     routeState.query = { module: 'rail', task_id: 'missing-task', task_window: '1' }
     routeState.path = '/desktop/tasks'

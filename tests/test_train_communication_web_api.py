@@ -44,6 +44,10 @@ class _ApiService:
         return TrainCommunicationPageDTO(items=[cls.row], total=1)
 
     @classmethod
+    def list_online_trains(cls, _site_id: str, **_kwargs) -> TrainCommunicationPageDTO:
+        return TrainCommunicationPageDTO(items=[cls.row], total=1)
+
+    @classmethod
     def get_train_detail(cls, site_id: str, train_id: str):
         return (
             TrainCommunicationDetailDTO(train=cls.row, site_id=site_id)
@@ -109,6 +113,7 @@ def test_train_communication_queries_do_not_touch_sources_and_write_routes_are_a
         urls = [
             "/api/rail-transit/train-communication/summary",
             "/api/rail-transit/train-communication/trains",
+            "/api/rail-transit/train-communication/online",
             "/api/rail-transit/train-communication/trains/01",
             "/api/rail-transit/train-communication/trains/01/topology",
             "/api/rail-transit/train-communication/mrs/mr-1",

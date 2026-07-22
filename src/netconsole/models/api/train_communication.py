@@ -117,6 +117,9 @@ class MrCommunicationStatusDTO(ApiModel):
     iperf: CommunicationMetricDTO = Field(default_factory=CommunicationMetricDTO)
 
 
+TopologyStatus = Literal["normal", "abnormal", "not_detected", "not_configured", "checking", "stale"]
+
+
 class TrainCommunicationRowDTO(ApiModel):
     train_id: str
     train_no: str
@@ -134,6 +137,10 @@ class TrainCommunicationRowDTO(ApiModel):
     updated_at: str | None = None
     data_status: str = ""
     online_reason: str = ""
+    diagnostic_status: TopologyStatus = "not_detected"
+    tc1_diagnostic_status: TopologyStatus = "not_detected"
+    tc2_diagnostic_status: TopologyStatus = "not_detected"
+    last_diagnostic_at: str | None = None
     mrs: list[MrCommunicationStatusDTO] = Field(default_factory=list)
     current_mesh_links: int = 0
     active_sessions: int = 0
@@ -168,9 +175,6 @@ class TrainCommunicationSummaryDTO(ApiModel):
     active_online_mr_sessions: int = 0
     agent_imported_sessions: int = 0
     latest_updated_at: str | None = None
-
-
-TopologyStatus = Literal["normal", "abnormal", "not_detected", "not_configured", "checking", "stale"]
 
 
 class TrainCommunicationTopologyNodeDTO(ApiModel):

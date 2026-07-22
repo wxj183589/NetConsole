@@ -243,7 +243,7 @@ async function toggleLock(): Promise<void> {
 }
 async function generate(): Promise<void> {
   const title = props.train ? '生成当前列车六节点点表' : '从设备生成'
-  const message = props.train ? '确认为当前在线列车生成六节点点表预览？生成结果需要保存后才正式生效。' : '确认从现有设备管理数据重新生成点表预览？当前编辑区不会立即持久化。'
+  const message = props.train ? '确认为当前列车生成六节点点表预览？生成结果需要保存后才正式生效。' : '确认从现有设备管理数据重新生成点表预览？当前编辑区不会立即持久化。'
   if (!await confirm({ type: 'WARNING', title, message, confirmText: '确认生成预览' })) return
   await startTask(() => generateCarNetworkPointTable(rows.value, globalConfig.value, targetTrainPayload()), '从设备管理生成点表失败')
 }

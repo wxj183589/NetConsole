@@ -424,6 +424,67 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    {
+      name: '仅忽略可选交换机分支时显示绿色成功',
+      taskStatus: 'COMPLETED',
+      summary: {
+        status: 'SUCCESS', success_count: 746, failed_count: 0, skipped_count: 1,
+        actionable_skipped_count: 0, ignored_skipped_count: 1,
+        skipped_reason_counts: { no_station_switches: 1 },
+      },
+      expected: '轨旁 AP 光衰数据已刷新：成功 746，失败 0；另有 1 项不适用或已忽略',
+      type: 'success',
+    },
+    {
+      name: '存在真实失败时显示明确成功和失败数量',
+      taskStatus: 'COMPLETED',
+      summary: {
+        status: 'PARTIAL_SUCCESS', success_count: 745, failed_count: 1,
+        actionable_skipped_count: 0, ignored_skipped_count: 0,
+      },
+      expected: '轨旁 AP 光衰数据已刷新：成功 745，失败 1，请在任务窗口查看详情',
+      type: 'warning',
+    },
+    {
+      name: '存在可处理跳过时明确显示未执行数量',
+      taskStatus: 'COMPLETED',
+      summary: {
+        status: 'PARTIAL_SUCCESS', success_count: 745, failed_count: 0,
+        actionable_skipped_count: 1, ignored_skipped_count: 0,
+        skipped_reason_counts: { connection_incomplete: 1 },
+      },
+      expected: '轨旁 AP 光衰数据已刷新：成功 745，1 个目标未执行，请在任务窗口查看详情',
+      type: 'warning',
+    },
+    {
+      name: '所有目标失败时显示失败数量和主要原因',
+      taskStatus: 'FAILED',
+      summary: {
+        status: 'FAILED', success_count: 0, failed_count: 746,
+        actionable_skipped_count: 0, ignored_skipped_count: 0,
+        failure_reason_counts: { fit_ap_collection_failed: 746 },
+      },
+      expected: '轨旁 AP 光衰更新失败：成功 0，失败 746；主要原因：AP 光衰采集失败，请在任务窗口查看详情',
+      type: 'error',
+    },
+  ])('$name', async ({ taskStatus, summary, expected, type }) => {
+    vi.useFakeTimers()
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
+    api.getTracksideApTask.mockResolvedValueOnce(task('update-running', taskStatus, 'trackside_ap_optical_update', summary))
+    const wrapper = await mountView()
+
+    await button(wrapper, '更新全部光衰').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+
+    const notice = wrapper.findAll('.el-alert').find((item) => item.text().includes(expected))
+    expect(notice?.attributes('data-type')).toBe(type)
+    expect(wrapper.text()).not.toContain('部分目标未成功')
+    wrapper.unmount()
+  })
+
   it('auto-saves completed business exports with the backend artifact name without a page save button', async () => {
     vi.useFakeTimers()
     const expectedName = '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx'

@@ -19,8 +19,11 @@ const topology: TrainCommunicationTopology = {
     { node_id: 'TC2-SW', side: 'TC2', role: 'SWITCH', name: '', device_id: null, ip_address: null, status: 'not_configured', message: '未配置', updated_at: null },
     { node_id: 'TC2-SRV', side: 'TC2', role: 'SERVER', name: '', device_id: null, ip_address: null, status: 'not_configured', message: '未配置', updated_at: null },
   ],
-  links: [{ link_id: 'tc1-mr-sw', source: 'TC1-MR', target: 'TC1-SW', label: 'MR 与交换机', status: 'not_configured', message: '' }],
-  vrrp: { status: 'not_detected', master_side: null, virtual_ip: null, master_device: null, backup_device: null, message: '未检测', updated_at: null },
+  links: [
+    { link_id: 'tc1-mr-sw', source: 'TC1-MR', target: 'TC1-SW', label: 'MR 与交换机', status: 'not_configured', message: '' },
+    { link_id: 'tc1-sw-tc2-sw', source: 'TC1-SW', target: 'TC2-SW', label: 'TC1-SW ↔ TC2-SW', status: 'normal', message: '' },
+  ],
+  vrrp: { status: 'normal', master_side: 'TC1', virtual_ip: '10.122.1.254', master_device: 'TC1-SW', backup_device: 'TC2-SW', message: '未检测', updated_at: null },
   cross_end: { status: 'not_detected', message: '未检测', updated_at: null },
 }
 
@@ -32,9 +35,34 @@ describe('FixedTrainTopology', () => {
     expect(wrapper.findAll('.topology-node')[3].classes()).toContain('is-abnormal')
     expect(wrapper.find('.topology-links line').classes()).toContain('is-not-configured')
     expect(wrapper.text()).toContain('VRRP')
-    expect(wrapper.text()).toContain('主端：未知')
     expect(wrapper.text()).toContain('跨 TC 通信')
     expect(wrapper.text()).not.toMatch(/unknown|no_data|RSSI|fping|iPerf/i)
+  })
+
+  it('renders VRRP as static virtual IP configuration only', async () => {
+    const wrapper = mount(FixedTrainTopology, { props: { topology } })
+    const panel = wrapper.find('.vrrp-panel')
+    const staticLink = wrapper.findAll('.topology-links line')[4]
+
+    expect(panel.text()).toContain('VRRP')
+    expect(panel.text()).toContain('虚拟 IP：10.122.1.254')
+    expect(panel.text()).not.toMatch(/正常|异常|未检测|主端|TC1-SW|TC2-SW/)
+    expect(staticLink.classes()).toContain('is-static')
+    expect(staticLink.classes()).not.toContain('is-normal')
+    expect(wrapper.find('.topology-links-legend').text()).not.toContain('VRRP：正常')
+    expect(wrapper.find('.cross-end').text()).toContain('跨 TC 通信：未检测')
+
+    await wrapper.setProps({ checking: true })
+    expect(panel.classes()).not.toContain('is-checking')
+    expect(panel.text()).not.toContain('检测中')
+    expect(staticLink.classes()).toContain('is-static')
+  })
+
+  it('does not render an empty VRRP virtual IP placeholder', () => {
+    const withoutVirtualIp = { ...topology, vrrp: { ...topology.vrrp, virtual_ip: null } }
+    const wrapper = mount(FixedTrainTopology, { props: { topology: withoutVirtualIp } })
+
+    expect(wrapper.find('.vrrp-panel').text()).toBe('VRRP')
   })
 
   it('emits a selected node with a device id', async () => {

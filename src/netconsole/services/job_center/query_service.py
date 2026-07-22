@@ -56,6 +56,17 @@ from netconsole.services.job_center.handlers.site_jobs import (
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
+TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
+    "status",
+    "success_count",
+    "failed_count",
+    "skipped_count",
+    "actionable_skipped_count",
+    "ignored_skipped_count",
+    "target_count",
+    "skipped_reason_counts",
+    "failure_reason_counts",
+)
 
 
 class JobCenterQueryService:
@@ -316,7 +327,7 @@ class JobCenterQueryService:
             cancel_reason=cancel_reason,
             artifact_download=artifact_download,
             artifact_reason="" if artifact_download else "当前任务 owner 未提供可下载 Artifact",
-            details=self._progress_details(row) if include_result else {},
+            details=self._task_details(task_type, row, result) if include_result else {},
         )
 
     @staticmethod
@@ -536,6 +547,20 @@ class JobCenterQueryService:
     def _progress_details(cls, row: dict[str, object]) -> dict[str, Any]:
         payload = cls._json_object(row.get("latest_progress_json"))
         return cls._payload_details(payload)
+
+    @classmethod
+    def _task_details(
+        cls,
+        task_type: str,
+        row: dict[str, object],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        details = cls._progress_details(row)
+        if task_type == "trackside_ap_optical_update":
+            details.update(
+                {key: result[key] for key in TRACKSIDE_AP_RESULT_DETAIL_KEYS if key in result}
+            )
+        return details
 
     @staticmethod
     def _payload_details(payload: dict[str, Any]) -> dict[str, Any]:
