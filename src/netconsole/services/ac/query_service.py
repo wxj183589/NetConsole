@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -614,23 +615,26 @@ class AcManagementQueryService:
         is_current_anomaly = status in {"warning", "critical"} and freshness == "fresh"
         label = display_optical_status(raw_status)
         ap_online_status = "offline" if offline else self._online_status(resource)
-        if status in {"warning", "critical"}:
-            reason = f"检测到光功率{label}，已计入{'严重光衰异常' if status == 'critical' else '异常 AP 光衰'}；当前 AP {'离线' if offline else '在线'}。"
-        elif status == "normal":
-            reason = "光衰结果正常"
-        else:
-            reason = "无可用光衰数据"
-        if freshness == "stale":
-            reason = f"{reason} 数据已过期，不作为当前实时状态统计。"
         return AcOpticalDTO(
             optical_status=status,
             optical_severity=status,
             raw_status=raw_status,
+            ap_rx_status=ap_status,
+            switch_rx_status=switch_status,
+            tx_power_status="unknown",
             ap_offline_related=offline and is_current_anomaly,
             ap_online_status=ap_online_status,
             data_freshness=freshness,
             is_current_anomaly=is_current_anomaly,
-            anomaly_reason=reason,
+            anomaly_reason=self._optical_reason(
+                status=status,
+                freshness=freshness,
+                ap_status=ap_status,
+                switch_status=switch_status,
+                ap_rx_power=row.get("rx_power"),
+                switch_rx_power=switch_rx,
+                offline=offline,
+            ),
             source_switch=switch_name,
             source_interface=interface,
             tx_power=str(row.get("tx_power") or ""),
@@ -643,6 +647,66 @@ class AcManagementQueryService:
             error_summary=str(row.get("error_message") or ""),
             updated_at=self._latest_text(row.get("updated_at"), row.get("collected_at"), module.get("updated_at")),
         )
+
+    @classmethod
+    def _optical_reason(
+        cls,
+        *,
+        status: str,
+        freshness: str,
+        ap_status: str,
+        switch_status: str,
+        ap_rx_power: object,
+        switch_rx_power: object,
+        offline: bool,
+    ) -> str:
+        label = "严重光衰异常" if status == "critical" else "异常 AP 光衰"
+        side_summaries = [
+            cls._optical_side_summary("AP 侧收光", ap_status, ap_rx_power),
+            cls._optical_side_summary("交换机侧收光", switch_status, switch_rx_power),
+        ]
+        abnormal_sides = [
+            summary
+            for summary, side_status in zip(side_summaries, (ap_status, switch_status), strict=True)
+            if summary and classify_optical_health(side_status) in {"warning", "critical"}
+        ]
+        normal_sides = [
+            summary
+            for summary, side_status in zip(side_summaries, (ap_status, switch_status), strict=True)
+            if summary and classify_optical_health(side_status) == "normal"
+        ]
+        if status in {"warning", "critical"}:
+            detail = "；".join([*abnormal_sides, *normal_sides])
+            reason = (
+                f"检测到{detail}。已计入{label}；当前 AP {'离线' if offline else '在线'}。"
+                if detail
+                else f"检测到光功率异常，已计入{label}；当前 AP {'离线' if offline else '在线'}。"
+            )
+        elif status == "normal":
+            detail = "；".join(normal_sides)
+            reason = f"{detail}。光衰结果正常" if detail else "光衰结果正常"
+        else:
+            reason = "无可用光衰数据"
+        if freshness == "stale":
+            reason = f"{reason} 数据已过期，不作为当前实时状态统计。"
+        return reason
+
+    @classmethod
+    def _optical_side_summary(cls, side_label: str, status: str, power: object) -> str:
+        if classify_optical_health(status) == "no_data":
+            return ""
+        power_text = cls._format_optical_power(power)
+        suffix = f"：{power_text}" if power_text else ""
+        return f"{side_label}{display_optical_status(status)}{suffix}"
+
+    @classmethod
+    def _format_optical_power(cls, value: object) -> str:
+        text = cls._clean_text(value)
+        if not text:
+            return ""
+        if "dbm" in text.casefold():
+            return text
+        return f"{text} dBm" if re.search(r"[-+]?\d+(?:\.\d+)?", text) else text
 
     def _optical_freshness(
         self,

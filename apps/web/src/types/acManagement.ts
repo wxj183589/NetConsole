@@ -104,6 +104,9 @@ export interface AcOptical {
   optical_status: string
   optical_severity: string
   raw_status: string
+  ap_rx_status: string
+  switch_rx_status: string
+  tx_power_status: string
   ap_offline_related: boolean
   ap_online_status: string
   data_freshness: string

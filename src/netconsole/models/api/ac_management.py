@@ -42,6 +42,9 @@ class AcOpticalDTO(ApiModel):
     optical_status: str = "no_data"
     optical_severity: str = "no_data"
     raw_status: str = "unknown"
+    ap_rx_status: str = "unknown"
+    switch_rx_status: str = "unknown"
+    tx_power_status: str = "unknown"
     ap_offline_related: bool = False
     ap_online_status: str = "unknown"
     data_freshness: str = "unknown"

@@ -12,8 +12,9 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
-import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcRadio } from '../../types/acManagement'
+import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcOptical, AcRadio } from '../../types/acManagement'
 import { displayInterfaceName } from '../../utils/interfaceName'
+import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
 
 const store = useAcManagementStore()
 const taskStore = useTaskStore()
@@ -343,6 +344,18 @@ function formatBytes(value: number): string {
   return `${(value / 1024 / 1024).toFixed(1)} MiB`
 }
 
+function opticalEvidenceTitle(label: string, value: unknown, status: string, optical: AcOptical): string {
+  const lines = [
+    `${label}：${formatOpticalPower(value)}`,
+    `判定：${opticalStatusPresentation(status).label}`,
+    optical.updated_at ? `采集时间：${formatTime(optical.updated_at)}` : '',
+    optical.source_switch || optical.source_interface
+      ? `来源：${[optical.source_switch, displayInterfaceName(optical.source_interface)].filter(Boolean).join(' / ')}`
+      : '',
+  ]
+  return lines.filter(Boolean).join('\n')
+}
+
 function diffLineClass(line: string): string {
   if (line.startsWith('+++') || line.startsWith('---')) return 'diff-file'
   if (line.startsWith('+')) return 'diff-added'
@@ -565,12 +578,49 @@ function diffLineClass(line: string): string {
           <div class="section-heading"><h3>光衰</h3><el-button v-if="isFeatureEnabled('web.ac_fit_ap_history')" link type="primary" @click="openHistory('optical')">查看历史</el-button></div>
           <el-alert :title="store.selected.optical.anomaly_reason" :type="statusType(store.selected.optical.optical_status)" :closable="false" show-icon />
           <el-descriptions :column="2" border class="optical-detail">
-            <el-descriptions-item label="Tx Power">{{ display(store.selected.optical.tx_power) }}</el-descriptions-item>
-            <el-descriptions-item label="Rx Power">{{ display(store.selected.optical.rx_power) }}</el-descriptions-item>
-            <el-descriptions-item label="交换机 Rx">{{ display(store.selected.optical.switch_rx_power) }}</el-descriptions-item>
-            <el-descriptions-item label="阈值状态">{{ display(store.selected.optical.threshold_status) }}</el-descriptions-item>
+            <el-descriptions-item label="Tx Power">
+              <el-tooltip
+                :content="opticalEvidenceTitle('AP 侧发光', store.selected.optical.tx_power, store.selected.optical.tx_power_status, store.selected.optical)"
+                placement="top"
+              >
+                <span
+                  data-testid="optical-tx-power"
+                  :class="opticalValuePresentation(store.selected.optical.tx_power_status, store.selected.optical.data_freshness).className"
+                >{{ formatOpticalPower(store.selected.optical.tx_power) }}</span>
+              </el-tooltip>
+            </el-descriptions-item>
+            <el-descriptions-item label="Rx Power">
+              <el-tooltip
+                :content="opticalEvidenceTitle('AP 侧收光', store.selected.optical.rx_power, store.selected.optical.ap_rx_status, store.selected.optical)"
+                placement="top"
+              >
+                <span
+                  data-testid="optical-ap-rx-power"
+                  :class="opticalValuePresentation(store.selected.optical.ap_rx_status, store.selected.optical.data_freshness).className"
+                >{{ formatOpticalPower(store.selected.optical.rx_power) }}</span>
+              </el-tooltip>
+            </el-descriptions-item>
+            <el-descriptions-item label="交换机 Rx">
+              <el-tooltip
+                :content="opticalEvidenceTitle('交换机侧收光', store.selected.optical.switch_rx_power, store.selected.optical.switch_rx_status, store.selected.optical)"
+                placement="top"
+              >
+                <span
+                  data-testid="optical-switch-rx-power"
+                  :class="opticalValuePresentation(store.selected.optical.switch_rx_status, store.selected.optical.data_freshness).className"
+                >{{ formatOpticalPower(store.selected.optical.switch_rx_power) }}</span>
+              </el-tooltip>
+            </el-descriptions-item>
+            <el-descriptions-item label="阈值状态">
+              <el-tag
+                data-testid="optical-threshold-status"
+                :type="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).tagType"
+                :class="opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).className"
+                effect="light"
+              >{{ display(store.selected.optical.threshold_status || opticalValuePresentation(store.selected.optical.raw_status, store.selected.optical.data_freshness).label) }}</el-tag>
+            </el-descriptions-item>
             <el-descriptions-item label="AP 在线状态">{{ statusLabel(store.selected.optical.ap_online_status) }}</el-descriptions-item>
-            <el-descriptions-item label="光衰判定">{{ opticalJudgement(store.selected.optical) }}</el-descriptions-item>
+            <el-descriptions-item label="光衰判定"><span data-testid="optical-judgement">{{ opticalJudgement(store.selected.optical) }}</span></el-descriptions-item>
             <el-descriptions-item label="告警等级">{{ opticalLabel(store.selected.optical.optical_status) }}</el-descriptions-item>
             <el-descriptions-item label="数据状态">{{ opticalFreshnessLabel(store.selected.optical.data_freshness) }}</el-descriptions-item>
             <el-descriptions-item label="温度">{{ display(store.selected.optical.temperature) }}</el-descriptions-item>
@@ -653,6 +703,11 @@ function diffLineClass(line: string): string {
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin: 23px 0 10px; }
 .section-heading h3, .metadata-editor .section-heading { margin: 0; }
 .optical-detail { margin-top: 12px; }
+.optical-value-normal { color: var(--el-color-success); }
+.optical-value-warning { color: var(--el-color-warning); font-weight: 600; }
+.optical-value-danger { color: var(--el-color-danger); font-weight: 700; }
+.optical-value-stale { color: var(--el-color-warning); font-weight: 600; }
+.optical-value-muted { color: var(--el-text-color-secondary); }
 .config-viewer { min-height: 360px; }
 .config-searchbar { position: sticky; top: 0; z-index: 2; padding: 10px 0; background: var(--nc-bg-panel); }
 .config-searchbar .el-input { max-width: 360px; }
