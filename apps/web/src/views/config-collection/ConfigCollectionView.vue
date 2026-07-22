@@ -55,6 +55,7 @@ const selectedDevices = ref<ConfigDevice[]>([])
 const selectedDevice = ref<ConfigDevice | null>(null)
 const selectedSnapshots = ref<ConfigSnapshot[]>([])
 type SnapshotChoice = { device: ConfigDevice; snapshot: ConfigSnapshot }
+type SnapshotComparisonPair = { left: SnapshotChoice; right: SnapshotChoice; source: 'checked' | 'manual' }
 const leftSnapshotChoice = ref<SnapshotChoice | null>(null)
 const rightSnapshotChoice = ref<SnapshotChoice | null>(null)
 const search = ref('')
@@ -82,6 +83,43 @@ let pollTimer: ReturnType<typeof setInterval> | undefined
 
 const hasActiveTasks = computed(() => activeTaskIds.value.size > 0)
 const failedTaskCount = computed(() => tasks.value.filter((task) => task.status === 'FAILED' || Number(task.result?.failed || 0) > 0).length)
+const checkedSnapshotPair = computed<SnapshotComparisonPair | null>(() => {
+  if (selectedSnapshots.value.length !== 2 || !selectedDevice.value) return null
+  const [left, right] = selectedSnapshots.value
+  if (left.id === right.id) return null
+  return {
+    left: { device: selectedDevice.value, snapshot: left },
+    right: { device: selectedDevice.value, snapshot: right },
+    source: 'checked',
+  }
+})
+const manualSnapshotPair = computed<SnapshotComparisonPair | null>(() => {
+  if (!leftSnapshotChoice.value || !rightSnapshotChoice.value) return null
+  if (leftSnapshotChoice.value.snapshot.id === rightSnapshotChoice.value.snapshot.id) return null
+  return { left: leftSnapshotChoice.value, right: rightSnapshotChoice.value, source: 'manual' }
+})
+const effectiveSnapshotPair = computed<SnapshotComparisonPair | null>(() => {
+  if (selectedSnapshots.value.length === 2) return checkedSnapshotPair.value
+  if (selectedSnapshots.value.length > 2) return null
+  return manualSnapshotPair.value
+})
+const effectiveLeftSnapshotChoice = computed(() => {
+  if (selectedSnapshots.value.length === 2) return checkedSnapshotPair.value?.left || null
+  if (selectedSnapshots.value.length > 2) return null
+  return leftSnapshotChoice.value
+})
+const effectiveRightSnapshotChoice = computed(() => {
+  if (selectedSnapshots.value.length === 2) return checkedSnapshotPair.value?.right || null
+  if (selectedSnapshots.value.length > 2) return null
+  return rightSnapshotChoice.value
+})
+const comparisonPairSource = computed(() => {
+  if (effectiveSnapshotPair.value?.source === 'checked') return '来自当前勾选'
+  if (effectiveSnapshotPair.value?.source === 'manual') return '手动指定'
+  if (selectedSnapshots.value.length < 2 && (leftSnapshotChoice.value || rightSnapshotChoice.value)) return '手动指定'
+  return ''
+})
+const hasValidSnapshotPair = computed(() => Boolean(effectiveSnapshotPair.value))
 const filteredDiffRows = computed(() => {
   const status = statusForConfigDiffFilter(diffFilter.value)
   return status ? resultDiffRows.value.filter((row) => row.status === status) : resultDiffRows.value
@@ -133,6 +171,7 @@ async function loadDevices(): Promise<void> {
 }
 
 async function loadSnapshots(): Promise<void> {
+  selectedSnapshots.value = []
   if (!selectedDevice.value) {
     snapshots.value = []
     return
@@ -281,14 +320,15 @@ async function downloadResultArtifact(): Promise<void> {
 }
 
 async function compareSnapshots(): Promise<void> {
-  if (!leftSnapshotChoice.value || !rightSnapshotChoice.value) {
+  const pair = effectiveSnapshotPair.value
+  if (!pair) {
     ElMessage.info('请分别选择左右快照进行比较')
     return
   }
   try {
     const task = await submitSnapshotConfigDiff(
-      leftSnapshotChoice.value.snapshot.id,
-      rightSnapshotChoice.value.snapshot.id,
+      pair.left.snapshot.id,
+      pair.right.snapshot.id,
     )
     addTaskReferences([task])
     focusedTaskId.value = task.id
@@ -334,14 +374,15 @@ async function deleteSelectedSnapshots(): Promise<void> {
 }
 
 async function exportSelectedDiff(): Promise<void> {
-  if (!leftSnapshotChoice.value || !rightSnapshotChoice.value) {
+  const pair = effectiveSnapshotPair.value
+  if (!pair) {
     ElMessage.info('请分别选择左右快照导出差异')
     return
   }
   try {
     const task = await submitConfigDiffExport(
-      leftSnapshotChoice.value.snapshot.id,
-      rightSnapshotChoice.value.snapshot.id,
+      pair.left.snapshot.id,
+      pair.right.snapshot.id,
     )
     addTaskReferences([task])
     focusedTaskId.value = task.id
@@ -399,6 +440,13 @@ function chooseSnapshot(snapshot: ConfigSnapshot, side: 'left' | 'right'): void 
   const choice = { device: selectedDevice.value, snapshot }
   if (side === 'left') leftSnapshotChoice.value = choice
   else rightSnapshotChoice.value = choice
+}
+
+function selectSnapshots(next: ConfigSnapshot[]): void {
+  selectedSnapshots.value = next
+  if (next.length > 2) {
+    ElMessage.warning('快照对比只能选择两条记录；批量勾选仍可用于导出 ZIP 或删除。')
+  }
 }
 
 function clearSnapshotChoice(side: 'left' | 'right'): void {
@@ -604,9 +652,9 @@ function formatBytes(value: number | null): string {
       <div class="content-card snapshot-card">
         <div class="card-heading"><div><h2>快照历史</h2><p>{{ selectedDevice?.name || '请选择设备' }} · 左右选择在切换设备或类型后仍保留</p></div><div class="heading-actions"><el-select v-model="snapshotType" clearable placeholder="配置类型" @change="loadSnapshots"><el-option label="运行配置" value="running" /><el-option label="保存配置" value="saved" /><el-option label="差异" value="diff" /></el-select><el-button :disabled="!selectedDevice || !isFeatureEnabled('web.config_collection_diff')" @click="compareLatest">最新差异</el-button><el-button :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedSnapshots">导出 ZIP</el-button><el-button :icon="Delete" :disabled="!selectedSnapshots.length || !isFeatureEnabled('web.config_collection_delete')" @click="deleteSelectedSnapshots">删除历史</el-button></div></div>
         <div class="comparison-basket" aria-label="配置快照左右选择篮">
-          <div class="snapshot-choice" data-testid="left-snapshot-choice"><span>左侧快照</span><strong>{{ snapshotChoiceLabel(leftSnapshotChoice) }}</strong><el-button link :disabled="!leftSnapshotChoice" @click="clearSnapshotChoice('left')">清除</el-button></div>
-          <div class="snapshot-choice" data-testid="right-snapshot-choice"><span>右侧快照</span><strong>{{ snapshotChoiceLabel(rightSnapshotChoice) }}</strong><el-button link :disabled="!rightSnapshotChoice" @click="clearSnapshotChoice('right')">清除</el-button></div>
-          <div class="comparison-actions"><el-button type="primary" :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较左右快照</el-button><el-button :disabled="!leftSnapshotChoice || !rightSnapshotChoice || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedDiff">导出左右差异</el-button></div>
+          <div class="snapshot-choice" data-testid="left-snapshot-choice"><span>左侧快照</span><strong>{{ snapshotChoiceLabel(effectiveLeftSnapshotChoice) }}</strong><small>{{ comparisonPairSource }}</small><el-button v-if="comparisonPairSource === '手动指定'" link :disabled="!leftSnapshotChoice" @click="clearSnapshotChoice('left')">清除</el-button></div>
+          <div class="snapshot-choice" data-testid="right-snapshot-choice"><span>右侧快照</span><strong>{{ snapshotChoiceLabel(effectiveRightSnapshotChoice) }}</strong><small>{{ comparisonPairSource }}</small><el-button v-if="comparisonPairSource === '手动指定'" link :disabled="!rightSnapshotChoice" @click="clearSnapshotChoice('right')">清除</el-button></div>
+          <div class="comparison-actions"><el-button type="primary" :disabled="!hasValidSnapshotPair || !isFeatureEnabled('web.config_collection_diff')" @click="compareSnapshots">比较左右快照</el-button><el-button :disabled="!hasValidSnapshotPair || !isFeatureEnabled('web.config_collection_export')" @click="exportSelectedDiff">导出左右差异</el-button></div>
         </div>
         <NcDataTable
           v-loading="snapshotLoading"
@@ -616,7 +664,7 @@ function formatBytes(value: number | null): string {
           route-key="/config-collection"
           row-key="id"
           height="calc(100vh - 430px)"
-          @selection-change="selectedSnapshots = $event"
+          @selection-change="selectSnapshots"
         >
           <template #cell-type="{ row }"><el-tag :type="row.type === 'diff' ? 'warning' : row.type === 'saved' ? 'success' : 'info'">{{ row.type === 'running' ? '运行配置' : row.type === 'saved' ? '保存配置' : '差异' }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button link @click.stop="chooseSnapshot(row, 'left')">设为左侧</el-button><el-button link @click.stop="chooseSnapshot(row, 'right')">设为右侧</el-button><el-button link type="primary" :icon="View" @click.stop="viewSnapshot(row)">查看</el-button><el-button link :icon="Download" :disabled="!isFeatureEnabled('web.config_collection_download')" @click.stop="downloadArtifact(row)">下载</el-button></template>
@@ -659,9 +707,10 @@ function formatBytes(value: number | null): string {
 .heading-actions { display: flex; align-items: center; gap: 8px; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; color: var(--nc-text-secondary); font-size: 12px; }
 .comparison-basket { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; gap: 10px; align-items: stretch; padding: 12px 16px; border-bottom: 1px solid var(--nc-divider); background: var(--nc-bg-muted); }
-.snapshot-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 42px; padding: 8px 10px; border: 1px solid var(--nc-border); border-radius: 8px; background: var(--nc-bg-panel); }
+.snapshot-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 42px; padding: 8px 10px; border: 1px solid var(--nc-border); border-radius: 8px; background: var(--nc-bg-panel); }
 .snapshot-choice span { color: var(--nc-text-secondary); font-size: 12px; }
 .snapshot-choice strong { overflow: hidden; color: var(--nc-text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.snapshot-choice small { color: var(--nc-primary); font-size: 11px; white-space: nowrap; }
 .comparison-actions { display: flex; align-items: center; gap: 8px; }
 .result-card { margin-top: 16px; }
 .code-panel { max-height: 470px; margin: 0; padding: 16px; overflow: auto; color: var(--nc-text-code); background: var(--nc-bg-code); font: 12px/1.55 Consolas, "Microsoft YaHei", monospace; white-space: pre; }

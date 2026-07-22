@@ -33,6 +33,12 @@ const api = vi.hoisted(() => ({
 const confirmDialog = vi.hoisted(() => vi.fn())
 const routerPush = vi.hoisted(() => vi.fn())
 const downloadBackendResource = vi.hoisted(() => vi.fn())
+const message = vi.hoisted(() => ({
+  error: vi.fn(),
+  info: vi.fn(),
+  success: vi.fn(),
+  warning: vi.fn(),
+}))
 
 vi.mock('../../api/configCollection', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
@@ -43,12 +49,7 @@ vi.mock('element-plus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('element-plus')>()
   return {
     ...actual,
-    ElMessage: {
-      error: vi.fn(),
-      info: vi.fn(),
-      success: vi.fn(),
-      warning: vi.fn(),
-    },
+    ElMessage: message,
   }
 })
 
@@ -293,6 +294,137 @@ describe('ConfigCollectionView mounted workflow', () => {
     await flushPromises()
     expect(openTaskWindow).toHaveBeenCalledWith({ module: 'config' })
     expect(routerPush).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('uses two checked snapshots as the visible comparison pair', async () => {
+    const wrapper = await mountView()
+    const snapshotTable = wrapper.findAllComponents(TableStub)[1]
+
+    snapshotTable.vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-testid="left-snapshot-choice"]').text()).toContain(
+      'SW-A · 运行配置 · 20260715_101500',
+    )
+    expect(wrapper.get('[data-testid="right-snapshot-choice"]').text()).toContain(
+      'SW-A · 保存配置 · 20260715_101500',
+    )
+    expect(wrapper.get('[data-testid="left-snapshot-choice"]').text()).toContain('来自当前勾选')
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(false)
+
+    await button(wrapper, '比较左右快照').trigger('click')
+    await flushPromises()
+
+    expect(api.submitSnapshotConfigDiff).toHaveBeenCalledWith(snapshotA.id, snapshotASaved.id)
+    wrapper.unmount()
+  })
+
+  it('exports the same pair selected by the snapshot checkboxes', async () => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+
+    await button(wrapper, '导出左右差异').trigger('click')
+    await flushPromises()
+
+    expect(api.submitConfigDiffExport).toHaveBeenCalledWith(snapshotA.id, snapshotASaved.id)
+    wrapper.unmount()
+  })
+
+  it('keeps comparison disabled when only one snapshot is checked without a manual pair', async () => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA])
+    await wrapper.vm.$nextTick()
+
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(true)
+    expect((button(wrapper, '导出左右差异').element as HTMLButtonElement).disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('blocks comparison for more than two checked snapshots without disabling batch actions', async () => {
+    const snapshotAOlder = snapshot(103, deviceA, 'running', '20260714_091500')
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit(
+      'selection-change',
+      [snapshotA, snapshotASaved, snapshotAOlder],
+    )
+    await wrapper.vm.$nextTick()
+
+    expect(message.warning).toHaveBeenCalledWith(
+      '快照对比只能选择两条记录；批量勾选仍可用于导出 ZIP 或删除。',
+    )
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(true)
+    expect((button(wrapper, '导出左右差异').element as HTMLButtonElement).disabled).toBe(true)
+    expect((button(wrapper, '导出 ZIP').element as HTMLButtonElement).disabled).toBe(false)
+    expect((button(wrapper, '删除历史').element as HTMLButtonElement).disabled).toBe(false)
+
+    await button(wrapper, '导出 ZIP').trigger('click')
+    await flushPromises()
+    expect(api.submitConfigSnapshotsExport).toHaveBeenCalledWith([
+      snapshotA.id,
+      snapshotASaved.id,
+      snapshotAOlder.id,
+    ])
+    await button(wrapper, '删除历史').trigger('click')
+    await flushPromises()
+    expect(api.issueSnapshotDelete).toHaveBeenCalledWith([
+      snapshotA.id,
+      snapshotASaved.id,
+      snapshotAOlder.id,
+    ])
+    expect(api.submitSnapshotConfigDiff).not.toHaveBeenCalled()
+    expect(api.submitConfigDiffExport).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not reuse checked snapshots after switching device or snapshot type', async () => {
+    const wrapper = await mountView()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+
+    wrapper.findAllComponents(TableStub)[0].vm.$emit('row-click', deviceB)
+    await flushPromises()
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(true)
+
+    wrapper.findAllComponents(TableStub)[0].vm.$emit('row-click', deviceA)
+    await flushPromises()
+    wrapper.findAllComponents(TableStub)[1].vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[placeholder="配置类型"]').trigger('change')
+    await flushPromises()
+
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(true)
+    expect(api.submitSnapshotConfigDiff).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears stale checked state on refresh and falls back to preserved manual choices', async () => {
+    const wrapper = await mountView()
+    await buttons(wrapper, '设为左侧')[0].trigger('click')
+    wrapper.findAllComponents(TableStub)[0].vm.$emit('row-click', deviceB)
+    await flushPromises()
+    await buttons(wrapper, '设为右侧')[0].trigger('click')
+    wrapper.findAllComponents(TableStub)[0].vm.$emit('row-click', deviceA)
+    await flushPromises()
+
+    const snapshotTable = wrapper.findAllComponents(TableStub)[1]
+    snapshotTable.vm.$emit('selection-change', [snapshotA, snapshotASaved])
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="right-snapshot-choice"]').text()).toContain('保存配置')
+    expect(wrapper.get('[data-testid="right-snapshot-choice"]').text()).toContain('来自当前勾选')
+
+    await button(wrapper, '刷新').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="left-snapshot-choice"]').text()).toContain('SW-A · 运行配置')
+    expect(wrapper.get('[data-testid="right-snapshot-choice"]').text()).toContain('SW-B · 运行配置')
+    expect(wrapper.get('[data-testid="right-snapshot-choice"]').text()).toContain('手动指定')
+    expect((button(wrapper, '比较左右快照').element as HTMLButtonElement).disabled).toBe(false)
+
+    await button(wrapper, '比较左右快照').trigger('click')
+    await flushPromises()
+    expect(api.submitSnapshotConfigDiff).toHaveBeenCalledWith(snapshotA.id, snapshotB.id)
     wrapper.unmount()
   })
 })
