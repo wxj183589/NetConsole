@@ -59,10 +59,12 @@ export class BackendDownloadManager {
   async download(value: unknown, window = this.options.window): Promise<BackendDownloadResult> {
     if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
     const request = validateBackendDownloadRequest(value)
-    const selection = await this.options.dialog.showSaveDialog(window, {
-      defaultPath: request.suggestedName,
-      ...(request.filters ? { filters: request.filters } : {}),
-    })
+    const selection = request.destinationPath
+      ? { canceled: false, filePath: this.options.pathRegistry.requireSavePath(request.destinationPath) }
+      : await this.options.dialog.showSaveDialog(window, {
+          defaultPath: request.suggestedName,
+          ...(request.filters ? { filters: request.filters } : {}),
+        })
     if (selection.canceled || !selection.filePath) return { status: 'cancelled' }
     if (this.shuttingDown) return { status: 'failed', error: '桌面正在退出，无法开始下载。' }
 

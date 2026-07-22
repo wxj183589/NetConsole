@@ -118,6 +118,32 @@ describe('backend download manager', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('saves to an explicitly granted save path without opening a second dialog', async () => {
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/xml' })
+      response.end('<NameTable Version="3.0" />')
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, '线路名称表.nam')
+    const pathRegistry = new GrantedPathRegistry()
+    pathRegistry.grant(target, 'save')
+    const dialog = { showSaveDialog: vi.fn() }
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: server.origin, apiToken: 'o'.repeat(48) }) },
+      dialog,
+      window: {},
+      pathRegistry,
+    })
+
+    await expect(manager.download({
+      apiPath: '/api/ac-management/fit-aps/omnipeek/artifacts/artifact-1/download',
+      suggestedName: '线路名称表.nam',
+      destinationPath: target,
+    })).resolves.toMatchObject({ status: 'saved' })
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled()
+    await expect(readFile(target, 'utf8')).resolves.toContain('NameTable')
+  })
+
   it('uses the trackside AP artifact name as the save dialog default', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const showSaveDialog = vi.fn(async () => ({ canceled: true }))

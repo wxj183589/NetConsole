@@ -975,7 +975,11 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     from netconsole.repositories.device_group_repository import DeviceGroupRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.models.omnipeek_name_table import OmniPeekExportConfig
-    from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, build_omnipeek_entries
+    from netconsole.services.omnipeek_name_table_service import (
+        OmniPeekNameTableService,
+        build_omnipeek_entries,
+        build_omnipeek_preview_rows,
+    )
 
     _emit(progress, "omnipeek_name_table_preview", 0, 3, "正在后台收集 OmniPeek 名称数据")
     _check_cancel(should_cancel)
@@ -1005,10 +1009,6 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     )
     _emit(progress, "omnipeek_name_table_preview", 2, 3, "正在整理预览和异常统计")
     _check_cancel(should_cancel)
-    abnormal = [item for item in items if item.status != "正常"]
-    normal = [item for item in items if item.status == "正常"]
-    preview_limit = max(1, min(int(params.get("preview_limit") or 500), 2000))
-    preview_items = (abnormal + normal)[:preview_limit]
     source_counts = service.source_counts(
         ac_device_uuid=str(params.get("ac_uuid") or "") or None,
         devices=devices,
@@ -1022,23 +1022,53 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
         include_ac_fit_ap=bool(params.get("include_ac_fit_ap", True)),
         include_ap_extensions=bool(params.get("include_ap_extensions", True)),
         include_device_mr=bool(params.get("include_device_mr", True)),
+        export_trackside_physical=bool(params.get("export_trackside_physical", True)),
+        export_trackside_r1=bool(params.get("export_trackside_r1", True)),
+        export_trackside_r2=bool(params.get("export_trackside_r2", True)),
+        export_onboard_physical=bool(params.get("export_onboard_physical", True)),
+        export_onboard_r1=bool(params.get("export_onboard_r1", True)),
+        export_onboard_r2=bool(params.get("export_onboard_r2", True)),
+        onboard_radio_mode=str(params.get("onboard_radio_mode") or "auto"),
+        enable_h3c_derivation=bool(params.get("enable_h3c_derivation", True)),
+        colors={str(key): str(value) for key, value in dict(params.get("colors") or {}).items()},
     )
+    preview_items = build_omnipeek_preview_rows(items, export_config)
+    abnormal = [item for item in preview_items if item["status"] != "正常"]
     exportable_entries = build_omnipeek_entries(items, export_config)
-    selectable_items = sum(1 for item in items if item.selected)
+    selectable_items = sum(1 for item in preview_items if item["selected"])
     stats = {
         "total": len(items),
-        "selected": sum(1 for item in items if item.selected),
+        "selected": selectable_items,
         "abnormal": len(abnormal),
-        "mac_conflict": sum(1 for item in items if item.status == "MAC冲突"),
-        "r2_failed": sum(1 for item in items if item.status == "R2推导失败"),
-        "missing_mac": sum(1 for item in items if item.status == "缺少物理MAC"),
+        "mac_conflict": sum(1 for item in preview_items if item["status"] == "MAC冲突"),
+        "r2_failed": sum(1 for item in preview_items if item["status"] == "R2推导失败"),
+        "missing_mac": sum(1 for item in preview_items if item["status"] == "缺少物理MAC"),
         "preview_count": len(preview_items),
         "exportable_entries": len(exportable_entries),
         "skipped": len(items) - selectable_items,
         "error_count": len(abnormal),
     }
     _emit(progress, "omnipeek_name_table_preview", 3, 3, "OmniPeek 名称表预览已就绪")
-    return {"items": [asdict(item) for item in preview_items], "source_counts": source_counts, "stats": stats}
+    return {
+        "items": preview_items,
+        "source_counts": source_counts,
+        "stats": stats,
+        "config": {
+            "line_name": export_config.line_name,
+            "include_ac_fit_ap": export_config.include_ac_fit_ap,
+            "include_ap_extensions": export_config.include_ap_extensions,
+            "include_device_mr": export_config.include_device_mr,
+            "export_trackside_physical": export_config.export_trackside_physical,
+            "export_trackside_r1": export_config.export_trackside_r1,
+            "export_trackside_r2": export_config.export_trackside_r2,
+            "export_onboard_physical": export_config.export_onboard_physical,
+            "export_onboard_r1": export_config.export_onboard_r1,
+            "export_onboard_r2": export_config.export_onboard_r2,
+            "onboard_radio_mode": export_config.onboard_radio_mode,
+            "enable_h3c_derivation": export_config.enable_h3c_derivation,
+            "colors": export_config.colors,
+        },
+    }
 
 
 def _ac_overview_history_snapshot(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

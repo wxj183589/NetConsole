@@ -18,7 +18,7 @@ const ElTable = defineComponent({
     flexible: Boolean,
     scrollbarAlwaysOn: Boolean,
   },
-  emits: ['header-dragend'],
+  emits: ['header-dragend', 'row-contextmenu'],
   setup(_props, { slots, expose }) {
     expose({ doLayout: tableDoLayout })
     return () => h('div', { class: 'el-table-stub' }, slots.default?.())
@@ -219,6 +219,48 @@ describe('NcDataTable', () => {
     })
 
     expect(wrapper.get('.expanded-row').text()).toBe('AP01')
+    wrapper.unmount()
+  })
+
+  it('owns the typed context menu, explains disabled actions, clamps it and closes on Escape', async () => {
+    const action = vi.fn()
+    const row = { name: 'AP01' }
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'context-menu',
+        routeKey: '/ac-management',
+        showColumnSettings: false,
+        data: [row],
+        columns: [{ key: 'name', label: '名称', valueType: 'name' }],
+        contextMenuItems: [
+          { key: 'open', label: '打开', action },
+          { key: 'disabled', label: '不可用动作', action, disabled: true, disabledReason: '当前 AP 离线' },
+        ],
+      },
+      global,
+    })
+    wrapper.getComponent(ElTable).vm.$emit(
+      'row-contextmenu',
+      row,
+      { property: 'name' },
+      new MouseEvent('contextmenu', { clientX: window.innerWidth - 1, clientY: window.innerHeight - 1 }),
+    )
+    await wrapper.vm.$nextTick()
+
+    const menu = wrapper.get('[role="menu"]')
+    expect(Number.parseInt(menu.attributes('style')?.match(/left: (\d+)px/)?.[1] || '0', 10)).toBeLessThan(window.innerWidth)
+    expect(menu.text()).toContain('当前 AP 离线')
+    const disabled = menu.findAll('button').find((button) => button.text().includes('不可用动作'))!
+    expect(disabled.attributes()).toHaveProperty('disabled')
+    await menu.findAll('button').find((button) => button.text().includes('打开'))!.trigger('click')
+    expect(action).toHaveBeenCalledWith(expect.objectContaining({ row, columnKey: 'name', cellValue: 'AP01' }))
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
+
+    wrapper.getComponent(ElTable).vm.$emit('row-contextmenu', row, { property: 'name' }, new MouseEvent('contextmenu'))
+    await wrapper.vm.$nextTick()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

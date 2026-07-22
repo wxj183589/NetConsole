@@ -34,8 +34,8 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `getRuntimeConfig` | 无 | 仅后端 `ready` 且受信 sender 可取 | Vue 内存 API 配置 |
 | `selectFile` | 过滤器、是否多选 | 数量、名称、扩展名、未知字段白名单 | 原生选择器 |
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
-| `chooseSavePath` | 安全文件名、过滤器 | 不接受路径或命令作为文件名 | 只选择目标位置 |
-| `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器 | main 只访问当前受管动态回环后端，自行注入内存令牌并流式保存；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
+| `chooseSavePath` | 安全文件名、过滤器、可选的本会话已授权目录 | 目录必须来自 `selectDirectory`，不接受未授权路径或把路径/命令伪装为文件名 | 只选择目标位置 |
+| `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器、可选的本会话已授权另存为路径 | main 重新校验路径确由 `chooseSavePath` 授权，只访问当前受管动态回环后端，自行注入内存令牌并流式保存；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
 | `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
@@ -57,7 +57,7 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 
 ## 文件导出边界
 
-`chooseSavePath` 只返回用户确认的目标路径。报告生成及 Excel/ZIP/PDF 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
+`chooseSavePath` 只返回用户确认并登记为当前会话授权的目标路径；可选默认目录同样必须先由 `selectDirectory` 授权。报告生成及 Excel/ZIP/PDF/NAM 内容继续属于 Python Application Service 与 Export Process。`downloadBackendResource` 只搬运既有受控 HTTP 响应：Renderer 可以回传刚取得的另存为路径，但 main 必须在内存授权表中重新校验后才跳过第二次对话框；任意绝对路径仍会被拒绝。Renderer 只能提交设备、配置、文件、AC、MESH、Online MR 和网络工具现有正式 Artifact endpoint 模式及各端点允许的字符串 Query，main 使用当前 `PythonBackendManager` 的动态回环 Origin 与内存令牌请求，先流式写入目标同目录的随机 `.part`，成功后原子替换，取消或失败时不留下临时/伪成功文件。Electron Main/Preload 不读取数据库、不解释或生成报告。
 
 Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a download>`、Blob 或页面导航不能绕过该桥接。退出时先关闭新下载入口，取消并等待在途流清理后再停止受管 Python；Browser Platform Adapter 不受该 Electron 专用策略影响。
 

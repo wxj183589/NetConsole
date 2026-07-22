@@ -11,7 +11,7 @@
 | Feature key | 中文模块 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | `module.devices` | 设备管理 | `ENABLED` | 设备、分组、连接、批量任务和相关导出 |
-| `module.ac` | AC 管理 | `ENABLED` | FIT AP 资源、扩展、光衰、历史和命令 |
+| `module.ac` | AC 管理 | `ENABLED` | FIT-AP 资源、扩展、光衰、受控动作和 OmniPeek 名称表 |
 | `module.rail_transit` | 轨道交通 | `ENABLED` | MR、Mesh、轨旁 AP、车载网络 |
 | `module.config_collection` | 配置采集 | `ENABLED` | 快照、比较、批量采集 |
 | `module.file_management` | 文件管理 | `ENABLED` | 局点文件和下载 |

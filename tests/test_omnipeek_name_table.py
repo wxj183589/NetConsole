@@ -8,6 +8,7 @@ import pytest
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.models.omnipeek_name_table import (
+    OmniPeekDeviceItem,
     OmniPeekExportConfig,
     OmniPeekNameEntry,
 )
@@ -15,6 +16,7 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.omnipeek_name_table_service import (
     OmniPeekNameTableService,
     build_omnipeek_entries,
+    build_omnipeek_preview_rows,
     export_omnipeek_nam,
 )
 from netconsole.utils.mac_utils import (
@@ -143,3 +145,27 @@ def test_export_omnipeek_nam_writes_required_xml_fields(tmp_path: Path) -> None:
     assert "<Group>宁波地铁12号线车载MR物理MAC组</Group>" in text
     assert "<Trust>Trusted</Trust>" in text
     assert "<Mod>2026-07-09T11:10:00Z</Mod>" in text
+
+
+def test_preview_marks_abnormal_rows_unselected_and_requires_explicit_force(tmp_path: Path) -> None:
+    config = OmniPeekExportConfig(line_name="测试线", output_path=tmp_path / "preview.nam")
+    missing = OmniPeekDeviceItem(role="trackside_ap", name="AP-Missing", physical_mac="", key="missing")
+    r2_failed = OmniPeekDeviceItem(role="trackside_ap", name="AP-R2", physical_mac="74ad-cb9d-33f0", key="r2")
+
+    rows = build_omnipeek_preview_rows([missing, r2_failed], config)
+
+    assert rows[0]["status"] == "缺少物理MAC"
+    assert rows[0]["selected"] is False
+    assert rows[0]["force_export_allowed"] is False
+    assert rows[1]["status"] == "R2推导失败"
+    assert rows[1]["selected"] is False
+    assert rows[1]["force_export_allowed"] is True
+    assert build_omnipeek_entries([r2_failed], config) == []
+
+    r2_failed.selected = True
+    r2_failed.force_export = True
+    entries = build_omnipeek_entries([r2_failed], config)
+    assert [(entry.name, entry.mac) for entry in entries] == [
+        ("AP-R2-物理MAC", "74:AD:CB:9D:33:F0"),
+        ("AP-R2-R1", "74:AD:CB:9D:33:FF"),
+    ]

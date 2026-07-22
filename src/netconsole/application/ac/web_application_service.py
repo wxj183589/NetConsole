@@ -22,6 +22,7 @@ from netconsole.core.settings import SettingsStore, normalize_external_terminal_
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import (
     AcActionPlanDTO,
+    AcFitApRemoteTerminalProfileDTO,
     AcExternalTerminalActionDTO,
     AcExternalTerminalOptionDTO,
     AcExternalTerminalOptionsDTO,
@@ -31,12 +32,17 @@ from netconsole.models.api.ac_management import (
     AcExtensionPreviewDTO,
     AcExtensionRollbackResultDTO,
     AcOmniPeekPreviewDTO,
+    AcOmniPeekPreferencesDTO,
     AcWebTaskDTO,
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
+from netconsole.services.ac.fit_ap_remote_terminal_profile import (
+    FitApRemoteTerminalProfileResolver,
+    FitApRemoteTerminalProfileStore,
+)
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec, omnipeek_name_table_spec
@@ -52,8 +58,12 @@ from netconsole.services.job_center.web_export_event_safety import redact_web_ta
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError, RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
-from netconsole.services.netmiko_connection import connection_targets
-from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name, make_omnipeek_filename
+from netconsole.services.omnipeek_name_table_service import (
+    default_omnipeek_line_name,
+    load_omnipeek_color_settings,
+    make_omnipeek_filename,
+    save_omnipeek_color_settings,
+)
 from netconsole.utils.mileage import mileage_storage_text
 
 
@@ -351,10 +361,20 @@ class AcWebApplicationService:
         )
         return self._task_dto(site_id, task_id)
 
-    def start_omnipeek_preview(self, site_id: str, *, ac_id: str, ap_ids: list[str]) -> AcWebTaskDTO:
+    def start_omnipeek_preview(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        ap_ids: list[str],
+        options: dict[str, object] | None = None,
+    ) -> AcWebTaskDTO:
         site_id = self._site(site_id)
         device_uuid = str(self._target(site_id, ac_id).device_uuid)
         selected = self._validated_ap_ids(site_id, device_uuid, ap_ids)
+        values = dict(options or {})
+        line_name = str(values.get("line_name") or "").strip() or default_omnipeek_line_name(site_id, self.paths)
+        colors = dict(values.get("colors") or {}) or load_omnipeek_color_settings(SettingsStore(self.paths))
         task_id = f"ac-omnipeek-preview-{uuid4().hex}"
         self.process_adapter.start_job(
             BackgroundJob(
@@ -372,17 +392,34 @@ class AcWebApplicationService:
                     "ac_uuid": device_uuid,
                     "selected_fit_ap_ids": selected,
                     "scope_extensions_to_fit_ap": True,
-                    "include_ac_fit_ap": True,
-                    "include_ap_extensions": True,
-                    "include_device_mr": False,
-                    "line_name": default_omnipeek_line_name(site_id, self.paths),
-                    "preview_limit": 2000,
+                    "include_ac_fit_ap": bool(values.get("include_ac_fit_ap", True)),
+                    "include_ap_extensions": bool(values.get("include_ap_extensions", True)),
+                    "include_device_mr": bool(values.get("include_device_mr", False)),
+                    "line_name": line_name,
+                    "export_trackside_physical": bool(values.get("export_trackside_physical", True)),
+                    "export_trackside_r1": bool(values.get("export_trackside_r1", True)),
+                    "export_trackside_r2": bool(values.get("export_trackside_r2", True)),
+                    "export_onboard_physical": bool(values.get("export_onboard_physical", True)),
+                    "export_onboard_r1": bool(values.get("export_onboard_r1", True)),
+                    "export_onboard_r2": bool(values.get("export_onboard_r2", True)),
+                    "onboard_radio_mode": str(values.get("onboard_radio_mode") or "auto"),
+                    "enable_h3c_derivation": bool(values.get("enable_h3c_derivation", True)),
+                    "colors": colors,
                 },
             )
         )
         return self._task_dto(site_id, task_id)
 
-    def get_omnipeek_preview(self, site_id: str, task_id: str) -> AcOmniPeekPreviewDTO:
+    def get_omnipeek_preview(
+        self,
+        site_id: str,
+        task_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        status_filter: str = "all",
+        search: str = "",
+    ) -> AcOmniPeekPreviewDTO:
         site_id = self._site(site_id)
         snapshot = self._task_snapshot(site_id, task_id)
         if snapshot.task_type != "omnipeek_name_table_preview":
@@ -390,10 +427,30 @@ class AcWebApplicationService:
         result = dict(snapshot.result or {})
         stats = dict(result.get("stats") or {})
         source_counts = dict(result.get("source_counts") or {})
+        rows = [dict(item) for item in result.get("items") or [] if isinstance(item, dict)]
+        filtered = [
+            item
+            for item in rows
+            if self._matches_omnipeek_filter(item, status_filter)
+            and self._matches_omnipeek_search(item, search)
+        ]
+        page_size = max(20, min(int(page_size), 500))
+        page = max(1, int(page))
+        start = (page - 1) * page_size
+        selected_keys = [str(item.get("item_key") or "") for item in rows if item.get("selected")]
         return AcOmniPeekPreviewDTO(
             task_id=task_id,
             task_status=snapshot.status.value,
             ready=snapshot.status is TaskState.COMPLETED,
+            config=dict(result.get("config") or {}),
+            source_counts={str(key): int(value) for key, value in source_counts.items()},
+            statistics={str(key): int(value) for key, value in stats.items()},
+            items=filtered[start:start + page_size],
+            matching_item_keys=[str(item.get("item_key") or "") for item in filtered],
+            selected_item_keys=selected_keys,
+            total=len(filtered),
+            page=page,
+            page_size=page_size,
             input_ap_count=int(source_counts.get("AC FIT-AP资源") or 0),
             exportable_entry_count=int(stats.get("exportable_entries") or 0),
             skipped_count=int(stats.get("skipped") or 0),
@@ -401,13 +458,23 @@ class AcWebApplicationService:
             message=redact_web_task_text(snapshot.message or snapshot.error_message),
         )
 
-    def start_omnipeek_export(self, site_id: str, *, ac_id: str, ap_ids: list[str]) -> AcWebTaskDTO:
+    def start_omnipeek_export(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        ap_ids: list[str],
+        options: dict[str, object] | None = None,
+    ) -> AcWebTaskDTO:
         site_id = self._site(site_id)
         if self.export_adapter is None:
             raise AcWebActionError("EXPORT_NOT_WIRED", "OmniPeek 导出进程未接线")
         device_uuid = str(self._target(site_id, ac_id).device_uuid)
         selected = self._validated_ap_ids(site_id, device_uuid, ap_ids)
-        line_name = default_omnipeek_line_name(site_id, self.paths)
+        values = dict(options or {})
+        line_name = str(values.get("line_name") or "").strip() or default_omnipeek_line_name(site_id, self.paths)
+        colors = dict(values.get("colors") or {}) or load_omnipeek_color_settings(SettingsStore(self.paths))
+        save_omnipeek_color_settings(SettingsStore(self.paths), colors)
         task_id = f"ac-omnipeek-export-{uuid4().hex}"
         reservation = self.artifact_store.reserve(
             site_id=site_id,
@@ -432,10 +499,22 @@ class AcWebApplicationService:
             },
             config={
                 "line_name": line_name,
-                "include_ac_fit_ap": True,
-                "include_ap_extensions": True,
-                "include_device_mr": False,
+                "include_ac_fit_ap": bool(values.get("include_ac_fit_ap", True)),
+                "include_ap_extensions": bool(values.get("include_ap_extensions", True)),
+                "include_device_mr": bool(values.get("include_device_mr", False)),
+                "export_trackside_physical": bool(values.get("export_trackside_physical", True)),
+                "export_trackside_r1": bool(values.get("export_trackside_r1", True)),
+                "export_trackside_r2": bool(values.get("export_trackside_r2", True)),
+                "export_onboard_physical": bool(values.get("export_onboard_physical", True)),
+                "export_onboard_r1": bool(values.get("export_onboard_r1", True)),
+                "export_onboard_r2": bool(values.get("export_onboard_r2", True)),
+                "onboard_radio_mode": str(values.get("onboard_radio_mode") or "auto"),
+                "enable_h3c_derivation": bool(values.get("enable_h3c_derivation", True)),
+                "colors": colors,
             },
+            selected_item_keys=[str(value) for value in values.get("selected_item_keys") or []],
+            excluded_item_keys=[str(value) for value in values.get("excluded_item_keys") or []],
+            force_export_keys=[str(value) for value in values.get("force_export_keys") or []],
             title="导出 OmniPeek 名称表",
             open_dir_on_success=False,
         ).to_job(task_id)
@@ -463,6 +542,18 @@ class AcWebApplicationService:
             raise
         return self._task_dto(site_id, task_id)
 
+    def omnipeek_preferences(self, site_id: str) -> AcOmniPeekPreferencesDTO:
+        site_id = self._site(site_id)
+        return AcOmniPeekPreferencesDTO(
+            line_name=default_omnipeek_line_name(site_id, self.paths),
+            colors=load_omnipeek_color_settings(SettingsStore(self.paths)),
+        )
+
+    def save_omnipeek_preferences(self, site_id: str, colors: dict[str, str]) -> AcOmniPeekPreferencesDTO:
+        self._site(site_id)
+        save_omnipeek_color_settings(SettingsStore(self.paths), colors)
+        return self.omnipeek_preferences(site_id)
+
     def external_terminal_options(self) -> AcExternalTerminalOptionsDTO:
         self._require_desktop_runtime()
         settings = SettingsStore(self.paths)
@@ -481,6 +572,59 @@ class AcWebApplicationService:
                 for config in configs
             ],
         )
+
+    def fit_ap_remote_terminal_profile(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+    ) -> AcFitApRemoteTerminalProfileDTO:
+        site_id = self._site(site_id)
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        try:
+            profile = FitApRemoteTerminalProfileStore(self.paths).describe(site_id, device_uuid)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise AcWebActionError("FIT_AP_PROFILE_UNAVAILABLE", str(exc)) from exc
+        if profile is None:
+            return AcFitApRemoteTerminalProfileDTO(ac_id=device_uuid, source="none")
+        return AcFitApRemoteTerminalProfileDTO(
+            ac_id=device_uuid,
+            scope=profile.scope,
+            protocol=profile.protocol,
+            port=profile.port,
+            username=profile.username,
+            password_configured=profile.password_configured,
+            source=profile.source,
+        )
+
+    def save_fit_ap_remote_terminal_profile(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        scope: str,
+        protocol: str,
+        port: int,
+        username: str,
+        password: str | None,
+        clear_password: bool,
+    ) -> AcFitApRemoteTerminalProfileDTO:
+        site_id = self._site(site_id)
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        try:
+            FitApRemoteTerminalProfileStore(self.paths).save(
+                site_id,
+                device_uuid,
+                scope="site" if scope == "site" else "ac",
+                protocol="ssh" if protocol == "ssh" else "telnet",
+                port=port,
+                username=username,
+                password=password,
+                clear_password=clear_password,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise AcWebActionError("FIT_AP_PROFILE_SAVE_FAILED", str(exc)) from exc
+        return self.fit_ap_remote_terminal_profile(site_id, ac_id=device_uuid)
 
     def launch_fit_ap_external_terminal(
         self,
@@ -508,25 +652,18 @@ class AcWebApplicationService:
         if config is None:
             raise AcWebActionError("TERMINAL_NOT_CONFIGURED", "未配置所选外部终端，请先到系统设置配置")
         device_repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
-        candidates = [
-            device
-            for device in device_repository.list()
-            if detail.ap.ip in {str(device.primary_address or "").strip(), str(device.backup_address or "").strip()}
-        ]
-        if len(candidates) != 1:
-            raise AcWebActionError("AP_CREDENTIALS_MISSING", "未配置该 AP 的远程登录凭据")
-        credential_device = candidates[0]
-        targets = [
-            target
-            for target in connection_targets(credential_device)
-            if target.host == detail.ap.ip and not target.via_tunnel
-        ]
-        target = targets[0] if targets else None
-        if target is None or not str(target.password or ""):
+        try:
+            resolved = FitApRemoteTerminalProfileResolver(
+                FitApRemoteTerminalProfileStore(self.paths),
+                device_repository,
+            ).resolve(site_id, device_uuid, detail.ap.ip, detail.ap.name)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise AcWebActionError("FIT_AP_PROFILE_UNAVAILABLE", str(exc)) from exc
+        if resolved is None:
             raise AcWebActionError("AP_CREDENTIALS_MISSING", "未配置该 AP 的远程登录凭据")
         args = build_external_terminal_command(
-            credential_device,
-            target,
+            resolved.device,
+            resolved.target,
             config.terminal_type,
             config.exe_path,
             config.include_password,
@@ -544,6 +681,32 @@ class AcWebApplicationService:
             ap_id=detail.ap.id,
             terminal_type=config.terminal_type,
             message=f"已打开 {detail.ap.name} 的远程终端",
+        )
+
+    @staticmethod
+    def _matches_omnipeek_filter(item: dict[str, object], status_filter: str) -> bool:
+        value = str(status_filter or "all")
+        status = str(item.get("status") or "")
+        if value == "selected":
+            return bool(item.get("selected"))
+        if value == "abnormal":
+            return status != "正常"
+        if value == "mac_conflict":
+            return status == "MAC冲突"
+        if value == "r2_failed":
+            return status == "R2推导失败"
+        if value == "missing_mac":
+            return status == "缺少物理MAC"
+        return True
+
+    @staticmethod
+    def _matches_omnipeek_search(item: dict[str, object], search: str) -> bool:
+        needle = str(search or "").strip().casefold()
+        if not needle:
+            return True
+        return any(
+            needle in str(item.get(key) or "").casefold()
+            for key in ("name", "location", "physical_mac", "r1_mac", "r2_mac", "data_source")
         )
 
     def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:

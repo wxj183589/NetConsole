@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import ctypes
 import hashlib
 import json
 import os
@@ -17,6 +16,7 @@ from uuid import uuid4
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
@@ -100,13 +100,6 @@ DOWNLOAD_DESCRIPTOR_EVENT = "file_management_descriptor"
 DOWNLOAD_HIDDEN_EVENT = "file_management_hidden"
 DOWNLOAD_WAITING_EVENT = "file_management_waiting"
 MESH_HISTORY_LOG_PATTERN = re.compile(r"^\d{4}_\d{2}_\d{2}_\d+meshlog\.log\.gz$", re.IGNORECASE)
-CRYPTPROTECT_UI_FORBIDDEN = 0x1
-
-
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("size", ctypes.c_ulong), ("data", ctypes.POINTER(ctypes.c_ubyte))]
-
-
 class FileManagementError(ValueError):
     pass
 
@@ -2219,7 +2212,7 @@ class FileManagementApplicationService:
 
 def _protect_descriptor(descriptor: dict[str, object], site: str, task_id: str) -> str:
     payload = json.dumps(descriptor, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    protected = _crypt_protect(payload, f"file-management\0{site}\0{task_id}".encode("utf-8"), decrypt=False)
+    protected = protect_windows_data(payload, f"file-management\0{site}\0{task_id}".encode("utf-8"))
     return base64.urlsafe_b64encode(protected).decode("ascii")
 
 
@@ -2228,38 +2221,11 @@ def _unprotect_descriptor(token: str, site: str, task_id: str) -> dict[str, obje
         protected = base64.urlsafe_b64decode(str(token or "").encode("ascii"))
     except (ValueError, UnicodeEncodeError) as exc:
         raise ValueError("下载恢复描述无效") from exc
-    payload = _crypt_protect(protected, f"file-management\0{site}\0{task_id}".encode("utf-8"), decrypt=True)
+    payload = unprotect_windows_data(protected, f"file-management\0{site}\0{task_id}".encode("utf-8"))
     value = json.loads(payload.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError("下载恢复描述无效")
     return {str(key): item for key, item in value.items()}
-
-
-def _crypt_protect(data: bytes, entropy: bytes, *, decrypt: bool) -> bytes:
-    if os.name != "nt":
-        raise RuntimeError("下载队列持久恢复要求 Windows DPAPI")
-    data_buffer = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
-    entropy_buffer = (ctypes.c_ubyte * len(entropy)).from_buffer_copy(entropy)
-    input_blob = _DataBlob(len(data), ctypes.cast(data_buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    entropy_blob = _DataBlob(len(entropy), ctypes.cast(entropy_buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    output_blob = _DataBlob()
-    windll = getattr(ctypes, "windll")
-    function = windll.crypt32.CryptUnprotectData if decrypt else windll.crypt32.CryptProtectData
-    args = (
-        ctypes.byref(input_blob),
-        None,
-        ctypes.byref(entropy_blob),
-        None,
-        None,
-        CRYPTPROTECT_UI_FORBIDDEN,
-        ctypes.byref(output_blob),
-    )
-    if not function(*args):
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(output_blob.data, output_blob.size)
-    finally:
-        windll.kernel32.LocalFree(output_blob.data)
 
 
 def is_mesh_log_file(filename: str) -> bool:

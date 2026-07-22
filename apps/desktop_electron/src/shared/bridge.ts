@@ -40,6 +40,7 @@ export interface SelectDirectoryResult {
 export interface ChooseSavePathOptions {
   suggestedName: string
   filters?: FileFilter[]
+  directoryPath?: string
 }
 
 export interface ChooseSavePathResult {
@@ -98,6 +99,7 @@ export interface BackendDownloadRequest {
   query?: Record<string, string>
   suggestedName: string
   filters?: FileFilter[]
+  destinationPath?: string
 }
 
 export interface BackendDownloadResult {

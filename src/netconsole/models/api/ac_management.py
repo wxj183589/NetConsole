@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from netconsole.models.api.common import ApiModel
 
@@ -331,17 +331,93 @@ class AcFitApMetadataSaveRequestDTO(ApiModel):
 class AcOmniPeekRequestDTO(ApiModel):
     ac_id: str = Field(min_length=1, max_length=100)
     ap_ids: list[str] = Field(default_factory=list, max_length=2000)
+    line_name: str = Field(default="", max_length=200)
+    include_ac_fit_ap: bool = True
+    include_ap_extensions: bool = True
+    include_device_mr: bool = False
+    export_trackside_physical: bool = True
+    export_trackside_r1: bool = True
+    export_trackside_r2: bool = True
+    export_onboard_physical: bool = True
+    export_onboard_r1: bool = True
+    export_onboard_r2: bool = True
+    onboard_radio_mode: Literal["auto", "r1_only", "r2_only", "r1_r2", "none"] = "auto"
+    enable_h3c_derivation: bool = True
+    selected_item_keys: list[str] = Field(default_factory=list, max_length=20000)
+    excluded_item_keys: list[str] = Field(default_factory=list, max_length=20000)
+    force_export_keys: list[str] = Field(default_factory=list, max_length=20000)
+    colors: dict[str, str] = Field(default_factory=dict)
+
+
+class AcOmniPeekPreviewItemDTO(ApiModel):
+    item_key: str
+    selected: bool = False
+    force_export: bool = False
+    force_export_allowed: bool = False
+    role: Literal["trackside_ap", "onboard_mr"]
+    type_label: str
+    name: str
+    location: str = ""
+    physical_mac: str = ""
+    r1_mac: str = ""
+    r2_mac: str = ""
+    r1_source: str = ""
+    r2_source: str = ""
+    export_content: str = ""
+    group: str = ""
+    color: str = ""
+    status: str = "正常"
+    abnormal_reason: str = ""
+    data_source: str = ""
 
 
 class AcOmniPeekPreviewDTO(ApiModel):
     task_id: str
     task_status: str
     ready: bool = False
+    config: dict[str, object] = Field(default_factory=dict)
+    source_counts: dict[str, int] = Field(default_factory=dict)
+    statistics: dict[str, int] = Field(default_factory=dict)
+    items: list[AcOmniPeekPreviewItemDTO] = Field(default_factory=list)
+    matching_item_keys: list[str] = Field(default_factory=list)
+    selected_item_keys: list[str] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
     input_ap_count: int = 0
     exportable_entry_count: int = 0
     skipped_count: int = 0
     error_count: int = 0
     message: str = ""
+
+
+class AcOmniPeekPreferencesDTO(ApiModel):
+    line_name: str = ""
+    colors: dict[str, str] = Field(default_factory=dict)
+
+
+class AcOmniPeekPreferencesSaveDTO(ApiModel):
+    colors: dict[str, str] = Field(default_factory=dict)
+
+
+class AcFitApRemoteTerminalProfileDTO(ApiModel):
+    ac_id: str
+    scope: Literal["ac", "site"] = "ac"
+    protocol: Literal["ssh", "telnet"] = "telnet"
+    port: int = Field(default=23, ge=1, le=65535)
+    username: str = ""
+    password_configured: bool = False
+    source: Literal["ac_profile", "site_profile", "none"] = "none"
+
+
+class AcFitApRemoteTerminalProfileSaveDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    scope: Literal["ac", "site"] = "ac"
+    protocol: Literal["ssh", "telnet"] = "telnet"
+    port: int = Field(default=23, ge=1, le=65535)
+    username: str = Field(default="", max_length=255)
+    password: SecretStr | None = Field(default=None, repr=False)
+    clear_password: bool = False
 
 
 class AcExternalTerminalRequestDTO(ApiModel):
@@ -394,7 +470,12 @@ __all__ = [
     "AcFitApDeleteRequestDTO",
     "AcFitApMetadataSaveRequestDTO",
     "AcOmniPeekRequestDTO",
+    "AcOmniPeekPreviewItemDTO",
     "AcOmniPeekPreviewDTO",
+    "AcOmniPeekPreferencesDTO",
+    "AcOmniPeekPreferencesSaveDTO",
+    "AcFitApRemoteTerminalProfileDTO",
+    "AcFitApRemoteTerminalProfileSaveDTO",
     "AcExternalTerminalRequestDTO",
     "AcExternalTerminalOptionDTO",
     "AcExternalTerminalOptionsDTO",

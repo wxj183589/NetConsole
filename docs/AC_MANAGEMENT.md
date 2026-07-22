@@ -4,6 +4,8 @@
 
 Electron AC/FIT-AP 处于 `PARTIAL / IMPLEMENTED_UNVERIFIED`。`/ac-management/fit-aps` 已不再是数据库只读页：Feature `web.ac_refresh` 的“更新 AC 信息”“更新 FIT-AP 资源”和 AP 详情“深度更新”都会创建持久化后台任务，经共享 Python Application Service 连接所选 H3C AC、保存 raw/命令记录并更新当前局点数据库。页面也已接入两项受控 AC 写动作、当前 AC 范围的 OmniPeek 名称表导出和桌面版单 AP 外部终端；这些闭环仍待 Electron 人工和真实 AC/AP 验收，全部缺口完成前不得标记 `COMPLETE`。
 
+`web.ac_dangerous_actions` 与 `web.ac_fit_ap_external_terminal` 已从开发隐藏项转为正式客户版默认功能。Feature Profile schema v2 会在升级首次加载时把 schema v1 中这两项的旧默认关闭状态迁移为正式默认值；用户在 v2 及以后主动关闭的选择保持不变，不要求删除 AppData。
+
 以列车为中心的 Mesh-Link 在线监控已并入 `/rail-transit/train-online`，AC 管理不再提供独立页面、导航或页面 Feature。底层 API 与 `web.rail_train_online` 共用门禁，Parser、Query Service、历史快照和 `ac_mesh_link_refresh` Task 继续作为列车在线状态的事实源。完整领域与匹配规则见 [轨道交通无线业务模型](RAIL_TRANSIT_WIRELESS.md)。
 
 当前 FIT-AP 更新链路为：
@@ -26,9 +28,9 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - AP 详情：基本信息、connection-record、Radio 1/2 状态/模式/频段/信道/带宽/利用率/功率/客户端/BSSID、LLDP/端口、交换机光模块和 AP 侧光衰；
 - 真实更新：AC CPU/内存/型号/版本/HTTPS 端口、FIT-AP 普通资源、所选 AP 深度 BSSID 和 FIT-AP 光衰；FIT-AP 光衰默认共享并发 64，运行时按平台上限和目标 AP 数裁剪，并通过 `tasks.db` resource key 阻止同一 AC 与轨旁更新重复执行；任务进度、取消、失败、部分命令失败、页面重启恢复和完成后结果刷新；业务页只保留紧凑摘要，停止、日志和 Artifact 统一在 Electron 任务窗口处理；
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
-- 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 默认关闭，启用后必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
-- OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 控制入口；勾选 AP 时限定勾选项，未勾选时读取当前 AC 全部 FIT-AP，并合并 AP 扩展信息、排除设备管理车载 MR。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、Artifact 清单、取消和恢复规则；
-- 单 AP 外部终端：FIT-AP 行右键菜单复用 `NcDataTable` 的 `row-contextmenu` 事件，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 共同门禁；Python 只接受 AC/AP/终端类型语义 ID，校验 AP 归属、IP、在线状态、已保存的唯一设备凭据和系统设置中的终端路径，再通过 `DesktopActionService` 启动。Browser/Server 模式拒绝，API 不接收或返回程序路径、参数和密码；
+- 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 是正式客户版默认功能，仍必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
+- OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 是正式客户版默认功能。窗口提供线路名、输出目录、三类数据源及真实数量、轨旁/车载导出内容、Radio 模式、颜色、结构化逐行预览、状态筛选、搜索、分页、选择和受控强制导出；AP 扩展信息只匹配当前 AC 的 FIT-AP，车载 MR 由用户决定是否加入。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、导出日志、Artifact 清单、取消和恢复规则；
+- 单 AP 外部终端：FIT-AP 行菜单由 `NcDataTable` 的类型安全菜单模型统一渲染，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 均为正式 Electron 默认功能；Python 只接受 AC/AP/终端类型语义 ID。登录资料按“当前 AC Profile、当前局点 Profile、设备管理 IP 唯一精确匹配兼容回退”解析，不再要求 FIT-AP 重复录入设备管理；Profile 密码使用 Windows DPAPI 写入受控配置且不返回 Vue。系统设置中的终端路径仍由 `available_external_terminal_configs` 管理，再通过 `DesktopActionService` 启动。Browser/Server 模式拒绝，API 不接收或返回程序路径、参数和密码；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 底层能力：AC 管理只保留受控采集、Parser、结构化快照、raw 和基础设施查询，不再呈现列车监控页面。列车、CT/TC 端点、当前 AP、RSSI、位置、匹配状态和两侧收光统一由“轨道交通 / 列车在线情况”展示。
@@ -80,7 +82,11 @@ GET  /api/ac-management/actions/plans/{plan_id}/audit
 POST /api/ac-management/fit-aps/omnipeek/preview
 GET  /api/ac-management/fit-aps/omnipeek/preview/{task_id}
 POST /api/ac-management/fit-aps/omnipeek/export
+GET  /api/ac-management/fit-aps/omnipeek/preferences
+PUT  /api/ac-management/fit-aps/omnipeek/preferences
 GET  /api/ac-management/fit-aps/omnipeek/artifacts/{artifact_id}/download
+GET  /api/ac-management/fit-aps/remote-terminal-profile
+PUT  /api/ac-management/fit-aps/remote-terminal-profile
 GET  /api/ac-management/fit-aps/external-terminal/options
 POST /api/ac-management/fit-aps/{ap_id}/external-terminal
 
@@ -118,9 +124,10 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 
 ## 尚未完成或验收的 Electron 能力
 
+- 动作页只把 `plan_id` 写入 `localStorage`，UI 和日志不展示 `confirm_token`；但当前 `AcActionPlanDTO` 仍把 Token 返回 Renderer，前端确认请求从内存 plan 回传。该实现尚未满足“Renderer 永不接收确认 Token”的严格边界，需后续改为服务端短期绑定或等价方案；修复前不得描述为 Token 完全未暴露给前端；
 - AP 信息导出以及详情页 Radio/LLDP/光衰历史 XLSX 导出仍需按当前代码和 Feature 状态复核；批量删除、AP 元数据 CSV/XLSX 导入、详情元数据保存及历史查看已进入永久链；
-- AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根和统一任务中心下载；仍需用真实局点数据验证名称冲突处置、OmniPeek 实际导入和 Electron 另存为体验；
-- 单 AP 外部终端只在 AP 管理 IP 能唯一匹配设备管理记录且该记录已有 SSH/Telnet 密码时启动；旧 Qt 曾硬编码的默认 Telnet 密码没有迁入。真实 AP 凭据映射、各终端版本参数兼容和现场可达性仍需人工验收；
+- AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根、统一任务中心和 Electron 受控另存为；仍需用现场 OmniPeek 验证实际导入结果；
+- 旧 Qt 曾硬编码的默认 Telnet 密码没有稳定配置来源，因此未迁入。当前使用专用 FIT-AP Profile；真实 AP 凭据、各终端版本参数兼容和现场可达性仍需人工验收；
 - AP 扩展信息与轨旁规划的导入、导出和编辑闭环；
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - Electron 原生另存为、打开文件/目录和真实 AC 工作流人工验收。

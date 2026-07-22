@@ -29,8 +29,12 @@ from netconsole.models.api.ac_management import (
     AcExtensionRollbackResultDTO,
     AcFitApDeleteRequestDTO,
     AcFitApMetadataSaveRequestDTO,
+    AcFitApRemoteTerminalProfileDTO,
+    AcFitApRemoteTerminalProfileSaveDTO,
     AcLocalRebuildRequestDTO,
     AcOmniPeekPreviewDTO,
+    AcOmniPeekPreferencesDTO,
+    AcOmniPeekPreferencesSaveDTO,
     AcOmniPeekRequestDTO,
     AcExternalTerminalRequestDTO,
     AcRefreshRequestDTO,
@@ -441,7 +445,10 @@ def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataS
 def preview_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
     try:
         return _web_service(request).start_omnipeek_preview(
-            _web_site_id(request), ac_id=payload.ac_id, ap_ids=payload.ap_ids
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            ap_ids=payload.ap_ids,
+            options=payload.model_dump(exclude={"ac_id", "ap_ids"}),
         )
     except AcWebActionError as exc:
         _raise_web_error(exc)
@@ -452,9 +459,23 @@ def preview_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> 
     response_model=AcOmniPeekPreviewDTO,
     dependencies=[Depends(require_feature("ac.omnipeek_name_table_export"))],
 )
-def fit_ap_omnipeek_preview(request: Request, task_id: str) -> AcOmniPeekPreviewDTO:
+def fit_ap_omnipeek_preview(
+    request: Request,
+    task_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=20, le=500),
+    status_filter: str = Query(default="all", max_length=30),
+    search: str = Query(default="", max_length=200),
+) -> AcOmniPeekPreviewDTO:
     try:
-        return _web_service(request).get_omnipeek_preview(_web_site_id(request), task_id)
+        return _web_service(request).get_omnipeek_preview(
+            _web_site_id(request),
+            task_id,
+            page=page,
+            page_size=page_size,
+            status_filter=status_filter,
+            search=search,
+        )
     except AcWebActionError as exc:
         _raise_web_error(exc)
 
@@ -471,7 +492,73 @@ def fit_ap_omnipeek_preview(request: Request, task_id: str) -> AcOmniPeekPreview
 def export_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
     try:
         return _web_service(request).start_omnipeek_export(
-            _web_site_id(request), ac_id=payload.ac_id, ap_ids=payload.ap_ids
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            ap_ids=payload.ap_ids,
+            options=payload.model_dump(exclude={"ac_id", "ap_ids"}),
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get(
+    "/fit-aps/omnipeek/preferences",
+    response_model=AcOmniPeekPreferencesDTO,
+    dependencies=[Depends(require_feature("ac.omnipeek_name_table_export"))],
+)
+def fit_ap_omnipeek_preferences(request: Request) -> AcOmniPeekPreferencesDTO:
+    return _web_service(request).omnipeek_preferences(_web_site_id(request))
+
+
+@router.put(
+    "/fit-aps/omnipeek/preferences",
+    response_model=AcOmniPeekPreferencesDTO,
+    dependencies=[Depends(require_feature("ac.omnipeek_name_table_export"))],
+)
+def save_fit_ap_omnipeek_preferences(
+    request: Request,
+    payload: AcOmniPeekPreferencesSaveDTO,
+) -> AcOmniPeekPreferencesDTO:
+    return _web_service(request).save_omnipeek_preferences(_web_site_id(request), payload.colors)
+
+
+@router.get(
+    "/fit-aps/remote-terminal-profile",
+    response_model=AcFitApRemoteTerminalProfileDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_external_terminal"))],
+)
+def fit_ap_remote_terminal_profile(
+    request: Request,
+    ac_id: str = Query(min_length=1, max_length=100),
+) -> AcFitApRemoteTerminalProfileDTO:
+    try:
+        return _web_service(request).fit_ap_remote_terminal_profile(
+            _web_site_id(request),
+            ac_id=ac_id,
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.put(
+    "/fit-aps/remote-terminal-profile",
+    response_model=AcFitApRemoteTerminalProfileDTO,
+    dependencies=[Depends(require_feature("web.ac_fit_ap_external_terminal"))],
+)
+def save_fit_ap_remote_terminal_profile(
+    request: Request,
+    payload: AcFitApRemoteTerminalProfileSaveDTO,
+) -> AcFitApRemoteTerminalProfileDTO:
+    try:
+        return _web_service(request).save_fit_ap_remote_terminal_profile(
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            scope=payload.scope,
+            protocol=payload.protocol,
+            port=payload.port,
+            username=payload.username,
+            password=payload.password.get_secret_value() if payload.password is not None else None,
+            clear_password=payload.clear_password,
         )
     except AcWebActionError as exc:
         _raise_web_error(exc)

@@ -22,7 +22,6 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
   useRouter: () => ({ push: mocks.routerPush }),
 }))
-vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('../../platform/runtime', () => ({
   getRuntimeConfig: () => ({ hostType: mocks.hostType }),
   getPlatformAdapter: () => ({ openExternalUrl: mocks.openExternalUrl }),
@@ -38,12 +37,15 @@ vi.mock('../../api/acWebParity', () => ({
   startAcOmniPeekExport: vi.fn(),
   getAcExternalTerminalOptions: vi.fn(),
   openAcFitApExternalTerminal: vi.fn(),
+  getAcFitApRemoteTerminalProfile: vi.fn(),
+  saveAcFitApRemoteTerminalProfile: vi.fn(),
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: mocks.confirm }) }))
 vi.mock('../../stores/acManagement', () => ({ useAcManagementStore: () => mocks.store }))
 vi.mock('../../stores/tasks', () => ({ useTaskStore: () => mocks.taskStore }))
 
 import AcManagementView from './AcManagementView.vue'
+import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 
 const passthrough = defineComponent({
   inheritAttrs: false,
@@ -104,9 +106,10 @@ const optionStub = defineComponent({
 })
 
 const dataTableStub = defineComponent({
-  props: { tableId: { type: String, default: '' } },
+  name: 'NcDataTable',
+  props: { tableId: { type: String, default: '' }, contextMenuItems: { type: Array, default: () => [] } },
   setup(props) {
-    return () => h('div', { class: 'nc-data-table', 'data-table-id': props.tableId })
+    return () => h('div', { class: 'nc-data-table', 'data-table-id': props.tableId, 'data-menu-count': props.contextMenuItems.length })
   },
 })
 
@@ -122,14 +125,18 @@ const stubs: Record<string, Component> = {
   ElForm: passthrough,
   ElFormItem: passthrough,
   ElInput: passthrough,
+  ElInputNumber: passthrough,
   ElOption: optionStub,
   ElPagination: passthrough,
   ElSelect: passthrough,
+  ElRadio: passthrough,
+  ElRadioGroup: passthrough,
   ElTabPane: passthrough,
   ElTabs: passthrough,
   ElTag: tagStub,
   ElTooltip: passthrough,
   NcDataTable: dataTableStub,
+  AcOmniPeekExportDialog: passthrough,
 }
 
 function optical(overrides: Record<string, unknown> = {}) {
@@ -323,6 +330,12 @@ function mountView(selectedOptical = optical()): VueWrapper {
 
 describe('AC Management optical detail behavior', () => {
   beforeEach(() => {
+    setWebFeaturesForTest({
+      'web.ac_dangerous_actions': { visible: true, enabled: true },
+      'web.ac_fit_ap_external_terminal': { visible: true, enabled: true },
+      'ac.omnipeek_name_table_export': { visible: true, enabled: true },
+      'desktop.native_bridge': { visible: true, enabled: true },
+    })
     mocks.routerPush.mockReset()
     mocks.confirm.mockReset()
     mocks.openExternalUrl.mockReset()
@@ -332,6 +345,34 @@ describe('AC Management optical detail behavior', () => {
     mocks.executeActionPlan.mockReset()
     mocks.getActionPlan.mockReset()
     mocks.getActionAudit.mockReset().mockResolvedValue({})
+  })
+
+  it('renders formal AC actions and OmniPeek with explicit production feature states', () => {
+    const wrapper = mountView()
+
+    expect(wrapper.text()).toContain('一键固化新上线 AP')
+    expect(wrapper.text()).toContain('一键开启 AP 远程登入')
+    expect(wrapper.text()).toContain('导出 OmniPeek 名称表')
+    expect(wrapper.find('[data-table-id="ac-fit-ap-resources"]').attributes('data-menu-count')).toBe('5')
+    wrapper.unmount()
+  })
+
+  it('keeps external terminal enabled in Electron and disabled with a reason in Browser mode', () => {
+    const wrapper = mountView()
+    const menu = wrapper.findComponent(dataTableStub).props('contextMenuItems') as Array<Record<string, unknown>>
+    const external = menu.find((item) => item.key === 'external-terminal')!
+    const row = { id: 'ap-1', name: 'AP-1', ip: '10.0.0.2', status: 'online' }
+
+    expect((external.disabled as (context: unknown) => boolean)({ row })).toBe(false)
+    mocks.hostType = 'browser'
+    const browserWrapper = mountView()
+    const browserMenu = browserWrapper.findComponent(dataTableStub).props('contextMenuItems') as Array<Record<string, unknown>>
+    const browserExternal = browserMenu.find((item) => item.key === 'external-terminal')!
+    expect((browserExternal.disabled as (context: unknown) => boolean)({ row })).toBe(true)
+    expect((browserExternal.disabledReason as (context: unknown) => string)({ row })).toContain('仅桌面版')
+    wrapper.unmount()
+    browserWrapper.unmount()
+    resetWebFeaturesForTest()
   })
 
   it('colors only the side that actually triggers the optical alarm', () => {

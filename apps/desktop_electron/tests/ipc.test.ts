@@ -151,6 +151,26 @@ describe('desktop IPC', () => {
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
   })
 
+  it('uses only a directory selected in the current desktop session as save location', async () => {
+    const { ipcMain, sender, selectedDirectory, savedFile, dialog } = createHarness()
+    const event = { sender }
+    const directory = await ipcMain.handlers.get(DESKTOP_IPC.selectDirectory)!(event)
+    await ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!(event, {
+      suggestedName: '线路名称表.nam',
+      directoryPath: (directory as { path: string }).path,
+    })
+
+    expect(dialog.showSaveDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ defaultPath: resolve(selectedDirectory, '线路名称表.nam') }),
+    )
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.chooseSavePath)!(event, {
+      suggestedName: '线路名称表.nam',
+      directoryPath: resolve('not-selected'),
+    })).rejects.toThrow('未由当前桌面会话授权')
+    expect(savedFile).toBeTruthy()
+  })
+
   it('uses only semantic settings ids for native settings actions', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ success: true }), { status: 200 }))
     const { ipcMain, sender, dialog } = createHarness({ fetchImpl: fetchMock })

@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="Row extends object">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { t } from '../../i18n/runtime'
@@ -23,6 +23,7 @@ import {
 } from './tablePreferences'
 import { calculateTableColumnWidths, useAutoColumnWidth } from './useAutoColumnWidth'
 import { clearTextMeasurementCache } from './textMeasurement'
+import type { NcDataTableContext, NcDataTableContextMenuItem } from './NcDataTableContextMenu'
 
 defineOptions({ inheritAttrs: false })
 
@@ -44,6 +45,7 @@ const props = withDefaults(defineProps<{
   showColumnSettings?: boolean
   sampleLimit?: number
   emptySpaceStrategy?: NcTableEmptySpaceStrategy
+  contextMenuItems?: readonly NcDataTableContextMenuItem<Row>[]
 }>(), {
   data: () => [],
   userKey: 'local-user',
@@ -58,15 +60,24 @@ const props = withDefaults(defineProps<{
   showColumnSettings: true,
   sampleLimit: 200,
   emptySpaceStrategy: 'stretch',
+  contextMenuItems: () => [],
 })
 
 const emit = defineEmits<{
   'header-dragend': [newWidth: number, oldWidth: number, column: unknown, event: MouseEvent]
+  'row-contextmenu': [row: Row, column: { property?: string; columnKey?: string; label?: string }, event: MouseEvent]
 }>()
 
 const tableRef = ref()
 const containerRef = ref<HTMLElement>()
 const scrollRef = ref<HTMLElement>()
+const contextMenuRef = ref<HTMLElement>()
+const contextMenu = shallowRef<{ visible: boolean; x: number; y: number; context: NcDataTableContext<Row> | null }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  context: null,
+})
 const availableWidth = ref(0)
 const displayRevision = ref(0)
 const bodyFont = ref('400 14px "Microsoft YaHei UI", sans-serif')
@@ -341,6 +352,64 @@ function handleHeaderDragEnd(newWidth: number, oldWidth: number, column: { colum
   emit('header-dragend', newWidth, oldWidth, column, event)
 }
 
+function closeContextMenu(): void {
+  contextMenu.value = { visible: false, x: 0, y: 0, context: null }
+}
+
+async function handleRowContextMenu(row: Row, column: { property?: string; columnKey?: string }, event: MouseEvent): Promise<void> {
+  emit('row-contextmenu', row, column, event)
+  if (!props.contextMenuItems.length) return
+  event.preventDefault()
+  event.stopPropagation()
+  const columnKey = String(column?.columnKey || column?.property || '')
+  const rowIndex = props.data.indexOf(row)
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    context: {
+      row,
+      rowIndex,
+      columnKey,
+      cellValue: column?.property ? (row as Record<string, unknown>)[column.property] : undefined,
+    },
+  }
+  await nextTick()
+  const menu = contextMenuRef.value
+  if (!menu) return
+  const margin = 8
+  contextMenu.value.x = Math.max(margin, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - margin))
+  contextMenu.value.y = Math.max(margin, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - margin))
+}
+
+function contextItemDisabled(item: NcDataTableContextMenuItem<Row>): boolean {
+  const context = contextMenu.value.context
+  if (!context) return true
+  return typeof item.disabled === 'function' ? item.disabled(context) : Boolean(item.disabled)
+}
+
+function contextItemReason(item: NcDataTableContextMenuItem<Row>): string {
+  const context = contextMenu.value.context
+  if (!context || !contextItemDisabled(item)) return ''
+  return typeof item.disabledReason === 'function' ? item.disabledReason(context) : String(item.disabledReason || '')
+}
+
+function runContextItem(item: NcDataTableContextMenuItem<Row>): void {
+  const context = contextMenu.value.context
+  if (!context || contextItemDisabled(item)) return
+  closeContextMenu()
+  void item.action(context)
+}
+
+function handleDocumentPointerDown(event: Event): void {
+  if (!contextMenu.value.visible || contextMenuRef.value?.contains(event.target as Node)) return
+  closeContextMenu()
+}
+
+function handleDocumentKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') closeContextMenu()
+}
+
 async function refreshColumnLayout(force = false, remount = false): Promise<void> {
   if (remount) {
     rebuildingColumnLayout.value = true
@@ -411,12 +480,20 @@ onMounted(() => {
     resizeObserver.observe(scrollRef.value)
   }
   window.addEventListener?.('resize', handleViewportChange)
+  document.addEventListener('pointerdown', handleDocumentPointerDown, true)
+  document.addEventListener('keydown', handleDocumentKeyDown)
+  scrollRef.value?.addEventListener('scroll', closeContextMenu, true)
 })
+
+watch(() => props.data, closeContextMenu)
 
 onBeforeUnmount(() => {
   rootObserver?.disconnect()
   resizeObserver?.disconnect()
   window.removeEventListener?.('resize', handleViewportChange)
+  document.removeEventListener('pointerdown', handleDocumentPointerDown, true)
+  document.removeEventListener('keydown', handleDocumentKeyDown)
+  scrollRef.value?.removeEventListener('scroll', closeContextMenu, true)
 })
 
 defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetLayout, autoFit, clearSelection, toggleRowSelection })
@@ -455,6 +532,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         flexible
         scrollbar-always-on
         @header-dragend="handleHeaderDragEnd"
+        @row-contextmenu="handleRowContextMenu"
       >
         <template
           v-for="(column, columnIndex) in renderColumns"
@@ -511,6 +589,29 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         <template v-if="$slots.append" #append><slot name="append" /></template>
       </el-table>
     </div>
+    <div
+      v-if="contextMenu.visible && contextMenu.context"
+      ref="contextMenuRef"
+      class="nc-data-table__context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      role="menu"
+      @contextmenu.prevent
+    >
+      <template v-for="item in contextMenuItems" :key="item.key">
+        <span v-if="item.separatorBefore" class="nc-data-table__context-separator" />
+        <button
+          type="button"
+          :class="{ danger: item.danger }"
+          :disabled="contextItemDisabled(item)"
+          :title="contextItemReason(item)"
+          role="menuitem"
+          @click="runContextItem(item)"
+        >
+          <span>{{ item.label }}</span>
+          <small v-if="contextItemReason(item)">{{ contextItemReason(item) }}</small>
+        </button>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -526,4 +627,11 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
 .nc-data-table :deep(.nc-data-table__column--hidden) { display: none !important; }
 .nc-data-table--compact :deep(.el-table__header th.el-table__cell),
 .nc-data-table--compact :deep(.el-table__body td.el-table__cell) { height: 34px; }
+.nc-data-table__context-menu { position: fixed; z-index: 4000; display: flex; flex-direction: column; min-width: 190px; max-width: min(320px, calc(100vw - 16px)); padding: 6px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 8px; box-shadow: var(--el-box-shadow-light); }
+.nc-data-table__context-menu button { display: flex; flex-direction: column; gap: 2px; padding: 7px 10px; background: transparent; border: 0; border-radius: 5px; color: var(--nc-text-primary); text-align: left; cursor: pointer; }
+.nc-data-table__context-menu button:hover:not(:disabled) { background: var(--nc-table-hover-bg); }
+.nc-data-table__context-menu button:disabled { color: var(--nc-text-secondary); cursor: not-allowed; opacity: .72; }
+.nc-data-table__context-menu button.danger:not(:disabled) { color: var(--nc-danger); }
+.nc-data-table__context-menu small { max-width: 280px; color: var(--nc-text-secondary); font-size: 11px; white-space: normal; }
+.nc-data-table__context-separator { height: 1px; margin: 5px 2px; background: var(--nc-divider); }
 </style>

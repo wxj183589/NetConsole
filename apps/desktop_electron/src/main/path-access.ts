@@ -70,6 +70,18 @@ export class GrantedPathRegistry {
     return granted.path
   }
 
+  requireSavePath(value: unknown): string {
+    const granted = this.requireGrant(value)
+    if (granted.kind !== 'save') throw new Error('该路径未获另存为授权')
+    return granted.path
+  }
+
+  requireDirectoryPath(value: unknown): string {
+    const granted = this.requireGrant(value)
+    if (granted.kind !== 'directory') throw new Error('该路径未获目录选择授权')
+    return granted.path
+  }
+
   grantCapability(
     path: string,
     purpose: CapabilityPurpose = 'artifact-download',

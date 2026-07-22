@@ -90,20 +90,39 @@ class OmniPeekNameTableService:
         scope_extensions_to_fit_ap: bool = False,
     ) -> list[OmniPeekDeviceItem]:
         items: list[OmniPeekDeviceItem] = []
+        fit_ap_rows = self._fit_ap_rows(ac_device_uuid) if include_ac_fit_ap or scope_extensions_to_fit_ap else []
+        scoped_ap_ids = {str(row.get("ap_uuid") or "") for row in fit_ap_rows if row.get("ap_uuid")}
+        scoped_ap_names = {_first_text(row, "ap_name", "name").casefold() for row in fit_ap_rows if _first_text(row, "ap_name", "name")}
+        scoped_ap_macs = {
+            value
+            for row in fit_ap_rows
+            if (value := _safe_normalize_mac(_first_text(row, "ap_mac", "mac", "ap_mac_display", "ap_mac_norm")))
+        }
         if include_ap_extensions:
-            items.extend(collect_trackside_ap_items_from_extensions(self.ac_repository.list_ap_extension_points()))
+            extension_items = collect_trackside_ap_items_from_extensions(self.ac_repository.list_ap_extension_points())
+            if scope_extensions_to_fit_ap and ac_device_uuid:
+                extension_items = [
+                    item
+                    for item in extension_items
+                    if str(item.raw.get("ap_uuid") or "") in scoped_ap_ids
+                    or item.name.casefold() in scoped_ap_names
+                    or _safe_normalize_mac(item.physical_mac) in scoped_ap_macs
+                ]
+            items.extend(extension_items)
         if include_ac_fit_ap:
-            items.extend(collect_trackside_ap_items(self._fit_ap_rows(ac_device_uuid)))
+            items.extend(collect_trackside_ap_items(fit_ap_rows))
         if include_device_mr:
             if devices is None and self.device_repository is not None:
                 devices = self.device_repository.list()
             items.extend(collect_onboard_mr_items(list(devices or []), group_names=group_names or {}))
         prepared = prepare_omnipeek_items(merge_omnipeek_items(items))
-        if scope_extensions_to_fit_ap and ac_device_uuid:
-            prepared = [item for item in prepared if str(item.raw.get("ap_uuid") or "")]
         selected = {str(value) for value in selected_fit_ap_ids or [] if str(value)}
         if selected:
-            prepared = [item for item in prepared if str(item.raw.get("ap_uuid") or "") in selected]
+            prepared = [
+                item
+                for item in prepared
+                if item.role == "onboard_mr" or str(item.raw.get("ap_uuid") or "") in selected
+            ]
         return prepared
 
     def _fit_ap_rows(self, ac_device_uuid: str | None) -> list[dict[str, object | None]]:
@@ -220,7 +239,46 @@ def prepare_omnipeek_items(items: Iterable[OmniPeekDeviceItem], config: OmniPeek
         _prepare_item_macs(item, config)
         item.key = item.key or _item_key(item)
     _mark_export_mac_conflicts(prepared, config)
+    for item in prepared:
+        if item.status != "正常" and not item.force_export:
+            item.selected = False
     return prepared
+
+
+def build_omnipeek_preview_rows(
+    items: Iterable[OmniPeekDeviceItem],
+    config: OmniPeekExportConfig,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in prepare_omnipeek_items(items, config):
+        exported = [(kind, mac) for kind, mac in _item_export_macs(item, config) if mac]
+        rows.append(
+            {
+                "item_key": item.key,
+                "selected": item.selected,
+                "force_export": item.force_export,
+                "force_export_allowed": item.status != "正常" and bool(exported),
+                "role": item.role,
+                "type_label": "轨旁AP" if item.role == "trackside_ap" else "车载MR",
+                "name": item.name,
+                "location": item.location,
+                "physical_mac": item.normalized_physical_mac,
+                "r1_mac": item.r1_mac,
+                "r2_mac": item.r2_mac,
+                "r1_source": item.r1_source,
+                "r2_source": item.r2_source,
+                "export_content": " / ".join(
+                    ENTRY_KIND_LABELS[kind].replace("轨旁AP", "").replace("车载MR", "").strip()
+                    for kind, _mac in exported
+                ),
+                "group": " / ".join(f"{config.line_name}{ENTRY_KIND_GROUP_SUFFIX[kind]}" for kind, _mac in exported),
+                "color": " / ".join(_color_for_kind(config, kind) for kind, _mac in exported),
+                "status": item.status,
+                "abnormal_reason": " / ".join(item.warnings),
+                "data_source": " / ".join(item.sources or [item.source]),
+            }
+        )
+    return rows
 
 
 def build_omnipeek_entries(items: Iterable[OmniPeekDeviceItem], config: OmniPeekExportConfig) -> list[OmniPeekNameEntry]:
@@ -229,7 +287,7 @@ def build_omnipeek_entries(items: Iterable[OmniPeekDeviceItem], config: OmniPeek
     for item in prepared:
         if not item.selected:
             continue
-        if item.status in {"缺少物理MAC", "MAC格式错误", "MAC冲突"} and not item.force_export:
+        if item.status != "正常" and not item.force_export:
             continue
         for kind, mac in _item_export_macs(item, config):
             if not mac:
@@ -298,7 +356,7 @@ def export_items_to_omnipeek_nam(
     prepared = prepare_omnipeek_items(items, config)
     entries = build_omnipeek_entries(prepared, config)
     warnings = _warnings_from_items(prepared)
-    skipped = sum(1 for item in prepared if not item.selected or (item.status not in {"正常", "R2推导失败"} and not item.force_export))
+    skipped = sum(1 for item in prepared if not item.selected or (item.status != "正常" and not item.force_export))
     result = export_omnipeek_nam(entries, config.output_path, config, source_counts=source_counts, warnings=warnings)
     return OmniPeekExportResult(
         output_path=result.output_path,

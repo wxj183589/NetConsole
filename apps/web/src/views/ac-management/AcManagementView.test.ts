@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './AcManagementView.vue?raw'
+import omniPeekSource from './AcOmniPeekExportDialog.vue?raw'
 
 describe('AC Management resource view', () => {
   it('shows real refresh, connection record, radio fields, optical relation and config diff', () => {
@@ -65,17 +66,18 @@ describe('AC Management resource view', () => {
   it('uses current-AC OmniPeek scope and the shared task/artifact flow', () => {
     expect(source).toContain('导出 OmniPeek 名称表')
     expect(source).toContain("isFeatureEnabled('ac.omnipeek_name_table_export')")
-    expect(source).toContain('startAcOmniPeekPreview(store.filters.ac_id, omniPeekScopeIds.value)')
-    expect(source).toContain('startAcOmniPeekExport(store.filters.ac_id, omniPeekScopeIds.value)')
-    expect(source).toContain('input_ap_count')
-    expect(source).toContain('exportable_entry_count')
-    expect(source).toContain('skipped_count')
-    expect(source).toContain('error_count')
-    expect(source).toContain('openTaskWindow(task.task_id)')
+    expect(source).toContain('<AcOmniPeekExportDialog')
+    expect(source).toContain(':ap-ids="omniPeekScopeIds"')
+    expect(omniPeekSource).toContain('startAcOmniPeekPreview(props.acId, props.apIds')
+    expect(omniPeekSource).toContain('startAcOmniPeekExport(props.acId, props.apIds')
+    expect(omniPeekSource).toContain('selected_item_keys')
+    expect(omniPeekSource).toContain('force_export_keys')
+    expect(omniPeekSource).toContain('downloadBackendResource')
   })
 
   it('adds a bounded row context menu while retaining detail and copy actions', () => {
-    expect(source).toContain('@row-contextmenu="showContextMenu"')
+    expect(source).toContain(':context-menu-items="fitApContextMenuItems"')
+    expect(source).toContain('NcDataTableContextMenuItem')
     expect(source).toContain('查看详情')
     expect(source).toContain('打开外部终端')
     expect(source).toContain('更新该 AP 光衰')
@@ -84,6 +86,7 @@ describe('AC Management resource view', () => {
     expect(source).toContain("getRuntimeConfig().hostType === 'electron'")
     expect(source).toContain("isFeatureEnabled('web.ac_fit_ap_external_terminal')")
     expect(source).toContain('openAcFitApExternalTerminal(row.id, store.filters.ac_id, terminalType.value)')
+    expect(source).not.toContain('document.addEventListener(\'click\'')
     expect(source).not.toContain('subprocess')
     expect(source).not.toContain('confirm_token')
   })

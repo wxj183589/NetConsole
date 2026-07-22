@@ -36,6 +36,7 @@ const DOWNLOAD_ENDPOINTS = [
   { pattern: new RegExp(`^/api/config-collection/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/file-management/downloads/${DOWNLOAD_SEGMENT}/file$`), query: new Set(['site_id']), required: new Set<string>() },
   { pattern: new RegExp(`^/api/ac-management/extensions/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
+  { pattern: new RegExp(`^/api/ac-management/fit-aps/omnipeek/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/mesh-analysis/sessions/${DOWNLOAD_SEGMENT}/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/rail-transit/trackside-ap-business/artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/online-mr/report-artifacts/${DOWNLOAD_SEGMENT}/download$`), query: new Set<string>(), required: new Set<string>() },
@@ -155,7 +156,7 @@ export function validateSiteStorageRestartRequest(value: unknown): SiteStorageRe
 
 export function validateChooseSavePathOptions(value: unknown): ChooseSavePathOptions {
   const record = asRecord(value, 'save path options')
-  rejectUnknownKeys(record, ['suggestedName', 'filters'])
+  rejectUnknownKeys(record, ['suggestedName', 'filters', 'directoryPath'])
   if (typeof record.suggestedName !== 'string') {
     throw new TypeError('suggestedName must be a string')
   }
@@ -172,12 +173,13 @@ export function validateChooseSavePathOptions(value: unknown): ChooseSavePathOpt
   return {
     suggestedName,
     ...(record.filters === undefined ? {} : { filters: validateFilters(record.filters) }),
+    ...(record.directoryPath === undefined ? {} : { directoryPath: validateBridgePath(record.directoryPath) }),
   }
 }
 
 export function validateBackendDownloadRequest(value: unknown): BackendDownloadRequest {
   const record = asRecord(value, 'backend download request')
-  rejectUnknownKeys(record, ['apiPath', 'query', 'suggestedName', 'filters'])
+  rejectUnknownKeys(record, ['apiPath', 'query', 'suggestedName', 'filters', 'destinationPath'])
   const saveOptions = validateChooseSavePathOptions({
     suggestedName: record.suggestedName,
     ...(record.filters === undefined ? {} : { filters: record.filters }),
@@ -190,6 +192,7 @@ export function validateBackendDownloadRequest(value: unknown): BackendDownloadR
     apiPath,
     ...(query === undefined ? {} : { query }),
     ...saveOptions,
+    ...(record.destinationPath === undefined ? {} : { destinationPath: validateBridgePath(record.destinationPath) }),
   }
 }
 

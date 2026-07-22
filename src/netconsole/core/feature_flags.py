@@ -21,8 +21,11 @@ class FeatureDisabledError(RuntimeError):
 
 PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
+FEATURE_PROFILE_SCHEMA_VERSION = 2
 LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
     {
+        "web.ac_dangerous_actions",
+        "web.ac_fit_ap_external_terminal",
         "web.rail_trackside_ap_business",
         "web.rail_trackside_ap_business_update",
     }
@@ -243,6 +246,10 @@ class FeatureGate:
 
     def _merge_data(self, data: dict[str, Any]) -> None:
         self.profile = str(data.get("profile") or self.profile)
+        try:
+            schema_version = int(data.get("schema_version") or 1)
+        except (TypeError, ValueError):
+            schema_version = 1
         normalized_count = 0
         for feature_id, raw_state in dict(data.get("features") or {}).items():
             if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
@@ -252,7 +259,11 @@ class FeatureGate:
                 normalized_count += len(missing)
             self.features[feature_id] = normalize_feature_state(
                 FEATURE_BY_ID[feature_id],
-                _migrate_legacy_formalized_feature_state(feature_id, raw_state),
+                _migrate_legacy_formalized_feature_state(
+                    feature_id,
+                    raw_state,
+                    schema_version=schema_version,
+                ),
             )
         if normalized_count:
             _feature_switch_log(f"normalized missing booleans: {normalized_count}")
@@ -355,8 +366,13 @@ def default_feature_state(item: FeatureItem) -> dict[str, bool]:
     )
 
 
-def _migrate_legacy_formalized_feature_state(feature_id: str, raw_state: dict[str, Any]) -> dict[str, Any]:
-    if feature_id not in LEGACY_FORMALIZED_FEATURE_IDS:
+def _migrate_legacy_formalized_feature_state(
+    feature_id: str,
+    raw_state: dict[str, Any],
+    *,
+    schema_version: int = 1,
+) -> dict[str, Any]:
+    if schema_version >= FEATURE_PROFILE_SCHEMA_VERSION or feature_id not in LEGACY_FORMALIZED_FEATURE_IDS:
         return raw_state
     values = {key: _bool_override(raw_state.get(key)) for key in FEATURE_STATE_KEYS}
     if values["internal_only"] is True or values["client_package"] not in {False, None}:
@@ -455,7 +471,7 @@ def default_profile(profile: str) -> dict[str, Any]:
     features = {}
     for item in list_features():
         features[item.feature_id] = default_feature_state(item)
-    return {"schema_version": 1, "profile": profile, "features": features}
+    return {"schema_version": FEATURE_PROFILE_SCHEMA_VERSION, "profile": profile, "features": features}
 
 
 def load_profile(path: Path, profile: str) -> dict[str, dict[str, bool]]:
@@ -479,7 +495,7 @@ def save_profile(
         raise ValueError(error)
     _feature_switch_log("validation passed")
     payload = {
-        "schema_version": 1,
+        "schema_version": FEATURE_PROFILE_SCHEMA_VERSION,
         "profile": profile,
         "build_options": {"engineer_package": bool(dict(build_options or {}).get("engineer_package", False))},
         "features": normalized,

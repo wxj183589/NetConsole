@@ -31,6 +31,7 @@ from netconsole.services.job_center.handlers.device_jobs import fit_ap_metadata_
 from netconsole.services.job_center.handlers.legacy_tasks import run_background_task
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.ac import fit_ap_remote_terminal_profile as terminal_profiles
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard
@@ -547,6 +548,14 @@ def test_ac_omnipeek_preview_and_export_are_scoped_to_current_ac_selection(tmp_p
     repository.upsert_ap_extension_point(
         {"ap_name": "Other-AC-AP", "ap_mac_display": "0000-0000-00ff", "station_name": "其他局点"}
     )
+    DeviceRepository(Database(paths.site_db_path("demo"))).create(
+        Device(
+            name="列车01-MR-A",
+            system_name="列车01-MR-A",
+            device_type="Cloud-AP",
+            mac_address="74ad-cb9d-3320",
+        )
+    )
 
     preview = service.start_omnipeek_preview("demo", ac_id="ac-1", ap_ids=["ap-online"])
     preview_job = normal.jobs[preview.task_id]
@@ -562,6 +571,31 @@ def test_ac_omnipeek_preview_and_export_are_scoped_to_current_ac_selection(tmp_p
     assert ready.input_ap_count == 1
     assert ready.exportable_entry_count > 0
     assert ready.error_count == 0
+    assert ready.items
+    assert ready.items[0].item_key
+    assert ready.items[0].group
+    assert ready.items[0].color
+
+    mr_preview = service.start_omnipeek_preview(
+        "demo",
+        ac_id="ac-1",
+        ap_ids=[],
+        options={
+            "line_name": "测试线路",
+            "include_ac_fit_ap": False,
+            "include_ap_extensions": False,
+            "include_device_mr": True,
+            "onboard_radio_mode": "r1_only",
+        },
+    )
+    mr_result = run_background_task(normal.jobs[mr_preview.task_id], should_cancel=lambda: False)
+    normal.complete(mr_preview.task_id, mr_result)
+    mr_ready = service.get_omnipeek_preview("demo", mr_preview.task_id, status_filter="all", search="列车01")
+    assert mr_ready.config["line_name"] == "测试线路"
+    assert mr_ready.config["include_device_mr"] is True
+    assert mr_ready.source_counts["设备管理"] == 1
+    assert mr_ready.total == 1
+    assert mr_ready.items[0].type_label == "车载MR"
 
     all_preview = service.start_omnipeek_preview("demo", ac_id="ac-1", ap_ids=[])
     all_result = run_background_task(normal.jobs[all_preview.task_id], should_cancel=lambda: False)
@@ -619,17 +653,21 @@ def test_fit_ap_external_terminal_uses_saved_credentials_and_never_accepts_rende
         )
     assert missing_credentials.value.code == "AP_CREDENTIALS_MISSING"
 
-    DeviceRepository(Database(paths.site_db_path("demo"))).create(
-        Device(
-            name="AP 登录凭据",
-            device_type="FAT-AP",
-            primary_address="10.0.1.1",
-            ssh_enabled=1,
-            ssh_port=22,
-            ssh_username="controlled-user",
-            ssh_password="controlled-secret",
-        )
+    monkeypatch.setattr(terminal_profiles, "protect_windows_data", lambda value, _entropy: b"protected:" + value)
+    monkeypatch.setattr(terminal_profiles, "unprotect_windows_data", lambda value, _entropy: value.removeprefix(b"protected:"))
+    profile = service.save_fit_ap_remote_terminal_profile(
+        "demo",
+        ac_id="ac-1",
+        scope="ac",
+        protocol="ssh",
+        port=22,
+        username="controlled-user",
+        password="controlled-secret",
+        clear_password=False,
     )
+    assert profile.password_configured is True
+    assert "controlled-secret" not in profile.model_dump_json()
+    assert "controlled-secret" not in (paths.config_dir / "fit_ap_remote_terminal_profiles.json").read_text(encoding="utf-8")
     launched = service.launch_fit_ap_external_terminal(
         "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
     )
@@ -667,9 +705,39 @@ def test_fit_ap_external_terminal_uses_saved_credentials_and_never_accepts_rende
                 "terminal_type": "securecrt",
                 "executable": "cmd.exe",
                 "arguments": ["/c", "whoami"],
+                "password": "must-not-enter-api",
             },
         )
     assert rejected.status_code == 422
+
+
+def test_fit_ap_external_terminal_uses_exact_device_ip_only_as_compatibility_fallback(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    terminal = tmp_path / "PuTTY.exe"
+    terminal.write_bytes(b"fixture")
+    settings = SettingsStore(paths)
+    settings.set_value("external_terminal/putty_path", str(terminal))
+    desktop = _FakeDesktopActionService()
+    service, _normal, _export, _tasks = _service(paths, desktop_action_service=desktop)
+    DeviceRepository(Database(paths.site_db_path("demo"))).create(
+        Device(
+            name="兼容凭据",
+            device_type="FAT-AP",
+            primary_address="10.0.1.1",
+            ssh_enabled=1,
+            ssh_port=22,
+            ssh_username="fallback-user",
+            ssh_password="fallback-secret",
+        )
+    )
+
+    launched = service.launch_fit_ap_external_terminal(
+        "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="putty"
+    )
+
+    assert launched.success is True
+    assert desktop.launches[0][0:2] == ("terminal.putty", "ap-online")
+    assert "fallback-secret" not in launched.model_dump_json()
 
 
 def test_ac_omnipeek_export_runs_shared_process_and_keeps_log(tmp_path: Path) -> None:

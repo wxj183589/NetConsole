@@ -53,6 +53,7 @@ describe('Electron security policy', () => {
       ['/api/config-collection/artifacts/artifact-1', undefined],
       ['/api/file-management/downloads/task-1/file', { site_id: 'demo' }],
       ['/api/ac-management/extensions/artifacts/artifact-1/download', undefined],
+      ['/api/ac-management/fit-aps/omnipeek/artifacts/artifact-1/download', undefined],
       ['/api/rail-transit/mesh-analysis/sessions/session-1/artifacts/artifact-1/download', undefined],
       ['/api/rail-transit/mesh-analysis/sessions/%E4%BC%9A%E8%AF%9D%2F1/artifacts/%E6%8A%A5%E5%91%8A%2F1/download', undefined],
       ['/api/rail-transit/trackside-ap-business/artifacts/artifact-1/download', undefined],

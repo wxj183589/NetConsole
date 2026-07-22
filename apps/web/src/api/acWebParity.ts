@@ -1,5 +1,9 @@
 import { apiRequest } from './client'
-import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcExternalTerminalAction, AcExternalTerminalOptions, AcOmniPeekPreview, AcTerminalType, AcWebTask } from '../types/acWebParity'
+import type {
+  AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview,
+  AcExternalTerminalAction, AcExternalTerminalOptions, AcFitApRemoteTerminalProfile,
+  AcOmniPeekConfig, AcOmniPeekPreferences, AcOmniPeekPreview, AcTerminalType, AcWebTask,
+} from '../types/acWebParity'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
@@ -119,21 +123,45 @@ export function getAcActionAudit(planId: string): Promise<AcActionAudit> {
   return apiRequest<AcActionAudit>(`${root}/actions/plans/${encodeURIComponent(planId)}/audit`)
 }
 
-export function startAcOmniPeekPreview(acId: string, apIds: string[]): Promise<AcWebTask> {
+export function startAcOmniPeekPreview(acId: string, apIds: string[], config: AcOmniPeekConfig): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/fit-aps/omnipeek/preview`, {
-    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds }),
+    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds, ...config }),
   })
 }
 
-export function getAcOmniPeekPreview(taskId: string): Promise<AcOmniPeekPreview> {
-  return apiRequest<AcOmniPeekPreview>(`${root}/fit-aps/omnipeek/preview/${encodeURIComponent(taskId)}`)
+export function getAcOmniPeekPreview(
+  taskId: string,
+  options: { page?: number; page_size?: number; status_filter?: string; search?: string } = {},
+): Promise<AcOmniPeekPreview> {
+  return apiRequest<AcOmniPeekPreview>(`${root}/fit-aps/omnipeek/preview/${encodeURIComponent(taskId)}${query(options)}`)
 }
 
-export function startAcOmniPeekExport(acId: string, apIds: string[]): Promise<AcWebTask> {
+export function startAcOmniPeekExport(
+  acId: string,
+  apIds: string[],
+  config: AcOmniPeekConfig & { selected_item_keys: string[]; excluded_item_keys: string[]; force_export_keys: string[] },
+): Promise<AcWebTask> {
   return apiRequest<AcWebTask>(`${root}/fit-aps/omnipeek/export`, {
-    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds }),
+    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds, ...config }),
   })
 }
+
+export function getAcOmniPeekPreferences(): Promise<AcOmniPeekPreferences> {
+  return apiRequest<AcOmniPeekPreferences>(`${root}/fit-aps/omnipeek/preferences`)
+}
+
+export function saveAcOmniPeekPreferences(colors: Record<string, string>): Promise<AcOmniPeekPreferences> {
+  return apiRequest<AcOmniPeekPreferences>(`${root}/fit-aps/omnipeek/preferences`, {
+    method: 'PUT', body: JSON.stringify({ colors }),
+  })
+}
+
+export const acOmniPeekArtifactDownloadRequest = (artifactId: string, suggestedName: string, destinationPath = ''): BackendDownloadRequest => ({
+  apiPath: `${root}/fit-aps/omnipeek/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName,
+  filters: [{ name: 'OmniPeek 名称表', extensions: ['nam'] }],
+  ...(destinationPath ? { destinationPath } : {}),
+})
 
 export function getAcExternalTerminalOptions(): Promise<AcExternalTerminalOptions> {
   return apiRequest<AcExternalTerminalOptions>(`${root}/fit-aps/external-terminal/options`)
@@ -142,5 +170,23 @@ export function getAcExternalTerminalOptions(): Promise<AcExternalTerminalOption
 export function openAcFitApExternalTerminal(apId: string, acId: string, terminalType: AcTerminalType): Promise<AcExternalTerminalAction> {
   return apiRequest<AcExternalTerminalAction>(`${root}/fit-aps/${encodeURIComponent(apId)}/external-terminal`, {
     method: 'POST', body: JSON.stringify({ ac_id: acId, terminal_type: terminalType }),
+  })
+}
+
+export function getAcFitApRemoteTerminalProfile(acId: string): Promise<AcFitApRemoteTerminalProfile> {
+  return apiRequest<AcFitApRemoteTerminalProfile>(`${root}/fit-aps/remote-terminal-profile${query({ ac_id: acId })}`)
+}
+
+export function saveAcFitApRemoteTerminalProfile(payload: {
+  ac_id: string
+  scope: 'ac' | 'site'
+  protocol: 'ssh' | 'telnet'
+  port: number
+  username: string
+  password?: string
+  clear_password?: boolean
+}): Promise<AcFitApRemoteTerminalProfile> {
+  return apiRequest<AcFitApRemoteTerminalProfile>(`${root}/fit-aps/remote-terminal-profile`, {
+    method: 'PUT', body: JSON.stringify(payload),
   })
 }

@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 
 import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
 import {
@@ -274,7 +274,9 @@ export function registerDesktopIpc(
     trusted(async (value, event) => {
       const options = validateChooseSavePathOptions(value)
       const result = await dependencies.dialog.showSaveDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
-        defaultPath: options.suggestedName,
+        defaultPath: options.directoryPath
+          ? resolve(registry.requireDirectoryPath(options.directoryPath), options.suggestedName)
+          : options.suggestedName,
         ...(options.filters ? { filters: options.filters } : {}),
       })
       return {
