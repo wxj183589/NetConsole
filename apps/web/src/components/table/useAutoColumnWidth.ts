@@ -93,7 +93,8 @@ export function calculateTableColumnWidths<Row extends object>(
     const headerRequired = calculateHeaderRequiredWidth(column, options)
     const contentRequired = calculateContentRequiredWidth(column, rows, options)
     const configuredMin = column.minWidth ?? 0
-    const effectiveMin = Math.max(headerRequired, preset.minWidth, configuredMin)
+    const presetMin = column.widthMode === 'fixed' ? 0 : preset.minWidth
+    const effectiveMin = Math.max(headerRequired, presetMin, configuredMin)
     const effectiveMax = Math.max(effectiveMin, column.maxWidth ?? preset.maxWidth)
     const automatic = column.widthMode === 'header'
       ? headerRequired

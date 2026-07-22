@@ -57,6 +57,29 @@ describe('automatic table column widths', () => {
     expect(populated.name).toBeGreaterThan(empty.name)
   })
 
+  it('honors an explicit fixed width below the field preset while preserving the full header', () => {
+    const column: NcTableColumn<Row> = {
+      key: 'description',
+      label: '描述',
+      valueType: 'description',
+      width: 90,
+      maxWidth: 120,
+    }
+    const widths = calculateTableColumnWidths({
+      columns: [column],
+      rows: [{ name: '', description: '一段明显超过固定列宽的描述内容' }],
+      measure,
+    })
+    const manuallyExpanded = calculateTableColumnWidths({
+      columns: [column],
+      rows: [],
+      manualWidths: { description: 300 },
+      measure,
+    })
+    expect(widths.description).toBe(90)
+    expect(manuallyExpanded.description).toBe(120)
+  })
+
   it('clamps manual widths to the header and keeps historical maxima across pages', () => {
     const column: NcTableColumn<Row> = { key: 'name', label: '设备名称', valueType: 'text', maxWidth: 300 }
     const header = calculateHeaderRequiredWidth(column, { measure })

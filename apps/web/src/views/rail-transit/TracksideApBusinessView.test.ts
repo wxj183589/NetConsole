@@ -115,7 +115,7 @@ function task(
 
 const NcDataTableStub = defineComponent({
   name: 'NcDataTable',
-  props: { data: { type: Array, default: () => [] }, height: String, tableId: String },
+  props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, height: String, tableId: String },
   template: `
     <div class="nc-data-table" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
@@ -209,6 +209,17 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('结果项')
     expect(buttons(wrapper, '打开任务窗口')).toHaveLength(1)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('calc(100vh - 330px)')
+    const tableColumns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<Record<string, unknown>>
+    expect(tableColumns.find((column) => column.key === 'description')).toMatchObject({
+      width: 90,
+      maxWidth: 120,
+      align: 'center',
+      headerAlign: 'center',
+      stretch: 'none',
+      showOverflowTooltip: true,
+    })
+    expect(tableColumns.find((column) => column.key === 'port_type')).toMatchObject({ width: 100 })
+    expect(tableColumns.find((column) => column.key === 'ap_mac')).toMatchObject({ stretch: 'priority' })
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)

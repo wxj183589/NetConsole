@@ -21,6 +21,8 @@ baseWidth
         effectiveMinWidth, effectiveMaxWidth)
 ```
 
+当页面显式声明 `widthMode=fixed`（或配置 `width` 自动归一化为 fixed）时，固定宽度优先于字段类型默认最小宽度，但仍不得小于完整表头或页面声明的 `minWidth`，并继续受 `maxWidth` 约束。这样短描述、短状态等已确认内容可以使用更紧凑的固定列宽，而不改变同类型自动列的全局基线。
+
 绝对条件是：
 
 ```text
