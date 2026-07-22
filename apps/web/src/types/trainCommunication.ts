@@ -26,6 +26,12 @@ export interface MrCommunicationStatus {
 
 export interface TrainCommunicationRow {
   train_id: string; train_no: string; train_name: string; communication_status: CommunicationStatus
+  canonical_train_id: string; display_name: string
+  overall_status: 'BOTH_ONLINE' | 'ONE_SIDE_ONLINE' | 'BOTH_OFFLINE' | 'STALE' | 'UNKNOWN' | ''
+  ct_online_status: 'ONLINE' | 'OFFLINE' | 'STALE' | 'UNKNOWN'
+  tc_online_status: 'ONLINE' | 'OFFLINE' | 'STALE' | 'UNKNOWN'
+  ct_mr_id: string; ct_mr_name: string; tc_mr_id: string; tc_mr_name: string
+  updated_at: string | null; data_status: string; online_reason: string
   mrs: MrCommunicationStatus[]; current_mesh_links: number; active_sessions: number
   warning_count: number; last_updated_at: string | null
 }

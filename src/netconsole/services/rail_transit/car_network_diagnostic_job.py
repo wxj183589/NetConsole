@@ -11,6 +11,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     discover_ac_devices,
     discover_core_switch_candidates,
 )
+from netconsole.services.rail_transit.train_identity import train_identity_matches
 
 
 def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
@@ -27,7 +28,7 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
         (
             item
             for item in trains
-            if train_id in {item.train_id, item.train_no, item.display_name}
+            if train_identity_matches((train_id,), (item.train_id, item.train_no, item.display_name))
         ),
         None,
     )
@@ -38,7 +39,7 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
     by_name = {
         node.node_name: node
         for node in stored_nodes
-        if node.train_id == train.train_id or node.train_no == train.train_no
+        if train_identity_matches((node.train_id, node.train_no, node.display_name), (train.train_id, train.train_no, train.display_name))
     }
     nodes = [by_name[name] for name in NODE_ORDER if name in by_name]
     if not nodes:
@@ -85,7 +86,21 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
         core_discovery=core_discovery,
         cancel_checker=cancelled,
     ).run(progress)
-    return result.to_json_dict()
+    payload = result.to_json_dict()
+    for key in (
+        "canonical_train_id",
+        "point_table_revision",
+        "online_snapshot_time",
+        "online_status",
+        "ct_mr_id",
+        "ct_mr_name",
+        "tc_mr_id",
+        "tc_mr_name",
+    ):
+        value = context.params.get(key)
+        if value not in (None, ""):
+            payload[key] = value
+    return payload
 
 
 __all__ = ["run_car_network_diagnostic"]

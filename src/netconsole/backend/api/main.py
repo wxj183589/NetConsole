@@ -474,18 +474,19 @@ def create_app(
         app.state.online_mr_web_control_service,
         app.state.online_mr_agent_web_control_service,
     )
+    app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(
+        paths,
+        mesh_query=app.state.ac_mesh_link_query_service,
+    )
     app.state.train_communication_query_service = TrainCommunicationQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,
         mesh_query=app.state.ac_mesh_link_query_service,
         online_mr_query=app.state.online_mr_query_service,
         job_query=app.state.job_center_query_service,
+        vehicle_online_query=app.state.vehicle_mr_online_query_service,
     )
     app.state.trackside_ap_business_query_service = trackside_ap_business_query_service
-    app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(
-        paths,
-        mesh_query=app.state.ac_mesh_link_query_service,
-    )
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,
@@ -543,6 +544,7 @@ def create_app(
         export_adapter=web_export_adapter,
         query_service=app.state.online_mr_query_service,
         mesh_query_service=app.state.mesh_analysis_query_service,
+        vehicle_mr_online_query_service=app.state.vehicle_mr_online_query_service,
         artifact_store=web_artifact_store,
     )
     app.state.mesh_bundle_application_service = MeshBundleApplicationService(

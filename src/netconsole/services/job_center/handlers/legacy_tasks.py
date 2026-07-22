@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -464,9 +464,12 @@ def _car_network_generate_point_table(params: dict[str, Any], progress: Progress
         CarNetworkNode,
         CarNetworkGlobalConfigStore,
         CarNetworkPointTableStore,
+        NODE_ORDER,
+        default_point_table,
         generate_point_table_from_devices,
         merge_global_config,
     )
+    from netconsole.services.rail_transit.train_identity import canonical_train_id_for, normalize_train_identity, train_identity_matches
 
     _emit(progress, "car_network_generate_point_table", 0, 1, "正在从设备管理生成点表")
     _check_cancel(should_cancel)
@@ -478,6 +481,50 @@ def _car_network_generate_point_table(params: dict[str, Any], progress: Progress
         global_config = CarNetworkGlobalConfigStore(paths, site_name).load()
     global_config = merge_global_config(global_config)
     nodes = generate_point_table_from_devices(DeviceRepository(Database(Path(str(params.get("db_path") or "")))), site_name, existing_nodes, global_config)
+    target_train = dict(params.get("target_train") or {})
+    target_identity = normalize_train_identity(
+        target_train.get("canonical_train_id"),
+        target_train.get("train_id"),
+        target_train.get("train_no"),
+        target_train.get("display_name"),
+    )
+    if target_identity.canonical_train_id:
+        target_values = (target_identity.canonical_train_id, target_identity.train_no, target_identity.display_name)
+        current = [
+            node
+            for node in nodes
+            if train_identity_matches((node.train_id, node.train_no, node.display_name), target_values)
+        ]
+        by_name = {node.normalized_name: node for node in current}
+        defaults = default_point_table(
+            target_identity.canonical_train_id,
+            target_identity.train_no,
+            global_config=global_config,
+        )
+        for default_node in defaults:
+            previous = by_name.get(default_node.normalized_name)
+            if previous is not None:
+                continue
+            node = default_node
+            if node.normalized_name == "TC1-MR":
+                node = replace(
+                    node,
+                    device_id=str(target_train.get("ct_mr_id") or ""),
+                    device_name=str(target_train.get("ct_mr_name") or ""),
+                )
+            elif node.normalized_name == "TC2-MR":
+                node = replace(
+                    node,
+                    device_id=str(target_train.get("tc_mr_id") or ""),
+                    device_name=str(target_train.get("tc_mr_name") or ""),
+                )
+            node = replace(
+                node,
+                display_name=str(target_train.get("display_name") or target_identity.display_name),
+                remark="在线列车六节点骨架预览",
+            )
+            nodes.append(node)
+        nodes = sorted(nodes, key=lambda node: (canonical_train_id_for(node.train_id, node.train_no, node.display_name), NODE_ORDER.index(node.normalized_name) if node.normalized_name in NODE_ORDER else 99, node.node_name))
     if bool(params.get("save_result")):
         CarNetworkGlobalConfigStore(paths, site_name).save(global_config)
         CarNetworkPointTableStore(paths, site_name).save(nodes)
@@ -492,6 +539,7 @@ def _car_network_save_point_table(params: dict[str, Any], progress: ProgressCall
         CarNetworkPointTableStore,
         normalize_train_network_defaults,
     )
+    from netconsole.services.rail_transit.train_communication_point_table_service import TrainCommunicationPointTableService
 
     _emit(progress, "car_network_save_point_table", 0, 1, "正在保存车内通信点表")
     _check_cancel(should_cancel)
@@ -502,8 +550,12 @@ def _car_network_save_point_table(params: dict[str, Any], progress: ProgressCall
     nodes = normalize_train_network_defaults(nodes, global_config, overwrite_custom=bool(params.get("overwrite_custom", False)))
     CarNetworkGlobalConfigStore(paths, site_name).save(global_config)
     CarNetworkPointTableStore(paths, site_name).save(nodes)
+    persisted_nodes = CarNetworkPointTableStore(paths, site_name).load()
+    revision = TrainCommunicationPointTableService(paths).revision(site_name)
+    if not persisted_nodes and nodes:
+        raise RuntimeError("车内通信点表保存后无法重新读取")
     _emit(progress, "car_network_save_point_table", 1, 1, "车内通信点表保存完成")
-    return {"nodes": [asdict(node) for node in nodes], "count": len(nodes)}
+    return {"nodes": [asdict(node) for node in persisted_nodes], "count": len(persisted_nodes), "revision": revision}
 
 
 def _trackside_ap_plan_import(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:

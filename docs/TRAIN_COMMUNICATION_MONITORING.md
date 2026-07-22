@@ -16,7 +16,15 @@ TC1-MR -> TC1-SW -> TC1-SRV
 TC2-MR -> TC2-SW -> TC2-SRV
 ```
 
-轨旁 AP、RSSI、fping、丢包、iPerf、光衰、Online MR、Agent 和 Mesh-Link 属于各自独立页面，不在本页聚合、筛选或控制。底层业务模块和历史数据不因此删除。
+轨旁 AP、RSSI、fping、丢包、iPerf、光衰、Online MR、Agent 和原始 Mesh-Link 明细属于各自独立页面，不在本页执行、采集或展示。列车可选状态只读取 `VehicleMrOnlineQueryService` 已计算的正式在线结果，不使用正在运行的 Online MR Session 充当在线状态，也不在前端硬编码列车。
+
+## 在线列车来源
+
+`GET /api/rail-transit/train-communication/online` 是本页下拉框的正式来源。该接口复用列车在线页的当前状态，只有 `BOTH_ONLINE` 和 `ONE_SIDE_ONLINE` 且至少一个在线端 `data_status == FRESH` 的列车可进入检测页；`BOTH_OFFLINE`、`STALE` 和 `UNKNOWN` 不作为当前在线列车返回。
+
+返回行包含 `canonical_train_id`、`display_name`、CT/TC 在线状态、CT/TC MR 身份、更新时间和在线原因。`active_sessions` 仍可展示当前是否存在采集任务，但不参与在线列车判定。
+
+列车身份统一归一到 `train:<两位车号>`，例如 `列车01`、`01车`、`01`、`1`、`train-01`、`train:01` 和 `LC01` 均匹配同一列车。拓扑查询、点表校验和最新诊断结果查询均使用同一规则。
 
 ## 状态契约
 
@@ -38,15 +46,24 @@ Python `TrainCommunicationQueryService` 返回稳定状态，Vue 只映射中文
 “立即检测”复用现有 `RailTransitWebApplicationService.start_car_network_diagnostic()` 和 `car_network_diagnostic` Task：
 
 - Router 只校验 Feature、局点和业务 ID，再调用 Application Service；
+- Application Service 提交任务前再次复核正式在线状态，列车离线或数据过期时返回 409；
+- 任务参数保存 `canonical_train_id`、车号、显示名、CT/TC MR、点表 revision、在线快照时间和在线状态；
 - 页面轮询现有任务状态，终态后重新读取拓扑；
 - 页面卸载或切换列车时清理轮询，不停止后台任务；
 - 本入口不启动 Online MR、不启动持续 fping/iPerf、不采集轨旁 AP，也不接受命令、凭据或路径。
+
+## 点表闭环
+
+点表仍是拓扑和检测对象的唯一配置来源，存储路径为当前局点 `car_network/parsed/point_table.json`。保存任务必须原子替换文件并重新读取 revision 后才返回成功。
+
+点表 Dialog 在当前列车无配置时显示六节点缺失清单，可生成当前列车六节点预览。生成结果只是编辑区预览，只有用户确认保存并收到 `saved` 事件后，父页面才刷新在线列车、当前拓扑和检测启动条件。
 
 ## API
 
 ```text
 GET  /api/rail-transit/train-communication/summary
 GET  /api/rail-transit/train-communication/trains
+GET  /api/rail-transit/train-communication/online
 GET  /api/rail-transit/train-communication/trains/{train_id}/topology
 POST /api/rail-transit/train-communication/trains/{train_id}/diagnostics
 GET  /api/rail-transit/train-communication/diagnostics/{task_id}
@@ -54,11 +71,11 @@ POST /api/rail-transit/train-communication/diagnostics/{task_id}/cancel
 POST /api/rail-transit/train-communication/diagnostics/recover
 ```
 
-`summary` 和 `trains` 只为当前局点及列车选择提供来源。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用，但不再驱动本页 UI。
+`summary` 提供页面摘要，`online` 提供当前可检测列车，`trains` 保留为通用通信聚合列表。既有 MR 聚合查询接口继续供其他独立页面或兼容调用使用，但不再驱动本页下拉框。
 
 ## 刷新与导航
 
-- 手工刷新只重新读取拓扑快照；
+- 手工刷新同时重新读取正式在线列车和当前拓扑；
 - 自动刷新可关闭，或设置为 10、30、60 秒；
 - 同一页面只维护一个自动刷新定时器和一个检测任务轮询定时器；
 - 点击已有 `device_id` 的节点跳转到 `/devices/{device_id}`，复用设备详情；未配置节点不创建虚假详情；

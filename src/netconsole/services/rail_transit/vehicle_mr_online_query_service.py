@@ -18,6 +18,10 @@ from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryServic
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
+from netconsole.services.rail_transit.train_identity import (
+    canonical_train_id_for,
+    train_identity_matches,
+)
 from netconsole.services.vehicle_mr_online import (
     VehicleMrOnlineStore,
     VehicleMrTrainState,
@@ -175,6 +179,20 @@ class VehicleMrOnlineQueryService:
             None,
         )
 
+    def get_train_by_identity(self, site_id: str, train_id: str) -> VehicleMrTrainStateDTO | None:
+        needle = (train_id, canonical_train_id_for(train_id))
+        return next(
+            (
+                item
+                for item in self._all_trains(site_id)
+                if train_identity_matches(
+                    needle,
+                    (item.train_id, item.train_no, item.train_name),
+                )
+            ),
+            None,
+        )
+
     def list_mappings(self, site_id: str) -> list[VehicleMrTrainMappingDTO]:
         return [
             VehicleMrTrainMappingDTO(**asdict(row))
@@ -313,7 +331,7 @@ class VehicleMrOnlineQueryService:
         )
         return VehicleMrEndStateDTO(
             endpoint=endpoint,
-            mr_id=(mesh.mr_id or None) if mesh else None,
+            mr_id=(mesh.mr_device_id or mesh.mr_id or None) if mesh else None,
             mr_name=(mesh.mr_name or None) if mesh else None,
             online_status=online_status,
             current_ap_name=(mesh.peer_ap_name or None)
@@ -399,8 +417,7 @@ class VehicleMrOnlineQueryService:
 
     @staticmethod
     def _train_key(value: str) -> str:
-        text = str(value or "").strip()
-        return text.zfill(2) if text.isdigit() else text.casefold()
+        return canonical_train_id_for(value) or str(value or "").strip().casefold()
 
     @staticmethod
     def _endpoint_key(value: str) -> str:

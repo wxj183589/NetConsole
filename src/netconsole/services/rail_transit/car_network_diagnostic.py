@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
+from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -40,6 +41,7 @@ from netconsole.services.vehicle_mr_online import (
     parse_train_identity,
     canonical_peer_name,
 )
+from netconsole.services.rail_transit.train_identity import canonical_train_id_for, train_identity_matches
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.utils.natural_sort import train_natural_sort_key
 
@@ -655,7 +657,11 @@ def default_point_table(
 
 
 def merge_train_nodes(existing: list[CarNetworkNode], train: CarNetworkTrain, sw_devices: dict[str, Device] | None = None) -> list[CarNetworkNode]:
-    by_name = {node.normalized_name: node for node in existing if node.train_id == train.train_id or node.train_no == train.train_no}
+    by_name = {
+        node.normalized_name: node
+        for node in existing
+        if train_identity_matches((node.train_id, node.train_no, node.display_name), (train.train_id, train.train_no, train.display_name))
+    }
     defaults = default_point_table(train.train_id, train.train_no, train.mr_devices)
     merged: list[CarNetworkNode] = []
     for node in defaults:
@@ -1103,13 +1109,21 @@ def _find_existing_node(nodes: list[CarNetworkNode], node: CarNetworkNode) -> Ca
         found = next((item for item in nodes if item.device_id == node.device_id and item.node_name == node.node_name), None)
         if found is not None:
             return found
-    return next((item for item in nodes if item.train_no == node.train_no and item.node_name == node.node_name), None)
+    return next(
+        (
+            item
+            for item in nodes
+            if item.node_name == node.node_name
+            and train_identity_matches((item.train_id, item.train_no, item.display_name), (node.train_id, node.train_no, node.display_name))
+        ),
+        None,
+    )
 
 
 def _dedupe_nodes(nodes: list[CarNetworkNode]) -> list[CarNetworkNode]:
     result: dict[tuple[str, str], CarNetworkNode] = {}
     for node in nodes:
-        result[(node.train_no or node.train_id, node.node_name)] = node
+        result[(canonical_train_id_for(node.train_id, node.train_no, node.display_name) or node.train_no or node.train_id, node.node_name)] = node
     return list(result.values())
 
 
@@ -1138,9 +1152,12 @@ class CarNetworkPointTableStore:
 
     def save(self, nodes: Iterable[CarNetworkNode]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temp_path.write_text(json.dumps([asdict(node) for node in _sort_nodes(list(nodes))], ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(self.path)
+        temp_path = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps([asdict(node) for node in _sort_nodes(list(nodes))], ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temp_path, self.path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def import_file(self, path: Path) -> int:
         nodes = [node_from_mapping(row) for row in read_point_table_file(path)]

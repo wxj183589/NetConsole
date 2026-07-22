@@ -121,7 +121,19 @@ class TrainCommunicationRowDTO(ApiModel):
     train_id: str
     train_no: str
     train_name: str
+    canonical_train_id: str = ""
+    display_name: str = ""
     communication_status: str = "unknown"
+    overall_status: str = ""
+    ct_online_status: str = "UNKNOWN"
+    tc_online_status: str = "UNKNOWN"
+    ct_mr_id: str = ""
+    ct_mr_name: str = ""
+    tc_mr_id: str = ""
+    tc_mr_name: str = ""
+    updated_at: str | None = None
+    data_status: str = ""
+    online_reason: str = ""
     mrs: list[MrCommunicationStatusDTO] = Field(default_factory=list)
     current_mesh_links: int = 0
     active_sessions: int = 0

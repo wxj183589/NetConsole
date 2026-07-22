@@ -8,6 +8,7 @@ import type { TrainCommunicationTopology } from '../../types/trainCommunication'
 
 const topology: TrainCommunicationTopology = {
   train_id: 'train-1', train_name: '列车 1', train_status: 'normal', checked_at: '2026-07-19T10:00:00Z',
+  point_table_status: 'configured', point_table_message: '', point_table_revision: 'rev-1', point_table_missing_nodes: [],
   tc1_nodes: [
     { node_id: 'TC1-MR', side: 'TC1', role: 'MR', name: 'TC1-MR', device_id: '1', ip_address: '10.0.0.1', status: 'normal', message: '', updated_at: null },
     { node_id: 'TC1-SW', side: 'TC1', role: 'SWITCH', name: '', device_id: null, ip_address: null, status: 'not_configured', message: '未配置', updated_at: null },

@@ -38,6 +38,12 @@ from netconsole.services.rail_transit.train_communication_point_table_service im
     POINT_TABLE_CONFIGURED,
     TrainCommunicationPointTableService,
 )
+from netconsole.services.rail_transit.train_identity import (
+    canonical_train_id_for,
+    normalize_train_identity,
+    train_identity_matches,
+)
+from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 
 
 ACTIVE_SESSION_STATES = {
@@ -59,6 +65,7 @@ RAW_LABELS = {
     "switch_history": "主链路切换日志",
     "collector_output": "Collector 输出",
 }
+_ONLINE_TRAIN_STATUSES = {"BOTH_ONLINE", "ONE_SIDE_ONLINE"}
 
 
 class TrainCommunicationQueryService:
@@ -73,6 +80,7 @@ class TrainCommunicationQueryService:
         online_mr_query: OnlineMrQueryService | None = None,
         job_query: JobCenterQueryService | None = None,
         point_table_service: TrainCommunicationPointTableService | None = None,
+        vehicle_online_query: VehicleMrOnlineQueryService | None = None,
         now_provider=None,
     ) -> None:
         self.paths = paths
@@ -81,6 +89,7 @@ class TrainCommunicationQueryService:
         self.online_mr_query = online_mr_query or OnlineMrQueryService(paths)
         self.job_query = job_query or JobCenterQueryService(paths)
         self.point_table_service = point_table_service or TrainCommunicationPointTableService(paths)
+        self.vehicle_online_query = vehicle_online_query or VehicleMrOnlineQueryService(paths, mesh_query=mesh_query)
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
 
     def current_site_id(self) -> str:
@@ -149,7 +158,7 @@ class TrainCommunicationQueryService:
         if has_warning is not None:
             rows = [row for row in rows if (row.warning_count > 0) is has_warning]
         if active_only:
-            rows = [row for row in rows if row.active_sessions > 0]
+            rows = [row for row in rows if row.current_mesh_links > 0 and row.communication_status not in {"stale", "unknown"}]
         if agent_only:
             rows = [row for row in rows if any(str(item.executor or "").upper() == "AGENT" for item in row.mrs)]
         if optical_anomaly_only:
@@ -169,9 +178,28 @@ class TrainCommunicationQueryService:
         start = (current - 1) * size
         return TrainCommunicationPageDTO(items=rows[start : start + size], total=len(rows), page=current, page_size=size)
 
+    def list_online_trains(
+        self,
+        site_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> TrainCommunicationPageDTO:
+        active_sessions = self._active_sessions_by_train(site_id)
+        rows = [
+            self._online_train_row(row, active_sessions.get(canonical_train_id_for(row.train_id, row.train_no, row.train_name), 0))
+            for row in self._all_vehicle_online_rows(site_id)
+            if row.overall_status in _ONLINE_TRAIN_STATUSES and self._has_fresh_online_endpoint(row)
+        ]
+        rows.sort(key=lambda row: (self._natural_key(row.train_no), row.updated_at or "", row.train_id))
+        size = max(1, min(int(page_size), 200))
+        current = max(1, int(page))
+        start = (current - 1) * size
+        return TrainCommunicationPageDTO(items=rows[start : start + size], total=len(rows), page=current, page_size=size)
+
     def get_train_detail(self, site_id: str, train_id: str) -> TrainCommunicationDetailDTO | None:
         rows, _ = self._rows(site_id)
-        row = next((item for item in rows if item.train_id == train_id), None)
+        row = next((item for item in rows if self._same_train((train_id,), (item.train_id, item.train_no, item.train_name))), None)
         if row is None:
             return None
         return TrainCommunicationDetailDTO(
@@ -183,25 +211,35 @@ class TrainCommunicationQueryService:
 
     def get_train_topology(self, site_id: str, train_id: str) -> TrainCommunicationTopologyDTO | None:
         base_trains = self.base_query.list_trains(site_id, page=1, page_size=200).items
-        base_train = next((item for item in base_trains if train_id in {item.id, item.train_no, item.name}), None)
-        identifiers = {train_id}
+        requested_identity = normalize_train_identity(train_id)
+        base_train = next((item for item in base_trains if self._same_train((train_id,), (item.id, item.train_no, item.name))), None)
+        identifiers = {train_id, requested_identity.canonical_train_id}
         if base_train is not None:
             identifiers.update({base_train.id, base_train.train_no, base_train.name})
         point_nodes = [
             item
             for item in self._point_table_nodes(site_id)
-            if {item.train_id, item.train_no, item.display_name} & identifiers
+            if self._same_train(tuple(identifiers), (item.train_id, item.train_no, item.display_name))
         ]
         if base_train is None and not point_nodes:
             return None
 
-        canonical_train_id = base_train.id if base_train is not None else point_nodes[0].train_id
-        train_name = base_train.name if base_train is not None else point_nodes[0].display_name or canonical_train_id
+        identity = normalize_train_identity(
+            train_id,
+            base_train.id if base_train is not None else "",
+            base_train.train_no if base_train is not None else "",
+            base_train.name if base_train is not None else "",
+            point_nodes[0].train_id if point_nodes else "",
+            point_nodes[0].train_no if point_nodes else "",
+            point_nodes[0].display_name if point_nodes else "",
+        )
+        canonical_train_id = identity.canonical_train_id or (base_train.id if base_train is not None else point_nodes[0].train_id)
+        train_name = base_train.name if base_train is not None else point_nodes[0].display_name or identity.display_name or canonical_train_id
         identifiers.add(canonical_train_id)
         base_mrs = [
             item
             for item in self.base_query.list_mrs(site_id, page=1, page_size=200).items
-            if item.train_id in identifiers or item.train_no in identifiers
+            if self._same_train(tuple(identifiers), (item.train_id, item.train_no, getattr(item, "train_name", "")))
         ]
         inspection = self.point_table_service.inspect(
             site_id,
@@ -299,6 +337,72 @@ class TrainCommunicationQueryService:
     def _point_table_nodes(self, site_id: str) -> list[CarNetworkNode]:
         return self.point_table_service.read_nodes(site_id)
 
+    def _all_vehicle_online_rows(self, site_id: str):
+        first = self.vehicle_online_query.list_trains(site_id, page=1, page_size=200)
+        result = list(first.items)
+        page = 2
+        while len(result) < first.total:
+            current = self.vehicle_online_query.list_trains(site_id, page=page, page_size=200)
+            if not current.items:
+                break
+            result.extend(current.items)
+            page += 1
+        return result
+
+    def _online_train_row(self, row, active_sessions: int = 0) -> TrainCommunicationRowDTO:
+        identity = normalize_train_identity(row.train_id, row.train_no, row.train_name)
+        return TrainCommunicationRowDTO(
+            train_id=identity.canonical_train_id or row.train_id,
+            canonical_train_id=identity.canonical_train_id,
+            train_no=identity.train_no or row.train_no,
+            train_name=row.train_name or identity.display_name or row.train_id,
+            display_name=self._online_display_name(row, identity.display_name),
+            communication_status="normal" if row.overall_status == "BOTH_ONLINE" else "warning",
+            overall_status=row.overall_status,
+            ct_online_status=row.ct.online_status,
+            tc_online_status=row.tc.online_status,
+            ct_mr_id=row.ct.mr_id or "",
+            ct_mr_name=row.ct.mr_name or "",
+            tc_mr_id=row.tc.mr_id or "",
+            tc_mr_name=row.tc.mr_name or "",
+            updated_at=row.updated_at,
+            data_status="FRESH",
+            online_reason=row.reason_text or "当前 Mesh-Link 显示列车在线",
+            current_mesh_links=sum(
+                endpoint.online_status == "ONLINE" and endpoint.data_status == "FRESH"
+                for endpoint in (row.ct, row.tc)
+            ),
+            active_sessions=active_sessions,
+            last_updated_at=row.updated_at,
+        )
+
+    @staticmethod
+    def _has_fresh_online_endpoint(row) -> bool:
+        return any(
+            endpoint.online_status == "ONLINE" and endpoint.data_status == "FRESH"
+            for endpoint in (row.ct, row.tc)
+        )
+
+    @staticmethod
+    def _online_display_name(row, fallback: str) -> str:
+        names = [str(value or "").strip() for value in (row.train_name, f"{row.train_no}车" if row.train_no else "", fallback) if str(value or "").strip()]
+        unique = list(dict.fromkeys(names))
+        return " / ".join(unique[:2]) if unique else row.train_id
+
+    def _active_sessions_by_train(self, site_id: str) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for session in self.online_mr_query.list_sessions(site_id, limit=1000):
+            if not self._is_active(session.status):
+                continue
+            key = canonical_train_id_for(session.mr_name, session.device_name)
+            if key:
+                counts[key] += 1
+        return counts
+
+    @staticmethod
+    def _same_train(left: tuple[object, ...], right: tuple[object, ...]) -> bool:
+        return train_identity_matches(left, right)
+
     def _latest_diagnostic_result(self, site_id: str, identifiers: set[str]) -> tuple[dict[str, Any], str | None]:
         rows = self.job_query.list_task_results(
             site_id,
@@ -307,8 +411,8 @@ class TrainCommunicationQueryService:
             limit=50,
         )
         for payload, updated_at in rows:
-            result_ids = {str(payload.get(key) or "") for key in ("train_id", "train_no", "display_name")}
-            if result_ids & identifiers:
+            result_ids = tuple(str(payload.get(key) or "") for key in ("train_id", "train_no", "display_name", "canonical_train_id"))
+            if self._same_train(tuple(identifiers), result_ids):
                 return payload, str(updated_at or "") or None
         return {}, None
 
@@ -594,11 +698,15 @@ class TrainCommunicationQueryService:
             status = "stale"
         else:
             status = "unknown"
-        train_no = mrs[0].train_id if mrs else train_id
+        identity = normalize_train_identity(train_id, *(item.train_name for item in mrs))
+        train_no = identity.train_no or train_id
+        train_name = mrs[0].train_name if mrs else identity.display_name or train_id
         return TrainCommunicationRowDTO(
             train_id=train_id,
             train_no=train_no,
-            train_name=mrs[0].train_name if mrs else train_id,
+            train_name=train_name,
+            canonical_train_id=identity.canonical_train_id,
+            display_name=train_name,
             communication_status=status,
             mrs=sorted(mrs, key=lambda item: (item.mr_role, item.mr_name)),
             current_mesh_links=sum(

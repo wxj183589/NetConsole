@@ -119,13 +119,10 @@ def online_trains(
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> TrainCommunicationPageDTO:
     return _query(
-        lambda: _service(request).list_trains(
+        lambda: _service(request).list_online_trains(
             _site_id(request, site_id),
-            active_only=True,
             page=page,
             page_size=page_size,
-            sort_by="updated_at",
-            sort_order="desc",
         )
     )
 
@@ -285,6 +282,7 @@ def generate_point_table(
             _site_id(request, ""),
             rows=[row.model_dump() for row in payload.rows],
             global_config=payload.global_config,
+            target_train=payload.target_train,
         )
     except RailTransitWebError as exc:
         _raise_application_error(exc)
@@ -467,6 +465,7 @@ def _raise_application_error(exc: RailTransitWebError) -> None:
         "TASK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
         "TRAIN_COMMUNICATION_REVISION_CONFLICT": status.HTTP_409_CONFLICT,
+        "TRAIN_COMMUNICATION_OFFLINE": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

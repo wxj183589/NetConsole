@@ -11,6 +11,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     CarNetworkNode,
     node_from_mapping,
 )
+from netconsole.services.rail_transit.train_identity import train_identity_matches
 
 
 POINT_TABLE_CONFIGURED = "configured"
@@ -147,17 +148,10 @@ class TrainCommunicationPointTableService:
 
     @staticmethod
     def _matches_train(node: CarNetworkNode, train_id: str, train_no: str, display_name: str) -> bool:
-        identifiers = {
-            str(value or "").strip().casefold()
-            for value in (train_id, train_no, display_name)
-            if str(value or "").strip()
-        }
-        node_identifiers = {
-            str(value or "").strip().casefold()
-            for value in (node.train_id, node.train_no, node.display_name)
-            if str(value or "").strip()
-        }
-        return bool(identifiers & node_identifiers)
+        return train_identity_matches(
+            (train_id, train_no, display_name),
+            (node.train_id, node.train_no, node.display_name),
+        )
 
     @classmethod
     def has_endpoint(cls, node: CarNetworkNode) -> bool:

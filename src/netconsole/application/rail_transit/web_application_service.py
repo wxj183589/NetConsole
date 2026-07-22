@@ -89,6 +89,12 @@ from netconsole.services.rail_transit.train_communication_point_table_service im
     POINT_TABLE_MISSING,
     TrainCommunicationPointTableService,
 )
+from netconsole.services.rail_transit.train_identity import (
+    canonical_train_id_for,
+    normalize_train_identity,
+    train_identity_matches,
+)
+from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 from netconsole.services.trackside_ap_plan_io import (
     TRACKSIDE_PLAN_COLUMNS,
     TRACKSIDE_PLAN_COLUMN_WIDTHS,
@@ -186,6 +192,7 @@ class RailTransitWebApplicationService:
         export_adapter: WebExportProcessAdapter,
         query_service: OnlineMrQueryService | None = None,
         mesh_query_service: MeshAnalysisQueryService | None = None,
+        vehicle_mr_online_query_service: VehicleMrOnlineQueryService | None = None,
         artifact_store: WebArtifactStore | None = None,
     ) -> None:
         self.paths = paths
@@ -194,6 +201,7 @@ class RailTransitWebApplicationService:
         self.export_adapter = export_adapter
         self.query_service = query_service or OnlineMrQueryService(paths)
         self.mesh_query_service = mesh_query_service or MeshAnalysisQueryService(paths)
+        self.vehicle_mr_online_query_service = vehicle_mr_online_query_service or VehicleMrOnlineQueryService(paths)
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
 
     def create_mesh_staging(self, site_id: str) -> Path:
@@ -476,6 +484,7 @@ class RailTransitWebApplicationService:
         *,
         rows: list[dict[str, object]],
         global_config: dict[str, object],
+        target_train: dict[str, object] | None = None,
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         config = merge_global_config(global_config)
@@ -488,6 +497,7 @@ class RailTransitWebApplicationService:
                 "nodes": [asdict(node) for node in self._point_nodes(rows)],
                 "global_config": config,
                 "save_result": False,
+                "target_train": self._target_train_payload(target_train or {}),
             },
         )
 
@@ -752,18 +762,46 @@ class RailTransitWebApplicationService:
             raise RailTransitWebError("TRAIN_REQUIRED", "请选择要检测的列车")
         site_id = self._site(site_id)
         trains = RailTransitBaseDataQueryService(self.paths).list_trains(site_id, page=1, page_size=200).items
-        train = next((item for item in trains if selected_train in {item.id, item.train_no, item.name}), None)
+        train = next((item for item in trains if train_identity_matches((selected_train,), (item.id, item.train_no, item.name))), None)
+        online = self.vehicle_mr_online_query_service.get_train_by_identity(site_id, selected_train)
+        if online is None or online.overall_status not in {"BOTH_ONLINE", "ONE_SIDE_ONLINE"} or not self._online_train_is_fresh(online):
+            raise RailTransitWebError("TRAIN_COMMUNICATION_OFFLINE", "当前列车已不在线，请刷新后重试")
+        identity = normalize_train_identity(
+            selected_train,
+            train.id if train is not None else "",
+            train.train_no if train is not None else "",
+            train.name if train is not None else "",
+            online.train_id,
+            online.train_no,
+            online.train_name,
+        )
         inspection = TrainCommunicationPointTableService(self.paths).inspect(
             site_id,
-            selected_train,
-            train_no=train.train_no if train is not None else "",
-            display_name=train.name if train is not None else "",
+            identity.canonical_train_id or selected_train,
+            train_no=identity.train_no or (train.train_no if train is not None else online.train_no),
+            display_name=train.name if train is not None else online.train_name,
         )
         if inspection.status == POINT_TABLE_MISSING:
             raise RailTransitWebError("TRAIN_COMMUNICATION_POINT_TABLE_MISSING", inspection.message)
         if inspection.status == POINT_TABLE_INVALID:
             raise RailTransitWebError("TRAIN_COMMUNICATION_POINT_TABLE_INVALID", inspection.message)
-        return self._start_task(site_id, "car_network_diagnostic", {"train_id": selected_train})
+        return self._start_task(
+            site_id,
+            "car_network_diagnostic",
+            {
+                "train_id": identity.canonical_train_id or selected_train,
+                "canonical_train_id": identity.canonical_train_id,
+                "train_no": identity.train_no or online.train_no,
+                "display_name": train.name if train is not None else online.train_name,
+                "ct_mr_id": online.ct.mr_id or "",
+                "ct_mr_name": online.ct.mr_name or "",
+                "tc_mr_id": online.tc.mr_id or "",
+                "tc_mr_name": online.tc.mr_name or "",
+                "point_table_revision": inspection.revision,
+                "online_snapshot_time": online.updated_at or "",
+                "online_status": online.overall_status,
+            },
+        )
 
     def get_car_network_diagnostic(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         task = self.get_task(site_id, task_id)
@@ -1784,9 +1822,38 @@ class RailTransitWebApplicationService:
     @staticmethod
     def _point_key(node: CarNetworkNode) -> tuple[str, str]:
         return (
-            str(node.train_no or node.train_id).strip().casefold(),
+            canonical_train_id_for(node.train_id, node.train_no, node.display_name) or str(node.train_no or node.train_id).strip().casefold(),
             node.normalized_name.strip().casefold(),
         )
+
+    @staticmethod
+    def _online_train_is_fresh(train) -> bool:
+        return any(
+            endpoint.online_status == "ONLINE" and endpoint.data_status == "FRESH"
+            for endpoint in (train.ct, train.tc)
+        )
+
+    @staticmethod
+    def _target_train_payload(value: dict[str, object]) -> dict[str, str]:
+        identity = normalize_train_identity(
+            value.get("canonical_train_id"),
+            value.get("train_id"),
+            value.get("train_no"),
+            value.get("train_name"),
+            value.get("display_name"),
+        )
+        if not identity.canonical_train_id:
+            return {}
+        return {
+            "canonical_train_id": identity.canonical_train_id,
+            "train_id": str(value.get("train_id") or identity.canonical_train_id),
+            "train_no": identity.train_no,
+            "display_name": str(value.get("display_name") or value.get("train_name") or identity.display_name),
+            "ct_mr_id": str(value.get("ct_mr_id") or ""),
+            "ct_mr_name": str(value.get("ct_mr_name") or ""),
+            "tc_mr_id": str(value.get("tc_mr_id") or ""),
+            "tc_mr_name": str(value.get("tc_mr_name") or ""),
+        }
 
     def _read_table_upload(
         self,

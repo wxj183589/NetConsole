@@ -29,7 +29,11 @@ export async function refreshVehicleMrOnline(controllerId: string): Promise<Vehi
   const result = await apiRequest<{ task_id: string; status: string; message: string }>(`${root}/refresh`, {
     method: 'POST', body: JSON.stringify({ controller_id: controllerId, include_switch_history: false }),
   })
-  return { task_id: result.task_id, status: result.status, action: 'ac_mesh_link_refresh', artifact_id: '', available: false, sha256: '', size_bytes: 0, message: result.message, error_message: '', result_summary: {} }
+  return {
+    task_id: result.task_id, status: result.status, action: 'ac_mesh_link_refresh',
+    artifact_id: '', artifact_name: '', available: false, sha256: '', size_bytes: 0,
+    message: result.message, error_message: '', result_summary: {},
+  }
 }
 export const refreshVehicleMrApMapping = (trainId = ''): Promise<VehicleMrOnlineTask> => apiRequest(`${root}/ap-mapping/refresh?train_id=${encodeURIComponent(trainId)}`, { method: 'POST' })
 export const saveVehicleMrMappings = (mappings: VehicleMrTrainMapping[]): Promise<VehicleMrOnlineTask> => apiRequest(`${root}/mappings`, { method: 'PUT', body: JSON.stringify({ mappings, explicit_confirmation: true, audit: { source: 'electron-vehicle-mr-mapping' } }) })
@@ -41,6 +45,7 @@ export async function getVehicleMrOnlineTask(taskId: string): Promise<VehicleMrO
     const item = await getTask(taskId)
     return {
       task_id: item.id, status: item.status, action: item.type, artifact_id: item.artifact_download?.artifact_id || '',
+      artifact_name: item.artifact_download?.display_name || '',
       available: Boolean(item.artifact_download), sha256: '', size_bytes: item.artifact_download?.size_bytes || 0,
       message: item.message, error_message: item.error_summary,
       result_summary: { records_count: item.records_count, snapshot_id: item.snapshot_id, parser_version: item.parser_version },

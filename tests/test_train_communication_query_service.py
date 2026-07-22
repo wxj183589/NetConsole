@@ -19,6 +19,7 @@ from netconsole.services.rail_transit.train_communication_query_service import T
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.rail_transit.car_network_diagnostic import CarNetworkNode, CarNetworkPointTableStore
+from netconsole.services.rail_transit.train_identity import canonical_train_id_for, train_identity_matches
 
 
 class _BaseQuery:
@@ -109,6 +110,32 @@ class _JobQuery:
     @staticmethod
     def list_task_results(*_args, **_kwargs) -> list[tuple[dict[str, object], str]]:
         return []
+
+
+class _VehicleOnlineQuery:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+
+    def list_trains(self, _site_id: str, *, page: int = 1, page_size: int = 50, **_kwargs):
+        start = (page - 1) * page_size
+        return SimpleNamespace(items=self.rows[start : start + page_size], total=len(self.rows))
+
+
+def _online_endpoint(status: str, data_status: str = "FRESH", *, mr_id: str = "", mr_name: str = ""):
+    return SimpleNamespace(online_status=status, data_status=data_status, mr_id=mr_id, mr_name=mr_name)
+
+
+def _online_train(overall_status: str, *, ct_status: str = "ONLINE", tc_status: str = "OFFLINE", ct_data: str = "FRESH", tc_data: str = "FRESH"):
+    return SimpleNamespace(
+        train_id="01车",
+        train_no="01",
+        train_name="列车01",
+        overall_status=overall_status,
+        ct=_online_endpoint(ct_status, ct_data, mr_id="mr-ct", mr_name="列车01-MR-CT"),
+        tc=_online_endpoint(tc_status, tc_data, mr_id="mr-tc", mr_name="列车01-MR-CW"),
+        updated_at="2026-07-22T10:00:00+00:00",
+        reason_text="CT 端 Mesh-Link 在线",
+    )
 
 
 def _service(tmp_path: Path) -> tuple[TrainCommunicationQueryService, _OnlineQuery]:
@@ -267,6 +294,48 @@ def test_fixed_topology_treats_ip_only_server_as_undetected(tmp_path: Path) -> N
     assert server.device_id is None
     assert server.ip_address == "10.0.0.3"
     assert server.status == "not_detected"
+
+
+def test_online_train_list_uses_formal_mesh_status_not_active_sessions(tmp_path: Path) -> None:
+    online = _OnlineQuery()
+    online.sessions = []
+    service = TrainCommunicationQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path),
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        online_mr_query=online,  # type: ignore[arg-type]
+        job_query=_JobQuery(),  # type: ignore[arg-type]
+        vehicle_online_query=_VehicleOnlineQuery([_online_train("ONE_SIDE_ONLINE")]),  # type: ignore[arg-type]
+    )
+
+    page = service.list_online_trains("demo")
+
+    assert page.total == 1
+    assert page.items[0].canonical_train_id == "train:01"
+    assert page.items[0].overall_status == "ONE_SIDE_ONLINE"
+    assert page.items[0].active_sessions == 0
+
+    online.sessions = [
+        OnlineMrSessionSummaryDTO(
+            session_id="local-active",
+            site_id="demo",
+            mr_name="列车01-MR-CT",
+            device_id=1,
+            status="COLLECTING",
+        )
+    ]
+    service.vehicle_online_query = _VehicleOnlineQuery([_online_train("BOTH_OFFLINE", ct_status="OFFLINE", tc_status="OFFLINE")])  # type: ignore[assignment]
+    assert service.list_online_trains("demo").items == []
+
+    service.vehicle_online_query = _VehicleOnlineQuery([_online_train("ONE_SIDE_ONLINE", ct_data="STALE")])  # type: ignore[assignment]
+    assert service.list_online_trains("demo").items == []
+
+
+def test_train_identity_normalizes_common_online_and_point_table_labels() -> None:
+    aliases = ["列车01", "01车", "01", "1", "train-01", "train:01", "NBL12-LC01"]
+
+    assert {canonical_train_id_for(value) for value in aliases} == {"train:01"}
+    assert train_identity_matches(("列车01",), ("train-01", "01车"))
 
 
 def test_service_has_no_qt_application_or_mutation_dependency() -> None:

@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与在线列车车内通信、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
-当前版本：`v1.3.9`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
+当前版本：`v1.4.1`。版本唯一来源为 `src/netconsole/core/version.py`；本文不单独维护版本号。
 
 局点、新建/切换、全局数据根迁移、备份恢复和 `.ncsite` 导入导出由 Python Core 统一管理，Electron 设置页只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
 

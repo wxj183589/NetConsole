@@ -62,9 +62,9 @@ export function saveCarNetworkPointTable(
   })
 }
 
-export function generateCarNetworkPointTable(rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>): Promise<RailTransitTask> {
+export function generateCarNetworkPointTable(rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>, targetTrain: Record<string, unknown> = {}): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`${trainRoot}/point-table/generate`, {
-    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig }),
+    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig, target_train: targetTrain }),
   })
 }
 

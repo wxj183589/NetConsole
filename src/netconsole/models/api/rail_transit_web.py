@@ -76,6 +76,7 @@ class CarNetworkPointPreviewDTO(ApiModel):
 class CarNetworkPointTableWriteRequestDTO(ApiModel):
     rows: list[CarNetworkPointRowDTO] = Field(default_factory=list)
     global_config: dict[str, object] = Field(default_factory=dict)
+    target_train: dict[str, object] = Field(default_factory=dict)
     overwrite_custom: bool = False
     explicit_confirmation: bool = False
     audit: dict[str, str] = Field(default_factory=dict)
