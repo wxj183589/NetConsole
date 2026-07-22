@@ -2,6 +2,12 @@
 
 ## v1.4.1 - 2026-07-22
 
+### 设备文件
+
+- 设备文件页改为分阶段加载，设备列表和最近 20 条下载任务不再阻塞首屏；临时文件递归清理移到宿主启动后的后台线程，下载任务使用 SQL 组合过滤和批量事件读取。
+- 恢复一次点击的受控 SFTP 流程：只在 SSH 已认证且 SFTP 子系统明确不可用时确认启用，主机密钥确认保留原连接意图，连接/认证/主机密钥/启用/重连/根目录错误使用稳定分类。
+- 文件管理 WinSCP 动作默认在 Python 主进程传入 URL 编码的设备 SSH 密码，并复用受控 SFTP 实际成功目标；Web DTO、Electron IPC 与安全日志仍不含密码或认证 URL。
+
 ### AC / FIT-AP
 
 - FIT-AP 详情光衰区域新增 AP 侧收光、交换机侧收光和 Tx Power 独立状态透传；当前值按真实分侧判定着色，避免整体告警把正常 AP Rx 或未判定 Tx Power 一起标红。
@@ -154,7 +160,7 @@
 - 命令说明开放正式 Feature 与导航，接入共享动态语言、统一任务窗口模块筛选、真实取消和安全 Markdown Artifact；网络工具、命令说明与日志维护任务均复用现有 Task Center 和 Electron 下载白名单，不建立第二套任务模型或路径接口。
 - 应用日志与安全维护完成 Electron 真实闭环：安全清理支持 1～365 天、扫描后按类别选择和二次确认，Worker 只处理运行日志、页面缓存与临时目录白名单，删除前重新校验年龄和路径，并保护 Job/Export 协议、导入预览、数据库、raw 与正式报告；取消保留未处理文件，标准进度事件可恢复已处理、删除、失败和释放空间计数。日志 CSV 与开源许可真实 TXT/XLSX 复用公共 Export Process/Artifact，公开名不含 UUID 或服务端路径；日志展示和导出补齐密码、Token、Community、私网 IPv4/IPv6 与 Windows/UNC 路径脱敏。自动测试已完成，Electron 人工确认、取消、保存和重启恢复仍待验收。
 - 文件管理按 Qt 双栏事实源完成 Electron 纵向闭环：本地/设备目录导航、分组筛选、受控 SFTP、明确确认的 H3C SFTP 准备、多选串行下载、TaskRepository 持久队列、取消/重试/清理/重启恢复、`.part` 清理、MR Mesh 日志归档与自动导入均接入永久 Service；设备文件使用 `fd1_*`，不伪装 Artifact。新增 `fda1_*` 一次性桌面动作和 Electron main 固定回环白名单，可打开受控目录并启动固定 WinSCP；Renderer 不接收路径、程序或凭据，Electron WinSCP 参数不含密码。自动验证通过后状态为 `IMPLEMENTED_UNVERIFIED`，真实 SFTP/MR、大文件异常和桌面点击仍待验收。
-- 设备管理 Electron/Qt 对等整改继续收口：删除旧只读校验链，编辑改为真实保存并同步详情；秘密字段增加保持、替换、显式清除三态且不回显；未保存新增/编辑表单可通过仅回环一次性秘密通道提交 SSH/Telnet/SNMP 正式 Job，取消会立即关闭通道且凭据不进入 Task 参数、响应和日志；CSV 导入增加已有主地址重复行预览及拒绝/跳过/仍新增策略；诊断下载生成含摘要、真实诊断文件和 manifest 的受控 ZIP Artifact；CSV（含/不含凭据）、模板、SecureCRT、OmniPeek 均由独立 Export Process 生成并通过 Electron 受管下载，成功保存后可使用已授权路径打开文件或定位目录；SecureCRT/Xshell/PuTTY 继续由严格 DTO 和白名单本机 Adapter 以 `shell=False` 启动。设备页面已移除私有 `sessionStorage` 任务记录并接入统一任务窗口；人工桌面与真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED`。
+- 设备管理 Electron/Qt 对等整改继续收口：删除旧只读校验链，编辑改为真实保存并同步详情；秘密字段增加保持、替换、显式清除三态且不回显；新增/编辑表单连接测试现已默认启用并接通共享 Job Runtime，一次性临时密码只经 stdin 敏感 bootstrap 注入，已保存密码由 Worker 按 `device_uuid` 解析，Job 参数、Task 数据库、响应和日志均不保存明文；任务提供验证、凭据解析、连接、握手、认证、会话验证和安全终态，弹窗可查看结果、失败分类、耗时并打开统一任务窗口。CSV 导入增加已有主地址重复行预览及拒绝/跳过/仍新增策略；诊断下载生成含摘要、真实诊断文件和 manifest 的受控 ZIP Artifact；CSV（含/不含凭据）、模板、SecureCRT、OmniPeek 均由独立 Export Process 生成并通过 Electron 受管下载，成功保存后可使用已授权路径打开文件或定位目录；SecureCRT/Xshell/PuTTY 继续由严格 DTO 和白名单本机 Adapter 以 `shell=False` 启动。设备页面已移除私有 `sessionStorage` 任务记录并接入统一任务窗口；人工桌面与真实设备验收前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
 - 配置采集中心按 Qt `ConfigCollectionCenterPage`、`ConfigLifecycleWorker/Service` 和 `ConfigDiffViewer` 实现 Electron 纵向链：纠正 `save force` 与 saved-configuration 快照语义，增加跨设备独立左右快照篮、“设备名 · 类型 · 时间”比较标题、共享 raw log 引用安全与删除前原子隔离/DB 失败恢复、直接 config Job handlers、双栏 added/removed/modified 差异与导航、真实 Export Process/Artifact、项目边界取消和检查点重启恢复，并以 Vue mount 测试覆盖采集/保存/删除/比较/导出/统一任务窗口；未修改数据库 schema，也未连接真实设备，状态保持 `IMPLEMENTED_UNVERIFIED`。
 - 收口第一批 Web 对等整改：设备管理补齐受控 CRUD、导入导出与诊断，网络工具补齐 Ping/fping/TCP、无线扫描与 Artifact 导出，配置中心补齐历史删除、`save force`、报告和目录动作，文件管理补齐只读 SFTP 下载，AC/轨交补齐 AP 扩展、车内诊断、MESH 导入和报告闭环。所有新增高风险入口均独立 Feature Gate、默认关闭且仅完成 Fake 验收；Qt 页面继续保留，真实 AC/MR/无线硬件验收未开始。
 - 修复 Electron 开发态文件管理、配置快照与 MESH Artifact 下载仍落入 Vite 固定 `127.0.0.1:8000` 的问题：三类入口统一使用 Runtime Adapter；Electron main 通过当前动态回环后端与内存令牌流式保存并原子替换，Browser 继续使用相对代理下载。主窗口新增同源及编码 `/api`/`/ws` 导航拦截、非桥接 Chromium 下载拒绝、Renderer/preload 故障状态与脱敏诊断。退出时先拒绝新下载、取消并等待在途写入清理；Python 在 Uvicorn 完全退出后发送 `shutdown_ack`，Main 再发送 `exit`，全部受管清理完成后 Electron 才退出。默认菜单、窗口标题和迁移期页脚同步收口。本轮未启动 Online MR 完整操作闭环迁移，Qt 仍是生产与回退入口；人工原生对话框与关闭残留仍需在本地主工作区点击验收。

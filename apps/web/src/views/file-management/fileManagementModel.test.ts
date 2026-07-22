@@ -7,7 +7,7 @@ import { activeDownloadTasks, formatBytes, formatSpeed, mergeDownloadTasks, sele
 function task(id: string, status: FileDownloadTask['status'], updatedAt: string): FileDownloadTask {
   return {
     task_id: id, site_id: 'demo', status, progress: 0, stage: '', message: '', batch_id: '', source_kind: 'remote',
-    device_name: 'MR-1', remote_name: `${id}.bin`, downloaded_bytes: 0, total_bytes: 0,
+    device_name: 'MR-1', remote_name: `${id}.bin`, remote_path: `flash:/${id}.bin`, local_path: `D:/downloads/${id}.bin`, downloaded_bytes: 0, total_bytes: 0,
     speed_bytes_per_second: 0, created_at: updatedAt, updated_at: updatedAt, retryable: false, retry_reason: '', result: null,
   }
 }
@@ -27,9 +27,12 @@ describe('file management state model', () => {
       { entry_id: 'dir', name: 'diagfile', is_dir: true, downloadable: false },
       { entry_id: 'bin', name: 'boot.bin', is_dir: false, downloadable: true },
       { entry_id: 'mesh', name: '2026_07_16_1meshlog.log.gz', is_dir: false, downloadable: true },
+      { entry_id: 'current', name: 'meshlog.log', is_dir: false, downloadable: true },
+      { entry_id: 'current-gzip', name: 'meshlog.log.gz', is_dir: false, downloadable: true },
+      { entry_id: 'false-positive', name: 'old_meshlog.log', is_dir: false, downloadable: true },
     ] as RemoteFileEntry[]
-    expect(selectableRemoteFiles(items).map((item) => item.entry_id)).toEqual(['bin', 'mesh'])
-    expect(selectableRemoteFiles(items, true).map((item) => item.entry_id)).toEqual(['mesh'])
+    expect(selectableRemoteFiles(items).map((item) => item.entry_id)).toEqual(['bin', 'mesh', 'current', 'current-gzip', 'false-positive'])
+    expect(selectableRemoteFiles(items, true).map((item) => item.entry_id)).toEqual(['mesh', 'current', 'current-gzip'])
   })
 
   it('formats queue byte counts and speeds', () => {

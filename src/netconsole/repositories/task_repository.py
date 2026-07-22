@@ -47,6 +47,8 @@ CREATE INDEX IF NOT EXISTS idx_task_snapshots_status_updated
     ON task_snapshots(status, updated_time DESC);
 CREATE INDEX IF NOT EXISTS idx_task_snapshots_type_updated
     ON task_snapshots(task_type, updated_time DESC);
+CREATE INDEX IF NOT EXISTS idx_task_snapshots_file_filter
+    ON task_snapshots(task_type, owner, source, site_name, status, updated_time DESC);
 
 CREATE TABLE IF NOT EXISTS task_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -344,6 +346,37 @@ class TaskRepository:
             ).fetchall()
         return [self._event_from_row(dict(row)) for row in rows]
 
+    def list_events_for_tasks(
+        self,
+        task_ids: Collection[str],
+        *,
+        event_types: Collection[str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """批量读取指定任务事件，避免任务列表逐条查询事件。"""
+
+        ids = sorted({str(task_id).strip() for task_id in task_ids if str(task_id).strip()})
+        if not ids:
+            return {}
+        grouped = {task_id: [] for task_id in ids}
+        types = sorted({str(event_type).strip() for event_type in (event_types or ()) if str(event_type).strip()})
+        with self._connect() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                clauses = [f"task_id IN ({','.join('?' for _ in chunk)})"]
+                params: list[object] = list(chunk)
+                if types:
+                    clauses.append(f"event_type IN ({','.join('?' for _ in types)})")
+                    params.extend(types)
+                rows = conn.execute(
+                    "SELECT sequence, event_id, task_id, event_type, event_time, source, payload_json "
+                    f"FROM task_events WHERE {' AND '.join(clauses)} ORDER BY sequence ASC",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    event = self._event_from_row(dict(row))
+                    grouped.setdefault(str(event["task_id"]), []).append(event)
+        return grouped
+
     def list_all_events(self, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -370,14 +403,25 @@ class TaskRepository:
             if snapshot.source != "local" or snapshot.owner_pid <= 0 or is_process_alive(snapshot.owner_pid):
                 continue
             now = utc_now_iso()
+            form_connection_test = snapshot.task_id.startswith("device-form-test-")
+            message = (
+                "临时表单连接测试不可恢复"
+                if form_connection_test
+                else "任务宿主已退出"
+            )
+            error_message = (
+                "上次运行非正常中断，一次性表单凭据已失效，请重新提交测试"
+                if form_connection_test
+                else "上次运行非正常中断，未发现仍存活的本地任务宿主"
+            )
             updated = TaskSnapshot(
                 **{
                     **asdict(snapshot),
                     "status": TaskState.FAILED,
                     "finished_time": now,
                     "updated_time": now,
-                    "message": "任务宿主已退出",
-                    "error_message": "上次运行非正常中断，未发现仍存活的本地任务宿主",
+                    "message": message,
+                    "error_message": error_message,
                 }
             )
             event = TaskEvent(

@@ -86,6 +86,8 @@ export interface FileDownloadTask {
   source_kind: 'managed_file' | 'remote' | ''
   device_name: string
   remote_name: string
+  remote_path: string
+  local_path: string
   downloaded_bytes: number
   total_bytes: number
   speed_bytes_per_second: number

@@ -7,13 +7,14 @@ import json
 import os
 import re
 import threading
-from time import monotonic, sleep
+from time import monotonic, perf_counter, sleep, time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -38,6 +39,7 @@ from netconsole.models.api.file_management import (
     RemoteFilePageDTO,
 )
 from netconsole.models.device import Device
+from netconsole.models.mesh_log_models import MeshMrProfile
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -46,6 +48,7 @@ from netconsole.repositories.mesh_mr_repository import MeshSchemaRebuildRequired
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.file_transfer_service import (
+    FileTransferConnectionError,
     FileTransferService,
     RemoteDeviceFile,
     SftpUnavailableError,
@@ -82,6 +85,7 @@ ARTIFACT_ID_RE = re.compile(r"^fa1_[0-9a-f]{32}$")
 LOCAL_ENTRY_ID_RE = re.compile(r"^fl1_[0-9a-f]{32}$")
 DEVICE_FILE_REF_RE = re.compile(r"^fd1_[0-9a-f]{32}$")
 DESKTOP_ACTION_RE = re.compile(r"^fda1_[0-9a-f]{32}$")
+SFTP_SETUP_CONFIRMATION_RE = re.compile(r"^sf1_[0-9a-f]{32}$")
 FILE_CATEGORIES = {"session", "raw", "package", "artifact"}
 ARTIFACT_SUFFIXES = {".csv", ".diff", ".html", ".json", ".md", ".pdf", ".png", ".txt", ".xls", ".xlsx"}
 PACKAGE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".zip.gz")
@@ -114,9 +118,17 @@ class FileReferenceNotFound(FileManagementError):
 class DeviceFileSftpError(RuntimeError):
     """设备文件连接的稳定错误契约；不携带命令、凭据或服务端路径。"""
 
-    def __init__(self, code: str, message: str, *, task_id: str = "") -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        task_id: str = "",
+        details: dict[str, object] | None = None,
+    ) -> None:
         self.code = code
         self.task_id = str(task_id or "")
+        self.details = dict(details or {})
         super().__init__(message)
 
 
@@ -182,6 +194,15 @@ class _PendingHostKey:
     port: int
     key: object
     details: HostKeyDetails
+    sftp_enable_task_id: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class _PendingSftpSetup:
+    site_id: str
+    device_id: str
+    trust_host_key_once: bool
     expires_at: datetime
 
 
@@ -218,6 +239,8 @@ class FileManagementApplicationService:
         self._sessions_lock = threading.RLock()
         self._pending_host_keys: dict[str, _PendingHostKey] = {}
         self._pending_host_keys_lock = threading.RLock()
+        self._pending_sftp_setups: dict[str, _PendingSftpSetup] = {}
+        self._pending_sftp_setups_lock = threading.RLock()
         self._local_entries: dict[str, _LocalEntry] = {}
         self._local_entry_ids: dict[tuple[str, str, str], str] = {}
         self._local_entries_lock = threading.RLock()
@@ -226,6 +249,7 @@ class FileManagementApplicationService:
         self._target_lock = threading.RLock()
         self._reserved_targets: set[str] = set()
         self._parts_cleaned: set[str] = set()
+        self._parts_cleanup_thread: threading.Thread | None = None
         self._queue_lock = threading.RLock()
         self._queue_sites: set[str] = {self.site_name}
         self._queue_stop = threading.Event()
@@ -240,21 +264,29 @@ class FileManagementApplicationService:
     def start(self) -> None:
         """启动持久下载队列；只由宿主生命周期调用。"""
 
-        if (
-            self._queue_stop.is_set()
-            or self.task_service is None
-            or not callable(getattr(self.process_adapter, "start_job", None))
-        ):
+        if self._queue_stop.is_set():
             return
         with self._queue_lock:
-            if self._queue_thread is not None and self._queue_thread.is_alive():
-                return
-            self._queue_thread = threading.Thread(
-                target=self._run_download_queue,
-                name="file-management-download-queue",
-                daemon=True,
-            )
-            self._queue_thread.start()
+            if (
+                self.task_service is not None
+                and callable(getattr(self.process_adapter, "start_job", None))
+                and (self._queue_thread is None or not self._queue_thread.is_alive())
+            ):
+                self._queue_thread = threading.Thread(
+                    target=self._run_download_queue,
+                    name="file-management-download-queue",
+                    daemon=True,
+                )
+                self._queue_thread.start()
+            if self._parts_cleanup_thread is None or not self._parts_cleanup_thread.is_alive():
+                site = self.current_site_id()
+                self._parts_cleanup_thread = threading.Thread(
+                    target=self._cleanup_stale_parts_once,
+                    args=(site,),
+                    name="file-management-part-cleanup",
+                    daemon=True,
+                )
+                self._parts_cleanup_thread.start()
 
     def close(self) -> None:
         """幂等关闭全部 Web 会话；FastAPI lifespan 必须在 shutdown 调用。"""
@@ -268,11 +300,18 @@ class FileManagementApplicationService:
             with self._queue_lock:
                 if self._queue_thread is queue_thread:
                     self._queue_thread = None
+        cleanup_thread = self._parts_cleanup_thread
+        if cleanup_thread is not None and cleanup_thread is not threading.current_thread():
+            cleanup_thread.join(timeout=2.0)
+            if not cleanup_thread.is_alive():
+                self._parts_cleanup_thread = None
         with self._sessions_lock:
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
         with self._pending_host_keys_lock:
             self._pending_host_keys.clear()
+        with self._pending_sftp_setups_lock:
+            self._pending_sftp_setups.clear()
         for session in sessions:
             try:
                 session.transfer.disconnect()
@@ -289,7 +328,6 @@ class FileManagementApplicationService:
 
     def status(self, site_id: str = "") -> FileManagementStatusDTO:
         site = self._site_id(site_id)
-        self._cleanup_stale_parts_once(site)
         with self._queue_lock:
             self._queue_sites.add(site)
         device_db_exists = self.paths.site_db_path(site).is_file()
@@ -319,7 +357,6 @@ class FileManagementApplicationService:
         site = self._site_id(site_id)
         with self._queue_lock:
             self._queue_sites.add(site)
-        self._cleanup_stale_parts_once(site)
         root = self._local_root(site)
         root.mkdir(parents=True, exist_ok=True)
         root_id = self._remember_local_entry(site, root, root)
@@ -441,7 +478,6 @@ class FileManagementApplicationService:
         site_id: str,
         device_id: str,
         *,
-        allow_sftp_setup: bool = False,
         trust_host_key_once: bool = False,
     ) -> FileConnectionDTO:
         site = self._site_id(site_id)
@@ -452,7 +488,6 @@ class FileManagementApplicationService:
             site,
             trust_host_key_once=trust_host_key_once,
         )
-        auto_enabled = False
         try:
             root_path = normalize_remote_path(transfer.connect(device))
         except SftpUnavailableError as exc:
@@ -460,59 +495,110 @@ class FileManagementApplicationService:
                 transfer.disconnect()
             except Exception:
                 pass
-            if not allow_sftp_setup:
-                raise DeviceFileSftpError(
-                    SftpUnavailableError.code,
-                    "设备当前未启用 SFTP。可勾选“SFTP 未启用时，允许自动配置并重连”后重新连接。",
-                ) from exc
-            task_id = self._enable_device_sftp(site, device)
-            auto_enabled = True
-            transfer = self._new_transfer(site, trust_host_key_once=trust_host_key_once)
-            transfer, root_path = self._reconnect_after_sftp_enable(
+            self._request_sftp_setup_confirmation(
                 site,
                 device,
-                transfer,
-                task_id=task_id,
                 trust_host_key_once=trust_host_key_once,
             )
+            raise AssertionError("SFTP setup confirmation must interrupt the connection flow") from exc
         except HostKeyTrustError as exc:
             try:
                 transfer.disconnect()
             except Exception:
                 pass
-            if exc.code != "DEVICE_FILE_HOST_KEY_UNKNOWN":
-                raise
-            challenge_id = f"hk1_{uuid4().hex}"
-            details = HostKeyDetails(
-                host=str(exc.details.get("host") or device.primary_address or ""),
-                port=int(exc.details.get("port") or device.ssh_port or 22),
-                algorithm=str(exc.details.get("algorithm") or ""),
-                fingerprint_sha256=str(exc.details.get("fingerprint_sha256") or ""),
-            )
-            # The key object remains process-local; it is never serialized to API or disk.
-            key = getattr(exc, "key", None)
-            if key is None:
-                raise
-            with self._pending_host_keys_lock:
-                self._pending_host_keys[challenge_id] = _PendingHostKey(
-                    site_id=site,
-                    device_id=device_key,
-                    host=details.host,
-                    port=details.port,
-                    key=key,
-                    details=details,
-                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
-                )
-            raise HostKeyTrustError(
-                str(exc),
-                {**details.as_dict(), "challenge_id": challenge_id, "device_id": device_key, "device_name": str(device.name or "")},
-            ) from exc
+            self._raise_host_key_challenge(site, device, exc)
+        except FileTransferConnectionError as exc:
+            try:
+                transfer.disconnect()
+            except Exception:
+                pass
+            raise DeviceFileSftpError(exc.code, str(exc)) from exc
         except Exception as exc:
             try:
                 transfer.disconnect()
             except Exception:
                 pass
-            raise RuntimeError(f"设备文件连接失败：{exc}") from exc
+            app_logger.log_error(
+                "DEVICE_FILE_NETWORK_UNREACHABLE",
+                f"device={device.name or device.primary_address}, error={sanitize_sensitive_text(str(exc), device)}",
+            )
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_NETWORK_UNREACHABLE",
+                "设备网络不可达或 SSH 端口不可用。",
+            ) from exc
+        return self._register_connected_transfer(site, device_key, device, transfer, root_path, message="SFTP 连接成功")
+
+    def _request_sftp_setup_confirmation(
+        self,
+        site: str,
+        device: Device,
+        *,
+        trust_host_key_once: bool,
+    ) -> None:
+        confirmation_id = f"sf1_{uuid4().hex}"
+        device_id = str(device.device_uuid or device.id or "")
+        with self._pending_sftp_setups_lock:
+            now = datetime.now(UTC)
+            self._pending_sftp_setups = {
+                key: value
+                for key, value in self._pending_sftp_setups.items()
+                if value.expires_at >= now
+            }
+            self._pending_sftp_setups[confirmation_id] = _PendingSftpSetup(
+                site_id=site,
+                device_id=device_id,
+                trust_host_key_once=bool(trust_host_key_once),
+                expires_at=now + timedelta(minutes=5),
+            )
+        raise DeviceFileSftpError(
+            "DEVICE_FILE_SFTP_UNAVAILABLE",
+            "检测到设备未启用 SFTP，需要确认后通过受控命令启用并重新连接。",
+            details={"confirmation_id": confirmation_id},
+        )
+
+    def confirm_sftp_setup(self, site_id: str, confirmation_id: str) -> FileConnectionDTO:
+        site = self._site_id(site_id)
+        value = str(confirmation_id or "").strip()
+        if not SFTP_SETUP_CONFIRMATION_RE.fullmatch(value):
+            raise FileReferenceNotFound("SFTP 自动恢复确认已失效")
+        with self._pending_sftp_setups_lock:
+            pending = self._pending_sftp_setups.pop(value, None)
+        if pending is None or pending.site_id != site or pending.expires_at <= datetime.now(UTC):
+            raise FileReferenceNotFound("SFTP 自动恢复确认已失效，请重新连接设备")
+        device = self._resolve_device(site, pending.device_id)
+        device_key = str(device.device_uuid or pending.device_id)
+        self._close_device_sessions(site, device_key)
+        task_id = self._enable_device_sftp(site, device)
+        transfer = self._new_transfer(site, trust_host_key_once=pending.trust_host_key_once)
+        try:
+            transfer, root_path = self._reconnect_after_sftp_enable(
+                site,
+                device,
+                transfer,
+                task_id=task_id,
+                trust_host_key_once=pending.trust_host_key_once,
+            )
+        except HostKeyTrustError as exc:
+            self._raise_host_key_challenge(site, device, exc, sftp_enable_task_id=task_id)
+        return self._register_connected_transfer(
+            site,
+            device_key,
+            device,
+            transfer,
+            root_path,
+            message="已在设备侧启用 SFTP，并完成重新连接。",
+        )
+
+    def _register_connected_transfer(
+        self,
+        site: str,
+        device_key: str,
+        device: Device,
+        transfer: FileTransferService,
+        root_path: str,
+        *,
+        message: str,
+    ) -> FileConnectionDTO:
         connection_id = f"fc1_{uuid4().hex}"
         root_file = RemoteDeviceFile("根目录", root_path, None, None, "dir", is_dir=True, file_type="directory")
         root_entry_id = self._new_remote_entry_id()
@@ -530,10 +616,7 @@ class FileManagementApplicationService:
             lock=threading.RLock(),
         )
         self._register_session(session)
-        return self._connection_dto(
-            session,
-            "已在设备侧启用 SFTP，并完成重新连接。" if auto_enabled else "已连接",
-        )
+        return self._connection_dto(session, message)
 
     def _new_transfer(self, site: str, *, trust_host_key_once: bool = False) -> FileTransferService:
         """创建只读 SFTP Transport；自动配置不属于 Transport 构造契约。"""
@@ -573,7 +656,7 @@ class FileManagementApplicationService:
         task_id = str(task.task_id or "")
         if not task_id:
             raise DeviceFileSftpError("DEVICE_FILE_SFTP_ENABLE_FAILED", "自动启用 SFTP 任务未能创建。")
-        if not self._wait_for_task(site, task_id, timeout_seconds=15.0):
+        if not self._wait_for_task(site, task_id, timeout_seconds=60.0):
             raise DeviceFileSftpError(
                 "DEVICE_FILE_SFTP_ENABLE_PENDING",
                 "正在执行启用设备 SFTP 任务，请稍候后从任务中心查看结果。",
@@ -616,12 +699,15 @@ class FileManagementApplicationService:
                         site,
                         trust_host_key_once=trust_host_key_once,
                     )
+            except HostKeyTrustError:
+                transfer.disconnect()
+                raise
             except Exception as exc:
                 last_error = exc
                 transfer.disconnect()
                 break
         raise DeviceFileSftpError(
-            "DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED",
+            "DEVICE_FILE_SFTP_RECONNECT_FAILED",
             "设备侧 SFTP 已执行启用，但重新连接设备文件服务失败，请稍后重试。",
             task_id=task_id,
         ) from last_error
@@ -656,7 +742,6 @@ class FileManagementApplicationService:
         challenge_id: str,
         *,
         persist: bool,
-        allow_sftp_setup: bool = False,
     ) -> FileConnectionDTO:
         site = self._site_id(site_id)
         value = str(challenge_id or "").strip()
@@ -668,12 +753,79 @@ class FileManagementApplicationService:
             raise FileReferenceNotFound("主机密钥确认已失效，请重新连接设备")
         if persist:
             HostKeyTrustService(self.paths).trust(pending.host, pending.port, pending.key)
+        if pending.sftp_enable_task_id:
+            device = self._resolve_device(site, pending.device_id)
+            transfer = self._new_transfer(site, trust_host_key_once=True)
+            try:
+                transfer, root_path = self._reconnect_after_sftp_enable(
+                    site,
+                    device,
+                    transfer,
+                    task_id=pending.sftp_enable_task_id,
+                    trust_host_key_once=True,
+                )
+            except HostKeyTrustError as exc:
+                self._raise_host_key_challenge(
+                    site,
+                    device,
+                    exc,
+                    sftp_enable_task_id=pending.sftp_enable_task_id,
+                )
+            return self._register_connected_transfer(
+                site,
+                str(device.device_uuid or pending.device_id),
+                device,
+                transfer,
+                root_path,
+                message="已在设备侧启用 SFTP，并完成重新连接。",
+            )
         return self.connect_device(
             site,
             pending.device_id,
-            allow_sftp_setup=allow_sftp_setup,
             trust_host_key_once=True,
         )
+
+    def _raise_host_key_challenge(
+        self,
+        site: str,
+        device: Device,
+        exc: HostKeyTrustError,
+        *,
+        sftp_enable_task_id: str = "",
+    ) -> None:
+        if exc.code != "DEVICE_FILE_HOST_KEY_UNKNOWN":
+            raise exc
+        device_key = str(device.device_uuid or device.id or "")
+        challenge_id = f"hk1_{uuid4().hex}"
+        details = HostKeyDetails(
+            host=str(exc.details.get("host") or device.primary_address or ""),
+            port=int(exc.details.get("port") or device.ssh_port or 22),
+            algorithm=str(exc.details.get("algorithm") or ""),
+            fingerprint_sha256=str(exc.details.get("fingerprint_sha256") or ""),
+        )
+        key = getattr(exc, "key", None)
+        if key is None:
+            raise exc
+        with self._pending_host_keys_lock:
+            self._pending_host_keys[challenge_id] = _PendingHostKey(
+                site_id=site,
+                device_id=device_key,
+                host=details.host,
+                port=details.port,
+                key=key,
+                details=details,
+                sftp_enable_task_id=str(sftp_enable_task_id or ""),
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+        raise HostKeyTrustError(
+            str(exc),
+            {
+                **details.as_dict(),
+                "challenge_id": challenge_id,
+                "device_id": device_key,
+                "device_name": str(device.name or ""),
+            },
+        ) from exc
 
     def disconnect_device(self, site_id: str, connection_id: str) -> FileConnectionDTO:
         session = self._session(site_id, connection_id)
@@ -691,6 +843,7 @@ class FileManagementApplicationService:
     ) -> RemoteFilePageDTO:
         session = self._session(site_id, connection_id)
         with session.lock:
+            self._assert_session_active(session)
             selected_id = str(entry_id or session.current_entry_id)
             selected = session.entries.get(selected_id)
             if selected is None:
@@ -700,7 +853,17 @@ class FileManagementApplicationService:
             try:
                 files = session.transfer.list_directory(selected.remote_file.remote_path)
             except Exception as exc:
-                raise RuntimeError(f"远程目录读取失败：{exc}") from exc
+                if self._is_session_failure(exc) or not self._transfer_is_connected(session.transfer):
+                    self._close_session(session)
+                    raise DeviceFileSftpError(
+                        "DEVICE_FILE_SESSION_DISCONNECTED",
+                        "设备文件会话已断开，请重新连接。",
+                    ) from exc
+                app_logger.log_error(
+                    "DEVICE_FILE_REMOTE_LIST_FAILED",
+                    f"device={session.device.name or session.device.primary_address}, error={sanitize_sensitive_text(str(exc), session.device)}",
+                )
+                raise FileManagementError("远程目录读取失败，请检查当前账号的目录读取权限。") from exc
             items: list[RemoteFileEntryDTO] = []
             for remote_file in files:
                 normalized = normalize_remote_path(
@@ -758,54 +921,30 @@ class FileManagementApplicationService:
                 has_more=start + selected_limit < len(items),
             )
 
-    def list_download_tasks(self, site_id: str, limit: int = 100) -> list[FileDownloadTaskDTO]:
+    def list_download_tasks(self, site_id: str, limit: int = 20) -> list[FileDownloadTaskDTO]:
         if self.task_service is None:
             return []
         site = self._site_id(site_id)
         with self._queue_lock:
             self._queue_sites.add(site)
-        self._cleanup_stale_parts_once(site)
         requested = max(1, min(int(limit), 200))
-        page_size = min(200, max(50, requested))
-        tasks: list[FileDownloadTaskDTO] = []
-        task_ids: set[str] = set()
         repository = self.task_service.repository(site)
-
-        offset = 0
-        while True:
-            snapshots = repository.list(statuses=ACTIVE_DOWNLOAD_STATES, limit=page_size, offset=offset)
-            if not snapshots:
-                break
-            offset += len(snapshots)
-            for snapshot in snapshots:
-                if self._is_download_snapshot(snapshot) and not self._task_hidden(repository, snapshot.task_id):
-                    tasks.append(self._download_task_from_snapshot(site, snapshot))
-                    task_ids.add(snapshot.task_id)
-            if len(snapshots) < page_size:
-                break
-
-        if len(tasks) >= requested:
-            return tasks
-
-        offset = 0
-        while len(tasks) < requested:
-            snapshots = repository.list(limit=page_size, offset=offset)
-            if not snapshots:
-                break
-            offset += len(snapshots)
-            for snapshot in snapshots:
-                if (
-                    snapshot.task_id not in task_ids
-                    and self._is_download_snapshot(snapshot)
-                    and not self._task_hidden(repository, snapshot.task_id)
-                ):
-                    tasks.append(self._download_task_from_snapshot(site, snapshot))
-                    task_ids.add(snapshot.task_id)
-                    if len(tasks) >= requested:
-                        break
-            if len(snapshots) < page_size:
-                break
-        return tasks
+        filters = {
+            "owner": "web_file_management",
+            "source": "local",
+            "site_name": site,
+            "task_types": {"file_management_download"},
+        }
+        active = repository.list_filtered(statuses=ACTIVE_DOWNLOAD_STATES, limit=1000, **filters)
+        remaining = max(0, requested - len(active))
+        terminal = repository.list_filtered(statuses=TERMINAL_DOWNLOAD_STATES, limit=remaining, **filters) if remaining else []
+        snapshots = [*active, *terminal]
+        metadata = self._download_task_metadata(repository, snapshots)
+        return [
+            self._download_task_from_snapshot(site, snapshot, metadata=metadata.get(snapshot.task_id))
+            for snapshot in snapshots
+            if not bool(metadata.get(snapshot.task_id, {}).get("hidden"))
+        ]
 
     def cancel_download(self, site_id: str, task_id: str) -> FileDownloadTaskDTO:
         task = self.download_task(site_id, task_id)
@@ -846,9 +985,13 @@ class FileManagementApplicationService:
                 site_id=site,
                 device_id=str(device.device_uuid or device.id or ""),
             )
-        if selected == "open_result_dir":
+        if selected in {"open_result", "open_result_dir"}:
             path, _name = self.open_download(site, task_id)
-            command = FileDesktopActionCommand(action=selected, site_id=site, path=path.parent)
+            command = FileDesktopActionCommand(
+                action=selected,
+                site_id=site,
+                path=path if selected == "open_result" else path.parent,
+            )
         elif selected == "open_local":
             entry = self._local_entry(site, local_entry_id)
             command = FileDesktopActionCommand(action=selected, site_id=site, path=entry.path)
@@ -889,23 +1032,27 @@ class FileManagementApplicationService:
         service = self._desktop_action_service
         if service is None or service.runtime_mode is not RuntimeMode.DESKTOP:
             raise FileManagementError("当前运行模式不允许桌面动作")
-        if command.action in {"open_local", "open_result_dir"}:
+        if command.action in {"open_local", "open_result", "open_result_dir"}:
             if command.path is None:
                 raise FileManagementError("桌面动作目标不存在")
-            result = service.open_controlled_path(command.path, expect_directory=True)
+            expect_directory = command.action == "open_result_dir" or command.path.is_dir()
+            result = service.open_controlled_path(command.path, expect_directory=expect_directory)
             if not result.success:
                 raise FileManagementError(result.message or result.code)
             return FileDesktopActionResultDTO(
                 action=command.action,
                 success=True,
-                message="已打开目录。",
+                message="已打开目录。" if expect_directory else "已打开文件。",
             )
         if command.action == "winscp":
             device = self._resolve_device(command.site_id, command.device_id)
+            preferred_target = self._connected_target(command.site_id, command.device_id)
+            launch_options = {"preferred_target": preferred_target} if preferred_target is not None else {}
             result = launch_winscp(
                 device,
                 SettingsStore(self.paths),
-                include_password=False,
+                include_password=True,
+                **launch_options,
             )
             if not result.success:
                 raise FileManagementError(result.message)
@@ -915,6 +1062,16 @@ class FileManagementApplicationService:
                 message=result.message,
             )
         raise FileManagementError("不支持的桌面动作")
+
+    def _connected_target(self, site: str, device_id: str):
+        with self._sessions_lock:
+            sessions = tuple(self._sessions.values())
+        for session in sessions:
+            if session.site_id == site and session.device_id == str(device_id):
+                target = getattr(session.transfer, "successful_target", None)
+                if target is not None:
+                    return target
+        return None
 
     def _winscp_capability(self) -> FileManagementCapabilityDTO:
         service = self._desktop_action_service
@@ -1002,6 +1159,7 @@ class FileManagementApplicationService:
         else:
             session = self._session(site, connection_id)
             with session.lock:
+                self._assert_session_active(session)
                 entry = session.entries.get(str(remote_entry_id or ""))
                 if entry is None or not REMOTE_ENTRY_ID_RE.fullmatch(str(remote_entry_id or "")):
                     raise FileReferenceNotFound("远程文件引用不存在或不属于当前设备会话")
@@ -1207,9 +1365,17 @@ class FileManagementApplicationService:
             return None
         return self._download_task_from_snapshot(site, snapshot)
 
-    def _download_task_from_snapshot(self, site: str, snapshot) -> FileDownloadTaskDTO:
+    def _download_task_from_snapshot(
+        self,
+        site: str,
+        snapshot,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> FileDownloadTaskDTO:
         repository = self.task_service.repository(site) if self.task_service is not None else None
-        descriptor = self._task_descriptor(repository, snapshot.task_id) if repository is not None else {}
+        descriptor = dict(metadata.get("descriptor") or {}) if metadata is not None else (
+            self._task_descriptor(repository, snapshot.task_id) if repository is not None else {}
+        )
         descriptor = descriptor or {}
         result = dict(snapshot.result or {})
         result_dto = None
@@ -1252,6 +1418,14 @@ class FileManagementApplicationService:
         total = max(0, int(snapshot.total or descriptor.get("remote_size") or 0))
         current = max(0, int(snapshot.current or (total if snapshot.status is TaskState.COMPLETED else 0)))
         speed = self._average_speed(snapshot.started_time, snapshot.finished_time or snapshot.updated_time, current)
+        local_path = ""
+        target_relative_path = str(descriptor.get("target_relative_path") or "")
+        target_kind = str(descriptor.get("target_kind") or "device_file")
+        if target_relative_path:
+            try:
+                local_path = str(self._safe_download_target(site, target_relative_path, target_kind))
+            except FileManagementError:
+                local_path = ""
         mesh_import_failed = result_dto is not None and result_dto.mesh_import_status == "failed"
         retryable = (
             snapshot.status in {TaskState.FAILED, TaskState.CANCELLED} or mesh_import_failed
@@ -1267,6 +1441,8 @@ class FileManagementApplicationService:
             source_kind=str(descriptor.get("source_kind") or ""),
             device_name=str(descriptor.get("device_name") or ""),
             remote_name=str(descriptor.get("remote_name") or descriptor.get("name") or ""),
+            remote_path=str(descriptor.get("remote_path") or ""),
+            local_path=local_path,
             downloaded_bytes=current,
             total_bytes=total,
             speed_bytes_per_second=speed,
@@ -1399,13 +1575,17 @@ class FileManagementApplicationService:
         relative = output.relative_to(context.paths.site_dir(site).resolve()).as_posix()
         size = output.stat().st_size
         digest = file_sha256(output)
+        output_name = _download_display_name(output.name)
+        if not output_name:
+            raise FileManagementError("下载结果文件名无效")
         context.progress("file_verify", 1, 1, f"已校验 {remote_file.name}")
         mesh_import = self._auto_import_mesh(context, site, device, output, target_kind)
         return {
             "result_kind": "device_file",
-            "name": display_name,
+            "name": output_name,
             "size_bytes": size,
             "sha256": digest,
+            "relative_path": relative,
             "device_file_ref": self._device_file_ref(context.job_id, relative, digest),
             "device_id": device_id,
             "remote_entry_id": remote_entry_id,
@@ -1493,6 +1673,38 @@ class FileManagementApplicationService:
         if session is None or session.site_id != site:
             raise FileReferenceNotFound("设备文件连接不存在或不属于当前局点")
         return session
+
+    def _assert_session_active(self, session: _RemoteSession) -> None:
+        if self._transfer_is_connected(session.transfer):
+            return
+        self._close_session(session)
+        raise DeviceFileSftpError(
+            "DEVICE_FILE_SESSION_DISCONNECTED",
+            "设备文件会话已断开，请重新连接。",
+        )
+
+    @staticmethod
+    def _transfer_is_connected(transfer: FileTransferService) -> bool:
+        check = getattr(transfer, "is_connected", None)
+        if not callable(check):
+            return True
+        try:
+            return bool(check())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_session_failure(exc: BaseException) -> bool:
+        name = exc.__class__.__name__.casefold()
+        message = str(exc or "").casefold()
+        return (
+            name in {"sshexception", "channelexception", "eoferror"}
+            or "channel closed" in message
+            or "socket is closed" in message
+            or "session is not active" in message
+            or "server connection dropped" in message
+            or "eof during negotiation" in message
+        )
 
     def _close_device_sessions(self, site: str, device_id: str) -> None:
         with self._sessions_lock:
@@ -1600,8 +1812,8 @@ class FileManagementApplicationService:
         remote_file: RemoteDeviceFile,
         local_directory_id: str,
     ) -> tuple[Path, str]:
-        if is_mesh_log_file(remote_file.name) and self._is_vehicle_mr_device(device):
-            profile = MeshStorageService(site, self.paths).ensure_mr_profile_identity_for_device(device)
+        profile = self._vehicle_mr_profile(site, device) if is_mesh_log_file(remote_file.name) else None
+        if profile is not None:
             directory = self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
             target_kind = "mr_raw"
         elif local_directory_id:
@@ -1640,9 +1852,19 @@ class FileManagementApplicationService:
             self._reserved_targets.add(str(candidate.resolve()))
             return candidate
 
-    @staticmethod
-    def _is_vehicle_mr_device(device: Device) -> bool:
-        return any("MR" in str(value or "").upper() for value in (device.device_type, device.name, device.system_name))
+    def _vehicle_mr_profile(self, site: str, device: Device) -> MeshMrProfile | None:
+        """仅以精确设备分组授权 MESH raw 路由，并确保 Profile 与设备身份关联。"""
+
+        if device.id is None or device.group_id is None or not self.paths.site_db_path(site).is_file():
+            return None
+        database = Database(self.paths.site_db_path(site))
+        try:
+            group = DeviceGroupRepository(database, site).get(int(device.group_id))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if str(group.name or "").strip() != "车载-MR":
+            return None
+        return MeshStorageService(site, self.paths).ensure_mr_profile_identity_for_device(device)
 
     @staticmethod
     def _remote_file_from_descriptor(descriptor: dict[str, object]) -> RemoteDeviceFile:
@@ -1699,6 +1921,35 @@ class FileManagementApplicationService:
                 except (OSError, ValueError, RuntimeError):
                     descriptor = None
         return descriptor
+
+    @staticmethod
+    def _download_task_metadata(repository, snapshots: Iterable[TaskSnapshot]) -> dict[str, dict[str, object]]:
+        selected = list(snapshots)
+        by_id = {snapshot.task_id: snapshot for snapshot in selected}
+        grouped = repository.list_events_for_tasks(
+            by_id,
+            event_types={DOWNLOAD_DESCRIPTOR_EVENT, DOWNLOAD_HIDDEN_EVENT, DOWNLOAD_WAITING_EVENT},
+        )
+        result: dict[str, dict[str, object]] = {}
+        for task_id, snapshot in by_id.items():
+            descriptor: dict[str, object] | None = None
+            hidden = False
+            waiting = False
+            for event in grouped.get(task_id, []):
+                payload = dict(event.get("payload") or {})
+                if event.get("type") == DOWNLOAD_DESCRIPTOR_EVENT:
+                    token = str(payload.get("protected_descriptor") or "")
+                    if token:
+                        try:
+                            descriptor = _unprotect_descriptor(token, snapshot.site_name, task_id)
+                        except (OSError, ValueError, RuntimeError):
+                            descriptor = None
+                elif event.get("type") == DOWNLOAD_HIDDEN_EVENT:
+                    hidden = bool(payload.get("hidden"))
+                elif event.get("type") == DOWNLOAD_WAITING_EVENT:
+                    waiting = bool(payload.get("waiting"))
+            result[task_id] = {"descriptor": descriptor or {}, "hidden": hidden, "waiting": waiting}
+        return result
 
     @staticmethod
     def _task_hidden(repository, task_id: str) -> bool:
@@ -1833,19 +2084,38 @@ class FileManagementApplicationService:
         with self._target_lock:
             if site in self._parts_cleaned:
                 return
+            started = perf_counter()
+            scanned = 0
+            deleted = 0
+            failures = 0
+            cutoff = time() - 24 * 60 * 60
             roots = (self.paths.file_downloads_root(site), self.paths.site_mesh_root(site))
             for root in roots:
                 if not root.is_dir():
                     continue
                 for part in root.rglob("*.part"):
+                    if scanned >= 1000:
+                        break
+                    scanned += 1
                     try:
-                        if part.is_symlink() or not part.is_file():
+                        if part.is_symlink() or not part.is_file() or part.stat().st_mtime > cutoff:
                             continue
                         self._assert_within(part, root, "临时文件超出受控清理目录")
                         part.unlink()
-                    except OSError:
+                        deleted += 1
+                    except (OSError, FileManagementError):
+                        failures += 1
                         continue
+                if scanned >= 1000:
+                    break
             self._parts_cleaned.add(site)
+            app_logger.log_info(
+                "DEVICE_FILE_PART_CLEANUP_COMPLETED",
+                (
+                    f"site={site}, scanned={scanned}, deleted={deleted}, failures={failures}, "
+                    f"elapsed_ms={int((perf_counter() - started) * 1000)}"
+                ),
+            )
 
     def _safe_site_relative_path(self, site: str, relative_path: str, *, under_downloads: bool = False) -> Path:
         value = str(relative_path or "").strip()
@@ -1987,7 +2257,7 @@ def _crypt_protect(data: bytes, entropy: bytes, *, decrypt: bool) -> bytes:
 
 def is_mesh_log_file(filename: str) -> bool:
     basename = Path(str(filename or "")).name
-    return basename.casefold() == "meshlog.log" or MESH_HISTORY_LOG_PATTERN.fullmatch(basename) is not None
+    return basename.casefold() in {"meshlog.log", "meshlog.log.gz"} or MESH_HISTORY_LOG_PATTERN.fullmatch(basename) is not None
 
 
 def resolve_local_download_name(remote_file: RemoteDeviceFile, device_name: str = "", today: date | None = None) -> str:
@@ -1995,10 +2265,12 @@ def resolve_local_download_name(remote_file: RemoteDeviceFile, device_name: str 
     safe_name = safe_device_name(device_name or "device")
     if MESH_HISTORY_LOG_PATTERN.fullmatch(basename):
         return f"{safe_name}-{basename}"
-    if basename.casefold() != "meshlog.log":
+    mesh_name = basename.casefold()
+    if mesh_name not in {"meshlog.log", "meshlog.log.gz"}:
         return basename
     resolved_date = _meshlog_modified_date(remote_file.modified_time) or today or date.today()
-    return f"{safe_name}-{resolved_date:%Y_%m_%d}-meshlog.log"
+    suffix = "meshlog.log.gz" if mesh_name.endswith(".gz") else "meshlog.log"
+    return f"{safe_name}-{resolved_date:%Y_%m_%d}-{suffix}"
 
 
 def _meshlog_modified_date(value: object) -> date | None:

@@ -74,4 +74,4 @@ Electron Session 拒绝所有 Chromium 原生 `will-download`，因此 `<a downl
 
 未来新增 `openArtifact`、`launchTerminal` 和 `notification` 仍必须单独增加 DTO、Feature、main 白名单、权限/审计和测试后才能开放。IPOP 仅允许通过 `launch_ipop` 语义动作启动已保存且再次校验的 `IPOP.EXE`；通用外部程序、任意路径和 argv 始终不在白名单。
 
-文件管理模块已实现 `fda1_*`、60 秒有效、一次性消费的强类型动作契约，并在 main/preload/shared 增加独立白名单。Renderer 只能提交动作引用；main 调固定回环端点，Service 仅打开受控目录或启动固定 WinSCP。WinSCP Electron 参数不含密码，不得回退到 Renderer 路径、任意程序/argv 或含密码 URL。验收状态见 [文件管理对等规格](development/parity/file-management.md)。
+文件管理模块已实现 `fda1_*`、60 秒有效、一次性消费的强类型动作契约，并在 main/preload/shared 增加独立白名单。Renderer 只能提交动作引用；main 调固定回环端点，Service 仅打开受控目录或启动固定 WinSCP。WinSCP 的 SSH 密码只在 Python 主进程消费动作后读取并 URL 编码，认证 URL 直接交给固定进程启动，不返回 Renderer、IPC 或 API；安全命令遮蔽原始和编码后密码。不得回退到 Renderer 路径、任意程序/argv 或由 Renderer 提供含密码 URL。验收状态见 [文件管理对等规格](development/parity/file-management.md)。

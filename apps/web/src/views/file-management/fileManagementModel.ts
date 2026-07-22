@@ -41,7 +41,11 @@ export function summarizeDownloadBatches(tasks: FileDownloadTask[]): DownloadBat
 }
 
 export function selectableRemoteFiles(items: RemoteFileEntry[], meshOnly = false): RemoteFileEntry[] {
-  return items.filter((item) => !item.is_dir && item.downloadable && (!meshOnly || /meshlog\.log(?:\.gz)?$/i.test(item.name)))
+  return items.filter((item) => !item.is_dir && item.downloadable && (!meshOnly || isMeshLogName(item.name)))
+}
+
+export function isMeshLogName(name: string): boolean {
+  return /^(?:meshlog\.log(?:\.gz)?|\d{4}_\d{2}_\d{2}_\d+meshlog\.log\.gz)$/i.test(String(name || '').trim())
 }
 
 export function formatBytes(value: number | null | undefined): string {

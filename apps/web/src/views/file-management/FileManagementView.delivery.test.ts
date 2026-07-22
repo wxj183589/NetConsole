@@ -9,29 +9,24 @@ import type { FileDownloadTask } from '../../types/fileManagement'
 const api = vi.hoisted(() => ({
   cancelFileDownload: vi.fn(),
   clearFileDownloads: vi.fn(),
+  confirmDeviceSftpSetup: vi.fn(),
   connectDeviceFiles: vi.fn(),
   createLocalDirectory: vi.fn(),
   disconnectDeviceFiles: vi.fn(),
-  fileDownloadRequest: vi.fn(() => ({ apiPath: '/api/file-management/downloads/task-1/file', suggestedName: 'startup.conf' })),
   getFileManagementStatus: vi.fn(),
   listFileDownloads: vi.fn(),
   listLocalFiles: vi.fn(),
   listRemoteDevices: vi.fn(),
   listRemoteFiles: vi.fn(),
-  localFileDownloadRequest: vi.fn(),
   prepareFileDesktopAction: vi.fn(),
   retryFileDownload: vi.fn(),
   startRemoteFileDownloadBatch: vi.fn(),
+  trustDeviceHostKey: vi.fn(),
 }))
-const downloadBackendResource = vi.hoisted(() => vi.fn())
 const messages = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), warning: vi.fn() }))
 
 vi.mock('../../api/fileManagement', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
-vi.mock('../../platform/runtime', () => ({
-  downloadBackendResource,
-  getPlatformAdapter: () => ({ openPath: vi.fn(), showItemInFolder: vi.fn() }),
-}))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('element-plus', async (importOriginal) => ({
   ...await importOriginal<typeof import('element-plus')>(),
@@ -79,10 +74,14 @@ describe('FileManagementView download delivery', () => {
       current_label: '下载目录', items: [], total: 0, page: 1, limit: 500, has_more: false,
     })
     api.listFileDownloads.mockResolvedValue([completedTask()])
+    api.prepareFileDesktopAction.mockImplementation(async (action: string) => ({ action_ref: `fda1_${action}` }))
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { executeFileDesktopAction: vi.fn(async () => ({ success: true })) },
+    })
   })
 
-  it('confirms a saved non-openable file and keeps native actions disabled', async () => {
-    downloadBackendResource.mockResolvedValue({ status: 'saved' })
+  it('opens the real completed file and containing directory without a save stage', async () => {
     const wrapper = mount(FileManagementView, {
       global: {
         directives: { loading: () => undefined },
@@ -95,12 +94,15 @@ describe('FileManagementView download delivery', () => {
     })
     await flushPromises()
 
-    await button(wrapper, 'Save').trigger('click')
+    await button(wrapper, 'Open').trigger('click')
+    await button(wrapper, 'Show in folder').trigger('click')
     await flushPromises()
 
-    expect(messages.success).toHaveBeenCalledWith('文件已保存；该文件类型不支持直接打开或定位')
-    expect(button(wrapper, 'Open').attributes('disabled')).toBeDefined()
-    expect(button(wrapper, 'Show in folder').attributes('disabled')).toBeDefined()
+    expect(api.prepareFileDesktopAction).toHaveBeenNthCalledWith(1, 'open_result', { site_id: 'demo', task_id: 'task-1' })
+    expect(api.prepareFileDesktopAction).toHaveBeenNthCalledWith(2, 'open_result_dir', { site_id: 'demo', task_id: 'task-1' })
+    expect(wrapper.text()).not.toContain('Save')
+    expect(messages.success).toHaveBeenCalledWith('已打开文件')
+    expect(messages.success).toHaveBeenCalledWith('已打开目录')
     wrapper.unmount()
   })
 })
@@ -109,6 +111,7 @@ function completedTask(): FileDownloadTask {
   return {
     task_id: 'task-1', site_id: 'demo', status: 'COMPLETED', progress: 100, stage: '', message: '完成',
     batch_id: '', source_kind: 'remote', device_name: 'MR-1', remote_name: 'startup.conf',
+    remote_path: 'flash:/startup.conf', local_path: 'D:/data/downloads/MR-1/startup.conf',
     downloaded_bytes: 12, total_bytes: 12, speed_bytes_per_second: 0,
     created_at: '', updated_at: '', retryable: false, retry_reason: '',
     result: {

@@ -43,10 +43,17 @@ export function createLocalDirectory(values: { site_id?: string; directory_id?: 
   return apiRequest(`${root}/local/directories${qs({ site_id })}`, { method: 'POST', body: JSON.stringify(body) })
 }
 
-export function connectDeviceFiles(deviceId: string, siteId = '', allowSftpSetup = false): Promise<FileConnection> {
+export function connectDeviceFiles(deviceId: string, siteId = ''): Promise<FileConnection> {
   return apiRequest(`${root}/connections${qs({ site_id: siteId })}`, {
     method: 'POST',
-    body: JSON.stringify({ device_id: deviceId, allow_sftp_setup: allowSftpSetup }),
+    body: JSON.stringify({ device_id: deviceId }),
+  })
+}
+
+export function confirmDeviceSftpSetup(confirmationId: string, siteId = ''): Promise<FileConnection> {
+  return apiRequest(`${root}/connections/confirm-sftp-setup${qs({ site_id: siteId })}`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmation_id: confirmationId }),
   })
 }
 
@@ -54,12 +61,11 @@ export function trustDeviceHostKey(
   challengeId: string,
   persist: boolean,
   siteId = '',
-  allowSftpSetup = false,
 ): Promise<FileConnection> {
   const path = persist ? `${root}/host-keys/trust` : `${root}/host-keys/trust-once`
   return apiRequest(path + qs({ site_id: siteId }), {
     method: 'POST',
-    body: JSON.stringify({ challenge_id: challengeId, allow_sftp_setup: allowSftpSetup }),
+    body: JSON.stringify({ challenge_id: challengeId }),
   })
 }
 
@@ -90,7 +96,7 @@ export function startRemoteFileDownloadBatch(
   })
 }
 
-export function listFileDownloads(siteId = '', limit = 100): Promise<FileDownloadTask[]> {
+export function listFileDownloads(siteId = '', limit = 20): Promise<FileDownloadTask[]> {
   return apiRequest(`${root}/downloads${qs({ site_id: siteId, limit })}`)
 }
 
@@ -138,7 +144,7 @@ export function localFileDownloadRequest(entryId: string, siteId: string, sugges
 }
 
 export function prepareFileDesktopAction(
-  action: 'winscp' | 'open_local' | 'open_result_dir',
+  action: 'winscp' | 'open_local' | 'open_result' | 'open_result_dir',
   values: { site_id?: string; device_id?: string; local_entry_id?: string; task_id?: string },
 ): Promise<FileDesktopAction> {
   const { site_id, ...body } = values

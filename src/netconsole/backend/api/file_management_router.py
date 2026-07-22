@@ -25,6 +25,7 @@ from netconsole.models.api.file_management import (
     LocalFilePageDTO,
     ManagedFilePageDTO,
     RemoteFilePageDTO,
+    SftpSetupConfirmationRequestDTO,
 )
 from netconsole.services.file_management_service import (
     DeviceFileSftpError,
@@ -137,7 +138,25 @@ def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, si
         lambda: _service(request).connect_device(
             _site_id(request, site_id),
             payload.device_id,
-            allow_sftp_setup=payload.allow_sftp_setup,
+        )
+    )
+
+
+@router.post(
+    "/connections/confirm-sftp-setup",
+    response_model=FileConnectionDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("web.file_management_remote"))],
+)
+def confirm_sftp_setup(
+    request: Request,
+    payload: SftpSetupConfirmationRequestDTO,
+    site_id: str = Query(default="", max_length=100),
+) -> FileConnectionDTO:
+    return _remote_call(
+        lambda: _service(request).confirm_sftp_setup(
+            _site_id(request, site_id),
+            payload.confirmation_id,
         )
     )
 
@@ -167,7 +186,6 @@ def trust_host_key_once(
             _site_id(request, site_id),
             payload.challenge_id,
             persist=False,
-            allow_sftp_setup=payload.allow_sftp_setup,
         )
     )
 
@@ -188,7 +206,6 @@ def trust_host_key(
             _site_id(request, site_id),
             payload.challenge_id,
             persist=True,
-            allow_sftp_setup=payload.allow_sftp_setup,
         )
     )
 
@@ -301,7 +318,7 @@ def download_task(request: Request, task_id: str, site_id: str = Query(default="
 def list_downloads(
     request: Request,
     site_id: str = Query(default="", max_length=100),
-    limit: int = Query(default=100, ge=1, le=200),
+    limit: int = Query(default=20, ge=1, le=200),
 ) -> list[FileDownloadTaskDTO]:
     return _call(lambda: _service(request).list_download_tasks(_site_id(request, site_id), limit))
 
@@ -395,6 +412,7 @@ def _remote_call(callback):
             "DEVICE_FILE_SFTP_UNAVAILABLE",
             "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
             "DEVICE_FILE_SFTP_ENABLE_PENDING",
+            "DEVICE_FILE_SESSION_DISCONNECTED",
         }
         raise HTTPException(
             status_code=(
@@ -405,7 +423,10 @@ def _remote_call(callback):
             detail={
                 "code": exc.code,
                 "message": str(exc),
-                "details": {"task_id": exc.task_id} if exc.task_id else {},
+                "details": {
+                    **exc.details,
+                    **({"task_id": exc.task_id} if exc.task_id else {}),
+                },
             },
         ) from exc
     except RuntimeError as exc:

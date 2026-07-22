@@ -219,6 +219,43 @@ def test_winscp_command_uses_sftp_and_masks_password():
     ]
 
 
+def test_winscp_url_encodes_all_password_special_characters_and_safe_command_masks_them():
+    password = "@:/% #中文字符"
+    device = Device(
+        name="SW-special",
+        ip_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password=password,
+        telnet_enabled=0,
+    )
+    target = choose_connection_target(device)
+
+    args = build_winscp_command(device, target, r"C:\Tools\WinSCP.exe")
+    safe = _safe_command(args, device)
+
+    assert args[1] == "sftp://admin:%40%3A%2F%25%20%23%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6@10.0.0.1:22/"
+    assert password not in safe
+    assert "%40%3A%2F%25%20%23%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6" not in safe
+
+
+def test_winscp_refuses_automatic_login_when_ssh_password_is_empty(monkeypatch):
+    device = Device(
+        name="SW-no-password",
+        ip_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="",
+        telnet_enabled=0,
+    )
+    monkeypatch.setattr("netconsole.services.external_terminal.find_winscp_exe", lambda _settings=None: r"C:\Tools\WinSCP.exe")
+
+    result = launch_winscp(device)
+
+    assert result.success is False
+    assert result.message == "当前设备未配置 SSH 密码，无法自动登录 WinSCP。"
+
+
 def test_winscp_tunnel_target_uses_localhost_port():
     device = Device(name="SW1", ssh_password="secret")
     target = ConnectionTarget(

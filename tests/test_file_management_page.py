@@ -6,6 +6,7 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.file_transfer_service import (
+    FileTransferConnectionError,
     FileTransferService,
     RemoteDeviceFile,
     SftpUnavailableError,
@@ -163,6 +164,8 @@ def test_file_transfer_does_not_invoke_shell_when_another_sftp_target_is_availab
     service = FileTransferService("demo", PathResolver(tmp_path))
 
     root = service.connect(device)
+    assert service.successful_target is not None
+    assert service.successful_target.host == "10.0.1.1"
     service.disconnect()
 
     assert root == "flash:/"
@@ -359,8 +362,10 @@ def test_open_sftp_channel_closed_keeps_transport_inactive_as_connect_error(
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
 
-    with pytest.raises(RuntimeError, match="Channel closed"):
+    with pytest.raises(FileTransferConnectionError) as excinfo:
         service.connect(device)
+    assert excinfo.value.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
+    assert "Channel closed" not in str(excinfo.value)
 
 
 def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(
@@ -401,10 +406,11 @@ def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(FileTransferConnectionError) as excinfo:
         service.connect(device)
 
-    assert "SSH 登录成功" in str(excinfo.value)
+    assert excinfo.value.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
+    assert "SSH session not active" not in str(excinfo.value)
 
 
 def test_file_transfer_service_rejects_remote_write_operations_in_read_only_mode(

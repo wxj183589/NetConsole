@@ -182,13 +182,19 @@ def launch_winscp(
     sessions: list[object] | None = None,
     *,
     include_password: bool = True,
+    preferred_target: ConnectionTarget | None = None,
 ) -> WinScpLaunchResult:
     exe = find_winscp_exe(settings)
     if not exe:
         return WinScpLaunchResult(False, "未找到 WinSCP，请先配置 WinSCP.exe 路径。", [])
-    target = next((item for item in connection_targets(device) if str(item.protocol or "").casefold() == "ssh"), None)
+    target = preferred_target or next(
+        (item for item in connection_targets(device) if str(item.protocol or "").casefold() == "ssh"),
+        None,
+    )
     if target is None or not str(target.username or "").strip():
         return WinScpLaunchResult(False, "当前设备未配置 SSH/SFTP 登录信息。", [])
+    if include_password and not str(target.password or ""):
+        return WinScpLaunchResult(False, "当前设备未配置 SSH 密码，无法自动登录 WinSCP。", [])
     if target.via_tunnel:
         tunnel = ExitStack()
         try:
@@ -248,5 +254,5 @@ def _safe_command(args: list[str], device: Device) -> str:
         raw = str(password or "")
         if raw:
             text = text.replace(raw, "***")
-            text = text.replace(quote(raw), "***")
+            text = text.replace(quote(raw, safe=""), "***")
     return text

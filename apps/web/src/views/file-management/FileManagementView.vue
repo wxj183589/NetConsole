@@ -1,22 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 import {
   cancelFileDownload,
   clearFileDownloads,
+  confirmDeviceSftpSetup,
   connectDeviceFiles,
   createLocalDirectory,
   disconnectDeviceFiles,
-  fileDownloadRequest,
   getFileManagementStatus,
   listFileDownloads,
   listLocalFiles,
   listRemoteDevices,
   listRemoteFiles,
-  localFileDownloadRequest,
   prepareFileDesktopAction,
   retryFileDownload,
   startRemoteFileDownloadBatch,
@@ -24,7 +22,6 @@ import {
 } from '../../api/fileManagement'
 import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
-import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type {
@@ -63,16 +60,16 @@ const winscpMessage = ref('')
 const desktopAvailable = Boolean(window.netconsoleDesktop)
 const localPage = ref<LocalFilePage | null>(null)
 const localLoading = ref(false)
+const deviceLoading = ref(false)
+const queueLoading = ref(false)
 const localPageNumber = ref(1)
 const devices = ref<FileRemoteDevice[]>([])
 const selectedDeviceId = ref('')
 const deviceSearch = ref('')
 const deviceGroup = ref('')
-const allowSftpSetup = ref(false)
-const sftpSetupConfirmed = ref(false)
-const sftpSetupConfirmationPending = ref(false)
 const sftpSetupTaskId = ref('')
 const connection = ref<FileConnection | null>(null)
+const connectionStatus = ref('未连接')
 const remotePage = ref<RemoteFilePage | null>(null)
 const remoteLoading = ref(false)
 const downloadLoading = ref(false)
@@ -80,20 +77,12 @@ const remotePageNumber = ref(1)
 const remoteSelected = ref<RemoteFileEntry[]>([])
 const remoteTable = ref<{ clearSelection(): void; toggleRowSelection(row: RemoteFileEntry, selected: boolean): void } | null>(null)
 const tasks = ref<FileDownloadTask[]>([])
-const savedCapabilities = ref(new Map<string, string>())
+const localSelectedEntryId = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => activeDownloadTasks(tasks.value))
 const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) || null)
-const isVehicleMrDevice = computed(() => {
-  const device = selectedDevice.value
-  if (!device) return false
-  const deviceType = String(device.device_type || '').trim().toUpperCase()
-  const groupName = String(device.group_name || '')
-  return deviceType === 'MR' || deviceType === 'MOBILE_ROUTER' || groupName.includes('车载-MR')
-})
 const deviceGroups = computed(() => [...new Set(devices.value.map((device) => device.group_name || '未分组'))].sort((a, b) => a.localeCompare(b)))
-const meshRemoteFiles = computed(() => selectableRemoteFiles(remotePage.value?.items || [], true))
 const filteredDevices = computed(() => {
   const query = deviceSearch.value.trim().toLocaleLowerCase()
   return devices.value.filter((device) => {
@@ -124,19 +113,27 @@ const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
     key: 'file', label: '文件', valueType: 'description', alignmentReason: 'long-text',
     measureValue: (row) => `${row.remote_name || row.result?.name || row.task_id} ${row.device_name || ''}`,
   },
+  { key: 'remote_path', label: '远程路径', valueType: 'description', alignmentReason: 'long-text' },
+  { key: 'local_path', label: '真实本地路径', valueType: 'description', alignmentReason: 'long-text' },
   { key: 'batch', label: '批次', valueType: 'text', displayValue: (row) => row.batch_id ? row.batch_id.slice(0, 10) : '—' },
   { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
   { key: 'progress', label: '进度', valueType: 'percentage', measureValue: (row) => `${row.progress}% ${formatBytes(row.downloaded_bytes)} / ${formatBytes(row.total_bytes)}` },
   { key: 'message', label: '信息', valueType: 'description', alignmentReason: 'long-text' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '保存', '打开', '所在目录'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '打开', '所在目录'] },
 ]
 const SFTP_SETUP_SUCCESS_MESSAGE = '已在设备侧启用 SFTP，并完成重新连接。'
 const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
-  DEVICE_FILE_SFTP_UNAVAILABLE: '设备 SFTP 未启用。请开启“SFTP 未启用时，允许自动配置并重连”后重试。',
+  DEVICE_FILE_NETWORK_UNREACHABLE: '设备网络不可达或 SSH 端口不可用。',
+  DEVICE_FILE_CONNECTION_TIMEOUT: '连接设备超时，请检查网络和 SSH 端口。',
+  DEVICE_FILE_AUTH_FAILED: '设备 SSH 认证失败，请检查用户名和密码。',
+  DEVICE_FILE_HOST_KEY_MISMATCH: '设备主机密钥与已保存记录不一致，连接已阻止。',
+  DEVICE_FILE_SFTP_UNAVAILABLE: '设备 SSH 已登录，但 SFTP 子系统不可用。',
   DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED: '当前设备厂商或版本不支持自动启用 SFTP，未执行设备配置。',
   DEVICE_FILE_SFTP_ENABLE_PENDING: '启用设备 SFTP 的受控任务仍在运行，请稍候后从任务中心查看结果。',
   DEVICE_FILE_SFTP_ENABLE_FAILED: '设备 SFTP 自动启用失败。请查看任务日志，并检查设备权限和 Command Profile。',
-  DEVICE_FILE_SFTP_ENABLE_SUCCEEDED_BUT_RECONNECT_FAILED: '设备侧 SFTP 已启用，但重新连接失败。请查看任务，并检查 SFTP 服务和网络连通性。',
+  DEVICE_FILE_SFTP_RECONNECT_FAILED: '设备侧 SFTP 已启用，但重新连接失败。请查看任务，并检查 SFTP 服务和网络连通性。',
+  DEVICE_FILE_REMOTE_ROOT_NOT_FOUND: '已建立 SFTP 会话，但未找到可读取的远程根目录。',
+  DEVICE_FILE_SESSION_DISCONNECTED: '设备文件会话已断开，请重新连接。',
 }
 const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
   completed: '完成',
@@ -167,17 +164,26 @@ async function initialize(): Promise<void> {
     deviceFilesMessage.value = status.device_files.message
     winscpAvailable.value = status.winscp.available
     winscpMessage.value = status.winscp.message
-    if (isFeatureEnabled('web.file_management_remote')) {
-      try { devices.value = await listRemoteDevices(siteId.value) } catch (reason) {
-        devices.value = []
-        remoteError.value = messageOf(reason, '设备列表读取失败')
-      }
-    }
-    await Promise.all([loadLocal('', 1), recoverTasks()])
   } catch (reason) {
     error.value = messageOf(reason, '文件管理初始化失败')
   } finally {
     loading.value = false
+  }
+  void loadLocal('', 1)
+  void loadDevices()
+  void recoverTasks()
+}
+
+async function loadDevices(): Promise<void> {
+  if (!isFeatureEnabled('web.file_management_remote')) return
+  deviceLoading.value = true
+  try {
+    devices.value = await listRemoteDevices(siteId.value)
+  } catch (reason) {
+    devices.value = []
+    remoteError.value = messageOf(reason, '设备列表读取失败')
+  } finally {
+    deviceLoading.value = false
   }
 }
 
@@ -186,7 +192,7 @@ async function refreshAll(): Promise<void> {
   if (connection.value) await loadRemote(remotePage.value?.current_entry_id || connection.value.root_entry_id, remotePageNumber.value)
 }
 
-async function loadLocal(directoryId = '', page = 1): Promise<void> {
+async function loadLocal(directoryId = '', page = 1, selectName = ''): Promise<void> {
   localLoading.value = true
   localError.value = ''
   try {
@@ -198,6 +204,9 @@ async function loadLocal(directoryId = '', page = 1): Promise<void> {
       limit: 500,
     })
     localPageNumber.value = localPage.value.page
+    localSelectedEntryId.value = selectName
+      ? (localPage.value.items.find((item) => item.name === selectName)?.entry_id || '')
+      : ''
   } catch (reason) {
     localError.value = messageOf(reason, '本地目录读取失败')
   } finally {
@@ -215,17 +224,7 @@ async function openLocal(row: LocalFileEntry): Promise<void> {
     await loadLocal(row.entry_id, 1)
     return
   }
-  try {
-    const result = await downloadBackendResource(localFileDownloadRequest(row.entry_id, siteId.value, row.name))
-    if (result.status === 'saved' && result.capabilityId) {
-      const opened = await getPlatformAdapter().openPath(result.capabilityId)
-      if (!opened.success) localError.value = opened.error || '文件打开失败'
-    } else if (result.status === 'failed') {
-      localError.value = result.error || '文件打开失败'
-    }
-  } catch (reason) {
-    localError.value = messageOf(reason, '文件打开失败')
-  }
+  await showDesktopDependency('open_local', { local_entry_id: row.entry_id })
 }
 
 async function createDirectory(): Promise<void> {
@@ -254,43 +253,34 @@ async function prepareLocalOpen(): Promise<void> {
   await showDesktopDependency('open_local', { local_entry_id: localPage.value.current_entry_id })
 }
 
-async function confirmSftpSetup(enabled: boolean): Promise<void> {
-  if (!enabled || sftpSetupConfirmed.value) return
-  sftpSetupConfirmationPending.value = true
-  try {
-    const accepted = await confirm({
-      type: 'DANGER',
-      title: '确认允许自动配置 SFTP',
-      message: 'SFTP 未启用时，NetConsole 将通过版本化 Command Profile 执行受控设备配置并重新连接。',
-      detail: '请确认你拥有设备配置权限。远程文件始终只读，不会上传、删除、重命名或创建远程目录。',
-      confirmText: '允许自动配置',
-    })
-    if (accepted) sftpSetupConfirmed.value = true
-    else allowSftpSetup.value = false
-  } catch {
-    allowSftpSetup.value = false
-  } finally {
-    sftpSetupConfirmationPending.value = false
-  }
-}
-
 function applySftpConnectionError(reason: ApiRequestError, fallback: string): void {
   const taskId = reason.details.task_id
   sftpSetupTaskId.value = typeof taskId === 'string' ? taskId : ''
   remoteError.value = SFTP_CONNECTION_ERROR_MESSAGES[reason.code] || messageOf(reason, fallback)
+  connectionStatus.value = reason.code === 'DEVICE_FILE_SESSION_DISCONNECTED' ? '未连接' : '连接失败'
 }
 
 async function connectDevice(): Promise<void> {
   if (!selectedDeviceId.value) return
-  if (allowSftpSetup.value && (!sftpSetupConfirmed.value || sftpSetupConfirmationPending.value)) return
   remoteLoading.value = true
   remoteError.value = ''
   sftpSetupTaskId.value = ''
   try {
     await disconnectDevice()
-    connection.value = await connectDeviceFiles(selectedDeviceId.value, siteId.value, allowSftpSetup.value)
+    connectionStatus.value = '正在连接 SSH'
+    await completeConnection(() => connectDeviceFiles(selectedDeviceId.value, siteId.value))
+  } finally {
+    remoteLoading.value = false
+  }
+}
+
+async function completeConnection(request: () => Promise<FileConnection>): Promise<boolean> {
+  try {
+    connection.value = await request()
+    connectionStatus.value = 'SFTP 连接成功'
     await loadRemote(connection.value.root_entry_id, 1)
     if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
+    return true
   } catch (reason) {
     if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_HOST_KEY_UNKNOWN') {
       const details = reason.details
@@ -306,25 +296,40 @@ async function connectDevice(): Promise<void> {
         requireAcknowledgement: true,
       })
       if (choice !== 'cancel' && challengeId) {
-        try {
-          connection.value = await trustDeviceHostKey(challengeId, choice === 'secondary', siteId.value, allowSftpSetup.value)
-          await loadRemote(connection.value.root_entry_id, 1)
-          if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
-          return
-        } catch (trustError) {
-          if (trustError instanceof ApiRequestError && trustError.code in SFTP_CONNECTION_ERROR_MESSAGES) {
-            applySftpConnectionError(trustError, '主机密钥信任失败')
-          } else remoteError.value = messageOf(trustError, '主机密钥信任失败')
-        }
-      } else {
-        remoteError.value = '已取消主机密钥信任，连接未建立。'
+        connectionStatus.value = 'SSH 登录成功'
+        return completeConnection(() => trustDeviceHostKey(challengeId, choice === 'secondary', siteId.value))
       }
-    } else if (reason instanceof ApiRequestError && reason.code in SFTP_CONNECTION_ERROR_MESSAGES) applySftpConnectionError(reason, '设备文件连接失败')
-    else remoteError.value = messageOf(reason, '设备文件连接失败')
+      remoteError.value = '已取消主机密钥信任，连接未建立。'
+    } else if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_SFTP_UNAVAILABLE') {
+      connectionStatus.value = '检测到设备未启用 SFTP'
+      const confirmationId = String(reason.details.confirmation_id || '')
+      const accepted = confirmationId && await confirm({
+        type: 'DANGER',
+        title: '确认启用设备 SFTP',
+        message: '设备未启用 SFTP，NetConsole 将通过受控命令启用 SFTP并重新连接。',
+        detail: '远程文件操作仍保持只读；不会上传、删除、重命名或创建远程目录。',
+        confirmText: '启用并继续连接',
+      })
+      if (accepted) {
+        connectionStatus.value = '正在启用设备 SFTP'
+        try {
+          const resumed = await confirmDeviceSftpSetup(confirmationId, siteId.value)
+          connectionStatus.value = '正在重新连接 SFTP'
+          return completeConnection(() => Promise.resolve(resumed))
+        } catch (setupError) {
+          return completeConnection(() => Promise.reject(setupError))
+        }
+      }
+      remoteError.value = '已取消启用设备 SFTP，连接未建立。'
+    } else if (reason instanceof ApiRequestError && reason.code in SFTP_CONNECTION_ERROR_MESSAGES) {
+      applySftpConnectionError(reason, '设备文件连接失败')
+    } else {
+      remoteError.value = messageOf(reason, '设备文件连接失败')
+    }
     connection.value = null
     remotePage.value = null
-  } finally {
-    remoteLoading.value = false
+    connectionStatus.value = '未连接'
+    return false
   }
 }
 
@@ -336,6 +341,7 @@ async function disconnectDevice(): Promise<void> {
   remotePage.value = null
   remoteSelected.value = []
   remoteTable.value?.clearSelection()
+  connectionStatus.value = '未连接'
 }
 
 async function loadRemote(entryId = '', page = 1): Promise<void> {
@@ -348,7 +354,14 @@ async function loadRemote(entryId = '', page = 1): Promise<void> {
     remoteSelected.value = []
     remoteTable.value?.clearSelection()
   } catch (reason) {
-    remoteError.value = messageOf(reason, '远程目录读取失败')
+    if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_SESSION_DISCONNECTED') {
+      connection.value = null
+      remotePage.value = null
+      remoteSelected.value = []
+      remoteTable.value?.clearSelection()
+      connectionStatus.value = '未连接'
+      remoteError.value = '设备文件会话已断开，请重新连接。'
+    } else remoteError.value = messageOf(reason, '远程目录读取失败')
   } finally {
     remoteLoading.value = false
   }
@@ -384,30 +397,6 @@ async function downloadRemote(): Promise<void> {
   await downloadRemoteEntries(remoteSelected.value)
 }
 
-async function downloadMeshLogsAndImport(): Promise<void> {
-  if (!connection.value || !localPage.value || !isVehicleMrDevice.value) return
-  const rows = meshRemoteFiles.value
-  if (!rows.length) {
-    remoteError.value = '当前目录没有可下载的 MESH 日志'
-    return
-  }
-  const totalBytes = rows.reduce((sum, row) => sum + Math.max(0, Number(row.size_bytes || 0)), 0)
-  const accepted = await confirm({
-    type: 'INFO',
-    title: '确认下载并传入 MESH 分析',
-    message: [
-      `目标车载 MR：${selectedDevice.value?.name || connection.value.device_name}`,
-      `文件数量：${rows.length}`,
-      `总大小：${formatBytes(totalBytes)}`,
-      '归档目录：对应车载 MR 的 raw 目录',
-      '下载完成后将自动尝试导入；若派生库需要重建，系统会单独标记该状态。',
-    ].join('\n'),
-    confirmText: '下载并导入',
-  })
-  if (!accepted) return
-  await downloadRemoteEntries(rows)
-}
-
 async function downloadRemoteEntries(rows: RemoteFileEntry[]): Promise<void> {
   if (!connection.value || !localPage.value || !rows.length) return
   downloadLoading.value = true
@@ -424,7 +413,13 @@ async function downloadRemoteEntries(rows: RemoteFileEntry[]): Promise<void> {
     clearRemoteSelection()
     scheduleTaskRefresh()
   } catch (reason) {
-    remoteError.value = messageOf(reason, '批量下载创建失败')
+    if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_SESSION_DISCONNECTED') {
+      connection.value = null
+      remotePage.value = null
+      remoteSelected.value = []
+      connectionStatus.value = '未连接'
+      remoteError.value = '设备文件会话已断开，请重新连接。'
+    } else remoteError.value = messageOf(reason, '批量下载创建失败')
   } finally {
     downloadLoading.value = false
   }
@@ -440,7 +435,7 @@ async function prepareWinscp(): Promise<void> {
 }
 
 async function showDesktopDependency(
-  action: 'winscp' | 'open_local' | 'open_result_dir',
+  action: 'winscp' | 'open_local' | 'open_result' | 'open_result_dir',
   values: { device_id?: string; local_entry_id?: string; task_id?: string },
 ): Promise<void> {
   try {
@@ -448,25 +443,35 @@ async function showDesktopDependency(
     const result = await prepareFileDesktopAction(action, { site_id: siteId.value, ...values })
     const executed = await window.netconsoleDesktop.executeFileDesktopAction(result.action_ref)
     if (!executed.success) throw new Error(executed.error || '桌面操作失败')
-    ElMessage.success(action === 'winscp' ? '已启动 WinSCP' : '已打开目录')
+    ElMessage.success(action === 'winscp' ? '已启动 WinSCP' : action === 'open_result' ? '已打开文件' : '已打开目录')
   } catch (reason) {
     error.value = messageOf(reason, '桌面操作失败')
   }
 }
 
 async function recoverTasks(): Promise<void> {
+  queueLoading.value = true
   queueError.value = ''
   try {
-    tasks.value = mergeDownloadTasks([], await listFileDownloads(siteId.value, 100))
+    tasks.value = mergeDownloadTasks([], await listFileDownloads(siteId.value, 20))
   } catch (reason) {
     queueError.value = messageOf(reason, '下载队列恢复失败')
+  } finally {
+    queueLoading.value = false
   }
   scheduleTaskRefresh()
 }
 
 async function refreshTasks(): Promise<void> {
   try {
-    tasks.value = mergeDownloadTasks(tasks.value, await listFileDownloads(siteId.value, 100))
+    const before = new Map(tasks.value.map((task) => [task.task_id, task.status]))
+    const incoming = await listFileDownloads(siteId.value, 20)
+    tasks.value = mergeDownloadTasks(tasks.value, incoming)
+    const completed = incoming.filter((task) => task.status === 'COMPLETED' && before.get(task.task_id) !== 'COMPLETED')
+    if (completed.length && localPage.value) {
+      const latest = [...completed].reverse().find((task) => task.result?.name) || completed[completed.length - 1]
+      await loadLocal(localPage.value.current_entry_id, localPageNumber.value, latest.result?.name || '')
+    }
   } catch (reason) {
     queueError.value = messageOf(reason, '下载队列刷新失败')
   }
@@ -505,38 +510,9 @@ async function clearTasks(status: 'COMPLETED' | 'FAILED'): Promise<void> {
   }
 }
 
-async function deliverTask(task: FileDownloadTask, action: 'save' | 'open' | 'folder'): Promise<void> {
+async function openTaskResult(task: FileDownloadTask, containingFolder = false): Promise<void> {
   if (!task.result) return
-  queueError.value = ''
-  try {
-    let capabilityId = savedCapabilities.value.get(task.task_id)
-    if (action === 'save') {
-      const result = await downloadBackendResource(fileDownloadRequest(task.task_id, task.site_id, task.result.name))
-      if (result.status === 'failed') {
-        queueError.value = result.error || '下载结果交付失败'
-        return
-      }
-      if (result.status === 'cancelled') return
-      if (result.status === 'started') {
-        ElMessage.success('已开始下载')
-        return
-      }
-      capabilityId = result.capabilityId
-      if (capabilityId) savedCapabilities.value.set(task.task_id, capabilityId)
-      ElMessage.success(capabilityId ? '文件已保存' : '文件已保存；该文件类型不支持直接打开或定位')
-      return
-    }
-    if (!capabilityId) {
-      ElMessage.warning('请先保存文件；只有支持的文件类型才能直接打开或定位')
-      return
-    }
-    const result = action === 'open'
-      ? await getPlatformAdapter().openPath(capabilityId)
-      : await getPlatformAdapter().showItemInFolder(capabilityId)
-    if (!result.success) queueError.value = result.error || '桌面打开失败'
-  } catch (reason) {
-    queueError.value = messageOf(reason, '下载结果交付失败')
-  }
+  await showDesktopDependency(containingFolder ? 'open_result_dir' : 'open_result', { task_id: task.task_id })
 }
 
 function taskType(status: FileDownloadTask['status']): 'success' | 'danger' | 'warning' | 'info' {
@@ -552,7 +528,7 @@ function messageOf(reason: unknown, fallback: string): string {
 </script>
 
 <template>
-  <section class="device-file-downloads-page" v-loading="loading">
+  <section class="device-file-downloads-page">
     <header class="page-heading">
       <div>
         <p class="eyebrow">LOCAL / DEVICE FILES</p>
@@ -570,13 +546,13 @@ function messageOf(reason: unknown, fallback: string): string {
       <el-select v-model="deviceGroup" clearable placeholder="全部分组">
         <el-option v-for="group in deviceGroups" :key="group" :label="group" :value="group" />
       </el-select>
-      <el-select v-model="selectedDeviceId" clearable filterable placeholder="选择设备（决定默认本地目录）" @change="deviceChanged">
+      <el-select v-model="selectedDeviceId" clearable filterable :loading="deviceLoading" placeholder="选择设备（决定默认本地目录）" @change="deviceChanged">
         <el-option v-for="device in filteredDevices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
       </el-select>
       <span>{{ selectedDevice ? `当前设备：${selectedDevice.name}` : '当前为局点下载根目录' }}</span>
       <template v-if="isFeatureEnabled('web.file_management_remote')">
-        <el-checkbox v-model="allowSftpSetup" :disabled="sftpSetupConfirmationPending || !!connection" @change="confirmSftpSetup">SFTP 未启用时，允许自动配置并重连</el-checkbox>
-        <el-button type="primary" :disabled="!selectedDeviceId || !!connection || sftpSetupConfirmationPending || (allowSftpSetup && !sftpSetupConfirmed)" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
+        <span>连接状态：{{ connectionStatus }}</span>
+        <el-button type="primary" :disabled="!selectedDeviceId || !!connection" :loading="remoteLoading" @click="connectDevice">{{ t('connect') }}</el-button>
         <el-button :disabled="!connection" @click="disconnectDevice">{{ t('disconnect') }}</el-button>
         <el-button v-if="isFeatureEnabled('web.file_management_desktop_actions') && desktopAvailable" :title="winscpMessage" :disabled="!selectedDeviceId || !winscpAvailable" @click="prepareWinscp">{{ t('winscp') }}</el-button>
       </template>
@@ -600,6 +576,9 @@ function messageOf(reason: unknown, fallback: string): string {
           table-id="file-local-entries"
           route-key="/file-management"
           height="430"
+          row-key="entry_id"
+          highlight-current-row
+          :current-row-key="localSelectedEntryId"
           empty-text="当前目录为空"
           @row-dblclick="openLocal"
         />
@@ -609,7 +588,7 @@ function messageOf(reason: unknown, fallback: string): string {
           small layout="prev, pager, next, total" :page-size="localPage.limit" :total="localPage.total"
           @current-change="(page: number) => loadLocal(localPage?.current_entry_id, page)"
         />
-        <p class="hint">双击目录进入；双击文件会通过受控下载桥保存后打开。</p>
+        <p class="hint">双击目录进入；双击文件会通过受控 Desktop Bridge 直接打开真实下载文件。</p>
       </article>
 
       <article v-if="isFeatureEnabled('web.file_management_remote')" class="content-card pane">
@@ -622,7 +601,6 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button :disabled="!connection" @click="selectAllRemote(false)">{{ t('selectAll') }}</el-button>
           <el-button :disabled="!connection" @click="clearRemoteSelection">{{ t('clearSelection') }}</el-button>
           <el-button :disabled="!connection" @click="selectAllRemote(true)">{{ t('meshLogs') }}</el-button>
-          <el-button :icon="Download" :loading="downloadLoading" :disabled="!connection || !localPage || !isVehicleMrDevice || !meshRemoteFiles.length || !isFeatureEnabled('web.file_management_download')" @click="downloadMeshLogsAndImport">{{ t('downloadAndImportMesh') }}</el-button>
           <el-button type="primary" :loading="downloadLoading" :disabled="!connection || !remoteSelected.length || !isFeatureEnabled('web.file_management_download')" @click="downloadRemote">{{ t('downloadSelected') }}（{{ remoteSelected.length }}）</el-button>
         </div>
         <NcDataTable
@@ -654,10 +632,10 @@ function messageOf(reason: unknown, fallback: string): string {
       <el-alert v-if="queueError" :title="queueError" type="error" :closable="false" show-icon />
       <div v-if="batchSummaries.length" class="batch-summaries">
         <el-tag v-for="batch in batchSummaries" :key="batch.batchId" effect="plain">
-          {{ batch.batchId.slice(0, 10) }}：{{ batch.completed }}/{{ batch.total }} 完成，{{ batch.failed }} 失败，{{ batch.cancelled }} 取消，{{ batch.active }} 进行中
+          {{ batch.batchId.slice(0, 10) }}：成功 {{ batch.completed }}、失败 {{ batch.failed }}、取消 {{ batch.cancelled }}<template v-if="batch.active">、进行中 {{ batch.active }}</template>
         </el-tag>
       </div>
-      <NcDataTable :data="tasks" :columns="downloadTaskColumns" table-id="file-download-queue" route-key="/file-management" empty-text="暂无下载任务">
+      <NcDataTable v-loading="queueLoading" :data="tasks" :columns="downloadTaskColumns" table-id="file-download-queue" route-key="/file-management" empty-text="暂无下载任务">
         <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${meshImportStatusText(row.result.mesh_import_status)}` : '' }}</small></template>
         <template #cell-status="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template>
         <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template>
@@ -665,9 +643,8 @@ function messageOf(reason: unknown, fallback: string): string {
           <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
           <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
-            <el-button link type="primary" @click="deliverTask(row, 'save')">{{ t('save') }}</el-button>
-            <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'open')">{{ t('open') }}</el-button>
-            <el-button link type="primary" :disabled="!savedCapabilities.has(row.task_id)" title="请先保存文件" @click="deliverTask(row, 'folder')">{{ t('containingFolder') }}</el-button>
+            <el-button link type="primary" @click="openTaskResult(row)">{{ t('open') }}</el-button>
+            <el-button link type="primary" @click="openTaskResult(row, true)">{{ t('containingFolder') }}</el-button>
           </template>
         </template>
       </NcDataTable>

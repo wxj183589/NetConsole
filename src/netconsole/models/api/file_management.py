@@ -79,12 +79,14 @@ class FileDownloadBatchRequestDTO(ApiModel):
 
 class DeviceFileConnectionRequestDTO(ApiModel):
     device_id: str = Field(min_length=1, max_length=120)
-    allow_sftp_setup: bool = False
 
 
 class HostKeyTrustRequestDTO(ApiModel):
     challenge_id: str = Field(min_length=36, max_length=80, pattern=r"^hk1_[0-9a-f]{32}$")
-    allow_sftp_setup: bool = False
+
+
+class SftpSetupConfirmationRequestDTO(ApiModel):
+    confirmation_id: str = Field(min_length=36, max_length=80, pattern=r"^sf1_[0-9a-f]{32}$")
 
 
 class FileRemoteDeviceDTO(ApiModel):
@@ -183,6 +185,8 @@ class FileDownloadTaskDTO(ApiModel):
     source_kind: str = ""
     device_name: str = ""
     remote_name: str = ""
+    remote_path: str = ""
+    local_path: str = ""
     downloaded_bytes: int = Field(default=0, ge=0)
     total_bytes: int = Field(default=0, ge=0)
     speed_bytes_per_second: float = Field(default=0, ge=0)
@@ -231,4 +235,5 @@ __all__ = [
     "ManagedFilePageDTO",
     "RemoteFileEntryDTO",
     "RemoteFilePageDTO",
+    "SftpSetupConfirmationRequestDTO",
 ]

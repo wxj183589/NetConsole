@@ -2,12 +2,24 @@
 
 连接参数由设备管理记录和后端 Credential Vault 组装。主地址、备用地址、SSH/SFTP 端口和连接超时沿用设备连接 Profile；页面不读取密码，也不拼接设备命令。
 
-连接状态使用 `DISCONNECTED`、`CONNECTING`、`HOST_KEY_CONFIRMATION_REQUIRED`、`CONNECTED` 和 `FAILED` 等结构化状态。未知主机密钥由 API 返回稳定错误码和指纹挑战；前端可选择仅本次信任或信任并保存。
+连接状态机为 `INITIAL_CONNECT -> HOST_KEY_CONFIRM -> SFTP_UNAVAILABLE -> SFTP_ENABLE_CONFIRM ->
+SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 API 返回稳定错误码和指纹
+挑战；前端可选择仅本次信任或信任并保存。即使挑战发生在用户已经确认启用 SFTP 之后，确认主机
+密钥也只继续重连，不会丢失原意图或再次提交启用命令。
+
+连接错误固定分类为 `DEVICE_FILE_NETWORK_UNREACHABLE`、`DEVICE_FILE_CONNECTION_TIMEOUT`、
+`DEVICE_FILE_AUTH_FAILED`、`DEVICE_FILE_HOST_KEY_UNKNOWN`、`DEVICE_FILE_HOST_KEY_MISMATCH`、
+`DEVICE_FILE_SFTP_UNAVAILABLE`、`DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED`、
+`DEVICE_FILE_SFTP_ENABLE_PENDING`、`DEVICE_FILE_SFTP_ENABLE_FAILED`、
+`DEVICE_FILE_SFTP_RECONNECT_FAILED` 和 `DEVICE_FILE_REMOTE_ROOT_NOT_FOUND`。远程会话中途失效使用
+`DEVICE_FILE_SESSION_DISCONNECTED`。页面不显示 Paramiko、socket 或通道原始异常。
 
 ## 自动启用边界
 
-设备侧启用 SFTP 默认关闭。自动启用只属于独立的 `config_write` 操作，不属于目录浏览、刷新或下载。
-触发前必须同时满足：
+页面不提供“允许自动配置”常驻开关。用户点击一次连接后，先按统一连接策略尝试 SSH/SFTP；只有
+`Channel closed`、子系统请求被拒绝、子系统不可用、管理策略禁止或明确的 SFTP disabled/not enabled
+等稳定分类才进入恢复分支，原始 Paramiko 异常不得返回页面。自动启用只属于独立的
+`config_write` 操作，不属于目录浏览、刷新或下载。触发前必须同时满足：
 
 1. 用户在明确的受控确认中授权本次配置写入；
 2. SSH 登录已成功；
@@ -21,9 +33,16 @@
 执行链固定为：
 
 ```text
-用户授权 -> Application Service -> DeviceOperationService -> Task Center -> Command Profile
+一次连接 -> 用户首次确认 -> Application Service -> DeviceOperationService -> Task Center -> Command Profile
+         -> 等待终态 -> 重建 SSH/SFTP -> 读取根目录
 ```
 
-任务只公开安全的任务 ID、状态、耗时和去敏错误；不得返回密码、Token、命令中的敏感凭据或服务器
-绝对路径。命令完成后关闭原 SSH 会话并重新建立 SFTP 会话，再允许目录浏览和下载。Profile 不匹配、
+任务只公开安全的任务 ID、状态、耗时和去敏错误；不得返回密码、Token 或命令中的敏感凭据。
+命令完成后关闭原 SSH 会话并重新建立 SFTP 会话，再允许目录浏览和下载。Profile 不匹配、
 任务取消、命令失败或重新连接失败时保持失败/未连接，不得伪造成功。
+
+每次连接按设备统一目标策略依次尝试主用、备用和受控隧道，成功后在进程内会话记录实际目标。
+该目标不含在 Web DTO 中，但供同设备的 WinSCP 动作复用，避免内置 SFTP 与 WinSCP 选择不同地址。
+
+目录刷新、进入目录或下载提交前会再次检查会话。会话失效后服务端销毁 `connection_id`，页面清空
+远程列表和选择，并只显示“设备文件会话已断开，请重新连接”。

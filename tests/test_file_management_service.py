@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+import os
 import sys
 import threading
 from dataclasses import replace
@@ -22,6 +22,7 @@ from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.file_transfer_service import (
@@ -31,6 +32,7 @@ from netconsole.services.file_transfer_service import (
     file_sha256,
     normalize_remote_path,
 )
+from netconsole.services.host_key_trust_service import HostKeyChallengeError
 from netconsole.services.file_management_service import (
     FileManagementApplicationService,
     FileReferenceNotFound,
@@ -130,7 +132,10 @@ def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_director
     (root / "b.txt").write_text("b", encoding="utf-8")
     (root / "folder").mkdir()
     (root / "folder" / "a.txt").write_text("a", encoding="utf-8")
-    (root / "stale.bin.part").write_bytes(b"partial")
+    stale_part = root / "stale.bin.part"
+    stale_part.write_bytes(b"partial")
+    old = (datetime.now(UTC) - timedelta(hours=25)).timestamp()
+    os.utime(stale_part, (old, old))
     service = FileManagementApplicationService(paths)
 
     first = service.list_local_files("demo", page=1, limit=1)
@@ -138,7 +143,12 @@ def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_director
     assert first.has_more is True
     assert first.items[0].is_dir is True
     assert str(root) not in first.model_dump_json()
-    assert not (root / "stale.bin.part").exists()
+    assert stale_part.exists(), "页面请求不得同步清理临时文件"
+    service.start()
+    assert service._parts_cleanup_thread is not None
+    service._parts_cleanup_thread.join(timeout=2)
+    assert not stale_part.exists()
+    service.close()
 
     nested = service.list_local_files("demo", directory_id=first.items[0].entry_id)
     assert [item.name for item in nested.items] == ["a.txt"]
@@ -158,7 +168,7 @@ def test_local_dual_pane_browser_is_root_clamped_paginated_and_supports_director
         service.list_local_files("demo", directory_id="fl1_" + "0" * 32)
 
 
-def test_file_desktop_actions_are_one_time_controlled_and_winscp_omits_password(
+def test_file_desktop_actions_are_one_time_controlled_and_winscp_passes_password_in_desktop_process_only(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -175,14 +185,13 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_omits_password(
             ssh_password="secret",
         )
     )
-    opened: list[Path] = []
+    opened: list[tuple[Path, bool]] = []
 
     class FakeDesktopActionService:
         runtime_mode = RuntimeMode.DESKTOP
 
         def open_controlled_path(self, path: Path, *, expect_directory: bool):
-            assert expect_directory is True
-            opened.append(path)
+            opened.append((path, expect_directory))
             return SimpleNamespace(success=True, code="completed", message="")
 
     winscp_calls: list[tuple[str, bool]] = []
@@ -210,9 +219,17 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_omits_password(
         local_entry_id=local.current_entry_id,
     )
     assert service.execute_desktop_action(open_action.action_ref).success is True
-    assert opened == [paths.file_downloads_root("demo").resolve()]
+    assert opened == [(paths.file_downloads_root("demo").resolve(), True)]
     with pytest.raises(FileReferenceNotFound):
         service.execute_desktop_action(open_action.action_ref)
+
+    downloaded = paths.file_downloads_root("demo") / "downloaded.log"
+    downloaded.write_text("done", encoding="utf-8")
+    local = service.list_local_files("demo")
+    file_entry = next(item for item in local.items if item.name == downloaded.name)
+    file_action = service.desktop_action("open_local", site_id="demo", local_entry_id=file_entry.entry_id)
+    assert service.execute_desktop_action(file_action.action_ref).success is True
+    assert opened[-1] == (downloaded.resolve(), False)
 
     winscp_action = service.desktop_action(
         "winscp",
@@ -220,7 +237,7 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_omits_password(
         device_id=device.device_uuid,
     )
     assert service.execute_desktop_action(winscp_action.action_ref).success is True
-    assert winscp_calls == [(device.device_uuid, False)]
+    assert winscp_calls == [(device.device_uuid, True)]
     assert service.status("demo").winscp.available is True
 
 
@@ -622,7 +639,7 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         assert batch.json()["tasks"][0]["batch_id"] == batch.json()["batch_id"]
         result = run_file_management_download(JobContext.from_job(first_job))
         assert result["sha256"] == file_sha256(paths.site_dir("demo") / str(first_job.params["target_relative_path"]))
-        assert "relative_path" not in result
+        assert result["relative_path"] == first_job.params["target_relative_path"]
         assert "artifact_id" not in result
         task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
         queue = client.get("/api/file-management/downloads", params={"site_id": "demo"})
@@ -631,7 +648,9 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         assert completed["result"]["result_kind"] == "device_file"
         assert completed["result"]["device_file_ref"].startswith("fd1_")
         assert completed["result"]["artifact_id"] == ""
-        assert completed["result"]["relative_path"] == ""
+        assert completed["result"]["relative_path"] == first_job.params["target_relative_path"]
+        assert completed["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+        assert completed["local_path"] == str(paths.site_dir("demo") / str(first_job.params["target_relative_path"]))
         device_file = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
         assert device_file.status_code == 200
         assert device_file.content == b"remote artifact"
@@ -657,7 +676,7 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
             params=service._job_params("demo", binary_descriptor),
         )
         binary_result = run_file_management_download(JobContext.from_job(binary_job))
-        assert binary_result["name"] == "启动_配置.bin"
+        assert binary_result["name"] == Path(str(binary_job.params["target_relative_path"])).name
         assert ":" not in str(binary_job.params["target_relative_path"])
         assert "?" not in str(binary_job.params["target_relative_path"])
         task_service.record_external_event(
@@ -672,7 +691,7 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
         )
         assert binary_artifact.status_code == 200
         assert binary_artifact.content == b"binary configuration"
-        assert "启动_配置.bin" in unquote(binary_artifact.headers["content-disposition"])
+        assert binary_result["name"] in unquote(binary_artifact.headers["content-disposition"])
         assert int(binary_artifact.headers["content-length"]) == len(b"binary configuration")
         assert binary_artifact.headers["content-type"] == "application/octet-stream"
         cleared = client.post(
@@ -756,7 +775,7 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
             pass
 
         def open_sftp(self):
-            raise RuntimeError("sftp subsystem disabled")
+            raise RuntimeError("Channel closed.")
 
         def invoke_shell(self):
             commands.append("invoke_shell")
@@ -786,7 +805,9 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_UNAVAILABLE"
-    assert "允许自动配置并重连" in response.json()["detail"]["message"]
+    assert response.json()["detail"]["details"]["confirmation_id"].startswith("sf1_")
+    assert response.json()["detail"]["message"] == "检测到设备未启用 SFTP，需要确认后通过受控命令启用并重新连接。"
+    assert "channel closed" not in response.text.casefold()
     assert commands == []
     assert host_key_events[:2] == ["loaded", "reject"]
 
@@ -806,6 +827,7 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     )
     task_service = TaskApplicationService(paths=paths, site_name="demo")
     operation_calls: list[tuple[str, str]] = []
+    host_key = object()
 
     class FakeDeviceOperationService:
         def start(self, device_uuid: str, operation_id: str, **_kwargs):
@@ -845,6 +867,17 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
         def connect(self, _device):
             if self.index == 0:
                 raise SftpUnavailableError()
+            if self.index == 1:
+                raise HostKeyChallengeError(
+                    "SFTP 重连目标需要确认设备主机密钥。",
+                    {
+                        "host": "192.0.2.31",
+                        "port": 22,
+                        "algorithm": "ssh-ed25519",
+                        "fingerprint_sha256": "SHA256:reconnect",
+                    },
+                    key=host_key,
+                )
             return "flash:/"
 
         def disconnect(self):
@@ -860,16 +893,151 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     )
 
     with TestClient(_app(service, remote_enabled=True)) as client:
-        response = client.post(
+        requested = client.post(
             "/api/file-management/connections",
             params={"site_id": "demo"},
-            json={"device_id": device.device_uuid, "allow_sftp_setup": True},
+            json={"device_id": device.device_uuid},
+        )
+        challenged = client.post(
+            "/api/file-management/connections/confirm-sftp-setup",
+            params={"site_id": "demo"},
+            json={"confirmation_id": requested.json()["detail"]["details"]["confirmation_id"]},
+        )
+        response = client.post(
+            "/api/file-management/host-keys/trust-once",
+            params={"site_id": "demo"},
+            json={"challenge_id": challenged.json()["detail"]["details"]["challenge_id"]},
         )
 
+    assert requested.status_code == 409
+    assert challenged.status_code == 409
+    assert challenged.json()["detail"]["code"] == "DEVICE_FILE_HOST_KEY_UNKNOWN"
     assert response.status_code == 201
     assert response.json()["message"] == "已在设备侧启用 SFTP，并完成重新连接。"
     assert operation_calls == [(device.device_uuid, "device.sftp.enable")]
-    assert len(FakeTransfer.instances) == 2
+    assert len(FakeTransfer.instances) == 3
+
+
+def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="AC-host-key",
+        primary_address="192.0.2.32",
+        ssh_enabled=1,
+    )
+    key = object()
+
+    class FakeTransfer:
+        instances: list["FakeTransfer"] = []
+
+        def __init__(self, *_args, strict_host_keys=False, trust_host_key_once=False, **_kwargs):
+            self.index = len(self.instances)
+            self.strict_host_keys = strict_host_keys
+            self.trust_host_key_once = trust_host_key_once
+            self.instances.append(self)
+
+        def connect(self, _device):
+            if self.index == 0:
+                raise HostKeyChallengeError(
+                    "首次连接需要确认设备主机密钥。",
+                    {
+                        "host": "192.0.2.32",
+                        "port": 22,
+                        "algorithm": "ssh-ed25519",
+                        "fingerprint_sha256": "SHA256:test",
+                    },
+                    key=key,
+                )
+            return "flash:/"
+
+        def disconnect(self):
+            pass
+
+    service = FileManagementApplicationService(
+        paths,
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+    )
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        challenged = client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": device.device_uuid},
+        )
+        trusted = client.post(
+            "/api/file-management/host-keys/trust-once",
+            params={"site_id": "demo"},
+            json={"challenge_id": challenged.json()["detail"]["details"]["challenge_id"]},
+        )
+
+    assert challenged.status_code == 409
+    assert challenged.json()["detail"]["details"] == {
+        "host": "192.0.2.32",
+        "port": 22,
+        "algorithm": "ssh-ed25519",
+        "fingerprint_sha256": "SHA256:test",
+        "challenge_id": challenged.json()["detail"]["details"]["challenge_id"],
+        "device_id": device.device_uuid,
+        "device_name": "AC-host-key",
+    }
+    assert trusted.status_code == 201
+    assert trusted.json()["message"] == "SFTP 连接成功"
+    assert FakeTransfer.instances[-1].strict_host_keys is True
+    assert FakeTransfer.instances[-1].trust_host_key_once is True
+
+
+def test_expired_remote_session_is_removed_and_returns_a_stable_message(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(id=1, device_uuid=Device.new_uuid(), name="AC-session", primary_address="192.0.2.33", ssh_enabled=1)
+
+    class FakeTransfer:
+        def __init__(self, *_args, **_kwargs):
+            self.connected = False
+
+        def connect(self, _device):
+            self.connected = True
+            return "flash:/"
+
+        def is_connected(self):
+            return self.connected
+
+        def list_directory(self, _path):
+            raise RuntimeError("Channel closed.")
+
+        def disconnect(self):
+            self.connected = False
+
+    service = FileManagementApplicationService(
+        paths,
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+    )
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        connected = client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": device.device_uuid},
+        )
+        connection_id = connected.json()["connection_id"]
+        failed = client.get(
+            f"/api/file-management/connections/{connection_id}/entries",
+            params={"site_id": "demo"},
+        )
+        stale = client.get(
+            f"/api/file-management/connections/{connection_id}/entries",
+            params={"site_id": "demo"},
+        )
+
+    assert failed.status_code == 409
+    assert failed.json()["detail"] == {
+        "code": "DEVICE_FILE_SESSION_DISCONNECTED",
+        "message": "设备文件会话已断开，请重新连接。",
+        "details": {},
+    }
+    assert "channel closed" not in failed.text.casefold()
+    assert stale.status_code == 404
 
 
 def test_desktop_action_contract_is_opaque_one_time_and_never_contains_password(tmp_path: Path) -> None:
@@ -902,8 +1070,10 @@ def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_pat
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     repository = DeviceRepository(database)
-    mr = repository.create(Device(name="MR-01", device_type="MR", primary_address="192.0.2.51"))
+    mr_group = DeviceGroupRepository(database, "demo").create("车载-MR", sort_order=40)
+    mr = repository.create(Device(name="MR-01", device_type="MR", primary_address="192.0.2.51", group_id=mr_group.id))
     ac = repository.create(Device(name="AC-01", device_type="AC", primary_address="192.0.2.52"))
+    misleading = repository.create(Device(name="MR-looking-switch", device_type="MR", primary_address="192.0.2.53"))
     service = FileManagementApplicationService(paths)
     local = service.list_local_files("demo", device_id=ac.device_uuid)
     created = service.create_local_directory(
@@ -926,6 +1096,12 @@ def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_pat
         RemoteDeviceFile("diag.tar.gz", "flash:/diagfile/diag.tar.gz", 1, None, "diag"),
         manual.entry_id,
     )
+    misleading_target, misleading_kind = service._download_target(
+        "demo",
+        misleading,
+        RemoteDeviceFile("meshlog.log", "flash:/meshlog.log", 1, "2026-07-16 12:00:00", "meshlog"),
+        manual.entry_id,
+    )
 
     assert mr_kind == "mr_raw"
     assert mr_target.name == "MR-01-2026_07_16-meshlog.log"
@@ -933,20 +1109,28 @@ def test_remote_download_target_keeps_qt_mr_and_regular_device_semantics(tmp_pat
     assert regular_kind == "device_file"
     assert regular_target.parent.name == "manual"
     assert paths.file_downloads_root("demo").resolve() in regular_target.parents
+    assert misleading_kind == "device_file"
+    assert misleading_target.parent.name == "manual"
+    profile = MeshStorageService("demo", paths).catalog.get_by_linked_device_id(int(mr.id))
+    assert profile is not None
+    assert profile.linked_device_uuid == mr.device_uuid
 
 
 def test_remote_mesh_download_target_does_not_open_incompatible_parsed_db(tmp_path: Path) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
-    device = DeviceRepository(database).create(Device(name="MR-old-schema", device_type="MR", primary_address="192.0.2.54"))
+    group = DeviceGroupRepository(database, "demo").create("车载-MR", sort_order=40)
+    device = DeviceRepository(database).create(
+        Device(name="MR-old-schema", device_type="MR", primary_address="192.0.2.54", group_id=group.id)
+    )
     profile = MeshStorageService("demo", paths).create_mr_profile(
         "MR-old-schema",
         linked_device_id=device.id,
         linked_device_uuid=device.device_uuid,
     )
     index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
-    with sqlite3.connect(index_path) as connection:
+    with Database(index_path).connect() as connection:
         connection.execute("UPDATE schema_meta SET value = 'old' WHERE key = 'schema_version'")
         connection.execute("UPDATE meta SET value = 'old' WHERE key = 'schema_version'")
         connection.commit()
@@ -1092,6 +1276,42 @@ def test_mr_mesh_download_marks_rebuild_required_when_auto_import_needs_rebuild(
     assert target.read_text(encoding="utf-8") == "mesh"
 
 
+def test_mesh_parse_failure_keeps_the_downloaded_raw_file(tmp_path: Path, monkeypatch) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-raw-protected", device_type="MR", primary_address="192.0.2.56")
+    )
+    profile = MeshStorageService("demo", paths).ensure_mr_profile_identity_for_device(device)
+    raw = paths.mesh_mr_raw_dir("demo", profile.safe_folder_name) / "meshlog.log"
+    raw.write_text("unsupported", encoding="utf-8")
+
+    class FakeImport:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def import_files(self, *_args, **_kwargs):
+            raise ValueError("parse failed")
+
+    monkeypatch.setattr("netconsole.services.file_management_service.MeshImportService", FakeImport)
+    context = JobContext.from_job(
+        BackgroundJob(
+            job_id="mesh-parse-failure",
+            task_type="file_management_download",
+            params={"site_name": "demo", "mesh_auto_import": True, "app_root": str(paths.app_root), "data_root": str(paths.data_root)},
+        )
+    )
+
+    result = FileManagementApplicationService(paths)._auto_import_mesh(context, "demo", device, raw, "mr_raw")
+
+    assert result == {
+        "mesh_import_status": "failed",
+        "mesh_import_error": "MESH 日志格式不受支持或解析失败",
+    }
+    assert raw.read_text(encoding="utf-8") == "unsupported"
+
+
 def test_remote_cancel_preserves_cancelled_exception_and_cleans_partial_file(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     transfer = FileTransferService("demo", paths)
@@ -1220,3 +1440,68 @@ def test_download_task_recovery_keeps_older_active_task_ahead_of_recent_history(
     assert len(tasks) == 100
     assert tasks[0].task_id == "active-download"
     assert {task.task_id for task in tasks} >= {"active-download"}
+
+
+def test_download_task_query_filters_in_sql_and_batches_events_with_large_unrelated_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    repository = task_service.repository("demo")
+    other_rows = [
+        (
+            f"other-{index:04d}",
+            "mesh_parse",
+            "其他模块任务",
+            "2026-07-15T00:00:00.000Z",
+            TaskState.COMPLETED.value,
+            "other_owner",
+            "local",
+            "demo",
+            f"2026-07-15T00:{index // 60:02d}:{index % 60:02d}.000Z",
+        )
+        for index in range(5000)
+    ]
+    with repository._connect() as connection:
+        connection.executemany(
+            "INSERT INTO task_snapshots(task_id, task_type, task_name, created_time, status, owner, source, site_name, updated_time) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            other_rows,
+        )
+        connection.executemany(
+            "INSERT INTO task_snapshots(task_id, task_type, task_name, created_time, status, owner, source, site_name, updated_time) "
+            "VALUES (?, 'file_management_download', '文件下载', ?, ?, 'web_file_management', 'local', 'demo', ?)",
+            [
+                (
+                    f"file-{index:03d}",
+                    "2026-07-16T00:00:00.000Z",
+                    TaskState.RUNNING.value if index < 2 else TaskState.COMPLETED.value,
+                    f"2026-07-16T00:00:{index:02d}.000Z",
+                )
+                for index in range(50)
+            ],
+        )
+        connection.commit()
+
+    calls = 0
+    original_batch = repository.list_events_for_tasks
+
+    def counted_batch(task_ids, *, event_types=None):
+        nonlocal calls
+        calls += 1
+        return original_batch(task_ids, event_types=event_types)
+
+    monkeypatch.setattr(repository, "list_events", lambda *_args, **_kwargs: pytest.fail("不得逐任务读取事件"))
+    monkeypatch.setattr(repository, "list_events_for_tasks", counted_batch)
+    monkeypatch.setattr(task_service, "repository", lambda _site="demo": repository)
+    service = FileManagementApplicationService(paths, task_service=task_service, process_adapter=object())
+    monkeypatch.setattr(Path, "rglob", lambda *_args, **_kwargs: pytest.fail("状态/任务请求不得递归扫描目录"))
+
+    assert service.status("demo").site_id == "demo"
+    tasks = service.list_download_tasks("demo", limit=20)
+
+    assert len(tasks) == 20
+    assert {task.task_id for task in tasks} >= {"file-000", "file-001"}
+    assert all(task.task_id.startswith("file-") for task in tasks)
+    assert calls == 1

@@ -15,7 +15,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard, netmiko_connection
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled
-from netconsole.services.netmiko_connection import build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text  # noqa: F401
+from netconsole.services.netmiko_connection import ConnectionTarget, build_netmiko_params, choose_connection_target, connection_targets, prepared_connection_target, safe_send_command, sanitize_sensitive_text  # noqa: F401
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
 from netconsole.services.host_key_trust_service import (
@@ -43,6 +43,14 @@ class SftpUnavailableError(RuntimeError):
     code = "DEVICE_FILE_SFTP_UNAVAILABLE"
 
     def __init__(self, message: str = "设备当前未启用 SFTP") -> None:
+        super().__init__(message)
+
+
+class FileTransferConnectionError(RuntimeError):
+    """SSH/SFTP 连接阶段的稳定、可安全返回错误。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
         super().__init__(message)
 
 
@@ -101,6 +109,7 @@ class FileTransferService:
         self._tunnel_session: TunnelSession | None = None
         self._root_path = ""
         self._current_path = ""
+        self._successful_target: ConnectionTarget | None = None
 
     def connect(self, device: Device, progress_callback: SftpProgressCallback | None = None) -> str:
         self.disconnect()
@@ -109,8 +118,12 @@ class FileTransferService:
             raise RuntimeError("SFTP requires SSH connection settings.")
         last_error = ""
         unavailable_error: SftpUnavailableError | None = None
+        connection_error: FileTransferConnectionError | None = None
 
-        for target in targets:
+        for target_index, target in enumerate(targets):
+            started = monotonic()
+            failure_stage = "connect_ssh"
+            ssh_authenticated = False
             tunnel_session: TunnelSession | None = None
             try:
                 prepared = target
@@ -136,10 +149,12 @@ class FileTransferService:
                     )
                 self._emit_progress(progress_callback, "file_management.status.sftp_trying")
                 client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
+                ssh_authenticated = True
                 self._emit_progress(progress_callback, "file_management.status.ssh_login_success")
                 self._client = client
                 self._tunnel_session = tunnel_session
                 try:
+                    failure_stage = "open_sftp"
                     self._sftp = client.open_sftp()
                 except Exception as sftp_exc:
                     transport_active = self._transport_is_active(client)
@@ -153,10 +168,13 @@ class FileTransferService:
                         "SFTP_OPEN_FAILED",
                         (
                             f"device={device.name}, target={prepared.host}:{prepared.port}, "
+                            f"device_id={device.device_uuid or device.id or ''}, method={target.method}, "
+                            f"target_role={'backup' if target_index else 'primary'}, via_tunnel={target.via_tunnel}, "
                             f"failure_stage=open_sftp, ssh_authenticated=True, "
                             f"transport_active={transport_active}, "
                             f"exception_type={sftp_exc.__class__.__name__}, "
                             f"sftp_subsystem_unavailable={sftp_unavailable}, "
+                            f"elapsed_ms={int((monotonic() - started) * 1000)}, "
                             f"error={sanitize_sensitive_text(str(sftp_exc), device)}"
                         ),
                     )
@@ -164,8 +182,10 @@ class FileTransferService:
                         raise
                     raise SftpUnavailableError() from sftp_exc
                 self._device = device
+                failure_stage = "detect_remote_root"
                 self._root_path = self.detect_remote_root()
                 self._current_path = self._root_path
+                self._successful_target = target
                 app_logger.log_info("SFTP_CONNECTED", f"device={device.name}, method={prepared.method}, target={prepared.host}:{prepared.port}, root={self._root_path}")
                 return self._root_path
             except SftpUnavailableError as exc:
@@ -180,11 +200,28 @@ class FileTransferService:
                     tunnel_session.close()
                 if isinstance(exc, HostKeyTrustError):
                     raise
-                last_error = self._friendly_connect_error(exc, device)
-                app_logger.log_error("SFTP_CONNECT_ATTEMPT_FAILED", f"device={device.name}, target={target.host}:{target.port}, error={last_error}")
+                classified = self._classify_connection_error(exc, failure_stage=failure_stage)
+                connection_error = classified
+                last_error = str(classified)
+                app_logger.log_error(
+                    "SFTP_CONNECT_ATTEMPT_FAILED",
+                    (
+                        f"device_id={device.device_uuid or device.id or ''}, device_name={device.name}, "
+                        f"method={target.method}, target_role={'backup' if target_index else 'primary'}, "
+                        f"via_tunnel={target.via_tunnel}, target={target.host}:{target.port}, "
+                        f"failure_stage={failure_stage}, exception_type={exc.__class__.__name__}, "
+                        f"transport_active={self._transport_is_active(self._client) if self._client is not None else False}, "
+                        f"ssh_authenticated={ssh_authenticated}, elapsed_ms={int((monotonic() - started) * 1000)}, "
+                        f"error={sanitize_sensitive_text(str(exc), device)}"
+                    ),
+                )
+                if classified.code in {"DEVICE_FILE_AUTH_FAILED", "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND"}:
+                    raise classified from exc
         if unavailable_error is not None:
             raise unavailable_error
-        raise RuntimeError(last_error or "SFTP connection failed.")
+        if connection_error is not None:
+            raise connection_error
+        raise FileTransferConnectionError("DEVICE_FILE_NETWORK_UNREACHABLE", last_error or "设备网络不可达。")
 
     def _connect_ssh_client(self, target, *, key_host: str = "", key_port: int = 0):
         import paramiko
@@ -288,6 +325,23 @@ class FileTransferService:
         return message
 
     @staticmethod
+    def _classify_connection_error(exc: BaseException, *, failure_stage: str) -> FileTransferConnectionError:
+        name = exc.__class__.__name__.casefold()
+        text = str(exc or "").casefold()
+        if failure_stage == "detect_remote_root":
+            return FileTransferConnectionError(
+                "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND",
+                "已建立 SFTP 会话，但未找到可读取的远程根目录。",
+            )
+        if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in text or "timeout" in text:
+            return FileTransferConnectionError("DEVICE_FILE_CONNECTION_TIMEOUT", "连接设备超时，请检查网络和 SSH 端口。")
+        if name in {"authenticationexception", "badauthenticationtype", "passwordrequiredexception"} or any(
+            marker in text for marker in ("authentication failed", "auth failed", "invalid password", "permission denied")
+        ):
+            return FileTransferConnectionError("DEVICE_FILE_AUTH_FAILED", "设备 SSH 认证失败，请检查用户名和密码。")
+        return FileTransferConnectionError("DEVICE_FILE_NETWORK_UNREACHABLE", "设备网络不可达或 SSH 端口不可用。")
+
+    @staticmethod
     def _is_sftp_unavailable_error(exc: BaseException) -> bool:
         """仅识别明确的 SFTP 子系统拒绝，避免网络/认证错误触发写操作。"""
 
@@ -385,6 +439,7 @@ class FileTransferService:
         self._device = None
         self._root_path = ""
         self._current_path = ""
+        self._successful_target = None
 
     def is_connected(self) -> bool:
         return self._sftp is not None
@@ -396,6 +451,10 @@ class FileTransferService:
     @property
     def current_path(self) -> str:
         return self._current_path
+
+    @property
+    def successful_target(self) -> ConnectionTarget | None:
+        return self._successful_target
 
     def detect_remote_root(self) -> str:
         sftp = self._require_sftp()

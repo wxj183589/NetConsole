@@ -26,12 +26,22 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
 
+文件管理下载仍以 `tasks.db` 为状态 SSOT。文件页面恢复时由 `TaskRepository` 在 SQL 层按
+`file_management_download + web_file_management + local + site/status` 组合过滤，活动任务优先；本批任务
+的 descriptor、hidden、waiting 事件一次查询并聚合，不遍历其他领域历史，也不逐任务读取完整事件流。
+
 ## Worker Process 约束
 
 - 普通任务由 `background_worker.py` 执行，导出由 `export_worker.py` 执行。
 - Worker Process 不导入 Renderer、Electron 或 FastAPI 对象，也不访问 DOM。
 - 网络、重 IO、重 CPU、解析和批量操作在进程内创建自己的 service/repository/数据库连接。
 - stdout 只写统一 JSONL，原始日志和诊断信息进入 stderr 或结构化 log event。
+
+### 一次性敏感 bootstrap
+
+设备新增/编辑表单的未保存连接测试复用同一 `LocalProcessAdapter -> background_worker -> device_connection_test` 链路。Job 参数和 Job JSON 只保存地址、端口、用户名、厂商/类型、跳板元数据、`device_uuid` 与 `saved_device / ephemeral / none` 凭据来源；临时密码不进入参数、`tasks.db`、事件、日志或结果。`saved_device` 由 Worker 按 `device_uuid` 从设备 Repository 解析，`ephemeral` 由宿主通过 Worker stdin 的一次性敏感 bootstrap 注入。
+
+敏感 bootstrap 不写临时文件、环境变量或 SQLite，只允许单次消费；宿主写入后、Worker 消费后以及任务完成/失败/取消时均清空受管缓冲和临时 Device 密钥字段。需要临时凭据的任务在宿主异常退出后不得恢复：恢复核对将其安全标记为失败并要求用户重新提交。该通道属于共享 Job Runtime 能力，不授权 Renderer 直连设备，也不允许用 base64、普通 Job 参数或独立线程绕过任务中心。
 
 ## 模型关系
 
