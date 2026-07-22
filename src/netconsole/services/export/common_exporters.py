@@ -871,6 +871,7 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
     config_data["output_path"] = path
     config = OmniPeekExportConfig(**config_data)
     service = OmniPeekNameTableService(AcRepository(database), device_repository)
+    selected_fit_ap_ids = [str(value) for value in source.get("selected_fit_ap_ids") or [] if str(value)]
     items = service.collect_items(
         include_ac_fit_ap=config.include_ac_fit_ap,
         include_ap_extensions=config.include_ap_extensions,
@@ -878,6 +879,8 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
         ac_device_uuid=str(source.get("ac_uuid") or "") or None,
         devices=devices,
         group_names=group_names,
+        selected_fit_ap_ids=selected_fit_ap_ids,
+        scope_extensions_to_fit_ap=bool(source.get("scope_extensions_to_fit_ap", False)),
     )
     selected_keys = {str(value) for value in payload.get("selected_item_keys") or [] if str(value)}
     excluded_keys = {str(value) for value in payload.get("excluded_item_keys") or [] if str(value)}
@@ -890,7 +893,12 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
         if item.key in force_keys:
             item.selected = True
             item.force_export = True
-    source_counts = service.source_counts(ac_device_uuid=str(source.get("ac_uuid") or "") or None, devices=devices)
+    source_counts = service.source_counts(
+        ac_device_uuid=str(source.get("ac_uuid") or "") or None,
+        devices=devices,
+        selected_fit_ap_ids=selected_fit_ap_ids,
+        scope_extensions_to_fit_ap=bool(source.get("scope_extensions_to_fit_ap", False)),
+    )
     source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
     _emit(progress, "write_omnipeek_name_table", 0, len(items), "正在导出 OmniPeek 名称表")
     _check_cancel(should_cancel)

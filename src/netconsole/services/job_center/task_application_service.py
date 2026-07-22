@@ -104,7 +104,7 @@ class TaskApplicationService:
                     active_statuses=_ACTIVE_TASK_STATES,
                 )
                 if conflict is not None:
-                    message = (
+                    message = str(params.get("resource_conflict_message") or "").strip() or (
                         f"当前 AC 已有光衰更新任务正在运行：{conflict.task_name} ({conflict.task_id})"
                     )
                     raise TaskResourceConflictError(message, task=conflict, resource_keys=resource_keys)

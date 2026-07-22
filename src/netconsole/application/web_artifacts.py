@@ -415,6 +415,7 @@ class WebArtifactStore:
     def _source_root(self, site_id: str, source: str) -> Path:
         roots = {
             "ac_extension_export": self.paths.trackside_ap_outputs_dir(site_id),
+            "ac_omnipeek_export": self.paths.trackside_ap_outputs_dir(site_id),
             "command_reference_export": self.paths.site_files_dir(site_id) / "command_reference",
             "online_mr_report": self.paths.online_mr_root(site_id),
             "mesh_analysis_report": self.paths.site_mesh_root(site_id),

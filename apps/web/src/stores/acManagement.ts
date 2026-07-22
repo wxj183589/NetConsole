@@ -21,6 +21,7 @@ import type {
 import type { AcWebTask } from '../types/acWebParity'
 
 const ACTIVE_TASK_KEY = 'netconsole.ac.active-task'
+const ACTIVE_ACTION_TASK_KEY = 'netconsole.ac.active-action-task'
 const TERMINAL_TASKS = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const REFRESH_ACTIONS = new Set(['ac_info_refresh', 'ac_fit_ap_resources_refresh', 'ac_fit_ap_detail_refresh', 'ac_fit_ap_optical_refresh', 'ac_fit_ap_delete_many', 'fit_ap_metadata_import', 'fit_ap_metadata_save'])
 
@@ -39,6 +40,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   const failures = ref(0)
   const error = ref('')
   const refreshTask = ref<AcWebTask | null>(null)
+  const actionTask = ref<AcWebTask | null>(null)
   const refreshStarting = ref(false)
   const filters = reactive({
     ac_id: '',
@@ -67,6 +69,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   let detailTimer: number | null = null
   let snapshotTimer: number | null = null
   let taskTimer: number | null = null
+  let actionTaskTimer: number | null = null
 
   const activeAc = computed(() => summary.value?.acs.find((item) => item.id === filters.ac_id) || summary.value?.acs[0])
 
@@ -209,6 +212,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
   const startFitApRefresh = () => startRefresh('fit-ap')
   const startFitApDetailRefresh = () => selected.value ? startRefresh('ap-detail', selected.value.ap.id) : Promise.resolve()
   const startOpticalRefresh = () => startRefresh('optical')
+  const startApOpticalRefresh = (apId: string) => startRefresh('optical', apId)
 
   async function startFitApDelete(apIds: string[]): Promise<void> {
     if (!filters.ac_id || !apIds.length || refreshStarting.value || (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status))) return
@@ -272,14 +276,38 @@ export const useAcManagementStore = defineStore('ac-management', () => {
 
   async function recoverRefreshTask(): Promise<void> {
     const saved = window.localStorage?.getItem(ACTIVE_TASK_KEY)
+    const savedAction = window.localStorage?.getItem(ACTIVE_ACTION_TASK_KEY)
     try {
       const tasks = await recoverAcWebTasks()
       refreshTask.value = tasks.find((item) => item.task_id === saved)
         || tasks.find((item) => REFRESH_ACTIONS.has(item.action))
         || null
       if (refreshTask.value && !TERMINAL_TASKS.has(refreshTask.value.status)) scheduleTask()
+      actionTask.value = tasks.find((item) => item.task_id === savedAction)
+        || tasks.find((item) => item.action === 'ac_command_action_execute'
+          && !TERMINAL_TASKS.has(item.status)
+          && (!filters.ac_id || item.target_id === filters.ac_id))
+        || null
+      if (actionTask.value && !TERMINAL_TASKS.has(actionTask.value.status)) scheduleActionTask()
     } catch {
       if (saved) await pollTask(saved)
+      if (savedAction) await pollActionTask(savedAction)
+    }
+  }
+
+  async function trackActionTask(taskId: string): Promise<void> {
+    actionTask.value = await getAcWebTask(taskId)
+    window.localStorage?.setItem(ACTIVE_ACTION_TASK_KEY, taskId)
+    scheduleActionTask()
+  }
+
+  async function pollActionTask(taskId: string): Promise<void> {
+    try {
+      actionTask.value = await getAcWebTask(taskId)
+      if (TERMINAL_TASKS.has(actionTask.value.status)) window.localStorage?.removeItem(ACTIVE_ACTION_TASK_KEY)
+      else scheduleActionTask()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : 'AC 动作任务读取失败'
     }
   }
 
@@ -301,6 +329,12 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     if (!refreshTask.value || TERMINAL_TASKS.has(refreshTask.value.status)) return
     if (taskTimer !== null) window.clearTimeout(taskTimer)
     taskTimer = window.setTimeout(() => void pollTask(refreshTask.value!.task_id), 1000)
+  }
+
+  function scheduleActionTask(): void {
+    if (!actionTask.value || TERMINAL_TASKS.has(actionTask.value.status)) return
+    if (actionTaskTimer !== null) window.clearTimeout(actionTaskTimer)
+    actionTaskTimer = window.setTimeout(() => void pollActionTask(actionTask.value!.task_id), 1000)
   }
 
   function setAcId(value: string): void {
@@ -351,11 +385,12 @@ export const useAcManagementStore = defineStore('ac-management', () => {
 
   function stopPolling(): void {
     polling = false
-    for (const timer of [summaryTimer, apsTimer, detailTimer, snapshotTimer, taskTimer]) {
+    for (const timer of [summaryTimer, apsTimer, detailTimer, snapshotTimer, taskTimer, actionTaskTimer]) {
       if (timer !== null) window.clearTimeout(timer)
     }
     summaryTimer = apsTimer = detailTimer = snapshotTimer = null
     taskTimer = null
+    actionTaskTimer = null
   }
 
   function scheduleSummary(): void {
@@ -408,6 +443,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     failures,
     error,
     refreshTask,
+    actionTask,
     refreshStarting,
     filters,
     snapshotPage,
@@ -426,11 +462,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     startFitApRefresh,
     startFitApDetailRefresh,
     startOpticalRefresh,
+    startApOpticalRefresh,
     startFitApDelete,
     startFitApMetadataImport,
     startFitApMetadataSave,
     cancelRefreshTask,
     recoverRefreshTask,
+    trackActionTask,
     setAcId,
     applyFilters,
     setPage,

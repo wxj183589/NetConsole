@@ -2,6 +2,7 @@ export interface AcWebTask {
   task_id: string
   status: string
   action: string
+  target_id?: string
   artifact_id: string
   available: boolean
   progress: number
@@ -73,4 +74,29 @@ export interface AcActionAudit {
   executor: string
   real_device_task: boolean
   audit: boolean
+}
+
+export interface AcOmniPeekPreview {
+  task_id: string
+  task_status: string
+  ready: boolean
+  input_ap_count: number
+  exportable_entry_count: number
+  skipped_count: number
+  error_count: number
+  message: string
+}
+
+export type AcTerminalType = 'securecrt' | 'putty' | 'xshell'
+
+export interface AcExternalTerminalOptions {
+  default_terminal_type: AcTerminalType | null
+  options: Array<{ terminal_type: AcTerminalType; label: string }>
+}
+
+export interface AcExternalTerminalAction {
+  ap_id: string
+  terminal_type: AcTerminalType
+  success: true
+  message: string
 }

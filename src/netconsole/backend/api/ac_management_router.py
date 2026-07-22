@@ -12,6 +12,8 @@ from netconsole.models.api.ac_management import (
     AcActionConfirmRequestDTO,
     AcActionPlanCreateRequestDTO,
     AcActionPlanDTO,
+    AcExternalTerminalActionDTO,
+    AcExternalTerminalOptionsDTO,
     AcConfigContentDTO,
     AcConfigDiffDTO,
     AcConfigSnapshotPageDTO,
@@ -28,6 +30,9 @@ from netconsole.models.api.ac_management import (
     AcFitApDeleteRequestDTO,
     AcFitApMetadataSaveRequestDTO,
     AcLocalRebuildRequestDTO,
+    AcOmniPeekPreviewDTO,
+    AcOmniPeekRequestDTO,
+    AcExternalTerminalRequestDTO,
     AcRefreshRequestDTO,
     AcWebTaskDTO,
 )
@@ -425,6 +430,93 @@ def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataS
 
 
 @router.post(
+    "/fit-aps/omnipeek/preview",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("ac.omnipeek_name_table_export")),
+        Depends(require_feature("web.ac_refresh")),
+    ],
+)
+def preview_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_omnipeek_preview(
+            _web_site_id(request), ac_id=payload.ac_id, ap_ids=payload.ap_ids
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get(
+    "/fit-aps/omnipeek/preview/{task_id}",
+    response_model=AcOmniPeekPreviewDTO,
+    dependencies=[Depends(require_feature("ac.omnipeek_name_table_export"))],
+)
+def fit_ap_omnipeek_preview(request: Request, task_id: str) -> AcOmniPeekPreviewDTO:
+    try:
+        return _web_service(request).get_omnipeek_preview(_web_site_id(request), task_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
+    "/fit-aps/omnipeek/export",
+    response_model=AcWebTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("ac.omnipeek_name_table_export")),
+        Depends(require_feature("web.ac_refresh")),
+    ],
+)
+def export_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
+    try:
+        return _web_service(request).start_omnipeek_export(
+            _web_site_id(request), ac_id=payload.ac_id, ap_ids=payload.ap_ids
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.get(
+    "/fit-aps/external-terminal/options",
+    response_model=AcExternalTerminalOptionsDTO,
+    dependencies=[
+        Depends(require_feature("web.ac_fit_ap_external_terminal")),
+        Depends(require_feature("desktop.native_bridge")),
+    ],
+)
+def fit_ap_external_terminal_options(request: Request) -> AcExternalTerminalOptionsDTO:
+    try:
+        return _web_service(request).external_terminal_options()
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
+    "/fit-aps/{ap_id}/external-terminal",
+    response_model=AcExternalTerminalActionDTO,
+    dependencies=[
+        Depends(require_feature("web.ac_fit_ap_external_terminal")),
+        Depends(require_feature("desktop.native_bridge")),
+    ],
+)
+def fit_ap_external_terminal(
+    request: Request,
+    ap_id: str,
+    payload: AcExternalTerminalRequestDTO,
+) -> AcExternalTerminalActionDTO:
+    try:
+        return _web_service(request).launch_fit_ap_external_terminal(
+            _web_site_id(request),
+            ac_id=payload.ac_id,
+            ap_id=ap_id,
+            terminal_type=payload.terminal_type,
+        )
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
+@router.post(
     "/trackside-business/local-rebuild",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
@@ -571,6 +663,19 @@ def extension_export_download(request: Request, artifact_id: str) -> FileRespons
     return FileResponse(path, filename=name)
 
 
+@router.get(
+    "/fit-aps/omnipeek/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("ac.omnipeek_name_table_export"))],
+)
+def fit_ap_omnipeek_download(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _web_service(request).open_omnipeek_export(_web_site_id(request), artifact_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+    return FileResponse(path, filename=name)
+
+
 def _required(value, message: str):
     if value is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
@@ -595,6 +700,7 @@ def _raise_web_error(exc: AcWebActionError) -> None:
         "PLAN_TAMPERED", "PLAN_EXPIRED", "PLAN_ALREADY_CONFIRMED", "CONFIRMATION_REQUIRED",
         "PLAN_SITE_MISMATCH", "TARGET_STALE", "ALREADY_APPLIED", "BASE_DATA_DATABASE_CHANGED",
         "BASE_DATA_ROLLBACK_CONFLICT", "BASE_DATA_IMPORT_CONFLICT", "BASE_DATA_BLOCKING_ISSUES",
+        "AC_ACTION_RUNNING",
     }
     not_found = {"PLAN_NOT_FOUND", "ARTIFACT_INVALID", "TASK_NOT_FOUND"}
     status_code = status.HTTP_409_CONFLICT if exc.code in conflicts else status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY

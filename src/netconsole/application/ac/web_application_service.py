@@ -14,24 +14,37 @@ from uuid import uuid4
 
 from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
+from netconsole.application.desktop.actions import DesktopActionService, RegisteredLaunch
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import (
     AcActionPlanDTO,
+    AcExternalTerminalActionDTO,
+    AcExternalTerminalOptionDTO,
+    AcExternalTerminalOptionsDTO,
     AcExtensionApplyResultDTO,
     AcExtensionDTO,
     AcExtensionPageDTO,
     AcExtensionPreviewDTO,
     AcExtensionRollbackResultDTO,
+    AcOmniPeekPreviewDTO,
     AcWebTaskDTO,
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
+from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec
+from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec, omnipeek_name_table_spec
+from netconsole.services.external_terminal import (
+    TERMINAL_LABELS,
+    available_external_terminal_configs,
+    build_external_terminal_command,
+)
 from netconsole.services.fit_ap_import_export import normalize_ap_direction
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
@@ -39,6 +52,8 @@ from netconsole.services.job_center.web_export_event_safety import redact_web_ta
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError, RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
+from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.omnipeek_name_table_service import default_omnipeek_line_name, make_omnipeek_filename
 from netconsole.utils.mileage import mileage_storage_text
 
 
@@ -59,7 +74,10 @@ class AcWebApplicationService:
     """AC Web 用例边界；设备 IO 只通过持久化后台任务执行。"""
 
     _OWNER = "web_ac"
-    _ARTIFACT_TASK_TYPES = {"ac_extension_export": "web_export_fit_ap_extension_xlsx"}
+    _ARTIFACT_TASK_TYPES = {
+        "ac_extension_export": "web_export_fit_ap_extension_xlsx",
+        "ac_omnipeek_export": "web_export_omnipeek_name_table",
+    }
     _LOCAL_REBUILD_TASKS = {
         "ac_overview_refresh": "AC 在线概览本地重算",
         "ac_fit_ap_resources_refresh": "FIT-AP 信息本地重算",
@@ -80,6 +98,8 @@ class AcWebApplicationService:
         "ac_fit_ap_delete_many": "ac_fit_ap_delete_many",
         "fit_ap_metadata_import": "fit_ap_metadata_import",
         "fit_ap_metadata_save": "fit_ap_metadata_save",
+        "omnipeek_name_table_preview": "ac_omnipeek_preview",
+        "web_export_omnipeek_name_table": "ac_omnipeek_export",
         "web_export_fit_ap_extension_xlsx": "ac_extension_export",
     }
     _locks_guard = threading.Lock()
@@ -95,6 +115,7 @@ class AcWebApplicationService:
         base_import_service: RailTransitBaseDataImportService | None = None,
         export_adapter: WebExportProcessAdapter | None = None,
         artifact_store: WebArtifactStore | None = None,
+        desktop_action_service: DesktopActionService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
@@ -105,6 +126,7 @@ class AcWebApplicationService:
         )
         self.export_adapter = export_adapter
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
+        self.desktop_action_service = desktop_action_service
 
     def current_site_id(self) -> str:
         try:
@@ -161,7 +183,7 @@ class AcWebApplicationService:
             raise AcWebActionError("TASK_NOT_ALLOWED", "不支持的 AC/FIT-AP 更新类型") from exc
         device_uuid = str(self._target(site_id, ac_id).device_uuid)
         ap_uuid = str(ap_id or "").strip()
-        if refresh_kind == "ap-detail":
+        if refresh_kind == "ap-detail" or (refresh_kind == "optical" and ap_uuid):
             if not ap_uuid:
                 raise AcWebActionError("AP_TARGET_REQUIRED", "FIT-AP 深度更新缺少 AP 目标")
             if self._repository(site_id).get_fit_ap_resource_by_uuid(device_uuid, ap_uuid) is None:
@@ -183,7 +205,7 @@ class AcWebApplicationService:
         if ap_uuid:
             params["ap_uuid"] = ap_uuid
         if refresh_kind == "optical":
-            params.update(source="auto", refresh_scope="all")
+            params.update(source="auto", refresh_scope="single" if ap_uuid else "all")
             resource_key = fit_ap_optical_resource_key(site_id, device_uuid)
             if resource_key:
                 params["resource_keys"] = [resource_key]
@@ -329,6 +351,201 @@ class AcWebApplicationService:
         )
         return self._task_dto(site_id, task_id)
 
+    def start_omnipeek_preview(self, site_id: str, *, ac_id: str, ap_ids: list[str]) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        selected = self._validated_ap_ids(site_id, device_uuid, ap_ids)
+        task_id = f"ac-omnipeek-preview-{uuid4().hex}"
+        self.process_adapter.start_job(
+            BackgroundJob(
+                job_id=task_id,
+                task_type="omnipeek_name_table_preview",
+                params={
+                    "site_name": site_id,
+                    "db_path": str(self.paths.site_db_path(site_id)),
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                    "task_name": "预览 OmniPeek 名称表",
+                    "owner": self._OWNER,
+                    "task_source": "local",
+                    "device_uuid": device_uuid,
+                    "ac_uuid": device_uuid,
+                    "selected_fit_ap_ids": selected,
+                    "scope_extensions_to_fit_ap": True,
+                    "include_ac_fit_ap": True,
+                    "include_ap_extensions": True,
+                    "include_device_mr": False,
+                    "line_name": default_omnipeek_line_name(site_id, self.paths),
+                    "preview_limit": 2000,
+                },
+            )
+        )
+        return self._task_dto(site_id, task_id)
+
+    def get_omnipeek_preview(self, site_id: str, task_id: str) -> AcOmniPeekPreviewDTO:
+        site_id = self._site(site_id)
+        snapshot = self._task_snapshot(site_id, task_id)
+        if snapshot.task_type != "omnipeek_name_table_preview":
+            raise AcWebActionError("TASK_NOT_FOUND", "OmniPeek 预览任务不存在")
+        result = dict(snapshot.result or {})
+        stats = dict(result.get("stats") or {})
+        source_counts = dict(result.get("source_counts") or {})
+        return AcOmniPeekPreviewDTO(
+            task_id=task_id,
+            task_status=snapshot.status.value,
+            ready=snapshot.status is TaskState.COMPLETED,
+            input_ap_count=int(source_counts.get("AC FIT-AP资源") or 0),
+            exportable_entry_count=int(stats.get("exportable_entries") or 0),
+            skipped_count=int(stats.get("skipped") or 0),
+            error_count=int(stats.get("error_count") or stats.get("abnormal") or 0),
+            message=redact_web_task_text(snapshot.message or snapshot.error_message),
+        )
+
+    def start_omnipeek_export(self, site_id: str, *, ac_id: str, ap_ids: list[str]) -> AcWebTaskDTO:
+        site_id = self._site(site_id)
+        if self.export_adapter is None:
+            raise AcWebActionError("EXPORT_NOT_WIRED", "OmniPeek 导出进程未接线")
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        selected = self._validated_ap_ids(site_id, device_uuid, ap_ids)
+        line_name = default_omnipeek_line_name(site_id, self.paths)
+        task_id = f"ac-omnipeek-export-{uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site_id,
+            owner=self._OWNER,
+            source="ac_omnipeek_export",
+            artifact_type="nam",
+            task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["ac_omnipeek_export"],
+            output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_omnipeek",
+            preferred_name=make_omnipeek_filename(line_name),
+            use_display_name_as_file_name=True,
+        )
+        job = omnipeek_name_table_spec(
+            reservation.output_path,
+            db_path=self.paths.site_db_path(site_id),
+            site_name=site_id,
+            source={
+                "ac_uuid": device_uuid,
+                "selected_fit_ap_ids": selected,
+                "selected_device_uuids": [],
+                "scope_extensions_to_fit_ap": True,
+            },
+            config={
+                "line_name": line_name,
+                "include_ac_fit_ap": True,
+                "include_ap_extensions": True,
+                "include_device_mr": False,
+            },
+            title="导出 OmniPeek 名称表",
+            open_dir_on_success=False,
+        ).to_job(task_id)
+        job = replace(job, site_name=site_id)
+
+        def completed(value: LocalProcessCompletion) -> None:
+            try:
+                if value.exit_code == 0 and not value.cancelled:
+                    self.artifact_store.complete(reservation)
+                else:
+                    self.artifact_store.fail(reservation)
+            except WebArtifactError:
+                self.artifact_store.fail(reservation)
+
+        try:
+            self.export_adapter.start_export(
+                job,
+                task_name="导出 OmniPeek 名称表",
+                owner=self._OWNER,
+                public_result=self._public_artifact_result(reservation),
+                on_complete=completed,
+            )
+        except Exception:
+            self.artifact_store.fail(reservation)
+            raise
+        return self._task_dto(site_id, task_id)
+
+    def external_terminal_options(self) -> AcExternalTerminalOptionsDTO:
+        self._require_desktop_runtime()
+        settings = SettingsStore(self.paths)
+        configs = available_external_terminal_configs(settings)
+        available = {config.terminal_type for config in configs}
+        default_type = normalize_external_terminal_type(settings.get_value("external_terminal/type", "securecrt"))
+        if default_type not in available:
+            default_type = configs[0].terminal_type if configs else None
+        return AcExternalTerminalOptionsDTO(
+            default_terminal_type=default_type,
+            options=[
+                AcExternalTerminalOptionDTO(
+                    terminal_type=config.terminal_type,
+                    label=TERMINAL_LABELS.get(config.terminal_type, config.terminal_type),
+                )
+                for config in configs
+            ],
+        )
+
+    def launch_fit_ap_external_terminal(
+        self,
+        site_id: str,
+        *,
+        ac_id: str,
+        ap_id: str,
+        terminal_type: str,
+    ) -> AcExternalTerminalActionDTO:
+        site_id = self._site(site_id)
+        device_uuid = str(self._target(site_id, ac_id).device_uuid)
+        detail = AcManagementQueryService(self.paths).get_ap_detail(site_id, str(ap_id or "").strip())
+        if detail is None or detail.ap.ac_id != device_uuid:
+            raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "目标 FIT-AP 不属于当前 AC")
+        if not detail.ap.ip:
+            raise AcWebActionError("AP_ADDRESS_MISSING", "当前 AP 没有 IP，无法打开外部终端")
+        if detail.ap.status != "online":
+            raise AcWebActionError("AP_NOT_ONLINE", "当前 AP 离线或状态异常，无法打开外部终端")
+        self._require_desktop_runtime()
+        configs = {
+            config.terminal_type: config
+            for config in available_external_terminal_configs(SettingsStore(self.paths))
+        }
+        config = configs.get(str(terminal_type or "").casefold())
+        if config is None:
+            raise AcWebActionError("TERMINAL_NOT_CONFIGURED", "未配置所选外部终端，请先到系统设置配置")
+        device_repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
+        candidates = [
+            device
+            for device in device_repository.list()
+            if detail.ap.ip in {str(device.primary_address or "").strip(), str(device.backup_address or "").strip()}
+        ]
+        if len(candidates) != 1:
+            raise AcWebActionError("AP_CREDENTIALS_MISSING", "未配置该 AP 的远程登录凭据")
+        credential_device = candidates[0]
+        targets = [
+            target
+            for target in connection_targets(credential_device)
+            if target.host == detail.ap.ip and not target.via_tunnel
+        ]
+        target = targets[0] if targets else None
+        if target is None or not str(target.password or ""):
+            raise AcWebActionError("AP_CREDENTIALS_MISSING", "未配置该 AP 的远程登录凭据")
+        args = build_external_terminal_command(
+            credential_device,
+            target,
+            config.terminal_type,
+            config.exe_path,
+            config.include_password,
+        )
+        assert self.desktop_action_service is not None
+        executable = Path(args[0])
+        result = self.desktop_action_service.launch_terminal(
+            f"terminal.{config.terminal_type}",
+            detail.ap.id,
+            RegisteredLaunch(executable, tuple(args[1:]), executable.parent),
+        )
+        if not result.success:
+            raise AcWebActionError("TERMINAL_LAUNCH_FAILED", result.message or "外部终端启动失败")
+        return AcExternalTerminalActionDTO(
+            ap_id=detail.ap.id,
+            terminal_type=config.terminal_type,
+            message=f"已打开 {detail.ap.name} 的远程终端",
+        )
+
     def cancel_task(self, site_id: str, task_id: str) -> AcWebTaskDTO:
         site_id = self._site(site_id)
         snapshot = self._task_snapshot(site_id, task_id)
@@ -444,9 +661,16 @@ class AcWebApplicationService:
                             "source": "cli",
                             "plan_id": str(plan["plan_id"]),
                             "plan_digest": str(plan["digest"]),
+                            "resource_keys": [f"{site_id}:{plan['target_id']}:ac_config_write"],
+                            "resource_conflict_message": "当前 AC 已有配置写任务正在运行",
                         },
                     )
                 )
+            except TaskResourceConflictError as exc:
+                plan["status"] = "CONFIRMED"
+                plan["task_id"] = ""
+                self._save_plan(plan)
+                raise AcWebActionError("AC_ACTION_RUNNING", "当前 AC 已有配置写任务正在运行") from exc
             except Exception:
                 plan["status"] = "START_FAILED"
                 self._save_plan(plan)
@@ -601,6 +825,20 @@ class AcWebApplicationService:
             raise AcWebActionError("ARTIFACT_INVALID", str(exc)) from exc
         return path, name
 
+    def open_omnipeek_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        try:
+            path, name, _manifest = self.artifact_store.open(
+                site_id=self._site(site_id),
+                artifact_id=artifact_id,
+                owner=self._OWNER,
+                source="ac_omnipeek_export",
+                artifact_type="nam",
+                task_type=self._ARTIFACT_TASK_TYPES["ac_omnipeek_export"],
+            )
+        except WebArtifactError as exc:
+            raise AcWebActionError("ARTIFACT_INVALID", str(exc)) from exc
+        return path, name
+
     def _task_dto(self, site_id: str, task_id: str) -> AcWebTaskDTO:
         snapshot = sanitize_web_export_snapshot(self._task_snapshot(site_id, task_id))
         metadata = (
@@ -617,6 +855,7 @@ class AcWebApplicationService:
             task_id=task_id,
             status=snapshot.status.value,
             action=self._TASK_ACTIONS[snapshot.task_type],
+            target_id=str(snapshot.device if snapshot.task_type == "ac_command_action_execute" else ""),
             artifact_id=str((metadata or {}).get("artifact_id") or ""),
             available=bool(metadata and metadata.get("completed") is True),
             progress=snapshot.progress,
@@ -773,6 +1012,20 @@ class AcWebApplicationService:
     def _repository(self, site_id: str) -> AcRepository:
         site_id = self._site(site_id)
         return AcRepository(Database(self.paths.site_db_path(site_id)))
+
+    def _validated_ap_ids(self, site_id: str, ac_id: str, ap_ids: list[str]) -> list[str]:
+        selected = list(dict.fromkeys(str(value or "").strip() for value in ap_ids if str(value or "").strip()))
+        if not selected:
+            return []
+        repository = self._repository(site_id)
+        if any(repository.get_fit_ap_resource_by_uuid(ac_id, ap_id) is None for ap_id in selected):
+            raise AcWebActionError("AP_TARGET_NOT_AUTHORIZED", "OmniPeek 导出目标 FIT-AP 不属于当前 AC")
+        return selected
+
+    def _require_desktop_runtime(self) -> None:
+        service = self.desktop_action_service
+        if service is None or service.runtime_mode is not RuntimeMode.DESKTOP:
+            raise AcWebActionError("DESKTOP_REQUIRED", "仅桌面版支持打开外部终端")
 
     def _action(self, action_id: str) -> tuple[str, tuple[str, ...]]:
         try:

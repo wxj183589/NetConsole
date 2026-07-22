@@ -1,5 +1,5 @@
 import { apiRequest } from './client'
-import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcWebTask } from '../types/acWebParity'
+import type { AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview, AcExternalTerminalAction, AcExternalTerminalOptions, AcOmniPeekPreview, AcTerminalType, AcWebTask } from '../types/acWebParity'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
@@ -117,4 +117,30 @@ export function getAcActionPlan(planId: string): Promise<AcActionPlan> {
 
 export function getAcActionAudit(planId: string): Promise<AcActionAudit> {
   return apiRequest<AcActionAudit>(`${root}/actions/plans/${encodeURIComponent(planId)}/audit`)
+}
+
+export function startAcOmniPeekPreview(acId: string, apIds: string[]): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/fit-aps/omnipeek/preview`, {
+    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds }),
+  })
+}
+
+export function getAcOmniPeekPreview(taskId: string): Promise<AcOmniPeekPreview> {
+  return apiRequest<AcOmniPeekPreview>(`${root}/fit-aps/omnipeek/preview/${encodeURIComponent(taskId)}`)
+}
+
+export function startAcOmniPeekExport(acId: string, apIds: string[]): Promise<AcWebTask> {
+  return apiRequest<AcWebTask>(`${root}/fit-aps/omnipeek/export`, {
+    method: 'POST', body: JSON.stringify({ ac_id: acId, ap_ids: apIds }),
+  })
+}
+
+export function getAcExternalTerminalOptions(): Promise<AcExternalTerminalOptions> {
+  return apiRequest<AcExternalTerminalOptions>(`${root}/fit-aps/external-terminal/options`)
+}
+
+export function openAcFitApExternalTerminal(apId: string, acId: string, terminalType: AcTerminalType): Promise<AcExternalTerminalAction> {
+  return apiRequest<AcExternalTerminalAction>(`${root}/fit-aps/${encodeURIComponent(apId)}/external-terminal`, {
+    method: 'POST', body: JSON.stringify({ ac_id: acId, terminal_type: terminalType }),
+  })
 }

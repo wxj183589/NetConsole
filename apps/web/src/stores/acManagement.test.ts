@@ -10,7 +10,7 @@ import {
   listAcAps,
   listAcConfigSnapshots,
 } from '../api/acManagement'
-import { deleteAcFitAps, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcResourceRefresh } from '../api/acWebParity'
+import { deleteAcFitAps, getAcWebTask, importAcFitApMetadata, recoverAcWebTasks, saveAcFitApMetadata, startAcResourceRefresh } from '../api/acWebParity'
 
 vi.mock('../api/acManagement', () => ({
   getAcApDetail: vi.fn(),
@@ -47,6 +47,7 @@ describe('AC Management polling store', () => {
     vi.mocked(importAcFitApMetadata).mockReset()
     vi.mocked(saveAcFitApMetadata).mockReset()
     vi.mocked(startAcResourceRefresh).mockReset()
+    vi.mocked(getAcWebTask).mockReset()
     vi.stubGlobal('window', { setTimeout, clearTimeout, localStorage: { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() } })
   })
 
@@ -110,6 +111,38 @@ describe('AC Management polling store', () => {
       'netconsole.ac.active-task',
       'task-fit-ap',
     )
+  })
+
+  it('starts a single-AP optical refresh without changing refresh task semantics', async () => {
+    vi.mocked(startAcResourceRefresh).mockResolvedValue({
+      task_id: 'task-optical-one', action: 'ac_fit_ap_optical_refresh', status: 'QUEUED',
+      progress: 0, stage: 'queued', current: 0, total: 0,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    })
+    const store = useAcManagementStore()
+    store.filters.ac_id = 'ac-1'
+
+    await store.startApOpticalRefresh('ap-1')
+
+    expect(startAcResourceRefresh).toHaveBeenCalledWith('optical', 'ac-1', 'ap-1')
+  })
+
+  it('tracks AC configuration actions in an independent recoverable task slot', async () => {
+    vi.mocked(getAcWebTask).mockResolvedValue({
+      task_id: 'action-1', action: 'ac_command_action_execute', status: 'RUNNING',
+      progress: 10, stage: 'connect', current: 0, total: 1,
+      artifact_id: '', available: false, sha256: '', size_bytes: 0,
+      message: '', error_message: '', result_summary: {},
+    })
+    const store = useAcManagementStore()
+
+    await store.trackActionTask('action-1')
+
+    expect(store.actionTask?.task_id).toBe('action-1')
+    expect(store.refreshTask).toBeNull()
+    expect(window.localStorage.setItem).toHaveBeenCalledWith('netconsole.ac.active-action-task', 'action-1')
+    store.stopPolling()
   })
 
   it('starts confirmed FIT-AP batch deletion through the persistent task API', async () => {

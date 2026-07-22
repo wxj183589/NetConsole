@@ -41,9 +41,31 @@ class OmniPeekNameTableService:
         self.ac_repository = ac_repository
         self.device_repository = device_repository
 
-    def source_counts(self, *, ac_device_uuid: str | None = None, devices: Iterable[Device] | None = None) -> dict[str, int]:
-        fit_ap_count = len(self._fit_ap_rows(ac_device_uuid))
+    def source_counts(
+        self,
+        *,
+        ac_device_uuid: str | None = None,
+        devices: Iterable[Device] | None = None,
+        selected_fit_ap_ids: Iterable[str] | None = None,
+        scope_extensions_to_fit_ap: bool = False,
+    ) -> dict[str, int]:
+        selected = {str(value) for value in selected_fit_ap_ids or [] if str(value)}
+        fit_ap_rows = self._fit_ap_rows(ac_device_uuid)
+        fit_ap_count = sum(1 for row in fit_ap_rows if not selected or str(row.get("ap_uuid") or "") in selected)
         extension_count = len(self.ac_repository.list_ap_extension_points())
+        if scope_extensions_to_fit_ap and ac_device_uuid:
+            extension_count = sum(
+                1
+                for item in self.collect_items(
+                    include_ac_fit_ap=True,
+                    include_ap_extensions=True,
+                    include_device_mr=False,
+                    ac_device_uuid=ac_device_uuid,
+                    selected_fit_ap_ids=selected_fit_ap_ids,
+                    scope_extensions_to_fit_ap=True,
+                )
+                if SOURCE_AP_EXTENSION in (item.sources or [item.source])
+            )
         device_count = 0
         if devices is not None:
             device_count = len(list(devices))
@@ -64,6 +86,8 @@ class OmniPeekNameTableService:
         ac_device_uuid: str | None = None,
         devices: Iterable[Device] | None = None,
         group_names: dict[int, str] | None = None,
+        selected_fit_ap_ids: Iterable[str] | None = None,
+        scope_extensions_to_fit_ap: bool = False,
     ) -> list[OmniPeekDeviceItem]:
         items: list[OmniPeekDeviceItem] = []
         if include_ap_extensions:
@@ -74,7 +98,13 @@ class OmniPeekNameTableService:
             if devices is None and self.device_repository is not None:
                 devices = self.device_repository.list()
             items.extend(collect_onboard_mr_items(list(devices or []), group_names=group_names or {}))
-        return prepare_omnipeek_items(merge_omnipeek_items(items))
+        prepared = prepare_omnipeek_items(merge_omnipeek_items(items))
+        if scope_extensions_to_fit_ap and ac_device_uuid:
+            prepared = [item for item in prepared if str(item.raw.get("ap_uuid") or "")]
+        selected = {str(value) for value in selected_fit_ap_ids or [] if str(value)}
+        if selected:
+            prepared = [item for item in prepared if str(item.raw.get("ap_uuid") or "") in selected]
+        return prepared
 
     def _fit_ap_rows(self, ac_device_uuid: str | None) -> list[dict[str, object | None]]:
         if ac_device_uuid:

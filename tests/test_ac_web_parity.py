@@ -5,6 +5,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,14 +18,17 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO, AcRefreshRequestDTO
+from netconsole.models.device import Device
 from netconsole.models.task_snapshot import TaskEvent, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.job_center.handlers.ac_jobs import ac_fit_ap_delete_many, fit_ap_metadata_import
 from netconsole.services.job_center.handlers.device_jobs import fit_ap_metadata_save
+from netconsole.services.job_center.handlers.legacy_tasks import run_background_task
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
@@ -45,6 +49,9 @@ AC_FEATURE_IDS = (
     "web.ac_fit_ap_metadata_write",
     "web.ac_fit_ap_history",
     "web.ac_dangerous_actions",
+    "ac.omnipeek_name_table_export",
+    "web.ac_fit_ap_external_terminal",
+    "desktop.native_bridge",
 )
 CSV_CONTENT = (
     "AP名称,AP_MAC,归属类型,归属站点,归属区间,区间起点站,区间终点站,场段,区域,网络,线别,里程,点位说明,方向,备注\n"
@@ -60,7 +67,7 @@ class _NoopAsyncService:
         return None
 
 
-def _service(paths, tasks=None):
+def _service(paths, tasks=None, *, desktop_action_service=None):
     mark_base_data_copy(paths)
     tasks = tasks or TaskApplicationService(paths=paths, site_name="demo")
     normal = FakeLocalProcessAdapter(tasks)
@@ -83,6 +90,7 @@ def _service(paths, tasks=None):
         import_preview_service=previews,
         base_import_service=imports,
         export_adapter=export,  # type: ignore[arg-type]
+        desktop_action_service=desktop_action_service,
     )
     return service, normal, export, tasks
 
@@ -211,6 +219,7 @@ def test_action_plan_persists_revalidates_target_and_starts_real_fixed_command_t
     assert job.task_type == "ac_command_action_execute"
     assert job.params["action"] == "enable_ap_remote_login"
     assert job.params["command_sequence"] == list(executed.command_summary)
+    assert job.params["resource_keys"] == ["demo:ac-1:ac_config_write"]
     assert snapshot is not None and snapshot.source == "local" and snapshot.owner == "web_ac"
     normal.complete(
         executed.task_id,
@@ -526,6 +535,165 @@ def test_fit_ap_metadata_save_api_starts_normalized_persistent_job(
         "location_note": "站台",
         "direction": "上行",
     }
+
+
+def test_ac_omnipeek_preview_and_export_are_scoped_to_current_ac_selection(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, normal, export, _tasks = _service(paths)
+    repository = AcRepository(Database(paths.site_db_path("demo")))
+    repository.upsert_ap_extension_point(
+        {"ap_name": "AP-Online", "ap_mac_display": "0000-0000-0001", "station_name": "车站A"}
+    )
+    repository.upsert_ap_extension_point(
+        {"ap_name": "Other-AC-AP", "ap_mac_display": "0000-0000-00ff", "station_name": "其他局点"}
+    )
+
+    preview = service.start_omnipeek_preview("demo", ac_id="ac-1", ap_ids=["ap-online"])
+    preview_job = normal.jobs[preview.task_id]
+    assert preview_job.params["selected_fit_ap_ids"] == ["ap-online"]
+    assert preview_job.params["include_device_mr"] is False
+    result = run_background_task(preview_job, should_cancel=lambda: False)
+    assert result["source_counts"]["AP扩展信息"] == 1
+    assert all(item["name"] != "Other-AC-AP" for item in result["items"])
+    normal.complete(preview.task_id, result)
+    ready = service.get_omnipeek_preview("demo", preview.task_id)
+
+    assert ready.ready is True
+    assert ready.input_ap_count == 1
+    assert ready.exportable_entry_count > 0
+    assert ready.error_count == 0
+
+    all_preview = service.start_omnipeek_preview("demo", ac_id="ac-1", ap_ids=[])
+    all_result = run_background_task(normal.jobs[all_preview.task_id], should_cancel=lambda: False)
+    assert all_result["source_counts"]["AC FIT-AP资源"] == 3
+    assert all_result["source_counts"]["AP扩展信息"] == 1
+    assert all(item["name"] != "Other-AC-AP" for item in all_result["items"])
+    normal.complete(all_preview.task_id, all_result)
+
+    started = service.start_omnipeek_export("demo", ac_id="ac-1", ap_ids=["ap-online"])
+    export_job = export.jobs[started.task_id]
+    assert export_job.site_name == "demo"
+    assert export_job.params["payload"]["source"] == {
+        "ac_uuid": "ac-1",
+        "selected_fit_ap_ids": ["ap-online"],
+        "selected_device_uuids": [],
+        "scope_extensions_to_fit_ap": True,
+    }
+    assert export_job.params["payload"]["config"]["include_device_mr"] is False
+    output = export.complete(started.task_id, b'<NameTable Version="3.0"></NameTable>')
+    opened, _name = service.open_omnipeek_export("demo", started.artifact_id)
+    assert opened == output
+
+    with pytest.raises(AcWebActionError) as foreign:
+        service.start_omnipeek_preview("demo", ac_id="ac-1", ap_ids=["not-current-ac"])
+    assert foreign.value.code == "AP_TARGET_NOT_AUTHORIZED"
+
+
+class _FakeDesktopActionService:
+    runtime_mode = RuntimeMode.DESKTOP
+
+    def __init__(self, *, success: bool = True) -> None:
+        self.success = success
+        self.launches: list[tuple[str, str, object]] = []
+
+    def launch_terminal(self, action_id: str, object_id: str, launch):
+        self.launches.append((action_id, object_id, launch))
+        return SimpleNamespace(success=self.success, message="fixture launch failed" if not self.success else "")
+
+
+def test_fit_ap_external_terminal_uses_saved_credentials_and_never_accepts_renderer_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    terminal = tmp_path / "SecureCRT.exe"
+    terminal.write_bytes(b"fixture")
+    settings = SettingsStore(paths)
+    settings.set_value("external_terminal/securecrt_path", str(terminal))
+    settings.set_value("external_terminal/type", "securecrt")
+    desktop = _FakeDesktopActionService()
+    service, _normal, _export, _tasks = _service(paths, desktop_action_service=desktop)
+
+    with pytest.raises(AcWebActionError) as missing_credentials:
+        service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
+        )
+    assert missing_credentials.value.code == "AP_CREDENTIALS_MISSING"
+
+    DeviceRepository(Database(paths.site_db_path("demo"))).create(
+        Device(
+            name="AP 登录凭据",
+            device_type="FAT-AP",
+            primary_address="10.0.1.1",
+            ssh_enabled=1,
+            ssh_port=22,
+            ssh_username="controlled-user",
+            ssh_password="controlled-secret",
+        )
+    )
+    launched = service.launch_fit_ap_external_terminal(
+        "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
+    )
+    assert launched.ap_id == "ap-online"
+    assert launched.terminal_type == "securecrt"
+    assert desktop.launches[0][0:2] == ("terminal.securecrt", "ap-online")
+    launch = desktop.launches[0][2]
+    assert launch.executable == terminal.resolve()
+    assert "controlled-secret" not in " ".join(launch.arguments)
+    assert "controlled-secret" not in launched.model_dump_json()
+
+    failed_desktop = _FakeDesktopActionService(success=False)
+    failed_service, _normal2, _export2, _tasks2 = _service(
+        paths, desktop_action_service=failed_desktop
+    )
+    with pytest.raises(AcWebActionError) as launch_failed:
+        failed_service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
+        )
+    assert launch_failed.value.code == "TERMINAL_LAUNCH_FAILED"
+
+    server_service, _normal3, _export3, _tasks3 = _service(paths)
+    with pytest.raises(AcWebActionError) as server_rejected:
+        server_service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
+        )
+    assert server_rejected.value.code == "DESKTOP_REQUIRED"
+
+    client, _client_service = _client(tmp_path / "api", monkeypatch)
+    with client:
+        rejected = client.post(
+            "/api/ac-management/fit-aps/ap-online/external-terminal",
+            json={
+                "ac_id": "ac-1",
+                "terminal_type": "securecrt",
+                "executable": "cmd.exe",
+                "arguments": ["/c", "whoami"],
+            },
+        )
+    assert rejected.status_code == 422
+
+
+def test_ac_omnipeek_export_runs_shared_process_and_keeps_log(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service, _normal, _fake_export, tasks = _service(paths)
+    adapter = WebExportProcessAdapter(tasks)
+    service.export_adapter = adapter
+    try:
+        started = service.start_omnipeek_export(
+            "demo", ac_id="ac-1", ap_ids=["ap-online"]
+        )
+        assert adapter.wait(started.task_id, timeout=30)
+        path, name = service.open_omnipeek_export("demo", started.artifact_id)
+    finally:
+        adapter.shutdown()
+
+    content = path.read_text(encoding="utf-8")
+    log_path = path.with_name(f"{path.stem}_导出日志.txt")
+    assert name.endswith("名称表.nam")
+    assert '<NameTable Version="3.0">' in content
+    assert "00:00:00:00:00:01" in content
+    assert "00:00:00:00:00:02" not in content
+    assert log_path.is_file()
+    assert "AC FIT-AP资源：1 条" in log_path.read_text(encoding="utf-8")
 
 
 def test_ac_extension_export_runs_in_qt_free_process_and_publishes_hash_manifest(tmp_path: Path) -> None:

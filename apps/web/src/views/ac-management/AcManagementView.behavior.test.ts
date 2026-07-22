@@ -10,6 +10,12 @@ const mocks = vi.hoisted(() => ({
   taskStore: null as null | Record<string, unknown>,
   confirm: vi.fn(),
   openExternalUrl: vi.fn(),
+  hostType: 'electron',
+  createActionPlan: vi.fn(),
+  confirmActionPlan: vi.fn(),
+  executeActionPlan: vi.fn(),
+  getActionPlan: vi.fn(),
+  getActionAudit: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -18,8 +24,20 @@ vi.mock('vue-router', () => ({
 }))
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('../../platform/runtime', () => ({
-  getRuntimeConfig: () => ({ hostType: 'electron' }),
+  getRuntimeConfig: () => ({ hostType: mocks.hostType }),
   getPlatformAdapter: () => ({ openExternalUrl: mocks.openExternalUrl }),
+}))
+vi.mock('../../api/acWebParity', () => ({
+  createAcActionPlan: mocks.createActionPlan,
+  confirmAcActionPlan: mocks.confirmActionPlan,
+  executeAcActionPlan: mocks.executeActionPlan,
+  getAcActionPlan: mocks.getActionPlan,
+  getAcActionAudit: mocks.getActionAudit,
+  startAcOmniPeekPreview: vi.fn(),
+  getAcOmniPeekPreview: vi.fn(),
+  startAcOmniPeekExport: vi.fn(),
+  getAcExternalTerminalOptions: vi.fn(),
+  openAcFitApExternalTerminal: vi.fn(),
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: mocks.confirm }) }))
 vi.mock('../../stores/acManagement', () => ({ useAcManagementStore: () => mocks.store }))
@@ -32,6 +50,14 @@ const passthrough = defineComponent({
   setup(_props, { slots }) {
     const attrs = useAttrs()
     return () => h('div', attrs, slots.default?.())
+  },
+})
+
+const dialogStub = defineComponent({
+  inheritAttrs: false,
+  setup(_props, { slots }) {
+    const attrs = useAttrs()
+    return () => h('div', attrs, [slots.default?.(), slots.footer?.()])
   },
 })
 
@@ -91,6 +117,7 @@ const stubs: Record<string, Component> = {
   ElDescriptions: passthrough,
   ElDescriptionsItem: descriptionsItemStub,
   ElDrawer: passthrough,
+  ElDialog: dialogStub,
   ElEmpty: passthrough,
   ElForm: passthrough,
   ElFormItem: passthrough,
@@ -255,6 +282,7 @@ function makeStore(selectedOptical = optical()) {
     configLoading: false,
     error: '',
     refreshTask: null,
+    actionTask: null,
     refreshStarting: false,
     startPolling: vi.fn(),
     stopPolling: vi.fn(),
@@ -274,15 +302,17 @@ function makeStore(selectedOptical = optical()) {
     startFitApRefresh: vi.fn(),
     startFitApDetailRefresh: vi.fn(),
     startOpticalRefresh: vi.fn(),
+    startApOpticalRefresh: vi.fn(),
     startFitApDelete: vi.fn(),
     startFitApMetadataImport: vi.fn(),
     startFitApMetadataSave: vi.fn(),
+    trackActionTask: vi.fn(),
   })
 }
 
 function mountView(selectedOptical = optical()): VueWrapper {
   mocks.store = makeStore(selectedOptical)
-  mocks.taskStore = reactive({ tasks: [], acquirePolling: vi.fn(), releasePolling: vi.fn() })
+  mocks.taskStore = reactive({ tasks: [], acquirePolling: vi.fn(), releasePolling: vi.fn(), refresh: vi.fn() })
   return mount(AcManagementView, {
     global: {
       stubs,
@@ -296,6 +326,12 @@ describe('AC Management optical detail behavior', () => {
     mocks.routerPush.mockReset()
     mocks.confirm.mockReset()
     mocks.openExternalUrl.mockReset()
+    mocks.hostType = 'electron'
+    mocks.createActionPlan.mockReset()
+    mocks.confirmActionPlan.mockReset()
+    mocks.executeActionPlan.mockReset()
+    mocks.getActionPlan.mockReset()
+    mocks.getActionAudit.mockReset().mockResolvedValue({})
   })
 
   it('colors only the side that actually triggers the optical alarm', () => {
@@ -337,6 +373,31 @@ describe('AC Management optical detail behavior', () => {
     expect(apRxPower.text()).toBe('--')
     expect(apRxPower.text()).not.toContain('dBm')
     expect(apRxPower.classes()).toContain('optical-value-muted')
+    wrapper.unmount()
+  })
+
+  it('previews fixed commands and never executes before explicit confirmation', async () => {
+    const plan = {
+      plan_id: 'plan-1', target_id: 'ac-1', action_id: 'persist_auto_ap', action_label: '固化新 AP',
+      plan_digest: 'digest', confirm_token: 'secret-token', expires_at: Date.now() + 60_000,
+      status: 'PREVIEW', command_summary: ['system-view', 'wlan auto-ap persistent all', 'save force', 'return', 'quit'], task_id: '',
+    }
+    mocks.createActionPlan.mockResolvedValue(plan)
+    mocks.confirmActionPlan.mockResolvedValue({ ...plan, status: 'CONFIRMED' })
+    mocks.executeActionPlan.mockResolvedValue({ ...plan, status: 'EXECUTING', task_id: 'action-task-1' })
+    const wrapper = mountView()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('一键固化新上线 AP'))!.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(mocks.createActionPlan).toHaveBeenCalledWith('ac-1', 'persist_auto_ap')
+    expect(wrapper.text()).toContain('wlan auto-ap persistent all')
+    expect(wrapper.text()).not.toContain('secret-token')
+    expect(mocks.executeActionPlan).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('确认并执行真实配置'))!.trigger('click')
+    await vi.waitFor(() => expect(mocks.executeActionPlan).toHaveBeenCalledWith('plan-1'))
+    expect((mocks.store!.trackActionTask as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('action-task-1')
     wrapper.unmount()
   })
 })

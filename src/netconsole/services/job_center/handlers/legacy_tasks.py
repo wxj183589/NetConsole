@@ -974,7 +974,8 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_group_repository import DeviceGroupRepository
     from netconsole.repositories.device_repository import DeviceRepository
-    from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService
+    from netconsole.models.omnipeek_name_table import OmniPeekExportConfig
+    from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, build_omnipeek_entries
 
     _emit(progress, "omnipeek_name_table_preview", 0, 3, "正在后台收集 OmniPeek 名称数据")
     _check_cancel(should_cancel)
@@ -991,6 +992,7 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     groups = DeviceGroupRepository(database, site_name).list() if site_name else []
     group_names = {int(group.id): group.name for group in groups if group.id is not None}
     service = OmniPeekNameTableService(ac_repository, device_repository)
+    selected_fit_ap_ids = [str(value) for value in params.get("selected_fit_ap_ids") or [] if str(value)]
     items = service.collect_items(
         include_ac_fit_ap=bool(params.get("include_ac_fit_ap", True)),
         include_ap_extensions=bool(params.get("include_ap_extensions", True)),
@@ -998,6 +1000,8 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
         ac_device_uuid=str(params.get("ac_uuid") or "") or None,
         devices=devices,
         group_names=group_names,
+        selected_fit_ap_ids=selected_fit_ap_ids,
+        scope_extensions_to_fit_ap=bool(params.get("scope_extensions_to_fit_ap", False)),
     )
     _emit(progress, "omnipeek_name_table_preview", 2, 3, "正在整理预览和异常统计")
     _check_cancel(should_cancel)
@@ -1005,8 +1009,22 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     normal = [item for item in items if item.status == "正常"]
     preview_limit = max(1, min(int(params.get("preview_limit") or 500), 2000))
     preview_items = (abnormal + normal)[:preview_limit]
-    source_counts = service.source_counts(ac_device_uuid=str(params.get("ac_uuid") or "") or None, devices=devices)
+    source_counts = service.source_counts(
+        ac_device_uuid=str(params.get("ac_uuid") or "") or None,
+        devices=devices,
+        selected_fit_ap_ids=selected_fit_ap_ids,
+        scope_extensions_to_fit_ap=bool(params.get("scope_extensions_to_fit_ap", False)),
+    )
     source_counts[SOURCE_DEVICE_MANAGEMENT] = sum(1 for item in items if SOURCE_DEVICE_MANAGEMENT in (item.sources or [item.source]))
+    export_config = OmniPeekExportConfig(
+        line_name=str(params.get("line_name") or "线路"),
+        output_path=Path("preview.nam"),
+        include_ac_fit_ap=bool(params.get("include_ac_fit_ap", True)),
+        include_ap_extensions=bool(params.get("include_ap_extensions", True)),
+        include_device_mr=bool(params.get("include_device_mr", True)),
+    )
+    exportable_entries = build_omnipeek_entries(items, export_config)
+    selectable_items = sum(1 for item in items if item.selected)
     stats = {
         "total": len(items),
         "selected": sum(1 for item in items if item.selected),
@@ -1015,6 +1033,9 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
         "r2_failed": sum(1 for item in items if item.status == "R2推导失败"),
         "missing_mac": sum(1 for item in items if item.status == "缺少物理MAC"),
         "preview_count": len(preview_items),
+        "exportable_entries": len(exportable_entries),
+        "skipped": len(items) - selectable_items,
+        "error_count": len(abnormal),
     }
     _emit(progress, "omnipeek_name_table_preview", 3, 3, "OmniPeek 名称表预览已就绪")
     return {"items": [asdict(item) for item in preview_items], "source_counts": source_counts, "stats": stats}

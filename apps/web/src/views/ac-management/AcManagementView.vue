@@ -5,14 +5,28 @@ import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
+import {
+  confirmAcActionPlan,
+  createAcActionPlan,
+  executeAcActionPlan,
+  getAcActionAudit,
+  getAcActionPlan,
+  getAcExternalTerminalOptions,
+  getAcOmniPeekPreview,
+  openAcFitApExternalTerminal,
+  startAcOmniPeekExport,
+  startAcOmniPeekPreview,
+} from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useAcManagementStore } from '../../stores/acManagement'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useTaskStore } from '../../stores/tasks'
+import { t } from '../../i18n/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcOptical, AcRadio } from '../../types/acManagement'
+import type { AcActionAudit, AcActionPlan, AcOmniPeekPreview, AcTerminalType } from '../../types/acWebParity'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import { formatOpticalPower, opticalStatusPresentation, opticalValuePresentation } from '../../utils/opticalPresentation'
 
@@ -36,6 +50,22 @@ const historyLoading = ref(false)
 const historyError = ref('')
 const historyPage = ref<AcApHistoryPage | null>(null)
 const historyKind = ref<'radio' | 'lldp' | 'optical'>('radio')
+const actionPlanStorageKey = 'netconsole.ac-management.action-plan'
+const actionPlan = ref<AcActionPlan | null>(null)
+const actionAudit = ref<AcActionAudit | null>(null)
+const actionDialogVisible = ref(false)
+const actionLoading = reactive<Record<'persist_auto_ap' | 'enable_ap_remote_login', boolean>>({ persist_auto_ap: false, enable_ap_remote_login: false })
+const omniPeekVisible = ref(false)
+const omniPeekLoading = ref(false)
+const omniPeekExportLoading = ref(false)
+const omniPeekPreview = ref<AcOmniPeekPreview | null>(null)
+const omniPeekScopeIds = ref<string[]>([])
+const terminalVisible = ref(false)
+const terminalLoading = ref(false)
+const terminalTarget = ref<AcAp | null>(null)
+const terminalType = ref<AcTerminalType>('securecrt')
+const terminalOptions = ref<Array<{ terminal_type: AcTerminalType; label: string }>>([])
+const contextMenu = reactive<{ visible: boolean; x: number; y: number; row: AcAp | null; cellValue: string }>({ visible: false, x: 0, y: 0, row: null, cellValue: '' })
 const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
 function acColumn<Row extends object>(
@@ -94,10 +124,16 @@ const detailRadios = computed(() => (store.selected?.radios || []).filter((radio
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
 const diffLines = computed(() => (store.configDiff?.raw_diff || '').split('\n'))
 const taskActive = computed(() => !!store.refreshTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.refreshTask.status))
+const actionTaskActive = computed(() => !!store.actionTask && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(store.actionTask.status))
 const publicAcTasks = computed(() => taskStore.tasks.filter((task) => task.module === 'ac' || task.owner === 'web_ac'))
 const activeAcTaskCount = computed(() => publicAcTasks.value.filter((task) => ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'].includes(task.status)).length)
 const failedAcTaskCount = computed(() => publicAcTasks.value.filter((task) => task.status === 'FAILED').length)
 const latestAcTask = computed(() => publicAcTasks.value.find((task) => task.id === store.refreshTask?.task_id) || publicAcTasks.value[0] || null)
+const acActionConflict = computed(() => actionTaskActive.value && store.actionTask?.target_id === store.filters.ac_id)
+const currentActionLoading = computed(() => {
+  const actionId = actionPlan.value?.action_id
+  return actionId === 'persist_auto_ap' || actionId === 'enable_ap_remote_login' ? actionLoading[actionId] : false
+})
 const historyColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => ({
   radio: [
     ['collected_at', '采集时间'], ['ap_name', 'AP 名称'], ['rid', 'Radio ID'], ['status', '状态'], ['mode', '模式'], ['band', '频段'],
@@ -128,14 +164,17 @@ const matchingLines = computed(() => {
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
+  document.addEventListener('click', closeContextMenu)
   store.startPolling()
   taskStore.acquirePolling(pollingConsumer)
   const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
   if (apId) void openDetailById(apId)
+  void recoverActionPlan()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)
+  document.removeEventListener('click', closeContextMenu)
   store.stopPolling()
   taskStore.releasePolling(pollingConsumer)
 })
@@ -150,8 +189,8 @@ function handleVisibility(): void {
   }
 }
 
-function openTaskWindow(): void {
-  const taskId = latestAcTask.value?.id || store.refreshTask?.task_id || ''
+function openTaskWindow(requestedTaskId = ''): void {
+  const taskId = requestedTaskId || latestAcTask.value?.id || store.actionTask?.task_id || store.refreshTask?.task_id || ''
   if (window.netconsoleDesktop) {
     void window.netconsoleDesktop.openTaskWindow({ module: 'ac', ...(taskId ? { taskId } : {}) })
     return
@@ -299,6 +338,172 @@ function display(value: unknown): string {
   return value === null || value === undefined || value === '' ? '--' : String(value)
 }
 
+async function recoverActionPlan(): Promise<void> {
+  const planId = window.localStorage?.getItem(actionPlanStorageKey) || ''
+  if (!planId || !isFeatureEnabled('web.ac_dangerous_actions')) return
+  try {
+    actionPlan.value = await getAcActionPlan(planId)
+    actionAudit.value = await getAcActionAudit(planId)
+    if (actionPlan.value.task_id) await store.trackActionTask(actionPlan.value.task_id)
+  } catch {
+    window.localStorage?.removeItem(actionPlanStorageKey)
+  }
+}
+
+async function prepareAcAction(actionId: 'persist_auto_ap' | 'enable_ap_remote_login'): Promise<void> {
+  if (!store.filters.ac_id || acActionConflict.value) return
+  actionLoading[actionId] = true
+  try {
+    actionPlan.value = await createAcActionPlan(store.filters.ac_id, actionId)
+    actionAudit.value = null
+    window.localStorage?.setItem(actionPlanStorageKey, actionPlan.value.plan_id)
+    actionDialogVisible.value = true
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.action.plan_failed', 'AC 动作计划创建失败')))
+  } finally {
+    actionLoading[actionId] = false
+  }
+}
+
+async function confirmAndExecuteAcAction(): Promise<void> {
+  const plan = actionPlan.value
+  if (!plan) return
+  actionLoading[plan.action_id as 'persist_auto_ap' | 'enable_ap_remote_login'] = true
+  try {
+    const confirmed = await confirmAcActionPlan(plan)
+    actionPlan.value = await executeAcActionPlan(confirmed.plan_id)
+    actionAudit.value = await getAcActionAudit(confirmed.plan_id)
+    if (actionPlan.value.task_id) {
+      await store.trackActionTask(actionPlan.value.task_id)
+      await taskStore.refresh()
+    }
+    actionDialogVisible.value = false
+    ElMessage.success(t('ac.action.task_submitted', 'AC 配置动作任务已提交'))
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.action.execute_failed', 'AC 配置动作执行失败')))
+  } finally {
+    actionLoading[plan.action_id as 'persist_auto_ap' | 'enable_ap_remote_login'] = false
+  }
+}
+
+async function openOmniPeekPreview(): Promise<void> {
+  if (!store.filters.ac_id) return
+  omniPeekScopeIds.value = [...selectedApIds.value]
+  omniPeekPreview.value = null
+  omniPeekVisible.value = true
+  omniPeekLoading.value = true
+  try {
+    const task = await startAcOmniPeekPreview(store.filters.ac_id, omniPeekScopeIds.value)
+    await taskStore.refresh()
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      const preview = await getAcOmniPeekPreview(task.task_id)
+      if (preview.ready) {
+        omniPeekPreview.value = preview
+        return
+      }
+      if (['FAILED', 'CANCELLED'].includes(preview.task_status)) throw new Error(preview.message || t('ac.omnipeek.preview_failed', 'OmniPeek 名称表预览失败'))
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 500))
+    }
+    throw new Error(t('ac.omnipeek.preview_timeout', 'OmniPeek 名称表预览超时，请在任务窗口查看'))
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.omnipeek.preview_failed', 'OmniPeek 名称表预览失败')))
+  } finally {
+    omniPeekLoading.value = false
+  }
+}
+
+async function exportOmniPeek(): Promise<void> {
+  if (!store.filters.ac_id || !omniPeekPreview.value) return
+  omniPeekExportLoading.value = true
+  try {
+    const task = await startAcOmniPeekExport(store.filters.ac_id, omniPeekScopeIds.value)
+    await taskStore.refresh()
+    omniPeekVisible.value = false
+    openTaskWindow(task.task_id)
+    ElMessage.success(t('ac.omnipeek.task_submitted', 'OmniPeek 名称表导出任务已提交'))
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.omnipeek.export_failed', 'OmniPeek 名称表导出失败')))
+  } finally {
+    omniPeekExportLoading.value = false
+  }
+}
+
+function showContextMenu(row: AcAp, column: { property?: string }, event: MouseEvent): void {
+  event.preventDefault()
+  contextMenu.visible = true
+  contextMenu.x = event.clientX
+  contextMenu.y = event.clientY
+  contextMenu.row = row
+  contextMenu.cellValue = column.property ? String(row[column.property as keyof AcAp] ?? '') : ''
+}
+
+function closeContextMenu(): void {
+  contextMenu.visible = false
+  contextMenu.row = null
+  contextMenu.cellValue = ''
+}
+
+async function copyText(value: string): Promise<void> {
+  await navigator.clipboard.writeText(value)
+  ElMessage.success(t('common.copied', '已复制'))
+}
+
+async function copyApRow(row: AcAp): Promise<void> {
+  await copyText([row.name, row.ip, row.mac, statusLabel(row.status), row.model, row.station, row.switch_name, row.switch_interface].join('\t'))
+}
+
+async function requestExternalTerminal(row: AcAp): Promise<void> {
+  if (!desktopHost.value) {
+    ElMessage.warning(t('ac.terminal.desktop_only', '仅桌面版支持打开外部终端'))
+    return
+  }
+  if (!row.ip) {
+    ElMessage.warning(t('ac.terminal.no_ip', '当前 AP 没有 IP，无法打开外部终端'))
+    return
+  }
+  if (row.status !== 'online') {
+    ElMessage.warning(t('ac.terminal.offline', '当前 AP 离线或状态异常，无法打开外部终端'))
+    return
+  }
+  terminalLoading.value = true
+  try {
+    const result = await getAcExternalTerminalOptions()
+    if (!result.options.length) throw new Error(t('ac.terminal.not_configured', '尚未配置外部终端程序路径'))
+    terminalTarget.value = row
+    terminalOptions.value = result.options
+    terminalType.value = result.default_terminal_type || result.options[0].terminal_type
+    if (result.options.length === 1) await launchExternalTerminal()
+    else terminalVisible.value = true
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
+  } finally {
+    terminalLoading.value = false
+  }
+}
+
+async function launchExternalTerminal(): Promise<void> {
+  const row = terminalTarget.value
+  if (!row || !store.filters.ac_id) return
+  terminalLoading.value = true
+  try {
+    const result = await openAcFitApExternalTerminal(row.id, store.filters.ac_id, terminalType.value)
+    terminalVisible.value = false
+    ElMessage.success(result.message)
+  } catch (cause) {
+    ElMessage.error(safeError(cause, t('ac.terminal.open_failed', '打开外部终端失败')))
+  } finally {
+    terminalLoading.value = false
+  }
+}
+
+function safeError(cause: unknown, fallback: string): string {
+  const message = cause instanceof Error ? cause.message : fallback
+  return message
+    .replace(/(password|token)\s*[:=]\s*[^,;\s]+/gi, '$1=***')
+    .replace(/[A-Za-z]:\\[^\r\n]+/g, '<本机路径>')
+}
+
 const interfaceValueKeys = new Set(['switch_interface', 'interface_name', 'local_interface', 'neighbor_interface'])
 
 function displayColumnValue(key: string, value: unknown): string {
@@ -367,15 +572,6 @@ function diffLineClass(line: string): string {
 
 <template>
   <section class="ac-management">
-    <el-alert
-      title="AC / FIT-AP 资源"
-      description="“更新 FIT-AP 资源”通过后台任务连接所选 H3C AC，保留命令原始记录并持久化 AP、Radio、连接记录与 LLDP 结果；任务可取消并可在页面重启后恢复。"
-      type="info"
-      :closable="false"
-      show-icon
-      class="readonly-alert"
-    />
-
     <div class="page-toolbar">
       <div>
         <h2>{{ store.activeAc?.name || 'AC 管理' }}</h2>
@@ -394,6 +590,19 @@ function diffLineClass(line: string): string {
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
         <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
+        <span v-if="isFeatureEnabled('web.ac_dangerous_actions')" class="toolbar-separator" aria-hidden="true" />
+        <el-button
+          v-if="isFeatureEnabled('web.ac_dangerous_actions')"
+          :loading="actionLoading.persist_auto_ap"
+          :disabled="!store.filters.ac_id || acActionConflict"
+          @click="prepareAcAction('persist_auto_ap')"
+        >{{ t('ac.action.persist_auto_ap', '一键固化新上线 AP') }}</el-button>
+        <el-button
+          v-if="isFeatureEnabled('web.ac_dangerous_actions')"
+          :loading="actionLoading.enable_ap_remote_login"
+          :disabled="!store.filters.ac_id || acActionConflict"
+          @click="prepareAcAction('enable_ap_remote_login')"
+        >{{ t('ac.action.enable_remote_login', '一键开启 AP 远程登入') }}</el-button>
       </div>
     </div>
 
@@ -455,6 +664,12 @@ function diffLineClass(line: string): string {
               @click="metadataInput?.click()"
             >导入 AP 元数据</el-button>
             <el-button
+              v-if="isFeatureEnabled('ac.omnipeek_name_table_export')"
+              :loading="omniPeekLoading"
+              :disabled="!store.filters.ac_id"
+              @click="openOmniPeekPreview"
+            >{{ t('ac.omnipeek.export', '导出 OmniPeek 名称表') }}</el-button>
+            <el-button
               v-if="isFeatureEnabled('web.ac_fit_ap_delete')"
               type="danger"
               plain
@@ -473,6 +688,7 @@ function diffLineClass(line: string): string {
             height="calc(100vh - 455px)"
             empty-text="暂无 FIT-AP 资源数据"
             @sort-change="handleSort"
+            @row-contextmenu="showContextMenu"
           >
             <template #cell-selection="{ row }"><el-checkbox :model-value="selectedApIds.has(row.id)" @change="setApSelected(row.id, Boolean($event))" /></template>
             <template #cell-status="{ row }"><el-tag :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template>
@@ -515,6 +731,53 @@ function diffLineClass(line: string): string {
 
       </el-tabs>
     </div>
+
+    <div v-if="contextMenu.visible && contextMenu.row" class="fit-ap-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
+      <button type="button" @click="openDetail(contextMenu.row); closeContextMenu()">{{ t('ac.context.detail', '查看详情') }}</button>
+      <button
+        type="button"
+        :disabled="!desktopHost || !isFeatureEnabled('web.ac_fit_ap_external_terminal') || !isFeatureEnabled('desktop.native_bridge')"
+        :title="!desktopHost ? t('ac.terminal.desktop_only', '仅桌面版支持打开外部终端') : ''"
+        @click="requestExternalTerminal(contextMenu.row); closeContextMenu()"
+      >{{ t('ac.context.external_terminal', '打开外部终端') }}</button>
+      <button type="button" :disabled="taskActive" @click="store.startApOpticalRefresh(contextMenu.row.id); closeContextMenu()">{{ t('ac.context.refresh_optical', '更新该 AP 光衰') }}</button>
+      <span class="context-separator" />
+      <button type="button" @click="copyText(contextMenu.cellValue); closeContextMenu()">{{ t('ac.context.copy_cell', '复制单元格') }}</button>
+      <button type="button" @click="copyApRow(contextMenu.row); closeContextMenu()">{{ t('ac.context.copy_row', '复制整行') }}</button>
+    </div>
+
+    <el-dialog v-model="actionDialogVisible" :title="t('ac.action.confirm_title', '确认 AC 配置动作')" width="min(680px, 94vw)" :close-on-click-modal="false">
+      <template v-if="actionPlan && store.activeAc">
+        <el-alert type="error" :title="t('ac.action.real_device_warning', '该操作将修改真实 AC 配置')" show-icon :closable="false" />
+        <el-descriptions :column="1" border class="action-summary">
+          <el-descriptions-item :label="t('ac.action.target', '当前 AC')">{{ store.activeAc.name }}（{{ store.activeAc.management_ip || '--' }}）</el-descriptions-item>
+          <el-descriptions-item :label="t('ac.action.name', '动作名称')">{{ actionPlan.action_label }}</el-descriptions-item>
+        </el-descriptions>
+        <pre class="command-preview">{{ actionPlan.command_summary.join('\n') }}</pre>
+      </template>
+      <template #footer>
+        <el-button @click="actionDialogVisible = false">{{ t('common.cancel', '取消') }}</el-button>
+        <el-button type="danger" :loading="currentActionLoading" @click="confirmAndExecuteAcAction">{{ t('ac.action.confirm_execute', '确认并执行真实配置') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="omniPeekVisible" :title="t('ac.omnipeek.preview_title', '导出 OmniPeek 名称表')" width="min(620px, 94vw)">
+      <div v-loading="omniPeekLoading">
+        <el-alert :title="omniPeekScopeIds.length ? t('ac.omnipeek.selected_scope', '范围：当前 AC 中已勾选的 FIT-AP') : t('ac.omnipeek.all_scope', '范围：当前 AC 的全部 FIT-AP')" type="info" :closable="false" />
+        <el-descriptions v-if="omniPeekPreview" :column="2" border class="omnipeek-summary">
+          <el-descriptions-item :label="t('ac.omnipeek.input_count', '输入 AP 数量')">{{ omniPeekPreview.input_ap_count }}</el-descriptions-item>
+          <el-descriptions-item :label="t('ac.omnipeek.entry_count', '可导出名称条目')">{{ omniPeekPreview.exportable_entry_count }}</el-descriptions-item>
+          <el-descriptions-item :label="t('ac.omnipeek.skipped_count', '跳过数量')">{{ omniPeekPreview.skipped_count }}</el-descriptions-item>
+          <el-descriptions-item :label="t('ac.omnipeek.error_count', '异常数量')">{{ omniPeekPreview.error_count }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <template #footer><el-button @click="omniPeekVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="omniPeekExportLoading" :disabled="!omniPeekPreview" @click="exportOmniPeek">{{ t('ac.omnipeek.confirm_export', '确认导出') }}</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
+      <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
+      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchExternalTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
+    </el-dialog>
 
     <el-drawer v-model="detailVisible" title="FIT-AP 详情" size="min(920px, 95vw)">
       <div v-loading="store.detailLoading">
@@ -674,13 +937,14 @@ function diffLineClass(line: string): string {
 
 <style scoped>
 .ac-management { max-width: 1780px; margin: 0 auto; }
-.readonly-alert, .page-error { margin-bottom: 16px; }
+.page-error { margin-bottom: 16px; }
 .task-summary { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }
 .page-toolbar p, .config-toolbar p, .detail-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
-.toolbar-actions { display: flex; align-items: center; gap: 10px; }
+.toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.toolbar-separator { width: 1px; height: 24px; background: var(--nc-divider); }
 .ac-info-strip { margin-bottom: 12px; }
 .summary-grid { display: grid; grid-template-columns: repeat(6, minmax(125px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-grid article { padding: 15px 17px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-top: 3px solid var(--nc-border-strong); border-radius: 10px; }
@@ -724,6 +988,13 @@ function diffLineClass(line: string): string {
 .diff-file { color: var(--nc-text-code-warning); }
 .diff-summary { margin-bottom: 10px; }
 .load-more { display: block; margin: 12px auto 0; }
+.action-summary, .omnipeek-summary { margin-top: 14px; }
+.command-preview { max-height: 260px; overflow: auto; padding: 14px; background: var(--nc-bg-code); border-radius: 8px; color: var(--nc-text-code); font: 13px/1.6 Consolas, "Microsoft YaHei", monospace; }
+.fit-ap-context-menu { position: fixed; z-index: 4000; display: flex; flex-direction: column; min-width: 168px; padding: 6px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 8px; box-shadow: var(--el-box-shadow-light); }
+.fit-ap-context-menu button { padding: 7px 10px; background: transparent; border: 0; border-radius: 5px; color: var(--nc-text-primary); text-align: left; cursor: pointer; }
+.fit-ap-context-menu button:hover:not(:disabled) { background: var(--nc-table-hover-bg); }
+.fit-ap-context-menu button:disabled { color: var(--nc-text-secondary); cursor: not-allowed; opacity: .65; }
+.context-separator { height: 1px; margin: 5px 2px; background: var(--nc-divider); }
 @media (max-width: 1400px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
   .filter-bar { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
@@ -732,6 +1003,7 @@ function diffLineClass(line: string): string {
   .page-toolbar, .config-toolbar { align-items: flex-start; flex-direction: column; }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }
   .filter-bar { grid-template-columns: 1fr 1fr; }
-  .toolbar-actions { flex-wrap: wrap; }
+  .toolbar-actions { justify-content: flex-start; }
+  .toolbar-separator { display: none; }
 }
 </style>

@@ -536,6 +536,7 @@ def create_app(
         base_import_service=app.state.rail_transit_base_data_import_service,
         export_adapter=web_export_adapter,
         artifact_store=web_artifact_store,
+        desktop_action_service=desktop_action_service,
     )
     app.state.rail_transit_web_application_service = RailTransitWebApplicationService(
         paths,

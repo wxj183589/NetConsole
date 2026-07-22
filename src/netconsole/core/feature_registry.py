@@ -111,6 +111,16 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.ac_fit_ap_metadata_import", "导入 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_fit_ap_metadata_write", "保存 FIT-AP 元数据（Web）", "web.ac_fit_ap_resources", "action"),
     FeatureItem("web.ac_fit_ap_history", "查看 FIT-AP 历史（Web）", "web.ac_fit_ap_resources", "action"),
+    FeatureItem(
+        "web.ac_fit_ap_external_terminal",
+        "打开 FIT-AP 外部终端（Electron）",
+        "web.ac_fit_ap_resources",
+        "action",
+        default_visible=False,
+        default_enabled=False,
+        default_client_package=False,
+        status=FeatureStatus.DEVELOPMENT,
+    ),
     FeatureItem("web.ac_open_web", "打开 AC Web 管理（Electron）", "web.ac_management", "action"),
     FeatureItem("web.ac_dangerous_actions", "AC 高风险动作真实闭环（Web）", "web.ac_management", "action", default_visible=False, default_enabled=False, default_client_package=False, status=FeatureStatus.DEVELOPMENT),
     FeatureItem(

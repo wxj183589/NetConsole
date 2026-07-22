@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
@@ -228,6 +230,7 @@ class AcWebTaskDTO(ApiModel):
     task_id: str
     status: str = "PENDING"
     action: str
+    target_id: str = ""
     artifact_id: str = ""
     available: bool = False
     progress: int = 0
@@ -325,6 +328,44 @@ class AcFitApMetadataSaveRequestDTO(ApiModel):
     direction: str = Field(default="", max_length=30)
 
 
+class AcOmniPeekRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    ap_ids: list[str] = Field(default_factory=list, max_length=2000)
+
+
+class AcOmniPeekPreviewDTO(ApiModel):
+    task_id: str
+    task_status: str
+    ready: bool = False
+    input_ap_count: int = 0
+    exportable_entry_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    message: str = ""
+
+
+class AcExternalTerminalRequestDTO(ApiModel):
+    ac_id: str = Field(min_length=1, max_length=100)
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+
+
+class AcExternalTerminalOptionDTO(ApiModel):
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    label: str
+
+
+class AcExternalTerminalOptionsDTO(ApiModel):
+    default_terminal_type: Literal["securecrt", "putty", "xshell"] | None = None
+    options: list[AcExternalTerminalOptionDTO] = Field(default_factory=list)
+
+
+class AcExternalTerminalActionDTO(ApiModel):
+    ap_id: str
+    terminal_type: Literal["securecrt", "putty", "xshell"]
+    success: Literal[True] = True
+    message: str
+
+
 __all__ = [
     "AcApDTO",
     "AcApDetailDTO",
@@ -352,6 +393,12 @@ __all__ = [
     "AcExtensionRollbackResultDTO",
     "AcFitApDeleteRequestDTO",
     "AcFitApMetadataSaveRequestDTO",
+    "AcOmniPeekRequestDTO",
+    "AcOmniPeekPreviewDTO",
+    "AcExternalTerminalRequestDTO",
+    "AcExternalTerminalOptionDTO",
+    "AcExternalTerminalOptionsDTO",
+    "AcExternalTerminalActionDTO",
     "AcLocalRebuildRequestDTO",
     "AcRefreshRequestDTO",
     "AcWebTaskDTO",
