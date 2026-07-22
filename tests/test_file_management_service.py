@@ -25,6 +25,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.device_operation_service import DeviceSftpEnableProfileUnresolved
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     RemoteDeviceFile,
@@ -760,11 +761,28 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
 
 
 def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, monkeypatch) -> None:
+    import netconsole.services.file_transfer_service as transfer_module
+
     paths, _source = _fixture(tmp_path)
     commands: list[str] = []
     host_key_events: list[str] = []
+    log_events: list[tuple[str, str]] = []
+
+    class FakeTransport:
+        def __init__(self):
+            self.active = True
+
+        def is_active(self):
+            return self.active
 
     class FakeSshClient:
+        instances: list["FakeSshClient"] = []
+
+        def __init__(self):
+            self.transport = FakeTransport()
+            self.connect_called = False
+            self.instances.append(self)
+
         def load_system_host_keys(self):
             host_key_events.append("loaded")
 
@@ -772,9 +790,14 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
             host_key_events.append(str(policy))
 
         def connect(self, **_kwargs):
-            pass
+            self.connect_called = True
+            self.transport.active = True
+
+        def get_transport(self):
+            return self.transport
 
         def open_sftp(self):
+            self.transport.active = False
             raise RuntimeError("Channel closed.")
 
         def invoke_shell(self):
@@ -789,6 +812,7 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
         "paramiko",
         SimpleNamespace(SSHClient=FakeSshClient, AutoAddPolicy=lambda: "auto", RejectPolicy=lambda: "reject"),
     )
+    monkeypatch.setattr(transfer_module.app_logger, "log_error", lambda event, message: log_events.append((event, message)))
     device = Device(
         device_uuid=Device.new_uuid(),
         name="MR-read-only",
@@ -808,8 +832,23 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     assert response.json()["detail"]["details"]["confirmation_id"].startswith("sf1_")
     assert response.json()["detail"]["message"] == "检测到设备未启用 SFTP，需要确认后通过受控命令启用并重新连接。"
     assert "channel closed" not in response.text.casefold()
+    assert "DEVICE_FILE_NETWORK_UNREACHABLE" not in response.text
+    assert FakeSshClient.instances[0].connect_called is True
+    assert FakeSshClient.instances[0].transport.active is False
     assert commands == []
     assert host_key_events[:2] == ["loaded", "reject"]
+    rejected = next(message for event, message in log_events if event == "SFTP_SUBSYSTEM_REJECTED")
+    for field in (
+        "site_id=demo",
+        "failure_stage=open_sftp",
+        "ssh_authenticated=True",
+        "transport_active=False",
+        "exception_type=RuntimeError",
+        "classification_reason=explicit_marker:channel_closed",
+        "classified_code=DEVICE_FILE_SFTP_UNAVAILABLE",
+    ):
+        assert field in rejected
+    assert "secret" not in rejected
 
 
 def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects(tmp_path: Path) -> None:
@@ -916,6 +955,59 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     assert response.json()["message"] == "已在设备侧启用 SFTP，并完成重新连接。"
     assert operation_calls == [(device.device_uuid, "device.sftp.enable")]
     assert len(FakeTransfer.instances) == 3
+
+
+def test_confirm_sftp_setup_fails_closed_when_software_version_is_unresolved(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="SW-unknown-version",
+        device_vendor="H3C",
+        device_type="SW",
+        primary_address="192.0.2.33",
+        ssh_enabled=1,
+    )
+
+    class FakeDeviceOperationService:
+        @staticmethod
+        def start(_device_uuid: str, _operation_id: str, **_kwargs):
+            raise DeviceSftpEnableProfileUnresolved("无法确认设备的软件版本，未执行 SFTP 配置命令。")
+
+    class FakeTransfer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def connect(_device):
+            raise SftpUnavailableError()
+
+        @staticmethod
+        def disconnect():
+            pass
+
+    service = FileManagementApplicationService(
+        paths,
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+        device_operation_service=FakeDeviceOperationService(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(_app(service, remote_enabled=True)) as client:
+        requested = client.post(
+            "/api/file-management/connections",
+            params={"site_id": "demo"},
+            json={"device_id": device.device_uuid},
+        )
+        response = client.post(
+            "/api/file-management/connections/confirm-sftp-setup",
+            params={"site_id": "demo"},
+            json={"confirmation_id": requested.json()["detail"]["details"]["confirmation_id"]},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED"
+    assert response.json()["detail"]["message"] == "无法确认设备的软件版本，未执行 SFTP 配置命令。"
 
 
 def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Path) -> None:

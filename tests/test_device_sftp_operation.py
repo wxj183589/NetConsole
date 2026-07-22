@@ -2,13 +2,47 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.device_operation_service import run_device_sftp_enable
+from netconsole.services.device_operation_service import (
+    DeviceOperationService,
+    DeviceSftpEnableProfileUnresolved,
+    run_device_sftp_enable,
+)
 from netconsole.services.job_center.job_context import JobContext
+
+
+def test_sftp_operation_refuses_write_when_software_version_is_unresolved(tmp_path: Path) -> None:
+    device = Device(
+        name="SW-unknown-version",
+        device_uuid=Device.new_uuid(),
+        device_vendor="H3C",
+        device_type="SW",
+    )
+
+    class FakeGateway:
+        @staticmethod
+        def get_device(_device_uuid: str):
+            return device
+
+        @staticmethod
+        def get_fact(_device_uuid: str):
+            return {"vendor": "H3C", "software_version": None}
+
+    service = DeviceOperationService(
+        PathResolver(tmp_path),
+        FakeGateway(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(DeviceSftpEnableProfileUnresolved, match="无法确认设备的软件版本"):
+        service.start(str(device.device_uuid), "device.sftp.enable")
 
 
 def test_sftp_worker_binds_username_only_inside_worker_and_keeps_profile_order(

@@ -9,7 +9,8 @@ SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 
 
 连接错误固定分类为 `DEVICE_FILE_NETWORK_UNREACHABLE`、`DEVICE_FILE_CONNECTION_TIMEOUT`、
 `DEVICE_FILE_AUTH_FAILED`、`DEVICE_FILE_HOST_KEY_UNKNOWN`、`DEVICE_FILE_HOST_KEY_MISMATCH`、
-`DEVICE_FILE_SFTP_UNAVAILABLE`、`DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED`、
+`DEVICE_FILE_SFTP_UNAVAILABLE`、`DEVICE_FILE_SFTP_NEGOTIATION_FAILED`、
+`DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED`、`DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED`、
 `DEVICE_FILE_SFTP_ENABLE_PENDING`、`DEVICE_FILE_SFTP_ENABLE_FAILED`、
 `DEVICE_FILE_SFTP_RECONNECT_FAILED` 和 `DEVICE_FILE_REMOTE_ROOT_NOT_FOUND`。远程会话中途失效使用
 `DEVICE_FILE_SESSION_DISCONNECTED`。页面不显示 Paramiko、socket 或通道原始异常。
@@ -17,8 +18,11 @@ SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 
 ## 自动启用边界
 
 页面不提供“允许自动配置”常驻开关。用户点击一次连接后，先按统一连接策略尝试 SSH/SFTP；只有
-`Channel closed`、子系统请求被拒绝、子系统不可用、管理策略禁止或明确的 SFTP disabled/not enabled
-等稳定分类才进入恢复分支，原始 Paramiko 异常不得返回页面。自动启用只属于独立的
+`Channel closed`、认证后 `EOF`、子系统请求被拒绝、子系统不可用、管理策略禁止或明确的 SFTP
+disabled/not enabled 等稳定分类才进入恢复分支。H3C 拒绝子系统时可能同时关闭 Channel 或整个
+SSH Transport，因此 `transport_active` 只记录诊断，不能否决已认证 `open_sftp` 阶段的子系统拒绝。
+无法明确归类的认证后 `open_sftp` 异常固定返回 `DEVICE_FILE_SFTP_NEGOTIATION_FAILED`，不得回落为
+网络不可达；原始 Paramiko 异常不得返回页面。自动启用只属于独立的
 `config_write` 操作，不属于目录浏览、刷新或下载。触发前必须同时满足：
 
 1. 用户在明确的受控确认中授权本次配置写入；
@@ -28,7 +32,12 @@ SFTP_ENABLING -> SFTP_RECONNECTING -> CONNECTED|FAILED`。未知主机密钥由 
 
 未知厂商、角色、平台或版本必须失败关闭，不得回退到 H3C 命令、旧构造函数或通用命令拼接。
 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile；Huawei、ZTE 和未知
-版本不执行。Profile 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。
+版本不执行。缺少可信软件版本时返回 `DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED`，不执行配置命令。
+Profile 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。
+
+2026-07-23 已在一台 H3C Comware V7 交换机上完成“识别子系统拒绝 -> 用户确认 -> 5 个受控
+步骤 -> 新建 SFTP 会话 -> 根目录读取 -> WinSCP Console 独立读取”的现场闭环。该证据只覆盖交换机
+角色的一台设备，AC、MR、首次主机密钥确认和大文件异常仍未覆盖，因此 Profile 目录状态不整体提升。
 
 执行链固定为：
 

@@ -27,7 +27,8 @@ Application Service -> DeviceOperationService -> Task Center -> Command Profile
 ```
 
 启用操作独立记录授权、Profile、任务终态和去敏结果；成功后重新建立 SFTP 会话，失败或取消不得
-把设备文件页面误报为已连接。当前自动启用和真实设备执行状态仍为 `REAL_DEVICE_PENDING`。
+把设备文件页面误报为已连接。一台 H3C Comware V7 交换机已完成受控启用、SFTP 重连、根目录
+读取和 WinSCP Console 独立读取；AC、MR、首次主机密钥和大文件异常仍为 `REAL_DEVICE_PENDING`。
 
 WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action_ref`。Python 主进程消费动作后
 重新读取设备凭据，并默认把 URL 编码后的 SSH 密码交给固定 WinSCP 可执行文件；密码、argv 和认证 URL
@@ -43,7 +44,7 @@ WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action
 
 ## 状态
 
-页面和下载队列已接入 Electron。普通文件直接写入设备专属目录或当前受控子目录；精确属于“车载-MR”分组且已关联 MR Profile 的 MESH 日志强制写入对应 `raw` 并自动导入。完成任务不再提供浏览器式“保存”，而是直接刷新左侧列表并提供受控“打开/所在目录”。真实设备 SFTP、主机密钥和大文件异常仍需现场验收，不能仅凭 Fake 测试标记为 `COMPLETE`。
+页面和下载队列已接入 Electron。普通文件直接写入设备专属目录或当前受控子目录；精确属于“车载-MR”分组且已关联 MR Profile 的 MESH 日志强制写入对应 `raw` 并自动导入。完成任务不再提供浏览器式“保存”，而是直接刷新左侧列表并提供受控“打开/所在目录”。真实交换机 SFTP 已有单设备现场证据；其余角色、主机密钥和大文件异常仍需现场验收，不能仅凭 Fake 测试标记为 `COMPLETE`。
 
 专题说明：
 

@@ -158,27 +158,40 @@ class FileTransferService:
                     self._sftp = client.open_sftp()
                 except Exception as sftp_exc:
                     transport_active = self._transport_is_active(client)
-                    sftp_unavailable = self._is_sftp_subsystem_unavailable(
+                    classification_reason = self._sftp_subsystem_unavailable_reason(
                         sftp_exc,
                         failure_stage="open_sftp",
                         transport_active=transport_active,
                         ssh_authenticated=True,
                     )
-                    app_logger.log_error(
-                        "SFTP_OPEN_FAILED",
-                        (
-                            f"device={device.name}, target={prepared.host}:{prepared.port}, "
-                            f"device_id={device.device_uuid or device.id or ''}, method={target.method}, "
-                            f"target_role={'backup' if target_index else 'primary'}, via_tunnel={target.via_tunnel}, "
-                            f"failure_stage=open_sftp, ssh_authenticated=True, "
-                            f"transport_active={transport_active}, "
-                            f"exception_type={sftp_exc.__class__.__name__}, "
-                            f"sftp_subsystem_unavailable={sftp_unavailable}, "
-                            f"elapsed_ms={int((monotonic() - started) * 1000)}, "
-                            f"error={sanitize_sensitive_text(str(sftp_exc), device)}"
-                        ),
-                    )
-                    if not sftp_unavailable:
+                    target_role = "backup" if target_index else "primary"
+                    elapsed_ms = int((monotonic() - started) * 1000)
+                    if classification_reason:
+                        app_logger.log_error(
+                            "SFTP_SUBSYSTEM_REJECTED",
+                            (
+                                f"site_id={self.site_name}, device_id={device.device_uuid or device.id or ''}, "
+                                f"device_name={device.name}, target_host={prepared.host}, target_port={prepared.port}, "
+                                f"target_role={target_role}, connection_method={target.method}, "
+                                f"failure_stage=open_sftp, ssh_authenticated=True, "
+                                f"transport_active={transport_active}, exception_type={sftp_exc.__class__.__name__}, "
+                                f"classification_reason={classification_reason}, "
+                                f"classified_code=DEVICE_FILE_SFTP_UNAVAILABLE, elapsed_ms={elapsed_ms}"
+                            ),
+                        )
+                    else:
+                        app_logger.log_error(
+                            "SFTP_OPEN_FAILED",
+                            (
+                                f"site_id={self.site_name}, device_id={device.device_uuid or device.id or ''}, "
+                                f"device_name={device.name}, target_host={prepared.host}, target_port={prepared.port}, "
+                                f"target_role={target_role}, connection_method={target.method}, "
+                                f"failure_stage=open_sftp, ssh_authenticated=True, "
+                                f"transport_active={transport_active}, exception_type={sftp_exc.__class__.__name__}, "
+                                f"classified_code=DEVICE_FILE_SFTP_NEGOTIATION_FAILED, elapsed_ms={elapsed_ms}, "
+                                f"error={sanitize_sensitive_text(str(sftp_exc), device)}"
+                            ),
+                        )
                         raise
                     raise SftpUnavailableError() from sftp_exc
                 self._device = device
@@ -333,6 +346,11 @@ class FileTransferService:
                 "DEVICE_FILE_REMOTE_ROOT_NOT_FOUND",
                 "已建立 SFTP 会话，但未找到可读取的远程根目录。",
             )
+        if failure_stage == "open_sftp":
+            return FileTransferConnectionError(
+                "DEVICE_FILE_SFTP_NEGOTIATION_FAILED",
+                "SSH 登录成功，但建立 SFTP 子系统失败。",
+            )
         if isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in text or "timeout" in text:
             return FileTransferConnectionError("DEVICE_FILE_CONNECTION_TIMEOUT", "连接设备超时，请检查网络和 SSH 端口。")
         if name in {"authenticationexception", "badauthenticationtype", "passwordrequiredexception"} or any(
@@ -362,34 +380,53 @@ class FileTransferService:
     ) -> bool:
         """在 open_sftp 上下文中识别设备拒绝 SFTP 子系统。"""
 
-        if failure_stage != "open_sftp" or not ssh_authenticated or not transport_active:
-            return False
+        return bool(
+            FileTransferService._sftp_subsystem_unavailable_reason(
+                exc,
+                failure_stage=failure_stage,
+                transport_active=transport_active,
+                ssh_authenticated=ssh_authenticated,
+            )
+        )
+
+    @staticmethod
+    def _sftp_subsystem_unavailable_reason(
+        exc: BaseException,
+        *,
+        failure_stage: str,
+        transport_active: bool,
+        ssh_authenticated: bool,
+    ) -> str | None:
+        """返回认证后的 SFTP 子系统拒绝原因；Transport 状态只参与诊断。"""
+
+        if failure_stage != "open_sftp" or not ssh_authenticated:
+            return None
         name = exc.__class__.__name__.casefold()
         text = str(exc or "").casefold()
-        if "channel closed" in text:
-            return True
-        if name == "channelexception" and any(
-            marker in text
-            for marker in (
-                "administratively prohibited",
-                "open failed",
-                "unknown channel type",
-                "subsystem request rejected",
-                "subsystem unavailable",
-            )
-        ):
-            return True
-        return (
-            (
-                "sftp" in text
-                and any(
-                    marker in text
-                    for marker in ("disabled", "not enabled", "not found", "subsystem", "unavailable")
-                )
-            )
-            or "subsystem request rejected" in text
-            or "subsystem unavailable" in text
+        explicit_markers = (
+            "channel closed",
+            "subsystem request rejected",
+            "subsystem unavailable",
+            "sftp server is disabled",
+            "sftp subsystem disabled",
+            "sftp subsystem is disabled",
+            "sftp service type is not supported",
+            "sftp disabled",
+            "sftp not enabled",
+            "unknown channel type",
+            "administratively prohibited",
         )
+        marker = next((value for value in explicit_markers if value in text), None)
+        if marker:
+            return f"explicit_marker:{marker.replace(' ', '_')}"
+        if name == "channelexception":
+            return "channel_exception"
+        if name in {"eoferror", "ssh_exception", "sshexception"}:
+            if not transport_active:
+                return "transport_closed_during_sftp_open"
+            if any(marker in text for marker in ("eof", "connection closed", "connection reset", "connection dropped")):
+                return "connection_closed_during_sftp_open"
+        return None
 
     @staticmethod
     def _transport_is_active(client) -> bool:

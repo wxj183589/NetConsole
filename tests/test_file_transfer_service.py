@@ -1,3 +1,6 @@
+import paramiko
+import pytest
+
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services import command_guard
@@ -14,6 +17,61 @@ from netconsole.services.file_transfer_service import (
     safe_device_name,
 )
 from netconsole.services.netmiko_connection import ConnectionTarget
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        RuntimeError("Channel closed."),
+        EOFError(),
+        paramiko.SSHException("EOF during negotiation"),
+        paramiko.SSHException("Server connection dropped"),
+        paramiko.ChannelException(1, "Administratively prohibited"),
+        RuntimeError("The SFTP server is disabled or the SFTP service type is not supported."),
+    ),
+    ids=(
+        "channel-closed",
+        "eof",
+        "ssh-eof",
+        "server-dropped",
+        "channel-prohibited",
+        "h3c-disabled-message",
+    ),
+)
+def test_open_sftp_failures_are_unavailable_after_auth_even_when_transport_is_inactive(error):
+    assert FileTransferService._is_sftp_subsystem_unavailable(
+        error,
+        failure_stage="open_sftp",
+        ssh_authenticated=True,
+        transport_active=False,
+    )
+
+
+def test_connect_stage_eof_never_triggers_sftp_auto_enable():
+    error = EOFError()
+
+    assert not FileTransferService._is_sftp_subsystem_unavailable(
+        error,
+        failure_stage="connect_ssh",
+        ssh_authenticated=False,
+        transport_active=False,
+    )
+    classified = FileTransferService._classify_connection_error(error, failure_stage="connect_ssh")
+    assert classified.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
+
+
+def test_ambiguous_open_sftp_failure_has_dedicated_negotiation_error():
+    error = RuntimeError("unexpected packet type")
+
+    assert not FileTransferService._is_sftp_subsystem_unavailable(
+        error,
+        failure_stage="open_sftp",
+        ssh_authenticated=True,
+        transport_active=False,
+    )
+    classified = FileTransferService._classify_connection_error(error, failure_stage="open_sftp")
+    assert classified.code == "DEVICE_FILE_SFTP_NEGOTIATION_FAILED"
+    assert str(classified) == "SSH 登录成功，但建立 SFTP 子系统失败。"
 
 
 def test_file_management_command_context_allows_only_dir_commands():

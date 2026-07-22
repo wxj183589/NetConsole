@@ -317,7 +317,7 @@ def test_open_sftp_channel_closed_is_sftp_unavailable_only_when_transport_active
         service.connect(device)
 
 
-def test_open_sftp_channel_closed_keeps_transport_inactive_as_connect_error(
+def test_open_sftp_channel_closed_with_inactive_transport_is_sftp_unavailable(
     tmp_path, monkeypatch
 ):
     class FakeSSHException(Exception):
@@ -362,10 +362,8 @@ def test_open_sftp_channel_closed_keeps_transport_inactive_as_connect_error(
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
 
-    with pytest.raises(FileTransferConnectionError) as excinfo:
+    with pytest.raises(SftpUnavailableError, match="未启用 SFTP"):
         service.connect(device)
-    assert excinfo.value.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
-    assert "Channel closed" not in str(excinfo.value)
 
 
 def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(
@@ -409,7 +407,7 @@ def test_file_transfer_keeps_transport_errors_separate_without_invoking_shell(
     with pytest.raises(FileTransferConnectionError) as excinfo:
         service.connect(device)
 
-    assert excinfo.value.code == "DEVICE_FILE_NETWORK_UNREACHABLE"
+    assert excinfo.value.code == "DEVICE_FILE_SFTP_NEGOTIATION_FAILED"
     assert "SSH session not active" not in str(excinfo.value)
 
 

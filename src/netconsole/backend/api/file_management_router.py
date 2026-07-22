@@ -411,6 +411,7 @@ def _remote_call(callback):
         conflict_codes = {
             "DEVICE_FILE_SFTP_UNAVAILABLE",
             "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
+            "DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED",
             "DEVICE_FILE_SFTP_ENABLE_PENDING",
             "DEVICE_FILE_SESSION_DISCONNECTED",
         }

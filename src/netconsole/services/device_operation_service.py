@@ -91,6 +91,10 @@ class DeviceInventoryRefreshFailed(RuntimeError):
         )
 
 
+class DeviceSftpEnableProfileUnresolved(ValueError):
+    """受控写入前无法从可信设备事实确认精确软件版本。"""
+
+
 class DeviceOperationService:
     """统一受控设备操作入口；请求只能选择稳定 Operation ID。"""
 
@@ -152,6 +156,10 @@ class DeviceOperationService:
             raise KeyError(device_uuid)
         fact = self.gateway.get_fact(device_uuid)
         platform_facts = self._platform_facts(device, fact)
+        if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not platform_facts.software_major:
+            raise DeviceSftpEnableProfileUnresolved(
+                "无法确认设备的软件版本，未执行 SFTP 配置命令。"
+            )
         profile = resolve_device_operation_profile(
             device,
             operation_id,
@@ -510,6 +518,7 @@ __all__ = [
     "DEVICE_SFTP_TASK_TYPE",
     "DeviceInventoryRefreshFailed",
     "DeviceOperationService",
+    "DeviceSftpEnableProfileUnresolved",
     "run_device_inventory_refresh",
     "run_device_sftp_enable",
 ]

@@ -630,6 +630,8 @@ class FileManagementApplicationService:
         )
 
     def _enable_device_sftp(self, site: str, device: Device) -> str:
+        from netconsole.services.device_operation_service import DeviceSftpEnableProfileUnresolved
+
         service = self._device_operation_service
         if service is None:
             raise DeviceFileSftpError(
@@ -642,6 +644,11 @@ class FileManagementApplicationService:
                 "device.sftp.enable",
                 idempotency_key=f"file-sftp:{uuid4().hex}",
             )
+        except DeviceSftpEnableProfileUnresolved as exc:
+            raise DeviceFileSftpError(
+                "DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED",
+                "无法确认设备的软件版本，未执行 SFTP 配置命令。",
+            ) from exc
         except (KeyError, ValueError) as exc:
             raise DeviceFileSftpError(
                 "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED",
