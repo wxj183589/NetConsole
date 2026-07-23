@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { CircleCheckFilled, InfoFilled, Lock, WarningFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
+import { getDeviceCompatibilitySummary } from '../api/deviceCompatibility'
 import { findNavigation } from '../navigation/registry'
+import type { DeviceCompatibilitySummary } from '../types/deviceCompatibility'
 
 type DashboardSectionTone = 'success' | 'info' | 'warning' | 'neutral'
 
@@ -18,6 +20,20 @@ interface DashboardSection {
 
 const router = useRouter()
 const navigationError = ref('')
+const compatibility = ref<DeviceCompatibilitySummary | null>(null)
+const compatibilityError = ref('')
+
+const compatibilityBody = computed(() => {
+  const summary = compatibility.value
+  const platforms = summary?.platforms?.length ? summary.platforms.join(' / ') : 'Comware V7 / V9'
+  const roles = summary?.roles?.length ? summary.roles.join('、') : '无线控制器、交换机、车载 MR（Cloud AP）'
+  return [
+    `当前代码内置兼容基线主要面向 H3C ${platforms} 设备，覆盖 ${roles}。`,
+    '不同设备型号、软件版本和项目配置可能存在命令、字段及返回格式差异。未经过实际设备验证的型号或版本，不保证可以直接使用全部采集和分析功能。',
+    summary?.disclaimer || '本地扫描候选不会显示到普通用户首页；已登记基线也不等于所有型号和 Release 均已完成现场验证。',
+    '软件涉及的设备查询、采集和受控配置命令，请进入“命令说明”查看。',
+  ]
+})
 
 const sections = computed<DashboardSection[]>(() => [
   {
@@ -39,13 +55,7 @@ const sections = computed<DashboardSection[]>(() => [
     tag: ['V7 / V9', 'H3C', '车载 MR'],
     tone: 'info',
     icon: InfoFilled,
-    body: [
-      '当前版本主要适配以下 H3C 设备及业务场景：',
-      '新版 H3C Comware V7、Comware V9 无线控制器；',
-      'H3C 交换机；',
-      '车载 MR 设备，包括 Cloud AP 形态的车载 MR。',
-      '不同设备型号、软件版本和项目配置可能存在命令、字段及返回格式差异。未经过实际设备验证的型号或版本，不保证可以直接使用全部采集和分析功能。',
-    ],
+    body: compatibilityBody.value,
   },
   {
     title: '测试功能与报告免责声明',
@@ -68,7 +78,6 @@ const sections = computed<DashboardSection[]>(() => [
       'NetConsole 主要用于设备信息采集、状态查看、文件获取、配置采集和无线数据分析。',
       '本软件不提供删除设备、重启设备等高风险设备操作命令，也不向 Web 页面开放任意命令执行能力。',
       '软件中涉及的受控配置操作，仅允许执行程序内预先定义、参数受限且用途明确的固定操作。具体命令及用途以“命令说明”页面为准。',
-      '本软件不提供删除设备、重启设备等高风险设备操作命令。',
     ],
   },
 ])
@@ -89,6 +98,14 @@ async function openNavigation(navigationId: string, fallbackName: string, messag
     console.warn(`Dashboard navigation failed: ${navigationId}`, reason)
   }
 }
+
+onMounted(async () => {
+  try {
+    compatibility.value = await getDeviceCompatibilitySummary()
+  } catch (reason) {
+    compatibilityError.value = reason instanceof Error ? reason.message : '设备兼容性基线暂时不可用'
+  }
+})
 </script>
 
 <template>
@@ -102,6 +119,7 @@ async function openNavigation(navigationId: string, fallbackName: string, messag
     </header>
 
     <el-alert v-if="navigationError" type="warning" :title="navigationError" show-icon :closable="false" class="dashboard-alert" />
+    <el-alert v-if="compatibilityError" type="warning" :title="compatibilityError" show-icon :closable="false" class="dashboard-alert" />
 
     <div class="dashboard-grid">
       <article v-for="section in sections" :key="section.title" class="dashboard-card" :class="`dashboard-card--${section.tone}`">

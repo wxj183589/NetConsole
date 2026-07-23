@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { defineComponent, h, nextTick } from 'vue'
+import { defineComponent, h } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,8 +14,13 @@ import jobCenterSource from './job-center/JobCenterView.vue?raw'
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
+  compatibility: vi.fn(),
 }))
 let warnSpy: ReturnType<typeof vi.spyOn>
+
+vi.mock('../api/deviceCompatibility', () => ({
+  getDeviceCompatibilitySummary: mocks.compatibility,
+}))
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: mocks.push }),
@@ -59,6 +64,17 @@ async function mountView() {
 beforeEach(() => {
   mocks.push.mockReset()
   mocks.push.mockResolvedValue(undefined)
+  mocks.compatibility.mockReset()
+  mocks.compatibility.mockResolvedValue({
+    generated_at: '2026-07-24T02:00:00',
+    profile_count: 6,
+    platforms: ['Comware V7', 'Comware V9'],
+    roles: ['无线控制器', '交换机', '车载 MR（Cloud AP）'],
+    validation_levels: ['registered_pending_field_validation'],
+    statement: '当前代码内置兼容基线主要面向 H3C Comware V7 / V9、H3C 无线控制器、H3C 交换机和车载 MR（Cloud AP）。',
+    disclaimer: '本地扫描候选不会显示到普通用户首页；已登记基线也不等于所有型号和 Release 均已完成现场验证。',
+    profiles: [],
+  })
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 })
 
@@ -73,8 +89,9 @@ describe('Dashboard home page', () => {
     expect(source).toContain('当前设备适配范围')
     expect(source).toContain('测试功能与报告免责声明')
     expect(source).toContain('设备操作安全说明')
-    expect(source).toContain('Comware V7、Comware V9')
-    expect(source).toContain('H3C 交换机')
+    expect(source).toContain('getDeviceCompatibilitySummary')
+    expect(source).toContain('Comware V7 / V9')
+    expect(source).toContain('交换机')
     expect(source).toContain('车载 MR')
     expect(source).toContain('Cloud AP')
     expect(source).toContain('查看命令说明')
@@ -86,11 +103,15 @@ describe('Dashboard home page', () => {
     expect(source).not.toContain("router.push('/tasks')")
     expect(source).not.toContain('全面兼容')
     expect(source).not.toContain('完全支持')
+    expect(source).not.toContain('现有局点设备概况')
+    expect(source).not.toContain('重新统计')
   })
 
   it('navigates to the existing command reference and task center routes without a blank failure state', async () => {
     const wrapper = await mountView()
-    await nextTick()
+    await flushPromises()
+    expect(mocks.compatibility).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('当前代码内置兼容基线主要面向 H3C Comware V7 / Comware V9')
     const buttons = wrapper.findAll('button')
     expect(buttons[0].text()).toBe('查看命令说明')
     expect(buttons[1].text()).toBe('打开任务中心')

@@ -1,0 +1,149 @@
+{
+  "schema_version": "2026.07.device-compatibility-profiles.v1",
+  "profiles": [
+    {
+      "profile_id": "h3c-comware-v7-switch-generic.v1",
+      "vendor": "H3C",
+      "device_role": "switch",
+      "display_role": "交换机",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 7,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "h3c.comware.switch.generic.device-inventory.v1",
+      "parser_profile_id": "h3c_comware_v7_modern_switch",
+      "capabilities": {
+        "device_overview": "supported",
+        "interface_status": "supported",
+        "optical_module": "supported",
+        "lldp": "supported",
+        "configuration_collect": "supported",
+        "device_file_download": "supported",
+        "fit_ap_collect": "not_applicable",
+        "vehicle_mr_collect": "not_applicable"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "当前 V7 交换机通用只读基线，具体型号和 Release 仍需按实测样本登记精确配置。"
+    },
+    {
+      "profile_id": "h3c-comware-v7-wireless-controller-generic.v1",
+      "vendor": "H3C",
+      "device_role": "wireless_controller",
+      "display_role": "无线控制器",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 7,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "legacy.ac_fit_ap_resource_collect",
+      "parser_profile_id": "h3c_comware_v7_ac",
+      "capabilities": {
+        "device_overview": "supported",
+        "interface_status": "partially_supported",
+        "optical_module": "partially_supported",
+        "lldp": "supported",
+        "configuration_collect": "supported",
+        "device_file_download": "supported",
+        "fit_ap_collect": "supported",
+        "vehicle_mr_collect": "not_applicable"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "AC/FIT-AP 资源使用既有受控命令上下文，后续可收敛到版本化 DeviceCommandProfile。"
+    },
+    {
+      "profile_id": "h3c-comware-v9-switch-generic.v1",
+      "vendor": "H3C",
+      "device_role": "switch",
+      "display_role": "交换机",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 9,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "h3c.comware.switch.generic.device-inventory.v1",
+      "parser_profile_id": "h3c_comware_v9_switch",
+      "capabilities": {
+        "device_overview": "unverified",
+        "interface_status": "unverified",
+        "optical_module": "unverified",
+        "lldp": "unverified",
+        "configuration_collect": "unverified",
+        "device_file_download": "unverified",
+        "fit_ap_collect": "unverified",
+        "vehicle_mr_collect": "not_applicable"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "当前仅登记 V9 交换机适配方向，不代表所有 V9 Release 已完成现场验证。"
+    },
+    {
+      "profile_id": "h3c-comware-v7-vehicle-mr-cloud-ap-generic.v1",
+      "vendor": "H3C",
+      "device_role": "mobile_router_cloud_ap",
+      "display_role": "车载 MR（Cloud AP）",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 7,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "h3c.comware.mobile_router.generic.device-inventory.v1",
+      "parser_profile_id": "h3c_cloud_ap_mr_v7",
+      "capabilities": {
+        "device_overview": "supported",
+        "interface_status": "supported",
+        "optical_module": "unsupported",
+        "lldp": "unsupported",
+        "configuration_collect": "supported",
+        "device_file_download": "supported",
+        "fit_ap_collect": "not_applicable",
+        "vehicle_mr_collect": "supported"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "Cloud AP 形态车载 MR 与普通 FIT AP 分开登记。"
+    },
+    {
+      "profile_id": "h3c-comware-v9-vehicle-mr-cloud-ap-generic.v1",
+      "vendor": "H3C",
+      "device_role": "mobile_router_cloud_ap",
+      "display_role": "车载 MR（Cloud AP）",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 9,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "h3c.comware.mobile_router.generic.device-inventory.v1",
+      "parser_profile_id": "h3c_cloud_ap_mr_v9",
+      "capabilities": {
+        "device_overview": "unverified",
+        "interface_status": "unverified",
+        "optical_module": "not_applicable",
+        "lldp": "not_applicable",
+        "configuration_collect": "unverified",
+        "device_file_download": "unverified",
+        "fit_ap_collect": "not_applicable",
+        "vehicle_mr_collect": "unverified"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "当前仅登记 V9 Cloud AP 形态车载 MR 适配方向。"
+    },
+    {
+      "profile_id": "h3c-comware-v9-wireless-controller-generic.v1",
+      "vendor": "H3C",
+      "device_role": "wireless_controller",
+      "display_role": "无线控制器",
+      "model_matchers": ["*"],
+      "platform_family": "comware",
+      "platform_major_version": 9,
+      "software_version_matchers": ["*"],
+      "command_profile_id": "legacy.ac_fit_ap_resource_collect",
+      "parser_profile_id": "h3c_comware_v9_ac",
+      "capabilities": {
+        "device_overview": "unverified",
+        "interface_status": "unverified",
+        "optical_module": "unverified",
+        "lldp": "unverified",
+        "configuration_collect": "unverified",
+        "device_file_download": "unverified",
+        "fit_ap_collect": "unverified",
+        "vehicle_mr_collect": "not_applicable"
+      },
+      "validation_level": "registered_pending_field_validation",
+      "notes": "当前仅登记 V9 无线控制器适配方向，不代表所有 V9 Release 已完成现场验证。"
+    }
+  ]
+}

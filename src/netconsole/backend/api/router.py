@@ -8,6 +8,7 @@ from netconsole.backend.api.agent_router import router as agent_router
 from netconsole.backend.api.agent_router import ws_router as agent_ws_router
 from netconsole.backend.api.config_collection_router import router as config_collection_router
 from netconsole.backend.api.command_reference_router import router as command_reference_router
+from netconsole.backend.api.device_compatibility_router import router as device_compatibility_router
 from netconsole.backend.api.device_management_router import router as device_management_router
 from netconsole.backend.api.file_management_router import router as file_management_router
 from netconsole.backend.api.feature_access import require_feature
@@ -42,6 +43,7 @@ api_router.include_router(
     command_reference_router,
     dependencies=[Depends(require_feature("web.command_reference"))],
 )
+api_router.include_router(device_compatibility_router)
 api_router.include_router(
     ac_management_router,
     dependencies=[Depends(require_feature("web.ac_management"))],
