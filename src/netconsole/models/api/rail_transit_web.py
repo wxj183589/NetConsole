@@ -101,6 +101,16 @@ class OnlineMrParseRequestDTO(ApiModel):
     force_reparse: bool = False
 
 
+class OnlineMrDeleteRequestDTO(ApiModel):
+    expected_session_id: str = Field(min_length=1, max_length=160)
+    explicit_confirmation: bool = False
+
+
+class OnlineMrDesktopLocationDTO(ApiModel):
+    target_type: Literal["file", "directory"]
+    path: str
+
+
 class OnlineMrNoteCreateRequestDTO(ApiModel):
     note: str = Field(min_length=1, max_length=500)
     explicit_confirmation: bool = False
@@ -122,6 +132,8 @@ __all__ = [
     "CarNetworkPointTableWriteRequestDTO",
     "OnlineMrNoteCreateRequestDTO",
     "OnlineMrParseRequestDTO",
+    "OnlineMrDeleteRequestDTO",
+    "OnlineMrDesktopLocationDTO",
     "OnlineMrReportRequestDTO",
     "OnlineMrTimelineQueryDTO",
     "RailTransitTaskDTO",

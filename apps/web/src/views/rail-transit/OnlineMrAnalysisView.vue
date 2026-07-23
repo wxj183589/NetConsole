@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Document, Download, Files, Refresh, Search, Tickets } from '@element-plus/icons-vue'
+import { Delete, Download, Files, FolderOpened, Refresh, Search, Tickets } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiRequestError } from '../../api/client'
@@ -14,9 +15,10 @@ import {
   queryOnlineMrMetrics,
   queryOnlineMrSwitchRssiWindows,
 } from '../../api/onlineMr'
-import { exportOnlineMrReport, getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
+import { deleteOnlineMrSession, exportOnlineMrReport, getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import OnlineMrAnalysisChart from '../../components/online-mr-analysis/OnlineMrAnalysisChart.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
@@ -127,15 +129,20 @@ const rawFiles = ref<OnlineMrRawFile[]>([])
 const rawTail = ref<string[]>([])
 const rawName = ref('')
 const task = ref<RailTransitTask | null>(null)
-const outputName = ref('')
 const loading = ref(false)
-const taskLoading = ref(false)
+const parseSubmitting = ref(false)
+const reportSubmitting = ref(false)
+const deleting = ref(false)
+const openingLocation = ref(false)
 const error = ref('')
 const analysisError = ref('')
 const startTime = ref('')
 const endTime = ref('')
 const downsample = ref<'NONE' | 'BUCKET_AVG' | 'MIN_MAX' | 'LATEST_PER_BUCKET'>('LATEST_PER_BUCKET')
 const bucketSeconds = ref(1)
+const analysisTabsHost = ref<HTMLElement | null>(null)
+const pendingDeleteTarget = ref<{ sessionId: string; index: number } | null>(null)
+const panel = useAvailablePanelHeight(analysisTabsHost, { minHeight: 420, bottomGap: 40 })
 
 const metricLimit = 1_000
 const businessLimit = 500
@@ -168,6 +175,21 @@ const parsedAlertType = computed(() => parsedReady.value ? 'success' : parsedSta
 const parsedMessage = computed(() => detail.value?.database_summary.message || '当前会话尚未生成解析结果。')
 const canParse = computed(() => Boolean(detail.value?.has_raw_data && isFeatureEnabled('web.online_mr_parse')))
 const reportDisabled = computed(() => !parsedReady.value || !isFeatureEnabled('web.online_mr_report_export'))
+const taskActive = computed(() => Boolean(task.value && !terminalStates.has(task.value.status)))
+const parseBusy = computed(() => parseSubmitting.value || (taskActive.value && task.value?.action === 'online_mr_parse'))
+const reportBusy = computed(() => reportSubmitting.value || (taskActive.value && task.value?.action === 'online_mr_report'))
+const deleteBusy = computed(() => deleting.value || (taskActive.value && task.value?.action === 'online_mr_session_delete'))
+const sessionResourceBusy = computed(() => parseBusy.value || reportBusy.value || deleteBusy.value)
+const tableHeight = computed(() => Math.max(360, panel.height.value - 58))
+const desktopLocationAvailable = computed(() => Boolean(
+  window.netconsoleDesktop?.openOnlineMrSessionLocation
+  && isFeatureEnabled('desktop.native_bridge')
+  && isFeatureEnabled('web.online_mr_session_open_location'),
+))
+const sessionActionsDisabled = computed(() => !detail.value || deleteBusy.value)
+const openLocationTitle = computed(() => desktopLocationAvailable.value
+  ? ''
+  : '该功能仅在 NetConsole Electron 桌面端可用。')
 const businessSummaryCards = computed(() => {
   const summary = businessSummary.value
   if (!summary) return []
@@ -420,9 +442,15 @@ function poll(): void {
     try {
       const updated = await getRailTransitTask(task.value!.task_id)
       rememberTask(updated)
-      if (terminalStates.has(updated.status) && updated.action === 'online_mr_parse') {
-        await loadAnalysis()
-        task.value = updated
+      if (terminalStates.has(updated.status)) {
+        if (updated.action === 'online_mr_parse') {
+          if (updated.status === 'COMPLETED') await loadAnalysis()
+          task.value = updated
+        } else if (updated.action === 'online_mr_report' && updated.status === 'FAILED') {
+          ElMessage.error(updated.error_message || updated.message || '分析报告生成失败')
+        } else if (updated.action === 'online_mr_session_delete') {
+          await finishDeleteTask(updated)
+        }
         return
       }
       poll()
@@ -486,14 +514,24 @@ function isAbort(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === 'AbortError'
 }
 
-async function loadSessions(): Promise<void> {
+async function loadSessions(options: { preferredIndex?: number } = {}): Promise<void> {
   loading.value = true
   error.value = ''
   try {
     sessions.value = await listRecentOnlineMrSessions(100)
     const requested = typeof route.query.session_id === 'string' ? route.query.session_id : ''
-    sessionId.value = sessions.value.find((item) => item.session_id === requested)?.session_id || sessionId.value || sessions.value[0]?.session_id || ''
-    if (sessionId.value) await loadAnalysis()
+    const retained = sessions.value.find((item) => item.session_id === sessionId.value)?.session_id
+    const requestedSession = sessions.value.find((item) => item.session_id === requested)?.session_id
+    const preferred = options.preferredIndex == null
+      ? ''
+      : sessions.value[Math.min(options.preferredIndex, Math.max(0, sessions.value.length - 1))]?.session_id || ''
+    sessionId.value = retained || preferred || requestedSession || sessions.value[0]?.session_id || ''
+    if (sessionId.value) {
+      await loadAnalysis()
+    } else {
+      detail.value = null
+      clearSessionData()
+    }
   } catch (cause) {
     error.value = message(cause, 'Online MR 会话列表加载失败')
   } finally {
@@ -604,10 +642,33 @@ function openTaskWindow(): void {
   }
   void router.push({ name: 'tasks', query: { module: 'rail', ...(taskId ? { task_id: taskId } : {}) } })
 }
+function selectSession(row: OnlineMrSessionSummary): void {
+  if (deleteBusy.value || row.session_id === sessionId.value) return
+  sessionId.value = row.session_id
+  void loadAnalysis()
+}
+async function openSessionLocation(): Promise<void> {
+  const selected = detail.value
+  if (!selected || deleteBusy.value) return
+  const bridge = window.netconsoleDesktop?.openOnlineMrSessionLocation
+  if (!bridge || !desktopLocationAvailable.value) {
+    ElMessage.warning('该功能仅在 NetConsole Electron 桌面端可用。')
+    return
+  }
+  openingLocation.value = true
+  try {
+    const result = await bridge(selected.session_id)
+    if (!result.success) ElMessage.error(result.error || '打开会话位置失败')
+  } catch (cause) {
+    ElMessage.error(message(cause, '打开会话位置失败'))
+  } finally {
+    openingLocation.value = false
+  }
+}
 async function startParse(forceReparse: boolean): Promise<void> {
-  if (!detail.value || !canParse.value) return
+  if (!detail.value || !canParse.value || sessionActionsDisabled.value || reportBusy.value || parseBusy.value) return
   if (forceReparse && !await confirm({ type: 'WARNING', title: '强制重新解析', message: '强制解析会重建当前会话 parsed 结果；原始日志不会删除。确认继续？', confirmText: '重新解析' })) return
-  taskLoading.value = true
+  parseSubmitting.value = true
   error.value = ''
   try {
     rememberTask(await parseOnlineMrSession(detail.value.session_id, forceReparse))
@@ -616,28 +677,94 @@ async function startParse(forceReparse: boolean): Promise<void> {
   } catch (cause) {
     error.value = message(cause, forceReparse ? '强制重新解析启动失败' : '会话解析启动失败')
   } finally {
-    taskLoading.value = false
+    parseSubmitting.value = false
   }
 }
 async function startReport(): Promise<void> {
-  if (!detail.value || reportDisabled.value) return
-  taskLoading.value = true
+  if (!detail.value || reportDisabled.value || sessionActionsDisabled.value || sessionResourceBusy.value) return
+  reportSubmitting.value = true
   error.value = ''
   try {
-    rememberTask(await exportOnlineMrReport(detail.value.session_id, outputName.value))
+    rememberTask(await exportOnlineMrReport(detail.value.session_id, ''))
     poll()
-    openTaskWindow()
+    ElMessage.success('分析报告任务已提交，请在任务窗口查看进度。')
   } catch (cause) {
     error.value = message(cause, 'Online MR 报告生成启动失败')
   } finally {
-    taskLoading.value = false
+    reportSubmitting.value = false
+  }
+}
+function taskResultBoolean(value: RailTransitTask, key: string): boolean {
+  return value.result_summary[key] === true
+}
+function taskResultStrings(value: RailTransitTask, key: string): string[] {
+  const rows = value.result_summary[key]
+  return Array.isArray(rows) ? rows.filter((item): item is string => typeof item === 'string') : []
+}
+async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
+  const target = pendingDeleteTarget.value
+  pendingDeleteTarget.value = null
+  if (!target) return
+  if (updated.status === 'FAILED' || !taskResultBoolean(updated, 'session_deleted')) {
+    ElMessage.error(updated.error_message || updated.message || '会话删除失败，原会话已保留。')
+    return
+  }
+  const issues = [...taskResultStrings(updated, 'failed_items'), ...taskResultStrings(updated, 'warnings')]
+  if (sessionId.value === target.sessionId) {
+    requestController?.abort()
+    sessionId.value = ''
+    detail.value = null
+    clearSessionData()
+  }
+  await loadSessions({ preferredIndex: target.index })
+  if (updated.status === 'COMPLETED' && issues.length === 0) {
+    ElMessage.success('会话及其受管本地数据已删除。')
+  } else {
+    ElMessage.warning(`会话主体已删除，部分关联项处理失败：${issues.join('；') || updated.message || '请在任务窗口查看详情。'}`)
+  }
+}
+async function deleteCurrentSession(): Promise<void> {
+  const selected = detail.value
+  if (!selected || sessionResourceBusy.value || !isFeatureEnabled('web.online_mr_session_delete')) return
+  const selectedIndex = Math.max(0, sessions.value.findIndex((item) => item.session_id === selected.session_id))
+  const duration = selected.duration_minutes == null ? '无数据' : `${formatNumber(selected.duration_minutes, 3)} min`
+  const accepted = await confirm({
+    type: 'DESTRUCTIVE',
+    title: '删除 Online MR 会话',
+    message: [
+      `MR：${selected.device_name || selected.mr_name || '无数据'}`,
+      `会话 ID：${selected.session_id}`,
+      `开始时间：${selected.started_at || '无数据'}`,
+      `采集时长：${duration}`,
+      `数据完整性：${selected.data_integrity || 'unknown'}`,
+      '',
+      '删除后将移除该会话的解析数据、缓存、报告记录及 NetConsole 管理的本地会话文件，此操作不可撤销。',
+    ].join('\n'),
+    confirmText: '确认删除',
+  })
+  if (!accepted || detail.value?.session_id !== selected.session_id) return
+  deleting.value = true
+  error.value = ''
+  try {
+    const submitted = await deleteOnlineMrSession(selected.session_id)
+    pendingDeleteTarget.value = { sessionId: selected.session_id, index: selectedIndex }
+    rememberTask(submitted)
+    poll()
+  } catch (cause) {
+    error.value = message(cause, 'Online MR 会话删除启动失败')
+  } finally {
+    deleting.value = false
   }
 }
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem('netconsole.online-mr-analysis.last-task') || ''
     const rows = await recoverRailTransitTasks()
-    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['online_mr_parse', 'online_mr_report'].includes(item.action)) || null)
+    rememberTask(rows.find((item) => item.task_id === saved) || rows.find((item) => ['online_mr_parse', 'online_mr_report', 'online_mr_session_delete'].includes(item.action)) || null)
+    if (task.value?.action === 'online_mr_session_delete' && task.value.status !== 'COMPLETED') {
+      const deletingSession = String(task.value.result_summary.session_id || sessionId.value)
+      pendingDeleteTarget.value = { sessionId: deletingSession, index: Math.max(0, sessions.value.findIndex((item) => item.session_id === deletingSession)) }
+    }
     poll()
   } catch (cause) {
     error.value = message(cause, '任务恢复失败')
@@ -715,13 +842,16 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <p>会话、原始日志与采集记录不依赖 parsed 数据库；业务表按解析结果结构化展示，动态图继续复用现有指标接口。</p>
       </div>
       <div class="actions">
-        <el-select v-model="sessionId" filterable placeholder="选择 Online MR 会话" style="width:360px" @change="loadAnalysis">
+        <el-select v-model="sessionId" class="session-selector" filterable placeholder="选择 Online MR 会话" :disabled="deleteBusy" @change="loadAnalysis">
           <el-option v-for="item in sessions" :key="item.session_id" :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`" :value="item.session_id" />
         </el-select>
-        <el-button :icon="Refresh" :loading="loading" @click="loadSessions">刷新</el-button>
-        <el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing'" :loading="taskLoading" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button>
-        <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing'" :loading="taskLoading" @click="startParse(true)">强制重新解析</el-button>
+        <el-button :icon="Refresh" :loading="loading" :disabled="deleteBusy" @click="loadSessions()">刷新</el-button>
+        <el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button>
+        <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(true)">强制重新解析</el-button>
+        <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingLocation" :disabled="sessionActionsDisabled || openingLocation || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation">打开本地目录</el-button>
+        <el-button data-testid="generate-report" type="primary" :icon="Download" :loading="reportBusy" :disabled="reportDisabled || sessionActionsDisabled || sessionResourceBusy" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button>
         <el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button>
+        <el-button data-testid="delete-session" type="danger" plain :icon="Delete" :loading="deleteBusy" :disabled="sessionActionsDisabled || sessionResourceBusy || !isFeatureEnabled('web.online_mr_session_delete')" @click="deleteCurrentSession">删除</el-button>
       </div>
     </header>
 
@@ -760,9 +890,10 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <span class="query-hint"><el-icon :size="16" class="inline-icon"><Search /></el-icon>查询窗口仅在当前页签加载</span>
       </div>
 
+      <div ref="analysisTabsHost" class="analysis-tabs-host">
       <el-tabs :model-value="activeTab" class="analysis-tabs" @tab-change="changeTab">
         <el-tab-pane name="session-history" label="会话记录">
-          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" border height="460" empty-text="暂无会话" @row-click="(row: OnlineMrSessionSummary) => { sessionId = row.session_id; void loadAnalysis() }" />
+          <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" :current-row-key="sessionId" highlight-current-row border :height="tableHeight" empty-text="暂无会话" @row-click="selectSession" />
         </el-tab-pane>
 
         <el-tab-pane name="mesh-link" label="主链路信息">
@@ -779,29 +910,29 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
             :columns="mainLinkColumns"
             :row-class-name="mainLinkRowClass"
             border
-            height="460"
+            :height="tableHeight"
             empty-text="暂无主链路信息"
           />
         </el-tab-pane>
 
         <el-tab-pane name="mesh-detail" label="链路明细">
-          <NcDataTable table-id="online-mr-analysis-mesh-detail" route-key="/rail-transit/online-mr-analysis" :data="linkDetailRows" :columns="linkDetailColumns" :row-class-name="linkDetailRowClass" border height="460" empty-text="暂无链路明细" />
+          <NcDataTable table-id="online-mr-analysis-mesh-detail" route-key="/rail-transit/online-mr-analysis" :data="linkDetailRows" :columns="linkDetailColumns" :row-class-name="linkDetailRowClass" border :height="tableHeight" empty-text="暂无链路明细" />
         </el-tab-pane>
 
         <el-tab-pane name="channel-busy" label="信道繁忙度">
-          <NcDataTable table-id="online-mr-analysis-channel-busy" route-key="/rail-transit/online-mr-analysis" :data="channelBusyRows" :columns="channelBusyColumns" border height="460" empty-text="暂无信道数据" />
+          <NcDataTable table-id="online-mr-analysis-channel-busy" route-key="/rail-transit/online-mr-analysis" :data="channelBusyRows" :columns="channelBusyColumns" border :height="tableHeight" empty-text="暂无信道数据" />
         </el-tab-pane>
 
         <el-tab-pane name="switch-history" label="主链路切换历史">
-          <NcDataTable table-id="online-mr-analysis-switch-history" route-key="/rail-transit/online-mr-analysis" :data="switchHistoryRows" :columns="switchHistoryColumns" border height="460" empty-text="暂无主链路切换历史" />
+          <NcDataTable table-id="online-mr-analysis-switch-history" route-key="/rail-transit/online-mr-analysis" :data="switchHistoryRows" :columns="switchHistoryColumns" border :height="tableHeight" empty-text="暂无主链路切换历史" />
         </el-tab-pane>
 
         <el-tab-pane name="active-switch" label="主链路切换日志">
-          <NcDataTable table-id="online-mr-analysis-active-switch" route-key="/rail-transit/online-mr-analysis" :data="switchRealtimeRows" :columns="switchRealtimeColumns" border height="460" empty-text="暂无主链路切换日志" />
+          <NcDataTable table-id="online-mr-analysis-active-switch" route-key="/rail-transit/online-mr-analysis" :data="switchRealtimeRows" :columns="switchRealtimeColumns" border :height="tableHeight" empty-text="暂无主链路切换日志" />
         </el-tab-pane>
 
         <el-tab-pane name="interface-rate" label="接口速率">
-          <NcDataTable table-id="online-mr-analysis-interface-rate" route-key="/rail-transit/online-mr-analysis" :data="interfaceRows" :columns="interfaceColumns" border height="460" empty-text="暂无接口速率数据" />
+          <NcDataTable table-id="online-mr-analysis-interface-rate" route-key="/rail-transit/online-mr-analysis" :data="interfaceRows" :columns="interfaceColumns" border :height="tableHeight" empty-text="暂无接口速率数据" />
         </el-tab-pane>
 
         <el-tab-pane name="charts" label="动态图">
@@ -813,15 +944,15 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         </el-tab-pane>
 
         <el-tab-pane name="fping" label="fping 1s 聚合">
-          <NcDataTable table-id="online-mr-analysis-fping" route-key="/rail-transit/online-mr-analysis" :data="fpingRows" :columns="fpingColumns" border height="460" empty-text="暂无 fping 数据" />
+          <NcDataTable table-id="online-mr-analysis-fping" route-key="/rail-transit/online-mr-analysis" :data="fpingRows" :columns="fpingColumns" border :height="tableHeight" empty-text="暂无 fping 数据" />
         </el-tab-pane>
 
         <el-tab-pane name="iperf" label="打流测试">
-          <NcDataTable table-id="online-mr-analysis-iperf" route-key="/rail-transit/online-mr-analysis" :data="iperfRows" :columns="iperfColumns" border height="460" empty-text="暂无打流测试数据" />
+          <NcDataTable table-id="online-mr-analysis-iperf" route-key="/rail-transit/online-mr-analysis" :data="iperfRows" :columns="iperfColumns" border :height="tableHeight" empty-text="暂无打流测试数据" />
         </el-tab-pane>
 
         <el-tab-pane name="diagnosis" label="诊断">
-          <NcDataTable table-id="online-mr-analysis-diagnosis" route-key="/rail-transit/online-mr-analysis" :data="diagnosisRows" :columns="diagnosisColumns" border height="460" empty-text="暂无诊断事件" />
+          <NcDataTable table-id="online-mr-analysis-diagnosis" route-key="/rail-transit/online-mr-analysis" :data="diagnosisRows" :columns="diagnosisColumns" border :height="tableHeight" empty-text="暂无诊断事件" />
         </el-tab-pane>
 
         <el-tab-pane name="raw" label="原始日志">
@@ -846,18 +977,6 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <span v-if="currentBusinessTable">当前 {{ currentBusinessRows.length }} 条 {{ businessTableLabel(currentBusinessTable) }}</span>
         <span v-else>图表数据按当前时间范围分批加载</span>
       </div>
-
-      <div class="report-card">
-        <div>
-          <h2><el-icon :size="18" class="inline-icon"><Document /></el-icon>分析报告</h2>
-          <p>{{ parsedReady ? '报告由 Export Process 生成；任务、日志和 Artifact 操作统一在任务窗口完成。' : `解析结果未就绪：${parsedMessage}` }}</p>
-        </div>
-        <div class="report-actions">
-          <el-input v-model="outputName" placeholder="可选报告文件名" />
-          <el-button type="primary" :icon="Download" :loading="taskLoading" :disabled="reportDisabled" :title="reportDisabled ? parsedMessage : ''" @click="startReport">生成 XLSX 报告</el-button>
-          <el-button :icon="Tickets" @click="openTaskWindow">打开任务窗口</el-button>
-        </div>
-        <el-alert v-if="task" :title="`${task.status} · ${task.error_message || task.message || task.task_id}`" :type="task.status === 'FAILED' ? 'error' : 'info'" :closable="false" />
       </div>
     </template>
   </section>
@@ -865,13 +984,15 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 
 <style scoped>
 .analysis-page{display:flex;flex-direction:column;gap:16px;min-width:0}
-.page-heading,.actions,.query-bar,.report-actions,.logs-toolbar{display:flex;align-items:center;gap:12px}
-.page-heading{justify-content:space-between}
-.page-heading h1,.report-card h2{margin:2px 0 6px}
-.page-heading p,.report-card p,.query-hint,.logs-toolbar{margin:0;color:var(--el-text-color-secondary)}
+.page-heading,.actions,.query-bar,.logs-toolbar{display:flex;align-items:center;gap:12px}
+.page-heading{justify-content:space-between;align-items:flex-start}
+.page-heading h1{margin:2px 0 6px}
+.page-heading p,.query-hint,.logs-toolbar{margin:0;color:var(--el-text-color-secondary)}
+.actions{justify-content:flex-end;flex-wrap:wrap;min-width:0}
+.session-selector{flex:1 1 340px;max-width:430px;min-width:260px}
 .eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}
 .summary-grid{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px}
-.summary-grid article,.report-card,.business-summary article{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:10px}
+.summary-grid article,.business-summary article{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:10px}
 .summary-grid article{padding:13px}
 .summary-grid span,.business-summary span{color:var(--el-text-color-secondary);font-size:12px}
 .summary-grid strong,.business-summary strong{display:block;margin-top:6px;font-size:18px}
@@ -881,14 +1002,10 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 .query-hint{display:inline-flex;align-items:center;gap:4px;font-size:12px}
 .inline-icon{width:16px!important;height:16px!important;max-width:16px!important;max-height:16px!important;flex:0 0 16px!important;flex-shrink:0!important}
 .inline-icon :deep(svg){width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
-.report-card h2 .inline-icon{width:18px!important;height:18px!important;max-width:18px!important;max-height:18px!important;flex-basis:18px!important}
-.analysis-tabs{min-width:0}
+.analysis-tabs-host,.analysis-tabs{min-width:0}
 .raw-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px}
 .raw-preview{margin:0;min-height:360px;max-height:480px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light);font:12px/1.6 Consolas,monospace;white-space:pre-wrap}
 .timeline-actions{display:flex;align-items:center;gap:8px}
-.report-card{display:flex;flex-direction:column;gap:14px;padding:14px 16px;min-height:100px;max-height:220px;overflow:auto}
-.report-card h2{display:flex;align-items:center;gap:6px}
-.report-actions .el-input{width:320px}
 :deep(.online-mr-row--group-a > td.el-table__cell){background:rgba(64,158,255,.04)}
 :deep(.online-mr-row--group-b > td.el-table__cell){background:rgba(103,194,58,.04)}
 :deep(.online-mr-row--active .nc-table-cell){color:var(--el-color-success);font-weight:600}
@@ -900,10 +1017,9 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 }
 @media(max-width:800px){
   .page-heading{align-items:flex-start;flex-direction:column}
+  .actions{justify-content:flex-start;width:100%}
+  .session-selector{max-width:none;width:100%}
   .summary-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}
   .query-bar>*{max-width:100%;width:100%!important}
-  .report-actions{align-items:stretch;flex-direction:column}
-  .report-actions .el-input{width:100%}
-  .report-card{max-height:none}
 }
 </style>

@@ -12,6 +12,7 @@ import {
   validateChooseSavePathOptions,
   validateExternalUrl,
   validateFileDesktopActionRef,
+  validateOnlineMrSessionId,
   validateRendererReadyReport,
   validateRendererWorkloadReport,
   validateSelectFileOptions,
@@ -310,6 +311,16 @@ export function registerDesktopIpc(
     )),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.openOnlineMrSessionLocation,
+    trusted((value) => openOnlineMrSessionLocation(
+      dependencies.backend,
+      dependencies.shell,
+      validateOnlineMrSessionId(value),
+      dependencies.fetchImpl ?? fetch,
+      dependencies.logger,
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
@@ -432,6 +443,87 @@ async function executeFileDesktopAction(
     logger('ELECTRON_FILE_DESKTOP_ACTION_FAILED')
     return { success: false, error: '桌面操作失败，请检查本机设置后重试。' }
   }
+}
+
+async function openOnlineMrSessionLocation(
+  backend: BackendLike,
+  shell: ShellLike,
+  sessionId: string,
+  fetchImpl: typeof fetch,
+  logger: DesktopLogger = () => undefined,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const runtime = backend.getRuntimeInfo()
+    const base = new URL(runtime.baseUrl)
+    if (
+      base.protocol !== 'http:'
+      || base.hostname !== '127.0.0.1'
+      || !base.port
+      || base.pathname !== '/'
+      || base.username
+      || base.password
+      || base.search
+      || base.hash
+    ) throw new Error('untrusted backend')
+    const url = new URL(
+      `/api/online-mr/sessions/${encodeURIComponent(sessionId)}/desktop-location`,
+      base.origin,
+    )
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken },
+      redirect: 'error',
+    })
+    if (!response.ok) {
+      return {
+        success: false,
+        error: await safeBackendActionError(
+          response,
+          '当前会话没有可打开的本地目录。',
+        ),
+      }
+    }
+    const body = await response.json() as { target_type?: unknown; path?: unknown }
+    if (
+      (body.target_type !== 'file' && body.target_type !== 'directory')
+      || typeof body.path !== 'string'
+      || !isAbsolute(body.path)
+      || body.path.includes('\0')
+    ) {
+      throw new Error('invalid managed target')
+    }
+    if (body.target_type === 'file') {
+      shell.showItemInFolder(body.path)
+    } else {
+      const error = await shell.openPath(body.path)
+      if (error) throw new Error('open directory failed')
+    }
+    logger('ELECTRON_ONLINE_MR_LOCATION_OPENED')
+    return { success: true }
+  } catch {
+    logger('ELECTRON_ONLINE_MR_LOCATION_FAILED')
+    return { success: false, error: '打开会话本地目录失败，请检查文件是否仍存在。' }
+  }
+}
+
+async function safeBackendActionError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json() as { detail?: unknown }
+    const detail = body.detail
+    const message = typeof detail === 'string'
+      ? detail
+      : detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string'
+        ? String((detail as { message: string }).message)
+        : ''
+    if (
+      message
+      && message.length <= 200
+      && !/[A-Za-z]:[\\/]|\\\\/.test(message)
+    ) return message
+  } catch {
+    // 使用稳定的安全回退文案。
+  }
+  return fallback
 }
 
 async function executeSettingsAction(

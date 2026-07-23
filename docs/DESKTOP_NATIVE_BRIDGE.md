@@ -38,6 +38,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `downloadBackendResource` | 正式 Artifact endpoint 白名单、安全 Query、建议文件名、过滤器、可选的本会话已授权另存为路径 | main 重新校验路径确由 `chooseSavePath` 授权，只访问当前受管动态回环后端，自行注入内存令牌并流式保存；普通 `/api/health` 等路由拒绝 | 文件、配置快照与既有业务 Artifact 下载 |
 | `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
+| `openOnlineMrSessionLocation` | 稳定 Online MR `session_id` | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端只返回 `PathResolver` 管理根内的文件/目录，路径不返回 Renderer | 打开车载 MR 会话包、raw 或受管会话目录 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `selectSettingsTool` | `iperf3/fping/ipop/securecrt/xshell/putty` 之一 | main 按 tool ID 固定文件名集合，复验绝对路径与 basename；FastAPI 保存与真实执行点再次校验存在性、普通文件和非符号链接 | 系统设置原生 EXE 选择 |
 | `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
@@ -54,6 +55,8 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 原生打开/定位对文件使用允许列表，当前只接受常见文本、JSON/CSV、Markdown、PDF、Excel、抓包和 ZIP 等数据/报告类型。FileManagement 既有 `.bin/.conf` 及其他合法远端文件仍可安全保存，但不返回 capability；`.exe`、脚本、系统控制文件、快捷方式和安装包同样不能借 reveal 绕过。保存时建议名与最终名按规范化的真实末级扩展精确比较，`.tar.gz/.zip.gz` 等已知复合扩展整体保留，无扩展单独表示；未知或含连字符的合法扩展不会折叠为“无扩展”，改扩展名会在发起 HTTP 前拒绝。
 
 `openExternalUrl` 不复用窗口导航，也不允许 Renderer 自己创建新窗口。main/preload 两侧都校验 URL，只有无凭据 HTTPS 地址会传给 `shell.openExternal`；临时 API Token、认证 Header 和设备密码不得进入 URL。
+
+`openOnlineMrSessionLocation` 不接受 Renderer 路径、目标类型、URL 或回退目录。后端根据当前局点和 `session_id` 解析受管 Session，优先定位正式 ZIP，其次定位 MESH/终端 raw，再回退受管目录或关联报告；不存在时返回稳定安全错误。main 收到目标后只调用 `showItemInFolder` 或 `openPath`，不会把绝对路径回送 Renderer。Server Mode、非 `127.0.0.1`、缺少桌面会话认证或 Feature 关闭时端点失败关闭。
 
 ## 文件导出边界
 

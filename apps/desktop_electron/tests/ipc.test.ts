@@ -323,6 +323,51 @@ describe('desktop IPC', () => {
     })
   })
 
+  it('resolves and opens an Online MR location only through the fixed authenticated endpoint', async () => {
+    const managedFile = resolve('managed-online-mr', 'session.zip')
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ target_type: 'file', path: managedFile }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const { ipcMain, sender, shell } = createHarness({ fetchImpl: fetchMock })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openOnlineMrSessionLocation)!
+
+    await expect(handler({ sender }, '20260721_155004_ea78c0')).resolves.toEqual({ success: true })
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'http://127.0.0.1:43123/api/online-mr/sessions/20260721_155004_ea78c0/desktop-location',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'X-NetConsole-Session': 'secret-token' },
+      redirect: 'error',
+    })
+    expect(shell.showItemInFolder).toHaveBeenCalledWith(managedFile)
+    expect(shell.openPath).not.toHaveBeenCalled()
+    expect(() => handler({ sender }, '..\\outside')).toThrow('session id is invalid')
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('returns a safe message when an Online MR local target no longer exists', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({
+        detail: {
+          code: 'ONLINE_MR_LOCAL_FILES_MISSING',
+          message: '该会话的本地文件已不存在。',
+        },
+      }),
+      { status: 404, headers: { 'content-type': 'application/json' } },
+    ))
+    const { ipcMain, sender, shell } = createHarness({ fetchImpl: fetchMock })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openOnlineMrSessionLocation)!
+
+    await expect(handler({ sender }, 'session-1')).resolves.toEqual({
+      success: false,
+      error: '该会话的本地文件已不存在。',
+    })
+    expect(shell.showItemInFolder).not.toHaveBeenCalled()
+    expect(shell.openPath).not.toHaveBeenCalled()
+  })
+
   it('rejects arbitrary backend download URLs at the main-process boundary', async () => {
     const { ipcMain, sender } = createHarness()
     const handler = ipcMain.handlers.get(DESKTOP_IPC.downloadBackendResource)!

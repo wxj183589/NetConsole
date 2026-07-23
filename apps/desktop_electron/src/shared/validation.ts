@@ -153,6 +153,18 @@ export function validateSettingsActionId(value: unknown): SettingsActionId {
   return value as SettingsActionId
 }
 
+export function validateOnlineMrSessionId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !/^[0-9A-Za-z][0-9A-Za-z_.-]{0,159}$/.test(value)
+    || value === '.'
+    || value === '..'
+  ) {
+    throw new TypeError('Online MR session id is invalid')
+  }
+  return value
+}
+
 export function validateSiteStorageRestartRequest(value: unknown): SiteStorageRestartRequest {
   const record = asRecord(value, 'site storage restart request')
   rejectUnknownKeys(record, ['dataRoot', 'activeSiteId'])

@@ -15,6 +15,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 _SAFE_STEM = re.compile(r"[^0-9A-Za-z._\u4e00-\u9fff-]+")
+_SAFE_CONTEXT = re.compile(r"[0-9A-Za-z_.:-]{1,160}\Z")
 _ALLOWED_SUFFIXES = {".xlsx", ".csv", ".zip", ".pdf", ".md", ".txt", ".nam"}
 
 
@@ -55,6 +56,7 @@ class WebArtifactStore:
         output_root: Path,
         preferred_name: str,
         use_display_name_as_file_name: bool = False,
+        context: dict[str, str] | None = None,
     ) -> ReservedWebArtifact:
         site_id = self._site(site_id)
         root = self._controlled_root(site_id, source, output_root)
@@ -92,6 +94,13 @@ class WebArtifactStore:
             "file_name": output_path.name,
             "display_name": display_name,
         }
+        safe_context = {
+            str(key): str(value)
+            for key, value in dict(context or {}).items()
+            if _SAFE_CONTEXT.fullmatch(str(key)) and _SAFE_CONTEXT.fullmatch(str(value))
+        }
+        if safe_context:
+            manifest["context"] = safe_context
         self._write_manifest(site_id, artifact_id, manifest)
         return ReservedWebArtifact(
             artifact_id=artifact_id,
@@ -104,6 +113,80 @@ class WebArtifactStore:
             task_source="local",
             output_path=output_path,
             display_name=display_name,
+        )
+
+    def online_mr_session_artifacts(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        owner: str,
+        task_type: str,
+    ) -> list[dict[str, object]]:
+        """列出明确关联会话的报告；旧默认文件名仅作受控兼容。"""
+
+        site_id = self._site(site_id)
+        if not _SAFE_CONTEXT.fullmatch(str(session_id or "")):
+            raise WebArtifactError("Online MR 会话标识无效")
+        root = self._manifest_root(site_id)
+        if not root.is_dir():
+            return []
+        result: list[dict[str, object]] = []
+        legacy_prefix = f"{session_id}_online_mr-"
+        for manifest_path in root.glob("*.json"):
+            if manifest_path.is_symlink():
+                continue
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                context = data.get("context")
+                associated = (
+                    isinstance(context, dict)
+                    and context.get("kind") == "online_mr_session"
+                    and context.get("session_id") == session_id
+                )
+                legacy = (
+                    not context
+                    and str(data.get("file_name") or "").startswith(legacy_prefix)
+                )
+                if not associated and not legacy:
+                    continue
+                if (
+                    data.get("site_id") != site_id
+                    or data.get("owner") != owner
+                    or data.get("source") != "online_mr_report"
+                    or data.get("task_type") != task_type
+                    or data.get("task_source") != "local"
+                ):
+                    continue
+                artifact_id = str(data.get("artifact_id") or "")
+                if manifest_path.resolve() != self._manifest_path(site_id, artifact_id):
+                    continue
+                output = self._validated_output(data)
+            except (
+                KeyError,
+                OSError,
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+                WebArtifactError,
+            ):
+                continue
+            result.append(
+                {
+                    "artifact_id": artifact_id,
+                    "task_id": str(data.get("task_id") or ""),
+                    "path": str(output),
+                    "manifest_path": str(manifest_path.resolve()),
+                    "completed": data.get("completed") is True,
+                    "modified_at": output.stat().st_mtime if output.is_file() else 0.0,
+                }
+            )
+        return sorted(
+            result,
+            key=lambda item: (float(item["modified_at"]), str(item["artifact_id"])),
+            reverse=True,
         )
 
     def complete(self, reservation: ReservedWebArtifact) -> dict[str, object]:

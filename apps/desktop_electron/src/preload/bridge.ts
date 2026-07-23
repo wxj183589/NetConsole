@@ -10,6 +10,7 @@ import {
   validateChooseSavePathOptions,
   validateRendererReadyReport,
   validateRendererWorkloadReport,
+  validateOnlineMrSessionId,
   validateSelectFileOptions,
   validateTaskWindowContext,
   validateUiPreferenceKey, validateUiPreferenceValue,
@@ -76,6 +77,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.executeFileDesktopAction,
       validateFileDesktopActionRef(actionRef),
     ) as ReturnType<NetConsoleDesktopBridge['executeFileDesktopAction']>,
+    openOnlineMrSessionLocation: (sessionId) => ipcRenderer.invoke(
+      DESKTOP_IPC.openOnlineMrSessionLocation,
+      validateOnlineMrSessionId(sessionId),
+    ) as Promise<{ success: boolean; error?: string }>,
     openPath: (capabilityId) => ipcRenderer.invoke(
       DESKTOP_IPC.openPath,
       validateCapabilityId(capabilityId),

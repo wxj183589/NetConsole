@@ -144,6 +144,8 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.online_mr_realtime", "车载 MR 实时展示", "rail.online_mr_collection", "page"),
     FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_analysis", "action", status=FeatureStatus.DEVELOPMENT),
     FeatureItem("web.online_mr_parse", "Online MR 会话解析（Web）", "web.online_mr_analysis", "action", status=FeatureStatus.DEVELOPMENT),
+    FeatureItem("web.online_mr_session_open_location", "打开 Online MR 会话本地位置", "web.online_mr_analysis", "action"),
+    FeatureItem("web.online_mr_session_delete", "删除 Online MR 历史会话", "web.online_mr_analysis", "action"),
     FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
     FeatureItem("web.train_communication_monitoring", "车内通信检测", "module.rail_transit", "page"),
     FeatureItem(

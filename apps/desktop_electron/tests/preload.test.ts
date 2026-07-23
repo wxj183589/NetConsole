@@ -29,6 +29,7 @@ describe('preload bridge', () => {
       'getUiPreference',
       'onBackendStatusChanged',
       'openExternalUrl',
+      'openOnlineMrSessionLocation',
       'openPath',
       'openTaskWindow',
       'reportRendererReady',
@@ -95,6 +96,7 @@ describe('preload bridge', () => {
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
+    expect(() => bridge.openOnlineMrSessionLocation?.('..\\private')).toThrow('Online MR session id is invalid')
     expect(() => bridge.restartBackend({ dataRoot: 'relative' })).toThrow('dataRoot must be absolute')
     expect(() => bridge.reportRendererWorkload?.({
       module: 'mesh-analysis',
@@ -112,5 +114,20 @@ describe('preload bridge', () => {
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
 
+  it('sends only a validated Online MR session id to the fixed IPC channel', async () => {
+    const ipcRenderer: IpcRendererLike = {
+      invoke: vi.fn(async () => ({ success: true })),
+      send: vi.fn(),
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    }
+    const bridge = createDesktopBridge(ipcRenderer)
 
+    await bridge.openOnlineMrSessionLocation?.('20260721_155004_ea78c0')
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(
+      DESKTOP_IPC.openOnlineMrSessionLocation,
+      '20260721_155004_ea78c0',
+    )
+  })
 })

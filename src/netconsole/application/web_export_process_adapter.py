@@ -38,6 +38,7 @@ class WebExportProcessAdapter(LocalProcessAdapter):
         owner: str,
         task_type: str = "",
         public_result: dict[str, object] | None = None,
+        resource_keys: list[str] | None = None,
         on_complete: CompletionCallback | None = None,
     ) -> str:
         if not _SAFE_JOB_ID.fullmatch(job.job_id):
@@ -69,6 +70,8 @@ class WebExportProcessAdapter(LocalProcessAdapter):
                 "owner": owner,
                 "task_source": "local",
                 "_cancel_grace_ms": 3_000,
+                "resource_keys": list(resource_keys or ()),
+                "resource_conflict_message": "当前会话已有解析、报告或删除任务正在执行，请等待任务完成。",
             },
         )
         try:

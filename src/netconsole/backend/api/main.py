@@ -69,6 +69,8 @@ from netconsole.services.rail_transit.base_data_import_service import RailTransi
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
 from netconsole.application.rail_transit.base_data_application_service import RailTransitBaseDataApplicationService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
+from netconsole.services.rail_transit.station_source_discovery_service import StationSourceDiscoveryService
+from netconsole.services.rail_transit.station_template_service import StationTemplateService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
@@ -523,6 +525,14 @@ def create_app(
         paths,
         app.state.rail_transit_base_data_query_service,
         rail_base_data_write_guard,
+    )
+    app.state.rail_transit_station_source_discovery_service = StationSourceDiscoveryService(
+        paths,
+        app.state.rail_transit_base_data_query_service,
+    )
+    app.state.rail_transit_station_template_service = StationTemplateService(
+        paths,
+        app.state.rail_transit_base_data_query_service,
     )
     app.state.rail_transit_import_preview_service = RailTransitImportPreviewService(
         app.state.rail_transit_base_data_query_service,

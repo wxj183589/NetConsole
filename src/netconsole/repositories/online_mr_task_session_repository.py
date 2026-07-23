@@ -192,6 +192,54 @@ class OnlineMrTaskSessionRepository:
 
         run_sqlite_with_retry(operation)
 
+    def delete_session_records(
+        self,
+        session_id: str,
+        *,
+        task_ids: set[str] | None = None,
+        excluded_task_ids: set[str] | None = None,
+    ) -> dict[str, int]:
+        """事务删除一个会话的映射、关联任务快照及级联事件。"""
+
+        if not session_id:
+            raise ValueError("session_id 不能为空")
+        requested = {str(value) for value in (task_ids or set()) if str(value)}
+        excluded = {str(value) for value in (excluded_task_ids or set()) if str(value)}
+        result = {"mapping_records_deleted": 0, "task_records_deleted": 0}
+
+        def operation() -> None:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    SELECT controller_task_id
+                    FROM online_mr_task_sessions
+                    WHERE session_id = ? AND site_id = ?
+                    """,
+                    (session_id, self.site_id),
+                ).fetchall()
+                requested.update(str(row["controller_task_id"]) for row in rows)
+                cursor = conn.execute(
+                    "DELETE FROM online_mr_task_sessions WHERE session_id = ? AND site_id = ?",
+                    (session_id, self.site_id),
+                )
+                result["mapping_records_deleted"] = max(0, int(cursor.rowcount))
+                deletable = sorted(requested - excluded)
+                if deletable:
+                    placeholders = ",".join("?" for _ in deletable)
+                    cursor = conn.execute(
+                        f"""
+                        DELETE FROM task_snapshots
+                        WHERE site_name = ? AND task_id IN ({placeholders})
+                        """,
+                        (self.site_id, *deletable),
+                    )
+                    result["task_records_deleted"] = max(0, int(cursor.rowcount))
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return result
+
     def find_by_task(self, controller_task_id: str) -> OnlineMrTaskSessionMapping | None:
         return self.get_by_task(controller_task_id)
 

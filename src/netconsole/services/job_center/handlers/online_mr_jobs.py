@@ -20,6 +20,7 @@ from netconsole.services.online_mr.application_service import OnlineMrApplicatio
 from netconsole.services.online_mr.collection_models import collection_config_from_payload
 from netconsole.services.online_mr.collection_packager import OnlineMrCollectionPackager
 from netconsole.services.online_mr.collection_service import OnlineMrCollectionService
+from netconsole.services.online_mr.session_lifecycle import OnlineMrSessionLifecycleService
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 
 ONLINE_MR_AGENT_TOKEN_ENV = "NETCONSOLE_JOB_SECRET_ONLINE_MR_AGENT_TOKEN"
@@ -81,6 +82,21 @@ def online_mr_mark_stale_sessions(context: JobContext) -> dict[str, object]:
     finally:
         service.close()
     return {"changed_count": len(changed)}
+
+
+def online_mr_session_delete(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    service = OnlineMrSessionLifecycleService(context.paths)
+    result = service.delete_session(
+        site_id=_required_text(context, "site_id"),
+        session_id=_required_text(context, "session_id"),
+        session_dir=_required_text(context, "session_dir"),
+        artifact_items=list(context.params.get("artifact_items") or []),
+        related_task_ids=list(context.params.get("related_task_ids") or []),
+        current_task_id=context.job_id,
+        progress=context.progress,
+    )
+    return result
 
 
 def online_mr_agent_packages_sync(context: JobContext) -> dict[str, object]:
@@ -196,6 +212,7 @@ HANDLERS = {
         "online_mr_report_export",
         "online_mr_collection_devices_refresh",
         "online_mr_mark_stale_sessions",
+        "online_mr_session_delete",
         "online_mr_collection_start",
         "online_mr_collection_status",
         "online_mr_collection_package",

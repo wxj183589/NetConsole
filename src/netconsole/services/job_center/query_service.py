@@ -384,6 +384,8 @@ class JobCenterQueryService:
             return True, ""
         if owner == AC_WEB_OWNER:
             return True, ""
+        if owner == RAIL_WEB_OWNER and task_type == "online_mr_session_delete":
+            return False, "会话删除进入受控提交后不可停止，请等待任务完成"
         if owner == RAIL_WEB_OWNER:
             return True, ""
         if owner == NETWORK_TOOL_OWNER:

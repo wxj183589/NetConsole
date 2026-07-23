@@ -56,6 +56,9 @@ RAIL_FEATURE_IDS = (
     "web.train_communication_monitoring",
     "web.online_mr_report_export",
     "web.online_mr_parse",
+    "web.online_mr_session_open_location",
+    "web.online_mr_session_delete",
+    "desktop.native_bridge",
     "online_mr.collection_notes",
     "web.mesh_analysis_import",
     "web.mesh_analysis_report_export",
@@ -286,6 +289,151 @@ def test_online_mr_note_and_parse_use_real_session_and_task(tmp_path: Path) -> N
     assert normal.jobs[task.task_id].task_type == "online_mr_parse"
     assert normal.jobs[task.task_id].params["session_dir"] == str(session.resolve())
     assert normal.jobs[task.task_id].params["force_reparse"] is True
+    assert normal.jobs[task.task_id].params["resource_keys"] == [
+        "online_mr_session:demo:session-actions"
+    ]
+
+
+def test_online_mr_location_report_and_delete_share_session_resource(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, export, tasks = _service(paths)
+    session = _online_mr_session(paths, "session-actions")
+    _mark_online_mr_parsed_ready(session, "session-actions")
+    resource_key = "online_mr_session:demo:session-actions"
+
+    location = service.online_mr_desktop_location("demo", "session-actions")
+    assert location == {
+        "target_type": "file",
+        "path": str((session / "raw" / "mesh_link_raw.log").resolve()),
+    }
+    (session / "outputs" / "session-actions.zip").write_bytes(b"package")
+    package_location = service.online_mr_desktop_location("demo", "session-actions")
+    assert package_location == {
+        "target_type": "file",
+        "path": str((session / "outputs" / "session-actions.zip").resolve()),
+    }
+
+    report = service.start_online_mr_report("demo", "session-actions", "")
+    snapshot = tasks.repository("demo").get(report.task_id)
+    assert snapshot is not None
+    assert snapshot.resource_keys == [resource_key]
+    with pytest.raises(RailTransitWebError) as report_conflict:
+        service.start_online_mr_delete(
+            "demo",
+            "session-actions",
+            expected_session_id="session-actions",
+            explicit_confirmation=True,
+        )
+    assert report_conflict.value.code == "ONLINE_MR_SESSION_TASK_ACTIVE"
+
+    report_path = Path(str(export.jobs[report.task_id].output_path))
+    export.complete(report.task_id)
+    (session / "outputs" / "session-actions.zip").unlink()
+    (session / "raw" / "mesh_link_raw.log").unlink()
+    fallback_location = service.online_mr_desktop_location(
+        "demo", "session-actions"
+    )
+    assert fallback_location == {
+        "target_type": "directory",
+        "path": str((session / "raw").resolve()),
+    }
+    artifact = service.artifact_store.online_mr_session_artifacts(
+        "demo",
+        "session-actions",
+        owner=service._OWNER,
+        task_type=service._ARTIFACT_TASK_TYPES["online_mr_report"],
+    )[0]
+    manifest_path = Path(str(artifact["manifest_path"]))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["context"]["session_id"] = "missing-session-with-report"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report_location = service.online_mr_desktop_location(
+        "demo", "missing-session-with-report"
+    )
+    assert report_location == {
+        "target_type": "file",
+        "path": str(report_path.resolve()),
+    }
+    with pytest.raises(RailTransitWebError) as missing_location:
+        service.online_mr_desktop_location("demo", "missing-session")
+    assert missing_location.value.code == "ONLINE_MR_LOCAL_FILES_MISSING"
+
+    manifest["context"]["session_id"] = "session-actions"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    deletion = service.start_online_mr_delete(
+        "demo",
+        "session-actions",
+        expected_session_id="session-actions",
+        explicit_confirmation=True,
+    )
+    job = normal.jobs[deletion.task_id]
+    assert deletion.action == "online_mr_session_delete"
+    assert job.params["resource_keys"] == [resource_key]
+    assert job.params["session_dir"] == str(session.resolve())
+    assert all(
+        Path(str(item["path"])).is_relative_to(paths.online_mr_root("demo"))
+        for item in job.params["artifact_items"]
+    )
+    with pytest.raises(RailTransitWebError) as cancel_rejected:
+        service.cancel_task("demo", deletion.task_id)
+    assert cancel_rejected.value.code == "TASK_NOT_CANCELLABLE"
+
+
+def test_online_mr_session_action_api_rejects_browser_location_and_confirms_delete(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    session = _online_mr_session(paths, "session-api-delete")
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+    normal = FakeLocalProcessAdapter(app.state.task_service)
+    app.state.rail_transit_web_application_service = RailTransitWebApplicationService(
+        paths,
+        app.state.task_service,
+        process_adapter=normal,  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(app.state.task_service),  # type: ignore[arg-type]
+        query_service=app.state.online_mr_query_service,
+        mesh_query_service=app.state.mesh_analysis_query_service,
+    )
+    _enable_features(app)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        browser_location = client.post(
+            "/api/online-mr/sessions/session-api-delete/desktop-location"
+        )
+        mismatch = client.request(
+            "DELETE",
+            "/api/online-mr/sessions/session-api-delete",
+            json={
+                "expected_session_id": "other-session",
+                "explicit_confirmation": True,
+            },
+        )
+        accepted = client.request(
+            "DELETE",
+            "/api/online-mr/sessions/session-api-delete",
+            json={
+                "expected_session_id": "session-api-delete",
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert browser_location.status_code == 403
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["code"] == "CONFIRMATION_REQUIRED"
+    assert accepted.status_code == 202
+    assert accepted.json()["action"] == "online_mr_session_delete"
+    assert str(session.resolve()) not in accepted.text
 
 
 def test_point_table_preview_transform_save_and_task_window_blocker(

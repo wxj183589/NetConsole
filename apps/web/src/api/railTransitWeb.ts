@@ -122,6 +122,19 @@ export function exportMeshAnalysisReport(sessionId: string, override?: MeshAnaly
   })
 }
 
+export function deleteOnlineMrSession(sessionId: string): Promise<RailTransitTask> {
+  return apiRequest<RailTransitTask>(
+    `${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({
+        expected_session_id: sessionId,
+        explicit_confirmation: true,
+      }),
+    },
+  )
+}
+
 export function getRailTransitTask(taskId: string): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/tasks/${encodeURIComponent(taskId)}`)
 }

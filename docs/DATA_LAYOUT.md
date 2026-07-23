@@ -184,6 +184,10 @@ sessions/<session>/
 
 当前标准 Online MR 会话目录没有 `reports/` 或 `packages/`；正式包位于 `outputs/`。`raw/` 和 metadata 是采集事实源，`parsed/online_diagnosis.sqlite` 是报告、历史图表和跨源时间轴的现行查询产物，虽然可由完整 raw 重建，但不能在未确认 raw 完整、重建能力和消费者的情况下当作普通缓存无条件删除。阶段 5B-1 的 `OnlineMrQueryService` 只通过白名单相对引用读取这些内容，不接受任意文件路径，也不创建、迁移或修复数据库 schema。
 
+用户在“车载 MR 收集分析”中显式确认删除历史会话时，`online_mr_session_delete` Job 是唯一允许移除完整 Session 的业务入口。它只接受 Query Service 已解析的正式 Session 和关联 Artifact 清单：先把 `<online_mr>/<mr>/sessions/<session>` 原子移动到同一 Online MR 根下的 `.deleted_sessions/<session>-<random>`，再用一个 `BEGIN IMMEDIATE` 事务删除 `online_mr_task_sessions` 映射与明确关联的 Task/Event，最后清理关联报告清单和隔离目录。数据库失败必须把目录恢复到原位置；报告或文件清理失败保留隔离证据并返回部分成功。`.deleted_sessions` 不是普通缓存，不进入系统维护扫描，后续恢复或清理必须依据删除任务结果。
+
+该入口拒绝正在采集、停止、解析、导出或恢复的 Session，拒绝符号链接、junction、管理根、根外路径和路径穿越；不会删除 Agent 远端包、原始导入 ZIP、仓库外源文件、其他会话或未能明确关联的历史报告。普通自动/手工磁盘清理仍不得触及 Online MR Session。
+
 阶段 5B-7 的 Agent ZIP importer 在当前局点 `files/imports/online_mr/.<import_id>.tmp/` 校验和解压，成功后原子移动到正式 Session；失败时只清理本次 staging，不删除用户源 ZIP 或已有 Session。同一 Session 的重复导入以 `import_manifest.json` 中的源 ZIP SHA-256 判断幂等，哈希不同则冲突且不覆盖。
 
 阶段 5B-8 的 HTTP Client 流式下载到 `files/imports/online_mr/downloads/agent_download_<package_id>_<timestamp>.zip.part`，完成后原子改名为 `.zip`。下载中断、取消或超限会删除 `.part`；成功导入或幂等确认后默认清理下载 ZIP，校验失败或冲突时保留 ZIP 供排查。远端 Agent 包不删除。

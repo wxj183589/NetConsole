@@ -150,6 +150,12 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 当前解析库 schema version 为 `online_mr_business_tables_v9_no_source_fields`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
 
+`/rail-transit/online-mr-analysis` 的会话动作统一位于页面顶部：刷新、解析/强制解析、打开会话位置、生成 XLSX、打开任务窗口和删除会话。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在任务窗口查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
+
+“打开会话位置”是 Electron 专用语义动作。Renderer 只向白名单 IPC 提交稳定 `session_id`，Electron Main 用受管回环 Origin 和内存会话令牌调用固定 FastAPI 端点；Application Service 在 `PathResolver` 管理根内按正式包、MESH/终端 raw、raw 目录、会话目录、parsed、关联报告的顺序解析目标。绝对路径不返回 Renderer，Browser/Server Mode 显式禁用该动作。
+
+“删除会话”使用 `online_mr_session_delete` Background Job，并与同一会话的解析和报告共享 `online_mr_session:<site_id>:<session_id>` 资源键。页面在二次确认中固定展示 MR、会话 ID、开始时间、时长和完整性；后端再次核对稳定 ID、采集/停止状态和活动任务。删除范围只包括该 Session 目录、明确关联的 parsed/cache/报告 Artifact 及 `tasks.db` 中的关联映射/任务记录，不删除 Agent 远端包、用户导入源 ZIP、仓库外文件或其他会话。文件先原子隔离，再事务删除数据库记录；数据库失败会恢复原目录，后续 Artifact 或物理文件清理失败则返回 `PARTIAL_SUCCESS` 和具体失败项。任务开始受控提交后不可取消，避免 Worker 在目录与数据库提交之间被强制终止。符号链接、junction、路径穿越、管理根目录及根外目标全部拒绝。
+
 ## 8. 验证清单
 
 - 单/双 MR 选择、Ping 槽位绑定和手工目标保留；
@@ -161,6 +167,9 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 - 1080p、窄/宽 splitter、输入区折叠恢复；
 - 打包原子替换、失败保留 raw、备注多会话写入；
 - 实时视图、离线解析和报告三条路径不互相越权。
+- 顶部报告动作单次提交、任务窗口查看进度、选择器与当前表格行同步；
+- Electron 打开位置只提交 Session ID，Browser 降级禁用；
+- 删除确认取消不改数据；活动采集/解析/报告拒绝删除；数据库失败恢复、文件失败部分成功；删除后自动选中相邻会话。
 
 ## 9. Windows Agent sidecar 边界
 

@@ -69,7 +69,10 @@ from netconsole.services.mesh_analysis_params_service import (
     save_site_mesh_analysis_params,
 )
 from netconsole.models.mesh_analysis_params import normalize_mesh_analysis_params
+from netconsole.services.online_mr.errors import OnlineMrQueryError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
+from netconsole.services.online_mr.session_lifecycle import online_mr_session_resource_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.car_network_diagnostic import (
     DEFAULT_GLOBAL_CONFIG,
@@ -137,6 +140,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
         "vehicle_mr_online_collection_start": "列车在线连续采集",
         "online_mr_parse": "Online MR 会话解析",
+        "online_mr_session_delete": "删除 Online MR 历史会话",
     }
     _UPLOAD_SUFFIXES = (".log", ".txt", ".log.gz", ".txt.gz")
     _TABLE_SUFFIXES = {".xlsx", ".csv"}
@@ -1253,17 +1257,13 @@ class RailTransitWebApplicationService:
 
     def start_online_mr_report(self, site_id: str, session_id: str, output_name: str = "") -> RailTransitTaskDTO:
         site_id = self._site(site_id)
-        detail = self.query_service.get_session(site_id, session_id)
+        detail, session_dir = self._online_mr_session_dir(site_id, session_id)
         if detail.database_summary.status != "ready":
             raise RailTransitWebError(
                 "PARSE_REQUIRED",
                 detail.database_summary.message or "Online MR 解析数据库尚未就绪，请先解析当前会话",
             )
         root = self.paths.online_mr_root(site_id).resolve()
-        session_dir = (root / detail.session_path_reference).resolve()
-        self._require_within(session_dir, root)
-        if not session_dir.is_dir() or session_dir.is_symlink():
-            raise RailTransitWebError("SESSION_NOT_FOUND", "Online MR 会话不存在")
         task_id = f"rail-export-{uuid4().hex}"
         name = self._report_name(output_name or f"{session_id}_online_mr.xlsx")
         reservation = self.artifact_store.reserve(
@@ -1275,6 +1275,7 @@ class RailTransitWebApplicationService:
             task_type=self._ARTIFACT_TASK_TYPES["online_mr_report"],
             output_root=root / "reports",
             preferred_name=name,
+            context={"kind": "online_mr_session", "session_id": session_id},
         )
         job = online_mr_report_xlsx_spec(
             reservation.output_path,
@@ -1282,7 +1283,13 @@ class RailTransitWebApplicationService:
             title="Online MR 分析报告",
             open_dir_on_success=False,
         ).to_job(task_id)
-        return self._start_export(site_id, replace(job, site_name=site_id), "online_mr_report", reservation)
+        return self._start_export(
+            site_id,
+            replace(job, site_name=site_id),
+            "online_mr_report",
+            reservation,
+            resource_keys=[online_mr_session_resource_key(site_id, session_id)],
+        )
 
     def add_online_mr_note(
         self,
@@ -1350,6 +1357,155 @@ class RailTransitWebApplicationService:
                 "session_dir": str(session_dir),
                 "force_reparse": bool(force_reparse),
                 "audit": {"source": "electron_online_mr", "action": "force_reparse" if force_reparse else "parse"},
+                "resource_keys": [online_mr_session_resource_key(site_id, session_id)],
+                "resource_conflict_message": "当前会话已有解析、报告或删除任务正在执行，请等待任务完成。",
+            },
+        )
+
+    def online_mr_desktop_location(self, site_id: str, session_id: str) -> dict[str, str]:
+        site_id = self._site(site_id)
+        try:
+            _detail, session_dir = self._online_mr_session_dir(site_id, session_id)
+        except RailTransitWebError as exc:
+            if exc.code == "SESSION_NOT_FOUND":
+                report_location = self._online_mr_report_location(site_id, session_id)
+                if report_location is not None:
+                    return report_location
+                raise RailTransitWebError(
+                    "ONLINE_MR_LOCAL_FILES_MISSING",
+                    "该会话的本地文件已不存在。",
+                ) from exc
+            raise
+        root = self.paths.online_mr_root(site_id).resolve()
+        paths = OnlineMrCollectionPaths.from_session_dir(session_dir)
+        preferred_files = [
+            paths.package_path,
+            paths.raw_dir / "mesh_link_raw.log",
+            paths.raw_dir / "terminal_monitor_raw.log",
+            paths.raw_dir / "collector_output_raw.log",
+        ]
+        for candidate in preferred_files:
+            resolved = candidate.resolve(strict=False)
+            self._require_within(resolved, root)
+            if candidate.is_file() and not candidate.is_symlink():
+                return {"target_type": "file", "path": str(resolved)}
+        raw_dir = paths.raw_dir.resolve(strict=False)
+        self._require_within(raw_dir, root)
+        if raw_dir.is_dir() and not raw_dir.is_symlink():
+            return {"target_type": "directory", "path": str(raw_dir)}
+        if session_dir.is_dir() and not session_dir.is_symlink():
+            return {"target_type": "directory", "path": str(session_dir)}
+        parsed = (session_dir / "parsed").resolve(strict=False)
+        if parsed.is_dir() and not parsed.is_symlink():
+            return {"target_type": "directory", "path": str(parsed)}
+        report_location = self._online_mr_report_location(site_id, session_id)
+        if report_location is not None:
+            return report_location
+        raise RailTransitWebError(
+            "ONLINE_MR_LOCAL_FILES_MISSING",
+            "该会话的本地文件已不存在。",
+        )
+
+    def _online_mr_report_location(
+        self,
+        site_id: str,
+        session_id: str,
+    ) -> dict[str, str] | None:
+        reports = self.artifact_store.online_mr_session_artifacts(
+            site_id,
+            session_id,
+            owner=self._OWNER,
+            task_type=self._ARTIFACT_TASK_TYPES["online_mr_report"],
+        )
+        for item in reports:
+            candidate = Path(str(item.get("path") or ""))
+            if candidate.is_file() and not candidate.is_symlink():
+                return {"target_type": "file", "path": str(candidate.resolve())}
+            parent = candidate.parent
+            if parent.is_dir() and not parent.is_symlink():
+                return {"target_type": "directory", "path": str(parent.resolve())}
+        return None
+
+    def start_online_mr_delete(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        expected_session_id: str,
+        explicit_confirmation: bool,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation or expected_session_id != session_id:
+            raise RailTransitWebError(
+                "CONFIRMATION_REQUIRED",
+                "删除目标已变化，请重新选择会话并确认。",
+            )
+        detail, session_dir = self._online_mr_session_dir(site_id, session_id)
+        active_session_states = {
+            "CREATED",
+            "CONNECTING",
+            "INITIALIZING",
+            "COLLECTING",
+            "RECONNECTING",
+            "STARTING",
+            "RUNNING",
+            "STOPPING",
+        }
+        active_task_states = {
+            TaskState.PENDING.value,
+            TaskState.STARTING.value,
+            TaskState.RUNNING.value,
+            TaskState.STOPPING.value,
+        }
+        if (
+            str(detail.status or "").upper() in active_session_states
+            or str(detail.task_status or "").upper() in active_task_states
+            or str(detail.mapping_state or "").upper() in {"PENDING_SESSION", "LINKED"}
+        ):
+            raise RailTransitWebError(
+                "ONLINE_MR_SESSION_RUNNING",
+                "当前会话仍在采集或停止处理中，请先停止并等待任务完成。",
+            )
+        resource_key = online_mr_session_resource_key(site_id, session_id)
+        artifacts = self.artifact_store.online_mr_session_artifacts(
+            site_id,
+            session_id,
+            owner=self._OWNER,
+            task_type=self._ARTIFACT_TASK_TYPES["online_mr_report"],
+        )
+        related_task_ids = {
+            str(detail.controller_task_id or ""),
+            *(str(item.get("task_id") or "") for item in artifacts),
+        }
+        repository = self.task_service.repository(site_id)
+        active = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
+        for snapshot in repository.list_filtered(
+            statuses=active,
+            site_name=site_id,
+            limit=1000,
+        ):
+            if resource_key in snapshot.resource_keys or snapshot.task_id in related_task_ids:
+                raise RailTransitWebError(
+                    "ONLINE_MR_SESSION_TASK_ACTIVE",
+                    "当前会话仍有关联解析、导出或恢复任务正在执行，请等待任务完成。",
+                )
+        related_task_ids.update(
+            snapshot.task_id
+            for snapshot in repository.list_filtered(site_name=site_id, limit=1000)
+            if resource_key in snapshot.resource_keys
+        )
+        return self._start_task(
+            site_id,
+            "online_mr_session_delete",
+            {
+                "site_id": site_id,
+                "session_id": session_id,
+                "session_dir": str(session_dir),
+                "artifact_items": artifacts,
+                "related_task_ids": sorted(value for value in related_task_ids if value),
+                "resource_keys": [resource_key],
+                "resource_conflict_message": "当前会话已有解析、报告或删除任务正在执行，请等待任务完成。",
+                "audit": {"source": "electron_online_mr", "action": "delete_session"},
             },
         )
 
@@ -1522,6 +1678,14 @@ class RailTransitWebApplicationService:
     def cancel_task(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         snapshot = self._snapshot(site_id, task_id)
+        if (
+            snapshot.task_type == "online_mr_session_delete"
+            and snapshot.status not in TERMINAL_TASK_STATES
+        ):
+            raise RailTransitWebError(
+                "TASK_NOT_CANCELLABLE",
+                "会话删除进入受控提交后不可停止，请等待任务完成。",
+            )
         if snapshot.status not in TERMINAL_TASK_STATES:
             cancelled = self.process_adapter.cancel_job(task_id) or self.export_adapter.cancel_job(task_id)
             if not cancelled:
@@ -1679,6 +1843,8 @@ class RailTransitWebApplicationService:
         job: ExportJob,
         action: str,
         reservation: ReservedWebArtifact,
+        *,
+        resource_keys: list[str] | None = None,
     ) -> RailTransitTaskDTO:
         def completed(value: LocalProcessCompletion) -> None:
             if value.exit_code == 0 and not value.cancelled:
@@ -1700,6 +1866,7 @@ class RailTransitWebApplicationService:
                     "artifact_source": reservation.source,
                     "artifact_type": reservation.artifact_type,
                 },
+                resource_keys=resource_keys,
                 on_complete=completed,
             )
         except Exception:
@@ -1764,6 +1931,9 @@ class RailTransitWebApplicationService:
             "candidate_ap_interface_count", "current_lldp_port_count", "preserved_lldp_port_count",
             "concurrency", "requested_concurrency", "effective_concurrency",
             "platform_concurrency_limit", "fit_ap_effective_concurrency",
+            "session_deleted", "parsed_data_deleted", "artifacts_deleted",
+            "managed_files_deleted", "artifact_count", "mapping_records_deleted",
+            "task_records_deleted", "error_code", "error_message",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):
@@ -1778,6 +1948,10 @@ class RailTransitWebApplicationService:
         created_session_ids = result.get("created_session_ids")
         if isinstance(created_session_ids, list) and all(isinstance(item, str) for item in created_session_ids):
             summary["created_session_ids"] = created_session_ids
+        for key in ("warnings", "failed_items"):
+            values = result.get(key)
+            if isinstance(values, list) and all(isinstance(item, str) for item in values):
+                summary[key] = values[:20]
         return summary
 
     def _open_artifact(
@@ -1954,7 +2128,10 @@ class RailTransitWebApplicationService:
             pass
 
     def _online_mr_session_dir(self, site_id: str, session_id: str):
-        detail = self.query_service.get_session(site_id, session_id)
+        try:
+            detail = self.query_service.get_session(site_id, session_id)
+        except OnlineMrQueryError as exc:
+            raise RailTransitWebError("SESSION_NOT_FOUND", str(exc)) from exc
         root = self.paths.online_mr_root(site_id).resolve()
         candidate = root / detail.session_path_reference
         if candidate.is_symlink():

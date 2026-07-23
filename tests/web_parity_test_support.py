@@ -68,6 +68,7 @@ class FakeExportProcessAdapter:
         task_name: str,
         owner: str,
         public_result: dict[str, object] | None = None,
+        resource_keys: list[str] | None = None,
         on_complete=None,
     ) -> str:
         self.jobs[job.job_id] = job
@@ -82,6 +83,7 @@ class FakeExportProcessAdapter:
                     "owner": owner,
                     "task_source": "local",
                     "public_result": dict(public_result or {}),
+                    "resource_keys": list(resource_keys or ()),
                 },
             )
         )

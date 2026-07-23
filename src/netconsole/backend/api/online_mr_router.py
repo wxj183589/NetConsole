@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.common import ApiResponse
 from netconsole.models.api.online_mr import (
     OnlineMrCollectorStatusDTO,
@@ -27,6 +28,8 @@ from netconsole.models.api.online_mr import (
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.models.api.rail_transit_web import (
     OnlineMrNoteCreateRequestDTO,
+    OnlineMrDeleteRequestDTO,
+    OnlineMrDesktopLocationDTO,
     OnlineMrParseRequestDTO,
     OnlineMrReportRequestDTO,
     RailTransitTaskDTO,
@@ -46,6 +49,17 @@ def _rail_service(request: Request) -> RailTransitWebApplicationService:
     if service is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="轨交 Web 服务未接线")
     return service
+
+
+def _desktop(request: Request) -> None:
+    if (
+        request.app.state.runtime_mode is not RuntimeMode.DESKTOP
+        or request.url.hostname != "127.0.0.1"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该功能仅在 NetConsole Electron 桌面端可用。",
+        )
 
 
 @router.get("/sessions/current", response_model=ApiResponse[OnlineMrSessionDetailDTO | None])
@@ -296,6 +310,55 @@ def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO)
 
 
 @router.post(
+    "/sessions/{session_id}/desktop-location",
+    response_model=OnlineMrDesktopLocationDTO,
+    dependencies=[
+        Depends(_desktop),
+        Depends(require_feature("desktop.native_bridge")),
+        Depends(require_feature("web.online_mr_session_open_location")),
+    ],
+)
+def desktop_location(
+    request: Request,
+    session_id: str,
+) -> OnlineMrDesktopLocationDTO:
+    try:
+        return OnlineMrDesktopLocationDTO.model_validate(
+            _rail_service(request).online_mr_desktop_location(
+                _facade(request).current_site_id(),
+                session_id,
+            )
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.online_mr_session_delete")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def delete_session(
+    request: Request,
+    session_id: str,
+    payload: OnlineMrDeleteRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_online_mr_delete(
+            _facade(request).current_site_id(),
+            session_id,
+            expected_session_id=payload.expected_session_id,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.post(
     "/mesh-analysis/import",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
@@ -393,8 +456,27 @@ def task_recover(request: Request) -> list[RailTransitTaskDTO]:
 
 
 def _raise_rail_error(exc: RailTransitWebError) -> None:
-    not_found = {"TASK_NOT_FOUND", "SESSION_NOT_FOUND", "RAW_DATA_NOT_FOUND", "MESH_SESSION_NOT_FOUND", "MESH_RESULT_NOT_FOUND", "ARTIFACT_INVALID"}
-    status_code = status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
+    not_found = {
+        "TASK_NOT_FOUND",
+        "SESSION_NOT_FOUND",
+        "RAW_DATA_NOT_FOUND",
+        "MESH_SESSION_NOT_FOUND",
+        "MESH_RESULT_NOT_FOUND",
+        "ARTIFACT_INVALID",
+        "ONLINE_MR_LOCAL_FILES_MISSING",
+    }
+    conflicts = {
+        "ONLINE_MR_SESSION_RUNNING",
+        "ONLINE_MR_SESSION_TASK_ACTIVE",
+        "TASK_RESOURCE_BUSY",
+    }
+    status_code = (
+        status.HTTP_404_NOT_FOUND
+        if exc.code in not_found
+        else status.HTTP_409_CONFLICT
+        if exc.code in conflicts
+        else status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
