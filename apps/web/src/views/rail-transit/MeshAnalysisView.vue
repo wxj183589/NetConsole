@@ -1501,11 +1501,21 @@ function buildResultLabel(value: string): string {
           </div>
           <h3 class="chart-section-title">轨旁信号图</h3>
           <el-alert v-if="tracksideSignal?.warnings?.length" :title="tracksideSignal.warnings.join('；')" type="warning" :closable="false" show-icon />
+          <div v-if="tracksideSignal" class="mini-summary">
+            <span>采样时刻 <strong>{{ tracksideSignal.returned_frames }} / {{ tracksideSignal.total_frames }}</strong></span>
+            <span>ACTIVE 链路点 <strong>{{ tracksideSignal.returned_active_link_points }} / {{ tracksideSignal.active_link_points }}</strong></span>
+            <span>STANDBY 链路点 <strong>{{ tracksideSignal.returned_standby_link_points }} / {{ tracksideSignal.standby_link_points }}</strong></span>
+            <span>总链路点 <strong>{{ tracksideSignal.returned_link_points }} / {{ tracksideSignal.total_link_points }}</strong></span>
+            <span>AP/Radio 序列 <strong>{{ tracksideSignal.returned_series }} / {{ tracksideSignal.total_series }}</strong></span>
+            <span>链路存在区段 <strong>{{ tracksideSignal.total_link_runs }}</strong></span>
+            <span>角色切换 <strong>{{ tracksideSignal.role_switch_count }}</strong></span>
+            <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
+          </div>
           <div ref="tracksideChartHost" class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
             <MeshTracksideSignalChart :series="tracksideSignal?.series || []" :events="tracksideSignal?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-location-band="showLocationBand" :active="activeTab === 'rssi' && tracksideChartVisible" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 AP / Peer / Radio 分组，使用 Peer 侧 RSSI 字段并按 series 独立降采样。</p>
+          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 Peer Radio MAC / AP MAC / Peer MAC + 本地 Radio 建立稳定物理序列，ACTIVE 与 STANDBY 是点级角色；目标点数表示目标采样时刻，保留某个时刻时会返回该 frame 的全部有效链路。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">

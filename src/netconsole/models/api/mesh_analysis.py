@@ -497,7 +497,7 @@ class MeshTracksideSignalPointDTO(ApiModel):
     link_id: int | None = None
     sample_id: int | None = None
     local_radio: int | None = None
-    role: Literal["ACTIVE"] = "ACTIVE"
+    role: Literal["ACTIVE", "STANDBY"]
     peer_mac: str | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
@@ -524,10 +524,11 @@ class MeshTracksideSignalSeriesDTO(ApiModel):
     peer_name: str | None = None
     peer_mac: str | None = None
     ap_mac: str | None = None
+    peer_radio_mac: str | None = None
     radio: int | None = None
     station: str | None = None
     section: str | None = None
-    role: Literal["ACTIVE"] = "ACTIVE"
+    roles_present: list[Literal["ACTIVE", "STANDBY"]] = Field(default_factory=list)
     data_source: str = "peer_rssi_db"
     total_points: int = 0
     returned_points: int = 0
@@ -550,13 +551,30 @@ class MeshTracksideSignalChartDTO(ApiModel):
     continuity_gap_seconds: float | None = None
     total_series: int = 0
     returned_series: int = 0
+    total_frames: int = 0
+    returned_frames: int = 0
+    total_link_points: int = 0
+    returned_link_points: int = 0
+    total_link_runs: int = 0
+    active_link_points: int = 0
+    standby_link_points: int = 0
+    returned_active_link_points: int = 0
+    returned_standby_link_points: int = 0
+    role_switch_count: int = 0
+    skipped_missing_signal_points: int = 0
+    skipped_missing_identity_points: int = 0
     total_points: int = 0
     returned_points: int = 0
     downsampled: bool = False
+    requested_max_frames: int = 0
+    effective_max_frames: int = 0
     requested_max_points: int = 0
     effective_max_points: int = 0
     top_n: int = 0
-    include_standby: bool = False
+    included_roles: list[Literal["ACTIVE", "STANDBY"]] = Field(
+        default_factory=lambda: ["ACTIVE", "STANDBY"]
+    )
+    include_standby: bool = True
 
 
 class MeshLinkTimelineDTO(ApiModel):

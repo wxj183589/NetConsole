@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocation,
+    MeshApLocationService,
     MeshApLocationSnapshot,
 )
 
@@ -97,3 +98,22 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
         mileage="K12+300",
         line_side="上行",
     )
+
+
+def test_location_service_prefers_the_unpaged_location_source() -> None:
+    item = SimpleNamespace(
+        name="AP-05",
+        mac="0000-0000-0050",
+        station="车站E",
+        section="",
+        mileage=SimpleNamespace(raw=""),
+        line_side="下行",
+    )
+
+    class Query:
+        list_ap_location_items = staticmethod(lambda _site_id: [item])
+        list_aps = staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError))
+
+    snapshot = MeshApLocationService(Query()).snapshot("demo")  # type: ignore[arg-type]
+
+    assert snapshot.resolve({"peer_ap_mac": "000000000050"}).station == "车站E"

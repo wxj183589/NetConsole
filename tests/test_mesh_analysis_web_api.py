@@ -70,6 +70,15 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert active_chart["requested_max_points"] == 10
     assert active_chart["effective_max_points"] == 10
     assert active_chart["downsample_warning"] is None
+    trackside_chart = responses[6].json()
+    assert trackside_chart["included_roles"] == ["ACTIVE", "STANDBY"]
+    assert trackside_chart["include_standby"] is True
+    assert trackside_chart["total_frames"] >= trackside_chart["returned_frames"]
+    assert trackside_chart["total_link_points"] == (
+        trackside_chart["active_link_points"] + trackside_chart["standby_link_points"]
+    )
+    assert trackside_chart["returned_link_points"] == trackside_chart["returned_points"]
+    assert trackside_chart["requested_max_frames"] == trackside_chart["requested_max_points"] == 10
     returned_points = {
         (point["timestamp"], point["link_id"], point["timestamp_tag"], point["local_radio"]): point["local_rssi"]
         for point in active_chart["points"]

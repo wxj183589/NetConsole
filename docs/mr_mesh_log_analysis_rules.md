@@ -71,8 +71,9 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
 - 主链 RSSI/Busy 图按时间窗口和 Radio 查询，默认按请求目标点数降采样，硬上限为 2,000 点。服务端保留首尾、有效切换/异常/无 ACTIVE 断点和极值；有效切换锚点超过请求目标时自动提高本次有效点数，超过硬上限才按时间均匀抽样切换锚点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数和必要的 `downsample_warning`。
-- 轨旁信号图只展示 ACTIVE 主链路在轨旁侧观测到的 RSSI 多序列，按 AP/MAC + Radio 分组，优先使用 `peer_rssi_db`，缺失时回退 `peer_signal_dbm`，不合并为 STANDBY/MIXED，也不再按序列热度截断到前 N 组；轨旁图事件默认为空，只保留轨旁数据自身的点预算与断点。
-- 轨旁信号图的 `max_points` 是目标点数，不是 2,000 点硬上限。后端先按每个 Radio 的 ACTIVE peer 时间轴建立 `run_id/run_sequence`：来源、Radio、ACTIVE Peer/AP、结构化区段或连续性大间隙变化才开启新 run；不同 Radio 或其他 AP 的交错记录不得让当前序列断线。降采样按 ACTIVE run 独立执行，每个多点 run 至少保留首尾点，并优先保留轨旁 RSSI 极小/极大点；当必要点超过目标点数时提升 `effective_max_points`，不能删除整个 AP 序列或把多点 run 压成单点。
+- 轨旁信号图的业务语义是 Trackside Link RSSI（轨旁链路 RSSI）：每个采样帧同时展示真实 `ACTIVE` 主链和 `STANDBY` 备链在轨旁侧观测到的信号。结构化 `run_segment.rows` 是首选来源；旧结果仅在缺少结构化 STANDBY 行时使用真实 `standby_links_by_index/backups` 回退并按帧和物理身份去重，不从 ACTIVE 猜测备链。轨旁值优先读取 `peer_rssi_db`，缺失时回退 `peer_signal_dbm`，两者都缺失则跳过并计数，禁止使用 MR 侧字段代替。
+- 轨旁物理序列身份依次使用 `peer_radio_mac`、`peer_ap_mac`、规范化 `peer_mac`、规范化 AP 名称，再与本地 Radio 组成 `series_key`。`ACTIVE/STANDBY` 是点属性；角色变化不拆图例、不换色、不开始新 run。来源、Radio、Peer Radio/物理身份变化、链路在有效采样帧中消失、连续性大间隙或明确日志缺口才开始新的链路存在区段，前端仅在新区段前插入空值断线。
+- 轨旁接口的 `max_points` 表示目标采样时刻数，兼容字段 `requested_max_points/effective_max_points` 与新的 `requested_max_frames/effective_max_frames` 同值，不是链路点硬上限。后端先按 `(source_file_id, sample_time, timestamp_tag, local_radio)` 建帧，再选择首末、序列/区段边界、角色/主链切换、异常、缺口前后和区段 RSSI 极值等关键帧；一旦选中某帧，必须返回该帧全部有效主备链路。DTO 分别报告 frame、链路点、序列和链路存在区段数量，关键帧超过请求目标时提高有效 frame 预算，不截断整条 AP 序列或同帧链路。
 - 单 AP 选择以正式建链顺序区段为边界；同一 AP 的全部经过时段可以合并显示，但 run 切换强制插入空值断线，不跨经过时段连线。
 - 链路明细导出进入独立 Export Process，并以只读 Repository 打开 compact v3 派生库；导出阶段不得初始化 schema、写回解析结果或触发 WAL/checkpoint。
 - ACTIVE/STANDBY 主链图 Tooltip 的备链按来源、采样时间、`timestamp_tag` 和 Radio 严格匹配；“MR / 轨旁 AP 接收信号”按业务展示要求只读取 compact v3 的 `local_rssi_db / peer_rssi_db` 差值，不得回退 `local_signal_dbm / peer_signal_dbm`。主链、备链和可选切换事件使用一个 Tooltip 与主题分隔线；原始 MESH 页面不展示不可靠的切换耗时和事件类型。图表切换事件仍携带前后 AP 与区段序号，点击可定位建链顺序。
@@ -83,10 +84,10 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - MR/源文件切换使用防抖、懒加载和 repository 缓存，避免重复解析和重复查询。
 - RSSI 与空口负载使用独立响应和视口状态。全部 ACTIVE 主链 RSSI 与轨旁信号图由父级维护唯一的完整日志时间域、绝对毫秒 viewport、来源和 revision；完整时间域优先使用会话 `first_sample_time/last_sample_time`，两个图的 `xAxis.min/max` 和 `dataZoom startValue/endValue` 完全相同，不按各自采样点吸附。用户缩放只产生一次父级状态变更，镜像图以静默 `dispatchAction(dataZoom)` 应用相同 revision，不反向回写；重置、建链顺序、链路明细和切换定位统一更新该 viewport。两图还共享绝对 axis pointer 时间；当前时刻没有本图采样时明确显示无有效采样，不跳到另一采样时刻。
 - Online MR 主链图、离线 ACTIVE 主链图和轨旁信号图复用 `apps/web/src/components/charts/multiSeriesTimeChart.ts` 的 Canvas 初始化、图例、网格、坐标轴、dataZoom、toolbox、Tooltip 基础样式和大数据符号策略。ECharts 显式使用 Canvas `useDirtyRect`；普通数据保留系统 DPR，5,000 点以上上限 1.5，20,000 点以上上限 1.0，图片导出仍使用 pixel ratio 2。Electron 不关闭 Chromium 硬件加速；开发模式只记录 `app.getGPUFeatureStatus()` 的 feature 状态，读取失败时继续软件渲染且不阻止启动。
-- 轨旁 payload 到达时只校验一次序列顺序并建立非深度响应式缓存；viewport、位置带、主题和 resize 复用原 series data，dataZoom 不执行完整 `setOption`，不再重复复制或排序全部 AP 序列。5,000 点以上关闭 animation、symbol、emphasis、每点 label、切换 scatter 和大量 markLine；轨旁图接近可视区域时才初始化 ECharts，但数据请求仍提前完成，初始化后立即应用当前共享 viewport。AP/Radio 系列颜色使用规范化 AP MAC + Radio 稳定计算。
+- 轨旁 payload 到达时只校验一次序列顺序并建立非深度响应式缓存；viewport、位置带、主题和 resize 复用原 series data，dataZoom 不执行完整 `setOption`，不再重复复制或排序全部 AP 序列。小数据下 ACTIVE 使用实心圆、STANDBY 使用空心圆；5,000 点以上关闭 animation、symbol、emphasis、每点 label、切换 scatter 和大量 markLine。轨旁图接近可视区域时才初始化 ECharts，但数据请求仍提前完成，初始化后立即应用当前共享 viewport。系列颜色使用 Peer Radio MAC、AP MAC、Peer MAC、序列身份与 Radio 的稳定优先级计算，不含点角色。
 - Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
 - `active-path` 和 `trackside-signal` 的 RSSI 请求始终读取当前 Radio 的完整日志范围；建链顺序、链路明细、切换定位和图表拖动只改变前端共享 viewport，不把该 viewport 作为 `time_from/time_to` 重新裁剪 RSSI API。锁定范围后的同期空口负载查询仍保留既有 `time_from/time_to` 语义。
-- 固定规模转换回归由 `tracksideSeriesPerformance.test.ts` 覆盖 140 个序列、14,581 点和 6,264 个 run；真实 Chromium Canvas 的 option 构建、首次 `setOption`、首次可交互、dataZoom、resize、主题更新、long task、heap 和 GPU feature status 可在 `apps/desktop_electron` 运行 `pnpm run profile:mesh-chart` 复验。该 smoke 使用隐藏窗口和脱敏合成序列，不访问现场日志或设备。
+- 固定规模转换回归由 `tracksideSeriesPerformance.test.ts` 覆盖 140 个主备混合序列、14,581 个链路点和 6,264 个链路存在区段；真实 Chromium Canvas 的 option 构建、首次 `setOption`、首次可交互、dataZoom、resize、主题更新、long task、heap 和 GPU feature status 可在 `apps/desktop_electron` 运行 `pnpm run profile:mesh-chart` 复验。需要复验更大真实统计量级时，可仅为该命令设置 `NETCONSOLE_MESH_PROFILE_SERIES_COUNT` 与 `NETCONSOLE_MESH_PROFILE_POINT_COUNT`；默认基线不变。该 smoke 使用隐藏窗口和脱敏合成序列，不访问现场日志或设备。
 - 锁定 RSSI 后进入空口负载，必须使用相同来源、Radio、ACTIVE/Peer 模式、锚点、全部经过标记和 `time_from/time_to` 重新查询，不得只筛选前端降采样数组。响应分别报告 requested、effective、首末实际采样、范围内总点数和返回点数；无 Busy 样本时不扩大范围或伪造 `0`。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
 

@@ -20,6 +20,7 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     stations = service.list_stations("demo")
     sections = service.list_sections("demo")
     aps = service.list_aps("demo", page=1, page_size=2, sort_by="mileage")
+    ap_locations = service.list_ap_location_items("demo")
     mrs = service.list_mrs("demo")
     trains = service.list_trains("demo")
     issues = service.list_issues("demo", page_size=200)
@@ -33,6 +34,10 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert sections.total == 3
     assert aps.total == 3
     assert len(aps.items) == 2
+    assert len(ap_locations) == 3
+    assert {item.name for item in ap_locations} == {
+        item.name for item in service.list_aps("demo", page_size=200).items
+    }
     assert any(not item.station and item.section == "A-B 区间" for item in service.list_aps("demo", page_size=200).items)
     assert [item.role for item in mrs.items] == ["CT", "CW"]
     assert trains.items[0].mr_count == 2

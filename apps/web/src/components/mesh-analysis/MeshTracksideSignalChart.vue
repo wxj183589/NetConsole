@@ -124,6 +124,15 @@ function pointLabel(point: MeshTracksideSignalPointData): string {
   return point.peer_ap_name || point.peer_mac || '轨旁 AP 未知'
 }
 
+function tracksideColorKey(series: MeshTracksideSignalSeriesData): string {
+  if (!series.peer_radio_mac && !series.ap_mac && !series.peer_mac) return series.series_id
+  return normalizedApRadioColorKey(
+    series.peer_radio_mac || series.ap_mac,
+    series.peer_mac,
+    series.radio,
+  )
+}
+
 function rebuildSeriesCache(): void {
   const rawSeries = toRaw(props.series).map((item) => ({
     ...toRaw(item),
@@ -181,12 +190,15 @@ function buildTooltipPointSection(point: RenderedSignalPoint, index: number): st
     `采样时间：${escapeMeshTooltipHtml(point.value[0])}`,
     `轨旁 AP：${escapeMeshTooltipHtml(pointLabel(meta))}`,
     `AP MAC：${escapeMeshTooltipHtml(meta.peer_ap_mac || series.ap_mac)}`,
+    `Peer MAC：${escapeMeshTooltipHtml(meta.peer_mac)}`,
+    `Peer Radio MAC：${escapeMeshTooltipHtml(meta.peer_radio_mac)}`,
+    `Radio：${metric(meta.local_radio)}`,
+    `链路角色：${escapeMeshTooltipHtml(meta.role)}`,
     `轨旁侧 RSSI：${metric(point.value[1])}`,
     `MR 侧 RSSI（参考）：${metric(meta.local_rssi)}`,
     `Peer Signal / MR Signal：${metric(meta.peer_signal)} / ${metric(meta.local_signal)}`,
     `站点 / 区间：${escapeMeshTooltipHtml(meta.station)} / ${escapeMeshTooltipHtml(meta.section)}`,
-    '链路状态：ACTIVE',
-    `建链持续时间：${metric(meta.segment_duration_seconds, ' s')}`,
+    ...(meta.segment_duration_seconds == null ? [] : [`主链建链持续时间：${metric(meta.segment_duration_seconds, ' s')}`]),
     `数据来源：${escapeMeshTooltipHtml(meta.data_source)}`,
   ].join('<br>')
 }
@@ -472,7 +484,7 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
   return [
     ...seriesCache.series.map((item) => {
       const color = stableTimeChartSeriesColor(
-        normalizedApRadioColorKey(item.meta.ap_mac, item.meta.peer_mac, item.meta.radio),
+        tracksideColorKey(item.meta),
         theme.series,
       )
       return {
@@ -525,7 +537,12 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         if (!key || seen.has(key)) return []
         seen.add(key)
         return [point]
-      }).slice(0, 8)
+      }).sort((left, right) => {
+        const role = (left.meta?.role === 'ACTIVE' ? 0 : 1) - (right.meta?.role === 'ACTIVE' ? 0 : 1)
+        if (role) return role
+        return pointLabel(left.meta!).localeCompare(pointLabel(right.meta!), 'zh-CN')
+          || String(left.meta?.peer_mac || '').localeCompare(String(right.meta?.peer_mac || ''))
+      })
       return buildTooltip(pointItems, event, pointerTime)
     },
   }
@@ -539,7 +556,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
       series: seriesCache.series.map((item) => {
         const color = stableTimeChartSeriesColor(
-          normalizedApRadioColorKey(item.meta.ap_mac, item.meta.peer_mac, item.meta.radio),
+          tracksideColorKey(item.meta),
           theme.series,
         )
         return { id: item.id, itemStyle: { color }, lineStyle: { color, width: 2 } }

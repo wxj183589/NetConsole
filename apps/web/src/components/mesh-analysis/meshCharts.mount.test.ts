@@ -97,10 +97,11 @@ const tracksideSeries: MeshTracksideSignalSeriesData[] = [{
   peer_name: 'AP-1',
   peer_mac: 'peer-1',
   ap_mac: 'ap-1',
+  peer_radio_mac: null,
   radio: 1,
   station: '站点一',
   section: '区间一',
-  role: 'ACTIVE',
+  roles_present: ['ACTIVE'],
   data_source: 'peer_rssi_db',
   total_points: 1,
   returned_points: 1,
@@ -110,10 +111,11 @@ const tracksideSeries: MeshTracksideSignalSeriesData[] = [{
   peer_name: 'AP-2',
   peer_mac: 'peer-2',
   ap_mac: 'ap-2',
+  peer_radio_mac: null,
   radio: 1,
   station: '站点一',
   section: '区间一',
-  role: 'ACTIVE',
+  roles_present: ['ACTIVE'],
   data_source: 'peer_rssi_db',
   total_points: 1,
   returned_points: 1,
@@ -171,7 +173,7 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
   })
 
-  it('renders the trackside signal chart as active peer RSSI lines without default switch markers', async () => {
+  it('renders the trackside link RSSI chart without default switch markers', async () => {
     const wrapper = mount(MeshTracksideSignalChart, {
       props: {
         series: tracksideSeries,
@@ -204,7 +206,7 @@ describe('MESH charts mount and render', () => {
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
     expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('轨旁侧 RSSI：-45')
-    expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('链路状态：ACTIVE')
+    expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('链路角色：ACTIVE')
     const dedupedTooltip = option.tooltip.formatter([
       { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } },
       { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0], meshEvent: chartEvent } },
@@ -225,7 +227,7 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps a trackside series connected when delayed samples still belong to the same ACTIVE run', async () => {
+  it('keeps a trackside series connected when delayed samples still belong to the same link run', async () => {
     const nextPoint = {
       ...tracksideChartPoint,
       timestamp: '2026-07-20T10:00:30.123Z',
@@ -254,7 +256,7 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
-  it('breaks a trackside series when a repeated AP starts a new ACTIVE run', async () => {
+  it('breaks a trackside series when a repeated AP starts a new link run', async () => {
     const firstPoint = {
       ...tracksideChartPoint,
       run_id: 'run-1',
@@ -382,6 +384,130 @@ describe('MESH charts mount and render', () => {
     }
     expect(option.series[0].data?.[0]?.value).toEqual([fallbackPoint.timestamp, -55])
     expect(option.series[0].data?.[0]?.value[1]).not.toBe(-40)
+
+    wrapper.unmount()
+  })
+
+  it('keeps ACTIVE and STANDBY role changes in one legend and one color', async () => {
+    const points: MeshTracksideSignalPointData[] = [
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:00.000Z', role: 'ACTIVE', run_id: 'link-run-1', run_sequence: 1 },
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:01.000Z', role: 'STANDBY', run_id: 'link-run-1', run_sequence: 1 },
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:02.000Z', role: 'ACTIVE', run_id: 'link-run-1', run_sequence: 1 },
+    ]
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{
+          ...tracksideSeries[0],
+          roles_present: ['ACTIVE', 'STANDBY'],
+          total_points: points.length,
+          returned_points: points.length,
+          points,
+        }],
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        name: string
+        type: string
+        itemStyle: { color: string }
+        data: Array<{ value: [string, number | null]; symbol?: string }>
+      }>
+    }
+    expect(option.series).toHaveLength(1)
+    expect(option.series[0].name).toBe('AP-1 · Radio 1')
+    expect(option.series[0].name).not.toMatch(/ACTIVE|STANDBY|MIXED/)
+    expect(option.series[0].type).toBe('line')
+    expect(option.series[0].itemStyle.color).toBeTruthy()
+    expect(option.series[0].data.map((item) => item.value[1])).toEqual([-45, -45, -45])
+    expect(option.series[0].data.map((item) => item.symbol)).toEqual(['circle', 'emptyCircle', 'circle'])
+    expect(option.series[0].data.every((item) => item.value[1] !== null)).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('shows every ACTIVE and STANDBY link in one frame tooltip in role and AP order', async () => {
+    const frameTime = '2026-07-20T10:05:00.000Z'
+    const framePoints: MeshTracksideSignalPointData[] = [
+      { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-A', peer_mac: 'peer-a', peer_ap_mac: 'ap-a', peer_radio_mac: 'radio-a', role: 'ACTIVE' },
+      { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-D', peer_mac: 'peer-d', peer_ap_mac: 'ap-d', peer_radio_mac: 'radio-d', role: 'STANDBY' },
+      { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-B', peer_mac: 'peer-b', peer_ap_mac: 'ap-b', peer_radio_mac: 'radio-b', role: 'STANDBY' },
+      { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-C', peer_mac: 'peer-c', peer_ap_mac: 'ap-c', peer_radio_mac: 'radio-c', role: 'STANDBY' },
+    ]
+    const frameSeries: MeshTracksideSignalSeriesData[] = framePoints.map((point, index) => ({
+      ...tracksideSeries[0],
+      series_id: `frame-series-${index}`,
+      peer_name: point.peer_ap_name,
+      peer_mac: point.peer_mac,
+      ap_mac: point.peer_ap_mac,
+      peer_radio_mac: point.peer_radio_mac,
+      roles_present: [point.role],
+      points: [point],
+    }))
+    const wrapper = mount(MeshTracksideSignalChart, { props: { series: frameSeries } })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        name: string
+        type: string
+        markLine?: unknown
+        data: Array<{ value: [string, number | null]; meta: MeshTracksideSignalPointData; seriesMeta: MeshTracksideSignalSeriesData }>
+      }>
+      tooltip: { formatter: (params: unknown) => string }
+    }
+    expect(option.series).toHaveLength(4)
+    expect(option.series.every((item) => item.type === 'line')).toBe(true)
+    expect(option.series.every((item) => item.markLine === undefined)).toBe(true)
+    expect(option.series.map((item) => item.name).join(' ')).not.toMatch(/ACTIVE|STANDBY|MIXED/)
+    const tooltip = option.tooltip.formatter(option.series.map((item) => ({ axisValue: frameTime, data: item.data[0] })))
+    expect(tooltip.match(/链路角色：/g)).toHaveLength(4)
+    expect(tooltip.match(/链路角色：ACTIVE/g)).toHaveLength(1)
+    expect(tooltip.match(/链路角色：STANDBY/g)).toHaveLength(3)
+    expect(tooltip.indexOf('AP-A')).toBeLessThan(tooltip.indexOf('AP-B'))
+    expect(tooltip.indexOf('AP-B')).toBeLessThan(tooltip.indexOf('AP-C'))
+    expect(tooltip.indexOf('AP-C')).toBeLessThan(tooltip.indexOf('AP-D'))
+    for (const radioMac of ['radio-a', 'radio-b', 'radio-c', 'radio-d']) {
+      expect(tooltip).toContain(`Peer Radio MAC：${radioMac}`)
+    }
+
+    wrapper.unmount()
+  })
+
+  it('keeps mixed-role large data as one line without role scatter or markLine', async () => {
+    const points: MeshTracksideSignalPointData[] = Array.from({ length: 5_000 }, (_, index) => ({
+      ...tracksideChartPoint,
+      link_id: index + 1,
+      timestamp: new Date(Date.UTC(2026, 6, 20, 10, 0, 0, index)).toISOString(),
+      role: index % 2 === 0 ? 'ACTIVE' : 'STANDBY',
+      run_id: 'large-link-run',
+      run_sequence: 1,
+    }))
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{
+          ...tracksideSeries[0],
+          roles_present: ['ACTIVE', 'STANDBY'],
+          total_points: points.length,
+          returned_points: points.length,
+          points,
+        }],
+        events: [chartEvent],
+        showSwitchLines: true,
+        showSwitchPoints: true,
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ type: string; showSymbol: boolean; markLine?: unknown; data: unknown[] }>
+    }
+    expect(option.series).toHaveLength(1)
+    expect(option.series[0].type).toBe('line')
+    expect(option.series[0].showSymbol).toBe(false)
+    expect(option.series[0].markLine).toBeUndefined()
+    expect(option.series[0].data).toHaveLength(5_000)
 
     wrapper.unmount()
   })

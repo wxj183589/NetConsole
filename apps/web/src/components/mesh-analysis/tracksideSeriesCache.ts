@@ -5,6 +5,7 @@ import type {
 
 export interface RenderedTracksideSignalPoint {
   value: [string, number | null]
+  symbol?: 'circle' | 'emptyCircle'
   meta?: MeshTracksideSignalPointData
   seriesMeta?: MeshTracksideSignalSeriesData
 }
@@ -63,6 +64,7 @@ export function buildTracksideSeriesCache(
       }
       rendered.push({
         value: [point.timestamp, tracksidePointValue(point)],
+        symbol: point.role === 'ACTIVE' ? 'circle' : 'emptyCircle',
         meta: point,
         seriesMeta: item,
       })

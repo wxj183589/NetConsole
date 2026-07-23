@@ -2,8 +2,13 @@ const { readFileSync } = require('node:fs')
 const { resolve } = require('node:path')
 const { app, BrowserWindow } = require('electron')
 
-const SERIES_COUNT = 140
-const POINT_COUNT = 14_581
+function positiveProfileSize(name, fallback) {
+  const value = Number.parseInt(process.env[name] || '', 10)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+const SERIES_COUNT = positiveProfileSize('NETCONSOLE_MESH_PROFILE_SERIES_COUNT', 140)
+const POINT_COUNT = positiveProfileSize('NETCONSOLE_MESH_PROFILE_POINT_COUNT', 14_581)
 
 app.commandLine.appendSwitch('enable-precise-memory-info')
 

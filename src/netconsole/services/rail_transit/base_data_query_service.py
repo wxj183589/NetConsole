@@ -230,6 +230,10 @@ class RailTransitBaseDataQueryService:
         selected, current, size = self._page(items, page, page_size)
         return TracksideApPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
+    def list_ap_location_items(self, site_id: str) -> list[TracksideApDTO]:
+        """一次返回 AP 位置基础字段，不拼接运行态、质量问题或分页结果。"""
+        return self._all_aps(site_id, include_runtime=False)
+
     def get_ap(self, site_id: str, ap_id: str) -> TracksideApDetailDTO | None:
         item = next((row for row in self._all_aps(site_id, include_runtime=True) if row.id == ap_id), None)
         if item is None:

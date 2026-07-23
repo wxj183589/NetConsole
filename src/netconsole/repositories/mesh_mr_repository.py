@@ -1631,6 +1631,78 @@ class MeshMrRepository:
         run_segment["events"] = events
         return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
 
+    def query_trackside_link_chart_segment(
+        self,
+        source_file_id: int | str | None = None,
+        radio: int | None = None,
+        time_from: str = "",
+        time_to: str = "",
+    ) -> dict[str, object]:
+        """只读轨旁链路 RSSI 标量行，不构造未消费的 synthetic metric payload。"""
+        if self._is_index_database():
+            if source_file_id not in (None, ""):
+                repo = self._detail_repo_for_source(source_file_id)
+                if repo is None:
+                    return {"run_segment": _segment_payload(None, [], None, None)}
+                payload = repo.query_trackside_link_chart_segment(None, radio, time_from, time_to)
+                segment = dict(payload.get("run_segment") or {})
+                for row in segment.get("rows") or []:
+                    row["source_file_id"] = int(source_file_id)
+                return {"run_segment": segment}
+            rows: list[dict[str, object]] = []
+            for source_id, repo in self._detail_repo_items():
+                payload = repo.query_trackside_link_chart_segment(None, radio, time_from, time_to)
+                detail_rows = list(dict(payload.get("run_segment") or {}).get("rows") or [])
+                for row in detail_rows:
+                    row["source_file_id"] = source_id
+                rows.extend(detail_rows)
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("sample_time") or ""),
+                    str(row.get("timestamp_tag") or ""),
+                    int(row.get("radio") or 0),
+                    int(row.get("id") or 0),
+                )
+            )
+        else:
+            clauses: list[str] = []
+            values: list[object] = []
+            if source_file_id not in (None, ""):
+                clauses.append("source_file_id = ?")
+                values.append(int(source_file_id))
+            if radio is not None:
+                clauses.append("radio = ?")
+                values.append(int(radio))
+            if time_from:
+                clauses.append("sample_time >= ?")
+                values.append(time_from)
+            if time_to:
+                clauses.append("sample_time <= ?")
+                values.append(time_to)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            with self._connect() as conn:
+                rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        f"""
+                        SELECT {_MESH_LINK_CHART_COLUMNS}
+                        FROM mesh_links
+                        {where}
+                        ORDER BY sample_time ASC, timestamp_tag ASC, radio ASC, id ASC
+                        """,
+                        values,
+                    ).fetchall()
+                ]
+        ordered_times = list(
+            dict.fromkeys(str(row.get("sample_time") or "") for row in rows if row.get("sample_time"))
+        )
+        interval, gap = _interval_and_threshold(ordered_times)
+        anchor = next(
+            (row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE),
+            rows[0] if rows else None,
+        )
+        return {"run_segment": _segment_payload(anchor, rows, interval, gap)}
+
     def _query_active_path_backup_rows(self, conn: sqlite3.Connection, active_rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if not active_rows:
             return []

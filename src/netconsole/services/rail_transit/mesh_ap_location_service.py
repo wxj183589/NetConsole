@@ -108,6 +108,9 @@ class MeshApLocationService:
         self.base_query = base_query
 
     def snapshot(self, site_id: str) -> MeshApLocationSnapshot:
+        list_location_items = getattr(self.base_query, "list_ap_location_items", None)
+        if callable(list_location_items):
+            return MeshApLocationSnapshot.from_base_data_items(list_location_items(site_id))
         first = self.base_query.list_aps(site_id, page=1, page_size=500)
         items = list(first.items)
         page = 2

@@ -40,10 +40,11 @@ function series(points: MeshTracksideSignalPointData[]): MeshTracksideSignalSeri
     peer_name: 'AP-1',
     peer_mac: 'bc5a-3457-3a00',
     ap_mac: 'bc5a-3457-3000',
+    peer_radio_mac: null,
     radio: 1,
     station: null,
     section: null,
-    role: 'ACTIVE',
+    roles_present: ['ACTIVE'],
     data_source: 'peer_rssi_db',
     total_points: points.length,
     returned_points: points.length,
@@ -72,5 +73,30 @@ describe('trackside immutable series cache', () => {
     const cache = buildTracksideSeriesCache([series([late, early])])
     expect(cache.unorderedSeriesIds).toEqual(['ap-1:radio:1'])
     expect(cache.series[0].data.map((item) => item.value[0])).toEqual([late.timestamp, early.timestamp])
+  })
+
+  it('keeps role changes in one link run and uses point-level symbols', () => {
+    const active = point('2026-07-20 10:00:00.000', 1)
+    const standby = {
+      ...point('2026-07-20 10:00:01.000', 1),
+      role: 'STANDBY' as const,
+    }
+    const activeAgain = point('2026-07-20 10:00:02.000', 1)
+    const cache = buildTracksideSeriesCache([{
+      ...series([active, standby, activeAgain]),
+      roles_present: ['ACTIVE', 'STANDBY'],
+    }])
+
+    expect(cache.series).toHaveLength(1)
+    expect(cache.series[0].data.map((item) => item.value)).toEqual([
+      [active.timestamp, active.peer_rssi],
+      [standby.timestamp, standby.peer_rssi],
+      [activeAgain.timestamp, activeAgain.peer_rssi],
+    ])
+    expect(cache.series[0].data.map((item) => item.symbol)).toEqual([
+      'circle',
+      'emptyCircle',
+      'circle',
+    ])
   })
 })
