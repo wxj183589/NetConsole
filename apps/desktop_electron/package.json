@@ -60,6 +60,7 @@
       }
     ],
     "win": {
+      "executableName": "NetConsole",
       "icon": "../../resources/branding/netconsole.ico",
       "target": [
         {

@@ -8,7 +8,6 @@ import { isDeepStrictEqual } from 'node:util'
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
-const executable = resolve(unpackedRoot, 'NetConsole.exe')
 const qtPackagePrefixes = [
   'pyside2',
   'pyside6',
@@ -230,6 +229,15 @@ const expectedDeviceInventoryProfiles = new Map([
   ['h3c.comware.mobile_router.generic.device-inventory.v1', expectedMobileRouterDeviceInventoryCommands],
 ])
 
+const executableNameArgument = process.argv.indexOf('--resolve-windows-executable')
+if (executableNameArgument >= 0) {
+  const packageJsonPath = process.argv[executableNameArgument + 1]
+  if (!packageJsonPath) throw new Error('--resolve-windows-executable 必须提供 package.json 路径。')
+  console.log(resolveWindowsExecutableName(resolve(packageJsonPath)))
+  process.exit(0)
+}
+
+const executable = resolve(unpackedRoot, resolveWindowsExecutableName(resolve(appRoot, 'package.json')))
 const toolRootArgument = process.argv.indexOf('--validate-tool-root')
 if (toolRootArgument >= 0) {
   const toolRoot = process.argv[toolRootArgument + 1]
@@ -282,6 +290,17 @@ try {
 }
 
 console.log('Electron packaged smoke passed without Qt runtime residue and with NOTICE/SBOM metadata.')
+
+function resolveWindowsExecutableName(packageJsonPath) {
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+  const executableName = packageJson?.build?.win?.executableName
+  if (typeof executableName !== 'string' || !executableName.trim()) {
+    throw new Error(
+      `Electron Builder 构建契约错误：${packageJsonPath} 必须设置 build.win.executableName。`,
+    )
+  }
+  return `${executableName.trim()}.exe`
+}
 
 function validateComplianceArtifacts(runtimeVersions) {
   const backendRoot = resolve(unpackedRoot, 'resources', 'backend')

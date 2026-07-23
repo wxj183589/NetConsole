@@ -104,12 +104,50 @@ def test_empty_python_entrypoint_dispatches_electron_desktop(capsys, monkeypatch
     from netconsole.launcher import electron_desktop
 
     monkeypatch.setattr(sys, "argv", ["NetConsole"])
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: False)
     calls: list[bool] = []
     monkeypatch.setattr(electron_desktop, "launch_electron_desktop", lambda: calls.append(True) or 0)
 
     assert entrypoint.main() == 0
     assert calls == [True]
     assert capsys.readouterr().err == ""
+
+
+def test_empty_frozen_backend_entrypoint_rejects_standalone_launch(capsys, monkeypatch) -> None:
+    from netconsole import entrypoint
+    from netconsole.launcher import electron_desktop
+
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe"])
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
+    monkeypatch.setattr(
+        electron_desktop,
+        "launch_electron_desktop",
+        lambda: pytest.fail("冻结后端不得启动源码 Electron 开发链"),
+    )
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(entrypoint.app_logger, "log_error", lambda event, detail: events.append((event, detail)))
+    dialogs: list[bool] = []
+    monkeypatch.setattr(entrypoint, "_show_managed_backend_standalone_message", lambda: dialogs.append(True))
+
+    assert entrypoint.main() == entrypoint.MANAGED_BACKEND_STANDALONE_EXIT_CODE
+    assert events == [("MANAGED_BACKEND_STANDALONE_LAUNCH", entrypoint.MANAGED_BACKEND_STANDALONE_MESSAGE)]
+    assert dialogs == [True]
+    assert entrypoint.MANAGED_BACKEND_STANDALONE_MESSAGE in capsys.readouterr().err
+
+
+def test_frozen_backend_smoke_environment_still_exits_successfully(monkeypatch) -> None:
+    from netconsole import entrypoint
+
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe"])
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
+    monkeypatch.setenv("NETCONSOLE_SMOKE_TEST", "1")
+    monkeypatch.setattr(
+        entrypoint,
+        "_reject_managed_backend_standalone_launch",
+        lambda: pytest.fail("smoke 模式不得进入后端单独启动提示"),
+    )
+
+    assert entrypoint.main() == 0
 
 
 def test_electron_desktop_plan_uses_project_runtime_without_global_pnpm(tmp_path: Path) -> None:

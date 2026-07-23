@@ -6,11 +6,17 @@ import faulthandler
 import traceback
 from pathlib import Path
 
-from netconsole.core.runtime_environment import app_root
+from netconsole.core import app_logger
+from netconsole.core.runtime_environment import app_root, is_packaged_runtime
 from netconsole.core.paths import PathResolver
 
 
 BASE_DIR = app_root()
+MANAGED_BACKEND_STANDALONE_EXIT_CODE = 2
+MANAGED_BACKEND_STANDALONE_MESSAGE = (
+    "NetConsoleBackend.exe 是 NetConsole 桌面程序的受管后端，不能单独运行。\n"
+    "请启动 NetConsole.exe 或使用正式安装程序。"
+)
 
 
 def _runtime_log_dir() -> str:
@@ -38,6 +44,37 @@ def _write_runtime_smoke_log(context) -> None:
             handle.write(f"data_dir={context.paths.data_dir}\n")
             handle.write(f"runtime_dir={context.paths.runtime_dir}\n")
             handle.write(f"logs_dir={context.paths.logs_dir}\n")
+    except Exception:
+        pass
+
+
+def _reject_managed_backend_standalone_launch() -> int:
+    try:
+        app_logger.log_error("MANAGED_BACKEND_STANDALONE_LAUNCH", MANAGED_BACKEND_STANDALONE_MESSAGE)
+    except Exception:
+        pass
+    diagnostics = sys.stderr or getattr(sys, "__stderr__", None)
+    if diagnostics is not None:
+        try:
+            print(MANAGED_BACKEND_STANDALONE_MESSAGE, file=diagnostics)
+        except Exception:
+            pass
+    _show_managed_backend_standalone_message()
+    return MANAGED_BACKEND_STANDALONE_EXIT_CODE
+
+
+def _show_managed_backend_standalone_message() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            MANAGED_BACKEND_STANDALONE_MESSAGE,
+            "NetConsole",
+            0x00000010,
+        )
     except Exception:
         pass
 
@@ -115,6 +152,8 @@ def main() -> int:
             _verify_release_contract()
             return 0
         if not sys.argv[1:]:
+            if is_packaged_runtime():
+                return _reject_managed_backend_standalone_launch()
             from netconsole.launcher.electron_desktop import launch_electron_desktop
 
             return launch_electron_desktop()

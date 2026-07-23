@@ -14,6 +14,7 @@ describe('Electron-only packaging', () => {
     expect(packageJson.scripts.package).toContain('electron-builder')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
     expect(packageJson.build.productName).toBe('NetConsole v1.4.2 by wxj')
+    expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
       from: 'dist/package-resources/backend',
@@ -30,6 +31,35 @@ describe('Electron-only packaging', () => {
     expect(packageJson.build.nsis.installerHeaderIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false)
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
+  })
+
+  it('resolves the packaged executable from the Electron Builder contract', () => {
+    const script = resolve(appRoot, 'scripts', 'package-smoke.mjs')
+    const packageJsonPath = resolve(appRoot, 'package.json')
+    const configured = spawnSync(
+      process.execPath,
+      [script, '--resolve-windows-executable', packageJsonPath],
+      { cwd: appRoot, encoding: 'utf8' },
+    )
+
+    expect(configured.status, configured.stdout + configured.stderr).toBe(0)
+    expect(configured.stdout.trim()).toBe('NetConsole.exe')
+
+    const temporary = mkdtempSync(join(tmpdir(), 'netconsole-electron-package-contract-'))
+    const invalidPackageJsonPath = resolve(temporary, 'package.json')
+    try {
+      writeFileSync(invalidPackageJsonPath, JSON.stringify({ build: { win: {} } }), 'utf8')
+      const missing = spawnSync(
+        process.execPath,
+        [script, '--resolve-windows-executable', invalidPackageJsonPath],
+        { cwd: appRoot, encoding: 'utf8' },
+      )
+
+      expect(missing.status, missing.stdout + missing.stderr).not.toBe(0)
+      expect(missing.stderr).toContain('build.win.executableName')
+    } finally {
+      rmSync(temporary, { recursive: true, force: true })
+    }
   })
 
   it('builds the backend without a system Python dependency', () => {

@@ -68,6 +68,8 @@ node scripts/package-smoke.mjs
 
 安装包 smoke 以 `ELECTRON_RUN_AS_NODE=1` 读取最终 `NetConsole.exe` 的 `process.versions`，逐项核对 Electron、Chromium 和 Node.js Notice/SBOM 版本；同时要求 electron-builder 输出中的 `LICENSE.electron.txt`、`LICENSES.chromium.html`、Backend 第三方说明、Notice 和 SBOM 都存在。包内 `device_command_profiles.json` 还必须保持 schema `2026.07.device-command-profiles.v1`，且只包含 `device.inventory.collect` 的受控只读 Profile，不得包含 `device.sftp.enable` 等写入型 Profile。
 
+正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
+
 正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；单元测试或源码 smoke 不能替代这些验收。`nsis.deleteAppDataOnUninstall=false` 是当前数据保护约束。
 
 ## 外部工具与许可证阻塞
