@@ -22,6 +22,8 @@
 ### 稳定性与性能
 
 - 轨旁指针更新、Tooltip 和固定详情的打开、滚动、关闭不调用 ECharts `setOption/clear/resize/dispose`，不重建 series cache、不改变共享 viewport；真实 Electron Canvas 画像中无清空像素、Renderer/GPU/Utility 子进程退出或持续 Heap 增长。
+- Windows 正式目录包固定生成 `NetConsole.exe`，package smoke 直接读取 Electron Builder 的 `build.win.executableName`，配置缺失时立即失败，避免产品显示名与正式 EXE 名称再次漂移。
+- PyInstaller `NetConsoleBackend.exe` 明确保持为 Electron 受管后端；冻结环境无参数运行时记录日志、显示原生提示并返回非零状态，不再误入源码 Electron 开发链。品牌 ICO 同步补齐 256px 层，目录包 smoke 与 NSIS 安装包构建已通过。
 - 软件版本升级到 `v1.4.2`，同步 Electron 打包版本、窗口标题、Web Shell、发布文档和内置更新日志。
 
 ## v1.4.1 - 2026-07-22

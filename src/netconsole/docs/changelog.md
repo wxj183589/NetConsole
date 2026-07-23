@@ -6,6 +6,8 @@ v1.4.2
 - 轨旁 Tooltip 改为按图表可用高度展示的独立 Vue 浮层，并新增可完整保留当前 frame 全部 ACTIVE/STANDBY 链路的“固定查看”详情面板。
 - 同帧、相邻帧、run 重叠和短间隔冲突的轨旁 AP/Radio 序列使用稳定冲突感知配色；曲线、Tooltip、范围列表和固定详情共用颜色。
 - Tooltip、固定详情和指针更新不重建图表、缓存或 viewport；软件版本同步升级到 `v1.4.2`。
+- Windows 正式目录包固定生成 `NetConsole.exe`，package smoke 从 Electron Builder 配置解析名称；冻结后的 `NetConsoleBackend.exe` 无参数运行时显示受管后端提示并返回非零状态，不再启动源码开发链。
+- 品牌 ICO 补齐 256px 层，`v1.4.2` 目录包 smoke 与 NSIS 安装包构建通过。
 
 v1.4.1
 - AC/FIT-AP 正式开放受控固化与远程登录动作，新增 DPAPI 保护的登录 Profile、公共行菜单和完整 OmniPeek 名称表预览/导出闭环。
