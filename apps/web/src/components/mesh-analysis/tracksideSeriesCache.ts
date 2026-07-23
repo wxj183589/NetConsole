@@ -57,6 +57,19 @@ export interface RenderedTracksideSignalSeries {
   data: CompactTracksideChartPoint[]
   meta: CompactTracksideSeriesMeta
   pointCount: number
+  firstTimestampMillis: number | null
+  lastTimestampMillis: number | null
+}
+
+export interface TracksideViewportSeriesItem {
+  seriesId: string
+  metaId: number
+  timestampMillis: number
+  apName: string | null
+  apMac: string | null
+  radio: number | null
+  rssi: number | null
+  rssiSource: 'pointer' | 'latest'
 }
 
 export interface TracksideSeriesCache {
@@ -99,6 +112,8 @@ export function buildTracksideSeriesCache(
   const series = sourceSeries.map((item) => {
     const rendered: CompactTracksideChartPoint[] = []
     const metaIds: number[] = []
+    let seriesFirstTimestampMillis: number | null = null
+    let seriesLastTimestampMillis: number | null = null
     const compactSeries: CompactTracksideSeriesMeta = {
       seriesId: item.series_id,
       name: seriesLabel(item),
@@ -175,6 +190,12 @@ export function buildTracksideSeriesCache(
       lastTimestampMillis = lastTimestampMillis === null
         ? timestampMillis
         : Math.max(lastTimestampMillis, timestampMillis)
+      seriesFirstTimestampMillis = seriesFirstTimestampMillis === null
+        ? timestampMillis
+        : Math.min(seriesFirstTimestampMillis, timestampMillis)
+      seriesLastTimestampMillis = seriesLastTimestampMillis === null
+        ? timestampMillis
+        : Math.max(seriesLastTimestampMillis, timestampMillis)
       previousRunId = currentRunId
       previousTimestampMillis = timestampMillis
       previousTimestampTag = point.timestamp_tag
@@ -188,6 +209,8 @@ export function buildTracksideSeriesCache(
       data: rendered,
       meta: compactSeries,
       pointCount: item.points.length,
+      firstTimestampMillis: seriesFirstTimestampMillis,
+      lastTimestampMillis: seriesLastTimestampMillis,
     }
   })
 
@@ -227,6 +250,129 @@ export function tracksidePointMeta(
   metaId: number,
 ): CompactTracksidePointMeta | undefined {
   return metaId < 0 ? undefined : cache.pointMetaById.get(metaId)
+}
+
+function lowerBoundTracksidePoint(
+  data: readonly CompactTracksideChartPoint[],
+  timestampMillis: number,
+): number {
+  let low = 0
+  let high = data.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (data[middle][0] < timestampMillis) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function upperBoundTracksidePoint(
+  data: readonly CompactTracksideChartPoint[],
+  timestampMillis: number,
+): number {
+  let low = 0
+  let high = data.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (data[middle][0] <= timestampMillis) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+function pointAtExactTimestamp(
+  data: readonly CompactTracksideChartPoint[],
+  timestampMillis: number,
+): CompactTracksideChartPoint | undefined {
+  for (
+    let index = lowerBoundTracksidePoint(data, timestampMillis);
+    index < data.length && data[index][0] === timestampMillis;
+    index += 1
+  ) {
+    if (data[index][2] >= 0) return data[index]
+  }
+  return undefined
+}
+
+function latestPointInRange(
+  data: readonly CompactTracksideChartPoint[],
+  startMillis: number,
+  endMillis: number,
+): CompactTracksideChartPoint | undefined {
+  let latestRealPoint: CompactTracksideChartPoint | undefined
+  for (let index = upperBoundTracksidePoint(data, endMillis) - 1; index >= 0; index -= 1) {
+    const point = data[index]
+    if (point[0] < startMillis) break
+    if (point[2] < 0) continue
+    latestRealPoint ??= point
+    if (point[1] != null) return point
+  }
+  return latestRealPoint
+}
+
+function unorderedPointInRange(
+  data: readonly CompactTracksideChartPoint[],
+  startMillis: number,
+  endMillis: number,
+  pointerMillis: number | null,
+): { point: CompactTracksideChartPoint; source: 'pointer' | 'latest' } | undefined {
+  let latestRealPoint: CompactTracksideChartPoint | undefined
+  let latestValidPoint: CompactTracksideChartPoint | undefined
+  for (const point of data) {
+    if (point[2] < 0 || point[0] < startMillis || point[0] > endMillis) continue
+    if (pointerMillis !== null && point[0] === pointerMillis) return { point, source: 'pointer' }
+    if (!latestRealPoint || point[0] >= latestRealPoint[0]) latestRealPoint = point
+    if (point[1] != null && (!latestValidPoint || point[0] >= latestValidPoint[0])) latestValidPoint = point
+  }
+  const point = latestValidPoint || latestRealPoint
+  return point ? { point, source: 'latest' } : undefined
+}
+
+export function tracksideViewportSeriesItems(
+  cache: TracksideSeriesCache,
+  startMillis: number,
+  endMillis: number,
+  pointerMillis: number | null = null,
+): TracksideViewportSeriesItem[] {
+  if (!Number.isFinite(startMillis) || !Number.isFinite(endMillis) || startMillis > endMillis) return []
+  const unorderedSeries = new Set(cache.unorderedSeriesIds)
+  return cache.series.flatMap((series) => {
+    if (
+      series.firstTimestampMillis === null
+      || series.lastTimestampMillis === null
+      || series.lastTimestampMillis < startMillis
+      || series.firstTimestampMillis > endMillis
+    ) return []
+    const resolved = unorderedSeries.has(series.id)
+      ? unorderedPointInRange(series.data, startMillis, endMillis, pointerMillis)
+      : (() => {
+          const pointerPoint = pointerMillis !== null
+            && pointerMillis >= startMillis
+            && pointerMillis <= endMillis
+            ? pointAtExactTimestamp(series.data, pointerMillis)
+            : undefined
+          if (pointerPoint) return { point: pointerPoint, source: 'pointer' as const }
+          const latestPoint = latestPointInRange(series.data, startMillis, endMillis)
+          return latestPoint ? { point: latestPoint, source: 'latest' as const } : undefined
+        })()
+    if (!resolved) return []
+    const point = tracksidePointMeta(cache, resolved.point[2])
+    if (!point) return []
+    return [{
+      seriesId: series.id,
+      metaId: point.metaId,
+      timestampMillis: point.timestampMillis,
+      apName: point.peerApName || series.meta.peerName,
+      apMac: point.peerApMac || series.meta.apMac,
+      radio: point.localRadio ?? series.meta.radio,
+      rssi: point.rssi,
+      rssiSource: resolved.source,
+    }]
+  }).sort((left, right) => (
+    String(left.apName || left.apMac || '').localeCompare(String(right.apName || right.apMac || ''), 'zh-CN')
+    || (left.radio ?? Number.MAX_SAFE_INTEGER) - (right.radio ?? Number.MAX_SAFE_INTEGER)
+    || left.seriesId.localeCompare(right.seriesId)
+  ))
 }
 
 export function disposeTracksideSeriesCache(cache: TracksideSeriesCache | null | undefined): void {

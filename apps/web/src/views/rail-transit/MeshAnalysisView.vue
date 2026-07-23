@@ -2,7 +2,7 @@
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight, Delete, Document, Download, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
@@ -139,6 +139,8 @@ const showLocationBand = ref(true)
 const meshPreferenceReady = ref(false)
 const rssiLayoutMode = ref<MeshRssiLayoutMode>(DEFAULT_MESH_RSSI_LAYOUT_MODE)
 const rssiCompareSplitRatio = ref(DEFAULT_MESH_RSSI_SPLIT_RATIO)
+const rssiImmersive = ref(false)
+const rssiCompactSessionExpanded = ref(false)
 const showBusyPeer = ref(false)
 const showBusySwitchLines = ref(false)
 const showBusySwitchPoints = ref(false)
@@ -203,7 +205,7 @@ const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPIN
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
 const buildOrderPanel = useAvailablePanelHeight(buildOrderTableHost, { minHeight: 420, bottomGap: 72 })
 const linkPanel = useAvailablePanelHeight(linkTableHost, { minHeight: 420, bottomGap: 72 })
-const rssiPanel = useAvailablePanelHeight(rssiWorkspaceHost, { minHeight: 240, bottomGap: 96 })
+const rssiPanel = useAvailablePanelHeight(rssiWorkspaceHost, { minHeight: 320, bottomGap: 16 })
 const busyPanel = useAvailablePanelHeight(busyChartHost, { minHeight: 360, bottomGap: 48 })
 
 const cards = computed(() => summary.value ? [
@@ -258,6 +260,22 @@ const busyValidSampleCount = computed(() => (busyChartData.value?.points || []).
 const lockedRangeLabel = computed(() => lockedAnalysisRange.value
   ? `${lockedAnalysisRange.value.start_time} — ${lockedAnalysisRange.value.end_time}`
   : '')
+const isRssiWorkspaceMode = computed(() => activeTab.value === 'rssi')
+const sessionDetailsExpanded = computed(() => (
+  isRssiWorkspaceMode.value ? rssiCompactSessionExpanded.value : sessionExpanded.value
+))
+const activePaneAlertMessages = computed(() => [
+  rssiFocusLabel.value,
+  lockedAnalysisRange.value
+    ? `已锁定 ${lockedRangeLabel.value} · Radio ${lockedAnalysisRange.value.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.value.sample_count} 点`
+    : '',
+  chartData.value?.downsample_warning || '',
+].filter(Boolean))
+const activePaneAlertSummary = computed(() => (
+  chartData.value?.downsample_warning
+  || activePaneAlertMessages.value[0]
+  || ''
+))
 const buildOrderOptions = computed(() => {
   const rows = buildOrderVisits.value.length ? buildOrderVisits.value : buildOrders.value
   const selectedRow = selectedSegment.value
@@ -459,6 +477,7 @@ watch(rssiCompareSplitRatio, (ratio) => {
 
 function setRssiLayoutMode(mode: MeshRssiLayoutMode): void {
   if (mode === rssiLayoutMode.value) return
+  if (mode !== 'compare') rssiImmersive.value = false
   if (mode === 'compare') {
     rssiLayoutBeforeFocus = DEFAULT_MESH_RSSI_LAYOUT_MODE
   } else {
@@ -475,13 +494,26 @@ function toggleRssiFocus(mode: Exclude<MeshRssiLayoutMode, 'compare'>): void {
   setRssiLayoutMode(rssiLayoutMode.value === mode ? 'compare' : mode)
 }
 
+function toggleRssiImmersive(): void {
+  if (!rssiImmersive.value) setRssiLayoutMode('compare')
+  rssiImmersive.value = !rssiImmersive.value
+  void nextTick(() => {
+    rssiPanel.refresh()
+    resizeVisibleRssiCharts()
+  })
+}
+
 function handleRssiLayoutKeydown(event: KeyboardEvent): void {
-  if (
-    event.defaultPrevented
-    || event.key !== 'Escape'
-    || activeTab.value !== 'rssi'
-    || rssiLayoutMode.value === 'compare'
-  ) return
+  if (event.defaultPrevented || event.key !== 'Escape' || activeTab.value !== 'rssi') return
+  if (rssiImmersive.value) {
+    rssiImmersive.value = false
+    void nextTick(() => {
+      rssiPanel.refresh()
+      resizeVisibleRssiCharts()
+    })
+    return
+  }
+  if (rssiLayoutMode.value === 'compare') return
   const previous = normalizeMeshRssiLayoutMode(rssiLayoutBeforeFocus)
   rssiLayoutBeforeFocus = DEFAULT_MESH_RSSI_LAYOUT_MODE
   rssiLayoutMode.value = previous === rssiLayoutMode.value
@@ -606,6 +638,16 @@ const tracksideRecoveryMessage = computed(() => (
     ? '上次轨旁图因渲染进程内存不足退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
     : '上次渲染轨旁图时页面异常退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
 ))
+const tracksidePaneAlertMessages = computed(() => [
+  tracksideRecoveryBlocked.value ? tracksideRecoveryMessage.value : '',
+  ...(tracksideSignal.value?.warnings || []),
+].filter(Boolean))
+const tracksidePaneAlertSummary = computed(() => {
+  if (tracksideRecoveryBlocked.value) return tracksideRecoveryMessage.value
+  const data = tracksideSignal.value
+  if (!data || !data.warnings.length) return ''
+  return `轨旁图已保留关键采样：${data.returned_frames}/${data.total_frames} 时刻，${data.returned_link_points}/${data.total_link_points} 链路点`
+})
 
 onMounted(async () => {
   window.addEventListener('keydown', handleRssiLayoutKeydown)
@@ -637,6 +679,8 @@ watch(activeTab, (tab) => {
   if (tab === 'rssi') {
     void nextTick(observeTracksideChart)
     resizeVisibleRssiCharts()
+  } else {
+    rssiImmersive.value = false
   }
   refreshDetailPanels()
 })
@@ -710,6 +754,15 @@ async function openSession(row: MeshAnalysisSession, preserveRecovery = false): 
 function setSessionExpanded(value: boolean): void {
   sessionExpanded.value = value
   sessionStorage.setItem(sessionExpandedKey, String(value))
+}
+
+function toggleSessionDetails(): void {
+  if (isRssiWorkspaceMode.value) {
+    rssiCompactSessionExpanded.value = !rssiCompactSessionExpanded.value
+    refreshDetailPanels()
+    return
+  }
+  setSessionExpanded(!sessionExpanded.value)
 }
 
 function restoreSessionExpansionForDetail(): void {
@@ -1587,9 +1640,22 @@ function buildResultLabel(value: string): string {
 </script>
 
 <template>
-  <section class="mesh-page">
+  <section
+    class="mesh-page"
+    :class="{
+      'is-rssi-workspace': isRssiWorkspaceMode,
+      'is-rssi-immersive': rssiImmersive,
+    }"
+  >
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p><h1>Mesh 原始日志分析</h1><p>选择日志后自动匹配当前局点车载 MR，并完成归档、解析、分析和报告交付。</p></div>
+      <div class="page-heading__copy">
+        <p class="eyebrow">RAIL TRANSIT · OFFLINE MESH ANALYSIS</p>
+        <h1>{{ isRssiWorkspaceMode ? 'MR 原始 MESH 日志分析' : 'Mesh 原始日志分析' }}</h1>
+        <p class="page-heading__description">选择日志后自动匹配当前局点车载 MR，并完成归档、解析、分析和报告交付。</p>
+        <p v-if="isRssiWorkspaceMode && selected" class="page-heading__current-log">
+          当前日志：{{ selected.session.mr_name }} · Radio {{ chartRadio ?? '全部' }} · {{ selected.session.original_filename }}
+        </p>
+      </div>
       <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('web.mesh_analysis_import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('web.mesh_analysis_report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading" @click="refreshOverview()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
@@ -1668,13 +1734,13 @@ function buildResultLabel(value: string): string {
     </el-dialog>
 
     <section class="content-card sessions-panel" v-loading="loading">
-      <button class="sessions-toggle" type="button" :aria-expanded="sessionExpanded" @click="setSessionExpanded(!sessionExpanded)">
-        <el-icon><ArrowDown v-if="sessionExpanded" /><ArrowRight v-else /></el-icon>
+      <button class="sessions-toggle" type="button" :aria-expanded="sessionDetailsExpanded" @click="toggleSessionDetails">
+        <el-icon><ArrowDown v-if="sessionDetailsExpanded" /><ArrowRight v-else /></el-icon>
         <strong>分析会话 · {{ total }} 个来源 · {{ summary?.train_count ?? 0 }} 列车 / {{ summary?.mr_count ?? 0 }} MR</strong>
         <span v-if="selected">当前：{{ selected.session.mr_name }} · {{ selected.session.original_filename }}</span>
         <el-tag v-if="task" size="small">任务 {{ task.status }}</el-tag>
       </button>
-      <template v-if="sessionExpanded">
+      <template v-if="sessionDetailsExpanded">
         <div v-if="task" class="task-card">
           <div class="task-line">
             <div class="task-copy"><strong>{{ task.action }}</strong><span>{{ task.task_id }}</span></div>
@@ -1757,43 +1823,50 @@ function buildResultLabel(value: string): string {
         </div>
 
         <div v-show="activeTab === 'rssi'" id="pane-rssi" class="chart-pane">
-          <div class="chart-toolbar">
-            <div class="rssi-layout-switch" role="group" aria-label="RSSI 图表布局">
-              <el-button
-                :class="{ 'is-current': rssiLayoutMode === 'compare' }"
-                title="上下对比"
-                @click="setRssiLayoutMode('compare')"
-              >
-                对比
+          <div class="chart-toolbar rssi-chart-toolbar">
+            <div class="rssi-chart-toolbar__row">
+              <div class="rssi-layout-switch" role="group" aria-label="RSSI 图表布局">
+                <el-button
+                  :class="{ 'is-current': rssiLayoutMode === 'compare' }"
+                  title="上下对比"
+                  @click="setRssiLayoutMode('compare')"
+                >
+                  对比
+                </el-button>
+                <el-button
+                  :class="{ 'is-current': rssiLayoutMode === 'active-focus' }"
+                  title="仅看全部 ACTIVE 主链路"
+                  @click="setRssiLayoutMode('active-focus')"
+                >
+                  主链
+                </el-button>
+                <el-button
+                  :class="{ 'is-current': rssiLayoutMode === 'trackside-focus' }"
+                  title="仅看轨旁信号图"
+                  @click="setRssiLayoutMode('trackside-focus')"
+                >
+                  轨旁
+                </el-button>
+              </div>
+              <el-button :icon="FullScreen" :type="rssiImmersive ? 'primary' : undefined" @click="toggleRssiImmersive">
+                {{ rssiImmersive ? '退出沉浸' : '沉浸对比' }}
               </el-button>
-              <el-button
-                :class="{ 'is-current': rssiLayoutMode === 'active-focus' }"
-                title="仅看全部 ACTIVE 主链路"
-                @click="setRssiLayoutMode('active-focus')"
-              >
-                主链
-              </el-button>
-              <el-button
-                :class="{ 'is-current': rssiLayoutMode === 'trackside-focus' }"
-                title="仅看轨旁信号图"
-                @click="setRssiLayoutMode('trackside-focus')"
-              >
-                轨旁
-              </el-button>
+              <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
+              <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
             </div>
-            <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
-            <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
-            <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
-            <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
-            <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints">显示切换节点</el-button>
-            <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
-            <el-button @click="resetCurrentChartViewport">重置视图</el-button>
-            <el-button v-if="!lockedAnalysisRange" :icon="Lock" type="primary" plain @click="lockCurrentRssiRange">锁定当前时间范围</el-button>
-            <template v-else>
-              <el-button :icon="Refresh" @click="lockCurrentRssiRange">更新锁定范围</el-button>
-              <el-button :icon="Unlock" @click="clearTimeLock">解除时间锁定</el-button>
-              <el-button type="primary" @click="openLockedBusyRange">查看同期空口负载</el-button>
-            </template>
+            <div class="rssi-chart-toolbar__row">
+              <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
+              <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
+              <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints">显示切换节点</el-button>
+              <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
+              <el-button @click="resetCurrentChartViewport">重置视图</el-button>
+              <el-button v-if="!lockedAnalysisRange" :icon="Lock" type="primary" plain @click="lockCurrentRssiRange">锁定当前时间范围</el-button>
+              <template v-else>
+                <el-button :icon="Refresh" @click="lockCurrentRssiRange">更新锁定范围</el-button>
+                <el-button :icon="Unlock" @click="clearTimeLock">解除时间锁定</el-button>
+                <el-button type="primary" @click="openLockedBusyRange">查看同期空口负载</el-button>
+              </template>
+            </div>
           </div>
           <div
             ref="rssiWorkspaceHost"
@@ -1815,10 +1888,14 @@ function buildResultLabel(value: string): string {
                       {{ rssiLayoutMode === 'active-focus' ? '返回对比' : '专注' }}
                     </el-button>
                   </header>
-                  <div class="rssi-pane-alerts">
-                    <el-alert v-if="rssiFocusLabel" :title="rssiFocusLabel" type="success" :closable="false" show-icon />
-                    <el-alert v-if="lockedAnalysisRange" :title="`已锁定 ${lockedRangeLabel} · Radio ${lockedAnalysisRange.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.sample_count} 点`" type="info" :closable="false" show-icon />
-                    <el-alert v-if="chartData?.downsample_warning" :title="chartData.downsample_warning" type="warning" :closable="false" show-icon />
+                  <div v-if="activePaneAlertSummary" class="rssi-pane-alert">
+                    <span class="rssi-pane-alert__text" :title="activePaneAlertSummary">提示：{{ activePaneAlertSummary }}</span>
+                    <el-popover placement="bottom-start" :width="520" trigger="click">
+                      <template #reference><el-button link type="primary">详情</el-button></template>
+                      <div class="rssi-pane-alert__details">
+                        <p v-for="message in activePaneAlertMessages" :key="message">{{ message }}</p>
+                      </div>
+                    </el-popover>
                   </div>
                   <div class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData?.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData?.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData?.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData?.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData?.summary.sample_count ?? 0 }}</strong></span><span>ACTIVE <strong>{{ chartData?.summary.active_count ?? 0 }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData?.summary.standby_context_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData?.summary.switch_count ?? 0 }}</strong></span><span>最早 <strong>{{ chartData?.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData?.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
@@ -1835,21 +1912,15 @@ function buildResultLabel(value: string): string {
                       {{ rssiLayoutMode === 'trackside-focus' ? '返回对比' : '专注' }}
                     </el-button>
                   </header>
-                  <div class="rssi-pane-alerts">
-                    <el-alert
-                      v-if="tracksideRecoveryBlocked"
-                      :title="tracksideRecoveryMessage"
-                      type="warning"
-                      :closable="false"
-                      show-icon
-                    >
-                      <template #default>
-                        <el-button type="warning" plain :loading="tracksideLoading" @click="loadTracksideAfterRecovery">
-                          重新加载轨旁信号图
-                        </el-button>
-                      </template>
-                    </el-alert>
-                    <el-alert v-if="tracksideSignal?.warnings?.length" :title="tracksideSignal.warnings.join('；')" type="warning" :closable="false" show-icon />
+                  <div v-if="tracksidePaneAlertSummary" class="rssi-pane-alert">
+                    <span class="rssi-pane-alert__text" :title="tracksidePaneAlertSummary">提示：{{ tracksidePaneAlertSummary }}</span>
+                    <el-button v-if="tracksideRecoveryBlocked" link type="warning" :loading="tracksideLoading" @click="loadTracksideAfterRecovery">重新加载轨旁信号图</el-button>
+                    <el-popover placement="bottom-start" :width="520" trigger="click">
+                      <template #reference><el-button link type="primary">详情</el-button></template>
+                      <div class="rssi-pane-alert__details">
+                        <p v-for="message in tracksidePaneAlertMessages" :key="message">{{ message }}</p>
+                      </div>
+                    </el-popover>
                   </div>
                   <div v-if="tracksideSignal" class="mini-summary rssi-pane-summary">
                     <span>采样时刻 <strong>{{ tracksideSignal.returned_frames }} / {{ tracksideSignal.total_frames }}</strong></span>
@@ -1870,7 +1941,7 @@ function buildResultLabel(value: string): string {
             </MeshRssiChartWorkspace>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 Peer Radio MAC / AP MAC / Peer MAC + 本地 Radio 建立稳定物理序列，ACTIVE 与 STANDBY 是点级角色；目标点数表示目标采样时刻，保留某个时刻时会返回该 frame 的全部有效链路。</p>
+          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按内部物理链路身份与本地 Radio 建立稳定序列，ACTIVE 与 STANDBY 是点级角色；目标点数表示目标采样时刻，保留某个时刻时会返回该 frame 的全部有效链路。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">
@@ -1917,4 +1988,51 @@ function buildResultLabel(value: string): string {
 .rssi-layout-switch{display:inline-flex;align-items:center}.rssi-layout-switch .el-button{margin-left:0;border-radius:0}.rssi-layout-switch .el-button:first-child{border-radius:6px 0 0 6px}.rssi-layout-switch .el-button:last-child{border-radius:0 6px 6px 0}.rssi-layout-switch .el-button+.el-button{margin-left:-1px}.rssi-layout-switch .el-button.is-current{position:relative;z-index:1;color:var(--nc-primary);border-color:var(--nc-primary);background:color-mix(in srgb,var(--nc-primary) 12%,var(--nc-bg-card))}
 .rssi-workspace-host{width:100%;min-width:0;min-height:240px;overflow:hidden}.rssi-pane-content{display:flex;width:100%;height:100%;min-width:0;min-height:0;flex-direction:column;overflow-y:auto}.rssi-pane-heading{display:flex;min-height:36px;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:2px 4px}.rssi-pane-heading h3{margin:0}.rssi-pane-alerts{max-height:104px;flex:none;overflow-y:auto}.rssi-pane-alerts:empty{display:none}.rssi-pane-summary{flex:none;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.rssi-pane-summary span{flex:none;white-space:nowrap}.rssi-pane-chart-host{width:100%;min-width:0;min-height:240px;flex:1 0 240px}
 .mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{min-height:0;flex:none;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){display:none}.detail-tab-content{min-height:0;flex:1}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
+.mesh-page.is-rssi-workspace{gap:8px}
+.is-rssi-workspace .page-heading{min-height:36px;gap:12px}
+.is-rssi-workspace .page-heading__copy{display:flex;min-width:0;align-items:center;gap:12px}
+.is-rssi-workspace .page-heading__copy .eyebrow,
+.is-rssi-workspace .page-heading__description{display:none}
+.is-rssi-workspace .page-heading h1{flex:none;margin:0;font-size:18px;line-height:28px}
+.page-heading__current-log{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.is-rssi-workspace .page-heading>.jump-actions{min-width:0;flex:none;flex-wrap:nowrap;overflow-x:auto}
+.is-rssi-workspace .page-heading>.jump-actions :deep(.el-button){flex:none}
+.is-rssi-workspace .sessions-panel{padding:0 10px}
+.is-rssi-workspace .sessions-toggle{min-height:36px;padding:3px 0}
+.is-rssi-workspace .detail-card{padding:7px 12px}
+.is-rssi-workspace .detail-heading{min-height:34px;gap:12px}
+.is-rssi-workspace .detail-heading>div:first-child{display:flex;min-width:0;align-items:center;gap:10px}
+.is-rssi-workspace .detail-heading h2{flex:none;margin:0;font-size:16px}
+.is-rssi-workspace .detail-heading p{min-width:0;overflow:hidden;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.is-rssi-workspace .detail-heading>.jump-actions{min-width:0;flex-wrap:nowrap;overflow-x:auto}
+.is-rssi-workspace .detail-heading>.jump-actions :deep(.el-button){flex:none}
+.is-rssi-workspace .warning-summary{max-height:42px;overflow:hidden}
+.is-rssi-workspace .warning-summary .el-alert{margin:3px 0}
+.is-rssi-workspace .detail-tabs :deep(.el-tabs__header){margin:0}
+.rssi-chart-toolbar{display:flex;min-width:0;flex-direction:column;align-items:stretch;gap:4px;padding:4px 0}
+.rssi-chart-toolbar__row{display:flex;min-height:32px;min-width:0;align-items:center;gap:8px;overflow-x:auto;overflow-y:hidden;white-space:nowrap;scrollbar-width:thin}
+.rssi-chart-toolbar__row>*{flex:none}
+.rssi-chart-toolbar__row .el-select{width:180px}
+.rssi-workspace-host{min-height:320px}
+.rssi-pane-content{overflow:hidden}
+.rssi-pane-heading{min-height:28px;height:28px;padding:0 4px}
+.rssi-pane-heading h3{margin:0;font-size:14px;line-height:28px}
+.rssi-pane-alert{display:flex;height:26px;min-width:0;flex:none;align-items:center;gap:6px;padding:0 6px;color:var(--nc-warning);background:color-mix(in srgb,var(--nc-warning) 9%,var(--nc-bg-card));font-size:12px}
+.rssi-pane-alert__text{min-width:0;overflow:hidden;flex:1;text-overflow:ellipsis;white-space:nowrap}
+.rssi-pane-alert__details p{margin:0 0 8px;line-height:1.5}
+.rssi-pane-alert__details p:last-child{margin-bottom:0}
+.mesh-page .rssi-pane-summary{min-height:26px;max-height:26px;padding:0;gap:6px;scrollbar-width:none}
+.mesh-page .rssi-pane-summary::-webkit-scrollbar{display:none}
+.mesh-page .rssi-pane-summary span{height:24px;padding:2px 8px;line-height:20px}
+.rssi-pane-chart-host{min-height:240px;flex:1 0 240px}
+.is-rssi-workspace #pane-rssi>.hint{display:none}
+.mesh-page.is-rssi-immersive{gap:0}
+.is-rssi-immersive>.page-heading,
+.is-rssi-immersive>.sessions-panel,
+.is-rssi-immersive .detail-heading,
+.is-rssi-immersive .warning-summary,
+.is-rssi-immersive .detail-card>.el-alert,
+.is-rssi-immersive .detail-tabs{display:none}
+.is-rssi-immersive .detail-card{padding:4px 8px;border-radius:0}
+.is-rssi-immersive .rssi-chart-toolbar{padding-top:0}
 </style>

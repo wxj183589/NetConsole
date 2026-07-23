@@ -8,9 +8,14 @@ export type MeshRssiLayoutMode = typeof MESH_RSSI_LAYOUT_MODES[number]
 
 export const DEFAULT_MESH_RSSI_LAYOUT_MODE: MeshRssiLayoutMode = 'compare'
 export const DEFAULT_MESH_RSSI_SPLIT_RATIO = 0.5
-export const MIN_MESH_RSSI_SPLIT_RATIO = 0.25
-export const MAX_MESH_RSSI_SPLIT_RATIO = 0.75
+export const MIN_MESH_RSSI_SPLIT_RATIO = 0.35
+export const MAX_MESH_RSSI_SPLIT_RATIO = 0.65
 export const MESH_RSSI_SPLITTER_SIZE = 8
+export const MIN_MESH_RSSI_PANE_HEIGHT = 320
+export const MIN_LARGE_MESH_RSSI_PANE_HEIGHT = 400
+export const LARGE_MESH_RSSI_WORKSPACE_HEIGHT = (
+  MIN_LARGE_MESH_RSSI_PANE_HEIGHT * 2 + MESH_RSSI_SPLITTER_SIZE
+)
 
 export interface MeshRssiCompareLayout {
   workspaceHeight: number
@@ -46,7 +51,9 @@ export function resolveMeshRssiCompareLayout(
   const height = Number.isFinite(workspaceHeight)
     ? Math.max(0, Math.floor(workspaceHeight))
     : 0
-  const minimumPaneHeight = height < 620 ? 240 : 280
+  const minimumPaneHeight = height >= LARGE_MESH_RSSI_WORKSPACE_HEIGHT
+    ? MIN_LARGE_MESH_RSSI_PANE_HEIGHT
+    : MIN_MESH_RSSI_PANE_HEIGHT
   const minimumInnerHeight = minimumPaneHeight * 2 + MESH_RSSI_SPLITTER_SIZE
   const innerHeight = Math.max(height, minimumInnerHeight)
   const paneSpace = innerHeight - MESH_RSSI_SPLITTER_SIZE

@@ -9,11 +9,12 @@
 - 主链路建链顺序由 `MeshLinkAnalyzer` 经 `MeshMrRepository.query_active_link_build_order` 生成，页面 API、综合报告和链路明细导出不得各自重算区段、短时建链或乒乓结论。
 - 链路明细由 `MeshMrRepository.iter_link_details` 读取 compact v3 标量列；`timestamp_tag` 是采样身份的一部分，报告不得合并同毫秒的不同采样块。
 - 全部 ACTIVE RSSI 和空口负载复用 `mesh_chart_payload` 的唯一 ACTIVE 路径结果。RSSI 图固定为 MR/Peer 两条序列，空口负载图固定为 MR 侧 TxBusy/RxBusy 两条序列，不按 AP 数量扩增图例，也不伪造 CtlBusy。
-- 轨旁信号图独立采用 Trackside Link RSSI 语义：每个 frame 同时接收 ACTIVE 与 STANDBY 真实链路，序列按 Peer Radio/AP/Peer + 本地 Radio 保持稳定，角色只属于点。角色切换不拆图例或断线，链路消失后重现才开启新区段；Tooltip 通过外部 frame 索引显示同帧全部主备链路，并按 ACTIVE、STANDBY、AP/MAC 排序。
+- 轨旁信号图独立采用 Trackside Link RSSI 语义：每个 frame 同时接收 ACTIVE 与 STANDBY 真实链路，序列按内部 Peer Radio/AP/Peer + 本地 Radio 身份保持稳定，角色只属于点。角色切换不拆序列或断线，链路消失后重现才开启新区段；Tooltip 通过外部 frame 索引显示同帧全部主备链路，并按 ACTIVE、STANDBY、AP/MAC 排序。底部全量图例默认关闭；点击点和当前范围列表只公开 AP 名称、AP MAC、Radio 与原始轨旁 RSSI，不公开内部 Peer/series/run/link 身份。
 - 页面与报告通过 `MeshApLocationSnapshot` 共享 AP 名称、MAC、站点、区间、里程和线路方向解析；Export Job 只携带该快照的受控字符串字段。Excel 工作表保留完整业务数据，嵌入图表使用关键点和极值降采样，空 ACTIVE 不创建空图。
 - 正式报告继续由 Export Process 生成：Worker 写临时文件，完成后原子替换目标 Artifact；Renderer 不读取全量链路，也不生成 Excel。
 - 图表请求按 Radio/时间窗口使用 generation 防止迟到响应串回旧会话；单 AP 支持单次经过和全部经过时段，后者以 `gap_before` 强制断线。
 - 图表的 data/display/theme/resize/viewport/reset 更新分开处理：显示 Peer、切换时刻线、切换节点、站点区间带、主题和容器尺寸变化都保留真实毫秒视口，不把 `dataZoom` 重置到全日志。全部 ACTIVE RSSI 与轨旁信号图由父级提供同一个会话绝对时间域和带来源/revision 的 viewport，不按各自采样点吸附；程序化镜像更新使用静默 `dispatchAction`，组件通过 `getViewport/applyViewport/resetViewport/getVisibleTimeRange` 暴露同一契约。
+- RSSI 工作区以宿主元素的真实顶部位置计算剩余视口高度。对比模式默认 50/50，分隔比例限制为 35%～65%；2K 可用空间下每个 pane 至少 400px，较矮窗口至少 320px，不足时只滚动工作区。标题、告警和统计保持单行，图表组件自身不再声明固定最小高度。页面内“沉浸对比”仅收起非必要顶部区域，左侧导航、共享 viewport、缓存和两个 ECharts 实例保持不变；布局与分隔拖动只 resize。
 - 共享二维时间序列内核位于 `apps/web/src/components/charts/multiSeriesTimeChart.ts`。Online MR、离线 ACTIVE RSSI 与轨旁信号图统一 Canvas `useDirtyRect`、DPR 上限、图例/网格/dataZoom/toolbox/Tooltip 基础样式；轨旁大 payload 使用 `shallowRef + markRaw`，ECharts 点固定为 `[timestampMillis, rssi, metaId, roleCode]`，业务元数据只保存在外部 Map，不允许点引用完整 `meta`、`seriesMeta` 或原始 `points`。视口、位置带、主题和 resize 不重复排序或复制数万点。小数据用实心/空心圆区分主备点，大数据隐藏 symbol，禁止为角色生成额外 scatter 或 markLine。
 - 切换会话、来源、Radio 或重新请求前必须取消旧请求、拒绝迟到 generation、卸载旧图并清空 cache Map；组件卸载同时解除 ECharts、ZRender、Resize/Window 监听和计时器。父级在每个轨旁渲染阶段最多上报一次严格 workload 快照，禁止在 dataZoom 中高频上报。
 - “锁定当前时间范围”只保存在当前页面运行期；切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。锁定后查询空口负载会携带同一来源、Radio、模式、锚点、全部经过标记及 `time_from/time_to` 重新请求后端，RSSI 与 Busy 使用独立响应和视口状态。

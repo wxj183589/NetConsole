@@ -27,6 +27,8 @@ export interface MultiSeriesTimeChartBaseOptions {
   pointCount: number
   fullDomain?: TimeChartDomain | null
   viewport?: TimeChartViewportValues | null
+  showLegend?: boolean
+  reserveLegendSpace?: boolean
 }
 
 export function isLargeTimeChart(pointCount: number): boolean {
@@ -93,6 +95,8 @@ export function createMultiSeriesTimeChartBaseOption(
 ): Record<string, unknown> {
   const axis = createNetConsoleAxisStyle(theme)
   const largeMode = isLargeTimeChart(options.pointCount)
+  const showLegend = options.showLegend !== false
+  const reserveLegendSpace = options.reserveLegendSpace !== false
   return {
     animation: false,
     color: theme.series,
@@ -113,7 +117,9 @@ export function createMultiSeriesTimeChartBaseOption(
       ...createNetConsoleTooltipStyle(theme),
       textStyle: { color: theme.text, fontSize: 12, lineHeight: 20 },
     },
-    legend: { type: 'scroll', bottom: 2, ...createNetConsoleLegendStyle(theme) },
+    legend: showLegend
+      ? { type: 'scroll', bottom: 2, ...createNetConsoleLegendStyle(theme) }
+      : { show: false, data: [] },
     toolbox: {
       right: 8,
       feature: {
@@ -122,7 +128,7 @@ export function createMultiSeriesTimeChartBaseOption(
         saveAsImage: { title: '保存图像', pixelRatio: 2 },
       },
     },
-    grid: { left: 58, right: 24, top: 32, bottom: 72, containLabel: true },
+    grid: { left: 58, right: 24, top: 32, bottom: reserveLegendSpace ? 72 : 52, containLabel: true },
     xAxis: {
       type: 'time',
       min: options.fullDomain?.full_start_time,
@@ -152,7 +158,7 @@ export function createMultiSeriesTimeChartBaseOption(
       {
         type: 'slider',
         height: 18,
-        bottom: 28,
+        bottom: reserveLegendSpace ? 28 : 12,
         filterMode: 'none',
         minValueSpan: MIN_TIME_CHART_VIEWPORT_SPAN_MS,
         startValue: options.viewport?.start_time,

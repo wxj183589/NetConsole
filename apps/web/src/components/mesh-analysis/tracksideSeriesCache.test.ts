@@ -9,6 +9,7 @@ import {
   disposeTracksideSeriesCache,
   findTracksideFrameMetaIds,
   tracksidePointMeta,
+  tracksideViewportSeriesItems,
 } from './tracksideSeriesCache'
 
 function point(timestamp: string, run: number, breakBefore = false): MeshTracksideSignalPointData {
@@ -130,6 +131,70 @@ describe('trackside compact series cache', () => {
     expect(roles).toEqual(['ACTIVE', 'STANDBY'])
   })
 
+  it('finds only viewport series with inclusive boundaries and pointer-or-latest RSSI values', () => {
+    const start = Date.parse('2026-07-20 10:00:10.000')
+    const end = Date.parse('2026-07-20 10:00:20.000')
+    const source = [
+      { ...series([point('2026-07-20 10:00:09.000', 1)]), series_id: 'ap-a', peer_name: 'AP-A' },
+      { ...series([point('2026-07-20 10:00:10.000', 2)]), series_id: 'ap-b', peer_name: 'AP-B' },
+      {
+        ...series([{
+          ...point('2026-07-20 10:00:15.000', 3),
+          peer_rssi: null,
+          peer_signal: 35,
+        }]),
+        series_id: 'ap-c',
+        peer_name: 'AP-C',
+      },
+      { ...series([point('2026-07-20 10:00:20.001', 4)]), series_id: 'ap-d', peer_name: 'AP-D' },
+    ]
+    const cache = buildTracksideSeriesCache(source)
+
+    const latest = tracksideViewportSeriesItems(cache, start, end)
+    expect(latest.map((item) => item.seriesId)).toEqual(['ap-b', 'ap-c'])
+    expect(latest.map((item) => item.rssi)).toEqual([42, 35])
+    expect(latest.every((item) => item.rssiSource === 'latest')).toBe(true)
+
+    const pointer = tracksideViewportSeriesItems(cache, start, end, Date.parse('2026-07-20 10:00:15.000'))
+    expect(pointer.find((item) => item.seriesId === 'ap-c')).toMatchObject({
+      rssi: 35,
+      rssiSource: 'pointer',
+    })
+  })
+
+  it('keeps missing trackside RSSI empty and retains peer radio identity only inside the cache', () => {
+    const missing = {
+      ...point('2026-07-20 10:00:00.000', 1),
+      peer_rssi: null,
+      peer_signal: null,
+      peer_radio_mac: 'bc5a-3457-3a0f',
+    }
+    const first = {
+      ...series([missing]),
+      series_id: 'radio-bssid-a',
+      peer_radio_mac: 'bc5a-3457-3a0f',
+    }
+    const second = {
+      ...series([{ ...missing, peer_radio_mac: 'bc5a-3457-3a1f' }]),
+      series_id: 'radio-bssid-b',
+      peer_radio_mac: 'bc5a-3457-3a1f',
+    }
+    const cache = buildTracksideSeriesCache([first, second])
+    const items = tracksideViewportSeriesItems(
+      cache,
+      Date.parse('2026-07-20 10:00:00.000'),
+      Date.parse('2026-07-20 10:00:00.000'),
+    )
+
+    expect(cache.series).toHaveLength(2)
+    expect(cache.seriesMetaById.get(first.series_id)?.peerRadioMac).toBe(first.peer_radio_mac)
+    expect(cache.seriesMetaById.get(second.series_id)?.peerRadioMac).toBe(second.peer_radio_mac)
+    expect(items).toHaveLength(2)
+    expect(items.every((item) => item.rssi === null)).toBe(true)
+    expect(items[0]).not.toHaveProperty('peerRadioMac')
+    expect(items[0]).not.toHaveProperty('peerMac')
+  })
+
   it('clears every retained collection when a session cache is released', () => {
     const cache = buildTracksideSeriesCache([series([point('2026-07-20 10:00:00.000', 1)])])
     disposeTracksideSeriesCache(cache)
@@ -188,6 +253,34 @@ describe('trackside compact series cache', () => {
     disposeTracksideSeriesCache(cache)
     expect(cache.pointMetaById.size).toBe(0)
     expect(cache.series).toHaveLength(0)
+  })
+
+  it('computes 100 viewport lists for 481 sorted series without rebuilding chart data', () => {
+    const source = Array.from({ length: 481 }, (_, seriesIndex) => ({
+      ...series(Array.from({ length: 24 }, (_, pointIndex) => ({
+        ...point(new Date(Date.UTC(2026, 6, 20, 10, 0, pointIndex)).toISOString(), 1),
+        peer_ap_name: `AP-${seriesIndex}`,
+      }))),
+      series_id: `series-${seriesIndex}`,
+      peer_name: `AP-${seriesIndex}`,
+    }))
+    const cache = buildTracksideSeriesCache(source)
+    const firstDataReference = cache.series[0].data
+    const started = performance.now()
+    let visibleCount = 0
+    for (let index = 0; index < 100; index += 1) {
+      visibleCount = tracksideViewportSeriesItems(
+        cache,
+        Date.parse('2026-07-20T10:00:08.000Z'),
+        Date.parse('2026-07-20T10:00:12.000Z'),
+      ).length
+    }
+    const computeMs = performance.now() - started
+    console.info(`trackside viewport list profile: totalSeries=481 visibleSeriesInViewport=${visibleCount} compute100=${computeMs.toFixed(3)}ms`)
+
+    expect(visibleCount).toBe(481)
+    expect(cache.series[0].data).toBe(firstDataReference)
+    expect(computeMs).toBeLessThan(2_000)
   })
 
   it('releases ten consecutive session caches instead of retaining old payload indexes', () => {

@@ -36,6 +36,8 @@ describe('useAvailablePanelHeight', () => {
   it('uses the viewport remainder while preserving the minimum', () => {
     expect(measureAvailablePanelHeight(1080, 430, { minHeight: 420, bottomGap: 70 })).toBe(580)
     expect(measureAvailablePanelHeight(720, 430, { minHeight: 420, bottomGap: 70 })).toBe(420)
+    expect(measureAvailablePanelHeight(1440, 280, { minHeight: 320, bottomGap: 16 })).toBe(1_144)
+    expect(measureAvailablePanelHeight(1080, 300, { minHeight: 320, bottomGap: 16 })).toBe(764)
   })
 
   it('recalculates after layout and resize observer changes', async () => {

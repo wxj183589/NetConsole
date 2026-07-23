@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   DEFAULT_MESH_RSSI_SPLIT_RATIO,
+  MIN_MESH_RSSI_PANE_HEIGHT,
   MESH_RSSI_SPLITTER_SIZE,
   normalizeMeshRssiSplitRatio,
   resolveMeshRssiCompareLayout,
@@ -34,7 +35,7 @@ const compareLayout = computed(() => resolveMeshRssiCompareLayout(
 const canvasStyle = computed(() => {
   if (props.mode !== 'compare') {
     return {
-      height: `${Math.max(240, Math.floor(props.workspaceHeight))}px`,
+      height: `${Math.max(MIN_MESH_RSSI_PANE_HEIGHT, Math.floor(props.workspaceHeight))}px`,
       gridTemplateRows: 'minmax(0, 1fr)',
     }
   }

@@ -25,7 +25,12 @@ const echartsMock = vi.hoisted(() => {
     convertToPixel: vi.fn(() => 320),
     getZr: vi.fn(() => zrender),
   }
-  return { chart, zrender, init: vi.fn(() => chart), use: vi.fn() }
+  return {
+    chart,
+    zrender,
+    init: vi.fn(() => chart),
+    use: vi.fn(),
+  }
 })
 
 vi.mock('echarts/core', () => ({ init: echartsMock.init, use: echartsMock.use }))
@@ -194,7 +199,9 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.init).toHaveBeenCalledTimes(1)
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       yAxis: { name: string }
-      legend: { type?: string }
+      legend: { show?: boolean; data?: unknown[] }
+      grid: { bottom: number }
+      dataZoom: Array<{ bottom?: number }>
       series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<[number, number | null, number, number]> }>
       tooltip: {
         formatter: (params: unknown) => string
@@ -219,7 +226,9 @@ describe('MESH charts mount and render', () => {
     expect(option.series[0].showSymbol).toBe(true)
     expect(option.series[0].data?.[0]?.slice(0, 2)).toEqual([Date.parse(tracksideChartPoint.timestamp), -45])
     expect(option.series[1].data?.[0]?.slice(0, 2)).toEqual([Date.parse(tracksideSecondPoint.timestamp), -62])
-    expect(option.legend.type).toBe('scroll')
+    expect(option.legend).toEqual({ show: false, data: [] })
+    expect(option.grid.bottom).toBe(52)
+    expect(option.dataZoom[1].bottom).toBe(12)
     expect(option.toolbox.feature.dataZoom).toBeDefined()
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
@@ -264,6 +273,108 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
   })
 
+  it('selects real trackside samples and shows only AP identity, Radio, and raw trackside RSSI', async () => {
+    const firstPoint = {
+      ...tracksideChartPoint,
+      timestamp: '2026-07-20T10:00:00.000Z',
+      peer_ap_name: '鼓楼上行 AP-12',
+      peer_ap_mac: '4073-4d64-e180',
+      peer_radio_mac: '4073-4d64-e18f',
+      peer_rssi: 37,
+      peer_signal: 57,
+    }
+    const fallbackPoint = {
+      ...firstPoint,
+      timestamp: '2026-07-20T10:00:01.000Z',
+      peer_rssi: null,
+      peer_signal: 35,
+    }
+    const missingPoint = {
+      ...firstPoint,
+      timestamp: '2026-07-20T10:00:02.000Z',
+      peer_rssi: null,
+      peer_signal: null,
+    }
+    const unnamedPoint = {
+      ...tracksideSecondPoint,
+      timestamp: '2026-07-20T10:00:01.000Z',
+      peer_ap_name: null,
+      peer_ap_mac: '4073-4d64-e200',
+      peer_radio_mac: '4073-4d64-e20f',
+      peer_rssi: 33,
+    }
+    const selectionSeries: MeshTracksideSignalSeriesData[] = [{
+      ...tracksideSeries[0],
+      peer_name: firstPoint.peer_ap_name,
+      ap_mac: firstPoint.peer_ap_mac,
+      peer_radio_mac: firstPoint.peer_radio_mac,
+      total_points: 3,
+      returned_points: 3,
+      points: [firstPoint, fallbackPoint, missingPoint],
+    }, {
+      ...tracksideSeries[1],
+      peer_name: null,
+      ap_mac: unnamedPoint.peer_ap_mac,
+      peer_radio_mac: unnamedPoint.peer_radio_mac,
+      points: [unnamedPoint],
+    }]
+    const wrapper = mount(MeshTracksideSignalChart, { props: { series: selectionSeries } })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ id: string; data: Array<[number, number | null, number, number]> }>
+    }
+    const setOptionCountBeforeSelection = echartsMock.chart.setOption.mock.calls.length
+    const dispatchCountBeforeSelection = echartsMock.chart.dispatchAction.mock.calls.length
+    const selectedDataReference = option.series[0].data
+    const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
+    click({ seriesId: selectionSeries[0].series_id, data: option.series[0].data[0] })
+    await nextTick()
+
+    expect(wrapper.text()).toContain('已选 AP：鼓楼上行 AP-12')
+    expect(wrapper.text()).toContain('AP MAC：40734d64e180')
+    expect(wrapper.text()).toContain('Radio：1')
+    expect(wrapper.text()).toContain('轨旁 RSSI：37')
+    expect(wrapper.text()).not.toContain('轨旁 RSSI：-37')
+    expect(wrapper.text()).not.toMatch(/Peer Radio MAC|peer_radio_mac|Peer MAC|dBm/i)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(setOptionCountBeforeSelection)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledTimes(dispatchCountBeforeSelection)
+    expect(option.series[0].data).toBe(selectedDataReference)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+
+    click({ seriesId: selectionSeries[0].series_id, data: option.series[0].data[1] })
+    await nextTick()
+    expect(wrapper.text()).toContain('轨旁 RSSI：35')
+
+    click({ seriesId: selectionSeries[0].series_id, data: option.series[0].data[2] })
+    await nextTick()
+    expect(wrapper.text()).toContain('轨旁 RSSI：—')
+
+    const details = wrapper.find('details')
+    ;(details.element as HTMLDetailsElement).open = true
+    await details.trigger('toggle')
+    expect(wrapper.text()).toContain('当前范围 AP（2）')
+    expect(wrapper.text()).toContain('4073-4d64-e200')
+    expect(wrapper.text()).toContain('40734d64e200 · Radio 1 · 最新 RSSI 33')
+    expect(wrapper.text()).not.toMatch(/Peer Radio MAC|peer_radio_mac|Peer MAC|series_id|run_id|link_id/i)
+
+    const blankClick = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
+    blankClick({})
+    await nextTick()
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(false)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(setOptionCountBeforeSelection)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledTimes(dispatchCountBeforeSelection)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+
+    click({ seriesId: selectionSeries[0].series_id, data: option.series[0].data[0] })
+    await nextTick()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
   it('switches RSSI layouts twenty times without rebuilding or disposing charts', async () => {
     const Harness = defineComponent({
       setup(_, { expose }) {
@@ -297,6 +408,18 @@ describe('MESH charts mount and render', () => {
     const wrapper = mount(Harness)
     await flushPromises()
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const tracksideOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ id: string; data: Array<[number, number | null, number, number]> }>
+    }
+    const tracksideClick = echartsMock.chart.on.mock.calls
+      .filter(([event]) => event === 'click')
+      .at(-1)?.[1] as (payload: unknown) => void
+    tracksideClick({
+      seriesId: tracksideSeries[0].series_id,
+      data: tracksideOption.series[0].data[0],
+    })
+    await nextTick()
+    expect(wrapper.text()).toContain('已选 AP：AP-1')
     const initialSetOptionCalls = echartsMock.chart.setOption.mock.calls.length
     const startedAt = performance.now()
 
@@ -315,6 +438,7 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCalls)
     expect(echartsMock.chart.resize).toHaveBeenCalled()
     expect(echartsMock.chart.dispose).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('已选 AP：AP-1')
     wrapper.unmount()
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(2)
   })
@@ -400,10 +524,12 @@ describe('MESH charts mount and render', () => {
     }
 
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(10)
-    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(10)
-    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(10)
+    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(20)
+    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(20)
     expect(addListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
     expect(removeListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
+    expect(addListener.mock.calls.filter(([event]) => event === 'keydown')).toHaveLength(10)
+    expect(removeListener.mock.calls.filter(([event]) => event === 'keydown')).toHaveLength(10)
     expect(caches.every((cache) => cache.disposed && cache.pointMetaById.size === 0)).toBe(true)
   })
 

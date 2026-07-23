@@ -198,7 +198,14 @@ app.whenReady().then(async () => {
             return [timestampMillis, point.peer_rssi, id, roleCode]
           })
           dataIndexToMetaId.set(source.series_id, metaIds)
-          return { id: source.series_id, name: seriesMeta.name, data, meta: seriesMeta }
+          return {
+            id: source.series_id,
+            name: seriesMeta.name,
+            data,
+            meta: seriesMeta,
+            firstTimestampMillis: data[0]?.[0] ?? null,
+            lastTimestampMillis: data.at(-1)?.[0] ?? null,
+          }
         })
         return {
           series,
@@ -218,6 +225,30 @@ app.whenReady().then(async () => {
         cache.dataIndexToMetaId.clear()
         cache.frameMetaIds.clear()
         cache.frameTimestamps.length = 0
+      }
+
+      function lowerBound(data, timestampMillis) {
+        let low = 0
+        let high = data.length
+        while (low < high) {
+          const middle = (low + high) >>> 1
+          if (data[middle][0] < timestampMillis) low = middle + 1
+          else high = middle
+        }
+        return low
+      }
+
+      function viewportSeries(cache, startMillis, endMillis) {
+        return cache.series.filter((item) => {
+          if (
+            item.firstTimestampMillis == null
+            || item.lastTimestampMillis == null
+            || item.lastTimestampMillis < startMillis
+            || item.firstTimestampMillis > endMillis
+          ) return false
+          const index = lowerBound(item.data, startMillis)
+          return index < item.data.length && item.data[index][0] <= endMillis
+        })
       }
 
       function escapeTooltipHtml(value) {
@@ -250,7 +281,7 @@ app.whenReady().then(async () => {
           return '<strong>' + symbol + ' ' + entry.role + '　'
             + escapeTooltipHtml(entry.peerApName || entry.peerMac || '轨旁 AP 未知')
             + ' · Radio ' + escapeTooltipHtml(entry.localRadio) + '</strong>'
-            + '<br>轨旁 / MR RSSI：' + escapeTooltipHtml(entry.rssi) + ' / ' + escapeTooltipHtml(entry.localRssi) + ' dBm'
+            + '<br>轨旁 / MR RSSI：' + escapeTooltipHtml(entry.rssi) + ' / ' + escapeTooltipHtml(entry.localRssi)
             + '<br>站点 / 区间：' + escapeTooltipHtml(entry.station) + ' / ' + escapeTooltipHtml(entry.section)
             + duration
         })
@@ -265,7 +296,7 @@ app.whenReady().then(async () => {
             transitionDuration: 0,
             axisPointer: { type: 'line', snap: false },
           },
-          legend: { type: 'scroll', bottom: 2 },
+          legend: { show: false, data: [] },
           toolbox: {
             right: 8,
             feature: {
@@ -274,12 +305,12 @@ app.whenReady().then(async () => {
               saveAsImage: { pixelRatio: 2 },
             },
           },
-          grid: { left: 58, right: 24, top: 32, bottom: 72, containLabel: true },
+          grid: { left: 58, right: 24, top: 32, bottom: 52, containLabel: true },
           xAxis: { type: 'time', minInterval: 1000 },
-          yAxis: { type: 'value', name: 'dBm' },
+          yAxis: { type: 'value', name: 'RSSI' },
           dataZoom: [
             { type: 'inside', filterMode: 'none', minValueSpan: 1000 },
-            { type: 'slider', height: 18, bottom: 28, filterMode: 'none', minValueSpan: 1000 },
+            { type: 'slider', height: 18, bottom: 12, filterMode: 'none', minValueSpan: 1000 },
           ],
           series: cache.series.map((item) => ({
             id: item.id,
@@ -328,6 +359,18 @@ app.whenReady().then(async () => {
       let layoutSwitchDisposeDelta = 0
       let layoutSwitchHeapGrowthBytes = null
       let layoutSwitchSteadyHeapGrowthBytes = null
+      let visibleSeriesInViewport = 0
+      let viewportListComputeAverageMs = 0
+      let viewportListComputeMaximumMs = 0
+      let selectedSeriesId = null
+      let selectionStyleUpdateAverageMs = 0
+      let selectionStyleUpdateMaximumMs = 0
+      let selectionHeapGrowthBytes = null
+      let selectionSteadyHeapGrowthBytes = null
+      let selectionDataReferencesPreserved = false
+      let selectionInitDelta = 0
+      let selectionSetOptionDelta = 0
+      let selectionDisposeDelta = 0
 
       for (let sessionIndex = 0; sessionIndex < SESSION_COUNT; sessionIndex += 1) {
         await collectGarbage()
@@ -401,6 +444,66 @@ app.whenReady().then(async () => {
           renderer = chart.getZr().painter.getType()
           dirtyRectEnabled = chart.getZr().painter._opts?.useDirtyRect === true
           devicePixelRatio = chart.getDevicePixelRatio()
+          const viewportListDurations = []
+          for (let viewportIndex = 0; viewportIndex < 100; viewportIndex += 1) {
+            const startIndex = viewportIndex * 137 % Math.max(1, cache.frameTimestamps.length - 50)
+            const viewportStarted = performance.now()
+            visibleSeriesInViewport = viewportSeries(
+              cache,
+              cache.frameTimestamps[startIndex],
+              cache.frameTimestamps[Math.min(cache.frameTimestamps.length - 1, startIndex + 50)],
+            ).length
+            viewportListDurations.push(performance.now() - viewportStarted)
+          }
+          viewportListComputeAverageMs = viewportListDurations.reduce((total, value) => total + value, 0) / viewportListDurations.length
+          viewportListComputeMaximumMs = Math.max(...viewportListDurations)
+
+          const selectionDataReferences = cache.series.map((item) => item.data)
+          const initBeforeSelections = chartInitCount
+          const setOptionBeforeSelections = chartSetOptionCount
+          const disposeBeforeSelections = chartDisposeCount
+          const selectionDurations = []
+          const selectionStatus = document.createElement('div')
+          document.body.append(selectionStatus)
+          await collectGarbage()
+          const selectionHeapBefore = heap()
+          const runSelectionBatch = async (offset) => {
+            for (let selectionIndex = 0; selectionIndex < 100; selectionIndex += 1) {
+              const selected = cache.series[(selectionIndex + offset) % cache.series.length]
+              selectedSeriesId = selected.id
+              const selectionStarted = performance.now()
+              const point = cache.pointMetaById.get(selected.data[0]?.[2])
+              selectionStatus.textContent = [
+                selected.meta.peerName || selected.meta.apMac || '轨旁 AP 未知',
+                selected.meta.apMac || '—',
+                'Radio ' + (selected.meta.radio ?? '—'),
+                'RSSI ' + (point?.rssi ?? '—'),
+              ].join(' · ')
+              selectionDurations.push(performance.now() - selectionStarted)
+            }
+          }
+          await runSelectionBatch(0)
+          await waitTwoFrames()
+          await collectGarbage()
+          const selectionHeapAfterFirstBatch = heap()
+          selectionHeapGrowthBytes = selectionHeapBefore == null || selectionHeapAfterFirstBatch == null
+            ? null
+            : selectionHeapAfterFirstBatch - selectionHeapBefore
+          await runSelectionBatch(100)
+          await waitTwoFrames()
+          await collectGarbage()
+          const selectionHeapAfterSecondBatch = heap()
+          selectionSteadyHeapGrowthBytes = selectionHeapAfterFirstBatch == null || selectionHeapAfterSecondBatch == null
+            ? null
+            : selectionHeapAfterSecondBatch - selectionHeapAfterFirstBatch
+          selectionStyleUpdateAverageMs = selectionDurations.reduce((total, value) => total + value, 0) / selectionDurations.length
+          selectionStyleUpdateMaximumMs = Math.max(...selectionDurations)
+          selectionDataReferencesPreserved = cache.series.every((item, index) => item.data === selectionDataReferences[index])
+          selectionInitDelta = chartInitCount - initBeforeSelections
+          selectionSetOptionDelta = chartSetOptionCount - setOptionBeforeSelections
+          selectionDisposeDelta = chartDisposeCount - disposeBeforeSelections
+          selectionStatus.remove()
+
           chart.dispatchAction({ type: 'dataZoom', start: 20, end: 60 }, { silent: true })
           await waitFrame()
           const viewportBefore = JSON.stringify((chart.getOption().dataZoom || []).map((item) => ({
@@ -477,6 +580,22 @@ app.whenReady().then(async () => {
         renderer,
         dirty_rect_enabled: dirtyRectEnabled,
         device_pixel_ratio: devicePixelRatio,
+        legend_enabled: false,
+        selected_series_id: selectedSeriesId,
+        visible_series_in_viewport: visibleSeriesInViewport,
+        viewport_list_iterations: 100,
+        viewport_list_compute_average_ms: Number(viewportListComputeAverageMs.toFixed(3)),
+        viewport_list_compute_maximum_ms: Number(viewportListComputeMaximumMs.toFixed(3)),
+        selection_iterations_per_batch: 100,
+        selection_total_iterations: 200,
+        selection_style_update_average_ms: Number(selectionStyleUpdateAverageMs.toFixed(3)),
+        selection_style_update_maximum_ms: Number(selectionStyleUpdateMaximumMs.toFixed(3)),
+        selection_heap_growth_bytes: selectionHeapGrowthBytes,
+        selection_steady_heap_growth_bytes: selectionSteadyHeapGrowthBytes,
+        selection_series_data_references_preserved: selectionDataReferencesPreserved,
+        selection_echarts_init_delta: selectionInitDelta,
+        selection_echarts_set_option_delta: selectionSetOptionDelta,
+        selection_echarts_dispose_delta: selectionDisposeDelta,
         api_payload_bytes: apiPayloadBytes,
         vue_shallow_payload_install_ms: Number(payloadInstallMs.toFixed(3)),
         compact_cache_build_ms: Number(cacheBuildMs.toFixed(3)),

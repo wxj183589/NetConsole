@@ -79,6 +79,34 @@ describe('shared multi-series time chart core', () => {
     expect(formatTimeChartAxisSecond('2026-07-20T10:00:00.181Z')).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   })
 
+  it('can hide one chart legend and release its reserved bottom space without changing defaults', () => {
+    const hidden = createMultiSeriesTimeChartBaseOption(theme, {
+      unit: 'RSSI',
+      pointCount: 481,
+      showLegend: false,
+      reserveLegendSpace: false,
+    }) as {
+      legend: { show: boolean; data: unknown[] }
+      grid: { bottom: number }
+      dataZoom: Array<{ bottom?: number }>
+    }
+    expect(hidden.legend).toEqual({ show: false, data: [] })
+    expect(hidden.grid.bottom).toBe(52)
+    expect(hidden.dataZoom[1].bottom).toBe(12)
+
+    const regular = createMultiSeriesTimeChartBaseOption(theme, {
+      unit: 'Mbps',
+      pointCount: 2,
+    }) as {
+      legend: { show?: boolean }
+      grid: { bottom: number }
+      dataZoom: Array<{ bottom?: number }>
+    }
+    expect(regular.legend.show).not.toBe(false)
+    expect(regular.grid.bottom).toBe(72)
+    expect(regular.dataZoom[1].bottom).toBe(28)
+  })
+
   it('disables symbols and emphasis in large mode and keeps AP/Radio colors stable', () => {
     expect(createTimeChartLinePresentation(14_581)).toMatchObject({
       showSymbol: false,

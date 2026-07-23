@@ -36,11 +36,12 @@ describe('Mesh RSSI chart workspace', () => {
     vi.unstubAllGlobals()
   })
 
-  it('fits both panes in one 2K workspace and uses limited internal scroll when short', () => {
+  it('gives both panes readable 2K heights and uses workspace scrolling when short', () => {
     for (const height of [900, 1_060]) {
       const layout = resolveMeshRssiCompareLayout(height, 0.5)
-      expect(layout.activePaneHeight).toBeGreaterThanOrEqual(300)
-      expect(layout.tracksidePaneHeight).toBeGreaterThanOrEqual(300)
+      expect(layout.activePaneHeight).toBeGreaterThanOrEqual(400)
+      expect(layout.tracksidePaneHeight).toBeGreaterThanOrEqual(400)
+      expect(Math.abs(layout.activePaneHeight - layout.tracksidePaneHeight)).toBeLessThanOrEqual(1)
       expect(
         layout.activePaneHeight + layout.tracksidePaneHeight + 8,
       ).toBe(height)
@@ -48,13 +49,13 @@ describe('Mesh RSSI chart workspace', () => {
     }
 
     const short = resolveMeshRssiCompareLayout(560, 0.25)
-    expect(short.minimumPaneHeight).toBe(240)
-    expect(short.activePaneHeight).toBeGreaterThanOrEqual(240)
-    expect(short.tracksidePaneHeight).toBeGreaterThanOrEqual(240)
-    expect(short.scrollable).toBe(false)
+    expect(short.minimumPaneHeight).toBe(320)
+    expect(short.activePaneHeight).toBe(320)
+    expect(short.tracksidePaneHeight).toBe(320)
+    expect(short.scrollable).toBe(true)
 
     const veryShort = resolveMeshRssiCompareLayout(420, 0.75)
-    expect(veryShort.innerHeight).toBe(488)
+    expect(veryShort.innerHeight).toBe(648)
     expect(veryShort.scrollable).toBe(true)
   })
 
@@ -101,7 +102,7 @@ describe('Mesh RSSI chart workspace', () => {
 
     await wrapper.setProps({ workspaceHeight: 420 })
     expect(wrapper.find('.mesh-rssi-workspace__canvas').attributes('style')).toContain(
-      'grid-template-rows: 240px 8px 240px',
+      'grid-template-rows: 320px 8px 320px',
     )
     expect(wrapper.attributes('data-scrollable')).toBe('true')
     await flushPromises()
@@ -140,8 +141,12 @@ describe('Mesh RSSI chart workspace', () => {
     await splitter.trigger('pointerup', { pointerId: 7, clientY: -1_000 })
 
     expect(setPointerCapture).toHaveBeenCalledWith(7)
-    expect(wrapper.emitted('update:splitRatio')?.at(-1)).toEqual([0.25])
+    expect(wrapper.emitted('update:splitRatio')?.at(-1)).toEqual([0.35])
     expect(releasePointerCapture).toHaveBeenCalledWith(7)
+    await splitter.trigger('pointerdown', { button: 0, pointerId: 9, clientY: 704 })
+    await splitter.trigger('pointermove', { pointerId: 9, clientY: 10_000 })
+    await splitter.trigger('pointerup', { pointerId: 9, clientY: 10_000 })
+    expect(wrapper.emitted('update:splitRatio')?.at(-1)).toEqual([0.65])
     await splitter.trigger('dblclick')
     expect(wrapper.emitted('update:splitRatio')?.at(-1)).toEqual([0.5])
     expect(wrapper.emitted('resize')?.length).toBeGreaterThan(0)
@@ -161,7 +166,7 @@ describe('Mesh RSSI chart workspace', () => {
     )).toBe(0.65)
 
     await saveUiPreference('mesh-analysis-rssi.layout-mode', 'fullscreen')
-    await saveUiPreference('mesh-analysis-rssi.compare-split-ratio', 0.9)
+    await saveUiPreference('mesh-analysis-rssi.compare-split-ratio', 0.25)
     expect(normalizeMeshRssiLayoutMode(
       await loadUiPreference('mesh-analysis-rssi.layout-mode', 'compare'),
     )).toBe('compare')

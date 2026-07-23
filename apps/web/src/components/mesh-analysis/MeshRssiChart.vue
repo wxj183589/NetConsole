@@ -455,7 +455,7 @@ defineExpose({
 </template>
 
 <style scoped>
-.chart-shell { position: relative; height: 100%; min-height: 240px; width: 100%; }
-.chart { height: 100%; min-height: 240px; width: 100%; min-width: 0; }
+.chart-shell { position: relative; height: 100%; min-height: 0; width: 100%; }
+.chart { height: 100%; min-height: 0; width: 100%; min-width: 0; }
 .empty { position: absolute; inset: 0; pointer-events: none; }
 </style>

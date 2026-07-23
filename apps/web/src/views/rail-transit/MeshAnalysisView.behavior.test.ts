@@ -113,6 +113,9 @@ const dialogStub = defineComponent({
   inheritAttrs: false,
   setup(_props, { slots }) { const attrs = useAttrs(); return () => h('div', attrs, [slots.default?.(), slots.footer?.()]) },
 })
+const popoverStub = defineComponent({
+  setup(_props, { slots }) { return () => h('div', [slots.reference?.(), slots.default?.()]) },
+})
 const chartViewport = {
   start_time: '2026-07-20 10:00:01.123',
   end_time: '2026-07-20 10:00:03.456',
@@ -163,6 +166,7 @@ const stubs: Record<string, Component | boolean> = {
   ElIcon: passthrough,
   ElOption: optionStub,
   ElPagination: passthrough,
+  ElPopover: popoverStub,
   ElSelect: selectStub,
   ElTabPane: passthrough,
   ElTabs: passthrough,
@@ -524,6 +528,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(tracksideChart?.props('active')).toBe(true)
     expect(wrapper.text()).toContain(`最早 ${fullStart}`)
     expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
+    expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('false')
 
     const initialActiveCalls = mocks.getActivePath.mock.calls.length
     const initialTracksideCalls = mocks.getTracksideSignal.mock.calls.length
@@ -544,6 +549,16 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.chartResize).toHaveBeenCalled()
 
     await layoutButton('对比').trigger('click')
+    await layoutButton('沉浸对比').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.mesh-page').classes()).toContain('is-rssi-immersive')
+    expect(tracksideChart?.props('seriesCache')).toBe(initialCache)
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(initialActiveCalls)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(initialTracksideCalls)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('.mesh-page').classes()).not.toContain('is-rssi-immersive')
+
     await layoutButton('主链').trigger('click')
     await flushPromises()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
@@ -587,6 +602,8 @@ describe('Mesh analysis detail behavior', () => {
       end_time: fullEnd,
     })
 
+    await wrapper.find('.sessions-toggle').trigger('click')
+    await flushPromises()
     const openAgain = wrapper.findAll('button').find((button) => button.text() === '查看')
     await openAgain!.trigger('click')
     await flushPromises()

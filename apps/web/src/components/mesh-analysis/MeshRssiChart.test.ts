@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './MeshRssiChart.vue?raw'
+import tracksideSource from './MeshTracksideSignalChart.vue?raw'
 
 describe('MeshRssiChart', () => {
   it('resizes hidden tabs and releases chart resources', () => {
@@ -12,6 +13,10 @@ describe('MeshRssiChart', () => {
     expect(source).toContain('chart?.dispose()')
     expect(source).toContain('function resize(): void')
     expect(source).toContain('if (!props.active || !chart) return')
+    expect(source).toContain('.chart { height: 100%; min-height: 0;')
+    expect(tracksideSource).toContain('.chart { height: 100%; min-height: 0;')
+    expect(source).not.toContain('min-height: 240px')
+    expect(tracksideSource).not.toContain('min-height: 240px')
   })
 
   it('renders one ACTIVE path series with zoom and preloaded standby context', () => {

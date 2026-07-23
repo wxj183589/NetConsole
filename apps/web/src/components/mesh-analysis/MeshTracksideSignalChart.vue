@@ -39,10 +39,12 @@ import {
   disposeTracksideSeriesCache,
   findTracksideFrameMetaIds,
   tracksidePointMeta,
+  tracksideViewportSeriesItems,
   type CompactTracksideChartPoint,
   type CompactTracksidePointMeta,
   type CompactTracksideSeriesMeta,
   type TracksideSeriesCache,
+  type TracksideViewportSeriesItem,
 } from './tracksideSeriesCache'
 import {
   buildTracksideTooltip,
@@ -108,10 +110,32 @@ let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
 let pointerGlobalOut: (() => void) | null = null
+let zrenderBlankClick: ((event: { target?: unknown }) => void) | null = null
 let interactiveTimer: ReturnType<typeof setTimeout> | null = null
+let viewportListTimer: ReturnType<typeof setTimeout> | null = null
 let seriesCache: TracksideSeriesCache = markRaw(props.seriesCache ?? buildTracksideSeriesCache(props.series))
 const reportedPhases = new Set<string>()
 const guardedTooltipElements = new Set<HTMLElement>()
+const viewportSeries = ref<TracksideViewportListItem[]>([])
+const rangePanelOpen = ref(false)
+const selectedTracksideAp = ref<SelectedTracksideAp | null>(null)
+const selectedOutsideRange = ref(false)
+let lastViewportListComputeMs = 0
+let lastSelectionStyleUpdateMs = 0
+
+interface SelectedTracksideAp {
+  seriesId: string
+  metaId: number
+  timestampMillis: number
+  apName: string | null
+  apMac: string | null
+  radio: number | null
+  rssi: number | null
+}
+
+interface TracksideViewportListItem extends TracksideViewportSeriesItem {
+  color: string
+}
 
 const timestamps = (): string[] => [
   seriesCache.firstTimestampMillis,
@@ -141,9 +165,160 @@ function tracksideColorKey(series: CompactTracksideSeriesMeta): string {
   )
 }
 
+function compactMac(value: string | null | undefined): string {
+  const source = String(value || '').trim()
+  const normalized = source.toLowerCase().replace(/[^0-9a-f]/g, '')
+  return normalized.length === 12 ? normalized : source || '—'
+}
+
+function apDisplayName(value: { apName: string | null; apMac: string | null }): string {
+  const name = String(value.apName || '').trim()
+  const normalizedName = name.toLowerCase().replace(/[^0-9a-f]/g, '')
+  if (name && normalizedName.length !== 12) return name
+  const mac = compactMac(value.apMac || name)
+  return /^[0-9a-f]{12}$/.test(mac)
+    ? `${mac.slice(0, 4)}-${mac.slice(4, 8)}-${mac.slice(8)}`
+    : mac === '—' ? '轨旁 AP 未知' : mac
+}
+
+function displayRssi(value: number | null): string {
+  return value == null || !Number.isFinite(value) ? '—' : String(value)
+}
+
+function reportInteractionProfile(): void {
+  if (!import.meta.env.DEV) return
+  console.debug('trackside interaction profile', {
+    totalSeries: seriesCache.series.length,
+    visibleSeriesInViewport: viewportSeries.value.length,
+    legendEnabled: false,
+    selectedSeriesId: selectedTracksideAp.value?.seriesId || null,
+    viewportListComputeMs: Number(lastViewportListComputeMs.toFixed(3)),
+    selectionStyleUpdateMs: Number(lastSelectionStyleUpdateMs.toFixed(3)),
+  })
+}
+
+function recordSelectionUpdate(): void {
+  const started = performance.now()
+  lastSelectionStyleUpdateMs = performance.now() - started
+  if (rangePanelOpen.value) reportInteractionProfile()
+}
+
+function selectedSeriesColor(): string {
+  const series = seriesCache.seriesMetaById.get(selectedTracksideAp.value?.seriesId || '')
+  const theme = readNetConsoleChartTokens()
+  return series
+    ? stableTimeChartSeriesColor(tracksideColorKey(series), theme.series) || theme.textSecondary
+    : theme.textSecondary
+}
+
+function currentViewportBounds(): [number, number] | null {
+  const viewport = currentViewport || props.syncViewport || props.initialViewport || fullViewport()
+  const start = meshTimestampMillis(viewport?.start_time)
+  const end = meshTimestampMillis(viewport?.end_time)
+  return start === null || end === null ? null : [start, end]
+}
+
+function updateSelectedRangeStatus(): void {
+  const selected = selectedTracksideAp.value
+  const bounds = currentViewportBounds()
+  selectedOutsideRange.value = Boolean(
+    selected
+    && bounds
+    && (selected.timestampMillis < bounds[0] || selected.timestampMillis > bounds[1]),
+  )
+}
+
+function recomputeViewportSeries(): void {
+  if (disposed || seriesCache.disposed) return
+  const bounds = currentViewportBounds()
+  if (!bounds) {
+    viewportSeries.value = []
+    return
+  }
+  const started = performance.now()
+  const theme = readNetConsoleChartTokens()
+  viewportSeries.value = tracksideViewportSeriesItems(
+    seriesCache,
+    bounds[0],
+    bounds[1],
+    null,
+  ).map((item) => {
+    const series = seriesCache.seriesMetaById.get(item.seriesId)
+    return {
+      ...item,
+      color: series
+        ? stableTimeChartSeriesColor(tracksideColorKey(series), theme.series) || theme.textSecondary
+        : theme.textSecondary,
+    }
+  })
+  lastViewportListComputeMs = performance.now() - started
+  updateSelectedRangeStatus()
+  if (rangePanelOpen.value) reportInteractionProfile()
+}
+
+function scheduleViewportSeriesUpdate(): void {
+  if (viewportListTimer) clearTimeout(viewportListTimer)
+  viewportListTimer = setTimeout(() => {
+    viewportListTimer = null
+    recomputeViewportSeries()
+  }, 75)
+}
+
+function clearTracksideSelection(updateChart = true): void {
+  if (!selectedTracksideAp.value) return
+  selectedTracksideAp.value = null
+  selectedOutsideRange.value = false
+  if (updateChart) recordSelectionUpdate()
+}
+
+function selectTracksidePoint(
+  point: CompactTracksidePointMeta,
+  series: CompactTracksideSeriesMeta,
+  toggleExactPoint = true,
+): void {
+  if (
+    toggleExactPoint
+    && selectedTracksideAp.value?.seriesId === series.seriesId
+    && selectedTracksideAp.value.metaId === point.metaId
+  ) {
+    clearTracksideSelection()
+    return
+  }
+  selectedTracksideAp.value = {
+    seriesId: series.seriesId,
+    metaId: point.metaId,
+    timestampMillis: point.timestampMillis,
+    apName: point.peerApName || series.peerName,
+    apMac: point.peerApMac || series.apMac,
+    radio: point.localRadio ?? series.radio,
+    rssi: point.rssi,
+  }
+  updateSelectedRangeStatus()
+  recordSelectionUpdate()
+}
+
+function selectViewportSeries(item: TracksideViewportListItem): void {
+  const point = tracksidePointMeta(seriesCache, item.metaId)
+  const series = seriesCache.seriesMetaById.get(item.seriesId)
+  if (point && series) selectTracksidePoint(point, series, false)
+}
+
+function handleRangePanelToggle(event: Event): void {
+  rangePanelOpen.value = Boolean((event.currentTarget as HTMLDetailsElement | null)?.open)
+  if (rangePanelOpen.value) recomputeViewportSeries()
+}
+
+function handleSelectionEscape(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !props.active || !selectedTracksideAp.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  clearTracksideSelection()
+}
+
 function rebuildSeriesCache(): void {
   const next = props.seriesCache ?? buildTracksideSeriesCache(props.series)
   if (next !== seriesCache) {
+    clearTracksideSelection(false)
     chart?.clear?.()
     disposeTracksideSeriesCache(seriesCache)
     seriesCache = markRaw(next)
@@ -151,6 +326,7 @@ function rebuildSeriesCache(): void {
   if (import.meta.env.DEV && seriesCache.unorderedSeriesIds.length) {
     console.warn(`轨旁信号 payload 存在未按时间排序的序列：${seriesCache.unorderedSeriesIds.join(', ')}`)
   }
+  recomputeViewportSeries()
 }
 
 interface ResolvedTracksidePoint {
@@ -293,9 +469,16 @@ async function ensureChart(): Promise<boolean> {
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
     pointerGlobalOut = () => emit('pointer-change', { time: null, source_chart: props.chartId })
-    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: () => void) => void } }).getZr?.()
+    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: (event: { target?: unknown }) => void) => void } }).getZr?.()
     zrender?.on('globalout', pointerGlobalOut)
-    unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
+    zrenderBlankClick = (event) => {
+      if (!event.target) clearTracksideSelection()
+    }
+    zrender?.on('click', zrenderBlankClick)
+    unsubscribeTheme = subscribeNetConsoleChartTheme(() => {
+      scheduleChartUpdate('theme')
+      scheduleViewportSeriesUpdate()
+    })
     return true
   })().finally(() => { initialization = null })
   return initialization
@@ -347,12 +530,15 @@ onMounted(() => {
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('keydown', handleSelectionEscape, true)
   scheduleChartUpdate('data')
+  recomputeViewportSeries()
 })
 
 onBeforeUnmount(() => {
   disposed = true
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('keydown', handleSelectionEscape, true)
   resizeObserver?.disconnect()
   resizeObserver = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
@@ -367,13 +553,17 @@ onBeforeUnmount(() => {
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
   chart?.off('updateAxisPointer', handleAxisPointer)
-  if (pointerGlobalOut) {
-    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: () => void) => void } } | null)?.getZr?.()
-    zrender?.off('globalout', pointerGlobalOut)
+  if (pointerGlobalOut || zrenderBlankClick) {
+    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: (event: { target?: unknown }) => void) => void } } | null)?.getZr?.()
+    if (pointerGlobalOut) zrender?.off('globalout', pointerGlobalOut)
+    if (zrenderBlankClick) zrender?.off('click', zrenderBlankClick)
   }
   pointerGlobalOut = null
+  zrenderBlankClick = null
   if (interactiveTimer) clearTimeout(interactiveTimer)
   interactiveTimer = null
+  if (viewportListTimer) clearTimeout(viewportListTimer)
+  viewportListTimer = null
   releaseTooltipWheelGuards()
   chart?.dispose()
   chart = null
@@ -404,6 +594,7 @@ watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewp
 watch(() => props.syncViewport, (viewport, previous) => {
   if (props.active && viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
   else if (!viewport && previous) { currentViewport = null; scheduleChartUpdate('reset') }
+  scheduleViewportSeriesUpdate()
 }, { deep: true })
 watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('theme'), { deep: true })
 watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
@@ -423,6 +614,7 @@ function handleChartClick(raw: unknown): void {
       : undefined
   const pointValue = Array.isArray(candidate.data) ? candidate.data : undefined
   const pointMeta = pointValue ? tracksidePointMeta(seriesCache, pointValue[2]) : undefined
+  const pointSeries = pointMeta ? seriesCache.seriesMetaById.get(pointMeta.seriesId) : undefined
   const event = Number.isSafeInteger(eventIndex)
     ? props.events[Number(eventIndex)]
     : props.events.find((item) => (
@@ -430,6 +622,11 @@ function handleChartClick(raw: unknown): void {
         && meshTimestampMillis(item.render_point_timestamp || item.point_timestamp || item.timestamp)
           === pointMeta.timestampMillis
       ))
+  if (candidate.seriesId === 'trackside-switch-nodes') {
+    if (event) emit('selectSwitch', event)
+    return
+  }
+  if (pointMeta && pointSeries) selectTracksidePoint(pointMeta, pointSeries)
   if (event) emit('selectSwitch', event)
 }
 
@@ -452,6 +649,8 @@ function handleDataZoom(raw: unknown): void {
     }, { silent: true })
   }
   currentViewport = viewport
+  updateSelectedRangeStatus()
+  scheduleViewportSeriesUpdate()
   pendingViewport = viewport
   if (viewportFrame !== null) return
   viewportFrame = requestAnimationFrame(() => {
@@ -466,6 +665,8 @@ function handleRestore(): void {
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
   currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
+  updateSelectedRangeStatus()
+  scheduleViewportSeriesUpdate()
   emit('viewport-change', { ...currentViewport })
 }
 
@@ -513,6 +714,8 @@ function applyViewport(viewport: MeshChartViewport): void {
   if (!normalized) return
   if (meshViewportRangeEquals(currentViewport, normalized) && currentViewport?.revision === normalized.revision) return
   currentViewport = normalized
+  updateSelectedRangeStatus()
+  scheduleViewportSeriesUpdate()
   if (!chart) return
   chart.dispatchAction({
     type: 'dataZoom',
@@ -599,7 +802,11 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
         connectNulls: false,
         data: item.data,
         itemStyle: { color },
-        lineStyle: { ...presentation.lineStyle, color, type: 'solid' },
+        lineStyle: {
+          ...presentation.lineStyle,
+          color,
+          type: 'solid',
+        },
         ...(overlayById.get(item.id) || {}),
       }
     }),
@@ -617,6 +824,8 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
     pointCount: seriesCache.totalRenderedPoints,
     fullDomain: props.sharedTimeDomain,
     viewport: target,
+    showLegend: false,
+    reserveLegendSpace: false,
   })
   const tooltip = {
     ...(baseOption.tooltip as Record<string, unknown>),
@@ -668,13 +877,12 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       ...baseOption,
       tooltip,
       yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
-      series: seriesCache.series.map((item) => {
-        const color = stableTimeChartSeriesColor(
-          tracksideColorKey(item.meta),
-          theme.series,
-        )
-        return { id: item.id, itemStyle: { color }, lineStyle: { color, width: 2 } }
-      }),
+      series: [
+        ...seriesCache.series.map((item) => {
+          const color = stableTimeChartSeriesColor(tracksideColorKey(item.meta), theme.series)
+          return { id: item.id, itemStyle: { color }, lineStyle: { color, width: 2 } }
+        }),
+      ],
     }, { lazyUpdate: true })
   } else {
     reportWorkloadPhase('echarts-set-option')
@@ -687,6 +895,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
     }, { replaceMerge: ['series'] })
     scheduleInteractiveReport()
   }
+  scheduleViewportSeriesUpdate()
   if (target) {
     applyViewport(target)
     if (!viewportReady && currentViewport) {
@@ -707,13 +916,63 @@ defineExpose({
 
 <template>
   <div class="chart-shell">
+    <div class="trackside-controls">
+      <div v-if="selectedTracksideAp" class="trackside-selected-ap" data-trackside-selected-ap>
+        <span class="trackside-selected-ap__dot" :style="{ backgroundColor: selectedSeriesColor() }"></span>
+        <span><strong>已选 AP：</strong>{{ apDisplayName(selectedTracksideAp) }}</span>
+        <span><strong>AP MAC：</strong>{{ compactMac(selectedTracksideAp.apMac) }}</span>
+        <span><strong>Radio：</strong>{{ selectedTracksideAp.radio ?? '—' }}</span>
+        <span><strong>轨旁 RSSI：</strong>{{ displayRssi(selectedTracksideAp.rssi) }}</span>
+        <span v-if="selectedOutsideRange" class="trackside-selected-ap__status">当前范围外</span>
+        <button type="button" class="trackside-text-button" @click="clearTracksideSelection()">取消选择</button>
+      </div>
+      <details class="trackside-range" @toggle="handleRangePanelToggle">
+        <summary>当前范围 AP（{{ viewportSeries.length }}）</summary>
+        <div v-if="rangePanelOpen" class="trackside-range__list">
+          <button
+            v-for="item in viewportSeries"
+            :key="item.seriesId"
+            type="button"
+            class="trackside-range__item"
+            :class="{ 'is-selected': selectedTracksideAp?.seriesId === item.seriesId }"
+            @click="selectViewportSeries(item)"
+          >
+            <span class="trackside-range__dot" :style="{ backgroundColor: item.color }"></span>
+            <span class="trackside-range__copy">
+              <strong>{{ apDisplayName(item) }}</strong>
+              <small>{{ compactMac(item.apMac) }} · Radio {{ item.radio ?? '—' }} · {{ item.rssiSource === 'pointer' ? 'RSSI' : '最新 RSSI' }} {{ displayRssi(item.rssi) }}</small>
+            </span>
+          </button>
+          <span v-if="!viewportSeries.length" class="trackside-range__empty">当前范围无 AP 采样</span>
+        </div>
+      </details>
+    </div>
     <div ref="container" class="chart"></div>
     <el-empty v-if="!hasData()" class="empty" description="暂无轨旁信号数据" :image-size="60" />
   </div>
 </template>
 
 <style scoped>
-.chart-shell { position: relative; height: 100%; min-height: 240px; width: 100%; }
-.chart { height: 100%; min-height: 240px; width: 100%; min-width: 0; }
+.chart-shell { position: relative; height: 100%; min-height: 0; width: 100%; }
+.chart { height: 100%; min-height: 0; width: 100%; min-width: 0; }
 .empty { position: absolute; inset: 0; pointer-events: none; }
+.trackside-controls { position: absolute; top: 0; right: 132px; left: 64px; z-index: 4; display: flex; min-height: 30px; align-items: center; gap: 8px; padding: 1px 0; }
+.trackside-selected-ap { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 12px; overflow-x: auto; white-space: nowrap; color: var(--nc-text-secondary); font-size: 12px; }
+.trackside-selected-ap strong { color: var(--nc-text-primary); font-weight: 600; }
+.trackside-selected-ap__dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
+.trackside-selected-ap__status { color: var(--nc-warning); }
+.trackside-text-button { flex: none; border: 0; background: transparent; color: var(--nc-primary); cursor: pointer; font: inherit; }
+.trackside-range { position: relative; flex: none; margin-left: auto; color: var(--nc-text-secondary); font-size: 12px; }
+.trackside-range summary { cursor: pointer; list-style: none; color: var(--nc-primary); user-select: none; }
+.trackside-range summary::-webkit-details-marker { display: none; }
+.trackside-range__list { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; display: grid; width: min(360px, calc(100vw - 48px)); max-height: min(360px, 55vh); overflow-y: auto; padding: 6px; border: 1px solid var(--nc-border); background: var(--nc-bg-elevated); box-shadow: var(--nc-shadow-floating); }
+.trackside-range__item { display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; background: transparent; color: var(--nc-text-primary); text-align: left; cursor: pointer; }
+.trackside-range__item:hover,
+.trackside-range__item.is-selected { background: var(--nc-bg-muted); }
+.trackside-range__dot { width: 8px; height: 8px; border-radius: 50%; }
+.trackside-range__copy { display: grid; min-width: 0; gap: 2px; }
+.trackside-range__copy strong,
+.trackside-range__copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trackside-range__copy small { color: var(--nc-text-secondary); }
+.trackside-range__empty { padding: 16px 8px; color: var(--nc-text-secondary); text-align: center; }
 </style>
