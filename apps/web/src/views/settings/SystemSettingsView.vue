@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   SETTINGS_TOOL_DEFINITIONS,
@@ -30,6 +30,7 @@ const emptyValues: SystemSettingsValues = {
   securecrt_sessions_root: '', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8',
 }
 const { confirm } = useConfirm()
+const route = useRoute()
 const snapshot = ref<SystemSettingsSnapshot | null>(null)
 const baseline = ref<SystemSettingsValues | null>(null)
 const form = reactive<SystemSettingsValues>(cloneValues(emptyValues))
@@ -39,6 +40,9 @@ const featurePreview = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const siteStorageFocused = ref(false)
+const siteStoragePanel = ref<InstanceType<typeof SiteStoragePanel> | null>(null)
+let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
 const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const featuresDirty = computed(() => JSON.stringify(features.value) !== featureBaseline.value)
@@ -63,7 +67,11 @@ const featureColumns: NcTableColumn<FeatureSetting>[] = [
 ]
 
 onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); if (dirty.value) restoreAppearance() })
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', beforeUnload)
+  if (siteStorageFocusTimer) clearTimeout(siteStorageFocusTimer)
+  if (dirty.value) restoreAppearance()
+})
 onBeforeRouteLeave(async () => {
   if (!anyDirty.value) return true
   try {
@@ -144,6 +152,23 @@ function previewAppearance(): void { applySystemAppearance(form) }
 function restoreAppearance(): void { if (baseline.value) applySystemAppearance(baseline.value) }
 function cloneValues(value: SystemSettingsValues): SystemSettingsValues { return { ...value, terminal_paths: { ...value.terminal_paths } } }
 function beforeUnload(event: BeforeUnloadEvent): void { if (anyDirty.value) { event.preventDefault(); event.returnValue = '' } }
+
+async function focusSiteStorage(): Promise<void> {
+  if (route.query.section !== 'site-storage') return
+  await nextTick()
+  const target = siteStoragePanel.value?.$el as HTMLElement | undefined
+  if (!target) return
+  target.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  siteStorageFocused.value = true
+  if (siteStorageFocusTimer) clearTimeout(siteStorageFocusTimer)
+  siteStorageFocusTimer = setTimeout(() => { siteStorageFocused.value = false }, 1600)
+}
+
+watch(
+  () => [route.query.section, route.query.site_focus],
+  () => { void focusSiteStorage() },
+  { immediate: true },
+)
 
 async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_path' | 'ipop_path'): Promise<void> {
   try {
@@ -248,7 +273,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </el-form>
     </section>
 
-    <SiteStoragePanel />
+    <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" />
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
       <el-form label-position="top">

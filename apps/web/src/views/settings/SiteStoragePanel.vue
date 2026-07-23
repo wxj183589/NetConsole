@@ -7,6 +7,8 @@ import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
 
+defineProps<{ focused?: boolean }>()
+
 const sites = ref<SiteRecord[]>([])
 const root = ref<DataRootSnapshot | null>(null)
 const loading = ref(false)
@@ -200,7 +202,13 @@ function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' |
 </script>
 
 <template>
-  <section v-if="desktopOnly" class="storage-panel" v-loading="loading">
+  <section
+    v-if="desktopOnly"
+    id="site-storage-management"
+    class="storage-panel"
+    :class="{ 'storage-panel--focused': focused }"
+    v-loading="loading"
+  >
     <div class="panel-heading"><div><h2>局点与数据管理</h2><p>局点切换、迁移和导入导出都经过 Backend 校验与 Task Center。</p></div><div v-if="root?.persistent !== false" class="actions"><el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button><el-button data-testid="import-site" :loading="busy" @click="importPackage">导入局点</el-button><el-button data-testid="export-site" :loading="busy" type="primary" @click="exportCurrent">导出当前局点</el-button></div></div>
     <el-alert v-if="root?.persistent === false" data-testid="isolated-storage-alert" title="隔离测试模式：当前数据将在退出后删除，不会写入正式 NetConsole 数据。" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -216,5 +224,5 @@ function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' |
 
 <style scoped>
 .el-alert{margin-top:14px}
-.storage-panel{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}}
+.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}}
 </style>

@@ -22,6 +22,7 @@ import {
   type NavigationItem,
 } from '../navigation/registry'
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
+import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import { navigationTitle, t } from '../i18n/runtime'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
@@ -219,6 +220,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
             <div class="header-title">{{ route.meta.title || 'Dashboard' }}</div>
             <div class="header-subtitle">{{ t('shell.subtitle', 'Vue、FastAPI 与 Python ApplicationService 共用同一业务核心') }}</div>
           </div>
+        </div>
+        <div class="current-site-slot">
+          <CurrentSiteIndicator />
         </div>
         <div class="header-status">
           <DesktopRuntimeStatus />

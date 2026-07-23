@@ -70,6 +70,7 @@ export interface DataRootSnapshot {
 export interface SiteTaskResponse { task_id: string; task_type: string }
 
 export const listSites = () => apiRequest<SiteRecord[]>('/api/v1/sites')
+export const getActiveSite = () => apiRequest<SiteRecord>('/api/v1/sites/active')
 export const getDataRoot = () => apiRequest<DataRootSnapshot>('/api/v1/storage/data-root')
 export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify(payload) })
 export const activateSite = (siteId: string) => apiRequest<{ restart_required: boolean }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })

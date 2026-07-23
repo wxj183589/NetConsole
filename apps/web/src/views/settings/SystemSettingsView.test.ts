@@ -259,4 +259,23 @@ describe('SystemSettingsView mounted behavior', () => {
     expect(wrapper.text()).toContain('action bridge failed')
     wrapper.unmount()
   })
+
+  it('scrolls to and refocuses site storage whenever the route focus parameter changes', async () => {
+    const scrollIntoView = vi.fn()
+    const previous = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const { wrapper, router } = await mounted()
+
+    await router.push({ path: '/settings', query: { section: 'site-storage', site_focus: '1' } })
+    await flushPromises()
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(wrapper.get('#site-storage-management').classes()).toContain('storage-panel--focused')
+
+    await router.push({ path: '/settings', query: { section: 'site-storage', site_focus: '2' } })
+    await flushPromises()
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+    HTMLElement.prototype.scrollIntoView = previous
+  })
 })

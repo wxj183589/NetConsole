@@ -63,6 +63,15 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
   })
 
+  it('exposes one stable focus target and applies only a visual focus state', async () => {
+    const wrapper = mount(SiteStoragePanel, { props: { focused: true } })
+    await flushPromises()
+
+    expect(wrapper.get('#site-storage-management').classes()).toContain('storage-panel--focused')
+    expect(api.activateSite).not.toHaveBeenCalled()
+    expect(adapter.restartBackend).not.toHaveBeenCalled()
+  })
+
   it('renders every legacy site returned by the registry API', async () => {
     vi.mocked(api.listSites).mockResolvedValue([
       site(),
