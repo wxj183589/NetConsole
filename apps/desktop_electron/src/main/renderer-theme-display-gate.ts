@@ -3,6 +3,8 @@ import type { BrowserWindow } from 'electron'
 export type RendererDisplayReason = 'theme-ready' | 'renderer-failed' | 'theme-timeout'
 
 export const MANAGED_RENDERER_RETRY_ACTION = 'netconsole-action://retry-renderer/'
+export const MANAGED_RENDERER_SAFE_RECOVERY_ACTION = 'netconsole-action://safe-recover-renderer/'
+export const MANAGED_RENDERER_OPEN_LOGS_ACTION = 'netconsole-action://open-renderer-logs/'
 export const MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION = 'netconsole-action://open-main-tasks/'
 
 export interface RendererDisplayWindow {
@@ -136,9 +138,16 @@ export class ManagedRendererRetryNavigation {
     private readonly onRejected: () => void = () => undefined,
     private readonly onRetryError: (cause: unknown) => void = () => undefined,
     private readonly openMainTasks: () => Promise<void> | void = () => undefined,
+    private readonly safeRecovery: () => Promise<void> | void = () => undefined,
+    private readonly openLogs: () => Promise<void> | void = () => undefined,
   ) {
     window.webContents.on('will-navigate', (event, target) => {
-      if (target !== MANAGED_RENDERER_RETRY_ACTION && target !== MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION) return
+      if (![
+        MANAGED_RENDERER_RETRY_ACTION,
+        MANAGED_RENDERER_SAFE_RECOVERY_ACTION,
+        MANAGED_RENDERER_OPEN_LOGS_ACTION,
+        MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
+      ].includes(target)) return
       event.preventDefault()
       if (
         window.isDestroyed()
@@ -148,8 +157,14 @@ export class ManagedRendererRetryNavigation {
         this.onRejected()
         return
       }
-      this.retryPageUrl = ''
-      const action = target === MANAGED_RENDERER_RETRY_ACTION ? this.retry : this.openMainTasks
+      if (target !== MANAGED_RENDERER_OPEN_LOGS_ACTION) this.retryPageUrl = ''
+      const action = target === MANAGED_RENDERER_RETRY_ACTION
+        ? this.retry
+        : target === MANAGED_RENDERER_SAFE_RECOVERY_ACTION
+          ? this.safeRecovery
+          : target === MANAGED_RENDERER_OPEN_LOGS_ACTION
+            ? this.openLogs
+            : this.openMainTasks
       void Promise.resolve().then(() => action()).catch(this.onRetryError)
     })
   }

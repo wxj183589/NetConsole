@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   MANAGED_RENDERER_RETRY_ACTION,
+  MANAGED_RENDERER_SAFE_RECOVERY_ACTION,
+  MANAGED_RENDERER_OPEN_LOGS_ACTION,
   MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
   ManagedRendererRetryNavigation,
   ManagedWindowErrorCoordinator,
@@ -138,6 +140,8 @@ describe('managed Renderer retry navigation', () => {
     const rejected = vi.fn()
     const retryError = vi.fn()
     const openMainTasks = vi.fn(async () => undefined)
+    const safeRecovery = vi.fn(async () => undefined)
+    const openLogs = vi.fn(async () => undefined)
     const window = {
       isDestroyed: vi.fn(() => false),
       webContents: {
@@ -147,7 +151,15 @@ describe('managed Renderer retry navigation', () => {
         }),
       },
     } as unknown as BrowserWindow
-    const navigation = new ManagedRendererRetryNavigation(window, retry, rejected, retryError, openMainTasks)
+    const navigation = new ManagedRendererRetryNavigation(
+      window,
+      retry,
+      rejected,
+      retryError,
+      openMainTasks,
+      safeRecovery,
+      openLogs,
+    )
     return {
       navigation,
       listeners,
@@ -155,6 +167,8 @@ describe('managed Renderer retry navigation', () => {
       rejected,
       retryError,
       openMainTasks,
+      safeRecovery,
+      openLogs,
       setCurrentUrl: (url: string) => { currentUrl = url },
     }
   }
@@ -212,5 +226,18 @@ describe('managed Renderer retry navigation', () => {
 
     expect(openMainTasks).toHaveBeenCalledOnce()
     expect(retry).not.toHaveBeenCalled()
+  })
+
+  it('offers safe recovery and keeps the status page armed after opening logs', async () => {
+    const { navigation, listeners, safeRecovery, openLogs } = createRetryHarness()
+    navigation.armForStatusPage('data:text/html;charset=utf-8,managed-error')
+
+    listeners[0]?.({ preventDefault: vi.fn() }, MANAGED_RENDERER_OPEN_LOGS_ACTION)
+    await Promise.resolve()
+    listeners[0]?.({ preventDefault: vi.fn() }, MANAGED_RENDERER_SAFE_RECOVERY_ACTION)
+    await Promise.resolve()
+
+    expect(openLogs).toHaveBeenCalledOnce()
+    expect(safeRecovery).toHaveBeenCalledOnce()
   })
 })

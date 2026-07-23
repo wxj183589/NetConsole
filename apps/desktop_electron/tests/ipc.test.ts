@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { registerDesktopIpc } from '../src/main/ipc'
 import { GrantedPathRegistry } from '../src/main/path-access'
-import type { NativeActionResult, RendererHostReport, TaskWindowContext } from '../src/shared/bridge'
+import type {
+  NativeActionResult,
+  RendererHostReport,
+  RendererRecoveryState,
+  RendererWorkloadReport,
+  TaskWindowContext,
+} from '../src/shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../src/shared/bridge'
 
 class FakeIpcMain {
@@ -27,6 +33,8 @@ class FakeIpcMain {
 function createHarness(overrides: {
   logger?: (event: string, detail?: string) => void
   onRendererReady?: (report: RendererHostReport, window: unknown) => void
+  onRendererWorkload?: (report: RendererWorkloadReport, window: unknown) => void
+  getRendererRecoveryState?: (window: unknown) => RendererRecoveryState | null
   openTaskWindow?: (value: TaskWindowContext) => NativeActionResult | Promise<NativeActionResult>
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
@@ -64,6 +72,8 @@ function createHarness(overrides: {
     isTrustedSender: (event) => event.sender === sender,
     logger: overrides.logger,
     onRendererReady: overrides.onRendererReady,
+    onRendererWorkload: overrides.onRendererWorkload,
+    getRendererRecoveryState: overrides.getRendererRecoveryState,
     openTaskWindow: overrides.openTaskWindow,
     fetchImpl: overrides.fetchImpl,
   })
@@ -83,6 +93,60 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.getRuntimeConfig)!
 
     expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
+  })
+
+  it('accepts only validated one-way workload reports and returns in-memory recovery state', () => {
+    const onRendererWorkload = vi.fn()
+    const recovery: RendererRecoveryState = {
+      mode: 'safe',
+      previousReason: 'oom',
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      sessionId: 'session-1',
+      sourceFileId: 9,
+      radio: 1,
+    }
+    const managedWindow = {}
+    const logger = vi.fn()
+    const { ipcMain, sender } = createHarness({
+      logger,
+      onRendererWorkload,
+      getRendererRecoveryState: () => recovery,
+      windowForEvent: () => managedWindow,
+    })
+    const event = { sender }
+    ipcMain.listeners.get(DESKTOP_IPC.rendererWorkload)?.(event, {
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      sessionId: 'session-1',
+      seriesCount: 770,
+      returnedLinkPoints: 44_251,
+      reportRevision: 2,
+    })
+
+    expect(onRendererWorkload).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: 'echarts-set-option', seriesCount: 770 }),
+      managedWindow,
+    )
+    expect(ipcMain.handlers.get(DESKTOP_IPC.rendererRecoveryState)?.(event)).toEqual(recovery)
+
+    ipcMain.listeners.get(DESKTOP_IPC.rendererWorkload)?.(event, {
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      rawPath: 'C:\\private\\raw.log',
+      reportRevision: 3,
+    })
+    ipcMain.listeners.get(DESKTOP_IPC.rendererWorkload)?.({ sender: {} }, {
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      reportRevision: 4,
+    })
+    expect(onRendererWorkload).toHaveBeenCalledOnce()
+    expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_WORKLOAD_REJECTED')
+    expect(logger).toHaveBeenCalledWith('ELECTRON_RENDERER_WORKLOAD_UNTRUSTED')
   })
 
   it('accepts only the fixed UI preference key allowlist', async () => {

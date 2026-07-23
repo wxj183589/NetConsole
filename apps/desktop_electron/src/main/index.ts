@@ -1,13 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type NativeActionResult, type RendererHostReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
-import { logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
+import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { resolveDesktopStorageContext } from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
@@ -15,10 +15,14 @@ import { StartupTimeline } from './startup-timeline'
 import {
   installRendererDiagnostics,
   safeDiagnosticUrl,
+  type RendererFailureActions,
+  type RendererProcessFailure,
 } from './renderer-diagnostics'
 import {
+  MANAGED_RENDERER_OPEN_LOGS_ACTION,
   MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
   MANAGED_RENDERER_RETRY_ACTION,
+  MANAGED_RENDERER_SAFE_RECOVERY_ACTION,
   ManagedRendererRetryNavigation,
   ManagedWindowErrorCoordinator,
   RendererThemeDisplayGate,
@@ -64,7 +68,12 @@ const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>(
 const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
 const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
 const windowRendererTargets = new WeakMap<BrowserWindow, string>()
+const latestRendererWorkloads = new Map<number, RendererWorkloadReport>()
+const rendererProcessFailures = new Map<number, RendererProcessFailure>()
+const rendererRecoveries = new Map<number, RendererRecoveryState>()
+let recentGpuProcessFailureAt = 0
 const RENDERER_THEME_READY_TIMEOUT_MS = 10_000
+const RECENT_GPU_FAILURE_WINDOW_MS = 15_000
 
 const hasSingleInstanceLock = process.env.NETCONSOLE_ISOLATED_SMOKE === '1'
   ? true
@@ -179,6 +188,8 @@ async function startDesktop(): Promise<void> {
       || (taskWindow && isTrustedRendererSender(event, taskWindow, [...rendererOrigins])),
     ),
     onRendererReady: handleRendererReady,
+    onRendererWorkload: handleRendererWorkload,
+    getRendererRecoveryState,
     logger,
     uiPreferenceStore: new UiPreferenceStore(app.getPath('userData')),
   })
@@ -289,6 +300,8 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
       `type=${cause instanceof Error ? cause.name : 'unknown'}`,
     ),
     openTasksInMainWindow,
+    () => retryManagedRenderer(window, 'safe'),
+    openElectronLogs,
   )
   const errorCoordinator = new ManagedWindowErrorCoordinator()
   const displayGate = new RendererThemeDisplayGate(window, {
@@ -311,7 +324,13 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
   windowDisplayGates.set(window, displayGate)
   windowErrorCoordinators.set(window, errorCoordinator)
   windowRetryNavigations.set(window, retryNavigation)
-  window.once('closed', () => displayGate.dispose())
+  const webContentsId = window.webContents.id
+  window.once('closed', () => {
+    displayGate.dispose()
+    latestRendererWorkloads.delete(webContentsId)
+    rendererProcessFailures.delete(webContentsId)
+    rendererRecoveries.delete(webContentsId)
+  })
   return window
 }
 
@@ -376,8 +395,17 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
   installRendererDiagnostics(window, {
     logger,
     canRetry: () => Boolean(windowRendererTargets.get(window)),
+    surface: window === mainWindow ? 'main' : 'task-window',
+    getLatestWorkload: () => latestRendererWorkloads.get(window.webContents.id),
+    hasRecentGpuFailure: () => (
+      recentGpuProcessFailureAt > 0
+      && Date.now() - recentGpuProcessFailureAt <= RECENT_GPU_FAILURE_WINDOW_MS
+    ),
+    onProcessGone: (failure) => rendererProcessFailures.set(window.webContents.id, failure),
     ...(smoke ? { onLoadStarted: handleRendererLoadStarted, onLoadStopped: handleRendererLoadStopped } : {}),
-    showError: (title, detail, retryable) => showManagedWindowError(window, title, detail, retryable),
+    showError: (title, detail, retryable, actions) => (
+      showManagedWindowError(window, title, detail, retryable, actions)
+    ),
   })
 }
 
@@ -402,6 +430,7 @@ async function loadStatusPage(
   detail: string,
   retryable = false,
   openMainTasks = false,
+  failureActions?: RendererFailureActions,
 ): Promise<void> {
   const retryNavigation = windowRetryNavigations.get(window)
   retryNavigation?.disarm()
@@ -415,16 +444,24 @@ async function loadStatusPage(
     ? '0 14px 38px rgb(0 0 0 / 42%)'
     : '0 14px 38px rgb(7 16 31 / 12%)'
   window.setBackgroundColor(statusBackground)
-  const retry = retryable
-    ? `<a href="${MANAGED_RENDERER_RETRY_ACTION}">重试</a>`
+  const safeRecovery = failureActions?.safeRecovery
+    ? `<a href="${MANAGED_RENDERER_SAFE_RECOVERY_ACTION}">安全恢复</a>`
+    : ''
+  const retry = retryable || failureActions?.directRetry
+    ? `<a${safeRecovery ? ' class="secondary"' : ''} href="${MANAGED_RENDERER_RETRY_ACTION}">${safeRecovery ? '直接重试' : '重试'}</a>`
+    : ''
+  const openLogs = failureActions?.openLogs
+    ? `<a class="secondary" href="${MANAGED_RENDERER_OPEN_LOGS_ACTION}">打开日志目录</a>`
     : ''
   const mainTasks = openMainTasks
     ? `<a class="secondary" href="${MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION}">在主窗口打开任务中心</a>`
     : ''
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${statusBackground};color:${statusText};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${statusBorder};border-radius:14px;background:${statusPanel};text-align:center;box-shadow:${statusShadow}}h1{font-size:22px;margin:0 0 12px}p{color:${statusMuted};line-height:1.7;margin:0 0 18px}.actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}.secondary{background:transparent;color:${statusText};border:1px solid ${statusBorder}}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><div class="actions">${retry}${mainTasks}</div></main></body></html>`
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${statusBackground};color:${statusText};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(620px,calc(100vw - 48px));padding:36px;border:1px solid ${statusBorder};border-radius:14px;background:${statusPanel};text-align:center;box-shadow:${statusShadow}}h1{font-size:22px;margin:0 0 12px}p{color:${statusMuted};line-height:1.7;margin:0 0 18px;white-space:pre-line}.actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}a{display:inline-block;padding:8px 18px;border-radius:8px;background:#0078d4;color:#fff;text-decoration:none}.secondary{background:transparent;color:${statusText};border:1px solid ${statusBorder}}</style></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p><div class="actions">${safeRecovery}${retry}${openLogs}${mainTasks}</div></main></body></html>`
   const statusPageUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   await window.loadURL(statusPageUrl)
-  if ((retryable || openMainTasks) && !window.isDestroyed()) retryNavigation?.armForStatusPage(statusPageUrl)
+  if ((retryable || openMainTasks || failureActions) && !window.isDestroyed()) {
+    retryNavigation?.armForStatusPage(statusPageUrl)
+  }
 }
 
 function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
@@ -476,6 +513,56 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     return
   }
   scheduleSmokeStableExit()
+}
+
+function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: unknown): void {
+  const window = sourceWindow === mainWindow
+    ? mainWindow
+    : sourceWindow === taskWindow
+      ? taskWindow
+      : undefined
+  if (!window || window.isDestroyed()) return
+  const webContentsId = window.webContents.id
+  latestRendererWorkloads.set(webContentsId, report)
+  logger(
+    'ELECTRON_RENDERER_WORKLOAD',
+    [
+      `web_contents_id=${webContentsId}`,
+      `surface=${window === mainWindow ? 'main' : 'task-window'}`,
+      `module=${report.module}`,
+      `phase=${report.phase}`,
+      `session_id=${report.sessionId ?? 'none'}`,
+      `source_file_id=${report.sourceFileId ?? 'none'}`,
+      `radio=${report.radio ?? 'none'}`,
+      `series_count=${report.seriesCount ?? 'none'}`,
+      `returned_link_points=${report.returnedLinkPoints ?? 'none'}`,
+      `returned_frames=${report.returnedFrames ?? 'none'}`,
+      `report_revision=${report.reportRevision}`,
+    ].join(' '),
+  )
+  const recovery = rendererRecoveries.get(webContentsId)
+  if (report.phase !== 'echarts-interactive' || !recovery) return
+  rendererRecoveries.delete(webContentsId)
+  rendererProcessFailures.delete(webContentsId)
+  logger(
+    'ELECTRON_RENDERER_RECOVERED',
+    [
+      `previous_reason=${recovery.previousReason}`,
+      `module=${recovery.module}`,
+      `session_id=${recovery.sessionId ?? 'none'}`,
+      `recovery_mode=${recovery.mode}`,
+    ].join(' '),
+  )
+}
+
+function getRendererRecoveryState(sourceWindow: unknown): RendererRecoveryState | null {
+  const window = sourceWindow === mainWindow
+    ? mainWindow
+    : sourceWindow === taskWindow
+      ? taskWindow
+      : undefined
+  if (!window || window.isDestroyed()) return null
+  return rendererRecoveries.get(window.webContents.id) ?? null
 }
 
 async function runTaskWindowSmoke(): Promise<void> {
@@ -601,13 +688,35 @@ function armRendererThemeDisplay(window: BrowserWindow): void {
   windowDisplayGates.get(window)?.arm()
 }
 
-async function retryManagedRenderer(window: BrowserWindow): Promise<void> {
+async function retryManagedRenderer(
+  window: BrowserWindow,
+  recoveryMode: RendererRecoveryState['mode'] = 'normal',
+): Promise<void> {
   if (window === taskWindow && taskWindowController) {
     logger('ELECTRON_RENDERER_RETRY_STARTED')
     await taskWindowController.retry()
     return
   }
-  const target = windowRendererTargets.get(window)
+  const failure = rendererProcessFailures.get(window.webContents.id)
+  const workload = failure?.workload
+  let target = windowRendererTargets.get(window)
+  if (workload?.module === 'mesh-analysis' && failure?.actions.safeRecovery) {
+    rendererRecoveries.set(window.webContents.id, {
+      mode: recoveryMode,
+      previousReason: failure.reason,
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      ...(workload.sessionId ? { sessionId: workload.sessionId } : {}),
+      ...(workload.sourceFileId == null ? {} : { sourceFileId: workload.sourceFileId }),
+      ...(workload.radio === undefined ? {} : { radio: workload.radio }),
+    })
+    target = new URL('/rail-transit/mesh-analysis', rendererUrl).toString()
+    rememberManagedRendererTarget(window, target)
+    logger(
+      'ELECTRON_RENDERER_RECOVERY_STARTED',
+      `mode=${recoveryMode} reason=${failure.reason} module=mesh-analysis session_id=${workload.sessionId ?? 'none'}`,
+    )
+  }
   if (
     window.isDestroyed()
     || !target
@@ -639,6 +748,11 @@ async function retryManagedRenderer(window: BrowserWindow): Promise<void> {
   }
 }
 
+async function openElectronLogs(): Promise<void> {
+  const result = await shell.openPath(app.getPath('logs'))
+  logger(result ? 'ELECTRON_RENDERER_LOGS_OPEN_FAILED' : 'ELECTRON_RENDERER_LOGS_OPENED')
+}
+
 async function openTasksInMainWindow(): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed() || !rendererUrl) return
   const target = new URL('/tasks', rendererUrl).toString()
@@ -661,10 +775,11 @@ async function showManagedWindowError(
   title: string,
   detail: string,
   retryable = false,
+  failureActions?: RendererFailureActions,
 ): Promise<void> {
   const coordinator = windowErrorCoordinators.get(window)
   const show = async () => {
-    const render = () => loadStatusPage(window, title, detail, retryable)
+    const render = () => loadStatusPage(window, title, detail, retryable, false, failureActions)
     const gate = windowDisplayGates.get(window)
     if (gate?.isWaiting()) {
       await gate.revealFallback('renderer-failed', render)
@@ -691,5 +806,7 @@ function escapeHtml(value: string): string {
 }
 
 app.on('child-process-gone', (_event, details) => {
-  logger('ELECTRON_CHILD_PROCESS_GONE', `type=${details.type} reason=${details.reason}`)
+  const diagnostic = buildChildProcessGoneDiagnostic(details)
+  if (diagnostic.event === 'ELECTRON_GPU_PROCESS_GONE') recentGpuProcessFailureAt = Date.now()
+  logger(diagnostic.event, diagnostic.detail)
 })

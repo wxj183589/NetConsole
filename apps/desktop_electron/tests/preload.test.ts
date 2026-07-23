@@ -24,6 +24,7 @@ describe('preload bridge', () => {
       'executeSettingsAction',
       'getAppInfo',
       'getBackendStatus',
+      'getRendererRecoveryState',
       'getRuntimeConfig',
       'getUiPreference',
       'onBackendStatusChanged',
@@ -31,6 +32,7 @@ describe('preload bridge', () => {
       'openPath',
       'openTaskWindow',
       'reportRendererReady',
+      'reportRendererWorkload',
       'restartBackend',
       'selectDataRootDirectory',
       'selectDirectory',
@@ -58,6 +60,21 @@ describe('preload bridge', () => {
       DESKTOP_IPC.rendererReady,
       { resolvedTheme: 'dark' },
     )
+    bridge.reportRendererWorkload?.({
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      sessionId: 'session-1',
+      returnedLinkPoints: 44_251,
+      reportRevision: 1,
+    })
+    expect(ipcRenderer.send).toHaveBeenCalledWith(
+      DESKTOP_IPC.rendererWorkload,
+      expect.objectContaining({
+        phase: 'echarts-set-option',
+        returnedLinkPoints: 44_251,
+      }),
+    )
   })
 
   it('validates arguments before sending IPC', async () => {
@@ -79,6 +96,21 @@ describe('preload bridge', () => {
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
     expect(() => bridge.restartBackend({ dataRoot: 'relative' })).toThrow('dataRoot must be absolute')
+    expect(() => bridge.reportRendererWorkload?.({
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      reportRevision: 0,
+    })).toThrow('reportRevision is invalid')
+    expect(() => bridge.reportRendererWorkload?.({
+      module: 'mesh-analysis',
+      route: '/rail-transit/mesh-analysis',
+      phase: 'echarts-set-option',
+      viewportStart: 'C:\\private\\raw.log',
+      reportRevision: 1,
+    })).toThrow('viewportStart is invalid')
     expect(ipcRenderer.invoke).not.toHaveBeenCalled()
   })
+
+
 })

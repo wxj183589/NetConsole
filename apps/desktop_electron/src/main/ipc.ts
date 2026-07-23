@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
 import {
   DESKTOP_HANDLED_CHANNELS,
   DESKTOP_IPC,
@@ -13,6 +13,7 @@ import {
   validateExternalUrl,
   validateFileDesktopActionRef,
   validateRendererReadyReport,
+  validateRendererWorkloadReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
   validateBridgePath,
@@ -84,6 +85,8 @@ export interface DesktopIpcDependencies {
   pathRegistry?: GrantedPathRegistry
   isTrustedSender: (event: IpcEventLike) => boolean
   onRendererReady?: (report: RendererHostReport, window: unknown) => void
+  onRendererWorkload?: (report: RendererWorkloadReport, window: unknown) => void
+  getRendererRecoveryState?: (window: unknown) => RendererRecoveryState | null
   logger?: DesktopLogger
   fetchImpl?: typeof fetch
   uiPreferenceStore?: UiPreferenceStoreLike
@@ -299,6 +302,14 @@ export function registerDesktopIpc(
     )),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.rendererRecoveryState,
+    trusted((_value, event) => (
+      dependencies.getRendererRecoveryState?.(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+      ) ?? null
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
     trusted(async (value) => {
       try {
@@ -348,6 +359,20 @@ export function registerDesktopIpc(
       dependencies.onRendererReady?.(report, window)
     } catch {
       dependencies.logger?.('ELECTRON_RENDERER_READY_REJECTED')
+    }
+  })
+  dependencies.ipcMain.on(DESKTOP_IPC.rendererWorkload, (event, value) => {
+    if (!dependencies.isTrustedSender(event)) {
+      dependencies.logger?.('ELECTRON_RENDERER_WORKLOAD_UNTRUSTED')
+      return
+    }
+    try {
+      dependencies.onRendererWorkload?.(
+        validateRendererWorkloadReport(value),
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+      )
+    } catch {
+      dependencies.logger?.('ELECTRON_RENDERER_WORKLOAD_REJECTED')
     }
   })
   return { shutdown: () => downloadManager.shutdown() }

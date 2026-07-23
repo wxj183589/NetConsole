@@ -2,7 +2,10 @@ import type { BrowserWindow } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  buildRendererProcessFailure,
   installRendererDiagnostics,
+  rendererFailureLogDetail,
+  rendererFailurePageDetail,
   safeDiagnosticUrl,
 } from '../src/main/renderer-diagnostics'
 
@@ -51,20 +54,44 @@ describe('renderer diagnostics', () => {
     expect(onLoadStopped).toHaveBeenCalledOnce()
   })
 
-  it('ignores cancelled loads but recovers from renderer crashes', async () => {
+  it('records OOM exitCode and the latest safe workload before offering safe recovery', async () => {
     const webListeners = new Map<string, (...args: unknown[]) => void>()
-    const showError = vi.fn(async () => undefined)
+    const logger = vi.fn()
+    const showError = vi.fn(async (
+      _title: string,
+      _detail: string,
+      _retry: boolean,
+      _actions?: { safeRecovery?: boolean; directRetry?: boolean; openLogs?: boolean },
+    ) => undefined)
+    const onProcessGone = vi.fn()
     const window = {
       webContents: {
+        id: 17,
         getURL: () => 'http://127.0.0.1:5173/',
         on: vi.fn((event, handler) => webListeners.set(event, handler)),
       },
       on: vi.fn(),
     } as unknown as BrowserWindow
     installRendererDiagnostics(window, {
-      logger: vi.fn(),
+      logger,
       canRetry: () => true,
       showError,
+      surface: 'main',
+      getLatestWorkload: () => ({
+        module: 'mesh-analysis',
+        route: '/rail-transit/mesh-analysis',
+        phase: 'echarts-set-option',
+        sessionId: 'session-1',
+        sourceFileId: 9,
+        radio: 1,
+        returnedFrames: 18_188,
+        returnedLinkPoints: 44_251,
+        seriesCount: 770,
+        heapUsedBytes: 512 * 1024 * 1024,
+        heapLimitBytes: 1024 * 1024 * 1024,
+        reportRevision: 8,
+      }),
+      onProcessGone,
     })
     const didFailLoad = webListeners.get('did-fail-load') as (
       event: unknown,
@@ -75,18 +102,51 @@ describe('renderer diagnostics', () => {
     ) => void
     const processGone = webListeners.get('render-process-gone') as (
       event: unknown,
-      details: { reason: string },
+      details: { reason: string; exitCode: number },
     ) => void
 
     didFailLoad({}, -3, 'aborted', 'http://127.0.0.1:5173/', true)
     expect(showError).not.toHaveBeenCalled()
-    processGone({}, { reason: 'crashed' })
+    processGone({}, { reason: 'oom', exitCode: 137 })
     await Promise.resolve()
     expect(showError).toHaveBeenCalledWith(
       'NetConsole 页面异常退出',
-      '渲染进程已退出，请重试。',
+      expect.stringContaining('原因：内存不足'),
       true,
+      {
+        safeRecovery: true,
+        directRetry: true,
+        openLogs: true,
+      },
     )
+    expect(showError.mock.calls[0]?.[1]).toContain('渲染阶段：轨旁信号图数据装载')
+    expect(logger).toHaveBeenCalledWith(
+      'ELECTRON_RENDERER_PROCESS_GONE',
+      expect.stringMatching(/reason=oom exit_code=137 web_contents_id=17.*trackside_rendering=true/),
+    )
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('token')
+    expect(onProcessGone).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'oom',
+      exitCode: 137,
+      webContentsId: 17,
+    }))
+  })
+
+  it('classifies Renderer crash separately from a recent GPU failure', () => {
+    const crashed = buildRendererProcessFailure({
+      reason: 'crashed',
+      exitCode: -1073741819,
+      webContentsId: 9,
+      surface: 'main',
+      route: '/rail-transit/mesh-analysis',
+      occurredAt: '2026-07-23T10:00:00.000Z',
+      gpuRelated: false,
+    })
+    const gpuRelated = { ...crashed, gpuRelated: true }
+
+    expect(rendererFailurePageDetail(crashed)).toContain('原因：Renderer 崩溃')
+    expect(rendererFailurePageDetail(gpuRelated)).toContain('原因：Renderer 崩溃（此前检测到 GPU 进程异常）')
+    expect(rendererFailureLogDetail(crashed)).toContain('gpu_related=false')
   })
 
   it('replaces a preload failure with a retryable safe status page', async () => {

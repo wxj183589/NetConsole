@@ -122,6 +122,47 @@ export interface RendererThemeReport {
 
 export type RendererHostReport = RendererReadyReport | RendererThemeReport
 
+export type RendererWorkloadPhase =
+  | 'session-selected'
+  | 'trackside-request-started'
+  | 'trackside-response-received'
+  | 'trackside-cache-building'
+  | 'trackside-cache-ready'
+  | 'echarts-init'
+  | 'echarts-set-option'
+  | 'echarts-interactive'
+  | 'chart-disposed'
+
+export interface RendererWorkloadReport {
+  module: 'mesh-analysis'
+  route: '/rail-transit/mesh-analysis'
+  phase: RendererWorkloadPhase
+  sessionId?: string
+  sourceFileId?: number
+  radio?: number | null
+  totalFrames?: number
+  returnedFrames?: number
+  totalLinkPoints?: number
+  returnedLinkPoints?: number
+  seriesCount?: number
+  viewportStart?: string
+  viewportEnd?: string
+  heapUsedBytes?: number
+  heapTotalBytes?: number
+  heapLimitBytes?: number
+  reportRevision: number
+}
+
+export interface RendererRecoveryState {
+  mode: 'safe' | 'normal'
+  previousReason: string
+  module: 'mesh-analysis'
+  route: '/rail-transit/mesh-analysis'
+  sessionId?: string
+  sourceFileId?: number
+  radio?: number | null
+}
+
 export interface TaskWindowContext {
   taskId?: string
   module?: 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'command-reference' | 'logs'
@@ -172,6 +213,10 @@ export interface NetConsoleDesktopBridge {
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   /** One-way, strictly validated renderer lifecycle or resolved-theme report. */
   reportRendererReady(report: RendererHostReport): void
+  /** One-way, strictly validated snapshot used only for Renderer diagnostics. */
+  reportRendererWorkload?(report: RendererWorkloadReport): void
+  /** Returns only the in-memory recovery context for this trusted Renderer. */
+  getRendererRecoveryState?(): Promise<RendererRecoveryState | null>
 }
 
 export const DESKTOP_IPC = Object.freeze({
@@ -199,6 +244,8 @@ export const DESKTOP_IPC = Object.freeze({
   openExternalUrl: 'netconsole:desktop:open-external-url',
   backendStatusChanged: 'netconsole:desktop:backend-status-changed',
   rendererReady: 'netconsole:desktop:renderer-ready',
+  rendererWorkload: 'netconsole:desktop:renderer-workload',
+  rendererRecoveryState: 'netconsole:desktop:renderer-recovery-state',
 })
 
 export const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
@@ -227,4 +274,5 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
   DESKTOP_IPC.openExternalUrl,
+  DESKTOP_IPC.rendererRecoveryState,
 ])

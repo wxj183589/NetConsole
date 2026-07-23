@@ -4,6 +4,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import meshAnalysisViewSource from './MeshAnalysisView.vue?raw'
+
 const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
   listVehicleMrs: vi.fn(),
@@ -124,6 +126,7 @@ const meshChartStub = defineComponent({
   props: {
     points: { type: Array, default: () => [] },
     series: { type: Array, default: () => [] },
+    seriesCache: { type: Object, default: null },
     events: { type: Array, default: () => [] },
     scope: { type: String, default: '' },
     initialViewport: { type: Object, default: null },
@@ -246,6 +249,11 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('keeps the large trackside payload outside Vue deep reactivity', () => {
+    expect(meshAnalysisViewSource).toContain('const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)')
+    expect(meshAnalysisViewSource).toContain('markRaw(await getMeshTracksideSignalChart(')
+  })
+
   it('places RSSI deltas before AP MAC and hides unreliable switch type and duration columns', async () => {
     const session = {
       session_id: 'session-1', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
@@ -340,7 +348,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
-    })
+    }, expect.anything())
     const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')
     expect(tracksideChart?.props('events')).toEqual([])
 
@@ -492,7 +500,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
-    })
+      time_from: undefined,
+      time_to: undefined,
+    }, expect.anything())
     const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
     ))
@@ -503,7 +513,7 @@ describe('Mesh analysis detail behavior', () => {
       full_end_time: fullEnd,
     })
     const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
-      (chart.props('series') as unknown[]).length > 0
+      ((chart.props('seriesCache') as { series?: unknown[] } | null)?.series?.length ?? 0) > 0
     ))
     expect(tracksideChart?.props('active')).toBe(false)
     intersectionCallbacks[0]?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
@@ -528,7 +538,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
-    })
+      time_from: undefined,
+      time_to: undefined,
+    }, expect.anything())
     expect(activeRssiChart?.props('syncViewport')).toMatchObject({
       start_time: fullStart,
       end_time: '2026-07-20 10:00:15.000',
@@ -604,7 +616,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
-    })
+      time_from: undefined,
+      time_to: undefined,
+    }, expect.anything())
     const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
     ))
@@ -638,6 +652,89 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
 
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail' } })
+    wrapper.unmount()
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
+  })
+
+  it('restores the crashed session safely and waits for an explicit trackside reload', async () => {
+    const session = {
+      session_id: 'session-safe',
+      mr_name: '列车06-MR-CW',
+      original_filename: '6CWmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const build = {
+      anchor_link_id: 10,
+      sequence: 1,
+      source_file_id: 7,
+      local_radio: 1,
+      peer_ap_name: '轨旁AP-1',
+      active_peer_mac: '0000-0000-0010',
+      build_start_time: session.first_sample_time,
+      build_end_time: '2026-07-20 10:00:10.000',
+    }
+    const reportRendererWorkload = vi.fn()
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: {
+        getRendererRecoveryState: vi.fn(async () => ({
+          mode: 'safe',
+          previousReason: 'oom',
+          module: 'mesh-analysis',
+          route: '/rail-transit/mesh-analysis',
+          sessionId: session.session_id,
+          sourceFileId: 7,
+          radio: 1,
+        })),
+        reportRendererWorkload,
+      },
+    })
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 7 }],
+    })
+    mocks.listBuildOrder.mockResolvedValue({ items: [build], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path',
+      anchor: null,
+      points: [{ timestamp: session.first_sample_time, local_radio: 1, local_rssi: 30 }],
+      events: [],
+      location_segments: [],
+      total_points: 1,
+      returned_points: 1,
+      downsampled: false,
+      summary: { sample_count: 1 },
+      time_from: null,
+      time_to: null,
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
+    expect(wrapper.text()).toContain('上次轨旁图因渲染进程内存不足退出')
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalled()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text() === '重新加载轨旁信号图')!.trigger('click')
+    await flushPromises()
+    expect(mocks.getTracksideSignal).toHaveBeenCalledOnce()
+    expect(reportRendererWorkload).toHaveBeenCalledWith(expect.objectContaining({
+      module: 'mesh-analysis',
+      phase: 'trackside-request-started',
+      sessionId: session.session_id,
+    }))
     wrapper.unmount()
     Reflect.deleteProperty(window, 'netconsoleDesktop')
   })

@@ -3,6 +3,7 @@ import type {
   BackendDownloadRequest,
   ChooseSavePathOptions,
   RendererHostReport,
+  RendererWorkloadReport,
   FileFilter,
   RendererReadyReport,
   SelectFileOptions,
@@ -289,6 +290,98 @@ export function validateRendererReadyReport(value: unknown): RendererHostReport 
     phase: record.phase as RendererReadyReport['phase'],
     ...(record.surface === undefined ? {} : { surface: record.surface as RendererReadyReport['surface'] }),
   }
+}
+
+const RENDERER_WORKLOAD_PHASES = new Set<RendererWorkloadReport['phase']>([
+  'session-selected',
+  'trackside-request-started',
+  'trackside-response-received',
+  'trackside-cache-building',
+  'trackside-cache-ready',
+  'echarts-init',
+  'echarts-set-option',
+  'echarts-interactive',
+  'chart-disposed',
+])
+
+export function validateRendererWorkloadReport(value: unknown): RendererWorkloadReport {
+  const record = asRecord(value, 'renderer workload report')
+  rejectUnknownKeys(record, [
+    'module',
+    'route',
+    'phase',
+    'sessionId',
+    'sourceFileId',
+    'radio',
+    'totalFrames',
+    'returnedFrames',
+    'totalLinkPoints',
+    'returnedLinkPoints',
+    'seriesCount',
+    'viewportStart',
+    'viewportEnd',
+    'heapUsedBytes',
+    'heapTotalBytes',
+    'heapLimitBytes',
+    'reportRevision',
+  ])
+  if (record.module !== 'mesh-analysis') throw new TypeError('renderer workload module is invalid')
+  if (record.route !== '/rail-transit/mesh-analysis') throw new TypeError('renderer workload route is invalid')
+  if (!RENDERER_WORKLOAD_PHASES.has(record.phase as RendererWorkloadReport['phase'])) {
+    throw new TypeError('renderer workload phase is invalid')
+  }
+  const result: RendererWorkloadReport = {
+    module: 'mesh-analysis',
+    route: '/rail-transit/mesh-analysis',
+    phase: record.phase as RendererWorkloadReport['phase'],
+    reportRevision: boundedInteger(record.reportRevision, 'reportRevision', 1, 2_147_483_647),
+  }
+  if (record.sessionId !== undefined) {
+    if (typeof record.sessionId !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z_.:-]{0,159}$/.test(record.sessionId)) {
+      throw new TypeError('renderer workload sessionId is invalid')
+    }
+    result.sessionId = record.sessionId
+  }
+  if (record.sourceFileId !== undefined) {
+    result.sourceFileId = boundedInteger(record.sourceFileId, 'sourceFileId', 1, 2_147_483_647)
+  }
+  if (record.radio !== undefined) {
+    result.radio = record.radio === null ? null : boundedInteger(record.radio, 'radio', 0, 255)
+  }
+  for (const field of [
+    'totalFrames',
+    'returnedFrames',
+    'totalLinkPoints',
+    'returnedLinkPoints',
+    'seriesCount',
+  ] as const) {
+    if (record[field] !== undefined) result[field] = boundedInteger(record[field], field, 0, 100_000_000)
+  }
+  for (const field of ['heapUsedBytes', 'heapTotalBytes', 'heapLimitBytes'] as const) {
+    if (record[field] !== undefined) result[field] = boundedInteger(record[field], field, 0, Number.MAX_SAFE_INTEGER)
+  }
+  for (const field of ['viewportStart', 'viewportEnd'] as const) {
+    if (record[field] === undefined) continue
+    if (
+      typeof record[field] !== 'string'
+      || record[field].length > 64
+      || !/^[0-9TZ: .+-]+$/.test(record[field])
+    ) throw new TypeError(`renderer workload ${field} is invalid`)
+    result[field] = record[field]
+  }
+  return result
+}
+
+function boundedInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || Number(value) < minimum || Number(value) > maximum) {
+    throw new TypeError(`renderer workload ${field} is invalid`)
+  }
+  return Number(value)
 }
 
 function validateFilters(value: unknown): FileFilter[] {

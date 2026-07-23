@@ -7,6 +7,7 @@ import MeshRssiChart from './MeshRssiChart.vue'
 import MeshTracksideSignalChart from './MeshTracksideSignalChart.vue'
 import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
 import type { MeshChartEvent, MeshChartPoint, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
+import { buildTracksideSeriesCache } from './tracksideSeriesCache'
 
 const echartsMock = vi.hoisted(() => {
   const zrender = { on: vi.fn(), off: vi.fn() }
@@ -187,7 +188,7 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.init).toHaveBeenCalledTimes(1)
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       legend: { type?: string }
-      series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<{ value: [string, number | null]; meta?: MeshTracksideSignalPointData; meshEvent?: MeshChartEvent }> }>
+      series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<[number, number | null, number, number]> }>
       tooltip: { formatter: (params: unknown) => string }
       toolbox: { feature: { dataZoom?: unknown; restore?: unknown; saveAsImage?: unknown } }
     }
@@ -199,32 +200,62 @@ describe('MESH charts mount and render', () => {
     expect(option.series[0].markLine).toBeUndefined()
     expect(option.series[0].connectNulls).toBe(false)
     expect(option.series[0].showSymbol).toBe(true)
-    expect(option.series[0].data?.[0]?.value).toEqual([tracksideChartPoint.timestamp, -45])
-    expect(option.series[1].data?.[0]?.value).toEqual([tracksideSecondPoint.timestamp, -62])
+    expect(option.series[0].data?.[0]?.slice(0, 2)).toEqual([Date.parse(tracksideChartPoint.timestamp), -45])
+    expect(option.series[1].data?.[0]?.slice(0, 2)).toEqual([Date.parse(tracksideSecondPoint.timestamp), -62])
     expect(option.legend.type).toBe('scroll')
     expect(option.toolbox.feature.dataZoom).toBeDefined()
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
-    expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('轨旁侧 RSSI：-45')
-    expect(option.tooltip.formatter([{ data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } }])).toContain('链路角色：ACTIVE')
+    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('轨旁侧 RSSI：-45')
+    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('链路角色：ACTIVE')
     const dedupedTooltip = option.tooltip.formatter([
-      { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0] } },
-      { data: { value: [tracksideChartPoint.timestamp, -45], meta: tracksideChartPoint, seriesMeta: tracksideSeries[0], meshEvent: chartEvent } },
+      { axisValue: tracksideChartPoint.timestamp },
+      { axisValue: tracksideChartPoint.timestamp },
     ])
     expect(dedupedTooltip.split('AP-1 · Radio 1').length - 1).toBe(1)
     const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
-    click({ data: { meshEvent: chartEvent, meta: tracksideChartPoint } })
+    click({ seriesId: option.series[0].name, data: option.series[0].data?.[0] })
     expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([chartEvent])
     const restore = echartsMock.chart.on.mock.calls.find(([event]) => event === 'restore')?.[1] as () => void
     restore()
-    expect(wrapper.emitted('viewport-change')?.at(-1)?.[0]).toMatchObject({
-      start_time: tracksideChartPoint.timestamp,
-      end_time: tracksideSecondPoint.timestamp,
-      source: 'user_zoom',
-    })
+    const restoredViewport = wrapper.emitted('viewport-change')?.at(-1)?.[0] as {
+      start_time: string
+      end_time: string
+      source: string
+    }
+    expect(Date.parse(restoredViewport.start_time)).toBe(Date.parse(tracksideChartPoint.timestamp))
+    expect(Date.parse(restoredViewport.end_time)).toBe(Date.parse(tracksideSecondPoint.timestamp))
+    expect(restoredViewport.source).toBe('user_zoom')
 
     wrapper.unmount()
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('disposes chart, cache, pointer listeners, and resize listeners across ten session mounts', async () => {
+    const addListener = vi.spyOn(window, 'addEventListener')
+    const removeListener = vi.spyOn(window, 'removeEventListener')
+    const caches = []
+    for (let sessionIndex = 0; sessionIndex < 10; sessionIndex += 1) {
+      const cache = buildTracksideSeriesCache(tracksideSeries.map((item) => ({
+        ...item,
+        series_id: `${item.series_id}:session-${sessionIndex}`,
+        points: item.points.map((itemPoint) => ({
+          ...itemPoint,
+          sample_id: sessionIndex,
+        })),
+      })))
+      caches.push(cache)
+      const wrapper = mount(MeshTracksideSignalChart, { props: { seriesCache: cache } })
+      await flushPromises()
+      wrapper.unmount()
+    }
+
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(10)
+    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(10)
+    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(10)
+    expect(addListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
+    expect(removeListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
+    expect(caches.every((cache) => cache.disposed && cache.pointMetaById.size === 0)).toBe(true)
   })
 
   it('keeps a trackside series connected when delayed samples still belong to the same link run', async () => {
@@ -246,11 +277,11 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ data?: Array<{ value: [string, number | null] }> }>
+      series: Array<{ data?: Array<[number, number | null, number, number]> }>
     }
-    expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [firstPoint.timestamp, -45],
-      [nextPoint.timestamp, -41],
+    expect(option.series[0].data?.map((item) => item.slice(0, 2))).toEqual([
+      [Date.parse(firstPoint.timestamp), -45],
+      [Date.parse(nextPoint.timestamp), -41],
     ])
 
     wrapper.unmount()
@@ -281,12 +312,12 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ data?: Array<{ value: [string, number | null] }> }>
+      series: Array<{ data?: Array<[number, number | null, number, number]> }>
     }
-    expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [firstPoint.timestamp, -45],
-      [nextPoint.timestamp, null],
-      [nextPoint.timestamp, -41],
+    expect(option.series[0].data?.map((item) => item.slice(0, 2))).toEqual([
+      [Date.parse(firstPoint.timestamp), -45],
+      [Date.parse(nextPoint.timestamp), null],
+      [Date.parse(nextPoint.timestamp), -41],
     ])
 
     wrapper.unmount()
@@ -319,13 +350,13 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ connectNulls?: boolean; data?: Array<{ value: [string, number | null] }> }>
+      series: Array<{ connectNulls?: boolean; data?: Array<[number, number | null, number, number]> }>
     }
     expect(option.series[0].connectNulls).toBe(false)
-    expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [firstPoint.timestamp, -45],
-      [middlePoint.timestamp, -42],
-      [lastPoint.timestamp, -41],
+    expect(option.series[0].data?.map((item) => item.slice(0, 2))).toEqual([
+      [Date.parse(firstPoint.timestamp), -45],
+      [Date.parse(middlePoint.timestamp), -42],
+      [Date.parse(lastPoint.timestamp), -41],
     ])
 
     wrapper.unmount()
@@ -353,18 +384,18 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ type?: string; data?: Array<{ value: [string, number | null] }> }>
+      series: Array<{ type?: string; data?: Array<[number, number | null, number, number]> }>
     }
     expect(option.series.every((item) => item.type === 'line')).toBe(true)
-    expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [apA[0].timestamp, -40],
-      [apA[1].timestamp, -42],
-      [apA[2].timestamp, -41],
+    expect(option.series[0].data?.map((item) => item.slice(0, 2))).toEqual([
+      [Date.parse(apA[0].timestamp), -40],
+      [Date.parse(apA[1].timestamp), -42],
+      [Date.parse(apA[2].timestamp), -41],
     ])
-    expect(option.series[1].data?.map((item) => item.value)).toEqual([
-      [apB[0].timestamp, -50],
-      [apB[1].timestamp, -52],
-      [apB[2].timestamp, -51],
+    expect(option.series[1].data?.map((item) => item.slice(0, 2))).toEqual([
+      [Date.parse(apB[0].timestamp), -50],
+      [Date.parse(apB[1].timestamp), -52],
+      [Date.parse(apB[2].timestamp), -51],
     ])
 
     wrapper.unmount()
@@ -380,10 +411,10 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ data?: Array<{ value: [string, number | null] }> }>
+      series: Array<{ data?: Array<[number, number | null, number, number]> }>
     }
-    expect(option.series[0].data?.[0]?.value).toEqual([fallbackPoint.timestamp, -55])
-    expect(option.series[0].data?.[0]?.value[1]).not.toBe(-40)
+    expect(option.series[0].data?.[0]?.slice(0, 2)).toEqual([Date.parse(fallbackPoint.timestamp), -55])
+    expect(option.series[0].data?.[0]?.[1]).not.toBe(-40)
 
     wrapper.unmount()
   })
@@ -412,7 +443,8 @@ describe('MESH charts mount and render', () => {
         name: string
         type: string
         itemStyle: { color: string }
-        data: Array<{ value: [string, number | null]; symbol?: string }>
+        symbol: (value: [number, number | null, number, number]) => string
+        data: Array<[number, number | null, number, number]>
       }>
     }
     expect(option.series).toHaveLength(1)
@@ -420,9 +452,9 @@ describe('MESH charts mount and render', () => {
     expect(option.series[0].name).not.toMatch(/ACTIVE|STANDBY|MIXED/)
     expect(option.series[0].type).toBe('line')
     expect(option.series[0].itemStyle.color).toBeTruthy()
-    expect(option.series[0].data.map((item) => item.value[1])).toEqual([-45, -45, -45])
-    expect(option.series[0].data.map((item) => item.symbol)).toEqual(['circle', 'emptyCircle', 'circle'])
-    expect(option.series[0].data.every((item) => item.value[1] !== null)).toBe(true)
+    expect(option.series[0].data.map((item) => item[1])).toEqual([-45, -45, -45])
+    expect(option.series[0].data.map((item) => option.series[0].symbol(item))).toEqual(['circle', 'emptyCircle', 'circle'])
+    expect(option.series[0].data.every((item) => item[1] !== null)).toBe(true)
 
     wrapper.unmount()
   })
@@ -453,7 +485,7 @@ describe('MESH charts mount and render', () => {
         name: string
         type: string
         markLine?: unknown
-        data: Array<{ value: [string, number | null]; meta: MeshTracksideSignalPointData; seriesMeta: MeshTracksideSignalSeriesData }>
+        data: Array<[number, number | null, number, number]>
       }>
       tooltip: { formatter: (params: unknown) => string }
     }
@@ -461,6 +493,8 @@ describe('MESH charts mount and render', () => {
     expect(option.series.every((item) => item.type === 'line')).toBe(true)
     expect(option.series.every((item) => item.markLine === undefined)).toBe(true)
     expect(option.series.map((item) => item.name).join(' ')).not.toMatch(/ACTIVE|STANDBY|MIXED/)
+    expect(option.series.flatMap((item) => item.data).every((item) => Array.isArray(item))).toBe(true)
+    expect(JSON.stringify(option.series)).not.toContain('peer_ap_name')
     const tooltip = option.tooltip.formatter(option.series.map((item) => ({ axisValue: frameTime, data: item.data[0] })))
     expect(tooltip.match(/链路角色：/g)).toHaveLength(4)
     expect(tooltip.match(/链路角色：ACTIVE/g)).toHaveLength(1)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowRight, Delete, Document, Download, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
@@ -22,6 +22,11 @@ import {
   type MeshSharedTimeDomain,
 } from '../../components/mesh-analysis/meshChartViewport'
 import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
+import {
+  buildTracksideSeriesCache,
+  disposeTracksideSeriesCache,
+  type TracksideSeriesCache,
+} from '../../components/mesh-analysis/tracksideSeriesCache'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -45,6 +50,9 @@ import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
+import type {
+  RendererWorkloadPhase,
+} from '../../../../desktop_electron/src/shared/bridge'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -63,7 +71,11 @@ const links = ref<MeshLinkDetail[]>([])
 const linkTotal = ref(0)
 const switches = ref<MeshSwitchEvent[]>([])
 const rssiActivePath = ref<MeshPathChart | null>(null)
-const tracksideSignal = ref<MeshTracksideSignalChartData | null>(null)
+const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)
+const tracksideSeriesCache = shallowRef<TracksideSeriesCache | null>(null)
+const tracksideLoading = ref(false)
+const tracksideRecoveryBlocked = ref(false)
+const tracksideRecoveryReason = ref('')
 const busyActivePath = ref<MeshPathChart | null>(null)
 const busyPeerPath = ref<MeshPathChart | null>(null)
 const artifacts = ref<MeshArtifact[]>([])
@@ -168,6 +180,11 @@ let rssiChartGeneration = 0
 let busyChartGeneration = 0
 let rssiViewportRevision = 0
 let tracksideObserver: IntersectionObserver | null = null
+let tracksideAbortController: AbortController | null = null
+let tracksideRequestGeneration = 0
+let tracksideWorkloadCycle = 0
+let rendererWorkloadRevision = 0
+const reportedWorkloadPhases = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
 const taskStorageKey = 'netconsole.mesh-analysis.last-task'
@@ -422,12 +439,99 @@ function observeTracksideChart(): void {
   tracksideObserver.observe(host)
 }
 
-onMounted(async () => { await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()]); scheduleRefresh() })
+function reportRendererWorkload(phase: RendererWorkloadPhase): void {
+  const bridge = window.netconsoleDesktop
+  if (!bridge) return
+  const sessionId = selected.value?.session.session_id
+  const sourceFileId = selectedSource.value?.source_file_id
+  const phaseKey = `${sessionId ?? 'none'}:${sourceFileId ?? 'none'}:${chartRadio.value ?? 'none'}:${tracksideWorkloadCycle}:${phase}`
+  if (reportedWorkloadPhases.has(phaseKey)) return
+  reportedWorkloadPhases.add(phaseKey)
+  const memory = (performance as Performance & {
+    memory?: {
+      usedJSHeapSize: number
+      totalJSHeapSize: number
+      jsHeapSizeLimit: number
+    }
+  }).memory
+  bridge.reportRendererWorkload?.({
+    module: 'mesh-analysis',
+    route: '/rail-transit/mesh-analysis',
+    phase,
+    ...(sessionId ? { sessionId } : {}),
+    ...(sourceFileId == null ? {} : { sourceFileId }),
+    radio: chartRadio.value,
+    ...(tracksideSignal.value ? {
+      totalFrames: tracksideSignal.value.total_frames,
+      returnedFrames: tracksideSignal.value.returned_frames,
+      totalLinkPoints: tracksideSignal.value.total_link_points,
+      returnedLinkPoints: tracksideSignal.value.returned_link_points,
+      seriesCount: tracksideSeriesCache.value?.series.length
+        ?? tracksideSignal.value.returned_series,
+    } : {}),
+    ...(rssiViewport.value?.start_time ? { viewportStart: rssiViewport.value.start_time } : {}),
+    ...(rssiViewport.value?.end_time ? { viewportEnd: rssiViewport.value.end_time } : {}),
+    ...(memory ? {
+      heapUsedBytes: memory.usedJSHeapSize,
+      heapTotalBytes: memory.totalJSHeapSize,
+      heapLimitBytes: memory.jsHeapSizeLimit,
+    } : {}),
+    reportRevision: ++rendererWorkloadRevision,
+  })
+}
+
+function releaseTracksideResources(reportDisposed = true): void {
+  tracksideAbortController?.abort()
+  tracksideAbortController = null
+  tracksideRequestGeneration += 1
+  if (reportDisposed && (tracksideSeriesCache.value || tracksideSignal.value)) {
+    reportRendererWorkload('chart-disposed')
+  }
+  disposeTracksideSeriesCache(tracksideSeriesCache.value)
+  tracksideSeriesCache.value = null
+  tracksideSignal.value = null
+}
+
+async function restoreRendererRecovery(): Promise<void> {
+  const recovery = await window.netconsoleDesktop?.getRendererRecoveryState?.()
+  if (!recovery || recovery.module !== 'mesh-analysis') return
+  let row = sessions.value.find((item) => item.session_id === recovery.sessionId)
+  if (!row && recovery.sessionId) {
+    try {
+      row = (await getMeshAnalysisSession(recovery.sessionId)).session
+    } catch {
+      return
+    }
+  }
+  if (!row) return
+  tracksideRecoveryReason.value = recovery.previousReason
+  tracksideRecoveryBlocked.value = recovery.mode === 'safe'
+  await openSession(row, true)
+  chartRadio.value = recovery.radio ?? chartRadio.value
+  if (recovery.mode === 'normal') {
+    loadedTabs.rssi = true
+    activeTab.value = 'rssi'
+    await loadFullRssiCharts()
+  }
+}
+
+const tracksideRecoveryMessage = computed(() => (
+  tracksideRecoveryReason.value === 'oom'
+    ? '上次轨旁图因渲染进程内存不足退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
+    : '上次渲染轨旁图时页面异常退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
+))
+
+onMounted(async () => {
+  await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
+  await restoreRendererRecovery()
+  scheduleRefresh()
+})
 onBeforeUnmount(() => {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
   tracksideObserver?.disconnect()
   tracksideObserver = null
+  releaseTracksideResources()
   stopTaskPolling()
 })
 watch(activeTab, (tab) => {
@@ -464,11 +568,19 @@ async function refreshOverview(silent = false): Promise<void> {
   } finally { loading.value = false }
 }
 
-async function openSession(row: MeshAnalysisSession): Promise<void> {
+async function openSession(row: MeshAnalysisSession, preserveRecovery = false): Promise<void> {
+  const keepRecovery = preserveRecovery === true
   const generation = ++detailGeneration
   detailLoading.value = true
+  releaseTracksideResources()
+  tracksideWorkloadCycle += 1
+  reportedWorkloadPhases.clear()
+  if (!keepRecovery) {
+    tracksideRecoveryBlocked.value = false
+    tracksideRecoveryReason.value = ''
+  }
   selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []
-  rssiActivePath.value = null; tracksideSignal.value = null; busyActivePath.value = null; busyPeerPath.value = null
+  rssiActivePath.value = null; busyActivePath.value = null; busyPeerPath.value = null
   selectedSegment.value = null; focusTimestamp.value = ''; rssiFocusLabel.value = ''; chartRadio.value = null; rssiViewport.value = null; busyViewport.value = null
   sharedPointerTime.value = null; sharedPointerSource.value = null; rssiViewportRevision = 0; tracksideChartVisible.value = typeof IntersectionObserver === 'undefined'
   tracksideObserver?.disconnect(); tracksideObserver = null
@@ -481,6 +593,7 @@ async function openSession(row: MeshAnalysisSession): Promise<void> {
     const detail = await getMeshAnalysisSession(id)
     if (generation !== detailGeneration) return
     selected.value = detail
+    reportRendererWorkload('session-selected')
     ensureSharedRssiViewport()
     restoreSessionExpansionForDetail()
     await loadBuildOrders(generation)
@@ -548,7 +661,10 @@ async function loadTab(tab: string): Promise<void> {
     return
   }
   if (!selected.value || loadedTabs[tab]) {
-    if (tab === 'rssi' && (!rssiActivePath.value || !tracksideSignal.value)) await loadCurrentMetricChart('rssi')
+    if (tab === 'rssi' && (!rssiActivePath.value || (!tracksideSignal.value && !tracksideRecoveryBlocked.value))) {
+      if (tracksideRecoveryBlocked.value) await loadActivePath('rssi')
+      else await loadCurrentMetricChart('rssi')
+    }
     if (tab === 'busy' && !(busyMode.value === 'peer' ? busyPeerPath.value : busyActivePath.value)) await loadCurrentMetricChart('busy', lockedAnalysisRange.value)
     return
   }
@@ -559,7 +675,10 @@ async function loadTab(tab: string): Promise<void> {
     const id = selected.value.session.session_id
     if (tab === 'build-order') await loadBuildOrders(generation)
     else if (tab === 'links') await reloadLinks(1, generation)
-    else if (tab === 'rssi') await loadCurrentMetricChart('rssi', null, generation)
+    else if (tab === 'rssi') {
+      if (tracksideRecoveryBlocked.value) await loadActivePath('rssi', null, generation)
+      else await loadCurrentMetricChart('rssi', null, generation)
+    }
     else if (tab === 'busy') await loadCurrentMetricChart('busy', lockedAnalysisRange.value, generation)
     else if (tab === 'switches') {
       const result = await listMeshSwitchEvents(id, { page: 1, page_size: 500 })
@@ -589,12 +708,66 @@ function isLatestChartRequest(metric: MeshChartMetric, generation: number): bool
 
 async function loadTracksideSignal(generation = detailGeneration): Promise<void> {
   if (!selected.value) return
-  const result = await getMeshTracksideSignalChart(selected.value.session.session_id, {
-    max_points: visiblePoints.value,
-    radio: chartRadio.value,
-  })
-  if (generation !== detailGeneration) return
-  tracksideSignal.value = result
+  releaseTracksideResources()
+  await nextTick()
+  const requestGeneration = ++tracksideRequestGeneration
+  const controller = new AbortController()
+  tracksideAbortController = controller
+  tracksideWorkloadCycle += 1
+  tracksideLoading.value = true
+  reportRendererWorkload('trackside-request-started')
+  try {
+    const result = markRaw(await getMeshTracksideSignalChart(
+      selected.value.session.session_id,
+      {
+        max_points: visiblePoints.value,
+        radio: chartRadio.value,
+        time_from: undefined,
+        time_to: undefined,
+      },
+      controller.signal,
+    ))
+    if (
+      generation !== detailGeneration
+      || requestGeneration !== tracksideRequestGeneration
+      || controller.signal.aborted
+    ) return
+    tracksideSignal.value = result
+    reportRendererWorkload('trackside-response-received')
+    reportRendererWorkload('trackside-cache-building')
+    const cache = markRaw(buildTracksideSeriesCache(result.series))
+    if (
+      generation !== detailGeneration
+      || requestGeneration !== tracksideRequestGeneration
+      || controller.signal.aborted
+    ) {
+      disposeTracksideSeriesCache(cache)
+      return
+    }
+    tracksideSignal.value = markRaw({ ...result, series: [] })
+    tracksideSeriesCache.value = cache
+    reportRendererWorkload('trackside-cache-ready')
+    await nextTick()
+    observeTracksideChart()
+  } catch (reason) {
+    if (!(reason instanceof DOMException && reason.name === 'AbortError')) throw reason
+  } finally {
+    if (requestGeneration === tracksideRequestGeneration) {
+      tracksideAbortController = null
+      tracksideLoading.value = false
+    }
+  }
+}
+
+async function loadTracksideAfterRecovery(): Promise<void> {
+  tracksideRecoveryBlocked.value = false
+  await loadTracksideSignal()
+}
+
+function handleTracksideWorkloadPhase(
+  phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed',
+): void {
+  reportRendererWorkload(phase)
 }
 
 async function loadActivePath(
@@ -620,10 +793,14 @@ async function loadActivePath(
 }
 
 async function loadFullRssiCharts(generation = detailGeneration): Promise<void> {
-  await Promise.all([
-    loadActivePath('rssi', null, generation),
-    loadTracksideSignal(generation),
-  ])
+  if (tracksideRecoveryBlocked.value) {
+    await loadActivePath('rssi', null, generation)
+  } else {
+    await Promise.all([
+      loadActivePath('rssi', null, generation),
+      loadTracksideSignal(generation),
+    ])
+  }
   if (generation === detailGeneration) ensureSharedRssiViewport()
 }
 
@@ -919,7 +1096,7 @@ async function changeChartRadio(): Promise<void> {
   sharedPointerSource.value = null
   busyViewport.value = null
   rssiActivePath.value = null
-  tracksideSignal.value = null
+  releaseTracksideResources()
   busyActivePath.value = null
   await reloadCurrentChart()
 }
@@ -1500,6 +1677,19 @@ function buildResultLabel(value: string): string {
             <MeshRssiChart ref="rssiChartRef" :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="activeTab === 'rssi'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
           </div>
           <h3 class="chart-section-title">轨旁信号图</h3>
+          <el-alert
+            v-if="tracksideRecoveryBlocked"
+            :title="tracksideRecoveryMessage"
+            type="warning"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <el-button type="warning" plain :loading="tracksideLoading" @click="loadTracksideAfterRecovery">
+                重新加载轨旁信号图
+              </el-button>
+            </template>
+          </el-alert>
           <el-alert v-if="tracksideSignal?.warnings?.length" :title="tracksideSignal.warnings.join('；')" type="warning" :closable="false" show-icon />
           <div v-if="tracksideSignal" class="mini-summary">
             <span>采样时刻 <strong>{{ tracksideSignal.returned_frames }} / {{ tracksideSignal.total_frames }}</strong></span>
@@ -1512,7 +1702,8 @@ function buildResultLabel(value: string): string {
             <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
           </div>
           <div ref="tracksideChartHost" class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
-            <MeshTracksideSignalChart :series="tracksideSignal?.series || []" :events="tracksideSignal?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-location-band="showLocationBand" :active="activeTab === 'rssi' && tracksideChartVisible" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
+            <MeshTracksideSignalChart v-if="tracksideSeriesCache" :series-cache="tracksideSeriesCache" :events="tracksideSignal?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-location-band="showLocationBand" :active="activeTab === 'rssi' && tracksideChartVisible" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" />
+            <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" description="暂无轨旁信号数据" :image-size="60" />
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 Peer Radio MAC / AP MAC / Peer MAC + 本地 Radio 建立稳定物理序列，ACTIVE 与 STANDBY 是点级角色；目标点数表示目标采样时刻，保留某个时刻时会返回该 frame 的全部有效链路。</p>

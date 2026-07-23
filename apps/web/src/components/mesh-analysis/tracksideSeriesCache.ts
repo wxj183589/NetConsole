@@ -2,27 +2,75 @@ import type {
   MeshTracksideSignalPointData,
   MeshTracksideSignalSeriesData,
 } from '../../types/meshAnalysis'
+import { meshTimestampMillis } from './meshChartViewport'
 
-export interface RenderedTracksideSignalPoint {
-  value: [string, number | null]
-  symbol?: 'circle' | 'emptyCircle'
-  meta?: MeshTracksideSignalPointData
-  seriesMeta?: MeshTracksideSignalSeriesData
+export type TracksideRoleCode = -1 | 0 | 1
+export type CompactTracksideChartPoint = [
+  timestampMillis: number,
+  rssi: number | null,
+  metaId: number,
+  roleCode: TracksideRoleCode,
+]
+
+export interface CompactTracksidePointMeta {
+  metaId: number
+  seriesId: string
+  timestampMillis: number
+  timestampTag: string
+  sourceFileId: number | null
+  linkId: number | null
+  sampleId: number | null
+  localRadio: number | null
+  role: 'ACTIVE' | 'STANDBY'
+  peerMac: string | null
+  peerApName: string | null
+  peerApMac: string | null
+  peerRadio: string | null
+  peerRadioMac: string | null
+  station: string | null
+  section: string | null
+  rssi: number | null
+  localRssi: number | null
+  peerSignal: number | null
+  localSignal: number | null
+  runId: string | null
+  segmentDurationSeconds: number | null
+  dataSource: string
+}
+
+export interface CompactTracksideSeriesMeta {
+  seriesId: string
+  name: string
+  peerName: string | null
+  peerMac: string | null
+  apMac: string | null
+  peerRadioMac: string | null
+  radio: number | null
+  station: string | null
+  section: string | null
+  pointCount: number
 }
 
 export interface RenderedTracksideSignalSeries {
   id: string
   name: string
-  data: RenderedTracksideSignalPoint[]
-  meta: MeshTracksideSignalSeriesData
+  data: CompactTracksideChartPoint[]
+  meta: CompactTracksideSeriesMeta
   pointCount: number
 }
 
 export interface TracksideSeriesCache {
   series: RenderedTracksideSignalSeries[]
-  timestamps: string[]
   totalRenderedPoints: number
   unorderedSeriesIds: string[]
+  pointMetaById: ReadonlyMap<number, CompactTracksidePointMeta>
+  seriesMetaById: ReadonlyMap<string, CompactTracksideSeriesMeta>
+  dataIndexToMetaId: ReadonlyMap<string, readonly number[]>
+  frameMetaIds: ReadonlyMap<number, readonly number[]>
+  frameTimestamps: number[]
+  firstTimestampMillis: number | null
+  lastTimestampMillis: number | null
+  disposed: boolean
 }
 
 function seriesLabel(series: MeshTracksideSignalSeriesData): string {
@@ -38,54 +86,166 @@ export function tracksidePointValue(point: MeshTracksideSignalPointData): number
 export function buildTracksideSeriesCache(
   sourceSeries: readonly MeshTracksideSignalSeriesData[],
 ): TracksideSeriesCache {
-  const timestamps: string[] = []
+  const pointMetaById = new Map<number, CompactTracksidePointMeta>()
+  const seriesMetaById = new Map<string, CompactTracksideSeriesMeta>()
+  const dataIndexToMetaId = new Map<string, number[]>()
+  const frameMetaIds = new Map<number, number[]>()
   const unorderedSeriesIds: string[] = []
   let totalRenderedPoints = 0
+  let nextMetaId = 0
+  let firstTimestampMillis: number | null = null
+  let lastTimestampMillis: number | null = null
+
   const series = sourceSeries.map((item) => {
-    const rendered: RenderedTracksideSignalPoint[] = []
+    const rendered: CompactTracksideChartPoint[] = []
+    const metaIds: number[] = []
+    const compactSeries: CompactTracksideSeriesMeta = {
+      seriesId: item.series_id,
+      name: seriesLabel(item),
+      peerName: item.peer_name,
+      peerMac: item.peer_mac,
+      apMac: item.ap_mac,
+      peerRadioMac: item.peer_radio_mac,
+      radio: item.radio,
+      station: item.station,
+      section: item.section,
+      pointCount: item.points.length,
+    }
+    seriesMetaById.set(item.series_id, compactSeries)
     let previousRunId: string | null = null
-    let previousTimestamp = ''
+    let previousTimestampMillis: number | null = null
+    let previousTimestampTag = ''
     let ordered = true
     for (const point of item.points) {
+      const timestampMillis = meshTimestampMillis(point.timestamp)
+      if (timestampMillis === null) continue
       if (
-        previousTimestamp
+        previousTimestampMillis !== null
         && (
-          point.timestamp < previousTimestamp
-          || (point.timestamp === previousTimestamp && point.timestamp_tag < (rendered.at(-1)?.meta?.timestamp_tag || ''))
+          timestampMillis < previousTimestampMillis
+          || (timestampMillis === previousTimestampMillis && point.timestamp_tag < previousTimestampTag)
         )
       ) ordered = false
-      const currentRunId = point.run_id ?? (point.run_sequence == null ? null : `${item.series_id}:${point.run_sequence}`)
+      const currentRunId = point.run_id
+        ?? (point.run_sequence == null ? null : `${item.series_id}:${point.run_sequence}`)
       if (
         rendered.length
         && point.break_before
         && (currentRunId == null || currentRunId !== previousRunId)
       ) {
-        rendered.push({ value: [point.timestamp, null] })
+        rendered.push([timestampMillis, null, -1, -1])
+        metaIds.push(-1)
       }
-      rendered.push({
-        value: [point.timestamp, tracksidePointValue(point)],
-        symbol: point.role === 'ACTIVE' ? 'circle' : 'emptyCircle',
-        meta: point,
-        seriesMeta: item,
+      const metaId = nextMetaId++
+      const value = tracksidePointValue(point)
+      const roleCode: TracksideRoleCode = point.role === 'ACTIVE' ? 0 : 1
+      rendered.push([timestampMillis, value, metaId, roleCode])
+      metaIds.push(metaId)
+      pointMetaById.set(metaId, {
+        metaId,
+        seriesId: item.series_id,
+        timestampMillis,
+        timestampTag: point.timestamp_tag,
+        sourceFileId: point.source_file_id,
+        linkId: point.link_id,
+        sampleId: point.sample_id,
+        localRadio: point.local_radio,
+        role: point.role,
+        peerMac: point.peer_mac,
+        peerApName: point.peer_ap_name,
+        peerApMac: point.peer_ap_mac,
+        peerRadio: point.peer_radio,
+        peerRadioMac: point.peer_radio_mac,
+        station: point.station,
+        section: point.section,
+        rssi: value,
+        localRssi: point.local_rssi,
+        peerSignal: point.peer_signal,
+        localSignal: point.local_signal,
+        runId: currentRunId,
+        segmentDurationSeconds: point.segment_duration_seconds,
+        dataSource: point.data_source,
       })
-      timestamps.push(point.timestamp)
+      const frame = frameMetaIds.get(timestampMillis)
+      if (frame) frame.push(metaId)
+      else frameMetaIds.set(timestampMillis, [metaId])
+      firstTimestampMillis = firstTimestampMillis === null
+        ? timestampMillis
+        : Math.min(firstTimestampMillis, timestampMillis)
+      lastTimestampMillis = lastTimestampMillis === null
+        ? timestampMillis
+        : Math.max(lastTimestampMillis, timestampMillis)
       previousRunId = currentRunId
-      previousTimestamp = point.timestamp
+      previousTimestampMillis = timestampMillis
+      previousTimestampTag = point.timestamp_tag
       totalRenderedPoints += 1
     }
     if (!ordered) unorderedSeriesIds.push(item.series_id)
+    dataIndexToMetaId.set(item.series_id, metaIds)
     return {
       id: item.series_id,
-      name: seriesLabel(item),
+      name: compactSeries.name,
       data: rendered,
-      meta: item,
+      meta: compactSeries,
       pointCount: item.points.length,
     }
   })
+
   return {
     series,
-    timestamps,
     totalRenderedPoints,
     unorderedSeriesIds,
+    pointMetaById,
+    seriesMetaById,
+    dataIndexToMetaId,
+    frameMetaIds,
+    frameTimestamps: [...frameMetaIds.keys()].sort((left, right) => left - right),
+    firstTimestampMillis,
+    lastTimestampMillis,
+    disposed: false,
   }
+}
+
+export function findTracksideFrameMetaIds(
+  cache: TracksideSeriesCache,
+  timestampMillis: number,
+): readonly number[] {
+  let low = 0
+  let high = cache.frameTimestamps.length - 1
+  while (low <= high) {
+    const middle = (low + high) >>> 1
+    const candidate = cache.frameTimestamps[middle]
+    if (candidate === timestampMillis) return cache.frameMetaIds.get(candidate) ?? []
+    if (candidate < timestampMillis) low = middle + 1
+    else high = middle - 1
+  }
+  return []
+}
+
+export function tracksidePointMeta(
+  cache: TracksideSeriesCache,
+  metaId: number,
+): CompactTracksidePointMeta | undefined {
+  return metaId < 0 ? undefined : cache.pointMetaById.get(metaId)
+}
+
+export function disposeTracksideSeriesCache(cache: TracksideSeriesCache | null | undefined): void {
+  if (!cache || cache.disposed) return
+  for (const item of cache.series) item.data.length = 0
+  cache.series.length = 0
+  cache.unorderedSeriesIds.length = 0
+  cache.frameTimestamps.length = 0
+  clearReadonlyMap(cache.pointMetaById)
+  clearReadonlyMap(cache.seriesMetaById)
+  clearReadonlyMap(cache.dataIndexToMetaId)
+  clearReadonlyMap(cache.frameMetaIds)
+  cache.totalRenderedPoints = 0
+  cache.firstTimestampMillis = null
+  cache.lastTimestampMillis = null
+  cache.disposed = true
+}
+
+function clearReadonlyMap<Key, Value>(map: ReadonlyMap<Key, Value>): void {
+  const mutable = map as Map<Key, Value>
+  mutable.clear()
 }

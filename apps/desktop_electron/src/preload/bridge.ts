@@ -1,6 +1,6 @@
 import type { IpcRendererEvent } from 'electron'
 
-import type { BackendStatus, NetConsoleDesktopBridge } from '../shared/bridge'
+import type { BackendStatus, NetConsoleDesktopBridge, RendererRecoveryState } from '../shared/bridge'
 import { DESKTOP_IPC } from '../shared/bridge'
 import {
   validateCapabilityId,
@@ -9,6 +9,7 @@ import {
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
   validateRendererReadyReport,
+  validateRendererWorkloadReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
   validateUiPreferenceKey, validateUiPreferenceValue,
@@ -96,6 +97,13 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.rendererReady,
       validateRendererReadyReport(report),
     ),
+    reportRendererWorkload: (report) => ipcRenderer.send(
+      DESKTOP_IPC.rendererWorkload,
+      validateRendererWorkloadReport(report),
+    ),
+    getRendererRecoveryState: () => ipcRenderer.invoke(
+      DESKTOP_IPC.rendererRecoveryState,
+    ) as Promise<RendererRecoveryState | null>,
   }
   return Object.freeze(bridge)
 }

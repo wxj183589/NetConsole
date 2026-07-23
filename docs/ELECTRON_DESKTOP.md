@@ -6,7 +6,7 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 任务动作以后端 owner capability 为准。当前统一停止入口只显式路由到设备管理、配置采集和文件管理既有 Application Service；其他 owner 保持禁用，不回退到通用 cancel 文件。设备 Export 只有在当前服务仍持有匹配的 Export spec、持久化 Job cancel 路径和活跃进程时才能确认 `STOPPING`。Artifact 使用强类型 DTO 携带不透明标识、正式显示名、大小、类型和受控 API 请求，经既有 Electron 流式下载、临时文件及原子替换保存；统一 DTO 和日志均不向 Renderer 返回服务端绝对路径。
 
-主窗口和任务窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；脱敏后的后端状态广播到所有受管窗口。关闭任务窗口仍只隐藏窗口，不改变后台任务状态。
+主窗口和任务窗口都安装同一 Renderer diagnostics，覆盖 preload、主 frame 加载失败、崩溃和无响应；`render-process-gone` 记录真实 reason、exitCode、webContents、窗口类型、安全路由和最新严格 workload 快照，GPU/Utility/Network Service 等 `child-process-gone` 使用独立事件。脱敏后的后端状态广播到所有受管窗口。关闭任务窗口仍只隐藏窗口，不改变后台任务状态。
 
 文件管理桌面动作使用独立 `executeFileDesktopAction(fda1_*)` 白名单。Renderer 只能提交 60 秒一次性引用；Electron main 只访问当前受管 Python 的固定回环端点，Service 只允许打开受控根内目录或启动固定 WinSCP。路径、程序、参数和凭据不进入 Renderer，Electron WinSCP 启动参数不含密码。
 
@@ -177,7 +177,7 @@ partition: non-persistent in-memory session
 - IPC 在 main 再次校验参数，并核对发送者必须是当前主窗口的 main frame，且 frame URL 仍属于已登记回环 Origin。
 - 所有新窗口继续拒绝；设备 Web 管理地址只能通过独立 `openExternalUrl` 白名单动作交给系统浏览器，拒绝 HTTP、凭据 URL 和 Renderer 任意导航。
 - Electron 内存 Session 一律拦截 Chromium `will-download`；合法文件只能走 `downloadBackendResource` 的原生保存确认与 main 流式链，不能用 `<a download>`、Blob 或页面导航绕过。
-- `did-start-loading`、`did-finish-load`、`did-fail-load`、`preload-error`、`render-process-gone`、`unresponsive/responsive`、`child-process-gone` 和后端状态变化均写入脱敏诊断；主框架失败显示可重试状态页，不保留永久黑屏。
+- `did-start-loading`、`did-finish-load`、`did-fail-load`、`preload-error`、`render-process-gone`、`unresponsive/responsive`、`child-process-gone` 和后端状态变化均写入脱敏诊断；日志不得包含 Token、Cookie、完整路径、请求头或原始日志。轨旁图阶段的 Renderer 退出显示纯静态安全页，可安全恢复同一会话但不自动请求轨旁图，也可直接重试或打开日志目录；成功稳定交互三秒后清除本次进程内恢复标记。
 - 默认移除 Electron 应用菜单；仅开发服务器存在且显式设置 `NETCONSOLE_ELECTRON_DEV_MENU=1` 时显示开发菜单。
 - 生产 BrowserWindow 显式设置 `devTools: false`；只有已校验的本机 Vite 开发模式允许 DevTools。
 
@@ -197,6 +197,8 @@ Renderer 当前只能调用：
 - `openExternalUrl`
 - `onBackendStatusChanged`
 - 内部开发冒烟用 `reportRendererReady`
+- MESH 轨旁图诊断用单向 `reportRendererWorkload`，只接受固定模块、路由、阶段和有界标量
+- `getRendererRecoveryState`，只返回当前受管窗口在本次应用运行期内的固定恢复 DTO
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 
