@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   executeActionPlan: vi.fn(),
   getActionPlan: vi.fn(),
   getActionAudit: vi.fn(),
+  getExternalTerminalOptions: vi.fn(),
+  openExternalTerminal: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -35,10 +37,8 @@ vi.mock('../../api/acWebParity', () => ({
   startAcOmniPeekPreview: vi.fn(),
   getAcOmniPeekPreview: vi.fn(),
   startAcOmniPeekExport: vi.fn(),
-  getAcExternalTerminalOptions: vi.fn(),
-  openAcFitApExternalTerminal: vi.fn(),
-  getAcFitApRemoteTerminalProfile: vi.fn(),
-  saveAcFitApRemoteTerminalProfile: vi.fn(),
+  getAcExternalTerminalOptions: mocks.getExternalTerminalOptions,
+  openAcFitApExternalTerminal: mocks.openExternalTerminal,
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: mocks.confirm }) }))
 vi.mock('../../stores/acManagement', () => ({ useAcManagementStore: () => mocks.store }))
@@ -345,6 +345,8 @@ describe('AC Management optical detail behavior', () => {
     mocks.executeActionPlan.mockReset()
     mocks.getActionPlan.mockReset()
     mocks.getActionAudit.mockReset().mockResolvedValue({})
+    mocks.getExternalTerminalOptions.mockReset()
+    mocks.openExternalTerminal.mockReset()
   })
 
   it('renders formal AC actions and OmniPeek with explicit production feature states', () => {
@@ -373,6 +375,28 @@ describe('AC Management optical detail behavior', () => {
     wrapper.unmount()
     browserWrapper.unmount()
     resetWebFeaturesForTest()
+  })
+
+  it('does not render or call the removed FIT-AP remote login profile flow', async () => {
+    mocks.getExternalTerminalOptions.mockResolvedValue({
+      default_terminal_type: 'securecrt',
+      options: [{ terminal_type: 'securecrt', label: 'SecureCRT' }],
+    })
+    const legacyMissingCode = ['AP', 'CREDENTIALS', 'MISSING'].join('_')
+    mocks.openExternalTerminal.mockRejectedValue(Object.assign(new Error('legacy missing credentials'), { code: legacyMissingCode }))
+    const wrapper = mountView()
+    const menu = wrapper.findComponent(dataTableStub).props('contextMenuItems') as Array<Record<string, unknown>>
+    const external = menu.find((item) => item.key === 'external-terminal')!
+
+    await (external.action as (context: unknown) => Promise<void>)({
+      row: { id: 'ap-1', name: 'AP-1', ip: '10.0.0.2', status: 'online' },
+    })
+    await vi.waitFor(() => expect(mocks.openExternalTerminal).toHaveBeenCalledWith('ap-1', 'ac-1', 'securecrt'))
+
+    expect(wrapper.text()).not.toContain(['配置 FIT-AP', '远程登录'].join(' '))
+    expect(wrapper.text()).not.toContain(['保存并', '打开终端'].join(''))
+    expect(wrapper.text()).not.toContain(['远程登录', '密码'].join(''))
+    wrapper.unmount()
   })
 
   it('colors only the side that actually triggers the optical alarm', () => {

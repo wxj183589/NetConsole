@@ -5,7 +5,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getAcApHistory } from '../../api/acManagement'
-import { ApiRequestError } from '../../api/client'
 import {
   confirmAcActionPlan,
   createAcActionPlan,
@@ -13,9 +12,7 @@ import {
   getAcActionAudit,
   getAcActionPlan,
   getAcExternalTerminalOptions,
-  getAcFitApRemoteTerminalProfile,
   openAcFitApExternalTerminal,
-  saveAcFitApRemoteTerminalProfile,
 } from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
@@ -64,10 +61,6 @@ const terminalLoading = ref(false)
 const terminalTarget = ref<AcAp | null>(null)
 const terminalType = ref<AcTerminalType>('securecrt')
 const terminalOptions = ref<Array<{ terminal_type: AcTerminalType; label: string }>>([])
-const remoteProfileVisible = ref(false)
-const remoteProfileLoading = ref(false)
-const terminalAfterProfileSave = ref(false)
-const remoteProfileForm = reactive({ scope: 'ac' as 'ac' | 'site', protocol: 'telnet' as 'ssh' | 'telnet', port: 23, username: '', password: '', clear_password: false, password_configured: false, source: 'none' })
 const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
 
 function acColumn<Row extends object>(
@@ -459,12 +452,7 @@ async function launchExternalTerminal(): Promise<void> {
     terminalVisible.value = false
     ElMessage.success(result.message)
   } catch (cause) {
-    if (cause instanceof ApiRequestError && cause.code === 'AP_CREDENTIALS_MISSING') {
-      terminalVisible.value = false
-      await openRemoteProfile(true)
-      return
-    }
-    if (cause instanceof ApiRequestError && cause.code === 'TERMINAL_NOT_CONFIGURED') {
+    if (cause instanceof Error && 'code' in cause && cause.code === 'TERMINAL_NOT_CONFIGURED') {
       await promptExternalTerminalSettings()
       return
     }
@@ -482,59 +470,6 @@ async function promptExternalTerminalSettings(): Promise<void> {
     await router.push({ name: 'system-settings' })
   } catch {
     // 用户取消。
-  }
-}
-
-async function openRemoteProfile(launchAfterSave = false): Promise<void> {
-  if (!store.filters.ac_id) return
-  remoteProfileLoading.value = true
-  terminalAfterProfileSave.value = launchAfterSave
-  try {
-    const profile = await getAcFitApRemoteTerminalProfile(store.filters.ac_id)
-    Object.assign(remoteProfileForm, {
-      scope: profile.scope || 'ac',
-      protocol: profile.protocol || 'telnet',
-      port: profile.port || (profile.protocol === 'ssh' ? 22 : 23),
-      username: profile.username || '',
-      password: '',
-      clear_password: false,
-      password_configured: profile.password_configured,
-      source: profile.source,
-    })
-    remoteProfileVisible.value = true
-  } catch (cause) {
-    ElMessage.error(safeError(cause, '远程登录配置加载失败'))
-  } finally {
-    remoteProfileLoading.value = false
-  }
-}
-
-function syncRemoteProfilePort(protocol: 'ssh' | 'telnet'): void {
-  remoteProfileForm.port = protocol === 'ssh' ? 22 : 23
-}
-
-async function saveRemoteProfile(): Promise<void> {
-  if (!store.filters.ac_id) return
-  remoteProfileLoading.value = true
-  try {
-    const profile = await saveAcFitApRemoteTerminalProfile({
-      ac_id: store.filters.ac_id,
-      scope: remoteProfileForm.scope,
-      protocol: remoteProfileForm.protocol,
-      port: remoteProfileForm.port,
-      username: remoteProfileForm.username,
-      ...(remoteProfileForm.password ? { password: remoteProfileForm.password } : {}),
-      clear_password: remoteProfileForm.clear_password,
-    })
-    remoteProfileVisible.value = false
-    remoteProfileForm.password = ''
-    ElMessage.success(`远程登录配置已保存（${profile.scope === 'site' ? '当前局点' : '当前 AC'}）`)
-    if (terminalAfterProfileSave.value && profile.password_configured) await launchExternalTerminal()
-  } catch (cause) {
-    ElMessage.error(safeError(cause, '远程登录配置保存失败'))
-  } finally {
-    terminalAfterProfileSave.value = false
-    remoteProfileLoading.value = false
   }
 }
 
@@ -797,22 +732,7 @@ function diffLineClass(line: string): string {
 
     <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
       <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
-      <template #footer><el-button @click="openRemoteProfile(false)">远程登录配置</el-button><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchExternalTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
-    </el-dialog>
-
-    <el-dialog v-model="remoteProfileVisible" title="配置 FIT-AP 远程登录" width="min(560px, 94vw)" :close-on-click-modal="false">
-      <el-alert title="凭据仅保存在本机数据目录，密码使用 Windows DPAPI 加密；不会写入设备资料库。" type="info" :closable="false" />
-      <el-form :model="remoteProfileForm" label-width="108px" class="remote-profile-form" v-loading="remoteProfileLoading">
-        <el-form-item label="适用范围"><el-radio-group v-model="remoteProfileForm.scope"><el-radio value="ac">当前 AC</el-radio><el-radio value="site">当前局点</el-radio></el-radio-group></el-form-item>
-        <el-form-item label="协议"><el-radio-group v-model="remoteProfileForm.protocol" @change="syncRemoteProfilePort"><el-radio value="telnet">Telnet</el-radio><el-radio value="ssh">SSH</el-radio></el-radio-group></el-form-item>
-        <el-form-item label="端口"><el-input-number v-model="remoteProfileForm.port" :min="1" :max="65535" /></el-form-item>
-        <el-form-item label="用户名"><el-input v-model="remoteProfileForm.username" maxlength="200" autocomplete="off" /></el-form-item>
-        <el-form-item label="密码">
-          <el-input v-model="remoteProfileForm.password" type="password" show-password maxlength="500" autocomplete="new-password" :placeholder="remoteProfileForm.password_configured ? '已配置；留空保持原密码' : '请输入远程登录密码'" />
-        </el-form-item>
-        <el-form-item v-if="remoteProfileForm.password_configured"><el-checkbox v-model="remoteProfileForm.clear_password">清除已保存密码</el-checkbox></el-form-item>
-      </el-form>
-      <template #footer><el-button @click="remoteProfileVisible = false">取消</el-button><el-button type="primary" :loading="remoteProfileLoading" @click="saveRemoteProfile">保存{{ terminalAfterProfileSave ? '并打开终端' : '' }}</el-button></template>
+      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchExternalTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="detailVisible" title="FIT-AP 详情" size="min(920px, 95vw)">
@@ -1026,7 +946,6 @@ function diffLineClass(line: string): string {
 .load-more { display: block; margin: 12px auto 0; }
 .action-summary { margin-top: 14px; }
 .command-preview { max-height: 260px; overflow: auto; padding: 14px; background: var(--nc-bg-code); border-radius: 8px; color: var(--nc-text-code); font: 13px/1.6 Consolas, "Microsoft YaHei", monospace; }
-.remote-profile-form { margin-top: 14px; }
 @media (max-width: 1400px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
   .filter-bar { grid-template-columns: repeat(4, minmax(150px, 1fr)); }

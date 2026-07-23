@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
 
@@ -400,26 +400,6 @@ class AcOmniPeekPreferencesSaveDTO(ApiModel):
     colors: dict[str, str] = Field(default_factory=dict)
 
 
-class AcFitApRemoteTerminalProfileDTO(ApiModel):
-    ac_id: str
-    scope: Literal["ac", "site"] = "ac"
-    protocol: Literal["ssh", "telnet"] = "telnet"
-    port: int = Field(default=23, ge=1, le=65535)
-    username: str = ""
-    password_configured: bool = False
-    source: Literal["ac_profile", "site_profile", "none"] = "none"
-
-
-class AcFitApRemoteTerminalProfileSaveDTO(ApiModel):
-    ac_id: str = Field(min_length=1, max_length=100)
-    scope: Literal["ac", "site"] = "ac"
-    protocol: Literal["ssh", "telnet"] = "telnet"
-    port: int = Field(default=23, ge=1, le=65535)
-    username: str = Field(default="", max_length=255)
-    password: SecretStr | None = Field(default=None, repr=False)
-    clear_password: bool = False
-
-
 class AcExternalTerminalRequestDTO(ApiModel):
     ac_id: str = Field(min_length=1, max_length=100)
     terminal_type: Literal["securecrt", "putty", "xshell"]
@@ -438,6 +418,8 @@ class AcExternalTerminalOptionsDTO(ApiModel):
 class AcExternalTerminalActionDTO(ApiModel):
     ap_id: str
     terminal_type: Literal["securecrt", "putty", "xshell"]
+    protocol: Literal["telnet"] = "telnet"
+    port: int = 23
     success: Literal[True] = True
     message: str
 
@@ -474,8 +456,6 @@ __all__ = [
     "AcOmniPeekPreviewDTO",
     "AcOmniPeekPreferencesDTO",
     "AcOmniPeekPreferencesSaveDTO",
-    "AcFitApRemoteTerminalProfileDTO",
-    "AcFitApRemoteTerminalProfileSaveDTO",
     "AcExternalTerminalRequestDTO",
     "AcExternalTerminalOptionDTO",
     "AcExternalTerminalOptionsDTO",

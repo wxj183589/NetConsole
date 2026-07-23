@@ -31,7 +31,6 @@ from netconsole.services.job_center.handlers.device_jobs import fit_ap_metadata_
 from netconsole.services.job_center.handlers.legacy_tasks import run_background_task
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.task_application_service import TaskApplicationService
-from netconsole.services.ac import fit_ap_remote_terminal_profile as terminal_profiles
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard
@@ -635,49 +634,51 @@ class _FakeDesktopActionService:
         return SimpleNamespace(success=self.success, message="fixture launch failed" if not self.success else "")
 
 
-def test_fit_ap_external_terminal_uses_saved_credentials_and_never_accepts_renderer_argv(
+def test_fit_ap_external_terminal_launches_fixed_telnet_without_credentials_or_device_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
-    terminal = tmp_path / "SecureCRT.exe"
-    terminal.write_bytes(b"fixture")
+    terminals = {
+        "securecrt": tmp_path / "SecureCRT.exe",
+        "xshell": tmp_path / "Xshell.exe",
+        "putty": tmp_path / "putty.exe",
+    }
+    for terminal in terminals.values():
+        terminal.write_bytes(b"fixture")
     settings = SettingsStore(paths)
-    settings.set_value("external_terminal/securecrt_path", str(terminal))
+    settings.set_value("external_terminal/securecrt_path", str(terminals["securecrt"]))
+    settings.set_value("external_terminal/xshell_path", str(terminals["xshell"]))
+    settings.set_value("external_terminal/putty_path", str(terminals["putty"]))
     settings.set_value("external_terminal/type", "securecrt")
+    settings.set_value("external_terminal/pass_password", True)
     desktop = _FakeDesktopActionService()
     service, _normal, _export, _tasks = _service(paths, desktop_action_service=desktop)
 
-    with pytest.raises(AcWebActionError) as missing_credentials:
-        service.launch_fit_ap_external_terminal(
-            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
+    expected_args = {
+        "securecrt": ("/TELNET", "10.0.1.1", "23"),
+        "xshell": ("-url", "telnet://10.0.1.1:23"),
+        "putty": ("-telnet", "10.0.1.1", "-P", "23"),
+    }
+    for terminal_type, arguments in expected_args.items():
+        launched = service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type=terminal_type
         )
-    assert missing_credentials.value.code == "AP_CREDENTIALS_MISSING"
-
-    monkeypatch.setattr(terminal_profiles, "protect_windows_data", lambda value, _entropy: b"protected:" + value)
-    monkeypatch.setattr(terminal_profiles, "unprotect_windows_data", lambda value, _entropy: value.removeprefix(b"protected:"))
-    profile = service.save_fit_ap_remote_terminal_profile(
-        "demo",
-        ac_id="ac-1",
-        scope="ac",
-        protocol="ssh",
-        port=22,
-        username="controlled-user",
-        password="controlled-secret",
-        clear_password=False,
-    )
-    assert profile.password_configured is True
-    assert "controlled-secret" not in profile.model_dump_json()
-    assert "controlled-secret" not in (paths.config_dir / "fit_ap_remote_terminal_profiles.json").read_text(encoding="utf-8")
-    launched = service.launch_fit_ap_external_terminal(
-        "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="securecrt"
-    )
-    assert launched.ap_id == "ap-online"
-    assert launched.terminal_type == "securecrt"
-    assert desktop.launches[0][0:2] == ("terminal.securecrt", "ap-online")
-    launch = desktop.launches[0][2]
-    assert launch.executable == terminal.resolve()
-    assert "controlled-secret" not in " ".join(launch.arguments)
-    assert "controlled-secret" not in launched.model_dump_json()
+        assert launched.ap_id == "ap-online"
+        assert launched.terminal_type == terminal_type
+        assert launched.protocol == "telnet"
+        assert launched.port == 23
+        assert launched.message == "已打开 AP-Online 的 Telnet 终端"
+        action_id, object_id, launch = desktop.launches[-1]
+        assert (action_id, object_id) == (f"terminal.{terminal_type}", "ap-online")
+        assert launch.executable == terminals[terminal_type].resolve()
+        assert launch.arguments == arguments
+        serialized = " ".join(launch.arguments).casefold()
+        assert "/password" not in serialized
+        assert "-pw" not in serialized
+        assert "ssh://" not in serialized
+        assert "@" not in serialized
+    legacy_profile_file = "fit_ap_" + "remote_" + "terminal_" + "profiles.json"
+    assert not (paths.config_dir / legacy_profile_file).exists()
 
     failed_desktop = _FakeDesktopActionService(success=False)
     failed_service, _normal2, _export2, _tasks2 = _service(
@@ -705,13 +706,16 @@ def test_fit_ap_external_terminal_uses_saved_credentials_and_never_accepts_rende
                 "terminal_type": "securecrt",
                 "executable": "cmd.exe",
                 "arguments": ["/c", "whoami"],
+                "protocol": "ssh",
+                "port": 22,
+                "username": "must-not-enter-api",
                 "password": "must-not-enter-api",
             },
         )
     assert rejected.status_code == 422
 
 
-def test_fit_ap_external_terminal_uses_exact_device_ip_only_as_compatibility_fallback(tmp_path: Path) -> None:
+def test_fit_ap_external_terminal_rejects_invalid_ap_scope_state_and_runtime(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     terminal = tmp_path / "PuTTY.exe"
     terminal.write_bytes(b"fixture")
@@ -719,25 +723,27 @@ def test_fit_ap_external_terminal_uses_exact_device_ip_only_as_compatibility_fal
     settings.set_value("external_terminal/putty_path", str(terminal))
     desktop = _FakeDesktopActionService()
     service, _normal, _export, _tasks = _service(paths, desktop_action_service=desktop)
-    DeviceRepository(Database(paths.site_db_path("demo"))).create(
-        Device(
-            name="兼容凭据",
-            device_type="FAT-AP",
-            primary_address="10.0.1.1",
-            ssh_enabled=1,
-            ssh_port=22,
-            ssh_username="fallback-user",
-            ssh_password="fallback-secret",
+
+    with pytest.raises(AcWebActionError) as offline:
+        service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-offline", terminal_type="putty"
         )
-    )
+    assert offline.value.code == "AP_NOT_ONLINE"
 
-    launched = service.launch_fit_ap_external_terminal(
-        "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="putty"
-    )
+    with pytest.raises(AcWebActionError) as foreign:
+        service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="not-current-ac", terminal_type="putty"
+        )
+    assert foreign.value.code == "AP_TARGET_NOT_AUTHORIZED"
 
-    assert launched.success is True
-    assert desktop.launches[0][0:2] == ("terminal.putty", "ap-online")
-    assert "fallback-secret" not in launched.model_dump_json()
+    with Database(paths.site_db_path("demo")).connect() as conn:
+        conn.execute("UPDATE ac_fit_ap_resources SET ap_ip = '' WHERE ap_uuid = 'ap-online'")
+        conn.commit()
+    with pytest.raises(AcWebActionError) as no_ip:
+        service.launch_fit_ap_external_terminal(
+            "demo", ac_id="ac-1", ap_id="ap-online", terminal_type="putty"
+        )
+    assert no_ip.value.code == "AP_ADDRESS_MISSING"
 
 
 def test_ac_omnipeek_export_runs_shared_process_and_keeps_log(tmp_path: Path) -> None:

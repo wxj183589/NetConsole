@@ -48,7 +48,7 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 
 注意 `<data_root>/data/runtime/` 与 `<data_root>/runtime/` 语义不同：前者可保存持久 profile，后者用于任务协议、缓存、临时文件和应用日志。
 
-FIT-AP 远程登录 Profile 保存于 `<data_root>/data/config/fit_ap_remote_terminal_profiles.json`。文件只保存局点/AC 范围、协议、端口、用户名和 Windows DPAPI 密文；明文密码不得落盘、进入 Vue DTO、任务日志或导出文件。写入使用文件锁与原子替换，配置损坏或无法解密时保留原文件并要求用户重新配置。
+旧版 FIT-AP 远程登录凭据 JSON 已废弃。当前版本不会读取、创建或写入该旧文件，也不会在升级或清理流程中自动删除用户机器上已存在的旧文件。H3C FIT-AP 外部终端使用固定 Telnet 23 端口直接打开，不保存、不读取、不传递 FIT-AP 用户名和密码。
 
 `archive/site-recycle` 和 `archive/demo-recycle` 属于恢复材料，不是普通缓存，也不在自动/手工磁盘清理白名单内。Legacy 局点只有经过只读审计、二阶段确认和逐文件哈希复核后才能移入回收区；移动成功不代表永久删除。受控 Demo 使用当前 Schema 和少量脱敏 fixture 重建，不写入预置任务历史，发布上限为 `50 MB`。`isolated_test` 使用独立系统临时数据根，不得把审计、清理计划、回收目录或 Demo 写入正式持久数据根。
 

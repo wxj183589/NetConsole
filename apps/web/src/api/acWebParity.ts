@@ -1,7 +1,7 @@
 import { apiRequest } from './client'
 import type {
   AcActionAudit, AcActionPlan, AcExtensionPage, AcExtensionPreview,
-  AcExternalTerminalAction, AcExternalTerminalOptions, AcFitApRemoteTerminalProfile,
+  AcExternalTerminalAction, AcExternalTerminalOptions,
   AcOmniPeekConfig, AcOmniPeekPreferences, AcOmniPeekPreview, AcTerminalType, AcWebTask,
 } from '../types/acWebParity'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -170,23 +170,5 @@ export function getAcExternalTerminalOptions(): Promise<AcExternalTerminalOption
 export function openAcFitApExternalTerminal(apId: string, acId: string, terminalType: AcTerminalType): Promise<AcExternalTerminalAction> {
   return apiRequest<AcExternalTerminalAction>(`${root}/fit-aps/${encodeURIComponent(apId)}/external-terminal`, {
     method: 'POST', body: JSON.stringify({ ac_id: acId, terminal_type: terminalType }),
-  })
-}
-
-export function getAcFitApRemoteTerminalProfile(acId: string): Promise<AcFitApRemoteTerminalProfile> {
-  return apiRequest<AcFitApRemoteTerminalProfile>(`${root}/fit-aps/remote-terminal-profile${query({ ac_id: acId })}`)
-}
-
-export function saveAcFitApRemoteTerminalProfile(payload: {
-  ac_id: string
-  scope: 'ac' | 'site'
-  protocol: 'ssh' | 'telnet'
-  port: number
-  username: string
-  password?: string
-  clear_password?: boolean
-}): Promise<AcFitApRemoteTerminalProfile> {
-  return apiRequest<AcFitApRemoteTerminalProfile>(`${root}/fit-aps/remote-terminal-profile`, {
-    method: 'PUT', body: JSON.stringify(payload),
   })
 }

@@ -141,16 +141,6 @@ export interface AcOmniPeekPreferences {
   colors: Record<string, string>
 }
 
-export interface AcFitApRemoteTerminalProfile {
-  ac_id: string
-  scope: 'ac' | 'site'
-  protocol: 'ssh' | 'telnet'
-  port: number
-  username: string
-  password_configured: boolean
-  source: 'ac_profile' | 'site_profile' | 'none'
-}
-
 export type AcTerminalType = 'securecrt' | 'putty' | 'xshell'
 
 export interface AcExternalTerminalOptions {
@@ -161,6 +151,8 @@ export interface AcExternalTerminalOptions {
 export interface AcExternalTerminalAction {
   ap_id: string
   terminal_type: AcTerminalType
+  protocol: 'telnet'
+  port: 23
   success: true
   message: string
 }

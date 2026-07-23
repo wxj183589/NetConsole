@@ -22,7 +22,6 @@ from netconsole.core.settings import SettingsStore, normalize_external_terminal_
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ac_management import (
     AcActionPlanDTO,
-    AcFitApRemoteTerminalProfileDTO,
     AcExternalTerminalActionDTO,
     AcExternalTerminalOptionDTO,
     AcExternalTerminalOptionsDTO,
@@ -35,14 +34,11 @@ from netconsole.models.api.ac_management import (
     AcOmniPeekPreferencesDTO,
     AcWebTaskDTO,
 )
+from netconsole.models.device import Device
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
-from netconsole.services.ac.fit_ap_remote_terminal_profile import (
-    FitApRemoteTerminalProfileResolver,
-    FitApRemoteTerminalProfileStore,
-)
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_task_builders import fit_ap_extension_xlsx_spec, omnipeek_name_table_spec
@@ -64,6 +60,7 @@ from netconsole.services.omnipeek_name_table_service import (
     make_omnipeek_filename,
     save_omnipeek_color_settings,
 )
+from netconsole.services.netmiko_connection import ConnectionTarget
 from netconsole.utils.mileage import mileage_storage_text
 
 
@@ -573,59 +570,6 @@ class AcWebApplicationService:
             ],
         )
 
-    def fit_ap_remote_terminal_profile(
-        self,
-        site_id: str,
-        *,
-        ac_id: str,
-    ) -> AcFitApRemoteTerminalProfileDTO:
-        site_id = self._site(site_id)
-        device_uuid = str(self._target(site_id, ac_id).device_uuid)
-        try:
-            profile = FitApRemoteTerminalProfileStore(self.paths).describe(site_id, device_uuid)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise AcWebActionError("FIT_AP_PROFILE_UNAVAILABLE", str(exc)) from exc
-        if profile is None:
-            return AcFitApRemoteTerminalProfileDTO(ac_id=device_uuid, source="none")
-        return AcFitApRemoteTerminalProfileDTO(
-            ac_id=device_uuid,
-            scope=profile.scope,
-            protocol=profile.protocol,
-            port=profile.port,
-            username=profile.username,
-            password_configured=profile.password_configured,
-            source=profile.source,
-        )
-
-    def save_fit_ap_remote_terminal_profile(
-        self,
-        site_id: str,
-        *,
-        ac_id: str,
-        scope: str,
-        protocol: str,
-        port: int,
-        username: str,
-        password: str | None,
-        clear_password: bool,
-    ) -> AcFitApRemoteTerminalProfileDTO:
-        site_id = self._site(site_id)
-        device_uuid = str(self._target(site_id, ac_id).device_uuid)
-        try:
-            FitApRemoteTerminalProfileStore(self.paths).save(
-                site_id,
-                device_uuid,
-                scope="site" if scope == "site" else "ac",
-                protocol="ssh" if protocol == "ssh" else "telnet",
-                port=port,
-                username=username,
-                password=password,
-                clear_password=clear_password,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise AcWebActionError("FIT_AP_PROFILE_SAVE_FAILED", str(exc)) from exc
-        return self.fit_ap_remote_terminal_profile(site_id, ac_id=device_uuid)
-
     def launch_fit_ap_external_terminal(
         self,
         site_id: str,
@@ -651,22 +595,36 @@ class AcWebApplicationService:
         config = configs.get(str(terminal_type or "").casefold())
         if config is None:
             raise AcWebActionError("TERMINAL_NOT_CONFIGURED", "未配置所选外部终端，请先到系统设置配置")
-        device_repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
-        try:
-            resolved = FitApRemoteTerminalProfileResolver(
-                FitApRemoteTerminalProfileStore(self.paths),
-                device_repository,
-            ).resolve(site_id, device_uuid, detail.ap.ip, detail.ap.name)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise AcWebActionError("FIT_AP_PROFILE_UNAVAILABLE", str(exc)) from exc
-        if resolved is None:
-            raise AcWebActionError("AP_CREDENTIALS_MISSING", "未配置该 AP 的远程登录凭据")
+        temporary_device = Device(
+            device_uuid=detail.ap.id,
+            name=detail.ap.name,
+            device_vendor="H3C",
+            device_type="Cloud-AP",
+            primary_address=detail.ap.ip,
+            protocol="telnet",
+            port=23,
+            username="",
+            password="",
+            ssh_enabled=0,
+            telnet_enabled=1,
+            telnet_port=23,
+            telnet_username="",
+            telnet_password="",
+        )
+        telnet_target = ConnectionTarget(
+            protocol="telnet",
+            device_type="hp_comware_telnet",
+            host=detail.ap.ip,
+            port=23,
+            username="",
+            password="",
+        )
         args = build_external_terminal_command(
-            resolved.device,
-            resolved.target,
+            temporary_device,
+            telnet_target,
             config.terminal_type,
             config.exe_path,
-            config.include_password,
+            include_password=False,
         )
         assert self.desktop_action_service is not None
         executable = Path(args[0])
@@ -680,7 +638,9 @@ class AcWebApplicationService:
         return AcExternalTerminalActionDTO(
             ap_id=detail.ap.id,
             terminal_type=config.terminal_type,
-            message=f"已打开 {detail.ap.name} 的远程终端",
+            protocol="telnet",
+            port=23,
+            message=f"已打开 {detail.ap.name} 的 Telnet 终端",
         )
 
     @staticmethod

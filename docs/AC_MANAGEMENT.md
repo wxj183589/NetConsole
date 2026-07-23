@@ -30,7 +30,7 @@ Vue AC 管理 -> POST /api/ac-management/refresh/fit-ap
 - 单 AP 定向更新接受 H3C 常见 `xxxx-xxxx-xxxx` MAC，后端统一规范化为标准格式；前端提交时优先使用 `ap_uuid`，其次 `ap_mac`，最后 `ap_name`，避免展示格式差异误拦稳定目标。
 - 真实 AC 写操作：只保留历史产品契约中的“固化新 AP”和“开启 AP 远程登录”两项固定命令；Feature `web.ac_dangerous_actions` 是正式客户版默认功能，仍必须经过命令预览、摘要校验、二次确认、真实后台 Task、取消和持久化审计；不在 AC 页扩展单独 `save force`；
 - OmniPeek 名称表：Feature `ac.omnipeek_name_table_export` 是正式客户版默认功能。窗口提供线路名、输出目录、三类数据源及真实数量、轨旁/车载导出内容、Radio 模式、颜色、结构化逐行预览、状态筛选、搜索、分页、选择和受控强制导出；AP 扩展信息只匹配当前 AC 的 FIT-AP，车载 MR 由用户决定是否加入。预览和 `.nam` 导出分别进入 Job Center 与 Export Process，继续复用共享 MAC 推导、冲突校验、导出日志、Artifact 清单、取消和恢复规则；
-- 单 AP 外部终端：FIT-AP 行菜单由 `NcDataTable` 的类型安全菜单模型统一渲染，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 均为正式 Electron 默认功能；Python 只接受 AC/AP/终端类型语义 ID。登录资料按“当前 AC Profile、当前局点 Profile、设备管理 IP 唯一精确匹配兼容回退”解析，不再要求 FIT-AP 重复录入设备管理；Profile 密码使用 Windows DPAPI 写入受控配置且不返回 Vue。系统设置中的终端路径仍由 `available_external_terminal_configs` 管理，再通过 `DesktopActionService` 启动。Browser/Server 模式拒绝，API 不接收或返回程序路径、参数和密码；
+- 单 AP 外部终端：FIT-AP 行菜单由 `NcDataTable` 的类型安全菜单模型统一渲染，保留详情、光衰更新和复制动作。Feature `web.ac_fit_ap_external_terminal` 与 `desktop.native_bridge` 均为正式 Electron 默认功能；Python 只接受 AC/AP/终端类型语义 ID。H3C FIT-AP 外部终端使用固定 Telnet 23 端口直接打开，不保存、不读取、不传递 FIT-AP 用户名和密码，也不依赖设备管理中同 IP 设备或 SSH 配置。系统设置中的终端路径仍由 `available_external_terminal_configs` 管理，再通过 `DesktopActionService` 启动。Browser/Server、离线和无 IP 场景拒绝，API 不接收或返回程序路径、参数、协议、端口、用户名和密码；
 - 配置快照：历史列表、受控正文分块、行号、搜索和同批次 running/saved 差异；
 - 刷新：总览和详情 15 秒，FIT-AP 与快照历史 30 秒；页面隐藏或卸载后停止，连续失败三次后降为 60 秒并保留最后一次成功数据。
 - Mesh-Link 底层能力：AC 管理只保留受控采集、Parser、结构化快照、raw 和基础设施查询，不再呈现列车监控页面。列车、CT/TC 端点、当前 AP、RSSI、位置、匹配状态和两侧收光统一由“轨道交通 / 列车在线情况”展示。
@@ -85,8 +85,6 @@ POST /api/ac-management/fit-aps/omnipeek/export
 GET  /api/ac-management/fit-aps/omnipeek/preferences
 PUT  /api/ac-management/fit-aps/omnipeek/preferences
 GET  /api/ac-management/fit-aps/omnipeek/artifacts/{artifact_id}/download
-GET  /api/ac-management/fit-aps/remote-terminal-profile
-PUT  /api/ac-management/fit-aps/remote-terminal-profile
 GET  /api/ac-management/fit-aps/external-terminal/options
 POST /api/ac-management/fit-aps/{ap_id}/external-terminal
 
@@ -127,7 +125,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 - 动作页只把 `plan_id` 写入 `localStorage`，UI 和日志不展示 `confirm_token`；但当前 `AcActionPlanDTO` 仍把 Token 返回 Renderer，前端确认请求从内存 plan 回传。该实现尚未满足“Renderer 永不接收确认 Token”的严格边界，需后续改为服务端短期绑定或等价方案；修复前不得描述为 Token 完全未暴露给前端；
 - AP 信息导出以及详情页 Radio/LLDP/光衰历史 XLSX 导出仍需按当前代码和 Feature 状态复核；批量删除、AP 元数据 CSV/XLSX 导入、详情元数据保存及历史查看已进入永久链；
 - AC OmniPeek NAM 已接入共享 Export Process、`WebArtifactStore` 当前局点 `trackside_ap_outputs` 受控根、统一任务中心和 Electron 受控另存为；仍需用现场 OmniPeek 验证实际导入结果；
-- 旧 Qt 曾硬编码的默认 Telnet 密码没有稳定配置来源，因此未迁入。当前使用专用 FIT-AP Profile；真实 AP 凭据、各终端版本参数兼容和现场可达性仍需人工验收；
+- 旧版 FIT-AP 登录凭据保存实现已废弃；当前 FIT-AP 外部终端固定生成 SecureCRT `/TELNET <AP_IP> 23`、Xshell `-url telnet://<AP_IP>:23` 或 PuTTY `-telnet <AP_IP> -P 23`，即使系统设置启用“启动外部终端时传递密码”也不会传递 FIT-AP 用户名或密码，也不会查询设备管理中的同 IP 记录。真实 AP 可达性和三类终端版本兼容仍需人工验收；
 - AP 扩展信息与轨旁规划的导入、导出和编辑闭环；
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - Electron 原生另存为、打开文件/目录和真实 AC 工作流人工验收。

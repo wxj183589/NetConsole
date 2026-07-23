@@ -130,8 +130,9 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
     }
     assert {(path, method) for path, method in routes if method == "PUT"} == {
         ("/api/ac-management/fit-aps/omnipeek/preferences", "PUT"),
-        ("/api/ac-management/fit-aps/remote-terminal-profile", "PUT"),
     }
+    legacy_profile_path = "/api/ac-management/fit-aps/" + "remote-" + "terminal-" + "profile"
+    assert legacy_profile_path not in {path for path, _method in routes}
     assert all(method in {"GET", "POST", "PUT"} for _path, method in routes)
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
     assert {path for path, _method in routes if "delete" in path} == {"/api/ac-management/fit-aps/delete"}
