@@ -578,8 +578,8 @@ class RailTransitBaseDataQueryService:
             if not has_mr_group and "MR" not in f"{row.get('name')} {row.get('device_type')}".upper():
                 continue
             item_id = str(row.get("device_uuid") or f"device:{row.get('id')}")
-            mesh = mesh_by_id.get(item_id) or mesh_by_name.get(str(row.get("name") or "").casefold())
             position_code, physical_end, car_number = mr_position(identity.car_end)
+            mesh = mesh_by_id.get(item_id) or mesh_by_name.get(str(row.get("name") or "").casefold())
             session = session_by_name.get(str(row.get("name") or "").casefold())
             runtime = RelatedRuntimeStatusDTO(
                 mesh_status=mesh.online_status if mesh else "unknown",
@@ -596,10 +596,10 @@ class RailTransitBaseDataQueryService:
                     train_id=identity.train_id,
                     train_no=identity.train_no,
                     role=identity.car_end,
-                    management_ip=str(row.get("primary_address") or ""),
                     mr_position_code=position_code,
                     physical_end=physical_end,
                     car_number=car_number,
+                    management_ip=str(row.get("primary_address") or ""),
                     station=str(row.get("station") or ""),
                     mac=self._display_mac(row.get("mac_address")),
                     protocol=str(row.get("protocol") or ""),
@@ -1085,8 +1085,8 @@ class RailTransitBaseDataQueryService:
                     name=train_id,
                     mr_count=len(rows),
                     roles=sorted({row.role for row in rows if row.role}),
-                    latest_mesh_status="online" if "online" in statuses else statuses[0] if statuses else "unknown",
                     mr_position_codes=sorted({row.mr_position_code for row in rows if row.mr_position_code != "unknown"}),
+                    latest_mesh_status="online" if "online" in statuses else statuses[0] if statuses else "unknown",
                     latest_session_id=sessions[0] if sessions else "",
                     issue_count=len(issue_rows),
                     highest_issue_severity=self._highest(issue_rows),

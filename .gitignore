@@ -76,6 +76,7 @@ tools/windows-x64/ipop/*.exe
 *.local
 *.env
 *.env.*
+config/profiles/features/.*.lock
 
 # Operating system
 Thumbs.db

@@ -1,0 +1,263 @@
+{
+  "objective": "完成 NetConsole Electron-only E10B 架构门禁、统一主题与设备详情纵向闭环",
+  "mode": "durable",
+  "base_branch": "main",
+  "base_head": "ee7381ea",
+  "working_branch": "main",
+  "current_head": "777ed481",
+  "created": 15,
+  "running": 5,
+  "reserved_slots": 0,
+  "stage_gate": "E10B_parallel_remediation",
+  "pycharm_main_entry": {
+    "status": "completed",
+    "commit": "7319697",
+    "runtime": "project_local_electron_as_node",
+    "smoke": "passed_exit_0_no_process_or_5173_residue"
+  },
+  "permanent_layer_qt_imports": {
+    "status": "completed",
+    "code_commit": "7d9f382d",
+    "archive_commit": "7e3b0b3",
+    "scope": "src/netconsole excluding src/netconsole/ui",
+    "verification": "21 targeted tests passed; no direct PySide6/qfluentwidgets import outside ui"
+  },
+  "threads": [
+    {
+      "thread_id": "019f71d2-14d1-71b2-b957-ad75b90a6cf3",
+      "role": "只读审计：Qt 依赖与业务抽离地图",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f71d2-b427-79a1-976f-51fd18045e07",
+      "role": "只读审计：data/.local 分类与迁移设计",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f71d2-cdad-7d41-a482-ccdefd3430bc",
+      "role": "只读审计：启动性能与 Electron-only 打包链",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7450-95cc-7c61-99d8-c69b0b4ea9c5",
+      "role": "只读审计：Qt依赖、打包与许可证最终残留",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7451-6407-7d32-b839-05f91c2aa7f8",
+      "role": "只读审计：本机开发链与正式API安全边界",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7451-7cac-7482-9bf4-da765ddc3e9a",
+      "role": "只读审计：版本化网络设备命令平台",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "read-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7468-67ba-7653-9e9a-8b6c70a2a8c5",
+      "role": "实现：Python依赖分层、无Qt发布Guard与许可证SBOM基础",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
+      "status": "completed",
+      "ownership": "dependency-build-license-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7469-2641-71c0-b543-2b1df69e7fa6",
+      "role": "实现：device.inventory.collect版本化命令Profile",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "device-command-profile-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f75f9-c4c0-7ba2-b0ac-87c62ea065f2",
+      "role": "实现：E10B Electron-only 架构 Guard",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "running",
+      "ownership": "architecture-guard-only",
+      "adopted": false,
+      "archived": false
+    },
+    {
+      "thread_id": "019f75fc-2c7d-7a93-866a-7fed9880e16f",
+      "role": "实现：设备详情 Python 契约与查询边界",
+      "model": "gpt-5.6-sol",
+      "thinking": "xhigh",
+      "status": "running",
+      "ownership": "device-detail-backend-only",
+      "adopted": false,
+      "archived": false
+    },
+    {
+      "thread_id": "019f75fc-4724-7fc3-8e0f-6a1bf50dd6ef",
+      "role": "实现：设备快速详情抽屉与完整详情页",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
+      "status": "running",
+      "ownership": "device-detail-frontend-only",
+      "adopted": false,
+      "archived": false
+    },
+    {
+      "thread_id": "019f75fd-e915-76e0-87ad-141a9f3b7faf",
+      "role": "实现：Vue/Electron 全局统一主题",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "global-theme-only",
+      "adopted": true,
+      "archived": true
+    },
+    {
+      "thread_id": "019f7606-63ba-7db1-b783-56e55a0a8141",
+      "role": "整改：Online MR diagnosis Parser 与 SQLite 边界",
+      "model": "gpt-5.6-sol",
+      "thinking": "xhigh",
+      "status": "running",
+      "ownership": "online-mr-diagnosis-sql-only",
+      "adopted": false,
+      "archived": false
+    },
+    {
+      "thread_id": "019f7608-6147-7bb3-b06b-4ca571c6756e",
+      "role": "实现：维护目录 README 覆盖门禁",
+      "model": "gpt-5.6-luna",
+      "thinking": "xhigh",
+      "status": "running",
+      "ownership": "directory-readme-guard-only",
+      "adopted": false,
+      "archived": false
+    },
+    {
+      "thread_id": "019f760c-565a-7453-8b0a-bb884b3f28e0",
+      "role": "整改：轨旁光衰采集 SQLite 边界",
+      "model": "gpt-5.6-sol",
+      "thinking": "high",
+      "status": "completed",
+      "ownership": "trackside-optical-sql-only",
+      "adopted": true,
+      "archived": true
+    }
+  ],
+  "baseline": {
+    "repo_data_files": 6,
+    "repo_data_bytes": 524357,
+    "repo_local_files": 16591,
+    "repo_local_bytes": 6222227681,
+    "python": "pending",
+    "vue": "v1.3.9 baseline 58 files / 174 tests passed",
+    "electron": "v1.3.9 baseline 10 files / 70 tests passed",
+    "startup_timeline": "pending"
+  },
+  "execution_order": [
+    "E0_qt_dependency_map",
+    "E1_remove_qt_runtime_tests_dependencies",
+    "E2_electron_only_build_startup_release",
+    "E3_local_qt_removal_commit",
+    "remove_snmp_center_and_wireless_survey",
+    "versioned_network_device_command_platform",
+    "versioned_product_api_contract",
+    "E4_runtime_data_root_and_migration",
+    "E5_startup_performance",
+    "E6_database_evidence_based_optimization",
+    "E7_code_quality",
+    "E8_documentation",
+    "E9_full_non_qt_validation",
+    "E10_architecture_compliance_and_legacy_logic_recovery"
+  ],
+  "deferred_workflows": [
+    {
+      "id": "remove_snmp_center_and_wireless_survey",
+      "status": "completed_cbf8e358",
+      "scope": "正式删除活动代码、入口、测试、依赖、资源和构建接线；迁移或删除用户数据前必须经过数据安全门"
+    },
+    {
+      "id": "versioned_network_device_command_platform",
+      "status": "audit_completed_019f7451_7cac",
+      "scope": "AC/MR 仅 H3C；交换机以 H3C 为当前主力并为 Huawei/ZTE 保留真实样本驱动的扩展；Operation ID、Profile、Parser、DTO 和安全审计统一"
+    },
+    {
+      "id": "versioned_product_api_contract",
+      "status": "audit_completed_p0_security_implemented_ec59b5b",
+      "scope": "Desktop Internal、Product、Development、Agent API 分类；版本、错误码、OpenAPI、WebSocket、Artifact、鉴权、契约测试和 TypeScript Client"
+    }
+  ],
+  "qt_inventory": {
+    "tracked_apps_desktop_and_ui_files": 155,
+    "active_qt_reference_files": 188,
+    "qt_importing_test_files": 40,
+    "status": "completed"
+  },
+  "development_contract": {
+    "desktop_product": "electron_only",
+    "browser_usage": "local_development_test_diagnostics_only",
+    "default_bind": "127.0.0.1",
+    "authentication": "ephemeral_session_token_required",
+    "lan_default": false,
+    "production_vite": false,
+    "production_dev_api": false,
+    "planned_commands": [
+      "pnpm dev:codex",
+      "browser_playwright_e2e",
+      "electron_e2e"
+    ]
+  },
+  "qt_removal_completion_gates": {
+    "source_and_tests": "活动源码、测试、入口和适配层无 Qt/PySide/QFluentWidgets",
+    "dependencies": "运行、测试、构建依赖分层且活动依赖文件无 Qt",
+    "clean_environment": "从空环境重建 venv，pip check 通过且 import PySide6 按预期失败",
+    "packaging": "Backend 与 Electron 安装包无 Qt DLL、plugins、资源和许可证残留",
+    "licenses": "重新生成实际随包 Python、Electron/Node、Chromium 与工具 notices/SBOM，未知许可证阻塞",
+    "verification": "无 Qt 环境完成 pytest 收集、FastAPI、Electron Backend、packaged smoke"
+  },
+  "repository_hygiene_contract": {
+    "directory_readmes": "从 E1 起同步受影响目录，E8 补齐所有 Git 管理项目目录并加入自动检查",
+    "archives": "阶段事实进入 docs/archive/migrations；废弃源码直接删除并依赖 Git 历史",
+    "generated_cleanup": "smoke 后回收可生成构建产物，保留校验摘要",
+    "data_safety": "业务数据先清单、哈希、SQLite 校验、迁移 manifest，再清理旧位置",
+    "git_safety": "阶段提交保持聚焦；不擅自删除远端分支或 apply/drop/pop 现有 stash"
+  },
+  "architecture_compliance_gate": {
+    "stage": "E10_after_E9_before_release",
+    "qt_history_map": "每个删除 Qt 文件分类 PURE_UI/BUSINESS_MOVED/ADAPTER_REPLACED/DEAD_CODE/FEATURE_REMOVED，并关联新位置与测试",
+    "boundaries": "检查 Electron Main/Preload、Vue、Router、Application、Service、Parser、Repository 和 Command Profile 实际依赖",
+    "guards": "import、直接 SQL、设备命令硬编码、UI 业务逻辑、移除功能、运行路径、孤儿模块和迁移映射",
+    "exceptions": "仅允许精确文件、理由、责任域、测试和到期时间的有限期例外",
+    "release_block": "P0/P1 架构问题、未迁移 Qt 业务逻辑、Router 直连 SQL/设备、核心命令绕过 Profile 均阻塞发布"
+  }
+}
