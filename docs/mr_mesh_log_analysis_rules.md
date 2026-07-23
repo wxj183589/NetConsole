@@ -70,9 +70,10 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 ## 6. 大数据与图表
 
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
-- 图表按时间窗口和 Radio 查询，默认按请求目标点数降采样，硬上限为 2,000 点。服务端保留首尾、有效切换/异常/无 ACTIVE 断点和极值；有效切换锚点超过请求目标时自动提高本次有效点数，超过硬上限才按时间均匀抽样切换锚点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数和必要的 `downsample_warning`。
+- 主链 RSSI/Busy 图按时间窗口和 Radio 查询，默认按请求目标点数降采样，硬上限为 2,000 点。服务端保留首尾、有效切换/异常/无 ACTIVE 断点和极值；有效切换锚点超过请求目标时自动提高本次有效点数，超过硬上限才按时间均匀抽样切换锚点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数和必要的 `downsample_warning`。
 - 轨旁信号图只展示 ACTIVE 主链路在轨旁侧观测到的 RSSI 多序列，按 AP/MAC + Radio 分组，优先使用 `peer_rssi_db`，缺失时回退 `peer_signal_dbm`，不合并为 STANDBY/MIXED，也不再按序列热度截断到前 N 组；轨旁图事件默认为空，只保留轨旁数据自身的点预算与断点。
-- 单 AP 选择以正式建链顺序区段为边界；同一 AP 的全部经过时段可以合并显示，但区段切换强制插入空值断线，不跨经过时段连线。
+- 轨旁信号图的 `max_points` 是目标点数，不是 2,000 点硬上限。后端先按每个 Radio 的 ACTIVE peer 时间轴建立 `run_id/run_sequence`：来源、Radio、ACTIVE Peer/AP、结构化区段或连续性大间隙变化才开启新 run；不同 Radio 或其他 AP 的交错记录不得让当前序列断线。降采样按 ACTIVE run 独立执行，每个多点 run 至少保留首尾点，并优先保留轨旁 RSSI 极小/极大点；当必要点超过目标点数时提升 `effective_max_points`，不能删除整个 AP 序列或把多点 run 压成单点。
+- 单 AP 选择以正式建链顺序区段为边界；同一 AP 的全部经过时段可以合并显示，但 run 切换强制插入空值断线，不跨经过时段连线。
 - 链路明细导出进入独立 Export Process，并以只读 Repository 打开 compact v3 派生库；导出阶段不得初始化 schema、写回解析结果或触发 WAL/checkpoint。
 - ACTIVE/STANDBY 主链图 Tooltip 的备链按来源、采样时间、`timestamp_tag` 和 Radio 严格匹配；“MR / 轨旁 AP 接收信号”按业务展示要求只读取 compact v3 的 `local_rssi_db / peer_rssi_db` 差值，不得回退 `local_signal_dbm / peer_signal_dbm`。主链、备链和可选切换事件使用一个 Tooltip 与主题分隔线；原始 MESH 页面不展示不可靠的切换耗时和事件类型。图表切换事件仍携带前后 AP 与区段序号，点击可定位建链顺序。
 - 切换节点由 Query Service 在估算采样间隔容差内映射到真实 ACTIVE RSSI，并作为强制锚点加入当前返回折线。红色节点只能使用同一返回点的 `timestamp/local_rssi`，不得用事件自带 RSSI 形成第二套坐标；未进入当前返回点集、缺失 RSSI、RSSI 为 `0` 或异常采样只保留事件事实，不绘制普通切换节点。黄色切换时刻线仍按事件时间显示，默认关闭，与默认开启的真实切换节点互不依赖。

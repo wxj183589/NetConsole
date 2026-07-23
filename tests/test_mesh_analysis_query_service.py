@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,56 @@ from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysi
 
 def _fingerprint(path: Path) -> tuple[int, str]:
     return path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _clear_mesh_chart_rows(conn: sqlite3.Connection) -> None:
+    for table in ("mesh_links", "samples", "active_points", "active_segments", "switch_events"):
+        conn.execute(f"DELETE FROM {table}")
+
+
+def _insert_active_mesh_link(
+    conn: sqlite3.Connection,
+    *,
+    row_id: int,
+    sample_time: str,
+    radio: int,
+    peer_name: str,
+    peer_mac: str,
+    peer_rssi: int | None,
+    peer_signal: int | None = None,
+) -> None:
+    ap_mac = f"{int(peer_mac, 16) + 0x1000:012x}"
+    conn.execute("INSERT INTO samples VALUES (?, 1, ?, ?, '')", (row_id, radio, sample_time))
+    conn.execute(
+        """
+        INSERT INTO mesh_links (
+            id, sample_id, source_file_id, record_seq, source_line_number, sample_time, radio, link_state,
+            peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_ap_mac, peer_site,
+            peer_radio_label, peer_radio, duration_seconds, local_rssi_db, peer_rssi_db,
+            local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy, peer_match_rule, peer_resolve_source,
+            peer_radio_mac, timestamp_tag, session_id, local_signal_dbm, peer_signal_dbm
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, '',
+            'radio', 'radio', 1, ?, ?, 1, 1, 1, 1, 'exact', 'mapping',
+            ?, '', 'session-trackside', -50, ?)
+        """,
+        (
+            row_id,
+            row_id,
+            row_id,
+            row_id,
+            sample_time,
+            radio,
+            peer_mac,
+            peer_mac,
+            peer_mac,
+            peer_name,
+            ap_mac,
+            (peer_rssi or 0) - 5,
+            peer_rssi,
+            peer_mac,
+            peer_signal,
+        ),
+    )
 
 
 def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) -> None:
@@ -480,6 +531,171 @@ def test_trackside_signal_chart_falls_back_to_peer_signal_not_local_rssi(tmp_pat
     assert point.peer_signal == -57
     assert point.local_rssi == -21
     assert point.data_source == "peer_signal_dbm"
+
+
+def test_trackside_signal_chart_keeps_interleaved_radios_continuous(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for offset, sample_time in enumerate(
+            [
+                "2026-07-15 10:00:00.000",
+                "2026-07-15 10:00:01.000",
+                "2026-07-15 10:00:02.000",
+            ],
+        ):
+            _insert_active_mesh_link(
+                conn,
+                row_id=offset * 2 + 1,
+                sample_time=sample_time,
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=40 + offset,
+            )
+            _insert_active_mesh_link(
+                conn,
+                row_id=offset * 2 + 2,
+                sample_time=sample_time,
+                radio=2,
+                peer_name="AP-B",
+                peer_mac="00000000000b",
+                peer_rssi=45 + offset,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, max_points=10)
+
+    assert chart.total_series == 2
+    ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
+    ap_b = next(item for item in chart.series if item.peer_name == "AP-B")
+    assert [point.peer_rssi for point in ap_a.points] == [40, 41, 42]
+    assert [point.break_before for point in ap_a.points] == [False, False, False]
+    assert len({point.run_id for point in ap_a.points}) == 1
+    assert [point.peer_rssi for point in ap_b.points] == [45, 46, 47]
+    assert [point.break_before for point in ap_b.points] == [False, False, False]
+    assert len({point.run_id for point in ap_b.points}) == 1
+
+
+def test_trackside_signal_chart_breaks_only_when_radio_active_peer_changes(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    sequence = [
+        ("AP-A", "00000000000a", 40),
+        ("AP-A", "00000000000a", 41),
+        ("AP-B", "00000000000b", 50),
+        ("AP-B", "00000000000b", 51),
+        ("AP-A", "00000000000a", 42),
+        ("AP-A", "00000000000a", 43),
+    ]
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for index, (peer_name, peer_mac, peer_rssi) in enumerate(sequence, start=1):
+            _insert_active_mesh_link(
+                conn,
+                row_id=index,
+                sample_time=f"2026-07-15 11:00:{index:02d}.000",
+                radio=1,
+                peer_name=peer_name,
+                peer_mac=peer_mac,
+                peer_rssi=peer_rssi,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10)
+
+    ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
+    ap_b = next(item for item in chart.series if item.peer_name == "AP-B")
+    assert [point.peer_rssi for point in ap_a.points] == [40, 41, 42, 43]
+    assert [point.break_before for point in ap_a.points] == [False, False, True, False]
+    assert len({point.run_id for point in ap_a.points}) == 2
+    assert [point.peer_rssi for point in ap_b.points] == [50, 51]
+    assert [point.break_before for point in ap_b.points] == [False, False]
+    assert len({point.run_id for point in ap_b.points}) == 1
+
+
+def test_trackside_signal_chart_run_sampling_is_not_capped_at_legacy_2000(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    ap_count = 400
+    runs_per_ap = 5
+    points_per_run = 28
+    samples: list[tuple[int, int, int, str, str]] = []
+    links: list[tuple[object, ...]] = []
+    row_id = 1
+    elapsed_seconds = 0
+    for run_index in range(runs_per_ap):
+        for ap_index in range(ap_count):
+            peer_mac = f"{ap_index + 1:012x}"
+            ap_mac = f"{ap_index + 0x1000:012x}"
+            peer_name = f"AP-{ap_index:03d}"
+            for point_index in range(points_per_run):
+                hour, remainder = divmod(elapsed_seconds, 3600)
+                minute, second = divmod(remainder, 60)
+                sample_time = f"2026-07-15 {hour:02d}:{minute:02d}:{second:02d}.000"
+                peer_rssi = 32 + (point_index % 8)
+                if point_index == 7:
+                    peer_rssi = 18
+                elif point_index == 13:
+                    peer_rssi = 58
+                samples.append((row_id, 1, 1, sample_time, ""))
+                links.append(
+                    (
+                        row_id,
+                        row_id,
+                        row_id,
+                        row_id,
+                        sample_time,
+                        1,
+                        peer_mac,
+                        peer_mac,
+                        peer_mac,
+                        peer_name,
+                        ap_mac,
+                        peer_rssi - 5,
+                        peer_rssi,
+                        peer_mac,
+                        peer_rssi - 2,
+                    )
+                )
+                row_id += 1
+                elapsed_seconds += 1
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        conn.executemany("INSERT INTO samples VALUES (?, ?, ?, ?, ?)", samples)
+        conn.executemany(
+            """
+            INSERT INTO mesh_links (
+                id, sample_id, source_file_id, record_seq, source_line_number, sample_time, radio, link_state,
+                peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_ap_mac, peer_site,
+                peer_radio_label, peer_radio, duration_seconds, local_rssi_db, peer_rssi_db,
+                local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy, peer_match_rule, peer_resolve_source,
+                peer_radio_mac, timestamp_tag, session_id, local_signal_dbm, peer_signal_dbm
+            ) VALUES (?, ?, 1, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, '',
+                'radio', 'radio', 1, ?, ?, 1, 1, 1, 1, 'exact', 'mapping',
+                ?, '', 'session-large-trackside', -50, ?)
+            """,
+            links,
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=2_000)
+
+    expected_total = ap_count * runs_per_ap * points_per_run
+    expected_runs = ap_count * runs_per_ap
+    minimum_required_points = expected_runs * 4
+    run_counts: dict[str, int] = defaultdict(int)
+    for series in chart.series:
+        for point in series.points:
+            assert point.run_id is not None
+            run_counts[point.run_id] += 1
+    assert chart.total_points == expected_total
+    assert chart.total_series == ap_count
+    assert chart.returned_series == ap_count
+    assert len(run_counts) == expected_runs
+    assert min(run_counts.values()) >= 4
+    assert chart.effective_max_points >= minimum_required_points
+    assert chart.returned_points >= minimum_required_points
+    assert chart.returned_points > 2_000
+    assert all("安全渲染上限" not in warning for warning in chart.warnings)
 
 
 def test_chart_budget_preserves_switch_points_and_expands_requested_limit() -> None:

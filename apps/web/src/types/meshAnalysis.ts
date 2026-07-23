@@ -173,6 +173,7 @@ export interface MeshTracksideSignalPointData {
   local_radio: number | null; role: 'ACTIVE'; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section: string | null
   peer_rssi: number | null; local_rssi: number | null; peer_signal: number | null; local_signal: number | null
+  run_id?: string | null; run_sequence?: number | null
   segment_sequence?: number | null; segment_start?: string | null; segment_end?: string | null
   segment_duration_seconds: number | null; break_before?: boolean; data_source: string
 }

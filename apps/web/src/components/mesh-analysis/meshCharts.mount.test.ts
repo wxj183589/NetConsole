@@ -215,16 +215,19 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('breaks a trackside series after a long time gap instead of bridging the same AP', async () => {
+  it('keeps a trackside series connected when delayed samples still belong to the same ACTIVE run', async () => {
     const nextPoint = {
       ...tracksideChartPoint,
       timestamp: '2026-07-20T10:00:30.123Z',
       peer_rssi: -41,
       local_rssi: -36,
+      run_id: 'run-1',
+      run_sequence: 1,
     }
+    const firstPoint = { ...tracksideChartPoint, run_id: 'run-1', run_sequence: 1 }
     const wrapper = mount(MeshTracksideSignalChart, {
       props: {
-        series: [{ ...tracksideSeries[0], points: [tracksideChartPoint, nextPoint] }],
+        series: [{ ...tracksideSeries[0], points: [firstPoint, nextPoint] }],
         continuityGapSeconds: 5,
       },
     })
@@ -234,8 +237,7 @@ describe('MESH charts mount and render', () => {
       series: Array<{ data?: Array<{ value: [string, number | null] }> }>
     }
     expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [tracksideChartPoint.timestamp, -45],
-      [nextPoint.timestamp, null],
+      [firstPoint.timestamp, -45],
       [nextPoint.timestamp, -41],
     ])
 
@@ -243,17 +245,24 @@ describe('MESH charts mount and render', () => {
   })
 
   it('breaks a trackside series when a repeated AP starts a new ACTIVE run', async () => {
+    const firstPoint = {
+      ...tracksideChartPoint,
+      run_id: 'run-1',
+      run_sequence: 1,
+    }
     const nextPoint = {
       ...tracksideChartPoint,
       link_id: 11,
       timestamp: '2026-07-20T10:00:02.123Z',
       peer_rssi: -41,
       local_rssi: -36,
+      run_id: 'run-2',
+      run_sequence: 2,
       break_before: true,
     }
     const wrapper = mount(MeshTracksideSignalChart, {
       props: {
-        series: [{ ...tracksideSeries[0], points: [tracksideChartPoint, nextPoint] }],
+        series: [{ ...tracksideSeries[0], points: [firstPoint, nextPoint] }],
         continuityGapSeconds: 5,
       },
     })
@@ -263,9 +272,87 @@ describe('MESH charts mount and render', () => {
       series: Array<{ data?: Array<{ value: [string, number | null] }> }>
     }
     expect(option.series[0].data?.map((item) => item.value)).toEqual([
-      [tracksideChartPoint.timestamp, -45],
+      [firstPoint.timestamp, -45],
       [nextPoint.timestamp, null],
       [nextPoint.timestamp, -41],
+    ])
+
+    wrapper.unmount()
+  })
+
+  it('does not insert repeated nulls when a point is flagged inside the same run', async () => {
+    const firstPoint = { ...tracksideChartPoint, run_id: 'run-1', run_sequence: 1 }
+    const middlePoint = {
+      ...tracksideChartPoint,
+      link_id: 12,
+      timestamp: '2026-07-20T10:00:01.123Z',
+      peer_rssi: -42,
+      run_id: 'run-1',
+      run_sequence: 1,
+      break_before: true,
+    }
+    const lastPoint = {
+      ...tracksideChartPoint,
+      link_id: 13,
+      timestamp: '2026-07-20T10:00:02.123Z',
+      peer_rssi: -41,
+      run_id: 'run-1',
+      run_sequence: 1,
+    }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{ ...tracksideSeries[0], points: [firstPoint, middlePoint, lastPoint] }],
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ connectNulls?: boolean; data?: Array<{ value: [string, number | null] }> }>
+    }
+    expect(option.series[0].connectNulls).toBe(false)
+    expect(option.series[0].data?.map((item) => item.value)).toEqual([
+      [firstPoint.timestamp, -45],
+      [middlePoint.timestamp, -42],
+      [lastPoint.timestamp, -41],
+    ])
+
+    wrapper.unmount()
+  })
+
+  it('renders interleaved trackside AP inputs as independent continuous line series', async () => {
+    const apA = [
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:00.000Z', peer_rssi: -40, run_id: 'radio1-run-a', run_sequence: 1 },
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:01.000Z', peer_rssi: -42, run_id: 'radio1-run-a', run_sequence: 1 },
+      { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:02.000Z', peer_rssi: -41, run_id: 'radio1-run-a', run_sequence: 1 },
+    ]
+    const apB = [
+      { ...tracksideSecondPoint, timestamp: '2026-07-20T10:00:00.000Z', peer_rssi: -50, run_id: 'radio2-run-b', run_sequence: 2 },
+      { ...tracksideSecondPoint, timestamp: '2026-07-20T10:00:01.000Z', peer_rssi: -52, run_id: 'radio2-run-b', run_sequence: 2 },
+      { ...tracksideSecondPoint, timestamp: '2026-07-20T10:00:02.000Z', peer_rssi: -51, run_id: 'radio2-run-b', run_sequence: 2 },
+    ]
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [
+          { ...tracksideSeries[0], points: apA },
+          { ...tracksideSeries[1], points: apB },
+        ],
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ type?: string; data?: Array<{ value: [string, number | null] }> }>
+    }
+    expect(option.series.every((item) => item.type === 'line')).toBe(true)
+    expect(option.series[0].data?.map((item) => item.value)).toEqual([
+      [apA[0].timestamp, -40],
+      [apA[1].timestamp, -42],
+      [apA[2].timestamp, -41],
+    ])
+    expect(option.series[1].data?.map((item) => item.value)).toEqual([
+      [apB[0].timestamp, -50],
+      [apB[1].timestamp, -52],
+      [apB[2].timestamp, -51],
     ])
 
     wrapper.unmount()

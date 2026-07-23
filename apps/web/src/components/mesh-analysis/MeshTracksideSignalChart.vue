@@ -112,38 +112,19 @@ function pointSeriesValue(point: MeshTracksideSignalPointData): number | null {
   return point.peer_rssi ?? point.peer_signal ?? null
 }
 
-function pointTimeMillis(point: MeshTracksideSignalPointData): number | null {
-  const millis = Date.parse(point.timestamp.replace(' ', 'T'))
-  return Number.isNaN(millis) ? null : millis
-}
-
-function continuityGapMillis(): number {
-  const seconds = props.continuityGapSeconds
-  const numericSeconds = Number(seconds)
-  if (seconds == null || Number.isNaN(numericSeconds) || numericSeconds <= 0) return 30_000
-  return Math.max(1_000, numericSeconds * 1000)
-}
-
 function renderSeries(): RenderedSignalSeries[] {
   return props.series.map((series) => ({
     name: seriesLabel(series),
     meta: series,
     data: (() => {
-      const gapMillis = continuityGapMillis()
       const rendered: RenderedSignalPoint[] = []
-      let previousTime: number | null = null
+      let previousRunId: string | null = null
       for (const point of [...series.points].sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))) {
-        const currentTime = pointTimeMillis(point)
+        const currentRunId = point.run_id ?? (point.run_sequence == null ? null : `${series.series_id}:${point.run_sequence}`)
         if (
           rendered.length
           && point.break_before
-        ) {
-          rendered.push({ value: [point.timestamp, null] })
-        } else if (
-          rendered.length
-          && previousTime != null
-          && currentTime != null
-          && currentTime - previousTime > gapMillis
+          && (currentRunId == null || currentRunId !== previousRunId)
         ) {
           rendered.push({ value: [point.timestamp, null] })
         }
@@ -152,7 +133,7 @@ function renderSeries(): RenderedSignalSeries[] {
           meta: point,
           seriesMeta: series,
         })
-        if (currentTime != null) previousTime = currentTime
+        previousRunId = currentRunId
       }
       return rendered
     })(),

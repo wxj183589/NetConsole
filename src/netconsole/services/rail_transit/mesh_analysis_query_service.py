@@ -885,7 +885,7 @@ class MeshAnalysisQueryService:
     ) -> MeshTracksideSignalChartDTO:
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
-        max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        max_points = max(int(max_points), 10)
         if context.detail_db is None:
             return MeshTracksideSignalChartDTO(
                 source_id=context.session_id,
@@ -2090,9 +2090,11 @@ class MeshAnalysisQueryService:
         segment_index = self._chart_segment_index(self._build_rows(context))
         groups: dict[tuple[str, int | None], dict[str, Any]] = {}
         materialized: list[dict[str, Any]] = []
+        runs: dict[tuple[int, int | None, int], dict[str, Any]] = {}
         last_by_series: dict[tuple[str, int | None], dict[str, Any]] = {}
+        last_by_radio: dict[int | None, dict[str, Any]] = {}
         seen_samples: set[tuple[tuple[str, int | None], int, str, str, int | None]] = set()
-        previous_active_series_key: tuple[str, int | None] | None = None
+        active_run_sequence = 0
         skipped_missing_signal = 0
 
         active_rows = [row for row in rows if str(row.get("link_state") or "").upper() == LINK_STATE_ACTIVE]
@@ -2121,14 +2123,8 @@ class MeshAnalysisQueryService:
             peer_rssi = self._number(row.get("peer_rssi_db"))
             peer_signal = self._number(row.get("peer_signal_dbm"))
             data_source = self._trackside_signal_data_source(peer_rssi, peer_signal)
-            if not data_source:
-                skipped_missing_signal += 1
-                previous_active_series_key = series_key
-                continue
             link_id = self._int(row.get("id") or row.get("link_id"))
             sample_key = (series_key, context.source_id, timestamp, timestamp_tag, link_id)
-            previous_series_key = previous_active_series_key
-            previous_active_series_key = series_key
             if sample_key in seen_samples:
                 continue
             seen_samples.add(sample_key)
@@ -2136,24 +2132,40 @@ class MeshAnalysisQueryService:
             segment_sequence = self._int(segment.get("sequence"))
             segment_start = str(segment.get("build_start_time") or "") or None
             segment_end = str(segment.get("build_end_time") or "") or None
-            run_id = (context.source_id, local_radio, identity, segment_sequence, segment_start, segment_end)
-            previous = last_by_series.get(series_key)
             current_time = self._parse_time(timestamp)
-            previous_time = previous.get("time") if previous else None
+            radio_state = last_by_radio.get(local_radio)
+            previous_time = radio_state.get("time") if radio_state else None
+            segment_key = (segment_sequence, segment_start, segment_end)
             gap_break = (
                 continuity_gap is not None
                 and previous_time is not None
                 and current_time is not None
                 and (current_time - previous_time).total_seconds() > continuity_gap
             )
-            break_before = bool(
-                previous
-                and (
-                    previous_series_key != series_key
-                    or previous.get("run_id") != run_id
-                    or gap_break
-                )
+            starts_new_run = bool(
+                radio_state is None
+                or radio_state.get("source_file_id") != context.source_id
+                or radio_state.get("identity") != identity
+                or radio_state.get("segment_key") != segment_key
+                or gap_break
             )
+            if starts_new_run:
+                active_run_sequence += 1
+            run_sequence = active_run_sequence if starts_new_run else int(radio_state["run_sequence"])
+            run_key = (context.source_id, local_radio, run_sequence)
+            run_id = f"{context.source_id}:{local_radio if local_radio is not None else 'all'}:{run_sequence}"
+            if not data_source:
+                skipped_missing_signal += 1
+                last_by_radio[local_radio] = {
+                    "time": current_time,
+                    "identity": identity,
+                    "segment_key": segment_key,
+                    "run_sequence": run_sequence,
+                    "source_file_id": context.source_id,
+                }
+                continue
+            previous = last_by_series.get(series_key)
+            break_before = bool(previous and previous.get("run_id") != run_id)
             point = MeshTracksideSignalPointDTO(
                 timestamp=timestamp,
                 timestamp_tag=timestamp_tag,
@@ -2173,6 +2185,8 @@ class MeshAnalysisQueryService:
                 local_rssi=self._number(row.get("local_rssi_db")),
                 peer_signal=peer_signal,
                 local_signal=self._number(row.get("local_signal_dbm")),
+                run_id=run_id,
+                run_sequence=run_sequence,
                 segment_sequence=segment_sequence,
                 segment_start=segment_start,
                 segment_end=segment_end,
@@ -2184,6 +2198,7 @@ class MeshAnalysisQueryService:
             item = {
                 "index": len(materialized),
                 "series_key": series_key,
+                "run_key": run_key,
                 "run_id": run_id,
                 "point": point,
                 "value": value,
@@ -2214,62 +2229,58 @@ class MeshAnalysisQueryService:
                     group[field] = value_text
             group["items"].append(item)
             materialized.append(item)
+            run = runs.setdefault(
+                run_key,
+                {
+                    "run_key": run_key,
+                    "run_id": run_id,
+                    "run_sequence": run_sequence,
+                    "series_key": series_key,
+                    "items": [],
+                },
+            )
+            run["items"].append(item)
             last_by_series[series_key] = {"time": current_time, "run_id": run_id, "index": item["index"]}
+            last_by_radio[local_radio] = {
+                "time": current_time,
+                "identity": identity,
+                "segment_key": segment_key,
+                "run_sequence": run_sequence,
+                "source_file_id": context.source_id,
+            }
 
         warnings: list[str] = []
         if skipped_missing_signal:
             warnings.append(f"已跳过 {skipped_missing_signal} 个缺少 peer_rssi / peer_signal 的 ACTIVE 采样点。")
         total_points = len(materialized)
-        requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        requested_max_points = max(int(max_points), 10)
         effective_max_points = requested_max_points
         selected_items = materialized
         if total_points == 0:
             warnings.append("当前日志没有任何有效 peer_rssi / peer_signal。")
         elif total_points > requested_max_points:
-            pinned: set[int] = set()
-            important: set[int] = {0, total_points - 1}
-            for group in groups.values():
-                items = list(group["items"])
+            required: set[int] = set()
+            for run in runs.values():
+                items = list(run["items"])
                 if not items:
                     continue
-                pinned.add(int(items[0]["index"]))
-                important.update({int(items[0]["index"]), int(items[-1]["index"])})
-                for position, item in enumerate(items):
-                    if item["point"].break_before:
-                        important.add(int(item["index"]))
-                        if position > 0:
-                            important.add(int(items[position - 1]["index"]))
+                required.update({int(items[0]["index"]), int(items[-1]["index"])})
                 valued = [item for item in items if item.get("value") is not None]
-                if valued:
-                    important.add(int(min(valued, key=lambda item: item["value"])["index"]))
-                    important.add(int(max(valued, key=lambda item: item["value"])["index"]))
-            required = important | pinned
+                if len(items) >= 3 and valued:
+                    required.add(int(min(valued, key=lambda item: item["value"])["index"]))
+                    required.add(int(max(valued, key=lambda item: item["value"])["index"]))
             if len(required) > effective_max_points:
-                if len(required) <= _MAX_CHART_RENDER_POINTS:
-                    effective_max_points = len(required)
-                    warnings.append(
-                        "为保留所有 ACTIVE 序列首点、区段边界和 RSSI 极值，"
-                        f"轨旁图目标点数已从 {requested_max_points} 提升到 {effective_max_points}。"
-                    )
-                else:
-                    effective_max_points = _MAX_CHART_RENDER_POINTS
-                    warnings.append(
-                        f"轨旁 ACTIVE RSSI 关键点共 {len(required)} 个，超过安全渲染上限 "
-                        f"{_MAX_CHART_RENDER_POINTS}，已优先保留各序列首点并抽样返回。"
-                    )
-            selected_indices = set(
-                int(index)
-                for index in render_indices(
-                    total_points,
-                    0,
-                    0,
-                    important,
-                    effective_max_points,
-                    pinned_indices=pinned,
+                effective_max_points = len(required)
+                warnings.append(
+                    "为保留所有 ACTIVE run 的首尾点和 RSSI 极值，"
+                    f"轨旁图目标点数已从 {requested_max_points} 提升到 {effective_max_points}。"
                 )
-            )
+            selected_indices = self._select_trackside_run_indices(runs, required, effective_max_points)
             selected_items = [item for item in materialized if int(item["index"]) in selected_indices]
-            warnings.append(f"轨旁 ACTIVE RSSI 总点数 {total_points}，已按关键点优先返回 {len(selected_items)} 点。")
+            warnings.append(
+                f"轨旁 ACTIVE RSSI 总点数 {total_points}，"
+                f"按 {len(runs)} 个 ACTIVE run 保线返回 {len(selected_items)} 点。"
+            )
 
         selected_by_series: dict[tuple[str, int | None], list[MeshTracksideSignalPointDTO]] = defaultdict(list)
         last_selected_by_series: dict[tuple[str, int | None], dict[str, Any]] = {}
@@ -2328,6 +2339,63 @@ class MeshAnalysisQueryService:
             top_n=0,
             include_standby=False,
         )
+
+    @staticmethod
+    def _select_trackside_run_indices(
+        runs: dict[tuple[int, int | None, int], dict[str, Any]],
+        required_indices: set[int],
+        effective_max_points: int,
+    ) -> set[int]:
+        selected = set(required_indices)
+        optional_by_run: list[list[int]] = []
+        for run in sorted(
+            runs.values(),
+            key=lambda item: int((item.get("items") or [{"index": 0}])[0]["index"]),
+        ):
+            optional = [
+                int(item["index"])
+                for item in run.get("items", [])
+                if int(item["index"]) not in required_indices
+            ]
+            if optional:
+                optional_by_run.append(optional)
+        remaining_budget = min(
+            max(int(effective_max_points) - len(selected), 0),
+            sum(len(items) for items in optional_by_run),
+        )
+        if remaining_budget <= 0:
+            return selected
+        if remaining_budget >= sum(len(items) for items in optional_by_run):
+            for optional in optional_by_run:
+                selected.update(optional)
+            return selected
+
+        total_optional = sum(len(items) for items in optional_by_run)
+        allocations: list[int] = []
+        fractions: list[tuple[float, int]] = []
+        allocated = 0
+        for index, optional in enumerate(optional_by_run):
+            exact = remaining_budget * (len(optional) / total_optional)
+            count = min(len(optional), math.floor(exact))
+            allocations.append(count)
+            fractions.append((exact - count, index))
+            allocated += count
+        for _fraction, index in sorted(fractions, reverse=True):
+            if allocated >= remaining_budget:
+                break
+            if allocations[index] >= len(optional_by_run[index]):
+                continue
+            allocations[index] += 1
+            allocated += 1
+
+        for optional, count in zip(optional_by_run, allocations, strict=True):
+            if count <= 0:
+                continue
+            if count >= len(optional):
+                selected.update(optional)
+                continue
+            selected.update(optional[position] for position in render_indices(len(optional), 0, 0, set(), count))
+        return selected
 
     @staticmethod
     def _trackside_signal_data_source(peer_rssi: float | None, peer_signal: float | None) -> str:

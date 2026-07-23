@@ -509,6 +509,8 @@ class MeshTracksideSignalPointDTO(ApiModel):
     local_rssi: float | None = None
     peer_signal: float | None = None
     local_signal: float | None = None
+    run_id: str | None = None
+    run_sequence: int | None = None
     segment_sequence: int | None = None
     segment_start: str | None = None
     segment_end: str | None = None
