@@ -235,7 +235,15 @@ def migrate_site(request: Request, site_id: str, payload: DataRootPathRequest) -
 def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> SiteTaskResponse:
     _call(lambda: _sites(request).get_site(site_id))
     _call(lambda: _sites(request).ensure_no_active_tasks(site_id))
-    return _submit(request, "site_export", {"site_id": site_id, "destination_path": payload.destination_path})
+    return _submit(
+        request,
+        "site_export",
+        {
+            "site_id": site_id,
+            "destination_path": payload.destination_path,
+            "package_type": payload.package_type,
+        },
+    )
 
 
 @router.post(
@@ -245,7 +253,12 @@ def export_site(request: Request, site_id: str, payload: SiteExportRequest) -> S
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def inspect_site_package(request: Request, payload: SiteImportInspectRequest) -> dict[str, object]:
-    return _call(lambda: _packages(request).inspect_package(Path(payload.package_path)))
+    return _call(
+        lambda: _packages(request).inspect_package(
+            Path(payload.package_path),
+            target_site_id=payload.target_site_id or None,
+        )
+    )
 
 
 @router.post(
@@ -257,7 +270,12 @@ def inspect_site_package(request: Request, payload: SiteImportInspectRequest) ->
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def import_site(request: Request, payload: SiteImportRequest) -> SiteTaskResponse:
-    _call(lambda: _packages(request).inspect_package(Path(payload.package_path)))
+    _call(
+        lambda: _packages(request).inspect_package(
+            Path(payload.package_path),
+            target_site_id=payload.site_id or payload.replace_site_id or None,
+        )
+    )
     _call(_sites(request).ensure_no_active_tasks_anywhere)
     return _submit(request, "site_import", payload.model_dump())
 

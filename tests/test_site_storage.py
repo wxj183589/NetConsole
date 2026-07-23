@@ -213,3 +213,152 @@ def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
     assert target_paths.site_db_path(legacy_name).is_file()
     assert not (target_paths.sites_dir / str(legacy["site_id"])).exists()
     assert target_sites.get_site(str(legacy["site_id"]))["display_name"] == "替换后的局点"
+
+
+def test_field_return_package_previews_and_applies_three_way_merge(tmp_path: Path) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("line-one", "一号线")
+    with sqlite3.connect(source_paths.site_db_path("line-one")) as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, primary_address, station, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "device-1",
+                "AP-0102",
+                "192.0.2.10",
+                "东门口站",
+                "2026-07-24T08:00:00",
+                "2026-07-24T08:00:00",
+            ),
+        )
+        connection.commit()
+    config_template = source_paths.config_center_root("line-one") / "templates.json"
+    config_template.parent.mkdir(parents=True)
+    config_template.write_text('{"template":"现场采集"}', encoding="utf-8")
+
+    field_package = tmp_path / "line-one-field.ncsite"
+    source_packages = SitePackageService(source_paths, source_sites)
+    field_result = source_packages.export_site(
+        "line-one",
+        field_package,
+        package_type="field_collection",
+    )
+
+    assert field_result["package_type"] == "field_collection"
+    with zipfile.ZipFile(field_package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["package_type"] == "field_collection"
+        assert manifest["site_uuid"].startswith("site-")
+        assert "site/db/tasks.db" not in archive.namelist()
+        assert "site/files/config_center/templates.json" in archive.namelist()
+
+    field_paths = _paths(tmp_path / "field")
+    field_sites = SiteApplicationService(field_paths)
+    field_packages = SitePackageService(field_paths, field_sites)
+    imported = field_packages.import_site(field_package, site_id="line-one")
+    assert imported["package_type"] == "field_collection"
+
+    with sqlite3.connect(field_paths.site_db_path("line-one")) as connection:
+        connection.execute(
+            "UPDATE devices SET station = ?, updated_at = ? WHERE device_uuid = ?",
+            ("东门口站至江厦桥东区间", "2026-07-24T10:00:00", "device-1"),
+        )
+        connection.commit()
+    raw_file = (
+        field_paths.site_dir("line-one")
+        / "files"
+        / "rail_transit"
+        / "online_mr"
+        / "MR-01"
+        / "sessions"
+        / "task-return-1"
+        / "raw"
+        / "mesh.log"
+    )
+    raw_file.parent.mkdir(parents=True)
+    raw_file.write_text("mesh sample", encoding="utf-8")
+
+    return_package = tmp_path / "line-one-return.ncresult"
+    return_result = field_packages.export_site(
+        "line-one",
+        return_package,
+        package_type="collection_return",
+    )
+    assert return_result["new_or_changed_files"] == 1
+
+    with sqlite3.connect(source_paths.site_db_path("line-one")) as connection:
+        connection.execute(
+            "UPDATE devices SET station = ?, updated_at = ? WHERE device_uuid = ?",
+            ("江厦桥东站", "2026-07-24T09:00:00", "device-1"),
+        )
+        connection.commit()
+
+    preview = source_packages.inspect_package(
+        return_package,
+        target_site_id="line-one",
+    )
+
+    assert preview["package_type"] == "collection_return"
+    assert preview["site_identity_match"] is True
+    assert preview["new_files"] == 1
+    assert preview["conflict_count"] >= 1
+    station_conflict = next(
+        item for item in preview["conflicts"] if item["field"] == "station"
+    )
+    assert station_conflict["base_value"] == "东门口站"
+    assert station_conflict["local_value"] == "江厦桥东站"
+    assert station_conflict["returned_value"] == "东门口站至江厦桥东区间"
+
+    with pytest.raises(SiteStorageError) as unresolved:
+        source_packages.import_site(return_package, site_id="line-one")
+    assert unresolved.value.code == "SITE_IMPORT_CONFLICT"
+
+    resolutions = [
+        {"conflict_id": item["conflict_id"], "choice": "returned"}
+        for item in preview["conflicts"]
+    ]
+    merged = source_packages.import_site(
+        return_package,
+        site_id="line-one",
+        conflict_resolutions=resolutions,
+    )
+
+    assert merged["backup_created"] is True
+    assert merged["new_files"] == 1
+    assert raw_file.relative_to(field_paths.site_dir("line-one")).as_posix()
+    imported_raw = (
+        source_paths.site_dir("line-one")
+        / raw_file.relative_to(field_paths.site_dir("line-one"))
+    )
+    assert imported_raw.read_text(encoding="utf-8") == "mesh sample"
+    with sqlite3.connect(source_paths.site_db_path("line-one")) as connection:
+        row = connection.execute(
+            "SELECT station FROM devices WHERE device_uuid = ?",
+            ("device-1",),
+        ).fetchone()
+    assert row == ("东门口站至江厦桥东区间",)
+    assert next(
+        source_paths.site_backups_dir("line-one").glob("sync-import-*")
+    ).is_dir()
+
+
+def test_legacy_site_requires_audit_before_exporting_field_collection_package(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    legacy_name = "宁波地铁1号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    sites = SiteApplicationService(paths)
+    legacy = next(item for item in sites.list_sites() if item["display_name"] == legacy_name)
+
+    with pytest.raises(SiteStorageError) as error:
+        SitePackageService(paths, sites).export_site(
+            str(legacy["site_id"]),
+            tmp_path / "legacy.ncsite",
+            package_type="field_collection",
+        )
+
+    assert error.value.code == "SITE_SYNC_AUDIT_REQUIRED"

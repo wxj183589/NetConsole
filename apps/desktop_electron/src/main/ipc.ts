@@ -246,7 +246,7 @@ export function registerDesktopIpc(
     DESKTOP_IPC.selectSitePackage,
     trusted(async (_value, event) => {
       const result = await dependencies.dialog.showOpenDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
-        properties: ['openFile'], filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }],
+        properties: ['openFile'], filters: [{ name: 'NetConsole 数据包', extensions: ['ncsite', 'ncresult'] }],
       })
       const selected = result.canceled ? undefined : result.filePaths[0]
       return { cancelled: !selected, ...(selected ? { path: validateBridgePath(selected) } : {}) }
@@ -255,9 +255,13 @@ export function registerDesktopIpc(
   dependencies.ipcMain.handle(
     DESKTOP_IPC.selectSiteExportDestination,
     trusted(async (value, event) => {
-      const suggestedName = validateChooseSavePathOptions({ suggestedName: value, filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }] }).suggestedName
+      const suggestedName = validateChooseSavePathOptions({ suggestedName: value }).suggestedName
+      const resultPackage = suggestedName.toLocaleLowerCase().endsWith('.ncresult')
+      const filters = resultPackage
+        ? [{ name: 'NetConsole 采集回传包', extensions: ['ncresult'] }]
+        : [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }]
       const result = await dependencies.dialog.showSaveDialog(dependencies.windowForEvent?.(event) ?? dependencies.window, {
-        defaultPath: suggestedName, filters: [{ name: 'NetConsole 局点包', extensions: ['ncsite'] }],
+        defaultPath: suggestedName, filters,
       })
       return { cancelled: result.canceled || !result.filePath, ...(!result.canceled && result.filePath ? { path: validateBridgePath(result.filePath) } : {}) }
     }),

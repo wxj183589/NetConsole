@@ -60,7 +60,48 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('演示局点')
     expect(wrapper.text()).toContain('全局数据根')
     expect(wrapper.find('[data-testid="create-site"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="import-site"]').text()).toBe('导入数据包')
+    expect(wrapper.find('[data-testid="export-site"]').text()).toContain('导出当前局点')
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
+  })
+
+  it('inspects a selected data package before opening the merge dialog', async () => {
+    adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\line.ncresult' } as never)
+    vi.mocked(api.inspectSitePackage).mockResolvedValue({
+      site_id: 'demo',
+      target_site_id: 'demo',
+      site_uuid: 'site-1',
+      site_name: '演示局点',
+      package_type: 'collection_return',
+      package_id: 'package-1',
+      base_revision: 35,
+      local_revision: 42,
+      file_count: 3,
+      site_identity_match: true,
+      new_files: 2,
+      duplicate_files: 1,
+      new_tasks: 1,
+      updated_tasks: 0,
+      new_records: 0,
+      updated_records: 1,
+      duplicate_records: 0,
+      unsupported_records: 0,
+      deletion_requests: 0,
+      conflict_count: 0,
+      conflicts: [],
+      invalid_count: 0,
+      estimated_additional_bytes: 1024,
+      create_snapshot: true,
+      can_import: true,
+    })
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="import-site"]').trigger('click')
+    await flushPromises()
+
+    expect(api.inspectSitePackage).toHaveBeenCalledWith('C:\\packages\\line.ncresult')
+    expect(api.importSite).not.toHaveBeenCalled()
   })
 
   it('exposes one stable focus target and applies only a visual focus state', async () => {

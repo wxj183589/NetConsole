@@ -25,6 +25,14 @@ from netconsole.core.sites import DEFAULT_SITE, SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.models.task_state import TaskState
+from netconsole.services.site_sync import (
+    COLLECTION_RETURN,
+    FIELD_COLLECTION,
+    FULL_MIGRATION,
+    PACKAGE_FORMAT_VERSION,
+    PACKAGE_TYPES,
+    SiteSyncService,
+)
 
 
 class SiteStorageError(RuntimeError):
@@ -84,7 +92,7 @@ _BOOTSTRAP_NAME = "bootstrap.json"
 _INVALID_NAME_RE = re.compile(r'[<>:"/\\|?*]')
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _SITE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$")
-_SENSITIVE_PARTS = {"token", "password", "passwd", "secret", "credentials", "bootstrap", "locks", "cache", "temp"}
+_SENSITIVE_PARTS = {"token", "password", "passwd", "secret", "credentials", "bootstrap", "locks", "cache", "sync", "temp"}
 _MAX_PACKAGE_FILES = 50_000
 _MAX_PACKAGE_BYTES = 20 * 1024 * 1024 * 1024
 _MAX_SINGLE_FILE_BYTES = 4 * 1024 * 1024 * 1024
@@ -432,7 +440,19 @@ class SiteApplicationService:
                 database = Database(db_path)
                 database.initialize()
                 DeviceGroupRepository(database, site_id).ensure_default_groups()
-                _atomic_json(staging / "site_meta.json", {"site_id": site_id, "display_name": display_name, "remark": remark, "schema_version": 1, "created_at": _now()})
+                _atomic_json(
+                    staging / "site_meta.json",
+                    {
+                        "site_id": site_id,
+                        "site_uuid": f"site-{uuid.uuid4()}",
+                        "display_name": display_name,
+                        "remark": remark,
+                        "schema_version": 1,
+                        "sync_schema_version": 1,
+                        "revision": 1,
+                        "created_at": _now(),
+                    },
+                )
                 _quick_check_site(staging)
                 _finalize_site_databases(staging)
                 if final.exists():
@@ -603,8 +623,24 @@ class SitePackageService:
         self.paths = paths
         self.sites = sites or SiteApplicationService(paths)
 
-    def export_site(self, site_id: str, destination: Path, *, check_cancel: Callable[[], None] | None = None) -> dict[str, object]:
+    def export_site(
+        self,
+        site_id: str,
+        destination: Path,
+        *,
+        package_type: str = FULL_MIGRATION,
+        check_cancel: Callable[[], None] | None = None,
+    ) -> dict[str, object]:
+        normalized_type = str(package_type or FULL_MIGRATION).strip().casefold()
+        if normalized_type not in PACKAGE_TYPES:
+            raise SiteStorageError("SITE_EXPORT_TYPE_INVALID", "不支持的局点数据包类型")
+        sync = SiteSyncService(self.paths, self.sites)
+        if normalized_type == FIELD_COLLECTION:
+            return sync.export_field_package(site_id, destination, check_cancel=check_cancel)
+        if normalized_type == COLLECTION_RETURN:
+            return sync.export_return_package(site_id, destination, check_cancel=check_cancel)
         site = self.sites.registry.get(site_id)
+        identity = sync.ensure_sync_identity(site, require_legacy_audit=False)
         destination = Path(destination).expanduser().resolve()
         if destination.suffix.casefold() != ".ncsite":
             destination = destination.with_suffix(".ncsite")
@@ -625,7 +661,24 @@ class SitePackageService:
                     else:
                         shutil.copy2(source, target)
                     manifest_files[f"site/{relative}"] = _sha256(target)
-                manifest = {"format": "netconsole-site-package", "format_version": 1, "app_version": APP_VERSION.removeprefix("v"), "site_id": site.site_id, "site_name": site.display_name, "created_at": _now(), "source_platform": "windows" if os.name == "nt" else os.name, "databases": [name for name in manifest_files if name.endswith(".db")], "artifacts": [], "checksums": manifest_files, "contains_credentials": False}
+                manifest = {
+                    "format": "netconsole-site-package",
+                    "format_version": PACKAGE_FORMAT_VERSION,
+                    "package_id": str(uuid.uuid4()),
+                    "package_type": FULL_MIGRATION,
+                    "app_version": APP_VERSION.removeprefix("v"),
+                    "site_id": site.site_id,
+                    "site_uuid": identity["site_uuid"],
+                    "site_name": site.display_name,
+                    "site_revision": identity["revision"],
+                    "base_revision": identity["revision"],
+                    "created_at": _now(),
+                    "source_platform": "windows" if os.name == "nt" else os.name,
+                    "databases": [name for name in manifest_files if name.endswith(".db")],
+                    "artifacts": [],
+                    "checksums": manifest_files,
+                    "contains_credentials": False,
+                }
                 (Path(temp) / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
                 (Path(temp) / "checksums.json").write_text(json.dumps(manifest_files, ensure_ascii=False, indent=2), encoding="utf-8")
                 (Path(temp) / "README.txt").write_text("NetConsole 局点包；导入后需要重新录入设备凭据。\n", encoding="utf-8")
@@ -633,13 +686,26 @@ class SitePackageService:
                     for item in Path(temp).rglob("*"):
                         if item.is_file():
                             archive.write(item, item.relative_to(temp).as_posix())
-            self.inspect_package(staging)
+            self.inspect_package(staging, validate_extension=False)
             os.replace(staging, destination)
-            return {"package_name": destination.name, "size_bytes": destination.stat().st_size, "contains_credentials": False}
+            return {
+                "package_name": destination.name,
+                "package_type": FULL_MIGRATION,
+                "site_uuid": identity["site_uuid"],
+                "base_revision": identity["revision"],
+                "size_bytes": destination.stat().st_size,
+                "contains_credentials": False,
+            }
         finally:
             staging.unlink(missing_ok=True)
 
-    def inspect_package(self, package: Path) -> dict[str, object]:
+    def inspect_package(
+        self,
+        package: Path,
+        *,
+        target_site_id: str | None = None,
+        validate_extension: bool = True,
+    ) -> dict[str, object]:
         package = Path(package).resolve()
         try:
             with zipfile.ZipFile(package) as archive:
@@ -660,10 +726,21 @@ class SitePackageService:
                     manifest = json.loads(archive.read("manifest.json"))
                 except (KeyError, json.JSONDecodeError) as exc:
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包缺少有效 manifest") from exc
-                if manifest.get("format") != "netconsole-site-package" or manifest.get("format_version") != 1:
+                version = int(manifest.get("format_version") or 0)
+                if manifest.get("format") != "netconsole-site-package" or version not in {1, PACKAGE_FORMAT_VERSION}:
                     raise SiteStorageError("SITE_IMPORT_VERSION_UNSUPPORTED", "不支持的局点包版本")
                 if manifest.get("contains_credentials") is not False:
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不能包含凭据")
+                package_type = (
+                    FULL_MIGRATION
+                    if version == 1
+                    else str(manifest.get("package_type") or "")
+                )
+                if package_type not in PACKAGE_TYPES:
+                    raise SiteStorageError("SITE_IMPORT_VERSION_UNSUPPORTED", "数据包类型不受支持")
+                expected_suffix = ".ncresult" if package_type == COLLECTION_RETURN else ".ncsite"
+                if validate_extension and package.suffix.casefold() != expected_suffix:
+                    raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", f"{package_type} 数据包扩展名应为 {expected_suffix}")
                 checksums = manifest.get("checksums")
                 if not isinstance(checksums, dict):
                     raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包缺少 checksum")
@@ -675,12 +752,58 @@ class SitePackageService:
                         raise SiteStorageError("SITE_IMPORT_CHECKSUM_FAILED", "局点包文件缺失") from exc
                     if actual != str(expected):
                         raise SiteStorageError("SITE_IMPORT_CHECKSUM_FAILED", "局点包完整性校验失败")
-                return {"site_id": str(manifest.get("site_id") or ""), "site_name": str(manifest.get("site_name") or ""), "file_count": len(infos), "contains_credentials": False}
+                public = {
+                    "site_id": str(manifest.get("site_id") or ""),
+                    "site_uuid": str(manifest.get("site_uuid") or ""),
+                    "site_name": str(manifest.get("site_name") or ""),
+                    "package_type": package_type,
+                    "package_id": str(manifest.get("package_id") or ""),
+                    "base_revision": int(manifest.get("base_revision") or manifest.get("site_revision") or 1),
+                    "file_count": len(infos),
+                    "contains_credentials": False,
+                    "conflict_count": 0,
+                    "conflicts": [],
+                    "invalid_count": 0,
+                    "estimated_additional_bytes": total,
+                    "can_import": True,
+                }
+                if package_type == COLLECTION_RETURN:
+                    return {
+                        **public,
+                        **SiteSyncService(self.paths, self.sites).inspect_return_package(
+                            package,
+                            manifest,
+                            target_site_id=target_site_id,
+                        ),
+                    }
+                return public
         except zipfile.BadZipFile as exc:
             raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "局点包不是有效 ZIP") from exc
 
-    def import_site(self, package: Path, *, site_id: str | None = None, display_name: str | None = None, replace_site_id: str | None = None) -> dict[str, object]:
-        info = self.inspect_package(package)
+    def import_site(
+        self,
+        package: Path,
+        *,
+        site_id: str | None = None,
+        display_name: str | None = None,
+        replace_site_id: str | None = None,
+        raw_only: bool = False,
+        conflict_resolutions: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        info = self.inspect_package(
+            package,
+            target_site_id=site_id or replace_site_id,
+        )
+        manifest = self._read_manifest(package)
+        package_type = str(info.get("package_type") or FULL_MIGRATION)
+        if package_type == COLLECTION_RETURN:
+            return SiteSyncService(self.paths, self.sites).import_return_package(
+                Path(package).resolve(),
+                manifest,
+                target_site_id=site_id or replace_site_id,
+                raw_only=raw_only,
+                conflict_resolutions=conflict_resolutions or [],
+            )
         original_id = validate_site_id(str(info["site_id"]))
         wanted_id = validate_site_id(site_id or replace_site_id or original_id)
         name = validate_display_name(display_name or str(info["site_name"]) or wanted_id)
@@ -716,7 +839,15 @@ class SitePackageService:
                 _publish_directory(imported_root, target)
                 published = True
                 self.sites.registry.register(SiteRecord(wanted_id, name, target, remark="imported"))
-                return {"site_id": wanted_id, "display_name": name, "backup_created": backup is not None, "requires_credentials": True}
+                if package_type == FIELD_COLLECTION:
+                    SiteSyncService(self.paths, self.sites).record_field_baseline(target, manifest)
+                return {
+                    "site_id": wanted_id,
+                    "display_name": name,
+                    "package_type": package_type,
+                    "backup_created": backup is not None,
+                    "requires_credentials": True,
+                }
             except SiteStorageError:
                 if published and backup and target.exists():
                     shutil.rmtree(target, ignore_errors=True)
@@ -733,6 +864,17 @@ class SitePackageService:
                 raise SiteStorageError("SITE_IMPORT_FAILED", "局点导入失败，已保留原数据") from exc
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _read_manifest(package: Path) -> dict[str, object]:
+        try:
+            with zipfile.ZipFile(Path(package).resolve()) as archive:
+                value = json.loads(archive.read("manifest.json"))
+        except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "数据包缺少有效 manifest") from exc
+        if not isinstance(value, dict):
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "数据包 manifest 格式无效")
+        return value
 
 
 def _default_data_root(paths: PathResolver) -> Path:

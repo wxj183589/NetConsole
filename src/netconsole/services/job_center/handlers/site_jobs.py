@@ -77,14 +77,19 @@ def site_data_root_migration(context: JobContext) -> dict[str, object]:
 def site_export(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     sites = SiteApplicationService(context.paths)
+    package_type = str(context.params.get("package_type") or "full_migration")
     destination = str(context.params.get("destination_path") or "")
     if not destination:
         record = sites.registry.get(str(context.params.get("site_id") or ""))
-        destination = str(record.root_path / "files" / "exports" / f"{record.site_id}.ncsite")
+        suffix = ".ncresult" if package_type == "collection_return" else ".ncsite"
+        destination = str(record.root_path / "files" / "exports" / f"{record.site_id}{suffix}")
     result = SitePackageService(context.paths, sites).export_site(
-        str(context.params.get("site_id") or ""), Path(destination), check_cancel=context.check_cancelled
+        str(context.params.get("site_id") or ""),
+        Path(destination),
+        package_type=package_type,
+        check_cancel=context.check_cancelled,
     )
-    context.progress("publish", 1, 1, "局点包导出完成")
+    context.progress("publish", 1, 1, "局点数据包导出完成")
     return result
 
 
@@ -107,6 +112,12 @@ def site_import(context: JobContext) -> dict[str, object]:
         site_id=str(context.params.get("site_id") or "") or None,
         display_name=str(context.params.get("display_name") or "") or None,
         replace_site_id=str(context.params.get("replace_site_id") or "") or None,
+        raw_only=bool(context.params.get("raw_only")),
+        conflict_resolutions=[
+            item
+            for item in context.params.get("conflict_resolutions", [])
+            if isinstance(item, dict)
+        ],
     )
     if bool(context.params.get("activate")):
         result["activation"] = sites.switch_site(str(result["site_id"]))

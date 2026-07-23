@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
@@ -14,6 +15,15 @@ const root = ref<DataRootSnapshot | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+const importDialogVisible = ref(false)
+const importInspection = ref<SitePackageInspection | null>(null)
+const importPackagePath = ref('')
+const importMode = ref<'new' | 'replace' | 'merge'>('new')
+const importSiteId = ref('')
+const importDisplayName = ref('')
+const importTargetSiteId = ref('')
+const importRawOnly = ref(false)
+const conflictChoices = ref<Record<string, { choice: SiteConflictChoice; manualValue: string }>>({})
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
 
@@ -114,14 +124,20 @@ async function rebuildDemo(site: SiteRecord): Promise<void> {
   finally { busy.value = false }
 }
 
-async function exportCurrent(): Promise<void> {
+async function exportCurrent(packageType: SitePackageType): Promise<void> {
   const current = sites.value.find((site) => site.active)
   if (!current) return
-  const selected = await getPlatformAdapter().selectSiteExportDestination(`${current.site_id}.ncsite`)
+  const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const names: Record<SitePackageType, string> = {
+    full_migration: `${current.display_name}_完整迁移包_${date}.ncsite`,
+    field_collection: `${current.display_name}_现场采集包_${date}.ncsite`,
+    collection_return: `${current.display_name}_采集回传包_${date}.ncresult`,
+  }
+  const selected = await getPlatformAdapter().selectSiteExportDestination(names[packageType])
   if (selected.cancelled || !selected.path) return
   busy.value = true
-  try { const task = await exportSite(current.site_id, selected.path); await openTask(task.task_id); ElMessage.success('导出任务已提交') }
-  catch (cause) { showError(cause, '局点导出失败') }
+  try { const task = await exportSite(current.site_id, selected.path, packageType); await openTask(task.task_id); ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`) }
+  catch (cause) { showError(cause, '数据包导出失败') }
   finally { busy.value = false }
 }
 
@@ -131,13 +147,55 @@ async function importPackage(): Promise<void> {
   busy.value = true
   try {
     const inspected = await inspectSitePackage(selected.path)
-    const displayName = await prompt(`导入局点显示名称（默认：${inspected.site_name}）`, '导入局点', inspected.site_name)
-    if (!displayName) return
-    const siteId = await prompt(`导入局点标识（默认：${inspected.site_id}）`, '导入局点', inspected.site_id)
-    if (!siteId) return
-    const task = await importSite({ package_path: selected.path, site_id: siteId, display_name: displayName })
-    await openTask(task.task_id); ElMessage.success('导入任务已提交')
-  } catch (cause) { showError(cause, '局点导入失败') }
+    importInspection.value = inspected
+    importPackagePath.value = selected.path
+    importMode.value = inspected.package_type === 'collection_return' ? 'merge' : 'new'
+    importSiteId.value = inspected.site_id
+    importDisplayName.value = inspected.site_name
+    importTargetSiteId.value = inspected.target_site_id || sites.value.find((site) => site.active)?.site_id || ''
+    importRawOnly.value = false
+    conflictChoices.value = Object.fromEntries(inspected.conflicts.map((item) => [item.conflict_id, { choice: 'local' as const, manualValue: '' }]))
+    importDialogVisible.value = true
+  } catch (cause) { showError(cause, '数据包预检失败') }
+  finally { busy.value = false }
+}
+
+async function executeImport(): Promise<void> {
+  const inspected = importInspection.value
+  if (!inspected || !importPackagePath.value) return
+  if (importMode.value === 'new' && (!importSiteId.value.trim() || !importDisplayName.value.trim())) {
+    ElMessage.warning('请填写局点标识和显示名称')
+    return
+  }
+  if (importMode.value === 'replace' && !importTargetSiteId.value) {
+    ElMessage.warning('请选择要替换的局点')
+    return
+  }
+  if (importMode.value === 'replace') {
+    const target = sites.value.find((site) => site.site_id === importTargetSiteId.value)
+    const confirmed = await confirmAction({ type: 'DANGER', title: '替换现有局点', message: `“${target?.display_name || importTargetSiteId.value}”将先创建完整备份，再由迁移包替换。`, confirmText: '确认替换局点' })
+    if (!confirmed) return
+  }
+  const resolutions: SiteConflictResolution[] = inspected.conflicts.map((item) => {
+    const selection = conflictChoices.value[item.conflict_id] || { choice: 'local' as const, manualValue: '' }
+    return {
+      conflict_id: item.conflict_id,
+      choice: selection.choice,
+      ...(selection.choice === 'manual' ? { manual_value: selection.manualValue } : {}),
+    }
+  })
+  busy.value = true
+  try {
+    const task = await importSite({
+      package_path: importPackagePath.value,
+      ...(importMode.value === 'new' ? { site_id: importSiteId.value.trim(), display_name: importDisplayName.value.trim() } : {}),
+      ...(importMode.value === 'replace' ? { replace_site_id: importTargetSiteId.value, display_name: importDisplayName.value.trim() } : {}),
+      ...(importMode.value === 'merge' ? { site_id: inspected.target_site_id || importTargetSiteId.value, raw_only: importRawOnly.value, conflict_resolutions: resolutions } : {}),
+    })
+    importDialogVisible.value = false
+    await openTask(task.task_id)
+    ElMessage.success('数据包导入任务已提交')
+  } catch (cause) { showError(cause, '数据包导入失败') }
   finally { busy.value = false }
 }
 
@@ -199,6 +257,8 @@ function classificationLabel(value: string): string { return ({ active_site: '�
 function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
+function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', field_collection: '现场采集包', collection_return: '采集回传包' } as const)[value] }
+function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
 </script>
 
 <template>
@@ -209,7 +269,26 @@ function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' |
     :class="{ 'storage-panel--focused': focused }"
     v-loading="loading"
   >
-    <div class="panel-heading"><div><h2>局点与数据管理</h2><p>局点切换、迁移和导入导出都经过 Backend 校验与 Task Center。</p></div><div v-if="root?.persistent !== false" class="actions"><el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button><el-button data-testid="import-site" :loading="busy" @click="importPackage">导入局点</el-button><el-button data-testid="export-site" :loading="busy" type="primary" @click="exportCurrent">导出当前局点</el-button></div></div>
+    <div class="panel-heading">
+      <div><h2>局点与数据管理</h2><p>局点切换、迁移和数据包合并都经过 Backend 校验与 Task Center。</p></div>
+      <div v-if="root?.persistent !== false" class="actions">
+        <el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button>
+        <el-button data-testid="import-site" :loading="busy" @click="importPackage">导入数据包</el-button>
+        <el-dropdown :disabled="busy" trigger="click" @command="exportCurrent">
+          <el-button data-testid="export-site" type="primary" :loading="busy">
+            导出当前局点
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="full_migration">导出完整迁移包</el-dropdown-item>
+              <el-dropdown-item command="field_collection">导出现场采集包</el-dropdown-item>
+              <el-dropdown-item command="collection_return">导出采集回传包</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+    </div>
     <el-alert v-if="root?.persistent === false" data-testid="isolated-storage-alert" title="隔离测试模式：当前数据将在退出后删除，不会写入正式 NetConsole 数据。" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
@@ -219,10 +298,88 @@ function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' |
         <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
       </article>
     </div>
+    <el-dialog v-model="importDialogVisible" class="site-import-dialog" width="min(920px, 94vw)" :close-on-click-modal="false" title="数据包导入预检">
+      <template v-if="importInspection">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="目标局点">{{ importInspection.site_name }}</el-descriptions-item>
+          <el-descriptions-item label="包类型">{{ packageTypeLabel(importInspection.package_type) }}</el-descriptions-item>
+          <el-descriptions-item label="局点 UUID"><code>{{ importInspection.site_uuid || '旧版包未提供' }}</code></el-descriptions-item>
+          <el-descriptions-item label="版本">基准 {{ importInspection.base_revision }}<template v-if="importInspection.local_revision !== undefined"> / 本地 {{ importInspection.local_revision }}</template></el-descriptions-item>
+        </el-descriptions>
+
+        <div v-if="importInspection.package_type === 'collection_return'" class="preflight-grid">
+          <span><strong>{{ importInspection.new_files || 0 }}</strong> 新增文件</span>
+          <span><strong>{{ importInspection.new_tasks || 0 }}</strong> 新增任务</span>
+          <span><strong>{{ importInspection.updated_records || 0 }}</strong> 自动更新</span>
+          <span><strong>{{ importInspection.duplicate_files || 0 }}</strong> 重复文件</span>
+          <span :class="{ danger: importInspection.conflict_count > 0 }"><strong>{{ importInspection.conflict_count }}</strong> 冲突</span>
+          <span :class="{ danger: importInspection.invalid_count > 0 }"><strong>{{ importInspection.invalid_count }}</strong> 无效数据</span>
+          <span><strong>{{ importInspection.deletion_requests || 0 }}</strong> 删除请求</span>
+          <span><strong>{{ formatBytes(importInspection.estimated_additional_bytes) }}</strong> 预计空间</span>
+        </div>
+
+        <div v-if="importInspection.package_type !== 'collection_return'" class="import-options">
+          <el-radio-group v-model="importMode">
+            <el-radio-button value="new">恢复为新局点</el-radio-button>
+            <el-radio-button value="replace">替换现有局点</el-radio-button>
+          </el-radio-group>
+          <el-form label-position="top">
+            <template v-if="importMode === 'new'">
+              <el-form-item label="局点标识"><el-input v-model="importSiteId" /></el-form-item>
+              <el-form-item label="显示名称"><el-input v-model="importDisplayName" /></el-form-item>
+            </template>
+            <template v-else>
+              <el-form-item label="替换目标">
+                <el-select v-model="importTargetSiteId" class="full-width">
+                  <el-option v-for="site in sites" :key="site.site_id" :label="site.display_name" :value="site.site_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="导入后显示名称"><el-input v-model="importDisplayName" /></el-form-item>
+            </template>
+          </el-form>
+        </div>
+
+        <template v-else>
+          <el-alert title="导入前自动创建恢复快照；原始文件按 SHA-256 追加；删除请求不会自动执行。" type="info" :closable="false" show-icon />
+          <el-checkbox v-model="importRawOnly" class="raw-only-option">仅导入原始采集数据</el-checkbox>
+          <div v-if="importInspection.conflicts.length" class="conflict-section">
+            <div class="section-heading"><strong>冲突处理</strong><span>默认保留本地值，可逐项选择回传值或手工填写。</span></div>
+            <div class="conflict-table-wrap">
+              <el-table :data="importInspection.conflicts" size="small" max-height="320">
+                <el-table-column label="对象" min-width="150"><template #default="{ row }">{{ row.entity_type }} / {{ row.entity_id }}</template></el-table-column>
+                <el-table-column prop="field" label="字段" min-width="120" />
+                <el-table-column label="基准值" min-width="150"><template #default="{ row }">{{ displayValue(row.base_value) }}</template></el-table-column>
+                <el-table-column label="本地值" min-width="150"><template #default="{ row }">{{ displayValue(row.local_value) }}</template></el-table-column>
+                <el-table-column label="回传值" min-width="150"><template #default="{ row }">{{ displayValue(row.returned_value) }}</template></el-table-column>
+                <el-table-column label="处理" width="180" fixed="right">
+                  <template #default="{ row }">
+                    <el-select v-model="conflictChoices[row.conflict_id].choice" size="small">
+                      <el-option label="使用本地值" value="local" />
+                      <el-option label="使用回传值" value="returned" />
+                      <el-option label="手工填写" value="manual" />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column label="手工值" min-width="160" fixed="right">
+                  <template #default="{ row }">
+                    <el-input v-if="conflictChoices[row.conflict_id].choice === 'manual'" v-model="conflictChoices[row.conflict_id].manualValue" size="small" />
+                    <span v-else>不适用</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </template>
+      </template>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="busy" :disabled="!importInspection?.can_import" @click="executeImport">导入并合并</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
 .el-alert{margin-top:14px}
-.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}}
+.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
 </style>

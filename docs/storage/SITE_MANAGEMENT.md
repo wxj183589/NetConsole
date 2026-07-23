@@ -8,6 +8,8 @@ Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解�
 
 新建流程为：校验 ID/名称、创建 staging、初始化必要数据库和默认设备组、写 `site_meta.json`、执行 SQLite `quick_check`、原子发布、注册 Registry。失败清理 staging，不改变当前局点。
 
+`site_meta.json` 同时保存跨电脑同步使用的不可变 `site_uuid` 与 revision。局点显示名称可以修改，不能作为同步匹配键。历史 `legacy-*` 局点保持只读审计优先：未产生审计记录前不能导出现场采集包或采集回传包；审计后才补齐同步标识。完整迁移/备份不依赖该限制。
+
 切换前必须确认当前局点没有 `PENDING/STARTING/RUNNING/STOPPING` 任务。切换更新现有应用配置并返回 `restart_required=true`，Electron 随后重启 Backend，使所有 Service 使用同一 SiteContext；不会自动停止任务或连接设备。
 
 ## Legacy 与 Demo 审计

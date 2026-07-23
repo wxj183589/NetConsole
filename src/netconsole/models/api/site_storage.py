@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
@@ -22,10 +24,18 @@ class SiteMigrateRequest(ApiModel):
 
 class SiteExportRequest(ApiModel):
     destination_path: str = Field(default="", max_length=32_767)
+    package_type: Literal["full_migration", "field_collection", "collection_return"] = "full_migration"
 
 
 class SiteImportInspectRequest(ApiModel):
     package_path: str = Field(min_length=1, max_length=32_767)
+    target_site_id: str = Field(default="", max_length=63)
+
+
+class SiteConflictResolution(ApiModel):
+    conflict_id: str = Field(min_length=1, max_length=128)
+    choice: Literal["local", "returned", "manual"]
+    manual_value: object | None = None
 
 
 class SiteImportRequest(ApiModel):
@@ -34,6 +44,8 @@ class SiteImportRequest(ApiModel):
     display_name: str = Field(default="", max_length=128)
     replace_site_id: str = Field(default="", max_length=63)
     activate: bool = False
+    raw_only: bool = False
+    conflict_resolutions: list[SiteConflictResolution] = Field(default_factory=list, max_length=2_000)
 
 
 class DataRootPathRequest(ApiModel):
@@ -103,6 +115,6 @@ class SiteCleanupPlanResponse(ApiModel):
 
 __all__ = [
     "DataRootPathRequest", "SiteActivateRequest", "SiteCreateRequest", "SiteExportRequest",
-    "SiteImportInspectRequest", "SiteImportRequest", "SiteMigrateRequest", "SiteTaskResponse",
+    "SiteConflictResolution", "SiteImportInspectRequest", "SiteImportRequest", "SiteMigrateRequest", "SiteTaskResponse",
     "SiteCleanupApplyRequest", "SiteCleanupRestoreRequest", "SiteDemoRebuildRequest", "SiteAuditSummaryResponse", "SiteCleanupPlanResponse",
 ]

@@ -86,6 +86,9 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 │  ├─ raw/
 │  ├─ snapshots/
 │  └─ outputs/
+├─ sync/                         # 跨电脑现场采集基准与导入审计，不作为普通业务文件展示
+│  ├─ baselines/<baseline_id>/   # 现场采集包导入时保存的不可变基准（含清洗后主库）
+│  └─ imports/<import_id>.json   # 回传包合并审计、来源与恢复快照相对引用
 ├─ file_manager/
 │  └─ downloads/
 ├─ snmp/                         # 旧版本遗留；当前不创建/读取/自动删除

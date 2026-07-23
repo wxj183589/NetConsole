@@ -115,6 +115,9 @@ class PathResolver:
     def site_backups_dir(self, site_name: str = "demo") -> Path:
         return self.site_files_dir(site_name) / "backups"
 
+    def site_sync_dir(self, site_name: str = "demo") -> Path:
+        return self.site_dir(site_name) / "sync"
+
     def site_imports_dir(self, site_name: str = "demo") -> Path:
         return self.site_files_dir(site_name) / "imports"
 
