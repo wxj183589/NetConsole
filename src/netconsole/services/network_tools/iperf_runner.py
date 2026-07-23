@@ -38,6 +38,7 @@ class IperfClientConfig:
     tcp_pacing_mbps: float | None = None
     udp_bitrate_mbps: float | None = None
     udp_report_threshold_mbps: float | None = None
+    debug_output_enabled: bool = False
 
     def normalized(self) -> "IperfClientConfig":
         protocol = str(self.protocol or "TCP").upper()
@@ -68,6 +69,7 @@ class IperfClientConfig:
             tcp_pacing_mbps=_optional_float(self.tcp_pacing_mbps),
             udp_bitrate_mbps=_optional_float(self.udp_bitrate_mbps),
             udp_report_threshold_mbps=_optional_float(self.udp_report_threshold_mbps),
+            debug_output_enabled=bool(self.debug_output_enabled),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -184,6 +186,8 @@ def build_iperf_client_args(iperf_path: Path, config: IperfClientConfig) -> list
         args.append("--bidir")
     if cfg.target_bandwidth:
         args.extend(["-b", cfg.target_bandwidth])
+    if cfg.debug_output_enabled:
+        args.append("-d")
     if cfg.protocol == "TCP" and cfg.tcp_block_size:
         args.extend(["-l", cfg.tcp_block_size])
     if cfg.protocol == "UDP" and cfg.packet_length:
@@ -210,6 +214,7 @@ def build_iperf_client_preflight_args(iperf_path: Path, config: IperfClientConfi
         tcp_pacing_mbps=cfg.tcp_pacing_mbps,
         udp_bitrate_mbps=cfg.udp_bitrate_mbps,
         udp_report_threshold_mbps=cfg.udp_report_threshold_mbps,
+        debug_output_enabled=cfg.debug_output_enabled,
     )
     return build_iperf_client_args(iperf_path, preflight)
 

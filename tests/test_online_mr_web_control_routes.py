@@ -9,6 +9,7 @@ def test_online_mr_control_routes_have_explicit_start_stop_force_stop_recover_an
     routes = {(route.path, frozenset(route.methods or set())) for route in router.routes}
     assert routes == {
         ("/rail-transit/online-mr-control/status", frozenset({"GET"})),
+        ("/rail-transit/online-mr-control/presets", frozenset({"GET"})),
         ("/rail-transit/online-mr-control/{operation_id}", frozenset({"GET"})),
         ("/rail-transit/online-mr-control/start", frozenset({"POST"})),
         ("/rail-transit/online-mr-control/{operation_id}/stop", frozenset({"POST"})),

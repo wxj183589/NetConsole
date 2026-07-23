@@ -1009,6 +1009,12 @@ class OnlineMrDiagnosisRepository:
         started_at: datetime,
         session_id: str,
         device_id: object,
+        protocol: str = "",
+        server_ip: str = "",
+        port: int | None = None,
+        direction: str = "",
+        parallel: int | None = None,
+        target_bandwidth: str | None = None,
     ) -> None:
         self._initialize_iperf_store()
 
@@ -1027,12 +1033,12 @@ class OnlineMrDiagnosisRepository:
                         session_id,
                         device_id,
                         mode,
-                        "",
-                        "",
-                        None,
-                        "",
-                        None,
-                        None,
+                        protocol,
+                        server_ip,
+                        port,
+                        direction,
+                        parallel,
+                        target_bandwidth,
                         started_at.isoformat(sep=" ", timespec="milliseconds"),
                         "RUNNING",
                         json.dumps(command, ensure_ascii=False),
@@ -1118,6 +1124,16 @@ class OnlineMrDiagnosisRepository:
             with connect_sqlite(self.db_path) as conn:
                 initialize_sqlite_wal(conn)
                 conn.executescript(IPERF_SCHEMA)
+                run_columns = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(iperf_runs)").fetchall()
+                }
+                for column, definition in {
+                    "log_file": "TEXT",
+                    "raw_file": "TEXT",
+                }.items():
+                    if column not in run_columns:
+                        conn.execute(f"ALTER TABLE iperf_runs ADD COLUMN {column} {definition}")
                 columns = {
                     str(row[1])
                     for row in conn.execute("PRAGMA table_info(iperf_intervals)").fetchall()
@@ -1128,6 +1144,7 @@ class OnlineMrDiagnosisRepository:
                     "clock_offset_ms": "REAL",
                     "offset_source": "TEXT",
                     "time_source": "TEXT",
+                    "raw_line": "TEXT",
                 }.items():
                     if column not in columns:
                         conn.execute(f"ALTER TABLE iperf_intervals ADD COLUMN {column} {definition}")

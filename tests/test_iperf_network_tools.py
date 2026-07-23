@@ -68,6 +68,7 @@ def test_iperf_version_parses_3_20_with_extra_output(tmp_path: Path) -> None:
 def test_tcp_auto_max_bandwidth_omits_bandwidth_arg(tmp_path: Path) -> None:
     args = build_iperf_client_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", protocol="TCP", target_bandwidth=None))
     assert "-b" not in args
+    assert "-d" not in args
 
 
 def test_tcp_target_bandwidth_includes_bandwidth_arg(tmp_path: Path) -> None:
@@ -251,14 +252,51 @@ def test_cbtc_dcs_tcp_observation_template_omits_bandwidth_arg(tmp_path: Path) -
 
 def test_online_mr_tcp_threshold_does_not_generate_bandwidth_arg(tmp_path: Path) -> None:
     traffic = IperfTrafficConfig(protocol="TCP", tcp_report_threshold_mbps=800.0, tcp_pacing_enabled=False).normalized()
-    args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth))
+    args = build_iperf3_json_args(
+        tmp_path / "iperf3.exe",
+        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, debug_output_enabled=traffic.debug_output_enabled),
+    )
     assert traffic.tcp_report_threshold_mbps == 800.0
     assert "-b" not in args
+    assert args.count("-d") == 1
 
 
-def test_online_mr_tcp_pacing_generates_bandwidth_arg_only_when_enabled(tmp_path: Path) -> None:
+def test_online_mr_tcp_rate_limit_generates_bandwidth_arg_without_parallel_split(tmp_path: Path) -> None:
+    traffic = IperfTrafficConfig(protocol="TCP", tcp_report_threshold_mbps=600.0, tcp_rate_limit_mbps=600.0, parallel=4).normalized()
+    args = build_iperf3_json_args(
+        tmp_path / "iperf3.exe",
+        IperfClientConfig(
+            "10.0.0.1",
+            protocol=traffic.protocol,
+            parallel=traffic.parallel,
+            target_bandwidth=traffic.target_bandwidth,
+            debug_output_enabled=traffic.debug_output_enabled,
+        ),
+    )
+    assert args[args.index("-b") + 1] == "600M"
+    assert args[args.index("-P") + 1] == "4"
+    assert "150M" not in args
+    assert args.count("-d") == 1
+
+
+def test_online_mr_tcp_rate_limit_zero_means_unlimited(tmp_path: Path) -> None:
+    traffic = IperfTrafficConfig(protocol="TCP", tcp_rate_limit_mbps=0).normalized()
+    args = build_iperf3_json_args(
+        tmp_path / "iperf3.exe",
+        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, debug_output_enabled=traffic.debug_output_enabled),
+    )
+    assert traffic.tcp_rate_limit_mbps == 0
+    assert "-b" not in args
+    assert args.count("-d") == 1
+
+
+def test_online_mr_legacy_tcp_pacing_maps_to_rate_limit(tmp_path: Path) -> None:
     traffic = IperfTrafficConfig(protocol="TCP", tcp_report_threshold_mbps=600.0, tcp_pacing_enabled=True, tcp_pacing_mbps=600.0).normalized()
-    args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth))
+    args = build_iperf3_json_args(
+        tmp_path / "iperf3.exe",
+        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, debug_output_enabled=traffic.debug_output_enabled),
+    )
+    assert traffic.tcp_rate_limit_mbps == 600.0
     assert args[args.index("-b") + 1] == "600M"
 
 
@@ -266,7 +304,7 @@ def test_online_mr_udp_bitrate_and_threshold_are_separate(tmp_path: Path) -> Non
     traffic = IperfTrafficConfig(protocol="UDP", udp_bitrate_mbps=800.0, udp_report_threshold_mbps=600.0, packet_length=1400).normalized()
     args = build_iperf3_json_args(
         tmp_path / "iperf3.exe",
-        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, packet_length=traffic.packet_length),
+        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, packet_length=traffic.packet_length, debug_output_enabled=traffic.debug_output_enabled),
     )
     assert traffic.udp_bitrate_mbps == 800.0
     assert traffic.udp_report_threshold_mbps == 600.0
@@ -277,11 +315,15 @@ def test_online_mr_udp_bitrate_and_threshold_are_separate(tmp_path: Path) -> Non
 
 def test_online_mr_legacy_tcp_bandwidth_maps_to_threshold_not_pacing(tmp_path: Path) -> None:
     traffic = IperfTrafficConfig(protocol="TCP", target_bandwidth="600M").normalized()
-    args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth))
+    args = build_iperf3_json_args(
+        tmp_path / "iperf3.exe",
+        IperfClientConfig("10.0.0.1", protocol=traffic.protocol, target_bandwidth=traffic.target_bandwidth, debug_output_enabled=traffic.debug_output_enabled),
+    )
     assert traffic.tcp_report_threshold_mbps == 600.0
     assert traffic.tcp_pacing_enabled is False
     assert traffic.target_bandwidth is None
     assert "-b" not in args
+    assert args.count("-d") == 1
 
 
 def test_follow_collection_manual_duration_uses_long_duration(tmp_path: Path) -> None:

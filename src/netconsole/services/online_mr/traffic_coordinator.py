@@ -386,6 +386,7 @@ class OnlineMrTrafficCoordinator:
             tcp_pacing_mbps=config.tcp_pacing_mbps,
             udp_bitrate_mbps=config.udp_bitrate_mbps,
             udp_report_threshold_mbps=config.udp_report_threshold_mbps,
+            debug_output_enabled=config.debug_output_enabled,
         ).normalized()
 
     def _state(self, session_id: str) -> _TrafficState | None:

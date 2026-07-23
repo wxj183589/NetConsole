@@ -333,6 +333,7 @@ const iperfColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'sample_time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
   { key: 'protocol', label: '协议', valueType: 'name' },
   { key: 'direction', label: '方向', valueType: 'status' },
+  { key: 'target_bandwidth', label: 'TCP 限速', valueType: 'description', displayValue: (row) => iperfRateLimitLabel(row) },
   { key: 'bitrate_mbps', label: 'bitrate', valueType: 'rate' },
   { key: 'jitter_ms', label: 'jitter', valueType: 'number' },
   { key: 'loss_percent', label: 'loss', valueType: 'percentage' },
@@ -376,6 +377,14 @@ function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '无数据'
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(digits)
   return formatted.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+function iperfRateLimitLabel(row: BusinessRow): string {
+  const protocol = String(row.protocol || '').toUpperCase()
+  if (protocol === 'UDP') return '--'
+  const value = row.target_bandwidth
+  if (value === undefined || value === null || value === '' || value === 0 || value === '0' || value === '0M') return '不限速'
+  const text = String(value)
+  return text.endsWith('M') ? `${text.slice(0, -1)} Mbps` : text
 }
 function parseDateTime(value: string | null | undefined): Date | null {
   if (!value) return null

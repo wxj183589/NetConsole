@@ -28,6 +28,7 @@ from netconsole.models.online_mr_models import (
     TASK_MESH_LINK,
     TASK_SWITCH_HISTORY,
     TASK_WIRELESS_STATUS,
+    IperfTrafficConfig,
     OnlineMrConnectionConfig,
     OnlineMrIntervals,
     OnlineMrSnapshot,
@@ -2472,6 +2473,14 @@ def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_
 
 def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
+    config.iperf = IperfTrafficConfig(
+        enabled=True,
+        server_ip="127.0.0.1",
+        protocol="TCP",
+        direction="download",
+        parallel=4,
+        tcp_rate_limit_mbps=600,
+    )
     session = OnlineMrSessionStore(paths).create_session(config)
     (session.session_dir / "raw" / "mesh_link_raw.log").write_text(
         f"2025-12-03 10:12:30 >>> display clock ; display wlan mesh-link\n{LINE_A}\n",
@@ -2519,6 +2528,7 @@ def test_online_mr_diagnosis_parser_rebuilds_raw_session_tables(tmp_path: Path) 
         assert conn.execute("SELECT COUNT(*) FROM main_link_samples").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM fping_samples").fetchone()[0] == 2
         assert conn.execute("SELECT COUNT(*) FROM iperf_intervals").fetchone()[0] == 1
+        assert conn.execute("SELECT protocol, direction, parallel, target_bandwidth FROM iperf_runs").fetchone() == ("TCP", "download", 4, "600M")
         assert conn.execute("SELECT COUNT(*) FROM radio_statistics_samples").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] >= 1
         assert conn.execute("SELECT COUNT(*) FROM active_segment_metrics").fetchone()[0] >= 1

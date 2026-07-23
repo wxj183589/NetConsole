@@ -86,15 +86,21 @@ return
 
 普通 display 准备只执行 `screen-length disable`；probe 准备依次执行 `screen-length disable`、`system-view`、`probe`。Channel busy、Radio statistics、Wireless status 使用 probe；Mesh、Switch history、Interface rate 使用普通 display。`radio_id` 由参数控制，表中的 `1` 是当前模板默认示例，不得在新代码重复硬编码。
 
+新配置默认使用统一 Radio 模式：页面只显示一个 `Radio ID`，并同步写入 `channel_busy_radio`、`ap_radio_statistics_radio`、`wireless_status_radio`。高级“分别设置 Radio”开启后才保留三类采集项的独立值；旧 Session/任务缺少 `radio_mode` 时，三值相同自动视为 `unified`，三值不同自动视为 `per_collector` 并原样恢复。Mesh link、Switch history、Interface rate 不额外增加 Radio 参数。
+
 Mesh/Channel/Statistics/Switch History 在命令组尾部追加 `repeat 2 delay <interval>`；Wireless/Interface 追加 `repeat 3 delay <interval>`。repeat 的 delay 来自当前会话 interval 参数，不是 parser 推导值。
 
 各任务原始回显写各自 raw 文件；`collector_output_raw.log` 只记录采集器过程，`terminal_monitor_raw.log` 只记录终端 monitor 回显，二者不得混写。
 
 ## 5. fping 与 iPerf3
 
-fping 启动前检查工具存在和版本。PIS 默认预设为：64 字节、10 ms 间隔、100 ms timeout、丢包警告 0.7%、延迟警告 100 ms；实际阈值可由预设/表单覆盖。原始采样同时记录本地时间；能从 `display clock` 得到偏移时补充设备对齐时间，否则保留 `offset_source=none`。
+fping 启动前检查工具存在和版本。新建 Online MR 配置默认启用 fping，并使用 PIS 高频 Ping / 验收预设：64 字节、10 ms 间隔、100 ms timeout、丢包警告 0.7%、延迟警告 100 ms；实际阈值可由预设/表单覆盖。已保存或恢复的 1000/4000 ms 只表示该 MR/Session 的用户自定义参数，必须按原值恢复，不得反向污染系统默认值或业务模板。原始采样同时记录本地时间；能从 `display clock` 得到偏移时补充设备对齐时间，否则保留 `offset_source=none`。
 
-iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采集时长。启动采集前执行预检；运行中失败可手工重试。批量 worker 失败后，页面会对仍活跃会话安排延迟预检/重试；参数相同的会话复用 batch worker 并镜像日志。TCP 与 UDP 参数、正反向和报告阈值分开处理，停止采集时同步停止打流。
+fping 与 iPerf 模板由 `src/netconsole/services/online_mr/ping_presets.py` 和 `src/netconsole/services/online_mr/traffic_presets.py` 作为后端事实源，Web 通过 `/api/rail-transit/online-mr-control/presets` 读取并展开结构化参数。Vue 不维护模板参数副本，也不提交 shell 命令；选择模板只填充参数并保留当前目标 IP，用户修改关键参数后按自定义配置处理。
+
+iPerf3 默认跟随采集生命周期，不用短固定 duration 代替正式采集时长。启动采集前执行预检；运行中失败可手工重试。批量 worker 失败后，页面会对仍活跃会话安排延迟预检/重试；参数相同的会话复用 batch worker 并镜像日志。所有 Online MR iPerf Client 命令固定启用 `-d`，debug 输出保留在 `iperf_client_raw.log`，离线业务解析只抽取有效 interval、summary、warning 和 error 行。
+
+TCP 与 UDP 参数、正反向和报告阈值分开处理，停止采集时同步停止打流。TCP 限速字段为 `tcp_rate_limit_mbps`：缺失、空值、`null` 或 `0` 都表示不限制 TCP，由 TCP 自行协商最大吞吐，命令不生成 `-b`；正数才生成对应 `-b <value>M`。并发流不做“总限速除以并发数”的自动换算，`-P 4` 与 `-b 600M` 会按原值一起传给 iperf3。UDP 使用 `udp_bitrate_mbps` 与 `packet_length` 生成 UDP 发送速率和包长。
 
 ## 6. 会话文件
 
@@ -158,7 +164,7 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 独立 Agent 的 Online MR 由 `apps/agent/mr_collector_py/collector_cli.py`（发布后为 `tools/windows-x64/mr_collector/netconsole-mr-collector.exe`）通过 Netmiko 执行；Go 进程只负责启动/停止 sidecar、任务状态、原始日志 tail、实时 view 和 ZIP。Agent 不生成正式分析报告，也不把 `stop.request` 打进采集包。
 
-Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/live`、`/api/v1/mr/collect/raw-tail`、`/api/v1/mr/collect/raw-summary`。fping 与可选 iPerf Client 共享 MR 生命周期；独立 iPerf Server/Client 和 TCP fallback 仍在各自工具页运行。
+Agent 会保留主程序兼容的 raw 文件名，并提供 `/api/v1/mr/collect/live`、`/api/v1/mr/collect/raw-tail`、`/api/v1/mr/collect/raw-summary`。fping 与可选 iPerf Client 共享 MR 生命周期；Controller 下发到 Agent 的 TCP 限速沿用 `tcp_rate_limit_mbps` 语义，正数才映射为 sidecar `bandwidth_mbps` 并生成 `-b`，空值或 0 不限速。独立 iPerf Server/Client 和 TCP fallback 仍在各自工具页运行。
 
 ## 10. Agent Executor Contract（5B-6 历史设计，5B-13A 已受控启用）
 

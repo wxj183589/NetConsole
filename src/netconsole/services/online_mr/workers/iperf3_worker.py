@@ -34,6 +34,8 @@ def build_iperf3_json_args(iperf_path: Path, config: IperfClientConfig) -> list[
         args.append("--bidir")
     if cfg.target_bandwidth:
         args.extend(["-b", cfg.target_bandwidth])
+    if cfg.debug_output_enabled:
+        args.append("-d")
     if cfg.protocol == "UDP" and cfg.packet_length:
         args.extend(["-l", str(cfg.packet_length)])
     return args

@@ -102,13 +102,18 @@ def test_control_api_start_stop_force_stop_recover_status_and_detail(tmp_path: P
     service = _ControlService()
     with _authorized_client(_app(tmp_path, service)) as client:
         status = client.get("/api/rail-transit/online-mr-control/status")
+        presets = client.get("/api/rail-transit/online-mr-control/presets")
         started = client.post("/api/rail-transit/online-mr-control/start", json=_payload())
         detail = client.get("/api/rail-transit/online-mr-control/task-1")
         stopped = client.post("/api/rail-transit/online-mr-control/task-1/stop")
         forced = client.post("/api/rail-transit/online-mr-control/task-1/force-stop")
         recovered = client.post("/api/rail-transit/online-mr-control/recover")
 
-    assert status.status_code == started.status_code == detail.status_code == stopped.status_code == forced.status_code == recovered.status_code == 200
+    assert status.status_code == presets.status_code == started.status_code == detail.status_code == stopped.status_code == forced.status_code == recovered.status_code == 200
+    preset_data = presets.json()
+    assert preset_data["ping"][0]["interval_ms"] == 10
+    assert preset_data["ping"][0]["timeout_ms"] == 100
+    assert preset_data["traffic"][0]["key"] == "pis_tcp_downlink_single"
     assert started.json()["owner"] == "web_local"
     assert stopped.json()["state"] == "stopped"
     assert service.started == service.stopped == 1

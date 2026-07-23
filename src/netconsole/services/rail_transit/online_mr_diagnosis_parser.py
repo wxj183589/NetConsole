@@ -1130,6 +1130,37 @@ class OnlineMrDiagnosisParser:
             samples.append(TimeSyncSample(collector_dt, device_dt, offset, str(source or "mesh_link_display_clock")))
         return samples
 
+    def _iperf_run_metadata(self) -> dict[str, object]:
+        config = self.meta.iperf if isinstance(self.meta.iperf, dict) else {}
+        protocol = str(config.get("protocol") or "").upper()
+        server_ip = str(config.get("server_ip") or "")
+        direction = str(config.get("direction") or "").lower()
+        target_bandwidth = str(config.get("target_bandwidth") or "").strip() or None
+        if protocol == "TCP":
+            tcp_rate_limit = _float_or_none(config.get("tcp_rate_limit_mbps"))
+            if tcp_rate_limit is None and config.get("tcp_pacing_enabled"):
+                tcp_rate_limit = _float_or_none(config.get("tcp_pacing_mbps"))
+            target_bandwidth = f"{tcp_rate_limit:g}M" if tcp_rate_limit is not None and tcp_rate_limit > 0 else None
+        elif protocol == "UDP" and not target_bandwidth:
+            udp_bitrate = _float_or_none(config.get("udp_bitrate_mbps"))
+            target_bandwidth = f"{udp_bitrate:g}M" if udp_bitrate is not None and udp_bitrate > 0 else None
+        try:
+            port = int(config.get("port")) if config.get("port") not in (None, "") else None
+        except (TypeError, ValueError):
+            port = None
+        try:
+            parallel = int(config.get("parallel")) if config.get("parallel") not in (None, "") else None
+        except (TypeError, ValueError):
+            parallel = None
+        return {
+            "protocol": protocol,
+            "server_ip": server_ip,
+            "port": port,
+            "direction": direction,
+            "parallel": parallel,
+            "target_bandwidth": target_bandwidth,
+        }
+
     def _normalize_fping_v5_sample(self, sample: dict[str, object], payload_text: str, stamp: str, timeout_ms: int) -> dict[str, object] | None:
         raw_type = sample.get("raw_type")
         if raw_type is not None and raw_type not in {"resp", "timeout"}:
@@ -1194,6 +1225,7 @@ class OnlineMrDiagnosisParser:
             return 0
         run_id = f"parsed_{self.meta.session_id}"
         command = ["iperf3", "parsed"]
+        run_metadata = self._iperf_run_metadata()
         self.repository.start_iperf_run(
             run_id,
             mode="client",
@@ -1202,6 +1234,7 @@ class OnlineMrDiagnosisParser:
             started_at=self.meta.started_at,
             session_id=self.meta.session_id,
             device_id=self.meta.device_id,
+            **run_metadata,
         )
         sync_samples = self._load_time_sync_samples()
         for row in rows:

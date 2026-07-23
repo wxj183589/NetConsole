@@ -28,19 +28,22 @@ class OnlineMrWebIntervalsDTO(ApiModel):
 
 
 class OnlineMrWebRadioDTO(ApiModel):
+    radio_mode: Literal["", "unified", "per_collector"] = ""
+    unified_radio_id: int | None = Field(default=None, ge=1, le=3)
+    collector_radio_ids: dict[str, int] = Field(default_factory=dict)
     channel_busy_radio: int = Field(default=1, ge=1, le=3)
     ap_radio_statistics_radio: int = Field(default=1, ge=1, le=3)
     wireless_status_radio: int = Field(default=1, ge=1, le=3)
 
 
 class OnlineMrWebFpingDTO(ApiModel):
-    enabled: bool = False
+    enabled: bool = True
     target: str = Field(default="", max_length=64)
     packet_size: int = Field(default=64, ge=1, le=65535)
-    interval_ms: int = Field(default=1000, ge=10, le=60000)
-    timeout_ms: int = Field(default=4000, ge=1, le=60000)
-    loss_warn_percent: float = Field(default=10.0, ge=0, le=100)
-    latency_warn_ms: int = Field(default=4000, ge=1, le=60000)
+    interval_ms: int = Field(default=10, ge=10, le=60000)
+    timeout_ms: int = Field(default=100, ge=1, le=60000)
+    loss_warn_percent: float = Field(default=0.7, ge=0, le=100)
+    latency_warn_ms: int = Field(default=100, ge=1, le=60000)
 
 
 class OnlineMrWebIperfDTO(ApiModel):
@@ -52,7 +55,43 @@ class OnlineMrWebIperfDTO(ApiModel):
     interval_seconds: int = Field(default=1, ge=1, le=60)
     udp_bitrate_mbps: float | None = Field(default=None, gt=0)
     tcp_report_threshold_mbps: float | None = Field(default=None, ge=0)
+    tcp_rate_limit_mbps: float | None = Field(default=None, ge=0)
+    packet_length: int | None = Field(default=None, ge=1, le=65507)
     reverse: bool = False
+
+
+class OnlineMrWebPingPresetDTO(ApiModel):
+    key: str
+    name: str
+    packet_size_bytes: int
+    interval_ms: int
+    timeout_ms: int
+    loss_warn_percent: float
+    latency_warn_ms: int
+    description: str = ""
+
+
+class OnlineMrWebTrafficPresetDTO(ApiModel):
+    key: str
+    name: str
+    protocol: Literal["TCP", "UDP"]
+    test_type: str
+    deployment_mode: str
+    business_direction: str
+    report_threshold_mbps: float
+    udp_bitrate_mbps: float | None = None
+    packet_length: int | None = None
+    parallel: int
+    reverse: bool
+    duration_sec: int
+    interval_sec: int
+    port: int
+    duration_mode: str
+
+
+class OnlineMrWebPresetsDTO(ApiModel):
+    ping: list[OnlineMrWebPingPresetDTO]
+    traffic: list[OnlineMrWebTrafficPresetDTO]
 
 
 class OnlineMrWebStartRequestDTO(ApiModel):

@@ -213,6 +213,9 @@ class OnlineMrAgentIntervals(ApiModel):
 
 
 class OnlineMrAgentRadio(ApiModel):
+    radio_mode: str = ""
+    unified_radio_id: int = Field(default=1, ge=1)
+    collector_radio_ids: dict[str, int] = Field(default_factory=dict)
     mesh_link_radio: int = Field(default=1, ge=1)
     channel_busy_radio: int = Field(default=1, ge=1)
     ap_radio_statistics_radio: int = Field(default=1, ge=1)
@@ -289,6 +292,7 @@ class OnlineMrAgentStartRequest(ApiModel):
         if request.executor_kind is not OnlineMrExecutorKind.AGENT or not request.agent_id:
             raise ValueError("Online MR Agent 请求必须指定 executor=AGENT 和 agent_id")
         config = request.config
+        radio = config.radio.normalized()
         fping = config.fping.normalized()
         iperf = config.iperf.normalized()
         threshold = (
@@ -332,9 +336,13 @@ class OnlineMrAgentStartRequest(ApiModel):
                 wireless_status=config.intervals.wireless_status,
             ),
             radio=OnlineMrAgentRadio(
-                channel_busy_radio=config.radio.channel_busy_radio,
-                ap_radio_statistics_radio=config.radio.ap_radio_statistics_radio,
-                wireless_status_radio=config.radio.wireless_status_radio,
+                radio_mode=radio.radio_mode,
+                unified_radio_id=radio.unified_radio_id or 1,
+                collector_radio_ids=radio.collector_radio_ids,
+                mesh_link_radio=radio.unified_radio_id or 1,
+                channel_busy_radio=radio.channel_busy_radio,
+                ap_radio_statistics_radio=radio.ap_radio_statistics_radio,
+                wireless_status_radio=radio.wireless_status_radio,
             ),
             fping=OnlineMrAgentFpingConfig(
                 enabled=fping.enabled,
@@ -354,7 +362,7 @@ class OnlineMrAgentStartRequest(ApiModel):
                 direction=iperf.direction,
                 duration_sec=iperf.duration_seconds,
                 parallel=iperf.parallel,
-                bandwidth_mbps=iperf.udp_bitrate_mbps or iperf.tcp_pacing_mbps or 0.0,
+                bandwidth_mbps=iperf.udp_bitrate_mbps if iperf.protocol == "UDP" else iperf.tcp_rate_limit_mbps or 0.0,
                 threshold_mbps=threshold,
                 reverse=iperf.direction.lower() in {"download", "reverse"},
                 report_interval=iperf.interval_seconds,

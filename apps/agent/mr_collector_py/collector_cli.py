@@ -595,10 +595,11 @@ class MRCollectorApp:
         args = [str(path), "-c", host, "-p", str(port), "-i", str(max(0.1, float(cfg.get("report_interval") or 1))), "-t", str(duration if duration > 0 else 86400), "--json", "--forceflush", "-P", str(parallel)]
         if protocol == "udp":
             args.append("-u")
-            if cfg.get("bandwidth_mbps") not in (None, "", 0, "0"):
-                args.extend(["-b", f"{float(cfg['bandwidth_mbps']):g}M"])
             if int(cfg.get("packet_length") or 0) > 0:
                 args.extend(["-l", str(int(cfg["packet_length"]))])
+        if cfg.get("bandwidth_mbps") not in (None, "", 0, "0"):
+            args.extend(["-b", f"{float(cfg['bandwidth_mbps']):g}M"])
+        args.append("-d")
         direction = str(cfg.get("direction") or "").lower()
         if cfg.get("reverse") or direction in {"download", "reverse"}:
             args.append("-R")

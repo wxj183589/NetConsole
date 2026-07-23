@@ -32,6 +32,28 @@ describe('Online MR local control', () => {
     expect(source).toContain('复制验收命令')
   })
 
+  it('uses backend presets and the new fping defaults for fresh configs', () => {
+    expect(source).toContain('getOnlineMrControlPresets')
+    expect(source).toContain('pis_high_ping_acceptance')
+    expect(source).toContain('interval_ms: 10')
+    expect(source).toContain('timeout_ms: 100')
+    expect(source).toContain('loss_warn_percent: 0.7')
+  })
+
+  it('exposes TCP rate limit without total-limit wording', () => {
+    expect(source).toContain('tcp_rate_limit_mbps')
+    expect(source).toContain('TCP 限速 Mbps')
+    expect(source).not.toContain('TCP 总限速')
+  })
+
+  it('uses unified Radio by default and keeps per-collector advanced controls', () => {
+    expect(source).toContain("radio_mode: 'unified'")
+    expect(source).toContain('Radio ID')
+    expect(source).toContain('分别设置 Radio')
+    expect(source).toContain('高级：分别设置 Radio')
+    expect(source).toContain('collector_radio_ids')
+  })
+
   it('locks the authorized real-device traffic parameters', () => {
     expect(source).toContain('real_device_test')
     expect(source).toContain("config.fping.interval_ms = 1000")

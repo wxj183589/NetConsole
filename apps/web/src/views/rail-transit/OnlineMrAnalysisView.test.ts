@@ -42,6 +42,7 @@ vi.mock('vue-router', () => ({
 }))
 
 import OnlineMrAnalysisView from './OnlineMrAnalysisView.vue'
+import source from './OnlineMrAnalysisView.vue?raw'
 
 const passthrough = defineComponent({
   inheritAttrs: false,
@@ -113,6 +114,13 @@ async function renderView() {
 }
 
 describe('Online MR analysis view behavior', () => {
+  it('shows TCP rate limit as an unlimited TCP field in iPerf tables', () => {
+    expect(source).toContain('TCP 限速')
+    expect(source).toContain('iperfRateLimitLabel')
+    expect(source).toContain('不限速')
+    expect(source).not.toContain('TCP 总限速')
+  })
+
   it('wraps inline Search and Document SVGs in bounded icon containers', async () => {
     const wrapper = await renderView()
 

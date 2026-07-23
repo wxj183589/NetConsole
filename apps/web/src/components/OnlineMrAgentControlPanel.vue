@@ -36,9 +36,16 @@ const config = reactive({
   duration_minutes: 0,
   items: { terminal_monitor: true as const, mesh_link: true, channel_busy: true, ap_radio_statistics: true, switch_history: true, interface_rate: true, wireless_status: true },
   intervals: { mesh_link: 1, channel_busy: 9, ap_radio_statistics: 10, switch_history: 300, interface_rate: 2, wireless_status: 3 },
-  radio: { channel_busy_radio: 1, ap_radio_statistics_radio: 1, wireless_status_radio: 1 },
-  fping: { enabled: false, target: '', packet_size: 64, interval_ms: 1000, timeout_ms: 4000, loss_warn_percent: 10, latency_warn_ms: 4000 },
-  iperf: { enabled: false, server_ip: '', port: 5201, protocol: 'TCP' as 'TCP' | 'UDP', parallel: 1, interval_seconds: 1, udp_bitrate_mbps: null as number | null, tcp_report_threshold_mbps: null as number | null, reverse: false },
+  radio: {
+    radio_mode: 'unified' as '' | 'unified' | 'per_collector',
+    unified_radio_id: 1,
+    collector_radio_ids: { channel_busy: 1, ap_radio_statistics: 1, wireless_status: 1 } as Record<string, number>,
+    channel_busy_radio: 1,
+    ap_radio_statistics_radio: 1,
+    wireless_status_radio: 1,
+  },
+  fping: { enabled: true, target: '', packet_size: 64, interval_ms: 10, timeout_ms: 100, loss_warn_percent: 0.7, latency_warn_ms: 100 },
+  iperf: { enabled: false, server_ip: '', port: 5201, protocol: 'TCP' as 'TCP' | 'UDP', parallel: 1, interval_seconds: 1, udp_bitrate_mbps: null as number | null, tcp_report_threshold_mbps: null as number | null, tcp_rate_limit_mbps: null as number | null, packet_length: null as number | null, reverse: false },
 })
 
 const active = computed(() => ['preparing', 'starting', 'running', 'remote_status_degraded', 'remote_unknown', 'stopping', 'waiting_package', 'importing'].includes(operation.value?.state || ''))
@@ -52,6 +59,14 @@ const stateLabel = computed(() => ({
 
 function payload(): OnlineMrAgentStartConfig {
   if (props.mr.device_id === null) throw new Error('当前 MR 未绑定正式设备')
+  config.radio.channel_busy_radio = config.radio.unified_radio_id || 1
+  config.radio.ap_radio_statistics_radio = config.radio.unified_radio_id || 1
+  config.radio.wireless_status_radio = config.radio.unified_radio_id || 1
+  config.radio.collector_radio_ids = {
+    channel_busy: config.radio.channel_busy_radio,
+    ap_radio_statistics: config.radio.ap_radio_statistics_radio,
+    wireless_status: config.radio.wireless_status_radio,
+  }
   return {
     site_id: props.siteId, device_id: props.mr.device_id, mr_id: props.mr.mr_id,
     agent_profile_id: profileId.value, executor: 'AGENT', ...JSON.parse(JSON.stringify(config)),

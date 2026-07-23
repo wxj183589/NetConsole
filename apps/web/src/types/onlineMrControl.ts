@@ -23,13 +23,33 @@ export interface OnlineMrControlStatus {
   real_device_test: boolean; safety_constraints: Record<string, unknown>
 }
 
+export interface OnlineMrPingPreset {
+  key: string; name: string; packet_size_bytes: number; interval_ms: number; timeout_ms: number
+  loss_warn_percent: number; latency_warn_ms: number; description: string
+}
+
+export interface OnlineMrTrafficPreset {
+  key: string; name: string; protocol: 'TCP' | 'UDP'; test_type: string
+  deployment_mode: string; business_direction: string; report_threshold_mbps: number
+  udp_bitrate_mbps: number | null; packet_length: number | null; parallel: number
+  reverse: boolean; duration_sec: number; interval_sec: number; port: number; duration_mode: string
+}
+
+export interface OnlineMrControlPresets {
+  ping: OnlineMrPingPreset[]; traffic: OnlineMrTrafficPreset[]
+}
+
 export interface OnlineMrStartConfig {
   site_id: string; device_id: string | number; mr_id: string; executor: 'LOCAL'; duration_minutes: number
   items: { terminal_monitor: true; mesh_link: boolean; channel_busy: boolean; ap_radio_statistics: boolean; switch_history: boolean; interface_rate: boolean; wireless_status: boolean }
   intervals: { mesh_link: number; channel_busy: number; ap_radio_statistics: number; switch_history: number; interface_rate: number; wireless_status: number }
-  radio: { channel_busy_radio: number; ap_radio_statistics_radio: number; wireless_status_radio: number }
+  radio: {
+    radio_mode: '' | 'unified' | 'per_collector'; unified_radio_id: number | null
+    collector_radio_ids: Record<string, number>
+    channel_busy_radio: number; ap_radio_statistics_radio: number; wireless_status_radio: number
+  }
   fping: { enabled: boolean; target: string; packet_size: number; interval_ms: number; timeout_ms: number; loss_warn_percent: number; latency_warn_ms: number }
-  iperf: { enabled: boolean; server_ip: string; port: number; protocol: 'TCP' | 'UDP'; parallel: number; interval_seconds: number; udp_bitrate_mbps: number | null; tcp_report_threshold_mbps: number | null; reverse: boolean }
+  iperf: { enabled: boolean; server_ip: string; port: number; protocol: 'TCP' | 'UDP'; parallel: number; interval_seconds: number; udp_bitrate_mbps: number | null; tcp_report_threshold_mbps: number | null; tcp_rate_limit_mbps: number | null; packet_length: number | null; reverse: boolean }
 }
 
 export type OnlineMrControlMr = Pick<MrCommunicationStatus, 'mr_id' | 'mr_name' | 'device_id' | 'management_ip' | 'train_name' | 'mr_role'>

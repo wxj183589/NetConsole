@@ -112,20 +112,60 @@ class OnlineMrTaskToggles:
 
 @dataclass
 class OnlineMrRadioConfig:
+    radio_mode: str = ""
+    unified_radio_id: int | None = None
+    collector_radio_ids: dict[str, int] = field(default_factory=dict)
     channel_busy_radio: int = 1
     ap_radio_statistics_radio: int = 1
     wireless_status_radio: int = 1
 
     def normalized(self) -> "OnlineMrRadioConfig":
+        collector_values = {
+            "channel_busy": self.channel_busy_radio,
+            "ap_radio_statistics": self.ap_radio_statistics_radio,
+            "wireless_status": self.wireless_status_radio,
+            **(self.collector_radio_ids or {}),
+        }
+        channel_busy = self._bounded(collector_values.get("channel_busy", 1))
+        ap_radio_statistics = self._bounded(collector_values.get("ap_radio_statistics", 1))
+        wireless_status = self._bounded(collector_values.get("wireless_status", 1))
+        requested_mode = str(self.radio_mode or "").strip().lower()
+        if requested_mode == "unified" or (not requested_mode and self.unified_radio_id not in (None, "")):
+            unified = self._bounded(self.unified_radio_id or channel_busy)
+            channel_busy = ap_radio_statistics = wireless_status = unified
+            mode = "unified"
+        elif requested_mode == "per_collector":
+            unified = channel_busy if channel_busy == ap_radio_statistics == wireless_status else None
+            mode = "per_collector"
+        else:
+            unified = channel_busy if channel_busy == ap_radio_statistics == wireless_status else None
+            mode = "unified" if unified is not None else "per_collector"
         return OnlineMrRadioConfig(
-            channel_busy_radio=min(3, max(1, int(self.channel_busy_radio))),
-            ap_radio_statistics_radio=min(3, max(1, int(self.ap_radio_statistics_radio))),
-            wireless_status_radio=min(3, max(1, int(self.wireless_status_radio))),
+            radio_mode=mode,
+            unified_radio_id=unified or 1,
+            collector_radio_ids={
+                "channel_busy": channel_busy,
+                "ap_radio_statistics": ap_radio_statistics,
+                "wireless_status": wireless_status,
+            },
+            channel_busy_radio=channel_busy,
+            ap_radio_statistics_radio=ap_radio_statistics,
+            wireless_status_radio=wireless_status,
         )
 
-    def as_dict(self) -> dict[str, int]:
+    @staticmethod
+    def _bounded(value: object) -> int:
+        try:
+            return min(3, max(1, int(value or 1)))
+        except (TypeError, ValueError):
+            return 1
+
+    def as_dict(self) -> dict[str, object]:
         normalized = self.normalized()
         return {
+            "radio_mode": normalized.radio_mode,
+            "unified_radio_id": normalized.unified_radio_id,
+            "collector_radio_ids": dict(normalized.collector_radio_ids),
             "channel_busy_radio": normalized.channel_busy_radio,
             "ap_radio_statistics_radio": normalized.ap_radio_statistics_radio,
             "wireless_status_radio": normalized.wireless_status_radio,
@@ -211,6 +251,7 @@ class IperfTrafficConfig:
     target_bandwidth: str | None = None
     report_threshold_mbps: float | None = None
     tcp_report_threshold_mbps: float | None = None
+    tcp_rate_limit_mbps: float | None = None
     tcp_pacing_enabled: bool = False
     tcp_pacing_mbps: float | None = None
     udp_bitrate_mbps: float | None = None
@@ -219,6 +260,7 @@ class IperfTrafficConfig:
     follow_collection: bool = True
     duration_seconds: int = 0
     tcp_block_size: str | None = None
+    debug_output_enabled: bool = True
 
     def normalized(self) -> "IperfTrafficConfig":
         protocol = str(self.protocol or "TCP").upper()
@@ -227,13 +269,16 @@ class IperfTrafficConfig:
         legacy_threshold = _optional_float(self.report_threshold_mbps)
         legacy_bandwidth_mbps = _bandwidth_text_to_mbps(bandwidth)
         tcp_threshold = _optional_float(self.tcp_report_threshold_mbps)
+        tcp_rate_limit = _optional_float(self.tcp_rate_limit_mbps)
         tcp_pacing = _optional_float(self.tcp_pacing_mbps)
+        if tcp_rate_limit is None and self.tcp_pacing_enabled:
+            tcp_rate_limit = tcp_pacing
         udp_bitrate = _optional_float(self.udp_bitrate_mbps)
         udp_threshold = _optional_float(self.udp_report_threshold_mbps)
         if protocol == "TCP":
             if tcp_threshold is None:
                 tcp_threshold = legacy_threshold if legacy_threshold is not None else legacy_bandwidth_mbps
-            bandwidth = f"{tcp_pacing:g}M" if self.tcp_pacing_enabled and tcp_pacing is not None else None
+            bandwidth = f"{tcp_rate_limit:g}M" if tcp_rate_limit is not None and tcp_rate_limit > 0 else None
         if protocol == "UDP" and not bandwidth and udp_bitrate is not None:
             bandwidth = f"{udp_bitrate:g}M"
         if protocol == "UDP" and not bandwidth:
@@ -261,14 +306,16 @@ class IperfTrafficConfig:
             target_bandwidth=bandwidth,
             report_threshold_mbps=report_threshold,
             tcp_report_threshold_mbps=tcp_threshold,
-            tcp_pacing_enabled=bool(self.tcp_pacing_enabled and tcp_pacing is not None),
-            tcp_pacing_mbps=tcp_pacing if self.tcp_pacing_enabled else None,
+            tcp_rate_limit_mbps=tcp_rate_limit,
+            tcp_pacing_enabled=bool(tcp_rate_limit is not None and tcp_rate_limit > 0),
+            tcp_pacing_mbps=tcp_rate_limit if tcp_rate_limit is not None and tcp_rate_limit > 0 else None,
             udp_bitrate_mbps=udp_bitrate,
             udp_report_threshold_mbps=udp_threshold,
             packet_length=max(1, int(self.packet_length)) if self.packet_length else None,
             follow_collection=bool(self.follow_collection),
             duration_seconds=max(0, int(self.duration_seconds or 0)),
             tcp_block_size=str(self.tcp_block_size or "").strip() or None,
+            debug_output_enabled=bool(self.debug_output_enabled),
         )
 
     def as_dict(self) -> dict[str, object]:

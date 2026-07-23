@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.models.api.online_mr_control import OnlineMrWebStartRequestDTO
+from netconsole.models.online_mr_models import OnlineMrRadioConfig
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
@@ -89,6 +90,28 @@ def _request(device_id: int, **overrides) -> OnlineMrWebStartRequestDTO:
     return OnlineMrWebStartRequestDTO.model_validate(payload)
 
 
+def test_radio_config_defaults_to_unified_mode_for_equal_legacy_values() -> None:
+    radio = OnlineMrRadioConfig(channel_busy_radio=2, ap_radio_statistics_radio=2, wireless_status_radio=2).normalized()
+
+    assert radio.radio_mode == "unified"
+    assert radio.unified_radio_id == 2
+    assert radio.channel_busy_radio == 2
+    assert radio.collector_radio_ids == {
+        "channel_busy": 2,
+        "ap_radio_statistics": 2,
+        "wireless_status": 2,
+    }
+
+
+def test_radio_config_preserves_mixed_legacy_values_as_per_collector() -> None:
+    radio = OnlineMrRadioConfig(channel_busy_radio=1, ap_radio_statistics_radio=2, wireless_status_radio=3).normalized()
+
+    assert radio.radio_mode == "per_collector"
+    assert radio.channel_busy_radio == 1
+    assert radio.ap_radio_statistics_radio == 2
+    assert radio.wireless_status_radio == 3
+
+
 def test_web_control_resolves_formal_mr_and_repository_credentials(tmp_path: Path) -> None:
     control, _application, adapter, device_id = _service(tmp_path)
 
@@ -100,6 +123,9 @@ def test_web_control_resolves_formal_mr_and_repository_credentials(tmp_path: Pat
     config = adapter.jobs[0].params["config"]
     assert config["mr_id"] == "mr-01-ct"
     assert config["mr_name"] == "列车01-MR-CT"
+    assert config["fping"]["enabled"] is True
+    assert config["fping"]["interval_ms"] == 10
+    assert config["fping"]["timeout_ms"] == 100
     assert config["username"] == "private-user"
     assert config["password"] == "private-pass"
     assert adapter.jobs[0].params["owner"] == "web_local"
@@ -215,8 +241,29 @@ def test_real_device_mode_forces_safe_traffic_parameters(tmp_path: Path) -> None
     assert config["iperf"]["protocol"] == "TCP"
     assert config["iperf"]["parallel"] == 1
     assert config["iperf"]["target_bandwidth"] == "2M"
+    assert config["iperf"]["tcp_rate_limit_mbps"] == 2.0
     assert config["iperf"]["tcp_pacing_enabled"] is True
     assert config["iperf"]["tcp_pacing_mbps"] == 2.0
+    assert config["iperf"]["debug_output_enabled"] is True
+
+
+def test_web_control_preserves_explicit_fping_and_tcp_rate_limit(tmp_path: Path) -> None:
+    control, _application, adapter, device_id = _service(tmp_path)
+
+    control.start(
+        _request(
+            device_id,
+            fping={"enabled": True, "target": "127.0.0.1", "interval_ms": 1000, "timeout_ms": 4000},
+            iperf={"enabled": True, "server_ip": "127.0.0.1", "protocol": "TCP", "tcp_rate_limit_mbps": 600, "parallel": 4},
+        ),
+        current_site_id="demo",
+    )
+
+    config = adapter.jobs[0].params["config"]
+    assert config["fping"]["interval_ms"] == 1000
+    assert config["fping"]["timeout_ms"] == 4000
+    assert config["iperf"]["tcp_rate_limit_mbps"] == 600.0
+    assert config["iperf"]["target_bandwidth"] == "600M"
 
 
 @pytest.mark.parametrize(

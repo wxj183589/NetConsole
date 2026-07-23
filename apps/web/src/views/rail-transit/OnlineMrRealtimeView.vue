@@ -137,6 +137,14 @@ function field(value: Record<string, unknown>, ...names: string[]): string {
   return '—'
 }
 
+function iperfRateLimit(value: Record<string, unknown>): string {
+  if (String(value.protocol || '').toUpperCase() !== 'TCP') return field(value, 'target_bandwidth')
+  const candidate = value.target_bandwidth
+  if (candidate === undefined || candidate === null || candidate === '' || candidate === 0 || candidate === '0' || candidate === '0M') return '不限速'
+  const text = String(candidate)
+  return text.endsWith('M') ? `${text.slice(0, -1)} Mbps` : text
+}
+
 function numberField(value: Record<string, unknown>, names: string[], suffix: string): string {
   for (const name of names) {
     const candidate = value[name]
@@ -368,7 +376,7 @@ onBeforeUnmount(() => {
         <div v-if="store.preview?.available" class="preview-grid">
           <div class="preview-block"><h4>当前无线状态</h4><dl><dt>站点</dt><dd>{{ field(displayContext, 'station', 'site') }}</dd><dt>区间</dt><dd>{{ field(displayContext, 'section') }}</dd><dt>主链路 AP</dt><dd>{{ field(link, 'master_ap', 'master', 'peer_name', 'resolved_peer_name') }}</dd><dt>Peer MAC</dt><dd>{{ field(link, 'peer_mac') }}</dd><dt>RSSI</dt><dd>{{ numberField(link, ['rssi_dbm'], ' dBm') }}</dd><dt>接口</dt><dd>{{ field(link, 'interface') }}</dd><dt>链路状态</dt><dd>{{ field(link, 'link_state', 'status') }}</dd><dt>在线时长</dt><dd>{{ field(link, 'online_time') }}</dd><dt>数据来源</dt><dd>{{ sourceLabel(link.source) }}</dd><dt>更新时间</dt><dd>{{ field(link, 'updated_at') }}</dd><dt>识别说明</dt><dd>{{ field(link, 'message') }}</dd></dl></div>
           <div class="preview-block"><h4>fping</h4><dl><dt>目标</dt><dd>{{ field(fping, 'target') }}</dd><dt>最新延迟</dt><dd>{{ numberField(fpingSummary, ['last_rtt_ms'], ' ms') }}</dd><dt>丢包</dt><dd>{{ numberField(fpingSummary, ['loss_rate_percent'], '%') }}</dd><dt>平均延迟</dt><dd>{{ numberField(fpingSummary, ['avg_rtt_ms'], ' ms') }}</dd><dt>状态</dt><dd>{{ field(fping, 'status') }}</dd></dl></div>
-          <div class="preview-block"><h4>iPerf 本地回环</h4><dl><dt>目标</dt><dd>{{ field(iperf, 'server_ip') }}</dd><dt>协议</dt><dd>{{ field(iperf, 'protocol') }}</dd><dt>限速</dt><dd>{{ field(iperf, 'target_bandwidth') }}</dd><dt>当前速率</dt><dd>{{ numberField(iperf, ['bitrate_mbps'], ' Mbps') }}</dd><dt>状态</dt><dd>{{ field(iperf, 'status') }}</dd></dl></div>
+          <div class="preview-block"><h4>iPerf 本地回环</h4><dl><dt>目标</dt><dd>{{ field(iperf, 'server_ip') }}</dd><dt>协议</dt><dd>{{ field(iperf, 'protocol') }}</dd><dt>限速</dt><dd>{{ iperfRateLimit(iperf) }}</dd><dt>当前速率</dt><dd>{{ numberField(iperf, ['bitrate_mbps'], ' Mbps') }}</dd><dt>状态</dt><dd>{{ field(iperf, 'status') }}</dd></dl></div>
         </div>
         <el-empty v-else description="当前采集尚未产生轻量预览" />
       </section>

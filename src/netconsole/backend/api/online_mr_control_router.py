@@ -6,10 +6,15 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.api.online_mr_control import (
     OnlineMrWebControlStatusDTO,
     OnlineMrWebOperationDTO,
+    OnlineMrWebPingPresetDTO,
+    OnlineMrWebPresetsDTO,
     OnlineMrWebStartRequestDTO,
+    OnlineMrWebTrafficPresetDTO,
 )
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrWebControlError, OnlineMrWebControlErrorCode
+from netconsole.services.online_mr.ping_presets import list_ping_presets
+from netconsole.services.online_mr.traffic_presets import list_traffic_presets
 
 
 router = APIRouter(prefix="/rail-transit/online-mr-control", tags=["online-mr-web-control"])
@@ -38,6 +43,46 @@ def require_local_desktop_session(request: Request) -> None:
 def status(request: Request) -> OnlineMrWebControlStatusDTO:
     require_local_desktop_session(request)
     return _facade(request).local_status()
+
+
+@router.get("/presets", response_model=OnlineMrWebPresetsDTO)
+def presets(request: Request) -> OnlineMrWebPresetsDTO:
+    require_local_desktop_session(request)
+    return OnlineMrWebPresetsDTO(
+        ping=[
+            OnlineMrWebPingPresetDTO(
+                key=item.key,
+                name=item.name,
+                packet_size_bytes=item.packet_size_bytes,
+                interval_ms=item.interval_ms,
+                timeout_ms=item.timeout_ms,
+                loss_warn_percent=item.loss_warn_percent,
+                latency_warn_ms=item.latency_warn_ms,
+                description=item.description,
+            )
+            for item in list_ping_presets()
+        ],
+        traffic=[
+            OnlineMrWebTrafficPresetDTO(
+                key=item.key,
+                name=item.name,
+                protocol=item.protocol,
+                test_type=item.test_type,
+                deployment_mode=item.deployment_mode,
+                business_direction=item.business_direction,
+                report_threshold_mbps=item.report_threshold_mbps,
+                udp_bitrate_mbps=item.udp_bitrate_mbps,
+                packet_length=item.packet_length,
+                parallel=item.parallel,
+                reverse=item.reverse,
+                duration_sec=item.duration_sec,
+                interval_sec=item.interval_sec,
+                port=item.port,
+                duration_mode=item.duration_mode,
+            )
+            for item in list_traffic_presets()
+        ],
+    )
 
 
 @router.get("/{operation_id}", response_model=OnlineMrWebOperationDTO)

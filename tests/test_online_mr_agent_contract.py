@@ -113,6 +113,24 @@ def test_agent_start_contract_expresses_collection_traffic_and_context_without_p
     assert public_payload["stop_strategy"] == "agent_duration"
 
 
+def test_agent_start_contract_maps_tcp_rate_limit_without_total_split() -> None:
+    app_request = _request()
+    app_request.config.iperf = IperfTrafficConfig(
+        enabled=True,
+        server_ip="198.51.100.10",
+        protocol="TCP",
+        direction="download",
+        parallel=4,
+        tcp_rate_limit_mbps=600,
+    )
+
+    request = OnlineMrAgentStartRequest.from_application_request(app_request)
+    public_payload = request.public_payload()
+
+    assert public_payload["iperf"]["bandwidth_mbps"] == 600
+    assert public_payload["iperf"]["parallel"] == 4
+
+
 @pytest.mark.parametrize(
     ("status", "task_state", "remote_terminal"),
     [

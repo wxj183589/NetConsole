@@ -115,11 +115,7 @@ def collection_config_from_payload(payload: dict[str, Any], paths: PathResolver)
             interface_rate=bool(tasks.get("interface_rate", True)),
             wireless_status=bool(tasks.get("wireless_status", False)),
         ),
-        radio=OnlineMrRadioConfig(
-            channel_busy_radio=int(radio.get("channel_busy_radio") or 1),
-            ap_radio_statistics_radio=int(radio.get("ap_radio_statistics_radio") or 1),
-            wireless_status_radio=int(radio.get("wireless_status_radio") or 1),
-        ),
+        radio=OnlineMrRadioConfig(**_known_values(OnlineMrRadioConfig, radio)),
         fping=FpingConfig(**_known_values(FpingConfig, fping)),
         iperf=IperfTrafficConfig(**_known_values(IperfTrafficConfig, iperf)),
         auto_reconnect=bool(values.get("auto_reconnect", True)),
