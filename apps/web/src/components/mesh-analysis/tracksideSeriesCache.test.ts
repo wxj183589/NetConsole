@@ -9,6 +9,7 @@ import {
   disposeTracksideSeriesCache,
   findNearestTracksideFrameTimestamp,
   findTracksideFrameMetaIds,
+  resolveTracksideTooltipFrame,
   tracksidePointMeta,
   tracksideViewportSeriesItems,
 } from './tracksideSeriesCache'
@@ -82,6 +83,10 @@ describe('trackside compact series cache', () => {
     })
     expect(tracksidePointMeta(cache, firstData[2])).not.toBe(first)
     expect(cache.dataIndexToMetaId.get(source.series_id)).toEqual([0, -1, 1])
+    expect(cache.coverageIntervals).toEqual([
+      { startMillis: Date.parse(first.timestamp), endMillis: Date.parse(first.timestamp) },
+      { startMillis: Date.parse(second.timestamp), endMillis: Date.parse(second.timestamp) },
+    ])
     expect(JSON.stringify(cache.series.map((item) => item.data))).not.toContain('AP-1')
     expect(cache.totalRenderedPoints).toBe(2)
   })
@@ -150,6 +155,78 @@ describe('trackside compact series cache', () => {
       cache,
       Date.parse('2024-10-22 14:46:36.000'),
     )).toBeNull()
+  })
+
+  it('resolves exact and downsampled frames across a continuous rendered line without the old 3-second cap', () => {
+    const first = '2024-10-22 14:39:13.000'
+    const second = '2024-10-22 14:39:23.000'
+    const cache = buildTracksideSeriesCache([series([
+      point(first, 1),
+      point(second, 1),
+    ])])
+
+    expect(cache.coverageIntervals).toEqual([{
+      startMillis: Date.parse(first),
+      endMillis: Date.parse(second),
+    }])
+    expect(resolveTracksideTooltipFrame(cache, Date.parse(first))).toBe(Date.parse(first))
+    expect(findNearestTracksideFrameTimestamp(
+      cache,
+      Date.parse('2024-10-22 14:39:19.000'),
+    )).toBeNull()
+    expect(resolveTracksideTooltipFrame(
+      cache,
+      Date.parse('2024-10-22 14:39:19.000'),
+    )).toBe(Date.parse(second))
+    expect(resolveTracksideTooltipFrame(
+      cache,
+      Date.parse('2024-10-22 14:39:18.000'),
+    )).toBe(Date.parse(first))
+  })
+
+  it('does not snap across a break, a new run, or outside rendered coverage', () => {
+    const first = '2024-10-22 14:39:13.000'
+    const second = '2024-10-22 14:39:21.000'
+    const pointer = Date.parse('2024-10-22 14:39:17.504')
+    const broken = buildTracksideSeriesCache([series([
+      point(first, 1),
+      point(second, 1, true),
+    ])])
+    const newRun = buildTracksideSeriesCache([series([
+      point(first, 1),
+      point(second, 2),
+    ])])
+
+    expect(resolveTracksideTooltipFrame(broken, pointer)).toBeNull()
+    expect(resolveTracksideTooltipFrame(newRun, pointer)).toBeNull()
+    expect(resolveTracksideTooltipFrame(
+      broken,
+      Date.parse('2024-10-22 14:39:12.999'),
+    )).toBeNull()
+    expect(resolveTracksideTooltipFrame(
+      broken,
+      Date.parse('2024-10-22 14:39:21.001'),
+    )).toBeNull()
+  })
+
+  it('resolves 1000 pointer frames with binary lookup only', () => {
+    const source = series(Array.from({ length: 2_000 }, (_, index) => (
+      point(new Date(Date.UTC(2024, 9, 22, 14, 0, index)).toISOString(), 1)
+    )))
+    const cache = buildTracksideSeriesCache([source])
+    const durations: number[] = []
+    for (let index = 0; index < 1_000; index += 1) {
+      const pointer = Date.UTC(2024, 9, 22, 14, 0, index) + 500
+      const started = performance.now()
+      expect(resolveTracksideTooltipFrame(cache, pointer)).not.toBeNull()
+      durations.push(performance.now() - started)
+    }
+    const averageMs = durations.reduce((sum, value) => sum + value, 0) / durations.length
+    const maximumMs = Math.max(...durations)
+    console.info(`trackside tooltip resolve profile: average=${averageMs.toFixed(4)}ms max=${maximumMs.toFixed(4)}ms`)
+
+    expect(averageMs).toBeLessThan(1)
+    expect(maximumMs).toBeLessThan(10)
   })
 
   it('finds only viewport series with inclusive boundaries and pointer-or-latest RSSI values', () => {
@@ -226,6 +303,7 @@ describe('trackside compact series cache', () => {
     expect(cache.dataIndexToMetaId.size).toBe(0)
     expect(cache.frameMetaIds.size).toBe(0)
     expect(cache.frameTimestamps).toEqual([])
+    expect(cache.coverageIntervals).toEqual([])
     expect(cache.medianFrameIntervalMs).toBe(0)
     expect(cache.frameMatchToleranceMs).toBe(500)
     expect(cache.totalRenderedPoints).toBe(0)

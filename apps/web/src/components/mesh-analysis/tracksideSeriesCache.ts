@@ -72,6 +72,11 @@ export interface TracksideViewportSeriesItem {
   rssiSource: 'pointer' | 'latest'
 }
 
+export interface TracksideRenderedCoverageInterval {
+  startMillis: number
+  endMillis: number
+}
+
 export interface TracksideSeriesCache {
   series: RenderedTracksideSignalSeries[]
   totalRenderedPoints: number
@@ -81,6 +86,7 @@ export interface TracksideSeriesCache {
   dataIndexToMetaId: ReadonlyMap<string, readonly number[]>
   frameMetaIds: ReadonlyMap<number, readonly number[]>
   frameTimestamps: number[]
+  coverageIntervals: TracksideRenderedCoverageInterval[]
   medianFrameIntervalMs: number
   frameMatchToleranceMs: number
   firstTimestampMillis: number | null
@@ -110,6 +116,7 @@ export function buildTracksideSeriesCache(
   let nextMetaId = 0
   let firstTimestampMillis: number | null = null
   let lastTimestampMillis: number | null = null
+  const coverageIntervals: TracksideRenderedCoverageInterval[] = []
 
   const series = sourceSeries.map((item) => {
     const rendered: CompactTracksideChartPoint[] = []
@@ -132,10 +139,29 @@ export function buildTracksideSeriesCache(
     let previousRunId: string | null = null
     let previousTimestampMillis: number | null = null
     let previousTimestampTag = ''
+    let coverageStartMillis: number | null = null
+    let coverageEndMillis: number | null = null
+    let previousCoverageRunId: string | null = null
+    let previousCoverageTimestampMillis: number | null = null
     let ordered = true
+    const flushCoverage = () => {
+      if (coverageStartMillis !== null && coverageEndMillis !== null) {
+        coverageIntervals.push({
+          startMillis: coverageStartMillis,
+          endMillis: coverageEndMillis,
+        })
+      }
+      coverageStartMillis = null
+      coverageEndMillis = null
+      previousCoverageRunId = null
+      previousCoverageTimestampMillis = null
+    }
     for (const point of item.points) {
       const timestampMillis = meshTimestampMillis(point.timestamp)
-      if (timestampMillis === null) continue
+      if (timestampMillis === null) {
+        flushCoverage()
+        continue
+      }
       if (
         previousTimestampMillis !== null
         && (
@@ -155,6 +181,24 @@ export function buildTracksideSeriesCache(
       }
       const metaId = nextMetaId++
       const value = tracksidePointValue(point)
+      const continuesCoverage = value !== null
+        && previousCoverageTimestampMillis !== null
+        && timestampMillis >= previousCoverageTimestampMillis
+        && !point.break_before
+        && currentRunId === previousCoverageRunId
+      if (value === null) {
+        flushCoverage()
+      } else if (continuesCoverage) {
+        coverageEndMillis = timestampMillis
+      } else {
+        flushCoverage()
+        coverageStartMillis = timestampMillis
+        coverageEndMillis = timestampMillis
+      }
+      if (value !== null) {
+        previousCoverageRunId = currentRunId
+        previousCoverageTimestampMillis = timestampMillis
+      }
       const roleCode: TracksideRoleCode = point.role === 'ACTIVE' ? 0 : 1
       rendered.push([timestampMillis, value, metaId, roleCode])
       metaIds.push(metaId)
@@ -203,6 +247,7 @@ export function buildTracksideSeriesCache(
       previousTimestampTag = point.timestamp_tag
       totalRenderedPoints += 1
     }
+    flushCoverage()
     if (!ordered) unorderedSeriesIds.push(item.series_id)
     dataIndexToMetaId.set(item.series_id, metaIds)
     return {
@@ -227,12 +272,36 @@ export function buildTracksideSeriesCache(
     dataIndexToMetaId,
     frameMetaIds,
     frameTimestamps,
+    coverageIntervals: mergeTracksideCoverageIntervals(coverageIntervals),
     medianFrameIntervalMs,
     frameMatchToleranceMs: tracksideFrameMatchToleranceMs(medianFrameIntervalMs),
     firstTimestampMillis,
     lastTimestampMillis,
     disposed: false,
   }
+}
+
+export function mergeTracksideCoverageIntervals(
+  intervals: readonly TracksideRenderedCoverageInterval[],
+): TracksideRenderedCoverageInterval[] {
+  if (!intervals.length) return []
+  const ordered = [...intervals]
+    .filter((item) => (
+      Number.isFinite(item.startMillis)
+      && Number.isFinite(item.endMillis)
+      && item.startMillis <= item.endMillis
+    ))
+    .sort((left, right) => left.startMillis - right.startMillis || left.endMillis - right.endMillis)
+  const merged: TracksideRenderedCoverageInterval[] = []
+  for (const interval of ordered) {
+    const previous = merged[merged.length - 1]
+    if (!previous || interval.startMillis > previous.endMillis) {
+      merged.push({ ...interval })
+      continue
+    }
+    previous.endMillis = Math.max(previous.endMillis, interval.endMillis)
+  }
+  return merged
 }
 
 export function medianTracksideFrameIntervalMs(
@@ -282,6 +351,47 @@ export function findNearestTracksideFrameTimestamp(
   return matched !== undefined && Math.abs(matched - pointerMillis) <= maximumToleranceMs
     ? matched
     : null
+}
+
+export function resolveTracksideTooltipFrame(
+  cache: TracksideSeriesCache,
+  pointerMillis: number,
+): number | null {
+  if (!Number.isFinite(pointerMillis) || !cache.frameTimestamps.length) return null
+  const frameIndex = lowerBoundNumber(cache.frameTimestamps, pointerMillis)
+  if (cache.frameTimestamps[frameIndex] === pointerMillis) return pointerMillis
+  if (!tracksideCoverageContains(cache.coverageIntervals, pointerMillis)) return null
+  const after = cache.frameTimestamps[frameIndex]
+  const before = frameIndex > 0 ? cache.frameTimestamps[frameIndex - 1] : undefined
+  if (before === undefined) return after ?? null
+  if (after === undefined) return before
+  return pointerMillis - before <= after - pointerMillis ? before : after
+}
+
+function tracksideCoverageContains(
+  intervals: readonly TracksideRenderedCoverageInterval[],
+  pointerMillis: number,
+): boolean {
+  let low = 0
+  let high = intervals.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (intervals[middle].startMillis <= pointerMillis) low = middle + 1
+    else high = middle
+  }
+  const candidate = low > 0 ? intervals[low - 1] : undefined
+  return Boolean(candidate && pointerMillis <= candidate.endMillis)
+}
+
+function lowerBoundNumber(values: readonly number[], target: number): number {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (values[middle] < target) low = middle + 1
+    else high = middle
+  }
+  return low
 }
 
 export function findTracksideFrameMetaIds(
@@ -436,6 +546,7 @@ export function disposeTracksideSeriesCache(cache: TracksideSeriesCache | null |
   cache.series.length = 0
   cache.unorderedSeriesIds.length = 0
   cache.frameTimestamps.length = 0
+  cache.coverageIntervals.length = 0
   cache.medianFrameIntervalMs = 0
   cache.frameMatchToleranceMs = 500
   clearReadonlyMap(cache.pointMetaById)

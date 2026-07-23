@@ -798,7 +798,7 @@ describe('MESH charts mount and render', () => {
 
   it('renders the local trackside pointer as an external multiline tooltip without redrawing series', async () => {
     const frameTime = '2026-07-20 10:05:00.852'
-    const pointerTime = '2026-07-20 10:05:00.607'
+    const pointerTime = frameTime
     const framePoints: MeshTracksideSignalPointData[] = [
       { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-A', peer_mac: 'peer-a', peer_ap_mac: 'ap-a', peer_radio_mac: 'radio-a', role: 'ACTIVE' },
       { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-D', peer_mac: 'peer-d', peer_ap_mac: 'ap-d', peer_radio_mac: 'radio-d', role: 'STANDBY' },
@@ -893,6 +893,31 @@ describe('MESH charts mount and render', () => {
     expect(option.series.every((item, index) => item.data === dataReferences[index])).toBe(true)
     expect(wrapper.emitted('viewport-change')).toBeUndefined()
 
+    await tooltip.get('.trackside-external-tooltip__pin').trigger('click')
+    const detailPanel = wrapper.get('[data-trackside-frame-detail-panel]')
+    expect(detailPanel.findAll('.trackside-frame-detail-entry')).toHaveLength(4)
+    expect(detailPanel.text()).toContain('ACTIVE 1 条 · STANDBY 3 条 · 共 4 条')
+    expect(detailPanel.text()).toContain('采样时间：2026-07-20 10:05:00.852')
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.chart.clear).toHaveBeenCalledTimes(initialClearCount)
+    expect(echartsMock.chart.resize).toHaveBeenCalledTimes(initialResizeCount)
+
+    await detailPanel.findAll('.trackside-frame-detail-entry__ap')[1].trigger('click')
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(true)
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(false)
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(true)
+    wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    updateAxisPointer({ axesInfo: [{ value: pointerTime }] })
+    await nextTick()
+
     vi.useFakeTimers()
     try {
       const globalout = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'globalout')?.[1] as () => void
@@ -909,6 +934,100 @@ describe('MESH charts mount and render', () => {
     }
 
     wrapper.unmount()
+  })
+
+  it('snaps a local pointer across a downsampled continuous line and hides it over a real break', async () => {
+    const firstTime = '2024-10-22 14:39:13.000'
+    const secondTime = '2024-10-22 14:39:23.000'
+    const continuousSeries: MeshTracksideSignalSeriesData[] = [{
+      ...tracksideSeries[0],
+      points: [
+        { ...tracksideChartPoint, timestamp: firstTime, run_id: 'run-1', run_sequence: 1 },
+        { ...tracksideChartPoint, timestamp: secondTime, run_id: 'run-1', run_sequence: 1 },
+      ],
+    }]
+    const wrapper = mount(MeshTracksideSignalChart, { props: { series: continuousSeries } })
+    await flushPromises()
+    const updateAxisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
+    wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    updateAxisPointer({ axesInfo: [{ value: '2024-10-22 14:39:19.000' }] })
+    await nextTick()
+
+    expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
+      '采样时间：2024-10-22 14:39:23.000',
+    )
+    expect(wrapper.text()).not.toContain('当前时刻无有效采样')
+    const setOptionCount = echartsMock.chart.setOption.mock.calls.length
+    await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+    expect(wrapper.get('[data-trackside-frame-detail-panel]').text()).toContain(
+      '采样时间：2024-10-22 14:39:23.000',
+    )
+    wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    updateAxisPointer({ axesInfo: [{ value: firstTime }] })
+    await nextTick()
+    expect(wrapper.get('[data-trackside-frame-detail-panel]').text()).toContain(
+      '采样时间：2024-10-22 14:39:23.000',
+    )
+    expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
+      '采样时间：2024-10-22 14:39:13.000',
+    )
+    await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+    expect(wrapper.get('[data-trackside-frame-detail-panel]').text()).toContain(
+      '采样时间：2024-10-22 14:39:13.000',
+    )
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(setOptionCount)
+    await wrapper.get('.trackside-frame-detail-panel__close').trigger('click')
+    const clearCount = echartsMock.chart.clear.mock.calls.length
+    const resizeCount = echartsMock.chart.resize.mock.calls.length
+    const interactionStarted = performance.now()
+    for (let index = 0; index < 100; index += 1) {
+      updateAxisPointer({ axesInfo: [{ value: index % 2 === 0 ? firstTime : secondTime }] })
+      await nextTick()
+      await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+      await wrapper.get('[data-trackside-frame-detail-panel]').trigger('wheel')
+      await wrapper.get('.trackside-frame-detail-panel__close').trigger('click')
+    }
+    const averagePinnedInteractionMs = (performance.now() - interactionStarted) / 100
+    console.info(`trackside pinned frame profile: average=${averagePinnedInteractionMs.toFixed(3)}ms`)
+    expect(averagePinnedInteractionMs).toBeLessThan(16)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(setOptionCount)
+    expect(echartsMock.chart.clear).toHaveBeenCalledTimes(clearCount)
+    expect(echartsMock.chart.resize).toHaveBeenCalledTimes(resizeCount)
+    updateAxisPointer({ axesInfo: [{ value: firstTime }] })
+    await nextTick()
+    await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
+    await wrapper.setProps({ workspaceVisible: false })
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(false)
+    wrapper.unmount()
+
+    vi.clearAllMocks()
+    const brokenSeries: MeshTracksideSignalSeriesData[] = [{
+      ...continuousSeries[0],
+      points: [
+        continuousSeries[0].points[0],
+        { ...continuousSeries[0].points[1], break_before: true },
+      ],
+    }]
+    const brokenWrapper = mount(MeshTracksideSignalChart, { props: { series: brokenSeries } })
+    await flushPromises()
+    const brokenAxisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
+    brokenWrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    brokenAxisPointer({ axesInfo: [{ value: '2024-10-22 14:39:19.000' }] })
+    await nextTick()
+
+    expect(brokenWrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    expect(brokenWrapper.text()).not.toContain('当前时刻无有效采样')
+    brokenWrapper.unmount()
   })
 
   it('keeps switch scatter and one markLine config enabled in large mode', async () => {

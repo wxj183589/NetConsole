@@ -1,4 +1,6 @@
 export interface TracksideTooltipEntry {
+  seriesId: string
+  metaId: number
   apName: string | null
   radio: number | null
   role: 'ACTIVE' | 'STANDBY'
@@ -8,6 +10,12 @@ export interface TracksideTooltipEntry {
   section: string | null
   activeDurationSeconds: number | null
   color: string
+}
+
+export interface PinnedTracksideFrame {
+  timestamp: string
+  timestampMillis: number
+  entries: TracksideTooltipEntry[]
 }
 
 export function displayTracksideTooltipMetric(value: number | null): string {

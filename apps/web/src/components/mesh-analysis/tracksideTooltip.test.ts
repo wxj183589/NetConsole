@@ -9,6 +9,8 @@ import {
 
 const entries: TracksideTooltipEntry[] = [
   {
+    seriesId: 'series-b',
+    metaId: 2,
     apName: 'AP-B',
     radio: 2,
     role: 'STANDBY',
@@ -20,6 +22,8 @@ const entries: TracksideTooltipEntry[] = [
     color: '#27ae60',
   },
   {
+    seriesId: 'series-a',
+    metaId: 1,
     apName: 'AP-A',
     radio: 1,
     role: 'ACTIVE',

@@ -18,6 +18,7 @@ import type {
   MeshTracksideSignalSeriesData,
 } from '../../types/meshAnalysis'
 import TracksideExternalTooltip from './TracksideExternalTooltip.vue'
+import TracksideFrameDetailPanel from './TracksideFrameDetailPanel.vue'
 import { buildMeshLocationBands } from './chartSeries'
 import {
   createFullMeshViewport,
@@ -36,8 +37,8 @@ import {
 import {
   buildTracksideSeriesCache,
   disposeTracksideSeriesCache,
-  findNearestTracksideFrameTimestamp,
   findTracksideFrameMetaIds,
+  resolveTracksideTooltipFrame,
   tracksidePointMeta,
   tracksideViewportSeriesItems,
   type CompactTracksideChartPoint,
@@ -52,6 +53,7 @@ import {
   type TracksideSeriesColorAssignment,
 } from './tracksideSeriesColors'
 import {
+  type PinnedTracksideFrame,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
 
@@ -64,6 +66,7 @@ const props = withDefaults(defineProps<{
   showSwitchPoints?: boolean
   showLocationBand?: boolean
   active?: boolean
+  workspaceVisible?: boolean
   initialViewport?: MeshChartViewport | null
   syncViewport?: MeshChartViewport | null
   lockedViewport?: MeshChartViewport | null
@@ -82,6 +85,7 @@ const props = withDefaults(defineProps<{
   showSwitchPoints: false,
   showLocationBand: true,
   active: true,
+  workspaceVisible: true,
   initialViewport: null,
   syncViewport: null,
   lockedViewport: null,
@@ -127,9 +131,13 @@ const viewportSeries = ref<TracksideViewportListItem[]>([])
 const rangePanelOpen = ref(false)
 const selectedTracksideAp = ref<SelectedTracksideAp | null>(null)
 const selectedOutsideRange = ref(false)
+const pinnedTracksideFrame = shallowRef<PinnedTracksideFrame | null>(null)
+const pinnedOutsideRange = ref(false)
+const tooltipAvailableHeight = ref(640)
 const tracksideTooltip = shallowRef<TracksideTooltipState>({
   visible: false,
   timestamp: null,
+  timestampMillis: null,
   entries: [],
   side: 'right',
   source: 'none',
@@ -154,6 +162,7 @@ interface TracksideViewportListItem extends TracksideViewportSeriesItem {
 interface TracksideTooltipState {
   visible: boolean
   timestamp: string | null
+  timestampMillis: number | null
   entries: TracksideTooltipEntry[]
   side: 'left' | 'right'
   source: TracksidePointerOrigin
@@ -212,11 +221,7 @@ function rebuildSeriesColors(theme = readNetConsoleChartTokens()): void {
 }
 
 function tooltipFrameTimestamp(pointerMillis: number): number | null {
-  return findNearestTracksideFrameTimestamp(
-    seriesCache,
-    pointerMillis,
-    seriesCache.frameMatchToleranceMs,
-  )
+  return resolveTracksideTooltipFrame(seriesCache, pointerMillis)
 }
 
 function compactMac(value: string | null | undefined): string {
@@ -279,6 +284,14 @@ function updateSelectedRangeStatus(): void {
     selected
     && bounds
     && (selected.timestampMillis < bounds[0] || selected.timestampMillis > bounds[1]),
+  )
+  pinnedOutsideRange.value = Boolean(
+    pinnedTracksideFrame.value
+    && bounds
+    && (
+      pinnedTracksideFrame.value.timestampMillis < bounds[0]
+      || pinnedTracksideFrame.value.timestampMillis > bounds[1]
+    ),
   )
 }
 
@@ -361,10 +374,16 @@ function handleRangePanelToggle(event: Event): void {
 
 function handleSelectionEscape(event: KeyboardEvent): void {
   if (event.key !== 'Escape' || !props.active) return
-  const handled = tracksideTooltip.value.visible || Boolean(selectedTracksideAp.value)
+  const handled = Boolean(pinnedTracksideFrame.value)
+    || tracksideTooltip.value.visible
+    || Boolean(selectedTracksideAp.value)
   if (!handled) return
   event.preventDefault()
   event.stopPropagation()
+  if (pinnedTracksideFrame.value) {
+    closePinnedTracksideFrame()
+    return
+  }
   pointerOrigin = 'none'
   tooltipPointerInside = false
   hideTracksideTooltip()
@@ -377,6 +396,7 @@ function rebuildSeriesCache(): void {
     pointerOrigin = 'none'
     tooltipPointerInside = false
     hideTracksideTooltip()
+    closePinnedTracksideFrame()
     clearTracksideSelection(false)
     chart?.clear?.()
     disposeTracksideSeriesCache(seriesCache)
@@ -469,6 +489,8 @@ function switchNodeData(events: ResolvedSwitchEvent[]): Array<{ value: [number, 
 function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
   const { meta, series } = point
   return {
+    seriesId: series.seriesId,
+    metaId: meta.metaId,
     apName: pointLabel(meta),
     radio: meta.localRadio ?? series.radio,
     role: meta.role,
@@ -492,6 +514,7 @@ function hideTracksideTooltip(hideEchartsTip = true): void {
   tracksideTooltip.value = {
     visible: false,
     timestamp: null,
+    timestampMillis: null,
     entries: [],
     side,
     source: 'none',
@@ -511,16 +534,58 @@ function scheduleTooltipHide(): void {
 
 function showTracksideTooltip(timestampMillis: number): void {
   const matchedTimestamp = tooltipFrameTimestamp(timestampMillis)
-  const points = (matchedTimestamp === null ? [] : findTracksideFrameMetaIds(seriesCache, matchedTimestamp))
+  if (matchedTimestamp === null) {
+    hideTracksideTooltip(false)
+    return
+  }
+  const points = findTracksideFrameMetaIds(seriesCache, matchedTimestamp)
     .map(resolvedPoint)
     .filter((point): point is ResolvedTracksidePoint => Boolean(point))
+  if (!points.length) {
+    hideTracksideTooltip(false)
+    return
+  }
   tracksideTooltip.value = {
     visible: true,
-    timestamp: formatMeshViewportTimestamp(matchedTimestamp ?? timestampMillis),
+    timestamp: formatMeshViewportTimestamp(matchedTimestamp),
+    timestampMillis: matchedTimestamp,
     entries: points.map(tooltipEntry),
-    side: localPointerSide,
+    side: pinnedTracksideFrame.value ? 'left' : localPointerSide,
     source: 'local',
   }
+}
+
+function pinCurrentTracksideFrame(): void {
+  const current = tracksideTooltip.value
+  if (
+    !current.visible
+    || current.timestampMillis === null
+    || !current.timestamp
+    || !current.entries.length
+  ) return
+  pinnedTracksideFrame.value = {
+    timestamp: current.timestamp,
+    timestampMillis: current.timestampMillis,
+    entries: current.entries.map((entry) => ({ ...entry })),
+  }
+  updateSelectedRangeStatus()
+  hideTracksideTooltip(false)
+}
+
+function closePinnedTracksideFrame(): void {
+  pinnedTracksideFrame.value = null
+  pinnedOutsideRange.value = false
+}
+
+function selectPinnedTracksideEntry(entry: TracksideTooltipEntry): void {
+  const point = tracksidePointMeta(seriesCache, entry.metaId)
+  const series = seriesCache.seriesMetaById.get(entry.seriesId)
+  if (point && series) selectTracksidePoint(point, series, false)
+}
+
+function updateTooltipAvailableHeight(): void {
+  const height = container.value?.clientHeight || 0
+  tooltipAvailableHeight.value = height > 24 ? height - 24 : 640
 }
 
 function handleTooltipPointerEnter(): void {
@@ -624,13 +689,18 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
 }
 
 function handleWindowResize(): void {
+  updateTooltipAvailableHeight()
   scheduleChartUpdate()
 }
 
 onMounted(() => {
   disposed = false
   rebuildSeriesCache()
-  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
+  updateTooltipAvailableHeight()
+  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+    updateTooltipAvailableHeight()
+    scheduleChartUpdate()
+  })
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
   window.addEventListener('keydown', handleSelectionEscape, true)
@@ -670,6 +740,7 @@ onBeforeUnmount(() => {
   cancelTooltipHide()
   tooltipPointerInside = false
   pointerOrigin = 'none'
+  closePinnedTracksideFrame()
   chart?.dispose()
   chart = null
   disposeTracksideSeriesCache(seriesCache)
@@ -691,6 +762,9 @@ watch(() => props.active, (active) => {
   pointerOrigin = 'none'
   hideTracksideTooltip()
   chart?.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
+})
+watch(() => props.workspaceVisible, (visible) => {
+  if (!visible) closePinnedTracksideFrame()
 })
 watch(() => props.lockedViewport, (viewport, previous) => {
   if (viewport) void nextTick(() => applyViewport(viewport))
@@ -1040,8 +1114,17 @@ defineExpose({
       :timestamp="tracksideTooltip.timestamp"
       :entries="tracksideTooltip.entries"
       :side="tracksideTooltip.side"
+      :available-height="tooltipAvailableHeight"
+      @pin="pinCurrentTracksideFrame"
       @pointerenter="handleTooltipPointerEnter"
       @pointerleave="handleTooltipPointerLeave"
+    />
+    <TracksideFrameDetailPanel
+      v-if="pinnedTracksideFrame"
+      :frame="pinnedTracksideFrame"
+      :outside-range="pinnedOutsideRange"
+      @close="closePinnedTracksideFrame"
+      @select="selectPinnedTracksideEntry"
     />
     <el-empty v-if="!hasData()" class="empty" description="暂无轨旁信号数据" :image-size="60" />
   </div>
