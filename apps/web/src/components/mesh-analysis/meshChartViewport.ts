@@ -31,6 +31,7 @@ export interface MeshChartHandle {
   getViewport: () => MeshChartViewport | null
   applyViewport: (viewport: MeshChartViewport) => void
   resetViewport: () => void
+  resize: () => void
   getVisibleTimeRange: () => MeshChartViewport | null
 }
 

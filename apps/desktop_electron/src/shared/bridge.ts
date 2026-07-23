@@ -170,6 +170,8 @@ export interface TaskWindowContext {
 }
 
 export const UI_PREFERENCE_KEYS = Object.freeze([
+  'mesh-analysis-rssi.layout-mode',
+  'mesh-analysis-rssi.compare-split-ratio',
   'mesh-analysis-rssi.show-switch-lines',
   'mesh-analysis-rssi.show-switch-points',
   'mesh-analysis-rssi.show-location-band',

@@ -18,9 +18,13 @@ describe('UI preference store', () => {
     temporaryRoots.push(root)
     const first = new UiPreferenceStore(root)
     await first.set('mesh-analysis-airload.show-switch-points', true)
+    await first.set('mesh-analysis-rssi.layout-mode', 'trackside-focus')
+    await first.set('mesh-analysis-rssi.compare-split-ratio', 0.65)
 
     const second = new UiPreferenceStore(root)
     await expect(second.get('mesh-analysis-airload.show-switch-points')).resolves.toBe(true)
+    await expect(second.get('mesh-analysis-rssi.layout-mode')).resolves.toBe('trackside-focus')
+    await expect(second.get('mesh-analysis-rssi.compare-split-ratio')).resolves.toBe(0.65)
     expect(await fs.readFile(join(root, 'ui-preferences.json'), 'utf8')).toContain('show-switch-points')
   })
 

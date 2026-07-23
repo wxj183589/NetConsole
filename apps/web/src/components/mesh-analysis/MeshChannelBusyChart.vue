@@ -155,7 +155,7 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       const renderReason = pendingRenderReason
       pendingRenderReason = null
       if (renderReason || !chartExisted) render(renderReason || 'data')
-      chart?.resize()
+      chart?.resize({ silent: true, animation: { duration: 0 } })
     })
   })
 }
@@ -242,6 +242,10 @@ function resetViewport(): void {
   if (target) applyViewport(target)
 }
 
+function resize(): void {
+  if (props.active) scheduleChartUpdate('resize')
+}
+
 function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   if (!chart) return
   const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
@@ -323,6 +327,7 @@ defineExpose({
   getViewport,
   applyViewport,
   resetViewport,
+  resize,
   getVisibleTimeRange: getViewport,
 })
 </script>

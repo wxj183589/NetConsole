@@ -1,4 +1,4 @@
-const { readFileSync } = require('node:fs')
+const { readFileSync, writeFileSync } = require('node:fs')
 const { resolve } = require('node:path')
 const { app, BrowserWindow } = require('electron')
 
@@ -12,6 +12,8 @@ const POINT_COUNT = positiveProfileSize('NETCONSOLE_MESH_PROFILE_POINT_COUNT', 4
 const FRAME_COUNT = positiveProfileSize('NETCONSOLE_MESH_PROFILE_FRAME_COUNT', 18_188)
 const SESSION_COUNT = positiveProfileSize('NETCONSOLE_MESH_PROFILE_SESSION_COUNT', 10)
 const SOFTWARE_RENDERING = process.env.NETCONSOLE_MESH_PROFILE_SOFTWARE === '1'
+const OUTPUT_PATH = process.argv.find((value) => value.startsWith('--output='))?.slice('--output='.length)
+  || process.env.NETCONSOLE_MESH_PROFILE_OUTPUT
 
 if (SOFTWARE_RENDERING) app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('enable-precise-memory-info')
@@ -315,6 +317,17 @@ app.whenReady().then(async () => {
       let tooltipFrameLinkCount = 0
       let tooltipBuildAverageMs = 0
       let tooltipBuildMaximumMs = 0
+      let chartInitCount = 0
+      let chartSetOptionCount = 0
+      let chartDisposeCount = 0
+      let layoutSwitchAverageMs = 0
+      let layoutSwitchMaximumMs = 0
+      let layoutSwitchViewportPreserved = false
+      let layoutSwitchInitDelta = 0
+      let layoutSwitchSetOptionDelta = 0
+      let layoutSwitchDisposeDelta = 0
+      let layoutSwitchHeapGrowthBytes = null
+      let layoutSwitchSteadyHeapGrowthBytes = null
 
       for (let sessionIndex = 0; sessionIndex < SESSION_COUNT; sessionIndex += 1) {
         await collectGarbage()
@@ -374,9 +387,11 @@ app.whenReady().then(async () => {
           useDirtyRect: true,
           devicePixelRatio: 1.5,
         })
+        chartInitCount += 1
         const interactiveStarted = performance.now()
         const setStarted = performance.now()
         chart.setOption(option, { replaceMerge: ['series'] })
+        chartSetOptionCount += 1
         const currentSetOptionMs = performance.now() - setStarted
         await waitTwoFrames()
         const currentInteractiveMs = performance.now() - interactiveStarted
@@ -386,8 +401,58 @@ app.whenReady().then(async () => {
           renderer = chart.getZr().painter.getType()
           dirtyRectEnabled = chart.getZr().painter._opts?.useDirtyRect === true
           devicePixelRatio = chart.getDevicePixelRatio()
+          chart.dispatchAction({ type: 'dataZoom', start: 20, end: 60 }, { silent: true })
+          await waitFrame()
+          const viewportBefore = JSON.stringify((chart.getOption().dataZoom || []).map((item) => ({
+            start: item.start,
+            end: item.end,
+            startValue: item.startValue,
+            endValue: item.endValue,
+          })))
+          const initBeforeSwitches = chartInitCount
+          const setOptionBeforeSwitches = chartSetOptionCount
+          const disposeBeforeSwitches = chartDisposeCount
+          const layoutDurations = []
+          const chartElement = document.getElementById('chart')
+          await collectGarbage()
+          const layoutHeapBefore = heap()
+          const runLayoutSwitchBatch = () => {
+            for (let layoutIndex = 0; layoutIndex < 20; layoutIndex += 1) {
+              chartElement.style.height = layoutIndex % 2 === 0 ? '430px' : '900px'
+              const layoutStarted = performance.now()
+              chart.resize({ silent: true, animation: { duration: 0 } })
+              layoutDurations.push(performance.now() - layoutStarted)
+            }
+          }
+          runLayoutSwitchBatch()
+          await waitTwoFrames()
+          await collectGarbage()
+          const layoutHeapAfterFirstBatch = heap()
+          layoutSwitchHeapGrowthBytes = layoutHeapBefore == null || layoutHeapAfterFirstBatch == null
+            ? null
+            : layoutHeapAfterFirstBatch - layoutHeapBefore
+          runLayoutSwitchBatch()
+          await waitTwoFrames()
+          await collectGarbage()
+          const layoutHeapAfterSecondBatch = heap()
+          layoutSwitchSteadyHeapGrowthBytes = layoutHeapAfterFirstBatch == null || layoutHeapAfterSecondBatch == null
+            ? null
+            : layoutHeapAfterSecondBatch - layoutHeapAfterFirstBatch
+          layoutSwitchAverageMs = layoutDurations.reduce((total, value) => total + value, 0) / layoutDurations.length
+          layoutSwitchMaximumMs = Math.max(...layoutDurations)
+          const viewportAfter = JSON.stringify((chart.getOption().dataZoom || []).map((item) => ({
+            start: item.start,
+            end: item.end,
+            startValue: item.startValue,
+            endValue: item.endValue,
+          })))
+          layoutSwitchViewportPreserved = viewportAfter === viewportBefore
+          layoutSwitchInitDelta = chartInitCount - initBeforeSwitches
+          layoutSwitchSetOptionDelta = chartSetOptionCount - setOptionBeforeSwitches
+          layoutSwitchDisposeDelta = chartDisposeCount - disposeBeforeSwitches
         }
         chart.dispose()
+        chartDisposeCount += 1
         clearCompactCache(cache)
         tracksideSignal.value = null
         await collectGarbage()
@@ -433,6 +498,15 @@ app.whenReady().then(async () => {
         tooltip_frame_link_count: tooltipFrameLinkCount,
         tooltip_build_average_ms: Number(tooltipBuildAverageMs.toFixed(3)),
         tooltip_build_maximum_ms: Number(tooltipBuildMaximumMs.toFixed(3)),
+        layout_switch_count: 40,
+        layout_switch_average_ms: Number(layoutSwitchAverageMs.toFixed(3)),
+        layout_switch_maximum_ms: Number(layoutSwitchMaximumMs.toFixed(3)),
+        layout_switch_viewport_preserved: layoutSwitchViewportPreserved,
+        layout_switch_echarts_init_delta: layoutSwitchInitDelta,
+        layout_switch_set_option_delta: layoutSwitchSetOptionDelta,
+        layout_switch_echarts_dispose_delta: layoutSwitchDisposeDelta,
+        layout_switch_heap_growth_bytes: layoutSwitchHeapGrowthBytes,
+        layout_switch_steady_heap_growth_bytes: layoutSwitchSteadyHeapGrowthBytes,
         sessions: sessionProfiles,
       }
     })()`, true)
@@ -445,14 +519,18 @@ app.whenReady().then(async () => {
       private_kb: metric.memory.privateBytes,
       working_set_kb: metric.memory.workingSetSize,
     }))
-    process.stdout.write(`${JSON.stringify({
+    const serializedProfile = `${JSON.stringify({
       ...profile,
       renderer_process_gone: rendererGone,
       child_process_gone: childGone,
       gpu_feature_status: gpuFeatureStatus,
       gpu_aux_attributes: gpuInfo?.auxAttributes ?? null,
       process_metrics: processMetrics,
-    })}\n`)
+    })}\n`
+    if (OUTPUT_PATH) {
+      writeFileSync(OUTPUT_PATH, serializedProfile, 'utf8')
+    }
+    process.stdout.write(serializedProfile)
     app.exit(rendererGone.length || childGone.length ? 2 : 0)
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`)

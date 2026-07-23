@@ -10,6 +10,8 @@ describe('MeshRssiChart', () => {
     expect(source).toContain('cancelAnimationFrame(resizeFrame)')
     expect(source).toContain('clientHeight > 0')
     expect(source).toContain('chart?.dispose()')
+    expect(source).toContain('function resize(): void')
+    expect(source).toContain('if (!props.active || !chart) return')
   })
 
   it('renders one ACTIVE path series with zoom and preloaded standby context', () => {

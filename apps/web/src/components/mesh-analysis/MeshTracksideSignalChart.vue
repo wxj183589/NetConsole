@@ -332,7 +332,7 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       const renderReason = pendingRenderReason
       pendingRenderReason = null
       if (renderReason || !chartExisted) render(renderReason || 'data')
-      chart?.resize()
+      chart?.resize({ silent: true, animation: { duration: 0 } })
     })
   })
 }
@@ -388,14 +388,21 @@ watch(() => [props.seriesCache, props.series] as const, () => {
 })
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('display'))
 watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
-watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
+watch(() => props.active, (active) => {
+  if (active) {
+    void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize'))
+    return
+  }
+  chart?.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
+  chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
+})
 watch(() => props.lockedViewport, (viewport, previous) => {
   if (viewport) void nextTick(() => applyViewport(viewport))
   else if (previous) { currentViewport = null; scheduleChartUpdate('reset') }
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 watch(() => props.syncViewport, (viewport, previous) => {
-  if (viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  if (props.active && viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
   else if (!viewport && previous) { currentViewport = null; scheduleChartUpdate('reset') }
 }, { deep: true })
 watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('theme'), { deep: true })
@@ -473,7 +480,7 @@ function handleAxisPointer(raw: unknown): void {
 }
 
 function applySharedPointer(time: string | null): void {
-  if (!chart) return
+  if (!props.active || !chart) return
   if (!time) {
     chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
     chart.dispatchAction({ type: 'hideTip' }, { silent: true })
@@ -516,6 +523,10 @@ function applyViewport(viewport: MeshChartViewport): void {
 function resetViewport(): void {
   const target = props.lockedViewport || fullViewport('programmatic')
   if (target) applyViewport(target)
+}
+
+function resize(): void {
+  if (props.active) scheduleChartUpdate('resize')
 }
 
 function tracksideOverlaySeries(
@@ -689,6 +700,7 @@ defineExpose({
   getViewport,
   applyViewport,
   resetViewport,
+  resize,
   getVisibleTimeRange: getViewport,
 })
 </script>
@@ -701,7 +713,7 @@ defineExpose({
 </template>
 
 <style scoped>
-.chart-shell { position: relative; height: 100%; min-height: 360px; width: 100%; }
-.chart { height: 100%; min-height: 360px; width: 100%; min-width: 0; }
+.chart-shell { position: relative; height: 100%; min-height: 240px; width: 100%; }
+.chart { height: 100%; min-height: 240px; width: 100%; min-width: 0; }
 .empty { position: absolute; inset: 0; pointer-events: none; }
 </style>

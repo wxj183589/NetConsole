@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   exportDetails: vi.fn(),
   chartApplyViewport: vi.fn(),
   chartResetViewport: vi.fn(),
+  chartResize: vi.fn(),
   routerPush: vi.fn(),
 }))
 
@@ -142,6 +143,7 @@ const meshChartStub = defineComponent({
       getVisibleTimeRange: () => chartViewport,
       applyViewport: mocks.chartApplyViewport,
       resetViewport: mocks.chartResetViewport,
+      resize: mocks.chartResize,
     })
     return () => h('div', { class: 'mesh-chart-stub' })
   },
@@ -175,6 +177,7 @@ const stubs: Record<string, Component | boolean> = {
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
+  localStorage.clear()
   mocks.listProfiles.mockResolvedValue([])
   mocks.listVehicleMrs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 })
   mocks.prepareContext.mockResolvedValue({ site_id: 'demo', vehicle_mr_count: 0, profile_count: 0, created_count: 0, updated_count: 0 })
@@ -521,6 +524,33 @@ describe('Mesh analysis detail behavior', () => {
     expect(tracksideChart?.props('active')).toBe(true)
     expect(wrapper.text()).toContain(`最早 ${fullStart}`)
     expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
+
+    const initialActiveCalls = mocks.getActivePath.mock.calls.length
+    const initialTracksideCalls = mocks.getTracksideSignal.mock.calls.length
+    const initialCache = tracksideChart?.props('seriesCache')
+    const layoutButton = (label: string) => wrapper.findAll('button')
+      .find((button) => button.text() === label)!
+    expect(wrapper.find('[data-layout-mode="compare"]').exists()).toBe(true)
+    for (let index = 0; index < 20; index += 1) {
+      await layoutButton(index % 2 === 0 ? '主链' : '轨旁').trigger('click')
+      await flushPromises()
+    }
+    expect(wrapper.find('[data-layout-mode="trackside-focus"]').exists()).toBe(true)
+    expect(activeRssiChart?.props('active')).toBe(false)
+    expect(tracksideChart?.props('active')).toBe(true)
+    expect(tracksideChart?.props('seriesCache')).toBe(initialCache)
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(initialActiveCalls)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(initialTracksideCalls)
+    expect(mocks.chartResize).toHaveBeenCalled()
+
+    await layoutButton('对比').trigger('click')
+    await layoutButton('主链').trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('[data-layout-mode="compare"]').exists()).toBe(true)
+    expect(activeRssiChart?.props('active')).toBe(true)
+    expect(tracksideChart?.props('active')).toBe(true)
 
     mocks.getActivePath.mockClear()
     mocks.getTracksideSignal.mockClear()

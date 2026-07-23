@@ -1,12 +1,16 @@
 // @vitest-environment happy-dom
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, h, nextTick, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import MeshChannelBusyChart from './MeshChannelBusyChart.vue'
 import MeshRssiChart from './MeshRssiChart.vue'
+import MeshRssiChartWorkspace from './MeshRssiChartWorkspace.vue'
 import MeshTracksideSignalChart from './MeshTracksideSignalChart.vue'
 import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
 import type { MeshChartEvent, MeshChartPoint, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
+import type { MeshChartHandle } from './meshChartViewport'
+import type { MeshRssiLayoutMode } from './meshRssiLayout'
 import { buildTracksideSeriesCache } from './tracksideSeriesCache'
 
 const echartsMock = vi.hoisted(() => {
@@ -252,6 +256,122 @@ describe('MESH charts mount and render', () => {
 
     wrapper.unmount()
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('switches RSSI layouts twenty times without rebuilding or disposing charts', async () => {
+    const Harness = defineComponent({
+      setup(_, { expose }) {
+        const mode = ref<MeshRssiLayoutMode>('compare')
+        const activeChart = ref<MeshChartHandle | null>(null)
+        const tracksideChart = ref<MeshChartHandle | null>(null)
+        expose({ setMode: (value: MeshRssiLayoutMode) => { mode.value = value } })
+        const resizeVisible = () => {
+          if (mode.value !== 'trackside-focus') activeChart.value?.resize()
+          if (mode.value !== 'active-focus') tracksideChart.value?.resize()
+        }
+        return () => h(MeshRssiChartWorkspace, {
+          mode: mode.value,
+          splitRatio: 0.5,
+          workspaceHeight: 900,
+          onResize: resizeVisible,
+        }, {
+          active: () => h(MeshRssiChart, {
+            ref: activeChart,
+            points: [chartPoint, chartPointAfterGap],
+            active: mode.value !== 'trackside-focus',
+          }),
+          trackside: () => h(MeshTracksideSignalChart, {
+            ref: tracksideChart,
+            series: tracksideSeries,
+            active: mode.value !== 'active-focus',
+          }),
+        })
+      },
+    })
+    const wrapper = mount(Harness)
+    await flushPromises()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const initialSetOptionCalls = echartsMock.chart.setOption.mock.calls.length
+    const startedAt = performance.now()
+
+    for (let index = 0; index < 20; index += 1) {
+      const mode: MeshRssiLayoutMode = index % 2 === 0
+        ? 'active-focus'
+        : 'trackside-focus'
+      ;(wrapper.vm as unknown as { setMode: (value: MeshRssiLayoutMode) => void }).setMode(mode)
+      await nextTick()
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
+    const averageSwitchMs = (performance.now() - startedAt) / 20
+
+    expect(averageSwitchMs).toBeLessThan(100)
+    expect(echartsMock.init).toHaveBeenCalledTimes(2)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCalls)
+    expect(echartsMock.chart.resize).toHaveBeenCalled()
+    expect(echartsMock.chart.dispose).not.toHaveBeenCalled()
+    wrapper.unmount()
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps hidden RSSI charts silent and restores the shared viewport when shown', async () => {
+    const sharedTimeDomain = {
+      full_start_time: chartPoint.timestamp,
+      full_end_time: chartPointAfterGap.timestamp,
+    }
+    const viewport = {
+      start_time: '2026-07-20T10:00:02.123Z',
+      end_time: '2026-07-20T10:00:06.123Z',
+      start_percent: 20,
+      end_percent: 60,
+      full_start_time: chartPoint.timestamp,
+      full_end_time: chartPointAfterGap.timestamp,
+      source: 'programmatic' as const,
+      source_chart: 'trackside-rssi' as const,
+      revision: 8,
+    }
+    const cases = [
+      mount(MeshRssiChart, {
+        props: {
+          points: [chartPoint, chartPointAfterGap],
+          sharedTimeDomain,
+          active: true,
+        },
+      }),
+      mount(MeshTracksideSignalChart, {
+        props: {
+          series: tracksideSeries,
+          sharedTimeDomain,
+          active: true,
+        },
+      }),
+    ]
+    await flushPromises()
+
+    for (const [index, wrapper] of cases.entries()) {
+      await wrapper.setProps({ active: false })
+      echartsMock.chart.dispatchAction.mockClear()
+      await wrapper.setProps({
+        syncViewport: viewport,
+        syncPointerTime: viewport.start_time,
+        syncPointerSource: index === 0 ? 'trackside-rssi' : 'active-rssi',
+      })
+      await flushPromises()
+      expect(echartsMock.chart.dispatchAction).not.toHaveBeenCalled()
+      expect(wrapper.emitted('viewport-change')).toBeUndefined()
+      expect(wrapper.emitted('pointer-change')).toBeUndefined()
+
+      await wrapper.setProps({ active: true })
+      const handle = wrapper.vm as unknown as MeshChartHandle
+      handle.resize()
+      handle.applyViewport(viewport)
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'dataZoom' }),
+        { silent: true },
+      )
+    }
+
+    cases.forEach((wrapper) => wrapper.unmount())
   })
 
   it('disposes chart, cache, pointer listeners, and resize listeners across ten session mounts', async () => {

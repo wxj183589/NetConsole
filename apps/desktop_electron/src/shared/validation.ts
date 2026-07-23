@@ -76,6 +76,21 @@ export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
 
 export function validateUiPreferenceValue(key: UiPreferenceKey, value: unknown): unknown | null {
   if (value === null) return null
+  if (key === 'mesh-analysis-rssi.layout-mode') {
+    if (!['compare', 'active-focus', 'trackside-focus'].includes(String(value))) {
+      throw new TypeError('UI RSSI layout preference is invalid')
+    }
+    return value
+  }
+  if (key === 'mesh-analysis-rssi.compare-split-ratio') {
+    if (
+      typeof value !== 'number'
+      || !Number.isFinite(value)
+      || value < 0.25
+      || value > 0.75
+    ) throw new TypeError('UI RSSI split preference is invalid')
+    return value
+  }
   if (key.startsWith('mesh-analysis-rssi.') || key.startsWith('mesh-analysis-airload.')) {
     if (typeof value !== 'boolean') throw new TypeError('UI chart preference must be a boolean')
     return value
