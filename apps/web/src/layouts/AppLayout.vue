@@ -24,6 +24,7 @@ import {
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import { navigationTitle, t } from '../i18n/runtime'
+import AppRouteView from './AppRouteView.vue'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
 const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
@@ -241,7 +242,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           show-icon
           :closable="false"
         />
-        <RouterView />
+        <AppRouteView />
       </el-main>
     </el-container>
   </el-container>

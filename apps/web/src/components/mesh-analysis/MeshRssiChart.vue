@@ -144,7 +144,9 @@ async function ensureChart(): Promise<boolean> {
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
-    pointerGlobalOut = () => emit('pointer-change', { time: null, source_chart: props.chartId })
+    pointerGlobalOut = () => {
+      if (props.active) emit('pointer-change', { time: null, source_chart: props.chartId })
+    }
     const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: () => void) => void } }).getZr?.()
     zrender?.on('globalout', pointerGlobalOut)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
@@ -236,6 +238,7 @@ watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, s
 })
 
 function handleChartClick(raw: unknown): void {
+  if (!props.active) return
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
   const event = data?.meshEvent || props.events.find((item) => (
     (item.render_point_timestamp || item.point_timestamp) === data?.meta?.timestamp
@@ -251,6 +254,7 @@ function focusCurrentPoint(): void {
 }
 
 function handleDataZoom(raw: unknown): void {
+  if (!props.active) return
   const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
     boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
     fullDomain: props.sharedTimeDomain,
@@ -280,6 +284,7 @@ function handleDataZoom(raw: unknown): void {
 }
 
 function handleRestore(): void {
+  if (!props.active) return
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
   currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
@@ -287,6 +292,7 @@ function handleRestore(): void {
 }
 
 function handleAxisPointer(raw: unknown): void {
+  if (!props.active) return
   const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
   const millis = meshTimestampMillis(value)
   if (millis === null) return

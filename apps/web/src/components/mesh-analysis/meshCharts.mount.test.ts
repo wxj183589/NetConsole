@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h, nextTick, ref } from 'vue'
+import { defineComponent, h, KeepAlive, nextTick, onActivated, onDeactivated, ref } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import MeshChannelBusyChart from './MeshChannelBusyChart.vue'
@@ -501,6 +501,71 @@ describe('MESH charts mount and render', () => {
     cases.forEach((wrapper) => wrapper.unmount())
   })
 
+  it('keeps ECharts instances and the trackside cache stable across 20 route cache cycles', async () => {
+    const cache = buildTracksideSeriesCache(tracksideSeries)
+    const points = [chartPoint, chartPointAfterGap]
+    const routeVisible = ref(true)
+    const pageActive = ref(true)
+    const CachedMeshCharts = defineComponent({
+      name: 'CachedMeshCharts',
+      setup() {
+        onActivated(() => { pageActive.value = true })
+        onDeactivated(() => { pageActive.value = false })
+        return () => h('div', [
+          h(MeshRssiChart, {
+            points,
+            active: pageActive.value,
+          }),
+          h(MeshTracksideSignalChart, {
+            seriesCache: cache,
+            active: pageActive.value,
+          }),
+        ])
+      },
+    })
+    const OrdinaryPage = defineComponent(() => () => h('div', 'ordinary'))
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h('div', [
+          h(KeepAlive, { max: 1 }, {
+            default: () => routeVisible.value
+              ? h(CachedMeshCharts, { key: 'mesh-analysis' })
+              : null,
+          }),
+          routeVisible.value ? null : h(OrdinaryPage),
+        ])
+      },
+    })
+    const wrapper = mount(RouteHost)
+    await flushPromises()
+
+    const initialInitCount = echartsMock.init.mock.calls.length
+    const initialSetOptionCount = echartsMock.chart.setOption.mock.calls.length
+    const initialResizeCount = echartsMock.chart.resize.mock.calls.length
+    expect(initialInitCount).toBe(2)
+    expect(cache.disposed).toBe(false)
+
+    for (let index = 0; index < 20; index += 1) {
+      routeVisible.value = false
+      await nextTick()
+      await flushPromises()
+      routeVisible.value = true
+      await nextTick()
+      await flushPromises()
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      expect(cache.disposed).toBe(false)
+    }
+
+    expect(echartsMock.init).toHaveBeenCalledTimes(initialInitCount)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.chart.dispose).not.toHaveBeenCalled()
+    expect(echartsMock.chart.resize.mock.calls.length).toBe(initialResizeCount + 40)
+
+    wrapper.unmount()
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(2)
+    expect(cache.disposed).toBe(true)
+  })
+
   it('disposes chart, cache, pointer listeners, and resize listeners across ten session mounts', async () => {
     const addListener = vi.spyOn(window, 'addEventListener')
     const removeListener = vi.spyOn(window, 'removeEventListener')
@@ -907,6 +972,30 @@ describe('MESH charts mount and render', () => {
     expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(true)
     expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    const initialInitCount = echartsMock.init.mock.calls.length
+    const initialDisposeCount = echartsMock.chart.dispose.mock.calls.length
+    const initialPointerEmits = wrapper.emitted('pointer-change')?.length ?? 0
+    await wrapper.setProps({ active: false })
+    await flushPromises()
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(true)
+    updateAxisPointer({ axesInfo: [{ value: pointerTime }] })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.emitted('pointer-change')?.length ?? 0).toBe(initialPointerEmits)
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.init).toHaveBeenCalledTimes(initialInitCount)
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(initialDisposeCount)
+
+    await wrapper.setProps({ active: true })
+    await flushPromises()
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(true)
+    expect(wrapper.find('[data-trackside-selected-ap]').exists()).toBe(true)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.init).toHaveBeenCalledTimes(initialInitCount)
+    expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(initialDisposeCount)
+
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await nextTick()
     expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(false)

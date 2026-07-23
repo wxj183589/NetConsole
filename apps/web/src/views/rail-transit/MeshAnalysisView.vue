@@ -1,5 +1,17 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View } from '@element-plus/icons-vue'
@@ -62,8 +74,15 @@ import type {
   RendererWorkloadPhase,
 } from '../../../../desktop_electron/src/shared/bridge'
 
+defineOptions({
+  name: 'MeshAnalysisView',
+})
+
 const router = useRouter()
 const { confirm } = useConfirm()
+const pageActive = ref(true)
+const pageActivatedOnce = ref(false)
+const analysisResultUpdatePending = ref(false)
 const loading = ref(false)
 const detailLoading = ref(false)
 const detailSectionError = ref('')
@@ -199,6 +218,11 @@ let tracksideWorkloadCycle = 0
 let rendererWorkloadRevision = 0
 let rssiLayoutBeforeFocus: MeshRssiLayoutMode = DEFAULT_MESH_RSSI_LAYOUT_MODE
 let rssiSplitPreferenceTimer: ReturnType<typeof setTimeout> | null = null
+let savedAppMainScrollTop = 0
+let scrollRestoreFrame: number | null = null
+let preserveCachedViewOnTaskCompletion = false
+let rendererRecoveryRestored = false
+let rendererRecoveryPromise: Promise<void> | null = null
 const reportedWorkloadPhases = new Set<string>()
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const restorableTaskStates = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'FAILED'])
@@ -504,7 +528,7 @@ function toggleRssiImmersive(): void {
 }
 
 function handleRssiLayoutKeydown(event: KeyboardEvent): void {
-  if (event.defaultPrevented || event.key !== 'Escape' || activeTab.value !== 'rssi') return
+  if (!pageActive.value || event.defaultPrevented || event.key !== 'Escape' || activeTab.value !== 'rssi') return
   if (rssiImmersive.value) {
     rssiImmersive.value = false
     void nextTick(() => {
@@ -522,8 +546,9 @@ function handleRssiLayoutKeydown(event: KeyboardEvent): void {
 }
 
 function resizeVisibleRssiCharts(): void {
+  if (!pageActive.value) return
   void nextTick(() => {
-    if (activeTab.value !== 'rssi') return
+    if (!pageActive.value || activeTab.value !== 'rssi') return
     const viewport = rssiViewport.value
     if (rssiLayoutMode.value !== 'trackside-focus') {
       rssiChartRef.value?.resize()
@@ -540,7 +565,7 @@ function resizeVisibleRssiCharts(): void {
 }
 
 function observeTracksideChart(): void {
-  if (tracksideChartVisible.value || activeTab.value !== 'rssi') return
+  if (!pageActive.value || tracksideChartVisible.value || activeTab.value !== 'rssi') return
   if (typeof IntersectionObserver === 'undefined') {
     tracksideChartVisible.value = true
     return
@@ -633,6 +658,16 @@ async function restoreRendererRecovery(): Promise<void> {
   }
 }
 
+async function restoreRendererRecoveryOnce(): Promise<void> {
+  if (rendererRecoveryRestored) return
+  if (!rendererRecoveryPromise) {
+    rendererRecoveryPromise = restoreRendererRecovery()
+      .then(() => { rendererRecoveryRestored = true })
+      .finally(() => { rendererRecoveryPromise = null })
+  }
+  await rendererRecoveryPromise
+}
+
 const tracksideRecoveryMessage = computed(() => (
   tracksideRecoveryReason.value === 'oom'
     ? '上次轨旁图因渲染进程内存不足退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
@@ -649,16 +684,66 @@ const tracksidePaneAlertSummary = computed(() => {
   return `轨旁图已保留关键采样：${data.returned_frames}/${data.total_frames} 时刻，${data.returned_link_points}/${data.total_link_points} 链路点`
 })
 
-onMounted(async () => {
-  window.addEventListener('keydown', handleRssiLayoutKeydown)
-  await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
-  await restoreRendererRecovery()
-  scheduleRefresh()
-})
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleRssiLayoutKeydown)
+function stopOverviewRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = null
+}
+
+function cancelScrollRestore(): void {
+  if (scrollRestoreFrame !== null) cancelAnimationFrame(scrollRestoreFrame)
+  scrollRestoreFrame = null
+}
+
+function savePageScrollPosition(): void {
+  savedAppMainScrollTop = document.querySelector<HTMLElement>('.app-main')?.scrollTop ?? 0
+}
+
+function restorePageScrollPosition(): void {
+  cancelScrollRestore()
+  scrollRestoreFrame = requestAnimationFrame(() => {
+    scrollRestoreFrame = requestAnimationFrame(() => {
+      scrollRestoreFrame = null
+      if (!pageActive.value) return
+      const appMain = document.querySelector<HTMLElement>('.app-main')
+      if (appMain) appMain.scrollTop = savedAppMainScrollTop
+    })
+  })
+}
+
+function pauseMeshAnalysisPage(): void {
+  savePageScrollPosition()
+  preserveCachedViewOnTaskCompletion = Boolean(
+    task.value && !terminalStates.has(task.value.status),
+  )
+  pageActive.value = false
+  stopOverviewRefresh()
+  stopTaskPolling()
+  tracksideObserver?.disconnect()
+  tracksideObserver = null
+  sharedPointerTime.value = null
+  sharedPointerSource.value = null
+  cancelScrollRestore()
+}
+
+async function resumeMeshAnalysisPage(): Promise<void> {
+  pageActive.value = true
+  await nextTick()
+  await restoreRendererRecoveryOnce()
+  if (!pageActive.value) return
+  refreshDetailPanels()
+  resizeVisibleRssiCharts()
+  observeTracksideChart()
+  restorePageScrollPosition()
+  scheduleRefresh()
+  if (task.value && !terminalStates.has(task.value.status)) pollTask()
+  void refreshOverview(true)
+}
+
+function disposeMeshAnalysisPage(): void {
+  pageActive.value = false
+  window.removeEventListener('keydown', handleRssiLayoutKeydown)
+  stopOverviewRefresh()
+  cancelScrollRestore()
   if (rssiSplitPreferenceTimer) {
     clearTimeout(rssiSplitPreferenceTimer)
     if (meshPreferenceReady.value) {
@@ -673,7 +758,24 @@ onBeforeUnmount(() => {
   tracksideObserver = null
   releaseTracksideResources()
   stopTaskPolling()
+}
+
+onMounted(async () => {
+  window.addEventListener('keydown', handleRssiLayoutKeydown)
+  await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
+  if (!pageActive.value) return
+  await restoreRendererRecoveryOnce()
+  if (pageActive.value) scheduleRefresh()
 })
+onActivated(() => {
+  if (!pageActivatedOnce.value) {
+    pageActivatedOnce.value = true
+    return
+  }
+  void resumeMeshAnalysisPage()
+})
+onDeactivated(pauseMeshAnalysisPage)
+onBeforeUnmount(disposeMeshAnalysisPage)
 watch(activeTab, (tab) => {
   if (selected.value) void loadTab(tab)
   if (tab === 'rssi') {
@@ -690,10 +792,12 @@ watch(tracksideChartVisible, (visible) => {
 watch(sessionExpanded, refreshDetailPanels)
 
 function scheduleRefresh(): void {
-  if (refreshTimer) clearTimeout(refreshTimer)
+  stopOverviewRefresh()
+  if (!pageActive.value) return
   refreshTimer = setTimeout(async () => {
-    if (document.visibilityState === 'visible') await refreshOverview(true)
-    scheduleRefresh()
+    refreshTimer = null
+    if (pageActive.value && document.visibilityState === 'visible') await refreshOverview(true)
+    if (pageActive.value) scheduleRefresh()
   }, failureCount >= 3 ? 90_000 : 30_000)
 }
 
@@ -720,6 +824,8 @@ async function openSession(row: MeshAnalysisSession, preserveRecovery = false): 
   const keepRecovery = preserveRecovery === true
   const generation = ++detailGeneration
   detailLoading.value = true
+  analysisResultUpdatePending.value = false
+  preserveCachedViewOnTaskCompletion = false
   releaseTracksideResources()
   tracksideWorkloadCycle += 1
   reportedWorkloadPhases.clear()
@@ -1448,8 +1554,24 @@ function rememberTask(value: RailTransitTask | null): void {
 function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskTimer = null }
 async function afterTask(): Promise<void> {
   if (task.value?.status !== 'COMPLETED') return
+  const preserveCachedView = preserveCachedViewOnTaskCompletion
+  preserveCachedViewOnTaskCompletion = false
   await refreshOverview()
   if (['mesh_log_import', 'mesh_bundle_import', 'mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) await loadProfiles()
+  if (preserveCachedView) {
+    if (
+      selected.value
+      && ['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)
+    ) {
+      analysisResultUpdatePending.value = true
+    } else if (
+      selected.value
+      && ['mesh_analysis_report', 'mesh_link_detail_export'].includes(task.value.action)
+    ) {
+      artifacts.value = await listMeshArtifacts(selected.value.session.session_id)
+    }
+    return
+  }
   const created = Array.isArray(task.value.result_summary.created_session_ids)
     ? task.value.result_summary.created_session_ids.filter((item): item is string => typeof item === 'string')
     : []
@@ -1470,6 +1592,7 @@ async function afterTask(): Promise<void> {
 }
 function pollTask(): void {
   stopTaskPolling()
+  if (!pageActive.value) return
   if (!task.value || terminalStates.has(task.value.status)) { void afterTask(); return }
   taskTimer = setTimeout(async () => {
     try { rememberTask(await getRailTransitTask(task.value!.task_id)); pollTask() }
@@ -1587,6 +1710,13 @@ async function rebuildSelected(): Promise<void> {
   if (!accepted) return
   void startTask(() => rebuildMeshAnalysis(selected.value!.session.session_id), 'MESH 派生数据库重建启动失败')
 }
+async function refreshCachedAnalysisResult(): Promise<void> {
+  if (!selected.value) return
+  const sessionId = selected.value.session.session_id
+  const next = sessions.value.find((item) => item.session_id === sessionId)
+    || selected.value.session
+  await openSession(next)
+}
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
@@ -1613,7 +1743,9 @@ async function openTaskWindow(taskId = task.value?.task_id || ''): Promise<void>
 }
 
 function refreshDetailPanels(): void {
+  if (!pageActive.value) return
   void nextTick(() => {
+    if (!pageActive.value) return
     buildOrderPanel.refresh()
     linkPanel.refresh()
     rssiPanel.refresh()
@@ -1785,6 +1917,15 @@ function buildResultLabel(value: string): string {
         <div v-if="warningsExpanded" class="warning-list"><el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon /></div>
       </div>
       <el-alert v-if="selectedSource && !selectedSource.exists" :title="selectedSource.missing_reason" :type="selectedSource.recoverable ? 'warning' : 'error'" :closable="false" show-icon />
+      <el-alert
+        v-if="analysisResultUpdatePending"
+        title="分析结果已在后台更新，当前仍显示离开页面前的结果。"
+        type="warning"
+        :closable="false"
+        show-icon
+      >
+        <template #default><el-button link type="primary" @click="refreshCachedAnalysisResult">刷新结果</el-button></template>
+      </el-alert>
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab" class="detail-tabs">
@@ -1899,7 +2040,7 @@ function buildResultLabel(value: string): string {
                   </div>
                   <div class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData?.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData?.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData?.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData?.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData?.summary.sample_count ?? 0 }}</strong></span><span>ACTIVE <strong>{{ chartData?.summary.active_count ?? 0 }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData?.summary.standby_context_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData?.summary.switch_count ?? 0 }}</strong></span><span>最早 <strong>{{ chartData?.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData?.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
-                    <MeshRssiChart ref="rssiChartRef" :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
+                    <MeshRssiChart ref="rssiChartRef" :points="chartData?.points || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
                   </div>
                 </div>
               </template>
@@ -1933,7 +2074,7 @@ function buildResultLabel(value: string): string {
                     <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
-                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" />
+                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" />
                     <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" description="暂无轨旁信号数据" :image-size="60" />
                   </div>
                 </div>
@@ -1964,7 +2105,7 @@ function buildResultLabel(value: string): string {
           <el-alert v-if="lockedAnalysisRange" :title="`已使用 RSSI 锁定时间 ${lockedRangeLabel} · RSSI 可见采样 ${lockedAnalysisRange.sample_count} 点 · 空口有效采样 ${busyValidSampleCount} 点`" type="info" :closable="false" show-icon />
           <el-alert v-if="lockedAnalysisRange && busyChartData && busyValidSampleCount === 0" title="当前 RSSI 锁定时间范围内没有有效 TxBusy/RxBusy 样本。" type="warning" :closable="false" show-icon />
           <div ref="busyChartHost" class="chart-host" :style="{ height: `${busyPanel.height.value}px` }">
-            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-switch-lines="showBusySwitchLines" :show-switch-points="showBusySwitchPoints" :show-location-band="showLocationBand" :scope="busyMode" :active="activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" />
+            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-switch-lines="showBusySwitchLines" :show-switch-points="showBusySwitchPoints" :show-location-band="showLocationBand" :scope="busyMode" :active="pageActive && activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" />
           </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
         </div>

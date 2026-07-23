@@ -1,16 +1,18 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h, useAttrs, type Component } from 'vue'
+import { defineComponent, h, KeepAlive, nextTick, ref, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import meshAnalysisViewSource from './MeshAnalysisView.vue?raw'
+import type { TracksideSeriesCache } from '../../components/mesh-analysis/tracksideSeriesCache'
 
 const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
   listVehicleMrs: vi.fn(),
   prepareContext: vi.fn(),
   recoverTasks: vi.fn(),
+  getTask: vi.fn(),
   getSession: vi.fn(),
   listSessions: vi.fn(),
   listBuildOrder: vi.fn(),
@@ -55,7 +57,7 @@ vi.mock('../../api/meshAnalysis', () => ({
 vi.mock('../../api/railTransitBaseData', () => ({ listVehicleMrs: mocks.listVehicleMrs }))
 vi.mock('../../api/railTransitWeb', () => ({
   exportMeshAnalysisReport: vi.fn(),
-  getRailTransitTask: vi.fn(),
+  getRailTransitTask: mocks.getTask,
   recoverRailTransitTasks: mocks.recoverTasks,
 }))
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }) }))
@@ -186,6 +188,7 @@ beforeEach(() => {
   mocks.listVehicleMrs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 })
   mocks.prepareContext.mockResolvedValue({ site_id: 'demo', vehicle_mr_count: 0, profile_count: 0, created_count: 0, updated_count: 0 })
   mocks.recoverTasks.mockResolvedValue([])
+  mocks.getTask.mockResolvedValue(null)
   mocks.listSessions.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.listLinks.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
@@ -256,9 +259,240 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('keeps the loaded RSSI session, cache, viewport state, and scroll position across 20 route deactivations', async () => {
+    let frameId = 0
+    const cancelledFrames = new Set<number>()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = ++frameId
+      queueMicrotask(() => {
+        if (!cancelledFrames.has(id)) callback(performance.now())
+      })
+      return id
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { cancelledFrames.add(id) })
+    vi.stubGlobal('IntersectionObserver', undefined)
+
+    const session = {
+      session_id: 'session-keep-alive',
+      mr_name: '列车06-MR-CT',
+      original_filename: '6CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:10:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 7, source_action_id: 'source-1', source_id: 'source-1' }],
+    })
+    mocks.listBuildOrder.mockResolvedValue({
+      items: [{
+        sequence: 1,
+        anchor_link_id: 10,
+        source_file_id: 7,
+        local_radio: 1,
+        peer_ap_name: 'AP-1',
+        active_peer_mac: '0000-0000-0010',
+        build_start_time: chartViewport.full_start_time,
+        build_end_time: chartViewport.full_end_time,
+        build_result: 'normal',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path',
+      anchor: null,
+      points: [
+        { timestamp: chartViewport.full_start_time, local_radio: 1, local_rssi: 30 },
+        { timestamp: chartViewport.start_time, local_radio: 1, local_rssi: 32 },
+        { timestamp: chartViewport.end_time, local_radio: 1, local_rssi: 34 },
+        { timestamp: chartViewport.full_end_time, local_radio: 1, local_rssi: 31 },
+      ],
+      events: [],
+      location_segments: [],
+      total_points: 4,
+      returned_points: 4,
+      downsampled: false,
+      summary: {},
+      time_from: null,
+      time_to: null,
+    })
+
+    const meshVisible = ref(true)
+    const OrdinaryPage = defineComponent(() => () => h('div', { 'data-ordinary-page': '' }))
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h('main', { class: 'app-main' }, [
+          h(KeepAlive, { max: 1 }, {
+            default: () => meshVisible.value
+              ? h(MeshAnalysisView, { key: 'mesh-analysis' })
+              : null,
+          }),
+          meshVisible.value ? null : h(OrdinaryPage),
+        ])
+      },
+    })
+    const wrapper = mount(RouteHost, {
+      attachTo: document.body,
+      global: { stubs, directives: { loading: () => undefined } },
+    })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    const meshUid = wrapper.getComponent(MeshAnalysisView).vm.$.uid
+    const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')!
+    const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')!
+    const initialCache = tracksideChart.props('seriesCache') as TracksideSeriesCache
+    const initialActiveCalls = mocks.getActivePath.mock.calls.length
+    const initialTracksideCalls = mocks.getTracksideSignal.mock.calls.length
+    const initialSessionCalls = mocks.getSession.mock.calls.length
+    const initialResizeCalls = mocks.chartResize.mock.calls.length
+    const appMain = wrapper.get('.app-main').element as HTMLElement
+    appMain.scrollTop = 720
+
+    for (let index = 0; index < 20; index += 1) {
+      meshVisible.value = false
+      await nextTick()
+      await flushPromises()
+      expect(activeRssiChart.props('active')).toBe(false)
+      expect(tracksideChart.props('active')).toBe(false)
+      expect(initialCache.disposed).toBe(false)
+      appMain.scrollTop = 0
+
+      meshVisible.value = true
+      await nextTick()
+      await flushPromises()
+      expect(wrapper.getComponent(MeshAnalysisView).vm.$.uid).toBe(meshUid)
+      expect(wrapper.get('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+      expect(activeRssiChart.props('active')).toBe(true)
+      expect(tracksideChart.props('active')).toBe(true)
+      expect(tracksideChart.props('seriesCache')).toBe(initialCache)
+      expect(appMain.scrollTop).toBe(720)
+    }
+
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(initialActiveCalls)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(initialTracksideCalls)
+    expect(mocks.getSession).toHaveBeenCalledTimes(initialSessionCalls)
+    expect(mocks.chartResize.mock.calls.length).toBeGreaterThanOrEqual(initialResizeCalls + 40)
+
+    wrapper.unmount()
+    expect(initialCache.disposed).toBe(true)
+  })
+
+  it('pauses task polling and keeps cached analysis until a background rebuild is explicitly refreshed', async () => {
+    vi.useFakeTimers()
+    let frameId = 0
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = ++frameId
+      queueMicrotask(() => callback(performance.now()))
+      return id
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const session = {
+      session_id: 'session-background-update',
+      mr_name: '列车06-MR-CW',
+      original_filename: '6CWmeshlog.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    const runningTask = {
+      task_id: 'mesh-rebuild-1',
+      action: 'mesh_source_rebuild',
+      status: 'RUNNING',
+      message: '',
+      error_message: '',
+      result_summary: {},
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 8, source_action_id: 'source-2', source_id: 'source-2' }],
+    })
+    mocks.recoverTasks.mockResolvedValue([runningTask])
+    mocks.getTask.mockResolvedValue({ ...runningTask, status: 'COMPLETED' })
+
+    const meshVisible = ref(true)
+    const RouteHost = defineComponent({
+      setup() {
+        return () => h('main', { class: 'app-main' }, [
+          h(KeepAlive, { max: 1 }, {
+            default: () => meshVisible.value
+              ? h(MeshAnalysisView, { key: 'mesh-analysis' })
+              : null,
+          }),
+          meshVisible.value ? null : h('div', { 'data-ordinary-page': '' }),
+        ])
+      },
+    })
+    const wrapper = mount(RouteHost, {
+      attachTo: document.body,
+      global: { stubs, directives: { loading: () => undefined } },
+    })
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+      await flushPromises()
+      expect(mocks.getSession).toHaveBeenCalledTimes(1)
+
+      meshVisible.value = false
+      await nextTick()
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(mocks.getTask).not.toHaveBeenCalled()
+
+      meshVisible.value = true
+      await nextTick()
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1_000)
+      await flushPromises()
+
+      expect(mocks.getTask).toHaveBeenCalledTimes(1)
+      expect(mocks.getSession).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain('分析结果已在后台更新，当前仍显示离开页面前的结果。')
+      expect(wrapper.findAll('button').some((button) => button.text() === '刷新结果')).toBe(true)
+      expect(wrapper.getComponent(MeshAnalysisView).find('.detail-tabs').attributes('modelvalue')).toBe('build-order')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the large trackside payload outside Vue deep reactivity', () => {
     expect(meshAnalysisViewSource).toContain('const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)')
     expect(meshAnalysisViewSource).toContain('markRaw(await getMeshTracksideSignalChart(')
+  })
+
+  it('separates route pause from final cache disposal', () => {
+    const pauseBody = meshAnalysisViewSource.match(
+      /function pauseMeshAnalysisPage\(\): void \{([\s\S]*?)\n\}/,
+    )?.[1] || ''
+    const disposeBody = meshAnalysisViewSource.match(
+      /function disposeMeshAnalysisPage\(\): void \{([\s\S]*?)\n\}/,
+    )?.[1] || ''
+    expect(meshAnalysisViewSource).toContain('onDeactivated(pauseMeshAnalysisPage)')
+    expect(meshAnalysisViewSource).toContain('onBeforeUnmount(disposeMeshAnalysisPage)')
+    expect(pauseBody).toContain('stopOverviewRefresh()')
+    expect(pauseBody).toContain('stopTaskPolling()')
+    expect(pauseBody).not.toMatch(/releaseTracksideResources|disposeTracksideSeriesCache|openSession|loadFullRssiCharts/)
+    expect(disposeBody).toContain('releaseTracksideResources()')
+    expect(meshAnalysisViewSource).toContain(':active="pageActive && activeTab === \'rssi\'')
   })
 
   it('places RSSI deltas before AP MAC and hides unreliable switch type and duration columns', async () => {

@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import source from './AppLayout.vue?raw'
+import routeViewSource from './AppRouteView.vue?raw'
 import ncLayoutSource from './NcLayout.vue?raw'
+import routesSource from '../router/routes.ts?raw'
 
 const styles = readFileSync(fileURLToPath(new URL('../styles/main.css', import.meta.url)), 'utf8')
 
@@ -43,6 +45,16 @@ describe('App layout foundation', () => {
     expect(styles).toContain('height: var(--nc-shell-header-height)')
     expect(styles).toContain('padding: var(--nc-content-padding)')
     expect(styles).not.toContain('min-width: 960px')
+  })
+
+  it('only keeps the mesh analysis route alive with one stable route-name key', () => {
+    expect(routesSource).toMatch(/name: 'mesh-analysis'.*keepAlive: true/)
+    expect(routesSource.match(/keepAlive: true/g)).toHaveLength(1)
+    expect(source).toContain('<AppRouteView />')
+    expect(routeViewSource).toContain('<KeepAlive :max="1">')
+    expect(routeViewSource).toContain(':key="String(viewRoute.name)"')
+    expect(routeViewSource).toContain('v-if="viewRoute.meta.keepAlive"')
+    expect(routeViewSource).toContain('v-if="!viewRoute.meta.keepAlive"')
   })
 
   it('keeps the root menu on the sidebar palette after lazy Element Plus styles load', () => {

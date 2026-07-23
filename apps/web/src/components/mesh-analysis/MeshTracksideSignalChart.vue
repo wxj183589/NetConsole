@@ -208,6 +208,7 @@ function seriesColor(seriesId: string, fallback: string): string {
 }
 
 function handleLocalPointerMove(event: PointerEvent): void {
+  if (!props.active) return
   pointerOrigin = 'local'
   cancelTooltipHide()
   const bounds = container.value?.getBoundingClientRect()
@@ -632,6 +633,7 @@ async function ensureChart(): Promise<boolean> {
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
     pointerGlobalOut = () => {
+      if (!props.active) return
       pointerOrigin = 'none'
       emit('pointer-change', { time: null, source_chart: props.chartId })
       scheduleTooltipHide()
@@ -782,6 +784,7 @@ watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, s
 })
 
 function handleChartClick(raw: unknown): void {
+  if (!props.active) return
   const candidate = raw as {
     seriesId?: string
     data?: CompactTracksideChartPoint | { value?: [number, number, number]; eventIndex?: number }
@@ -811,6 +814,7 @@ function handleChartClick(raw: unknown): void {
 }
 
 function handleDataZoom(raw: unknown): void {
+  if (!props.active) return
   pointerOrigin = 'none'
   hideTracksideTooltip()
   const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
@@ -844,6 +848,7 @@ function handleDataZoom(raw: unknown): void {
 }
 
 function handleRestore(): void {
+  if (!props.active) return
   pointerOrigin = 'none'
   hideTracksideTooltip()
   const viewport = fullViewport('user_zoom')
@@ -855,6 +860,7 @@ function handleRestore(): void {
 }
 
 function handleAxisPointer(raw: unknown): void {
+  if (!props.active) return
   const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
   const millis = meshTimestampMillis(value)
   if (millis === null) return
