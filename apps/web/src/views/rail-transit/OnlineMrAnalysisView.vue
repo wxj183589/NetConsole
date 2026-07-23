@@ -22,6 +22,7 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import type {
   OnlineMrBusinessSummary,
+  OnlineMrBusinessRow,
   OnlineMrBusinessTable,
   OnlineMrMetricPoint,
   OnlineMrMetricSeries,
@@ -37,7 +38,7 @@ const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
 
-type BusinessRow = Record<string, unknown>
+type BusinessRow = OnlineMrBusinessRow
 type RequestContext = { sessionId: string; generation: number; signal: AbortSignal }
 type ChartDefinition = { key: string; title: string; unit: string; metric?: readonly string[]; switchSource?: OnlineMrSwitchRssiSource }
 
@@ -46,7 +47,7 @@ const chartDefinitions: readonly ChartDefinition[] = [
   { key: 'rssi', title: '主链路 RSSI', metric: ['rssi'], unit: 'dBm' },
   { key: 'ping-loss', title: 'Ping 丢包率', metric: ['ping_loss'], unit: '%' },
   { key: 'ping-rtt', title: 'Ping 延迟（fping RTT）', metric: ['ping_rtt'], unit: 'ms' },
-  { key: 'interface', title: '接口 PPS', metric: ['interface_in_pps', 'interface_out_pps'], unit: 'pps' },
+  { key: 'interface', title: '接口速率', metric: ['interface_in_pps', 'interface_out_pps'], unit: 'pps' },
   { key: 'traffic', title: '业务打流', metric: ['iperf_bitrate'], unit: 'Mbps' },
   { key: 'busy', title: '信道繁忙度（Channel Busy）', metric: ['ctl_busy', 'tx_busy', 'rx_busy'], unit: '%' },
   { key: 'switch-rssi', title: '切换历史 RSSI 快照', switchSource: 'history', unit: 'dBm' },
@@ -54,10 +55,9 @@ const chartDefinitions: readonly ChartDefinition[] = [
 ]
 
 const businessTabToTable: Record<string, OnlineMrBusinessTable> = {
-  'mesh-link': 'mesh_link',
-  'mesh-detail': 'mesh_detail',
+  'mesh-link': 'main_link',
+  'mesh-detail': 'link_detail',
   'channel-busy': 'channel_busy',
-  statistics: 'radio_statistics',
   'switch-history': 'switch_history',
   'active-switch': 'switch_realtime',
   'interface-rate': 'interface_rate',
@@ -67,15 +67,14 @@ const businessTabToTable: Record<string, OnlineMrBusinessTable> = {
 }
 
 const businessTableLabels: Record<OnlineMrBusinessTable, string> = {
-  mesh_link: 'MESH 链路',
-  mesh_detail: 'MESH 明细',
+  main_link: '主链路信息',
+  link_detail: '链路明细',
   channel_busy: '信道繁忙度',
-  radio_statistics: '无线统计',
-  switch_history: '切换历史',
-  switch_realtime: '实时切换日志',
-  interface_rate: '接口 PPS',
-  fping_1s: 'fping 1 秒聚合',
-  iperf: 'iPerf',
+  switch_history: '主链路切换历史',
+  switch_realtime: '主链路切换日志',
+  interface_rate: '接口速率',
+  fping_1s: 'fping 1s 聚合',
+  iperf: '打流测试',
   diagnostics: '诊断',
 }
 
@@ -92,10 +91,9 @@ const switchWindows = ref<Record<OnlineMrSwitchRssiSource, OnlineMrSwitchRssiWin
 const switchOffsets = ref<Record<OnlineMrSwitchRssiSource, number>>({ history: 0, realtime: 0 })
 const switchHasMore = ref<Record<OnlineMrSwitchRssiSource, boolean>>({ history: false, realtime: false })
 const businessRows = ref<Record<OnlineMrBusinessTable, BusinessRow[]>>({
-  mesh_link: [],
-  mesh_detail: [],
+  main_link: [],
+  link_detail: [],
   channel_busy: [],
-  radio_statistics: [],
   switch_history: [],
   switch_realtime: [],
   interface_rate: [],
@@ -104,10 +102,9 @@ const businessRows = ref<Record<OnlineMrBusinessTable, BusinessRow[]>>({
   diagnostics: [],
 })
 const businessOffsets = ref<Record<OnlineMrBusinessTable, number>>({
-  mesh_link: 0,
-  mesh_detail: 0,
+  main_link: 0,
+  link_detail: 0,
   channel_busy: 0,
-  radio_statistics: 0,
   switch_history: 0,
   switch_realtime: 0,
   interface_rate: 0,
@@ -116,10 +113,9 @@ const businessOffsets = ref<Record<OnlineMrBusinessTable, number>>({
   diagnostics: 0,
 })
 const businessHasMore = ref<Record<OnlineMrBusinessTable, boolean>>({
-  mesh_link: false,
-  mesh_detail: false,
+  main_link: false,
+  link_detail: false,
   channel_busy: false,
-  radio_statistics: false,
   switch_history: false,
   switch_realtime: false,
   interface_rate: false,
@@ -148,12 +144,10 @@ const timelineLimit = 200
 let pollTimer: number | undefined
 let requestGeneration = 0
 let requestController: AbortController | null = null
-let suppressFilterReload = false
 
-const meshLinkRows = computed(() => businessRows.value.mesh_link)
-const meshDetailRows = computed(() => businessRows.value.mesh_detail)
+const mainLinkRows = computed(() => businessRows.value.main_link)
+const linkDetailRows = computed(() => businessRows.value.link_detail)
 const channelBusyRows = computed(() => businessRows.value.channel_busy)
-const radioStatisticsRows = computed(() => businessRows.value.radio_statistics)
 const switchHistoryRows = computed(() => businessRows.value.switch_history)
 const switchRealtimeRows = computed(() => businessRows.value.switch_realtime)
 const interfaceRows = computed(() => businessRows.value.interface_rate)
@@ -181,7 +175,7 @@ const businessSummaryCards = computed(() => {
     { label: '采样点', value: display(summary.sample_count) },
     { label: 'ACTIVE / STANDBY', value: `${display(summary.active_count)} / ${display(summary.standby_count)}` },
     { label: '切换次数', value: display(summary.switch_count) },
-    { label: 'fping / iPerf', value: `${display(summary.fping_point_count)} / ${display(summary.iperf_point_count)}` },
+    { label: 'fping / 打流', value: `${display(summary.fping_point_count)} / ${display(summary.iperf_point_count)}` },
     { label: '时间同步', value: `${summary.time_sync_status}${summary.time_sync_avg_offset_ms == null ? '' : ` · ${formatNumber(summary.time_sync_avg_offset_ms, 2)} ms`}` },
     { label: '估算间隔', value: summary.estimated_interval_seconds == null ? '无数据' : `${formatNumber(summary.estimated_interval_seconds, 2)} s` },
     { label: '当前链路', value: summary.current_link_state || '无数据' },
@@ -202,34 +196,23 @@ const sessionColumns: NcTableColumn<OnlineMrSessionSummary>[] = [
   { key: 'duration_minutes', label: '时长(分钟)', valueType: 'number', displayValue: (row) => display(row.duration_minutes) },
   { key: 'data_integrity', label: '数据状态', valueType: 'status', displayValue: (row) => row.finalization_complete == null ? '无数据' : row.finalization_complete ? '完整' : '部分' },
 ]
-const meshLinkColumns: NcTableColumn<BusinessRow>[] = [
+const mainLinkColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
-  { key: 'radio', label: 'Radio', valueType: 'number' },
-  { key: 'active_peer_mac', label: 'Active PeerMac', valueType: 'mac' },
-  { key: 'active_peer_name', label: '当前 PEER AP 名称', valueType: 'name', widthMode: 'content', minWidth: 180 },
-  { key: 'ap_mac', label: 'AP MAC', valueType: 'mac' },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'radio', label: '射频ID', valueType: 'number' },
+  { key: 'link_state', label: '链路状态', valueType: 'status' },
+  { key: 'peer_name', label: '对端名称', valueType: 'name', widthMode: 'content', minWidth: 180 },
+  { key: 'peer_mac', label: '对端MAC', valueType: 'mac' },
+  { key: 'mr_rssi', label: 'MR端RSSI', valueType: 'number' },
+  { key: 'bssid', label: 'BSSID', valueType: 'mac' },
   { key: 'belong_station', label: '归属站点', valueType: 'name' },
   { key: 'belong_section', label: '归属区间', valueType: 'name' },
-  { key: 'peer_radio', label: 'Peer Radio', valueType: 'number' },
-  { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', visible: false },
-  { key: 'start_time', label: '建链开始时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'end_time', label: '建链结束时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'duration_seconds', label: '主链路持续时长(s)', valueType: 'duration' },
-  { key: 'log_duration_seconds', label: '日志上报时长(s)', valueType: 'duration' },
-  { key: 'sample_count', label: '采样点数', valueType: 'number' },
-  { key: 'avg_mr_rssi', label: 'MR 平均 RSSI', valueType: 'number' },
-  { key: 'min_mr_rssi', label: '最小 RSSI', valueType: 'number' },
-  { key: 'max_mr_rssi', label: '最大 RSSI', valueType: 'number' },
-  { key: 'avg_tx_busy', label: 'TxBusy', valueType: 'percentage' },
-  { key: 'avg_rx_busy', label: 'RxBusy', valueType: 'percentage' },
-  { key: 'event_type', label: '建链结果', valueType: 'status' },
-  { key: 'decision_reason', label: '判定原因', valueType: 'description', align: 'left', alignmentReason: 'description' },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'actions', label: '操作', valueType: 'actions', fixed: 'right', width: 140, hideable: false },
+  { key: 'online_time', label: '在线时长', valueType: 'duration' },
 ]
-const meshDetailColumns: NcTableColumn<BusinessRow>[] = [
+const linkDetailColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
   { key: 'sample_time', label: '采样时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
   { key: 'radio', label: 'Radio', valueType: 'number' },
   { key: 'link_state', label: '状态', valueType: 'status' },
   { key: 'peer_mac', label: 'PeerMac', valueType: 'mac' },
@@ -237,111 +220,89 @@ const meshDetailColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'ap_mac', label: 'AP MAC', valueType: 'mac' },
   { key: 'belong_station', label: '归属站点', valueType: 'name' },
   { key: 'belong_section', label: '归属区间', valueType: 'name' },
-  { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', visible: false },
-  { key: 'peer_radio', label: 'Peer Radio', valueType: 'number', visible: false },
-  { key: 'link_start_time', label: '建链时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'link_duration_seconds', label: '链路时长', valueType: 'duration' },
-  { key: 'link_count', label: 'LinkCnt', valueType: 'number' },
-  { key: 'mr_rssi_delta', label: 'MR 侧 RSSI 差值', valueType: 'number', visible: false },
-  { key: 'peer_rssi_delta', label: 'Peer 侧 RSSI 差值', valueType: 'number', visible: false },
-  { key: 'mr_noise_floor', label: 'MR 侧底噪', valueType: 'number', visible: false },
-  { key: 'peer_noise_floor', label: 'Peer 侧底噪', valueType: 'number', visible: false },
   { key: 'mr_rx_signal', label: 'MR 接收信号', valueType: 'number' },
-  { key: 'peer_rx_signal', label: 'Peer 接收信号', valueType: 'number', visible: false },
-  { key: 'mr_rate_raw', label: 'MR 侧协商速率原始值', valueType: 'number', visible: false },
-  { key: 'peer_rate_raw', label: 'Peer 侧协商速率原始值', valueType: 'number', visible: false },
-  { key: 'l_tx_busy', label: 'L_TxBusy', valueType: 'percentage', visible: false },
-  { key: 'p_tx_busy', label: 'P_TxBusy', valueType: 'percentage', visible: false },
-  { key: 'l_rx_busy', label: 'L_RxBusy', valueType: 'percentage', visible: false },
-  { key: 'p_rx_busy', label: 'P_RxBusy', valueType: 'percentage', visible: false },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
+  { key: 'mesh_interface', label: 'Mesh接口', valueType: 'name' },
+  { key: 'online_time', label: 'Online Time', valueType: 'duration' },
 ]
 const channelBusyColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'radio', label: 'Radio', valueType: 'number' },
-  { key: 'ctl_busy', label: 'CtlBusy', valueType: 'percentage' },
-  { key: 'tx_busy', label: 'TxBusy', valueType: 'percentage' },
-  { key: 'rx_busy', label: 'RxBusy', valueType: 'percentage' },
-  { key: 'peer_ap', label: 'Peer AP', valueType: 'name' },
-  { key: 'belong_station', label: '站点', valueType: 'name' },
-  { key: 'belong_section', label: '区间', valueType: 'name' },
-  { key: 'structured_source', label: '结构化来源', valueType: 'name' },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'raw_line_start', label: '行号', valueType: 'number', visible: false },
-]
-const radioStatisticsColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'radio', label: 'Radio', valueType: 'number' },
-  { key: 'peer_ap', label: 'AP / Peer AP', valueType: 'name' },
-  { key: 'belong_station', label: '站点', valueType: 'name' },
-  { key: 'channel', label: '频道', valueType: 'number' },
-  { key: 'bandwidth', label: '带宽', valueType: 'number' },
-  { key: 'tx', label: 'Tx', valueType: 'number' },
-  { key: 'rx', label: 'Rx', valueType: 'number' },
-  { key: 'retry', label: 'Retry', valueType: 'number' },
-  { key: 'error', label: 'Error', valueType: 'number' },
-  { key: 'tx_busy', label: 'TxBusy', valueType: 'percentage', visible: false },
-  { key: 'rx_busy', label: 'RxBusy', valueType: 'percentage', visible: false },
-  { key: 'ctl_busy', label: 'CtlBusy', valueType: 'percentage', visible: false },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'raw_line_start', label: '行号', valueType: 'number', visible: false },
-]
-const switchColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '本地时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
   { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'source', label: '来源', valueType: 'name' },
-  { key: 'event', label: '事件', valueType: 'status' },
-  { key: 'severity', label: '级别', valueType: 'status' },
-  { key: 'description', label: '说明', valueType: 'description', align: 'left', alignmentReason: 'description' },
-  { key: 'radio', label: 'Radio', valueType: 'number' },
-  { key: 'from_peer_name', label: '切出 Peer', valueType: 'name' },
-  { key: 'to_peer_name', label: '切入 Peer', valueType: 'name' },
+  { key: 'radio', label: '射频ID', valueType: 'number' },
+  { key: 'ctl_channel', label: '控制信道', valueType: 'number' },
+  { key: 'bandwidth', label: '频宽', valueType: 'number' },
+  { key: 'record_interval', label: '记录间隔', valueType: 'duration' },
+  { key: 'ctl_busy', label: '控制信道繁忙度', valueType: 'percentage' },
+  { key: 'tx_busy', label: '发送繁忙度', valueType: 'percentage' },
+  { key: 'rx_busy', label: '接收繁忙度', valueType: 'percentage' },
+]
+const switchHistoryColumns: NcTableColumn<BusinessRow>[] = [
+  { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
+  { key: 'device_switch_time', label: '设备切换时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'radio', label: '射频ID', valueType: 'number' },
+  { key: 'from_peer_name', label: '切出Peer名称', valueType: 'name', widthMode: 'content', minWidth: 160 },
+  { key: 'to_peer_name', label: '切入Peer名称', valueType: 'name', widthMode: 'content', minWidth: 160 },
   { key: 'from_rssi', label: '切出 RSSI', valueType: 'number' },
   { key: 'to_rssi', label: '切入 RSSI', valueType: 'number' },
-  { key: 'reason_text', label: '原因', valueType: 'description', align: 'left', alignmentReason: 'description' },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'raw_line_start', label: '行号', valueType: 'number', visible: false },
+  { key: 'from_station', label: '切出 归属站点', valueType: 'name' },
+  { key: 'to_station', label: '切入 归属站点', valueType: 'name' },
+  { key: 'reason_text', label: '切换原因', valueType: 'description', align: 'left', alignmentReason: 'description' },
+  { key: 'active_duration', label: 'Active持续时间', valueType: 'duration' },
+]
+const switchRealtimeColumns: NcTableColumn<BusinessRow>[] = [
+  { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'device_name', label: '设备名称', valueType: 'name' },
+  { key: 'radio', label: 'Radio', valueType: 'number' },
+  { key: 'from_peer_name', label: '切出AP名称', valueType: 'name', widthMode: 'content', minWidth: 160 },
+  { key: 'from_peer_mac', label: '切出AP MAC', valueType: 'mac' },
+  { key: 'from_rssi', label: '切出RSSI', valueType: 'number' },
+  { key: 'from_station', label: '切出归属站点', valueType: 'name' },
+  { key: 'from_section', label: '切出归属区间', valueType: 'name' },
+  { key: 'to_peer_name', label: '切入AP名称', valueType: 'name', widthMode: 'content', minWidth: 160 },
+  { key: 'to_peer_mac', label: '切入AP MAC', valueType: 'mac' },
+  { key: 'to_rssi', label: '切入RSSI', valueType: 'number' },
+  { key: 'to_station', label: '切入归属站点', valueType: 'name' },
+  { key: 'to_section', label: '切入归属区间', valueType: 'name' },
+  { key: 'peer_quantity', label: 'peer数量', valueType: 'number' },
+  { key: 'link_quantity', label: 'Link数量', valueType: 'number' },
+  { key: 'reason_code', label: '切换原因码', valueType: 'number' },
+  { key: 'reason_text', label: '切换原因', valueType: 'description', align: 'left', alignmentReason: 'description' },
 ]
 const interfaceColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220, visible: false },
+  { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
+  { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
   { key: 'interface', label: '接口', valueType: 'name' },
   { key: 'direction', label: '方向', valueType: 'status' },
   { key: 'total_pps', label: '总 PPS', valueType: 'rate' },
   { key: 'broadcast_pps', label: '广播 PPS', valueType: 'rate' },
   { key: 'multicast_pps', label: '组播 PPS', valueType: 'rate' },
   { key: 'usage_percent', label: '利用率', valueType: 'percentage' },
-  { key: 'raw_file', label: '来源文件', valueType: 'description', align: 'left', alignmentReason: 'path' },
 ]
 const fpingColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '秒级时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'target_ip', label: 'target_ip', valueType: 'ip' },
-  { key: 'target_name', label: 'target_name', valueType: 'name' },
-  { key: 'sent', label: 'sent', valueType: 'number' },
-  { key: 'received', label: 'received', valueType: 'number' },
-  { key: 'loss_count', label: 'loss_count', valueType: 'number' },
-  { key: 'loss_rate', label: 'loss_rate', valueType: 'percentage' },
-  { key: 'min_rtt', label: 'min_rtt', valueType: 'number' },
-  { key: 'avg_rtt', label: 'avg_rtt', valueType: 'number' },
-  { key: 'max_rtt', label: 'max_rtt', valueType: 'number' },
-  { key: 'latest_rtt', label: 'latest_rtt', valueType: 'number' },
-  { key: 'raw_file', label: 'raw_file', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'raw_line_start', label: 'line_start', valueType: 'number', visible: false },
-  { key: 'raw_line_end', label: 'line_end', valueType: 'number', visible: false },
+  { key: 'index', label: '序号', type: 'index', valueType: 'index', width: 70, fixed: 'left' },
+  { key: 'time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'device_time', label: '设备对齐时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'local_time', label: '本地时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'target_ip', label: '目标IP', valueType: 'ip' },
+  { key: 'sent', label: '发送数', valueType: 'number' },
+  { key: 'received', label: '接收数', valueType: 'number' },
+  { key: 'loss_count', label: '丢失数', valueType: 'number' },
+  { key: 'loss_rate', label: '丢包率%', valueType: 'percentage' },
+  { key: 'avg_rtt', label: '平均延迟(ms)', valueType: 'number' },
+  { key: 'min_rtt', label: '最小延迟(ms)', valueType: 'number' },
+  { key: 'max_rtt', label: '最大延迟(ms)', valueType: 'number' },
+  { key: 'jitter_ms', label: '时延抖动(ms)', valueType: 'number' },
+  { key: 'status', label: '状态', valueType: 'status' },
 ]
 const iperfColumns: NcTableColumn<BusinessRow>[] = [
-  { key: 'sample_time', label: '时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
-  { key: 'protocol', label: '协议', valueType: 'name' },
-  { key: 'direction', label: '方向', valueType: 'status' },
-  { key: 'target_bandwidth', label: 'TCP 限速', valueType: 'description', displayValue: (row) => iperfRateLimitLabel(row) },
-  { key: 'bitrate_mbps', label: 'bitrate', valueType: 'rate' },
-  { key: 'jitter_ms', label: 'jitter', valueType: 'number' },
-  { key: 'loss_percent', label: 'loss', valueType: 'percentage' },
-  { key: 'retransmits', label: 'retransmits', valueType: 'number' },
-  { key: 'local_endpoint', label: 'local', valueType: 'name' },
-  { key: 'remote_endpoint', label: 'remote', valueType: 'name' },
-  { key: 'raw_file', label: 'raw_file', valueType: 'description', align: 'left', alignmentReason: 'path' },
-  { key: 'raw_line', label: 'raw_line', valueType: 'description', align: 'left', alignmentReason: 'description' },
+  { key: 'local_time', label: '本地时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
+  { key: 'runtime', label: '运行时间', valueType: 'duration' },
+  { key: 'transfer', label: '传输总量', valueType: 'description' },
+  { key: 'bitrate', label: '带宽', valueType: 'rate' },
+  { key: 'jitter_ms', label: '抖动', valueType: 'number' },
+  { key: 'lost_packets', label: '丢包数', valueType: 'number' },
+  { key: 'total_packets', label: '总数据包数', valueType: 'number' },
+  { key: 'loss_percent', label: '丢包率', valueType: 'percentage' },
 ]
 const diagnosisColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'issue_type', label: '问题类型', valueType: 'status' },
@@ -353,7 +314,6 @@ const diagnosisColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'section', label: '区间', valueType: 'name' },
   { key: 'description', label: '判断依据', valueType: 'description', align: 'left', alignmentReason: 'description' },
   { key: 'recommendation', label: '建议处理', valueType: 'description', align: 'left', alignmentReason: 'description' },
-  { key: 'evidence', label: 'evidence', valueType: 'description', align: 'left', alignmentReason: 'path' },
 ]
 const rawColumns: NcTableColumn<OnlineMrRawFile>[] = [
   { key: 'name', label: '文件', valueType: 'name', widthMode: 'content', minWidth: 240 },
@@ -377,30 +337,6 @@ function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '无数据'
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(digits)
   return formatted.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
-}
-function iperfRateLimitLabel(row: BusinessRow): string {
-  const protocol = String(row.protocol || '').toUpperCase()
-  if (protocol === 'UDP') return '--'
-  const value = row.target_bandwidth
-  if (value === undefined || value === null || value === '' || value === 0 || value === '0' || value === '0M') return '不限速'
-  const text = String(value)
-  return text.endsWith('M') ? `${text.slice(0, -1)} Mbps` : text
-}
-function parseDateTime(value: string | null | undefined): Date | null {
-  if (!value) return null
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
-  const parsed = new Date(normalized)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-function formatDateTime(value: Date): string {
-  const pad = (input: number, size = 2) => String(input).padStart(size, '0')
-  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}.${pad(value.getMilliseconds(), 3)}`
-}
-function shiftDateTime(value: string | null | undefined, seconds: number): string | null {
-  const parsed = parseDateTime(value)
-  if (!parsed) return value || null
-  parsed.setSeconds(parsed.getSeconds() + seconds)
-  return formatDateTime(parsed)
 }
 function sampleKey(row: BusinessRow, index: number): string {
   return String(row.sample_time || row.start_time || row.event_time || row.device_time || row.collector_time || row.time || index)
@@ -457,9 +393,6 @@ function switchRssiSeries(source: OnlineMrSwitchRssiSource): OnlineMrMetricSerie
       peer_name: role === 'old' ? event.old_peer_name : event.new_peer_name,
       peer_mac: role === 'old' ? event.old_peer_mac : event.new_peer_mac,
       reason: event.reason,
-      raw_file: event.raw_file,
-      raw_line_start: event.raw_line_start,
-      raw_line_end: event.raw_line_end,
     },
   }))
   return (['old', 'new'] as const).map((role) => {
@@ -500,10 +433,9 @@ function poll(): void {
 }
 function emptyBusinessState(): Record<OnlineMrBusinessTable, BusinessRow[]> {
   return {
-    mesh_link: [],
-    mesh_detail: [],
+    main_link: [],
+    link_detail: [],
     channel_busy: [],
-    radio_statistics: [],
     switch_history: [],
     switch_realtime: [],
     interface_rate: [],
@@ -513,10 +445,10 @@ function emptyBusinessState(): Record<OnlineMrBusinessTable, BusinessRow[]> {
   }
 }
 function emptyOffsetState(): Record<OnlineMrBusinessTable, number> {
-  return { mesh_link: 0, mesh_detail: 0, channel_busy: 0, radio_statistics: 0, switch_history: 0, switch_realtime: 0, interface_rate: 0, fping_1s: 0, iperf: 0, diagnostics: 0 }
+  return { main_link: 0, link_detail: 0, channel_busy: 0, switch_history: 0, switch_realtime: 0, interface_rate: 0, fping_1s: 0, iperf: 0, diagnostics: 0 }
 }
 function emptyMoreState(): Record<OnlineMrBusinessTable, boolean> {
-  return { mesh_link: false, mesh_detail: false, channel_busy: false, radio_statistics: false, switch_history: false, switch_realtime: false, interface_rate: false, fping_1s: false, iperf: false, diagnostics: false }
+  return { main_link: false, link_detail: false, channel_busy: false, switch_history: false, switch_realtime: false, interface_rate: false, fping_1s: false, iperf: false, diagnostics: false }
 }
 function clearAnalysisData(): void {
   businessSummary.value = null
@@ -642,7 +574,7 @@ async function loadActiveTab(tab: string, context = currentRequestContext()): Pr
   }
   analysisError.value = ''
   try {
-    if (tab === 'mesh-link') await Promise.all([loadBusinessSummary(context), loadBusinessTable('mesh_link', false, context)])
+    if (tab === 'mesh-link') await Promise.all([loadBusinessSummary(context), loadBusinessTable('main_link', false, context)])
     else if (businessTable) await loadBusinessTable(businessTable, false, context)
     else if (tab === 'charts') {
       if (selectedChart.value.switchSource) await loadSwitchWindows(selectedChart.value.switchSource, false, context)
@@ -732,18 +664,7 @@ function loadMoreActiveTab(): void {
   if (currentBusinessTable.value) void loadBusinessTable(currentBusinessTable.value, true)
   else if (activeTab.value === 'charts') loadMoreChart()
 }
-function focusChartRange(start: string | null | undefined, end: string | null | undefined): void {
-  suppressFilterReload = true
-  startTime.value = shiftDateTime(start, -10) || ''
-  endTime.value = shiftDateTime(end || start, 10) || ''
-  activeTab.value = 'charts'
-  chartTab.value = 'rssi'
-  const context = nextRequestContext()
-  void loadActiveTab('charts', context).finally(() => { suppressFilterReload = false })
-}
-
 watch([startTime, endTime], () => {
-  if (suppressFilterReload) return
   if (!currentBusinessTable.value && activeTab.value !== 'charts') return
   clearAnalysisData()
   const context = nextRequestContext()
@@ -777,11 +698,11 @@ onBeforeUnmount(() => {
 function businessRowsFor(table: OnlineMrBusinessTable): BusinessRow[] {
   return businessRows.value[table]
 }
-function meshLinkRowClass({ rowIndex }: { rowIndex: number }): string {
-  return businessRowClass(meshLinkRows.value, rowIndex, 'link_state')
+function mainLinkRowClass({ rowIndex }: { rowIndex: number }): string {
+  return businessRowClass(mainLinkRows.value, rowIndex, 'link_state')
 }
-function meshDetailRowClass({ rowIndex }: { rowIndex: number }): string {
-  return businessRowClass(meshDetailRows.value, rowIndex, 'link_state')
+function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
+  return businessRowClass(linkDetailRows.value, rowIndex, 'link_state')
 }
 </script>
 
@@ -844,7 +765,7 @@ function meshDetailRowClass({ rowIndex }: { rowIndex: number }): string {
           <NcDataTable table-id="online-mr-analysis-session-history" route-key="/rail-transit/online-mr-analysis" :data="sessions" :columns="sessionColumns" border height="460" empty-text="暂无会话" @row-click="(row: OnlineMrSessionSummary) => { sessionId = row.session_id; void loadAnalysis() }" />
         </el-tab-pane>
 
-        <el-tab-pane name="mesh-link" label="MESH 链路">
+        <el-tab-pane name="mesh-link" label="主链路信息">
           <div class="business-summary" v-if="businessSummary">
             <article v-for="item in businessSummaryCards" :key="item.label">
               <span>{{ item.label }}</span>
@@ -854,41 +775,33 @@ function meshDetailRowClass({ rowIndex }: { rowIndex: number }): string {
           <NcDataTable
             table-id="online-mr-analysis-mesh-link"
             route-key="/rail-transit/online-mr-analysis"
-            :data="meshLinkRows"
-            :columns="meshLinkColumns"
-            :row-class-name="meshLinkRowClass"
+            :data="mainLinkRows"
+            :columns="mainLinkColumns"
+            :row-class-name="mainLinkRowClass"
             border
             height="460"
-            empty-text="暂无 MESH 链路数据"
-          >
-            <template #cell-actions="{ row }">
-              <el-button link type="primary" size="small" :icon="Search" @click="focusChartRange((row as BusinessRow).start_time as string | null, (row as BusinessRow).end_time as string | null)">查看动态图</el-button>
-            </template>
-          </NcDataTable>
+            empty-text="暂无主链路信息"
+          />
         </el-tab-pane>
 
-        <el-tab-pane name="mesh-detail" label="MESH 明细">
-          <NcDataTable table-id="online-mr-analysis-mesh-detail" route-key="/rail-transit/online-mr-analysis" :data="meshDetailRows" :columns="meshDetailColumns" :row-class-name="meshDetailRowClass" border height="460" empty-text="暂无链路明细" />
+        <el-tab-pane name="mesh-detail" label="链路明细">
+          <NcDataTable table-id="online-mr-analysis-mesh-detail" route-key="/rail-transit/online-mr-analysis" :data="linkDetailRows" :columns="linkDetailColumns" :row-class-name="linkDetailRowClass" border height="460" empty-text="暂无链路明细" />
         </el-tab-pane>
 
         <el-tab-pane name="channel-busy" label="信道繁忙度">
           <NcDataTable table-id="online-mr-analysis-channel-busy" route-key="/rail-transit/online-mr-analysis" :data="channelBusyRows" :columns="channelBusyColumns" border height="460" empty-text="暂无信道数据" />
         </el-tab-pane>
 
-        <el-tab-pane name="statistics" label="无线统计">
-          <NcDataTable table-id="online-mr-analysis-statistics" route-key="/rail-transit/online-mr-analysis" :data="radioStatisticsRows" :columns="radioStatisticsColumns" border height="460" empty-text="暂无统计数据" />
+        <el-tab-pane name="switch-history" label="主链路切换历史">
+          <NcDataTable table-id="online-mr-analysis-switch-history" route-key="/rail-transit/online-mr-analysis" :data="switchHistoryRows" :columns="switchHistoryColumns" border height="460" empty-text="暂无主链路切换历史" />
         </el-tab-pane>
 
-        <el-tab-pane name="switch-history" label="切换历史">
-          <NcDataTable table-id="online-mr-analysis-switch-history" route-key="/rail-transit/online-mr-analysis" :data="switchHistoryRows" :columns="switchColumns" border height="460" empty-text="暂无切换历史" />
+        <el-tab-pane name="active-switch" label="主链路切换日志">
+          <NcDataTable table-id="online-mr-analysis-active-switch" route-key="/rail-transit/online-mr-analysis" :data="switchRealtimeRows" :columns="switchRealtimeColumns" border height="460" empty-text="暂无主链路切换日志" />
         </el-tab-pane>
 
-        <el-tab-pane name="active-switch" label="实时切换日志">
-          <NcDataTable table-id="online-mr-analysis-active-switch" route-key="/rail-transit/online-mr-analysis" :data="switchRealtimeRows" :columns="switchColumns" border height="460" empty-text="暂无实时切换日志" />
-        </el-tab-pane>
-
-        <el-tab-pane name="interface-rate" label="接口 PPS">
-          <NcDataTable table-id="online-mr-analysis-interface-rate" route-key="/rail-transit/online-mr-analysis" :data="interfaceRows" :columns="interfaceColumns" border height="460" empty-text="暂无接口 PPS 数据" />
+        <el-tab-pane name="interface-rate" label="接口速率">
+          <NcDataTable table-id="online-mr-analysis-interface-rate" route-key="/rail-transit/online-mr-analysis" :data="interfaceRows" :columns="interfaceColumns" border height="460" empty-text="暂无接口速率数据" />
         </el-tab-pane>
 
         <el-tab-pane name="charts" label="动态图">
@@ -899,12 +812,12 @@ function meshDetailRowClass({ rowIndex }: { rowIndex: number }): string {
           </el-tabs>
         </el-tab-pane>
 
-        <el-tab-pane name="fping" label="fping 1 秒聚合">
+        <el-tab-pane name="fping" label="fping 1s 聚合">
           <NcDataTable table-id="online-mr-analysis-fping" route-key="/rail-transit/online-mr-analysis" :data="fpingRows" :columns="fpingColumns" border height="460" empty-text="暂无 fping 数据" />
         </el-tab-pane>
 
-        <el-tab-pane name="iperf" label="iPerf">
-          <NcDataTable table-id="online-mr-analysis-iperf" route-key="/rail-transit/online-mr-analysis" :data="iperfRows" :columns="iperfColumns" border height="460" empty-text="暂无 iPerf 数据" />
+        <el-tab-pane name="iperf" label="打流测试">
+          <NcDataTable table-id="online-mr-analysis-iperf" route-key="/rail-transit/online-mr-analysis" :data="iperfRows" :columns="iperfColumns" border height="460" empty-text="暂无打流测试数据" />
         </el-tab-pane>
 
         <el-tab-pane name="diagnosis" label="诊断">

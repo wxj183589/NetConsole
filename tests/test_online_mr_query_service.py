@@ -359,7 +359,7 @@ def test_metrics_preserve_ping_targets_radios_and_timeout_semantics(tmp_path: Pa
     assert all(point.value != 0 for row in rows for point in row.points if point.value is not None)
 
 
-def test_metric_page_returns_real_radio_statistics_units_evidence_and_pagination(tmp_path: Path) -> None:
+def test_metric_page_returns_real_radio_statistics_units_without_raw_evidence(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session = _session(service, "radio-statistics")
     _metric_database(session / "parsed" / "online_diagnosis.sqlite")
@@ -382,10 +382,169 @@ def test_metric_page_returns_real_radio_statistics_units_evidence_and_pagination
     assert first.returned_points == 1
     assert first.series[0].unit == "frame"
     assert first.series[0].points[0].value == 120
-    assert first.series[0].points[0].dimensions["raw_file"] == "raw/ap_radio_statistics_raw.log"
+    assert "raw_file" not in first.series[0].points[0].dimensions
+    assert "raw_line_start" not in first.series[0].points[0].dimensions
     assert second.has_more is False
     assert second.series[0].points[0].value is None
     assert second.series[0].points[0].dimensions["metric_name"] == "TxRetryFrmCnt"
+
+
+def test_business_tables_use_new_keys_active_rows_and_strip_source_fields(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "business-table")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE main_link_samples (
+                id INTEGER PRIMARY KEY,
+                collector_time TEXT,
+                device_time TEXT,
+                device_clock TEXT,
+                radio INTEGER,
+                link_state TEXT,
+                peer_name TEXT,
+                peer_mac TEXT,
+                peer_mac_normalized TEXT,
+                resolved_peer_name TEXT,
+                mr_rssi REAL,
+                bssid TEXT,
+                mesh_interface TEXT,
+                belong_station TEXT,
+                belong_section TEXT,
+                online_time TEXT,
+                raw_file TEXT,
+                raw_line_start INTEGER,
+                raw_line_end INTEGER
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO main_link_samples VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            [
+                (
+                    1,
+                    "2026-07-13 10:00:00.100",
+                    "2026-07-13 10:00:00",
+                    "",
+                    1,
+                    "ACTIVE",
+                    "AP-A",
+                    "aa-aa-aa-aa-aa-aa",
+                    "aaaaaaaaaaaa",
+                    "轨旁AP-A",
+                    -61,
+                    "bb-bb-bb-bb-bb-bb",
+                    "WLAN-MeshLink1",
+                    "站点A",
+                    "区间A",
+                    "00h 01m 00s",
+                    "raw/mesh_link_raw.log",
+                    10,
+                    11,
+                ),
+                (
+                    2,
+                    "2026-07-13 10:00:00.100",
+                    "2026-07-13 10:00:00",
+                    "",
+                    1,
+                    "STANDBY",
+                    "AP-B",
+                    "cc-cc-cc-cc-cc-cc",
+                    "cccccccccccc",
+                    "轨旁AP-B",
+                    -72,
+                    "dd-dd-dd-dd-dd-dd",
+                    "WLAN-MeshLink2",
+                    "站点B",
+                    "区间B",
+                    "00h 00m 30s",
+                    "raw/mesh_link_raw.log",
+                    12,
+                    13,
+                ),
+            ],
+        )
+
+    main = service.query_business_table("site-a", "business-table", "main_link")
+    alias = service.query_business_table("site-a", "business-table", "mesh_link")
+    detail = service.query_business_table("site-a", "business-table", "link_detail")
+
+    assert main.table == "main_link"
+    assert alias.table == "main_link"
+    assert len(main.rows) == 1
+    assert main.rows[0] == {
+        "device_time": "2026-07-13 10:00:00",
+        "radio": 1,
+        "link_state": "ACTIVE",
+        "peer_name": "轨旁AP-A",
+        "peer_mac": "aa-aa-aa-aa-aa-aa",
+        "mr_rssi": -61,
+        "bssid": "bb-bb-bb-bb-bb-bb",
+        "belong_station": "站点A",
+        "belong_section": "区间A",
+        "online_time": "00h 01m 00s",
+    }
+    assert [row["link_state"] for row in detail.rows] == ["ACTIVE", "STANDBY"]
+    assert all("raw_file" not in row and "raw_line_start" not in row for row in [*main.rows, *detail.rows])
+    with pytest.raises(OnlineMrQueryError) as error:
+        service.query_business_table("site-a", "business-table", "radio_statistics")
+    assert error.value.code == OnlineMrQueryErrorCode.METRIC_UNSUPPORTED
+
+
+def test_fping_business_rows_use_natural_second_buckets_and_loss_status(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "fping-business")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE fping_1s_summary (
+                id INTEGER PRIMARY KEY,
+                bucket_time TEXT,
+                local_bucket_time TEXT,
+                device_bucket_time TEXT,
+                target_ip TEXT,
+                sent INTEGER,
+                received INTEGER,
+                lost INTEGER,
+                loss_percent REAL,
+                avg_latency_ms REAL,
+                min_latency_ms REAL,
+                max_latency_ms REAL,
+                jitter_ms REAL,
+                status TEXT
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO fping_1s_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-07-13 15:51:02", "2026-07-13 15:51:02", "2026-07-13 15:51:03", "10.0.0.1", 2, 1, 1, 50.0, 2.5, 2.5, 2.5, 0.0, "LOSS"),
+                (2, "2026-07-13 15:51:03", "2026-07-13 15:51:03", "2026-07-13 15:51:04", "10.0.0.1", 1, 0, 1, 100.0, None, None, None, None, "LOSS"),
+                (3, "2026-07-13 15:51:02", "2026-07-13 15:51:02", "2026-07-13 15:51:03", "10.0.0.2", 1, 1, 0, 0.0, 5.0, 5.0, 5.0, 0.0, "OK"),
+            ],
+        )
+
+    page = service.query_business_table("site-a", "fping-business", "fping_1s")
+
+    assert [(row["time"], row["target_ip"]) for row in page.rows] == [
+        ("2026-07-13 15:51:02", "10.0.0.1"),
+        ("2026-07-13 15:51:02", "10.0.0.2"),
+        ("2026-07-13 15:51:03", "10.0.0.1"),
+    ]
+    assert page.rows[0]["device_time"] == "2026-07-13 15:51:03"
+    assert page.rows[0]["status"] == "部分丢包"
+    assert page.rows[1]["status"] == "正常"
+    assert page.rows[2]["status"] == "全部丢包"
+    assert page.rows[2]["avg_rtt"] is None
+    assert page.rows[2]["min_rtt"] is None
+    assert page.rows[2]["max_rtt"] is None
 
 
 def test_multi_metric_page_caps_total_points_and_advances_shared_offset(tmp_path: Path) -> None:
@@ -421,7 +580,7 @@ def test_multi_metric_page_caps_total_points_and_advances_shared_offset(tmp_path
         )
 
 
-def test_switch_rssi_windows_are_source_specific_and_keep_raw_evidence(tmp_path: Path) -> None:
+def test_switch_rssi_windows_are_source_specific_without_raw_evidence(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session = _session(service, "switch-rssi")
     _metric_database(session / "parsed" / "online_diagnosis.sqlite")
@@ -430,9 +589,9 @@ def test_switch_rssi_windows_are_source_specific_and_keep_raw_evidence(tmp_path:
     realtime = service.query_switch_rssi_windows("site-a", "switch-rssi", "realtime")
 
     assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in history.items] == [(-81, -55)]
-    assert history.items[0].raw_file == "raw/switch_history_latest.log"
     assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in realtime.items] == [(-77, -49)]
-    assert realtime.items[0].raw_file == "raw/terminal_monitor_raw.log"
+    assert "raw_file" not in history.items[0].model_dump()
+    assert "raw_line_start" not in realtime.items[0].model_dump()
     assert {-60, -70}.isdisjoint({history.items[0].old_rssi_dbm, history.items[0].new_rssi_dbm})
     assert {row.source for row in service.query_timeline("site-a", "switch-rssi")} == {
         "switch_history",
@@ -512,7 +671,7 @@ def test_old_parsed_database_reports_compatible_capabilities_without_writing(tmp
 
     assert summary.status == "legacy"
     assert summary.compatible is True
-    assert summary.available_capabilities == ["mesh_link"]
+    assert summary.available_capabilities == ["link_detail", "main_link"]
     assert "channel_busy" in summary.missing_capabilities
     assert {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")} == before
 

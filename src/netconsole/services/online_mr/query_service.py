@@ -57,9 +57,9 @@ _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 
 _PARSED_CAPABILITY_TABLES = {
-    "mesh_link": frozenset({"main_link_samples"}),
+    "main_link": frozenset({"main_link_samples"}),
+    "link_detail": frozenset({"main_link_samples"}),
     "channel_busy": frozenset({"channel_busy_records"}),
-    "radio_statistics": frozenset({"radio_statistics_samples"}),
     "interface_rate": frozenset({"interface_rate_samples"}),
     "switch_history": frozenset({"switch_history_events"}),
     "switch_realtime": frozenset({"switch_realtime_events"}),
@@ -70,8 +70,33 @@ _PARSED_CAPABILITY_TABLES = {
 }
 _CURRENT_PARSED_TABLES = frozenset().union(
     *_PARSED_CAPABILITY_TABLES.values(),
-    {"online_parse_metadata", "online_parse_issues", "time_sync_samples", "active_segments", "active_segment_metrics"},
+    {
+        "online_parse_metadata",
+        "online_parse_issues",
+        "online_schema_meta",
+        "time_sync_samples",
+        "radio_statistics_samples",
+        "active_segments",
+        "active_segment_metrics",
+    },
 )
+_DEPRECATED_BUSINESS_TABLE_ALIASES = {
+    OnlineMrBusinessTable.MESH_LINK: OnlineMrBusinessTable.MAIN_LINK,
+    OnlineMrBusinessTable.MESH_DETAIL: OnlineMrBusinessTable.LINK_DETAIL,
+}
+_BUSINESS_SOURCE_FIELDS = {
+    "raw_file",
+    "source_file",
+    "source_path",
+    "relative_file",
+    "relative_path",
+    "raw_path",
+    "raw_line",
+    "raw_line_start",
+    "raw_line_end",
+    "line_number",
+    "evidence",
+}
 _RADIO_STAT_METRIC_NAMES = (
     "TxFrameAllCnt",
     "TxFrameAllBytes",
@@ -972,6 +997,7 @@ class OnlineMrQueryService:
             business_table = OnlineMrBusinessTable(table)
         except ValueError as exc:
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.METRIC_UNSUPPORTED, "不支持的 Online MR 业务表") from exc
+        business_table = _DEPRECATED_BUSINESS_TABLE_ALIASES.get(business_table, business_table)
         path = self._parsed_database_path(site_id, session_id)
         try:
             with closing(self._connect_readonly(path)) as conn:
@@ -987,7 +1013,7 @@ class OnlineMrQueryService:
             raise
         except sqlite3.Error as exc:
             raise self._database_error(exc) from exc
-        items = rows[:limit]
+        items = [self._strip_business_source_fields(row) for row in rows[:limit]]
         next_offset = offset + len(items)
         return OnlineMrBusinessTablePageDTO(
             table=business_table,
@@ -1103,18 +1129,16 @@ class OnlineMrQueryService:
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
-        if table == OnlineMrBusinessTable.MESH_LINK:
-            return self._business_mesh_link_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
-        if table == OnlineMrBusinessTable.MESH_DETAIL:
-            return self._business_mesh_detail_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.MAIN_LINK:
+            return self._business_main_link_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
+        if table == OnlineMrBusinessTable.LINK_DETAIL:
+            return self._business_link_detail_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         if table == OnlineMrBusinessTable.CHANNEL_BUSY:
             return self._business_channel_busy_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
-        if table == OnlineMrBusinessTable.RADIO_STATISTICS:
-            return self._business_radio_statistics_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         if table == OnlineMrBusinessTable.SWITCH_HISTORY:
-            return self._business_switch_rows(conn, "switch_history_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset, source="switch_history")
+            return self._business_switch_rows(conn, "switch_history_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         if table == OnlineMrBusinessTable.SWITCH_REALTIME:
-            return self._business_switch_rows(conn, "switch_realtime_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset, source="switch_realtime")
+            return self._business_switch_rows(conn, "switch_realtime_events", start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         if table == OnlineMrBusinessTable.INTERFACE_RATE:
             return self._business_interface_rate_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         if table == OnlineMrBusinessTable.FPING_1S:
@@ -1125,24 +1149,7 @@ class OnlineMrQueryService:
             return self._business_diagnostics_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
         return []
 
-    def _business_mesh_link_rows(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        start_time: str | None,
-        end_time: str | None,
-        limit: int,
-        offset: int,
-    ) -> list[dict[str, Any]]:
-        columns = self._table_columns(conn, "active_segments")
-        if columns:
-            time_expr = self._time_expr(columns, ("start_time", "end_time"))
-            rows = self._fetch_active_segment_rows(conn, time_expr, start_time, end_time, limit, offset)
-            if rows:
-                return rows
-        return self._business_mesh_link_fallback_rows(conn, start_time=start_time, end_time=end_time, limit=limit, offset=offset)
-
-    def _business_mesh_link_fallback_rows(
+    def _business_main_link_rows(
         self,
         conn: sqlite3.Connection,
         *,
@@ -1161,213 +1168,40 @@ class OnlineMrQueryService:
         order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
 
         def make_item(row_data: dict[str, Any]) -> dict[str, Any]:
-            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
-            peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized") or row_data.get("peer_name"))
-            peer_name = self._text_or_none(row_data.get("resolved_peer_name") or row_data.get("peer_name") or peer_mac)
-            rssi = row_data.get("mr_rssi")
+            device_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
+            peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized"))
+            peer_name = self._business_peer_name(
+                row_data.get("resolved_peer_name"),
+                row_data.get("peer_name"),
+            )
             return {
-                "sample_time": sample_time,
+                "device_time": device_time,
                 "radio": row_data.get("radio"),
                 "link_state": self._text_or_none(row_data.get("link_state")) or "ACTIVE",
-                "active_peer_mac": peer_mac,
-                "active_peer_name": peer_name,
-                "ap_mac": peer_mac,
-                "peer_radio_mac": self._text_or_none(row_data.get("bssid")),
-                "peer_radio": row_data.get("radio"),
+                "peer_name": peer_name,
+                "peer_mac": peer_mac,
+                "mr_rssi": row_data.get("mr_rssi"),
+                "bssid": self._text_or_none(row_data.get("bssid")),
                 "belong_station": self._text_or_none(row_data.get("belong_station")),
                 "belong_section": self._text_or_none(row_data.get("belong_section")),
-                "start_time": sample_time,
-                "end_time": sample_time,
-                "duration_seconds": 0.0,
-                "log_duration_seconds": 0.0,
-                "sample_count": 1,
-                "avg_mr_rssi": rssi,
-                "min_mr_rssi": rssi,
-                "max_mr_rssi": rssi,
-                "avg_tx_busy": None,
-                "max_tx_busy": None,
-                "avg_rx_busy": None,
-                "max_rx_busy": None,
-                "ping_sent": None,
-                "ping_received": None,
-                "ping_lost": None,
-                "ping_loss_percent": None,
-                "avg_latency_ms": None,
-                "max_latency_ms": None,
-                "avg_mbps": None,
-                "min_mbps": None,
-                "max_mbps": None,
-                "p95_mbps": None,
-                "total_retransmits": None,
-                "event_type": self._text_or_none(row_data.get("link_state")) or "ACTIVE",
-                "decision_reason": "",
-                "raw_file": self._text_or_none(row_data.get("raw_file")),
-                "raw_line_start": row_data.get("raw_line_start"),
-                "raw_line_end": row_data.get("raw_line_end"),
+                "online_time": self._text_or_none(row_data.get("online_time")),
             }
 
-        peer_key_columns = [name for name in ("peer_mac_normalized", "peer_mac", "resolved_peer_name", "peer_name") if name in columns]
-        if "link_state" not in columns or not peer_key_columns:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM main_link_samples
-                WHERE {where}
-                ORDER BY {order_by}
-                LIMIT ? OFFSET ?
-                """,
-                (*params, limit, offset),
-            ).fetchall()
-            return [make_item(dict(row)) for row in rows]
-
-        def peer_key_expr(prefix: str = "") -> str:
-            parts = [f"NULLIF({prefix}{name}, '')" for name in peer_key_columns]
-            return f"COALESCE({', '.join(parts)}, '')"
-
-        grouped_order = "g.sample_time ASC, s.radio ASC, s.id ASC" if "id" in columns else "g.sample_time ASC, s.radio ASC"
+        state_filter = "AND UPPER(link_state) LIKE 'ACTIVE%'" if "link_state" in columns else ""
         rows = conn.execute(
             f"""
-            WITH grouped AS (
-                SELECT
-                    {time_expr} AS sample_time,
-                    {peer_key_expr()} AS active_peer_key,
-                    radio
-                FROM main_link_samples
-                WHERE {where}
-                  AND UPPER(link_state) LIKE 'ACTIVE%'
-                GROUP BY sample_time, active_peer_key, radio
-                ORDER BY sample_time ASC, radio ASC
-                LIMIT ? OFFSET ?
-            )
-            SELECT
-                s.*
-            FROM main_link_samples s
-            JOIN grouped g
-              ON {time_expr} = g.sample_time
-             AND s.radio = g.radio
-             AND {peer_key_expr("s.")} = g.active_peer_key
+            SELECT *
+            FROM main_link_samples
             WHERE {where}
-            ORDER BY {grouped_order}
-            """,
-            (*params, limit, offset, *params),
-        ).fetchall()
-        items: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-        for row in rows:
-            row_data = dict(row)
-            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
-            key = (sample_time or "", str(row_data.get("radio") or ""), str(row_data.get("peer_mac") or row_data.get("peer_name") or ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(make_item(row_data))
-        return self._apply_business_paging(items, limit, offset)
-
-    def _fetch_active_segment_rows(
-        self,
-        conn: sqlite3.Connection,
-        time_expr: str | None,
-        start_time: str | None,
-        end_time: str | None,
-        limit: int,
-        offset: int,
-    ) -> list[dict[str, Any]]:
-        columns = self._table_columns(conn, "active_segments")
-        if not columns:
-            return []
-        where, params = self._time_where(time_expr or "start_time", start_time, end_time)
-        rows = conn.execute(
-            f"""
-            SELECT
-                s.id,
-                s.session_id,
-                s.radio,
-                s.active_peer_mac,
-                s.start_time,
-                s.end_time,
-                s.sample_count,
-                s.avg_mr_rssi,
-                s.min_mr_rssi,
-                s.max_mr_rssi,
-                s.event_type,
-                s.details_json,
-                m.ping_sent,
-                m.ping_success,
-                m.ping_lost,
-                m.ping_loss_percent,
-                m.avg_latency_ms,
-                m.max_latency_ms,
-                m.iperf_sample_count,
-                m.avg_mbps,
-                m.min_mbps,
-                m.max_mbps,
-                m.p95_mbps,
-                m.total_retransmits,
-                m.avg_tx_busy,
-                m.max_tx_busy,
-                m.avg_rx_busy,
-                m.max_rx_busy
-            FROM active_segments s
-            LEFT JOIN active_segment_metrics m ON m.segment_id = s.id
-            WHERE {where}
-            ORDER BY COALESCE(NULLIF(s.end_time, ''), NULLIF(s.start_time, '')) ASC, s.id ASC
+              {state_filter}
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             (*params, limit, offset),
         ).fetchall()
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            details = self._json_object(row["details_json"])
-            start_time_text = self._text_or_none(row["start_time"])
-            end_time_text = self._text_or_none(row["end_time"])
-            items.append(
-                {
-                    "sample_time": end_time_text or start_time_text,
-                    "radio": row["radio"],
-                    "link_state": "ACTIVE",
-                    "active_peer_mac": self._text_or_none(row["active_peer_mac"]),
-                    "active_peer_name": self._text_or_none(details.get("active_peer_name") or details.get("peer_name") or row["active_peer_mac"]),
-                    "ap_mac": self._text_or_none(details.get("ap_mac") or row["active_peer_mac"]),
-                    "peer_radio_mac": self._text_or_none(details.get("peer_radio_mac") or details.get("bssid")),
-                    "peer_radio": row["radio"],
-                    "belong_station": self._text_or_none(details.get("belong_station")),
-                    "belong_section": self._text_or_none(details.get("belong_section")),
-                    "start_time": start_time_text,
-                    "end_time": end_time_text,
-                    "duration_seconds": self._duration_seconds(start_time_text, end_time_text),
-                    "log_duration_seconds": self._duration_seconds(
-                        details.get("first_sample_time") or start_time_text,
-                        details.get("last_sample_time") or end_time_text,
-                    ),
-                    "sample_count": row["sample_count"],
-                    "avg_mr_rssi": row["avg_mr_rssi"],
-                    "min_mr_rssi": row["min_mr_rssi"],
-                    "max_mr_rssi": row["max_mr_rssi"],
-                    "avg_tx_busy": row["avg_tx_busy"],
-                    "max_tx_busy": row["max_tx_busy"],
-                    "avg_rx_busy": row["avg_rx_busy"],
-                    "max_rx_busy": row["max_rx_busy"],
-                    "ping_sent": row["ping_sent"],
-                    "ping_received": row["ping_success"],
-                    "ping_lost": row["ping_lost"],
-                    "ping_loss_percent": row["ping_loss_percent"],
-                    "avg_latency_ms": row["avg_latency_ms"],
-                    "max_latency_ms": row["max_latency_ms"],
-                    "avg_mbps": row["avg_mbps"],
-                    "min_mbps": row["min_mbps"],
-                    "max_mbps": row["max_mbps"],
-                    "p95_mbps": row["p95_mbps"],
-                    "total_retransmits": row["total_retransmits"],
-                    "event_type": self._text_or_none(row["event_type"]) or "ACTIVE",
-                    "decision_reason": self._text_or_none(details.get("reason") or details.get("event_reason") or details.get("decision_reason")),
-                    "raw_file": self._text_or_none(details.get("raw_file") or row["id"]),
-                    "raw_line_start": details.get("raw_line_start"),
-                    "raw_line_end": details.get("raw_line_end"),
-                }
-            )
-        return self._apply_business_paging(items, limit, offset)
+        return [make_item(dict(row)) for row in rows]
 
-    def _business_mesh_detail_rows(
+    def _business_link_detail_rows(
         self,
         conn: sqlite3.Connection,
         *,
@@ -1397,14 +1231,14 @@ class OnlineMrQueryService:
         items: list[dict[str, Any]] = []
         for row in rows:
             row_data = dict(row)
-            sample_time = self._text_or_none(row_data.get("collector_time") or row_data.get("device_time") or row_data.get("device_clock"))
+            sample_time = self._text_or_none(row_data.get("collector_time"))
+            device_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
             peer_mac = self._text_or_none(row_data.get("peer_mac") or row_data.get("peer_mac_normalized"))
-            peer_name = self._text_or_none(row_data.get("resolved_peer_name") or row_data.get("peer_name") or peer_mac)
+            peer_name = self._business_peer_name(row_data.get("resolved_peer_name"), row_data.get("peer_name"))
             items.append(
                 {
                     "sample_time": sample_time,
-                    "device_time": self._text_or_none(row_data.get("device_time")),
-                    "collector_time": self._text_or_none(row_data.get("collector_time")),
+                    "device_time": device_time,
                     "radio": row_data.get("radio"),
                     "link_state": self._text_or_none(row_data.get("link_state")),
                     "peer_mac": peer_mac,
@@ -1412,26 +1246,9 @@ class OnlineMrQueryService:
                     "ap_mac": peer_mac,
                     "belong_station": self._text_or_none(row_data.get("belong_station")),
                     "belong_section": self._text_or_none(row_data.get("belong_section")),
-                    "peer_radio_mac": self._text_or_none(row_data.get("bssid")),
-                    "peer_radio": row_data.get("radio"),
-                    "link_start_time": sample_time,
-                    "link_duration_seconds": self._duration_seconds(sample_time, sample_time),
-                    "link_count": row_data.get("link_count") or 1,
-                    "mr_rssi_delta": None,
-                    "peer_rssi_delta": None,
-                    "mr_noise_floor": row_data.get("mr_noise_floor") or row_data.get("local_noise_dbm"),
-                    "peer_noise_floor": row_data.get("peer_noise_floor") or row_data.get("peer_noise_dbm"),
                     "mr_rx_signal": row_data.get("mr_rssi") or row_data.get("local_signal_dbm"),
-                    "peer_rx_signal": row_data.get("peer_rx_signal") or row_data.get("peer_signal_dbm"),
-                    "mr_rate_raw": row_data.get("mr_rate_raw") or row_data.get("local_rate_raw"),
-                    "peer_rate_raw": row_data.get("peer_rate_raw"),
-                    "l_tx_busy": row_data.get("l_tx_busy") or row_data.get("local_tx_busy"),
-                    "p_tx_busy": row_data.get("p_tx_busy") or row_data.get("peer_tx_busy"),
-                    "l_rx_busy": row_data.get("l_rx_busy") or row_data.get("local_rx_busy"),
-                    "p_rx_busy": row_data.get("p_rx_busy") or row_data.get("peer_rx_busy"),
-                    "raw_file": self._text_or_none(row_data.get("raw_file")),
-                    "raw_line_start": row_data.get("raw_line_start"),
-                    "raw_line_end": row_data.get("raw_line_end"),
+                    "mesh_interface": self._text_or_none(row_data.get("mesh_interface") or row_data.get("bssid")),
+                    "online_time": self._text_or_none(row_data.get("online_time")),
                 }
             )
         return self._apply_business_paging(items, limit, offset)
@@ -1468,132 +1285,18 @@ class OnlineMrQueryService:
         items: list[dict[str, Any]] = []
         for row in rows:
             row_data = dict(row)
-            sample_time = self._text_or_none(row_data.get("device_time") or row_data.get("device_clock"))
             items.append(
                 {
-                    "sample_time": sample_time,
                     "device_time": self._text_or_none(row_data.get("device_time")),
                     "radio": row_data.get("radio"),
-                    "ctl_busy": row_data.get("ctl_busy"),
-                    "tx_busy": row_data.get("tx_busy"),
-                    "rx_busy": row_data.get("rx_busy"),
-                    "peer_ap": "",
-                    "belong_station": "",
-                    "belong_section": "",
-                    "structured_source": "channel_busy_records",
-                    "source_file": self._text_or_none(row_data.get("raw_file")),
-                    "raw_file": self._text_or_none(row_data.get("raw_file")),
-                    "raw_line_start": row_data.get("raw_line_start"),
-                    "raw_line_end": row_data.get("raw_line_end"),
                     "ctl_channel": row_data.get("ctl_channel"),
                     "bandwidth": row_data.get("bandwidth"),
                     "record_interval": row_data.get("record_interval"),
+                    "ctl_busy": row_data.get("ctl_busy"),
+                    "tx_busy": row_data.get("tx_busy"),
+                    "rx_busy": row_data.get("rx_busy"),
                 }
             )
-        return self._apply_business_paging(items, limit, offset)
-
-    def _business_radio_statistics_rows(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        start_time: str | None,
-        end_time: str | None,
-        limit: int,
-        offset: int,
-    ) -> list[dict[str, Any]]:
-        columns = self._table_columns(conn, "radio_statistics_samples")
-        if not columns:
-            return []
-        time_expr = self._time_expr(columns, ("collector_time", "device_clock"))
-        if not time_expr:
-            return []
-        where, params = self._time_where(time_expr, start_time, end_time)
-        rows = conn.execute(
-            f"""
-            WITH grouped AS (
-                SELECT
-                    {time_expr} AS sample_time,
-                    radio
-                FROM radio_statistics_samples
-                WHERE {where}
-                GROUP BY sample_time, radio
-                ORDER BY sample_time ASC, radio ASC
-                LIMIT ? OFFSET ?
-            ),
-            details AS (
-                SELECT
-                    r.collector_time,
-                    r.device_clock,
-                    r.radio,
-                    r.metric_name,
-                    r.metric_value,
-                    r.metric_unit,
-                    r.raw_file,
-                    r.raw_line_start,
-                    r.raw_line_end,
-                    g.sample_time
-                FROM radio_statistics_samples r
-                JOIN grouped g
-                  ON {time_expr} = g.sample_time
-                 AND r.radio = g.radio
-                WHERE {where}
-                ORDER BY g.sample_time ASC, r.radio ASC, r.id ASC
-            )
-            SELECT * FROM details
-            """,
-            (*params, limit + 1, offset, *params),
-        ).fetchall()
-        if not rows:
-            return []
-        groups: dict[tuple[str, object], list[sqlite3.Row]] = defaultdict(list)
-        order: list[tuple[str, object]] = []
-        for row in rows:
-            key = (self._text_or_none(row["sample_time"]) or "", row["radio"])
-            if key not in groups:
-                order.append(key)
-            groups[key].append(row)
-        items: list[dict[str, Any]] = []
-        previous_metrics_by_radio: dict[object, dict[str, float]] = {}
-        for key in order:
-            entries = groups[key]
-            sample_time = key[0] or self._text_or_none(entries[0]["collector_time"] or entries[0]["device_clock"])
-            metrics = {self._text_or_none(entry["metric_name"]) or "": entry["metric_value"] for entry in entries}
-            metric_units = {self._text_or_none(entry["metric_name"]) or "": self._text_or_none(entry["metric_unit"]) or "" for entry in entries}
-            raw_entry = entries[0]
-            previous_metrics = previous_metrics_by_radio.get(raw_entry["radio"], {})
-            retry_delta = self._counter_delta(metrics.get("TxRetryFrmCnt"), previous_metrics.get("TxRetryFrmCnt"))
-            error_delta = self._counter_delta(
-                self._counter_sum(metrics, ("TxErrFrmCnt", "TxDiscardFrmCnt")),
-                self._counter_sum(previous_metrics, ("TxErrFrmCnt", "TxDiscardFrmCnt")),
-            )
-            items.append(
-                {
-                    "sample_time": sample_time,
-                    "radio": raw_entry["radio"],
-                    "peer_ap": "",
-                    "belong_station": "",
-                    "channel": "",
-                    "bandwidth": "",
-                    "tx": metrics.get("TxFrameAllCnt"),
-                    "rx": metrics.get("RxFrameAllCnt"),
-                    "retry": retry_delta,
-                    "error": error_delta,
-                    "tx_busy": None,
-                    "rx_busy": None,
-                    "ctl_busy": None,
-                    "source_file": self._text_or_none(raw_entry["raw_file"]),
-                    "raw_file": self._text_or_none(raw_entry["raw_file"]),
-                    "raw_line_start": raw_entry["raw_line_start"],
-                    "raw_line_end": raw_entry["raw_line_end"],
-                    "metrics": metrics,
-                    "metric_units": metric_units,
-                }
-            )
-            previous_metrics_by_radio[raw_entry["radio"]] = {
-                name: number
-                for name, value in metrics.items()
-                if (number := self._float_or_none(value)) is not None
-            }
         return self._apply_business_paging(items, limit, offset)
 
     def _business_switch_rows(
@@ -1605,7 +1308,6 @@ class OnlineMrQueryService:
         end_time: str | None,
         limit: int,
         offset: int,
-        source: str,
     ) -> list[dict[str, Any]]:
         columns = self._table_columns(conn, table)
         if not columns:
@@ -1633,47 +1335,28 @@ class OnlineMrQueryService:
                 or row_data.get("snapshot_collector_time")
                 or row_data.get("device_time")
             )
-            reason_text = self._text_or_none(row_data.get("switch_reason_text"))
             reason_code = row_data.get("switch_reason_code")
+            reason_text = self._switch_reason_text(row_data.get("switch_reason_text"), reason_code)
             if table == "switch_history_events":
                 items.append(
                     {
-                        "sample_time": event_time,
-                        "device_time": self._text_or_none(row_data.get("event_time_device")) or event_time,
-                        "source": source,
-                        "event": "主链路切换",
-                        "severity": self._switch_severity(reason_text, reason_code),
-                        "description": reason_text,
+                        "device_switch_time": self._text_or_none(row_data.get("event_time_device")) or event_time,
                         "radio": row_data.get("radio"),
                         "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
-                        "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
-                        "from_rssi": row_data.get("old_rssi"),
-                        "from_station": self._text_or_none(row_data.get("old_belong_station")),
-                        "from_section": self._text_or_none(row_data.get("old_belong_section")),
                         "to_peer_name": self._text_or_none(row_data.get("new_peer_name")),
-                        "to_peer_mac": self._text_or_none(row_data.get("new_peer_mac")),
+                        "from_rssi": row_data.get("old_rssi"),
                         "to_rssi": row_data.get("new_rssi"),
+                        "from_station": self._text_or_none(row_data.get("old_belong_station")),
                         "to_station": self._text_or_none(row_data.get("new_belong_station")),
-                        "to_section": self._text_or_none(row_data.get("new_belong_section")),
-                        "peer_quantity": row_data.get("peer_quantity"),
-                        "link_quantity": row_data.get("link_quantity"),
-                        "reason_code": reason_code,
                         "reason_text": reason_text,
                         "active_duration": self._text_or_none(row_data.get("active_duration")),
-                        "raw_file": self._text_or_none(row_data.get("raw_file")),
-                        "raw_line_start": row_data.get("raw_line_start"),
-                        "raw_line_end": row_data.get("raw_line_end"),
                     }
                 )
             else:
                 items.append(
                     {
-                        "sample_time": event_time,
                         "device_time": event_time,
-                        "source": source,
-                        "event": "实时主链路切换",
-                        "severity": self._switch_severity(reason_text, reason_code),
-                        "description": reason_text,
+                        "device_name": self._text_or_none(row_data.get("device_name")),
                         "radio": row_data.get("radio"),
                         "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
                         "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
@@ -1689,10 +1372,6 @@ class OnlineMrQueryService:
                         "link_quantity": row_data.get("link_quantity"),
                         "reason_code": reason_code,
                         "reason_text": reason_text,
-                        "device_name": self._text_or_none(row_data.get("device_name")),
-                        "raw_file": self._text_or_none(row_data.get("raw_file")),
-                        "raw_line_start": row_data.get("raw_line_start"),
-                        "raw_line_end": row_data.get("raw_line_end"),
                     }
                 )
         return self._apply_business_paging(items, limit, offset)
@@ -1729,17 +1408,13 @@ class OnlineMrQueryService:
             row_data = dict(row)
             items.append(
                 {
-                    "sample_time": self._text_or_none(row_data.get("device_time") or row_data.get("device_clock")),
                     "device_time": self._text_or_none(row_data.get("device_time")),
-                    "direction": self._text_or_none(row_data.get("direction")),
                     "interface": self._text_or_none(row_data.get("interface_normalized") or row_data.get("interface_name")),
-                    "usage_percent": row_data.get("usage_percent"),
+                    "direction": self._interface_direction_label(row_data.get("direction")),
                     "total_pps": row_data.get("total_pps"),
                     "broadcast_pps": row_data.get("broadcast_pps"),
                     "multicast_pps": row_data.get("multicast_pps"),
-                    "raw_file": self._text_or_none(row_data.get("raw_file")),
-                    "raw_line_start": row_data.get("raw_line_start"),
-                    "raw_line_end": row_data.get("raw_line_end"),
+                    "usage_percent": row_data.get("usage_percent"),
                 }
             )
         return self._apply_business_paging(items, limit, offset)
@@ -1778,27 +1453,26 @@ class OnlineMrQueryService:
             received = row_data.get("received")
             lost = row_data.get("lost")
             loss_count = lost if lost is not None else (sent - received if sent is not None and received is not None else None)
+            status = self._fping_status_label(row_data.get("status"))
+            if sent and received == 0:
+                status = "全部丢包"
+            elif loss_count:
+                status = "部分丢包"
             items.append(
                 {
-                    "sample_time": self._text_or_none(row_data.get("device_bucket_time") or row_data.get("bucket_time") or row_data.get("local_bucket_time")),
+                    "time": self._text_or_none(row_data.get("bucket_time") or row_data.get("local_bucket_time") or row_data.get("device_bucket_time")),
                     "device_time": self._text_or_none(row_data.get("device_bucket_time")),
                     "local_time": self._text_or_none(row_data.get("local_bucket_time")),
                     "target_ip": self._text_or_none(row_data.get("target_ip")),
-                    "target_name": self._text_or_none(row_data.get("target_name")),
                     "sent": sent,
                     "received": received,
                     "loss_count": loss_count,
                     "loss_rate": row_data.get("loss_percent"),
-                    "min_rtt": row_data.get("min_latency_ms"),
                     "avg_rtt": row_data.get("avg_latency_ms"),
+                    "min_rtt": row_data.get("min_latency_ms"),
                     "max_rtt": row_data.get("max_latency_ms"),
-                    "latest_rtt": row_data.get("latest_latency_ms") if "latest_latency_ms" in row_data else row_data.get("max_latency_ms"),
                     "jitter_ms": row_data.get("jitter_ms"),
-                    "status": self._fping_status_label(row_data.get("status")),
-                    "clock_offset_ms": row_data.get("clock_offset_ms"),
-                    "raw_file": "raw/fping_v5_raw.log",
-                    "raw_line_start": None,
-                    "raw_line_end": None,
+                    "status": status,
                 }
             )
         return self._apply_business_paging(items, limit, offset)
@@ -1830,48 +1504,22 @@ class OnlineMrQueryService:
             """,
             (*params, limit, offset),
         ).fetchall()
-        run_rows: dict[str, dict[str, Any]] = {}
-        run_columns = self._table_columns(conn, "iperf_runs")
-        if run_columns and any(row["run_id"] not in (None, "") for row in rows):
-            run_ids = [str(row["run_id"]) for row in rows if row["run_id"] not in (None, "")]
-            placeholders = ",".join("?" for _ in run_ids)
-            for run_row in conn.execute(f"SELECT * FROM iperf_runs WHERE run_id IN ({placeholders})", run_ids):
-                run_rows[str(run_row["run_id"])] = dict(run_row)
         items: list[dict[str, Any]] = []
         for row in rows:
             row_data = dict(row)
-            run_data = run_rows.get(str(row_data.get("run_id") or ""), {})
             sample_time = self._text_or_none(
-                row_data.get("device_interval_center_time")
-                or row_data.get("device_aligned_time")
-                or row_data.get("interval_center_time")
-                or row_data.get("collector_time")
+                row_data.get("interval_center_time") or row_data.get("collector_time")
             )
-            protocol = self._text_or_none(row_data.get("protocol") or run_data.get("protocol"))
-            direction = self._text_or_none(row_data.get("direction") or row_data.get("role") or run_data.get("direction"))
             items.append(
                 {
-                    "sample_time": sample_time,
-                    "time": sample_time,
-                    "protocol": protocol,
-                    "direction": direction,
-                    "role": self._text_or_none(row_data.get("role")),
-                    "bitrate_mbps": row_data.get("bitrate_mbps"),
+                    "local_time": sample_time,
+                    "runtime": self._iperf_runtime_label(row_data.get("interval_start_sec"), row_data.get("interval_end_sec")),
+                    "transfer": self._transfer_label(row_data.get("transfer_bytes")),
+                    "bitrate": self._mbps_label(row_data.get("bitrate_mbps")),
                     "jitter_ms": row_data.get("jitter_ms"),
+                    "lost_packets": row_data.get("lost_packets"),
+                    "total_packets": row_data.get("total_packets"),
                     "loss_percent": row_data.get("loss_percent"),
-                    "loss_count": row_data.get("lost_packets"),
-                    "retransmits": row_data.get("retransmits"),
-                    "local_endpoint": self._iperf_local_endpoint({**run_data, **row_data}),
-                    "remote_endpoint": self._iperf_remote_endpoint({**run_data, **row_data}),
-                    "server_ip": self._text_or_none(row_data.get("server_ip") or run_data.get("server_ip")),
-                    "port": row_data.get("port") if row_data.get("port") not in (None, "") else run_data.get("port"),
-                    "parallel": row_data.get("parallel") if row_data.get("parallel") not in (None, "") else run_data.get("parallel"),
-                    "target_bandwidth": self._text_or_none(row_data.get("target_bandwidth") or run_data.get("target_bandwidth")),
-                    "started_at": self._text_or_none(row_data.get("started_at") or run_data.get("started_at")),
-                    "ended_at": self._text_or_none(row_data.get("ended_at") or run_data.get("ended_at")),
-                    "status": self._text_or_none(row_data.get("status") or run_data.get("status")),
-                    "raw_file": self._text_or_none(row_data.get("raw_file") or run_data.get("raw_file")),
-                    "raw_line": self._text_or_none(row_data.get("raw_line")),
                 }
             )
         return self._apply_business_paging(items, limit, offset)
@@ -1963,8 +1611,84 @@ class OnlineMrQueryService:
                 )
         return self._apply_business_paging(items, limit, offset)
 
+    @staticmethod
+    def _strip_business_source_fields(row: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in row.items() if key not in _BUSINESS_SOURCE_FIELDS}
+
     def _apply_business_paging(self, rows: list[dict[str, Any]], limit: int, offset: int) -> list[dict[str, Any]]:
         return rows[:limit]
+
+    @classmethod
+    def _business_peer_name(cls, *candidates: object) -> str | None:
+        for candidate in candidates:
+            text = cls._text_or_none(candidate)
+            if text and not cls._is_mac_like(text):
+                return text
+        return None
+
+    @staticmethod
+    def _is_mac_like(value: object) -> bool:
+        text = str(value or "").strip()
+        compact = re.sub(r"[^0-9A-Fa-f]", "", text)
+        return len(compact) == 12 and bool(re.fullmatch(r"[0-9A-Fa-f:.-]+", text))
+
+    @classmethod
+    def _switch_reason_text(cls, reason: object, code: object) -> str | None:
+        text = cls._text_or_none(reason)
+        if text:
+            return text
+        code_text = cls._text_or_none(code)
+        return f"未知原因码：{code_text}" if code_text else None
+
+    @staticmethod
+    def _interface_direction_label(value: object) -> str | None:
+        text = str(value or "").strip().lower()
+        if text in {"in", "inbound", "rx", "receive", "received", "input"}:
+            return "接收"
+        if text in {"out", "outbound", "tx", "send", "sent", "output"}:
+            return "发送"
+        return OnlineMrQueryService._text_or_none(value)
+
+    @staticmethod
+    def _fping_status_label(value: object) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        upper = text.upper()
+        if upper in {"OK", "SUCCESS", "NORMAL"}:
+            return "正常"
+        if upper in {"LOSS", "PARTIAL_LOSS"}:
+            return "丢包"
+        if upper in {"TIMEOUT", "FAILED", "ERROR"}:
+            return "超时"
+        return OnlineMrQueryService._text_or_none(value)
+
+    @staticmethod
+    def _iperf_runtime_label(start: object, end: object) -> str | None:
+        start_value = OnlineMrQueryService._float_or_none(start)
+        end_value = OnlineMrQueryService._float_or_none(end)
+        if start_value is None or end_value is None:
+            return None
+        return f"{start_value:.2f}-{end_value:.2f} s"
+
+    @staticmethod
+    def _transfer_label(value: object) -> str | None:
+        number = OnlineMrQueryService._float_or_none(value)
+        if number is None:
+            return None
+        units = ("B", "KiB", "MiB", "GiB")
+        index = 0
+        while abs(number) >= 1024 and index < len(units) - 1:
+            number /= 1024.0
+            index += 1
+        return f"{number:.2f} {units[index]}"
+
+    @staticmethod
+    def _mbps_label(value: object) -> str | None:
+        number = OnlineMrQueryService._float_or_none(value)
+        if number is None:
+            return None
+        return f"{number:g} Mbps"
 
     def _time_expr(self, columns: set[str], candidates: Iterable[str]) -> str | None:
         parts = [f"NULLIF({name}, '')" for name in candidates if name in columns]
@@ -2043,9 +1767,6 @@ class OnlineMrQueryService:
                 "belong_type",
                 "belonging_source",
                 "online_time",
-                "raw_file",
-                "raw_line_start",
-                "raw_line_end",
             )
             if name in columns
         ]
@@ -2389,6 +2110,12 @@ class OnlineMrQueryService:
 
     @staticmethod
     def _database_schema_version(conn: sqlite3.Connection) -> str | None:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='online_schema_meta'").fetchone():
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(online_schema_meta)")}
+            if {"key", "value"}.issubset(columns):
+                row = conn.execute("SELECT value FROM online_schema_meta WHERE key = 'schema_version' LIMIT 1").fetchone()
+                if row and row[0] not in (None, ""):
+                    return str(row[0])
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(meta)")}
             if {"key", "value"}.issubset(columns):
@@ -2455,8 +2182,7 @@ class OnlineMrQueryService:
         selects = [f"{time_expr} AS metric_time"]
         selects.append(f"{value_column} AS metric_value" if value_column else "NULL AS metric_value")
         selects.append(f"{text_column} AS text_value" if text_column else "NULL AS text_value")
-        evidence_dimensions = [name for name in ("raw_file", "raw_line_start", "raw_line_end") if name in columns]
-        selects.extend(f"{name} AS dim_{name}" for name in (*available_dimensions, *evidence_dimensions))
+        selects.extend(f"{name} AS dim_{name}" for name in available_dimensions)
         where = [f"{time_expr} IS NOT NULL"]
         params: list[Any] = []
         if metric == OnlineMrMetricType.PING_RTT and "success" in columns:
@@ -2476,7 +2202,7 @@ class OnlineMrQueryService:
         sql = f"SELECT {', '.join(selects)} FROM {table} WHERE {' AND '.join(where)} ORDER BY metric_time, rowid LIMIT ? OFFSET ?"
         grouped: dict[str, list[OnlineMrMetricPointDTO]] = defaultdict(list)
         for row in conn.execute(sql, params):
-            dimension_values = {name: row[f"dim_{name}"] for name in (*available_dimensions, *evidence_dimensions) if row[f"dim_{name}"] not in (None, "")}
+            dimension_values = {name: row[f"dim_{name}"] for name in available_dimensions if row[f"dim_{name}"] not in (None, "")}
             key = "|".join(f"{name}={dimension_values[name]}" for name in sorted(available_dimensions) if name in dimension_values) or "default"
             value = row["metric_value"]
             grouped[key].append(
@@ -2514,7 +2240,6 @@ class OnlineMrQueryService:
         required = {
             "id", "radio", "old_peer_name", "old_peer_mac", "old_rssi",
             "new_peer_name", "new_peer_mac", "new_rssi", "switch_reason_text",
-            "raw_file", "raw_line_start", "raw_line_end",
         }
         if not required.issubset(columns):
             return []
@@ -2539,7 +2264,7 @@ class OnlineMrQueryService:
         params.extend((limit, offset))
         rows = conn.execute(
             f"SELECT id, {time_expr} AS event_time, radio, old_peer_name, old_peer_mac, old_rssi, "
-            "new_peer_name, new_peer_mac, new_rssi, switch_reason_text, raw_file, raw_line_start, raw_line_end "
+            "new_peer_name, new_peer_mac, new_rssi, switch_reason_text "
             f"FROM {table} WHERE {' AND '.join(where)} ORDER BY event_time, id LIMIT ? OFFSET ?",
             params,
         )
@@ -2556,9 +2281,6 @@ class OnlineMrQueryService:
                 new_peer_name=str(row["new_peer_name"] or ""),
                 new_peer_mac=str(row["new_peer_mac"] or ""),
                 new_rssi_dbm=float(row["new_rssi"]) if row["new_rssi"] is not None else None,
-                raw_file=str(row["raw_file"] or ""),
-                raw_line_start=int(row["raw_line_start"]) if row["raw_line_start"] is not None else None,
-                raw_line_end=int(row["raw_line_end"]) if row["raw_line_end"] is not None else None,
             )
             for row in rows
         ]
@@ -2613,8 +2335,8 @@ class OnlineMrQueryService:
         if self._table_columns(conn, "switch_realtime_events"):
             for row in conn.execute(
                 "SELECT id, device_time, radio, old_peer_name, old_peer_mac, old_rssi, "
-                "new_peer_name, new_peer_mac, new_rssi, switch_reason_text, "
-                "raw_file, raw_line_start, raw_line_end FROM switch_realtime_events "
+                "new_peer_name, new_peer_mac, new_rssi, switch_reason_text "
+                "FROM switch_realtime_events "
                 "ORDER BY device_time LIMIT ?",
                 (fetch_limit,),
             ):
@@ -2634,9 +2356,6 @@ class OnlineMrQueryService:
                             "new_peer_name": row["new_peer_name"],
                             "new_peer_mac": row["new_peer_mac"],
                             "new_rssi_dbm": row["new_rssi"],
-                            "raw_file": row["raw_file"],
-                            "raw_line_start": row["raw_line_start"],
-                            "raw_line_end": row["raw_line_end"],
                         },
                     )
                 )

@@ -52,9 +52,11 @@ const tabsStub = defineComponent({
   props: { modelValue: { type: String, default: '' } },
   emits: ['tab-change'],
   setup(props, { emit, slots }) {
-    return () => h('div', props.modelValue === 'session-history' || props.modelValue === 'statistics' || props.modelValue === 'charts'
+    const mainTabs = new Set(['session-history', 'mesh-link', 'mesh-detail', 'channel-busy', 'switch-history', 'active-switch', 'interface-rate', 'fping', 'iperf', 'diagnosis', 'raw', 'logs', 'charts'])
+    return () => h('div', mainTabs.has(props.modelValue)
       ? [
-          h('button', { 'data-testid': 'statistics-tab', onClick: () => emit('tab-change', 'statistics') }, '无线统计'),
+          h('button', { 'data-testid': 'main-link-tab', onClick: () => emit('tab-change', 'mesh-link') }, '主链路信息'),
+          h('button', { 'data-testid': 'link-detail-tab', onClick: () => emit('tab-change', 'mesh-detail') }, '链路明细'),
           h('button', { 'data-testid': 'charts-tab', onClick: () => emit('tab-change', 'charts') }, '动态图'),
           slots.default?.(),
         ]
@@ -66,8 +68,13 @@ const tabsStub = defineComponent({
   },
 })
 const tableStub = defineComponent({
-  props: { data: { type: Array, default: () => [] }, emptyText: { type: String, default: '' } },
-  setup(props) { return () => h('div', props.data.length ? `${props.data.length} rows` : props.emptyText) },
+  props: { data: { type: Array, default: () => [] }, emptyText: { type: String, default: '' }, columns: { type: Array, default: () => [] } },
+  setup(props) {
+    return () => h('div', [
+      h('div', props.columns.map((column: any) => column.label).join('|')),
+      h('div', props.data.length ? `${props.data.length} rows` : props.emptyText),
+    ])
+  },
 })
 const selectStub = defineComponent({
   props: { modelValue: { type: String, default: '' }, placeholder: { type: String, default: '' } },
@@ -97,10 +104,10 @@ const stubs: Record<string, Component | boolean> = {
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.listRecentOnlineMrSessions.mockResolvedValue([{ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', started_at: '2026-07-20 10:00:00' }])
-  mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', data_integrity: 'complete', has_raw_data: true, database_summary: { status: 'ready', compatible: true, parser_version: 'v8', missing_capabilities: [], message: '解析数据库可用。' } })
+  mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', data_integrity: 'complete', has_raw_data: true, database_summary: { status: 'ready', compatible: true, parser_version: 'online_mr_business_tables_v9_no_source_fields', missing_capabilities: [], message: '解析数据库可用。' } })
   mocks.getOnlineMrBusinessSummary.mockResolvedValue({ session_id: 'session-1', sample_count: 0, active_count: 0, standby_count: 0, active_segment_count: 0, switch_count: 0, fping_point_count: 0, iperf_point_count: 0, channel_busy_count: 0, interface_pps_count: 0, diagnosis_count: 0, first_sample_time: null, last_sample_time: null, estimated_interval_seconds: null, time_sync_status: 'unknown', time_sync_avg_offset_ms: null, current_radio: null, current_link_state: '', current_peer_mac: '', current_peer_name: '', current_ap_mac: '', current_peer_radio_mac: '', current_station: '', current_section: '', current_rssi: null, current_segment_start: null, current_segment_end: null, current_segment_duration_seconds: null })
   mocks.queryOnlineMrMetrics.mockResolvedValue({ series: [], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 0, has_more: false })
-  mocks.queryOnlineMrBusinessTable.mockResolvedValue({ table: 'radio_statistics', rows: [], limit: 500, offset: 0, returned_count: 0, next_offset: 500, has_more: false })
+  mocks.queryOnlineMrBusinessTable.mockResolvedValue({ table: 'main_link', rows: [], limit: 500, offset: 0, returned_count: 0, next_offset: 500, has_more: false })
   mocks.queryOnlineMrSwitchRssiWindows.mockResolvedValue({ items: [], limit: 200, offset: 0, has_more: false })
   mocks.queryOnlineMrTimeline.mockResolvedValue([])
   mocks.recoverRailTransitTasks.mockResolvedValue([])
@@ -114,11 +121,19 @@ async function renderView() {
 }
 
 describe('Online MR analysis view behavior', () => {
-  it('shows TCP rate limit as an unlimited TCP field in iPerf tables', () => {
-    expect(source).toContain('TCP 限速')
-    expect(source).toContain('iperfRateLimitLabel')
-    expect(source).toContain('不限速')
-    expect(source).not.toContain('TCP 总限速')
+  it('uses refactored business labels without radio statistics or source columns', () => {
+    expect(source).toContain('主链路信息')
+    expect(source).toContain('链路明细')
+    expect(source).toContain('主链路切换历史')
+    expect(source).toContain('主链路切换日志')
+    expect(source).toContain('接口速率')
+    expect(source).toContain('fping 1s 聚合')
+    expect(source).toContain('打流测试')
+    expect(source).not.toContain('无线统计')
+    expect(source).not.toContain('来源文件')
+    expect(source).not.toContain('raw_file')
+    expect(source).not.toContain('raw_line')
+    expect(source).not.toContain('TCP 限速')
   })
 
   it('wraps inline Search and Document SVGs in bounded icon containers', async () => {
@@ -131,13 +146,16 @@ describe('Online MR analysis view behavior', () => {
     wrapper.unmount()
   })
 
-  it('queries real radio statistics with bounded paging instead of row counts', async () => {
+  it('queries main link and link detail with the new business table keys', async () => {
     const wrapper = await renderView()
-    await wrapper.get('[data-testid="statistics-tab"]').trigger('click')
+    await wrapper.get('[data-testid="main-link-tab"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="link-detail-tab"]').trigger('click')
     await flushPromises()
 
-    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledWith('session-1', 'radio_statistics', expect.objectContaining({ limit: 500, offset: 0 }))
-    expect(wrapper.text()).toContain('暂无统计数据')
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledWith('session-1', 'main_link', expect.objectContaining({ limit: 500, offset: 0 }))
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledWith('session-1', 'link_detail', expect.objectContaining({ limit: 500, offset: 0 }))
+    expect(wrapper.text()).toContain('暂无链路明细')
     wrapper.unmount()
   })
 
@@ -166,8 +184,8 @@ describe('Online MR analysis view behavior', () => {
       { session_id: 'session-2', device_name: 'MR-2', mr_name: 'MR-2', status: 'ABORTED', started_at: '2026-07-20 11:00:00' },
     ])
     mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionId === 'session-1'
-      ? { session_id: sessionId, device_name: 'MR-1', status: 'STOPPED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'ready', compatible: true, parser_version: 'v8', missing_capabilities: [], message: '解析数据库可用。' } }
-      : { session_id: sessionId, device_name: 'MR-2', status: 'ABORTED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'missing', compatible: false, parser_version: null, missing_capabilities: ['mesh_link'], message: '当前会话尚未生成解析数据库，原始日志仍可查看。' } })
+      ? { session_id: sessionId, device_name: 'MR-1', status: 'STOPPED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'ready', compatible: true, parser_version: 'online_mr_business_tables_v9_no_source_fields', missing_capabilities: [], message: '解析数据库可用。' } }
+      : { session_id: sessionId, device_name: 'MR-2', status: 'ABORTED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'missing', compatible: false, parser_version: null, missing_capabilities: ['main_link'], message: '当前会话尚未生成解析数据库，原始日志仍可查看。' } })
     mocks.queryOnlineMrMetrics.mockResolvedValueOnce({ series: [{ metric_type: 'rssi', series_key: 'AP-A', unit: 'dBm', points: [{ timestamp: 't', value: -61, text_value: null, dimensions: {} }], summary: { count: 1, minimum: -61, maximum: -61, average: -61 } }], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 1, has_more: false })
     const wrapper = await renderView()
     await wrapper.get('[data-testid="charts-tab"]').trigger('click')

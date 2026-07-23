@@ -32,7 +32,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_sampling_model_v8_iperf_time_alignment"
+PARSER_VERSION = "online_mr_business_tables_v9_no_source_fields"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -468,9 +468,6 @@ class OnlineMrDiagnosisParser:
                     device_dt.isoformat(sep=" ", timespec="milliseconds"),
                     offset_ms,
                     source,
-                    "raw/mesh_link_raw.log",
-                    block.offset_start,
-                    block.offset_end,
                 )
             ],
         )
@@ -590,9 +587,6 @@ class OnlineMrDiagnosisParser:
                     metrics.get("belong_type") or "unknown",
                     metrics.get("belonging_source") or "",
                     metrics.get("online_time") or record.duration_text or record.duration_seconds,
-                    "raw/mesh_link_raw.log",
-                    block.offset_start,
-                    block.offset_end,
                 )
             )
         self.repository.insert_rows("main_link_samples", rows)
@@ -617,9 +611,6 @@ class OnlineMrDiagnosisParser:
                     row.get("ctl_busy"),
                     row.get("tx_busy"),
                     row.get("rx_busy"),
-                    "raw/channel_busy_raw.log",
-                    block.offset_start,
-                    block.offset_end,
                 )
             )
         self.repository.insert_rows("channel_busy_records", values)
@@ -639,9 +630,6 @@ class OnlineMrDiagnosisParser:
                     key,
                     value,
                     "",
-                    "raw/ap_radio_statistics_raw.log",
-                    block.offset_start,
-                    block.offset_end,
                 )
                 for key, value in counters.items()
                 if isinstance(value, (int, float))
@@ -670,9 +658,6 @@ class OnlineMrDiagnosisParser:
                     row.get("broadcast_pps"),
                     row.get("multicast_pps"),
                     row.get("usage_percent"),
-                    "raw/interface_rate_raw.log",
-                    block.offset_start,
-                    block.offset_end,
                 )
             )
         if not values:
@@ -741,13 +726,12 @@ class OnlineMrDiagnosisParser:
             return 0
         resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
         enriched_rows = [self._enrich_switch_history_row(row, resolver) for row in rows]
-        self._write_switch_history_events(enriched_rows, collected_at, path)
+        self._write_switch_history_events(enriched_rows, collected_at)
         return len(enriched_rows)
 
-    def _write_switch_history_events(self, rows: list[dict[str, object]], snapshot_collector_time: datetime, path: Path) -> None:
+    def _write_switch_history_events(self, rows: list[dict[str, object]], snapshot_collector_time: datetime) -> None:
         if not rows:
             return
-        rel_path = f"raw/{path.name}" if path.parent == self.raw_dir else str(path)
         values: list[tuple[object, ...]] = []
         for row in rows:
             values.append(
@@ -774,9 +758,6 @@ class OnlineMrDiagnosisParser:
                     row.get("switch_reason_code"),
                     row.get("reason") or row.get("role") or "-",
                     row.get("active_time") or "-",
-                    rel_path,
-                    0,
-                    0,
                 )
             )
         self.repository.insert_rows("switch_history_events", values)
@@ -814,7 +795,7 @@ class OnlineMrDiagnosisParser:
             return 0
         resolver = ApRadioMappingService(str(self.meta.site or ""), self._path_resolver())
         enriched = [self._enrich_switch_log(row, resolver) for row in rows]
-        self._write_active_link_switch_logs(enriched, "terminal_monitor")
+        self._write_active_link_switch_logs(enriched)
         return len(enriched)
 
     def _enrich_switch_log(self, row: ActiveLinkSwitchLog, resolver: ApRadioMappingService) -> ActiveLinkSwitchLog:
@@ -882,8 +863,7 @@ class OnlineMrDiagnosisParser:
         parts = [f"{key}={counters.get(key)}" for key in keys if counters.get(key) is not None]
         return "display ar5drv statistics | " + " ".join(parts)
 
-    def _write_active_link_switch_logs(self, rows: list[ActiveLinkSwitchLog], source: str) -> None:
-        _ = source
+    def _write_active_link_switch_logs(self, rows: list[ActiveLinkSwitchLog]) -> None:
         self.repository.replace_switch_realtime_events(
             self.meta.session_id,
             [
@@ -906,9 +886,6 @@ class OnlineMrDiagnosisParser:
                         row.link_quantity,
                         row.switch_reason_code,
                         row.switch_reason_text,
-                        "raw/terminal_monitor_raw.log",
-                        0,
-                        0,
                 )
                 for row in rows
             ],
@@ -1246,18 +1223,9 @@ class OnlineMrDiagnosisParser:
             row["clock_offset_ms"] = clock_offset_ms
             row["offset_source"] = offset_source
             row["time_source"] = "mr_device_clock_aligned" if device_dt is not None else "local_tool"
-            row["raw_line"] = self._iperf_interval_summary(row)
             self.repository.append_iperf_interval(run_id, row, self.meta.session_id)
         self.repository.finish_iperf_run(run_id, "PARSED")
         return len(rows)
-
-    @staticmethod
-    def _iperf_interval_summary(row: dict[str, object]) -> str:
-        return (
-            f"iperf interval {row.get('interval_start_sec')}-{row.get('interval_end_sec')}s "
-            f"bitrate={row.get('bitrate_mbps')}Mbps retrans={row.get('retransmits')} "
-            f"loss={row.get('loss_percent')}"
-        )
 
     def _write_iperf_error_events(self, errors: list[dict[str, object]], path: Path) -> None:
         self.repository.insert_rows(

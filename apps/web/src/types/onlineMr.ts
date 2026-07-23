@@ -147,7 +147,146 @@ export interface OnlineMrMetricPage {
 
 export type OnlineMrSwitchRssiSource = 'history' | 'realtime'
 
-export type OnlineMrBusinessTable = 'mesh_link' | 'mesh_detail' | 'channel_busy' | 'radio_statistics' | 'switch_history' | 'switch_realtime' | 'interface_rate' | 'fping_1s' | 'iperf' | 'diagnostics'
+export type OnlineMrBusinessTable = 'main_link' | 'link_detail' | 'channel_busy' | 'switch_history' | 'switch_realtime' | 'interface_rate' | 'fping_1s' | 'iperf' | 'diagnostics'
+
+export interface OnlineMrBusinessRowBase {
+  [key: string]: unknown
+}
+
+export interface OnlineMrMainLinkRow extends OnlineMrBusinessRowBase {
+  device_time: string | null
+  radio: number | null
+  link_state: string | null
+  peer_name: string | null
+  peer_mac: string | null
+  mr_rssi: number | null
+  bssid: string | null
+  belong_station: string | null
+  belong_section: string | null
+  online_time: string | null
+}
+
+export interface OnlineMrLinkDetailRow extends OnlineMrBusinessRowBase {
+  sample_time: string | null
+  device_time: string | null
+  radio: number | null
+  link_state: string | null
+  peer_mac: string | null
+  peer_name: string | null
+  ap_mac: string | null
+  belong_station: string | null
+  belong_section: string | null
+  mr_rx_signal: number | null
+  mesh_interface: string | null
+  online_time: string | null
+}
+
+export interface OnlineMrChannelBusyRow extends OnlineMrBusinessRowBase {
+  device_time: string | null
+  radio: number | null
+  ctl_channel: number | null
+  bandwidth: number | null
+  record_interval: number | null
+  ctl_busy: number | null
+  tx_busy: number | null
+  rx_busy: number | null
+}
+
+export interface OnlineMrSwitchHistoryRow extends OnlineMrBusinessRowBase {
+  device_switch_time: string | null
+  radio: number | null
+  from_peer_name: string | null
+  to_peer_name: string | null
+  from_rssi: number | null
+  to_rssi: number | null
+  from_station: string | null
+  to_station: string | null
+  reason_text: string | null
+  active_duration: string | null
+}
+
+export interface OnlineMrSwitchRealtimeRow extends OnlineMrBusinessRowBase {
+  device_time: string | null
+  device_name: string | null
+  radio: number | null
+  from_peer_name: string | null
+  from_peer_mac: string | null
+  from_rssi: number | null
+  from_station: string | null
+  from_section: string | null
+  to_peer_name: string | null
+  to_peer_mac: string | null
+  to_rssi: number | null
+  to_station: string | null
+  to_section: string | null
+  peer_quantity: number | null
+  link_quantity: number | null
+  reason_code: number | null
+  reason_text: string | null
+}
+
+export interface OnlineMrInterfaceRateRow extends OnlineMrBusinessRowBase {
+  device_time: string | null
+  interface: string | null
+  direction: string | null
+  total_pps: number | null
+  broadcast_pps: number | null
+  multicast_pps: number | null
+  usage_percent: number | null
+}
+
+export interface OnlineMrFping1sRow extends OnlineMrBusinessRowBase {
+  time: string | null
+  device_time: string | null
+  local_time: string | null
+  target_ip: string | null
+  sent: number | null
+  received: number | null
+  loss_count: number | null
+  loss_rate: number | null
+  avg_rtt: number | null
+  min_rtt: number | null
+  max_rtt: number | null
+  jitter_ms: number | null
+  status: string | null
+}
+
+export interface OnlineMrIperfRow extends OnlineMrBusinessRowBase {
+  local_time: string | null
+  runtime: string | null
+  transfer: string | null
+  bitrate: string | null
+  jitter_ms: number | null
+  lost_packets: number | null
+  total_packets: number | null
+  loss_percent: number | null
+}
+
+export interface OnlineMrDiagnosticsRow extends OnlineMrBusinessRowBase {
+  issue_type: string | null
+  severity: string | null
+  start_time: string | null
+  end_time: string | null
+  peer_name: string | null
+  station: string | null
+  section: string | null
+  description: string | null
+  recommendation: string | null
+}
+
+export interface OnlineMrBusinessRowsByTable {
+  main_link: OnlineMrMainLinkRow
+  link_detail: OnlineMrLinkDetailRow
+  channel_busy: OnlineMrChannelBusyRow
+  switch_history: OnlineMrSwitchHistoryRow
+  switch_realtime: OnlineMrSwitchRealtimeRow
+  interface_rate: OnlineMrInterfaceRateRow
+  fping_1s: OnlineMrFping1sRow
+  iperf: OnlineMrIperfRow
+  diagnostics: OnlineMrDiagnosticsRow
+}
+
+export type OnlineMrBusinessRow = OnlineMrBusinessRowsByTable[OnlineMrBusinessTable]
 
 export interface OnlineMrBusinessSummary {
   session_id: string
@@ -180,9 +319,9 @@ export interface OnlineMrBusinessSummary {
   current_segment_duration_seconds: number | null
 }
 
-export interface OnlineMrBusinessTablePage {
-  table: OnlineMrBusinessTable
-  rows: Array<Record<string, unknown>>
+export interface OnlineMrBusinessTablePage<Table extends OnlineMrBusinessTable = OnlineMrBusinessTable> {
+  table: Table
+  rows: Array<OnlineMrBusinessRowsByTable[Table]>
   limit: number
   offset: number
   returned_count: number
@@ -202,9 +341,6 @@ export interface OnlineMrSwitchRssiWindow {
   new_peer_name: string
   new_peer_mac: string
   new_rssi_dbm: number | null
-  raw_file: string
-  raw_line_start: number | null
-  raw_line_end: number | null
 }
 
 export interface OnlineMrSwitchRssiPage {

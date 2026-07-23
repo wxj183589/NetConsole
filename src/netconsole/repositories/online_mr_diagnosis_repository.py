@@ -11,6 +11,7 @@ from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, 
 
 
 OnlineMrDatabaseError = sqlite3.Error
+ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v9_no_source_fields"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS main_link_samples (
@@ -33,10 +34,7 @@ CREATE TABLE IF NOT EXISTS main_link_samples (
     belong_section TEXT,
     belong_type TEXT,
     belonging_source TEXT,
-    online_time TEXT,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    online_time TEXT
 );
 CREATE TABLE IF NOT EXISTS channel_busy_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,10 +49,7 @@ CREATE TABLE IF NOT EXISTS channel_busy_records (
     row_index INTEGER,
     ctl_busy INTEGER,
     tx_busy INTEGER,
-    rx_busy INTEGER,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    rx_busy INTEGER
 );
 CREATE TABLE IF NOT EXISTS radio_statistics_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,10 +60,7 @@ CREATE TABLE IF NOT EXISTS radio_statistics_samples (
     radio INTEGER,
     metric_name TEXT,
     metric_value REAL,
-    metric_unit TEXT,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    metric_unit TEXT
 );
 CREATE TABLE IF NOT EXISTS interface_rate_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,10 +74,7 @@ CREATE TABLE IF NOT EXISTS interface_rate_samples (
     total_pps REAL,
     broadcast_pps REAL,
     multicast_pps REAL,
-    usage_percent REAL,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    usage_percent REAL
 );
 CREATE TABLE IF NOT EXISTS time_sync_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,10 +82,7 @@ CREATE TABLE IF NOT EXISTS time_sync_samples (
     collector_time TEXT NOT NULL,
     device_time TEXT NOT NULL,
     offset_ms REAL NOT NULL,
-    source TEXT,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    source TEXT
 );
 CREATE TABLE IF NOT EXISTS fping_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,9 +134,7 @@ CREATE TABLE IF NOT EXISTS iperf_runs (
     started_at TEXT,
     ended_at TEXT,
     status TEXT,
-    command_json TEXT,
-    log_file TEXT,
-    raw_file TEXT
+    command_json TEXT
 );
 CREATE TABLE IF NOT EXISTS iperf_intervals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +158,7 @@ CREATE TABLE IF NOT EXISTS iperf_intervals (
     lost_packets INTEGER,
     total_packets INTEGER,
     loss_percent REAL,
-    raw_line TEXT
+    source_event_key TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS online_parse_issues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,9 +216,6 @@ CREATE TABLE IF NOT EXISTS switch_history_events (
     switch_reason_code INTEGER,
     switch_reason_text TEXT,
     active_duration TEXT,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER,
     UNIQUE(session_id, event_time_device, old_peer_mac, new_peer_mac, switch_reason_code)
 );
 CREATE TABLE IF NOT EXISTS switch_realtime_events (
@@ -256,10 +237,7 @@ CREATE TABLE IF NOT EXISTS switch_realtime_events (
     peer_quantity INTEGER,
     link_quantity INTEGER,
     switch_reason_code INTEGER,
-    switch_reason_text TEXT,
-    raw_file TEXT,
-    raw_line_start INTEGER,
-    raw_line_end INTEGER
+    switch_reason_text TEXT
 );
 CREATE TABLE IF NOT EXISTS active_segments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,6 +284,10 @@ CREATE INDEX IF NOT EXISTS idx_fping_1s_summary_device_time ON fping_1s_summary(
 CREATE INDEX IF NOT EXISTS idx_analysis_events_time ON analysis_events(collector_time);
 CREATE INDEX IF NOT EXISTS idx_switch_history_events_time ON switch_history_events(event_time_local);
 CREATE INDEX IF NOT EXISTS idx_switch_realtime_events_time ON switch_realtime_events(device_time);
+CREATE TABLE IF NOT EXISTS online_schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 IPERF_SCHEMA = """
@@ -323,9 +305,7 @@ CREATE TABLE IF NOT EXISTS iperf_runs (
     started_at TEXT,
     ended_at TEXT,
     status TEXT,
-    command_json TEXT,
-    log_file TEXT,
-    raw_file TEXT
+    command_json TEXT
 );
 CREATE TABLE IF NOT EXISTS iperf_intervals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,7 +329,7 @@ CREATE TABLE IF NOT EXISTS iperf_intervals (
     lost_packets INTEGER,
     total_packets INTEGER,
     loss_percent REAL,
-    raw_line TEXT
+    source_event_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_time ON iperf_intervals(interval_center_time);
 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
@@ -392,37 +372,34 @@ REQUIRED_CACHE_TABLES = frozenset(
 INSERT_SQL = {
     "time_sync_samples": """
         INSERT INTO time_sync_samples (
-            session_id, collector_time, device_time, offset_ms, source,
-            raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            session_id, collector_time, device_time, offset_ms, source
+        ) VALUES (?, ?, ?, ?, ?)
     """,
     "main_link_samples": """
         INSERT INTO main_link_samples (
             session_id, collector_time, device_time, device_clock, time_source, radio, link_state,
             peer_name, peer_mac, peer_mac_normalized, resolved_peer_name, mr_rssi,
             bssid, mesh_interface, belong_station, belong_section, belong_type,
-            belonging_source, online_time, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            belonging_source, online_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "channel_busy_records": """
         INSERT INTO channel_busy_records (
             session_id, device_time, device_clock, time_source, radio, ctl_channel, bandwidth,
-            record_interval, row_index, ctl_busy, tx_busy, rx_busy,
-            raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            record_interval, row_index, ctl_busy, tx_busy, rx_busy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "radio_statistics_samples": """
         INSERT INTO radio_statistics_samples (
             session_id, collector_time, device_clock, time_source, radio,
-            metric_name, metric_value, metric_unit, raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            metric_name, metric_value, metric_unit
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "interface_rate_samples": """
         INSERT INTO interface_rate_samples (
             session_id, device_time, device_clock, time_source, interface_name, interface_normalized,
-            direction, total_pps, broadcast_pps, multicast_pps, usage_percent,
-            raw_file, raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            direction, total_pps, broadcast_pps, multicast_pps, usage_percent
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "switch_history_events": """
         INSERT OR IGNORE INTO switch_history_events (
@@ -430,9 +407,8 @@ INSERT_SQL = {
             event_time_local, time_source, radio, old_peer_name, old_peer_mac, old_rssi,
             old_belong_station, old_belong_section, new_peer_name, new_peer_mac, new_rssi,
             new_belong_station, new_belong_section, peer_quantity, link_quantity,
-            switch_reason_code, switch_reason_text, active_duration, raw_file,
-            raw_line_start, raw_line_end
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            switch_reason_code, switch_reason_text, active_duration
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "analysis_events": """
         INSERT INTO analysis_events (
@@ -456,6 +432,10 @@ class OnlineMrDiagnosisRepository:
     def initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            conn.execute(
+                "INSERT OR REPLACE INTO online_schema_meta (key, value) VALUES ('schema_version', ?)",
+                (ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION,),
+            )
 
     def discard_existing_database(self) -> None:
         for _ in range(3):
@@ -622,9 +602,8 @@ class OnlineMrDiagnosisRepository:
                     session_id, device_time, time_source, device_name,
                     old_peer_name, old_peer_mac, old_rssi, old_belong_station, old_belong_section,
                     new_peer_name, new_peer_mac, new_rssi, new_belong_station, new_belong_section,
-                    peer_quantity, link_quantity, switch_reason_code, switch_reason_text,
-                    raw_file, raw_line_start, raw_line_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    peer_quantity, link_quantity, switch_reason_code, switch_reason_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )
@@ -856,7 +835,7 @@ class OnlineMrDiagnosisRepository:
                 SELECT DISTINCT
                     session_id, radio, peer_name, peer_mac, peer_mac_normalized,
                     resolved_peer_name, bssid, mesh_interface, belong_station,
-                    belong_section, belong_type, belonging_source, raw_file
+                    belong_section, belong_type, belonging_source
                 FROM main_link_samples
                 WHERE COALESCE(
                     NULLIF(peer_mac, ''), NULLIF(peer_mac_normalized, ''),
@@ -1025,8 +1004,8 @@ class OnlineMrDiagnosisRepository:
                     """
                     INSERT OR REPLACE INTO iperf_runs (
                         run_id, session_id, device_id, mode, protocol, server_ip, port, direction, parallel,
-                        target_bandwidth, started_at, status, command_json, log_file, raw_file
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_bandwidth, started_at, status, command_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -1042,8 +1021,6 @@ class OnlineMrDiagnosisRepository:
                         started_at.isoformat(sep=" ", timespec="milliseconds"),
                         "RUNNING",
                         json.dumps(command, ensure_ascii=False),
-                        str(log_file),
-                        str(log_file),
                     ),
                 )
                 conn.commit()
@@ -1065,8 +1042,8 @@ class OnlineMrDiagnosisRepository:
                         run_id, session_id, collector_time, interval_start_sec, interval_end_sec, interval_center_time,
                         device_aligned_time, device_interval_center_time, clock_offset_ms, offset_source, time_source,
                         transfer_bytes, bitrate_mbps, retransmits, cwnd, role, jitter_ms, lost_packets,
-                        total_packets, loss_percent, raw_line, source_event_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        total_packets, loss_percent, source_event_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id, source_event_key) WHERE source_event_key <> '' DO NOTHING
                     """,
                     (
@@ -1090,7 +1067,6 @@ class OnlineMrDiagnosisRepository:
                         row.get("lost_packets"),
                         row.get("total_packets"),
                         row.get("loss_percent"),
-                        row.get("raw_line"),
                         "",
                     ),
                 )
@@ -1124,16 +1100,6 @@ class OnlineMrDiagnosisRepository:
             with connect_sqlite(self.db_path) as conn:
                 initialize_sqlite_wal(conn)
                 conn.executescript(IPERF_SCHEMA)
-                run_columns = {
-                    str(row[1])
-                    for row in conn.execute("PRAGMA table_info(iperf_runs)").fetchall()
-                }
-                for column, definition in {
-                    "log_file": "TEXT",
-                    "raw_file": "TEXT",
-                }.items():
-                    if column not in run_columns:
-                        conn.execute(f"ALTER TABLE iperf_runs ADD COLUMN {column} {definition}")
                 columns = {
                     str(row[1])
                     for row in conn.execute("PRAGMA table_info(iperf_intervals)").fetchall()
@@ -1144,7 +1110,6 @@ class OnlineMrDiagnosisRepository:
                     "clock_offset_ms": "REAL",
                     "offset_source": "TEXT",
                     "time_source": "TEXT",
-                    "raw_line": "TEXT",
                 }.items():
                     if column not in columns:
                         conn.execute(f"ALTER TABLE iperf_intervals ADD COLUMN {column} {definition}")

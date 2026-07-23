@@ -148,6 +148,8 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 - 报告：页面当前正式路径使用 Export Process 和车载 MR 离线 Excel exporter。
 - AP Identity：只在 `online_mr_parse` 旧结果后附加只读 `identity_shadow`；不改变实时生产匹配、parsed schema 或报告业务统计。
 
+当前解析库 schema version 为 `online_mr_business_tables_v9_no_source_fields`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
+
 ## 8. 验证清单
 
 - 单/双 MR 选择、Ping 槽位绑定和手工目标保留；
@@ -364,9 +366,9 @@ LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 
-分析页继续复用同一个只读 `OnlineMrQueryService`：既有 `/metrics` 列表契约保持兼容，新 `/metric-page` 对动态图提供总点数封顶的分页查询，`limit` 在去重后的指标间均分并显式返回 `page_size_per_metric`、`next_offset` 和 `has_more`。RSSI、Channel Busy、接口 PPS、fping RTT/丢包与 iPerf 吞吐读取各自正式表；无线统计读取 `radio_statistics_samples.metric_value/metric_unit`，不得用表行数或占位值替代。
+分析页继续复用同一个只读 `OnlineMrQueryService`：既有 `/metrics` 列表契约保持兼容，新 `/metric-page` 对动态图提供总点数封顶的分页查询，`limit` 在去重后的指标间均分并显式返回 `page_size_per_metric`、`next_offset` 和 `has_more`。RSSI、Channel Busy、接口速率、fping RTT/丢包与打流吞吐读取各自正式表；`radio_statistics_samples` 仅作为内部指标/报告数据来源，不再进入 Web 独立业务页签或业务表 API。
 
-历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer、Radio 及相对 raw 证据。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
+历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer 和 Radio。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 

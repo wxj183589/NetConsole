@@ -37,16 +37,19 @@ class OnlineMrSwitchRssiSource(StrEnum):
 
 
 class OnlineMrBusinessTable(StrEnum):
-    MESH_LINK = "mesh_link"
-    MESH_DETAIL = "mesh_detail"
+    MAIN_LINK = "main_link"
+    LINK_DETAIL = "link_detail"
     CHANNEL_BUSY = "channel_busy"
-    RADIO_STATISTICS = "radio_statistics"
     SWITCH_HISTORY = "switch_history"
     SWITCH_REALTIME = "switch_realtime"
     INTERFACE_RATE = "interface_rate"
     FPING_1S = "fping_1s"
     IPERF = "iperf"
     DIAGNOSTICS = "diagnostics"
+    # Deprecated API boundary aliases. Internal query semantics normalize these
+    # to MAIN_LINK/LINK_DETAIL so mesh_link no longer means diagnostic segments.
+    MESH_LINK = "mesh_link"
+    MESH_DETAIL = "mesh_detail"
 
 
 class OnlineMrDataIntegrity(StrEnum):
@@ -244,9 +247,6 @@ class OnlineMrSwitchRssiWindowDTO(ApiModel):
     new_peer_name: str = ""
     new_peer_mac: str = ""
     new_rssi_dbm: float | None = None
-    raw_file: str = ""
-    raw_line_start: int | None = None
-    raw_line_end: int | None = None
 
 
 class OnlineMrSwitchRssiPageDTO(ApiModel):

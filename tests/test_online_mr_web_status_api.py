@@ -176,7 +176,8 @@ def test_analysis_api_preserves_metric_paging_units_and_switch_sources(tmp_path:
     assert metric_data["series"][0]["unit"] == "frame"
     assert metric_data["series"][0]["points"][0]["value"] == 20
     assert switch.status_code == 200
-    assert switch.json()["data"]["items"][0] == {
+    switch_item = switch.json()["data"]["items"][0]
+    assert switch_item == {
         "event_id": "history-1",
         "source": "history",
         "event_time": "2026-07-14 10:01:00",
@@ -188,10 +189,9 @@ def test_analysis_api_preserves_metric_paging_units_and_switch_sources(tmp_path:
         "new_peer_name": "AP-B",
         "new_peer_mac": "bb",
         "new_rssi_dbm": -50.0,
-        "raw_file": "raw/switch_history_latest.log",
-        "raw_line_start": 5,
-        "raw_line_end": 6,
     }
+    assert "raw_file" not in switch_item
+    assert "raw_line_start" not in switch_item
 
 
 def test_legacy_metrics_endpoint_still_returns_a_series_list(tmp_path: Path) -> None:

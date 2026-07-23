@@ -60,6 +60,34 @@ def test_online_mr_diagnosis_repository_initializes_existing_schema_and_indexes(
         "idx_switch_history_events_time",
         "idx_switch_realtime_events_time",
     }.issubset(indexes)
+    business_tables = {
+        "main_link_samples",
+        "channel_busy_records",
+        "radio_statistics_samples",
+        "interface_rate_samples",
+        "time_sync_samples",
+        "switch_history_events",
+        "switch_realtime_events",
+        "iperf_runs",
+        "iperf_intervals",
+    }
+    forbidden = {
+        "raw_file",
+        "source_file",
+        "source_path",
+        "relative_file",
+        "relative_path",
+        "raw_path",
+        "raw_line",
+        "raw_line_start",
+        "raw_line_end",
+        "line_number",
+        "log_file",
+    }
+    with sqlite3.connect(db_path) as conn:
+        for table in business_tables:
+            columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+            assert columns.isdisjoint(forbidden), table
 
 
 def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract(
@@ -91,9 +119,6 @@ def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract
                 "station",
                 "fixture",
                 "00h 01m 00s",
-                "raw/mesh_link_raw.log",
-                0,
-                100,
             )
         ],
     )
@@ -131,9 +156,6 @@ def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract
         2,
         "主动切换",
         "00h 01m 00s",
-        "raw/switch_history_latest.log",
-        0,
-        100,
     )
     repository.insert_rows("switch_history_events", [switch_history_row])
     repository.insert_rows("switch_history_events", [switch_history_row])
@@ -201,9 +223,6 @@ def test_online_mr_diagnosis_repository_reads_bounded_identity_shadow_rows(
                 "station",
                 "fixture",
                 "",
-                "raw/mesh_link_raw.log",
-                0,
-                100,
             )
             for index in range(3)
         ],
@@ -225,7 +244,6 @@ def test_online_mr_diagnosis_repository_reads_bounded_identity_shadow_rows(
         "belong_section",
         "belong_type",
         "belonging_source",
-        "raw_file",
     }
 
 
@@ -291,7 +309,6 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
             "transfer_bytes": 1024.0,
             "bitrate_mbps": 8.0,
             "retransmits": 0,
-            "raw_line": "iperf interval 0.0-1.0s",
         },
         "session-1",
     )
@@ -304,7 +321,7 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
     with sqlite3.connect(db_path) as conn:
         journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
         run = conn.execute(
-            "SELECT status, command_json, log_file, raw_file FROM iperf_runs"
+            "SELECT status, command_json FROM iperf_runs"
         ).fetchone()
         interval = conn.execute(
             """
@@ -315,6 +332,9 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
         columns = {
             str(row[1]) for row in conn.execute("PRAGMA table_info(iperf_intervals)")
         }
+        run_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(iperf_runs)")
+        }
         indexes = {
             str(row[1]) for row in conn.execute("PRAGMA index_list(iperf_intervals)")
         }
@@ -323,8 +343,6 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
     assert run == (
         "PARSED",
         '["iperf3", "parsed"]',
-        str(raw_path),
-        str(raw_path),
     )
     assert interval == (
         "session-1",
@@ -334,6 +352,8 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
         "mr_device_clock_aligned",
     )
     assert "source_event_key" in columns
+    assert {"raw_line", "raw_file"}.isdisjoint(columns)
+    assert {"log_file", "raw_file"}.isdisjoint(run_columns)
     assert {
         "idx_iperf_intervals_time",
         "idx_iperf_intervals_run",

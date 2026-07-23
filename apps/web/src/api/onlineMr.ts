@@ -80,17 +80,17 @@ export async function queryOnlineMrMetrics(sessionId: string, metricTypes: strin
   return (await apiRequest<ApiResponse<OnlineMrMetricPage>>(`${root}/${encodeURIComponent(sessionId)}/metric-page?${query}`, { signal: options.signal })).data
 }
 
-export async function queryOnlineMrBusinessTable(
+export async function queryOnlineMrBusinessTable<Table extends OnlineMrBusinessTable>(
   sessionId: string,
-  table: OnlineMrBusinessTable,
+  table: Table,
   options: OnlineMrBusinessQuery = {},
-): Promise<OnlineMrBusinessTablePage> {
+): Promise<OnlineMrBusinessTablePage<Table>> {
   const query = new URLSearchParams({ table })
   if (options.startTime) query.set('start_time', options.startTime)
   if (options.endTime) query.set('end_time', options.endTime)
   if (options.limit) query.set('limit', String(options.limit))
   if (options.offset !== undefined) query.set('offset', String(options.offset))
-  return (await apiRequest<ApiResponse<OnlineMrBusinessTablePage>>(`${root}/${encodeURIComponent(sessionId)}/business-table?${query}`, { signal: options.signal })).data
+  return (await apiRequest<ApiResponse<OnlineMrBusinessTablePage<Table>>>(`${root}/${encodeURIComponent(sessionId)}/business-table?${query}`, { signal: options.signal })).data
 }
 
 export async function queryOnlineMrSwitchRssiWindows(
