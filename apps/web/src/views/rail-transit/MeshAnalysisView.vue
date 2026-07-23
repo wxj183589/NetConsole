@@ -7,7 +7,7 @@ import { ArrowDown, ArrowRight, Delete, Document, Download, Hide, Lock, Refresh,
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
 import MeshTracksideSignalChart from '../../components/mesh-analysis/MeshTracksideSignalChart.vue'
-import { meshTimestampMillis, visibleMeshSamples, type MeshChartHandle, type MeshChartViewport } from '../../components/mesh-analysis/meshChartViewport'
+import { createFullMeshViewport, meshTimestampMillis, visibleMeshSamples, type MeshChartHandle, type MeshChartViewport } from '../../components/mesh-analysis/meshChartViewport'
 import { buildMeshTimeGroupClasses } from '../../components/mesh-analysis/timeGrouping'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
@@ -533,7 +533,7 @@ async function loadTracksideSignal(
   generation = detailGeneration,
 ): Promise<void> {
   if (!selected.value) return
-  const effectiveRange = range ?? defaultChartWindowRange('rssi')
+  const effectiveRange = range
   const result = await getMeshTracksideSignalChart(selected.value.session.session_id, {
     max_points: visiblePoints.value,
     radio: effectiveRange?.radio ?? chartRadio.value,
@@ -553,7 +553,7 @@ async function loadActivePath(
 ): Promise<void> {
   if (!selected.value) return
   const requestGeneration = nextChartGeneration(metric)
-  const effectiveRange = range ?? defaultChartWindowRange(metric)
+  const effectiveRange = range ?? (metric === 'busy' ? defaultChartWindowRange(metric) : null)
   const result = await getMeshActivePathChart(selected.value.session.session_id, {
     max_points: visiblePoints.value,
     radio: effectiveRange?.radio ?? chartRadio.value,
@@ -563,6 +563,13 @@ async function loadActivePath(
   if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
   if (metric === 'rssi') rssiActivePath.value = result
   else busyActivePath.value = result
+}
+
+async function loadFullRssiCharts(generation = detailGeneration): Promise<void> {
+  await Promise.all([
+    loadActivePath('rssi', null, generation),
+    loadTracksideSignal(null, generation),
+  ])
 }
 
 async function loadPeerPath(
@@ -592,10 +599,7 @@ async function loadCurrentMetricChart(
   generation = detailGeneration,
 ): Promise<void> {
   if (metric === 'rssi') {
-    await Promise.all([
-      loadActivePath('rssi', range, generation),
-      loadTracksideSignal(range, generation),
-    ])
+    await loadFullRssiCharts(generation)
     return
   }
   const mode = range?.mode ?? busyMode.value
@@ -654,12 +658,21 @@ function defaultChartWindowRange(metric: MeshChartMetric): MeshChartWindowRange 
 
 async function reloadCurrentChart(): Promise<void> {
   const metric: MeshChartMetric = activeTab.value === 'busy' ? 'busy' : 'rssi'
+  const viewport = metric === 'rssi' ? rssiViewport.value : null
   await loadCurrentMetricChart(metric, metric === 'busy' ? lockedAnalysisRange.value : null)
+  if (metric === 'rssi' && viewport) {
+    rssiViewport.value = viewport
+    await nextTick()
+    rssiChartRef.value?.applyViewport(viewport)
+  }
 }
 
 function resetCurrentChartViewport(): void {
   if (activeTab.value === 'busy') busyChartRef.value?.resetViewport()
-  else rssiChartRef.value?.resetViewport()
+  else {
+    rssiViewport.value = createFullMeshViewport((chartData.value?.points || []).map((point) => point.timestamp), 'programmatic')
+    rssiChartRef.value?.resetViewport()
+  }
 }
 
 function clearTimeLock(): void {
@@ -816,8 +829,9 @@ async function selectBuildOrder(row: MeshActiveBuildOrder, showChart = false): P
   }
   rssiViewport.value = range
   rssiFocusLabel.value = `已定位：主链路建链顺序 #${row.sequence} · ${row.build_start_time} — ${row.build_end_time}`
-  await loadCurrentMetricChart('rssi', range)
+  await loadFullRssiCharts()
   await nextTick()
+  rssiChartRef.value?.applyViewport(range)
   document.querySelector('.detail-tabs')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
@@ -834,7 +848,9 @@ async function showLinkChart(row: MeshLinkDetail): Promise<void> {
   }
   rssiViewport.value = range
   rssiFocusLabel.value = `已定位：链路明细 #${row.record_id} · ${row.timestamp}`
-  await loadCurrentMetricChart('rssi', range)
+  await loadFullRssiCharts()
+  await nextTick()
+  rssiChartRef.value?.applyViewport(range)
 }
 
 function selectChartSwitch(event: MeshChartEvent): void {

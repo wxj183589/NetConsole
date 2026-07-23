@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   listSessions: vi.fn(),
   listBuildOrder: vi.fn(),
+  listLinks: vi.fn(),
   getActivePath: vi.fn(),
   getPeerPath: vi.fn(),
   getTracksideSignal: vi.fn(),
@@ -19,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   getCounterDeltas: vi.fn(),
   listAnomalies: vi.fn(),
   exportDetails: vi.fn(),
+  chartApplyViewport: vi.fn(),
+  chartResetViewport: vi.fn(),
   routerPush: vi.fn(),
 }))
 
@@ -38,7 +41,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   listMeshAnalysisSessions: mocks.listSessions,
   listMeshAnomalies: mocks.listAnomalies,
   listMeshArtifacts: vi.fn(),
-  listMeshLinks: vi.fn(),
+  listMeshLinks: mocks.listLinks,
   listMeshProfiles: mocks.listProfiles,
   listMeshSwitchEvents: vi.fn(),
   meshArtifactDownloadRequest: vi.fn(),
@@ -72,8 +75,26 @@ const alertStub = defineComponent({
   setup(props, { slots }) { return () => h('div', [props.title, slots.default?.()]) },
 })
 const optionStub = defineComponent({
-  props: { label: { type: String, default: '' } },
-  setup(props) { return () => h('span', { 'data-option-label': props.label }, props.label) },
+  props: { label: { type: String, default: '' }, value: { type: [String, Number, Boolean], default: '' } },
+  setup(props) { return () => h('option', { value: props.value, 'data-option-label': props.label }, props.label) },
+})
+const selectStub = defineComponent({
+  inheritAttrs: false,
+  props: { modelValue: { type: [String, Number, Boolean, Object], default: '' }, placeholder: { type: String, default: '' } },
+  emits: ['change', 'update:modelValue'],
+  setup(props, { attrs, slots, emit }) {
+    return () => h('select', {
+      ...attrs,
+      value: props.modelValue as string | number | boolean,
+      'data-placeholder': props.placeholder,
+      onChange: (event: Event) => {
+        const raw = (event.target as HTMLSelectElement).value
+        const value = raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : raw
+        emit('update:modelValue', value)
+        emit('change', value)
+      },
+    }, slots.default?.())
+  },
 })
 const dataTableStub = defineComponent({
   inheritAttrs: false,
@@ -100,12 +121,19 @@ const chartViewport = {
 }
 const meshChartStub = defineComponent({
   name: 'MeshChartStub',
+  props: {
+    points: { type: Array, default: () => [] },
+    series: { type: Array, default: () => [] },
+    scope: { type: String, default: '' },
+    initialViewport: { type: Object, default: null },
+    syncViewport: { type: Object, default: null },
+  },
   setup(_props, { expose }) {
     expose({
       getViewport: () => chartViewport,
       getVisibleTimeRange: () => chartViewport,
-      applyViewport: vi.fn(),
-      resetViewport: vi.fn(),
+      applyViewport: mocks.chartApplyViewport,
+      resetViewport: mocks.chartResetViewport,
     })
     return () => h('div', { class: 'mesh-chart-stub' })
   },
@@ -125,7 +153,7 @@ const stubs: Record<string, Component | boolean> = {
   ElIcon: passthrough,
   ElOption: optionStub,
   ElPagination: passthrough,
-  ElSelect: passthrough,
+  ElSelect: selectStub,
   ElTabPane: passthrough,
   ElTabs: passthrough,
   ElTag: passthrough,
@@ -145,6 +173,7 @@ beforeEach(() => {
   mocks.recoverTasks.mockResolvedValue([])
   mocks.listSessions.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
+  mocks.listLinks.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], estimated_interval_seconds: null, continuity_gap_seconds: null, total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, top_n: 3, include_standby: true })
@@ -260,6 +289,20 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.find('.sessions-toggle').trigger('click')
     await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
     await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
+      max_points: 600,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+    })
+    expect(mocks.getTracksideSignal).toHaveBeenLastCalledWith('session-locked', {
+      max_points: 600,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+      include_standby: true,
+      top_n: 3,
+    })
 
     await wrapper.findAll('button').find((button) => button.text() === '锁定当前时间范围')!.trigger('click')
     await flushPromises()
@@ -284,13 +327,72 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('collapses sessions after opening a source, defaults to build order and lazily keeps charts unloaded', async () => {
+    const fullStart = '2026-07-20 10:00:00.000'
+    const fullMiddle = '2026-07-20 10:30:00.000'
+    const fullEnd = '2026-07-20 11:00:00.000'
     const session = {
-      session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '2026-07-20 10:00:00.000', last_sample_time: '2026-07-20 11:00:00.000',
+      session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: fullStart, last_sample_time: fullEnd,
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
     mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
     mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1, 2], warnings: [], sources: [{ source_file_id: 7, source_action_id: 'source-1', source_id: 'source-1', exists: true, rebuild_capability: 'ready' }] })
-    mocks.listBuildOrder.mockResolvedValue({ items: [{ sequence: 1, anchor_link_id: 10, peer_ap_name: 'AP-1', active_peer_mac: 'aa', build_start_time: '2026-07-20 10:00:00.000', build_end_time: '2026-07-20 10:00:10.000', build_result: 'normal' }], total: 1, page: 1, page_size: 100 })
+    mocks.listBuildOrder.mockResolvedValue({ items: [{ sequence: 1, anchor_link_id: 10, local_radio: 1, peer_ap_name: 'AP-1', active_peer_mac: 'aa', build_start_time: fullStart, build_end_time: '2026-07-20 10:00:10.000', build_result: 'normal' }], total: 1, page: 1, page_size: 100 })
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path',
+      anchor: null,
+      points: [
+        { timestamp: fullStart, local_radio: 1, local_rssi: 30 },
+        { timestamp: fullMiddle, local_radio: 1, local_rssi: 36 },
+        { timestamp: fullEnd, local_radio: 1, local_rssi: 34 },
+      ],
+      events: [],
+      location_segments: [],
+      total_points: 3,
+      returned_points: 3,
+      downsampled: false,
+      summary: {
+        sample_count: 3,
+        active_count: 3,
+        standby_context_count: 1,
+        switch_count: 0,
+        current_radio: 1,
+        first_sample_time: fullStart,
+        last_sample_time: fullEnd,
+      },
+      time_from: null,
+      time_to: null,
+    })
+    mocks.getTracksideSignal.mockResolvedValue({
+      source_id: 'session-1',
+      radio: 1,
+      time_range: { start: fullStart, end: fullEnd },
+      series: [{
+        series_id: 'ap-1:radio:1',
+        peer_name: 'AP-1',
+        peer_mac: 'aa',
+        ap_mac: null,
+        radio: 1,
+        station: null,
+        section: null,
+        role: 'ACTIVE',
+        data_source: 'peer_rssi_db',
+        total_points: 2,
+        returned_points: 2,
+        points: [{ timestamp: fullStart, timestamp_tag: '', peer_rssi: 28 }, { timestamp: fullEnd, timestamp_tag: '', peer_rssi: 31 }],
+      }],
+      events: [],
+      warnings: [],
+      estimated_interval_seconds: null,
+      continuity_gap_seconds: null,
+      total_series: 1,
+      returned_series: 1,
+      total_points: 2,
+      returned_points: 2,
+      downsampled: false,
+      requested_max_points: 600,
+      top_n: 3,
+      include_standby: true,
+    })
 
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
@@ -317,24 +419,137 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
-      radio: undefined,
-      time_from: '2026-07-20 09:59:55.000',
-      time_to: '2026-07-20 10:00:15.000',
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
     })
 
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 600,
-      radio: undefined,
-      time_from: '2026-07-20 09:59:55.000',
-      time_to: '2026-07-20 10:00:15.000',
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
       include_standby: true,
       top_n: 3,
+    })
+    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
+      start_time: '2026-07-20 09:59:55.000',
+      end_time: '2026-07-20 10:00:15.000',
+    }))
+    expect(wrapper.text()).toContain(`最早 ${fullStart}`)
+    expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
+
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.chartApplyViewport.mockClear()
+    const targetPointSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.findAll('[data-option-label]').some((option) => option.text() === '目标 1200 点')
+    ))
+    await targetPointSelect!.vm.$emit('update:modelValue', 1200)
+    await targetPointSelect!.vm.$emit('change', 1200)
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
+      max_points: 1200,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+    })
+    expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
+      max_points: 1200,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+      include_standby: true,
+      top_n: 3,
+    })
+    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
+      start_time: '2026-07-20 09:59:55.000',
+      end_time: '2026-07-20 10:00:15.000',
+    }))
+
+    await wrapper.findAll('button').find((button) => button.text() === '重置视图')!.trigger('click')
+    await flushPromises()
+    expect(mocks.chartResetViewport).toHaveBeenCalled()
+    const rssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
+      chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
+    ))
+    expect(rssiChart?.props('syncViewport')).toMatchObject({
+      start_time: fullStart,
+      end_time: fullEnd,
     })
 
     const openAgain = wrapper.findAll('button').find((button) => button.text() === '查看')
     await openAgain!.trigger('click')
     await flushPromises()
     expect(wrapper.find('.sessions-toggle').attributes('aria-expanded')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('opens link detail RSSI view with full-log API requests and only applies the row window to charts', async () => {
+    const session = {
+      session_id: 'session-link', mr_name: '列车07-MR-CT', original_filename: '7CTmeshlog.log', first_sample_time: '2026-07-20 09:00:00.000', last_sample_time: '2026-07-20 12:00:00.000',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    const linkRow = {
+      record_id: 88,
+      timestamp: '2026-07-20 10:00:00.000',
+      timestamp_tag: '',
+      local_radio: 1,
+      link_role: 'ACTIVE',
+      peer_mac: '3052-77a8-7200',
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [{ source_file_id: 7 }] })
+    mocks.getActivePath.mockResolvedValue({
+      mode: 'active_path',
+      anchor: null,
+      points: [
+        { timestamp: session.first_sample_time, local_radio: 1, local_rssi: 30 },
+        { timestamp: linkRow.timestamp, local_radio: 1, local_rssi: 42 },
+        { timestamp: session.last_sample_time, local_radio: 1, local_rssi: 33 },
+      ],
+      events: [],
+      location_segments: [],
+      total_points: 3,
+      returned_points: 3,
+      downsampled: false,
+      summary: { sample_count: 3, first_sample_time: session.first_sample_time, last_sample_time: session.last_sample_time },
+      time_from: null,
+      time_to: null,
+    })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    mocks.chartApplyViewport.mockClear()
+    const tables = wrapper.findAllComponents(dataTableStub)
+    const linkTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-link-details:v3')!
+    await linkTable.vm.$emit('row-dblclick', linkRow)
+    await flushPromises()
+
+    expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
+      max_points: 600,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+    })
+    expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
+      max_points: 600,
+      radio: 1,
+      time_from: undefined,
+      time_to: undefined,
+      include_standby: true,
+      top_n: 3,
+    })
+    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
+      start_time: '2026-07-20 09:59:45.000',
+      end_time: '2026-07-20 10:00:15.000',
+    }))
+    expect(wrapper.text()).toContain(`最早 ${session.first_sample_time}`)
+    expect(wrapper.text()).toContain(`最新 ${session.last_sample_time}`)
     wrapper.unmount()
   })
 
