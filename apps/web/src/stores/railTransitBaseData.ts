@@ -6,6 +6,7 @@ import {
   getRailTransitBaseDataEditSession,
   getRailTransitSummary,
   getRailTransitImportPolicies,
+  getStationSourcePreview,
   listRailTransitImportChanges,
   listRailTransitImportOperations,
   listDataQualityIssueGroups,
@@ -16,6 +17,7 @@ import {
   listTrains,
   listVehicleMrs,
   previewRailTransitImport,
+  previewStationTemplate,
   rollbackRailTransitImport,
   saveRailTransitBaseDataChanges,
   validateRailTransitBaseDataChanges,
@@ -36,6 +38,8 @@ import type {
   Relation,
   Section,
   Station,
+  StationSourcePreview,
+  StationTemplatePreview,
   TracksideAp,
   Train,
   VehicleMr,
@@ -59,6 +63,8 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const issueGroupTotal = ref(0)
   const issueCodeCounts = ref<Record<string, number>>({})
   const importPreview = ref<ImportPreviewResult | null>(null)
+  const stationSourcePreview = ref<StationSourcePreview | null>(null)
+  const stationTemplatePreview = ref<StationTemplatePreview | null>(null)
   const importPolicies = ref<ImportPolicyStatus | null>(null)
   const importOperations = ref<ImportOperation[]>([])
   const importChanges = ref<ImportChange[]>([])
@@ -66,6 +72,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const selectedFileName = ref('')
   const loading = ref(false)
   const previewLoading = ref(false)
+  const stationSourceLoading = ref(false)
   const applyLoading = ref(false)
   const failures = ref(0)
   const error = ref('')
@@ -145,6 +152,31 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     try {
       importPreview.value = await previewRailTransitImport(file)
       recordSuccess()
+    } catch (cause) {
+      recordFailure(cause)
+      throw cause
+    } finally { previewLoading.value = false }
+  }
+
+  async function refreshStationSourcePreview(): Promise<StationSourcePreview> {
+    stationSourceLoading.value = true
+    try {
+      stationSourcePreview.value = await getStationSourcePreview()
+      recordSuccess()
+      return stationSourcePreview.value
+    } catch (cause) {
+      recordFailure(cause)
+      throw cause
+    } finally { stationSourceLoading.value = false }
+  }
+
+  async function previewStationTemplateFile(file: File): Promise<StationTemplatePreview> {
+    previewLoading.value = true
+    selectedFileName.value = file.name
+    try {
+      stationTemplatePreview.value = await previewStationTemplate(file)
+      recordSuccess()
+      return stationTemplatePreview.value
     } catch (cause) {
       recordFailure(cause)
       throw cause
@@ -265,10 +297,10 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
 
   return {
     summary, editSession, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
-    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, importPolicies,
+    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, stationSourcePreview, stationTemplatePreview, importPolicies,
     importOperations, importChanges, selectedOperationId, selectedFileName,
-    loading, previewLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
-    refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport,
+    loading, previewLoading, stationSourceLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
+    refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile,
     refreshImportGovernance, refreshEditSession, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,

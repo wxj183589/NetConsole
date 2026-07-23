@@ -11,6 +11,14 @@ IssueSeverity = Literal["error", "warning", "info"]
 MergeResult = Literal["CREATE", "UPDATE", "UNCHANGED", "SKIP", "CONFLICT", "NEEDS_CONFIRMATION"]
 BaseDataEntityType = Literal["site_metadata", "station", "section", "trackside_ap", "vehicle_mr", "trackside_ap_plan"]
 BaseDataChangeAction = Literal["create", "update", "delete", "replace"]
+StationNodeType = Literal["station", "parking_lot", "depot", "connection_point", "other", "unknown"]
+StationStructureType = Literal["underground", "elevated", "at_grade", "cutting", "mixed", "unknown"]
+StationPlatformLayout = Literal["island", "side", "mixed", "stacked_island", "stacked_side", "separated", "unknown"]
+StationTurnbackType = Literal["none", "crossover", "pocket_track", "tail_track", "loop", "depot_connection", "other", "unknown"]
+StationTurnbackDirection = Literal["none", "both", "increasing_to_decreasing", "decreasing_to_increasing", "unknown"]
+StationSourceKind = Literal["device_station_field", "template", "manual", "legacy_ap_derived"]
+StationSourceSyncStatus = Literal["matched", "stale", "conflict", "manual", "legacy", "unavailable"]
+StationSourceMatchStatus = Literal["create", "matched", "conflict", "manual_review"]
 
 
 class BaseDataEditSessionDTO(ApiModel):
@@ -128,10 +136,20 @@ class RailTransitSummaryDTO(ApiModel):
     line_name: str = ""
     project_type: str = ""
     network_type: str = ""
+    main_path_code: str = "MAIN"
+    increasing_direction_name: str = "上行"
+    decreasing_direction_name: str = "下行"
+    station_source_group_name: str = "车站"
+    station_source_field: str = "station"
     remark: str = ""
     created_at: str = ""
     updated_at: str = ""
     station_count: int = 0
+    normal_station_count: int = 0
+    special_node_count: int = 0
+    source_pending_count: int = 0
+    source_conflict_count: int = 0
+    source_stale_count: int = 0
     section_count: int = 0
     ap_count: int = 0
     train_count: int = 0
@@ -150,12 +168,101 @@ class StationDTO(ApiModel):
     name: str
     code: str = ""
     line_name: str = ""
-    sort_order: int = 0
+    sort_order: int | None = None
     ap_count: int = 0
     section_count: int = 0
     mileage_min: float | None = None
     mileage_max: float | None = None
     remark: str = ""
+    source_station_value: str = ""
+    source_station_key: str = ""
+    node_type: StationNodeType = "station"
+    path_code: str = "MAIN"
+    participates_in_direction: bool = True
+    structure_type: StationStructureType = "unknown"
+    platform_layout: StationPlatformLayout = "unknown"
+    is_line_terminal: bool = False
+    is_service_terminal: bool = False
+    turnback_capable: bool = False
+    turnback_type: StationTurnbackType = "none"
+    turnback_direction: StationTurnbackDirection = "none"
+    enabled: bool = True
+    source_kind: StationSourceKind = "legacy_ap_derived"
+    source_device_count: int = 0
+    source_sync_status: StationSourceSyncStatus = "legacy"
+    source_last_seen_at: str = ""
+
+
+class StationSourceIssueDTO(ApiModel):
+    severity: IssueSeverity
+    code: str
+    message: str
+    field_name: str = ""
+    blocking: bool = False
+    entity_id: str = ""
+
+
+class StationSourceCandidateDTO(ApiModel):
+    candidate_id: str
+    source_station_value: str
+    source_station_key: str
+    code: str = ""
+    name: str
+    node_type: StationNodeType = "station"
+    path_code: str = "MAIN"
+    sort_order: int | None = None
+    participates_in_direction: bool = True
+    source_device_count: int = 0
+    match_status: StationSourceMatchStatus = "create"
+    matched_station_id: str = ""
+    proposed_station: StationDTO
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
+class StationSourcePreviewDTO(ApiModel):
+    site_id: str
+    source_group_name: str = "车站"
+    source_field: str = "station"
+    group_found: bool = False
+    scanned_device_count: int = 0
+    empty_station_device_count: int = 0
+    unique_station_value_count: int = 0
+    normal_station_count: int = 0
+    special_node_count: int = 0
+    create_count: int = 0
+    match_count: int = 0
+    conflict_count: int = 0
+    warning_count: int = 0
+    candidates: list[StationSourceCandidateDTO] = Field(default_factory=list)
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
+class StationTemplatePreviewRowDTO(ApiModel):
+    row_number: int
+    source_station_value: str = ""
+    source_station_key: str = ""
+    code: str = ""
+    name: str = ""
+    node_type: StationNodeType = "station"
+    path_code: str = "MAIN"
+    sort_order: int | None = None
+    participates_in_direction: bool = True
+    proposed_station: StationDTO | None = None
+    action: Literal["create", "update", "unchanged", "conflict"] = "create"
+    valid: bool = True
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
+class StationTemplatePreviewDTO(ApiModel):
+    valid: bool = True
+    line_metadata: dict[str, Any] = Field(default_factory=dict)
+    rows: list[StationTemplatePreviewRowDTO] = Field(default_factory=list)
+    create_count: int = 0
+    update_count: int = 0
+    unchanged_count: int = 0
+    conflict_count: int = 0
+    blocking_count: int = 0
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
 
 
 class SectionDTO(ApiModel):

@@ -42,6 +42,12 @@ from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
+from netconsole.services.rail_transit.station_source_utils import (
+    DEFAULT_MAIN_PATH_CODE,
+    DEFAULT_STATION_SOURCE_GROUP,
+    STATION_SOURCE_FIELD,
+    normalize_station_source_value,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -122,18 +128,30 @@ class RailTransitBaseDataQueryService:
         meta = self._site_meta(site_id)
         points = self._all_points(site_id, include_runtime=False)
         aps = [item for item in points if self._is_ap_record(item)]
-        stations = self._stations(points)
+        stations = self._stations(points, site_id=site_id)
         sections = self._sections(points)
         mrs = self._all_mrs(site_id, include_runtime=False)
         trains = self._trains(mrs, self._issues(site_id, aps=aps, mrs=mrs))
         issues = self._issues(site_id, aps=aps, mrs=mrs)
         codes = Counter(issue.code for issue in issues)
+        has_formal_stations = any(station.source_kind != "legacy_ap_derived" for station in stations)
+        if has_formal_stations:
+            message = "已维护正式线路与站点基础资料，可从设备管理站点字段生成初稿并人工确认。"
+        elif stations:
+            message = "当前站点包含 AP 旧资料派生结果，可从设备管理站点字段生成初稿后再确认保存。"
+        else:
+            message = "当前暂无正式站点资料，可从设备管理中分组为“车站”的设备 station 字段生成初稿。"
         return RailTransitSummaryDTO(
             site_id=site_id,
             site_name=str(meta.get("display_name") or site_id),
             line_name=str(meta.get("line_name") or self._first(aps, "line_name") or ""),
             project_type=str(meta.get("system_type") or ""),
             network_type=str(meta.get("network_domain") or ""),
+            main_path_code=str(meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
+            increasing_direction_name=str(meta.get("increasing_direction_name") or "上行"),
+            decreasing_direction_name=str(meta.get("decreasing_direction_name") or "下行"),
+            station_source_group_name=str(meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP),
+            station_source_field=STATION_SOURCE_FIELD,
             remark=str(meta.get("remark") or ""),
             created_at=str(meta.get("created_at") or ""),
             updated_at=max(
@@ -141,6 +159,11 @@ class RailTransitBaseDataQueryService:
                 default="",
             ),
             station_count=len(stations),
+            normal_station_count=sum(station.node_type == "station" for station in stations),
+            special_node_count=sum(station.node_type != "station" for station in stations),
+            source_pending_count=sum(station.source_sync_status in {"manual", "legacy", "unavailable"} for station in stations),
+            source_conflict_count=sum(station.source_sync_status == "conflict" for station in stations),
+            source_stale_count=sum(station.source_sync_status == "stale" for station in stations),
             section_count=len(sections),
             ap_count=len(aps),
             train_count=len(trains),
@@ -151,17 +174,17 @@ class RailTransitBaseDataQueryService:
             duplicate_static_ip_count=codes["static_ip_duplicate"],
             unbound_mr_count=codes["mr_train_unbound"],
             issue_count=len(issues),
-            message="站点和区间为 AP 扩展资料派生的只读视图。" if aps else "当前局点暂无轨旁 AP 扩展资料。",
+            message=message,
         )
 
     def list_stations(
         self, site_id: str, *, query: str = "", page: int = 1, page_size: int = 50, sort_order: str = "asc"
     ) -> StationPageDTO:
-        items = self._stations(self._all_points(site_id, include_runtime=False))
+        items = self._stations(self._all_points(site_id, include_runtime=False), site_id=site_id)
         if query:
             needle = query.casefold()
-            items = [item for item in items if needle in f"{item.name} {item.code}".casefold()]
-        items.sort(key=lambda item: (item.sort_order, item.name), reverse=sort_order == "desc")
+            items = [item for item in items if needle in f"{item.name} {item.code} {item.source_station_value}".casefold()]
+        items.sort(key=lambda item: (item.sort_order is None, item.sort_order or 0, item.name), reverse=sort_order == "desc")
         selected, current, size = self._page(items, page, page_size)
         return StationPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
@@ -422,7 +445,7 @@ class RailTransitBaseDataQueryService:
 
     def known_locations(self, site_id: str) -> tuple[set[str], set[str]]:
         points = self._all_points(site_id, include_runtime=False)
-        return ({item.name for item in self._stations(points)}, {item.name for item in self._sections(points)})
+        return ({item.name for item in self._stations(points, site_id=site_id)}, {item.name for item in self._sections(points)})
 
     def _all_aps(self, site_id: str, *, include_runtime: bool) -> list[TracksideApDTO]:
         return [item for item in self._all_points(site_id, include_runtime=include_runtime) if self._is_ap_record(item)]
@@ -620,6 +643,7 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "mr_role_duplicate", "mr", mr.id, mr.name, "role", mr.role, "同一列车存在重复 MR 角色", "核对列车 MR 配置"))
         issues.extend(self._unbound_mr_issues(site_id))
         issues.extend(self._static_ip_issues(site_id))
+        issues.extend(self._station_issues(self._stations(self._all_points(site_id, include_runtime=False), site_id=site_id)))
         return issues
 
     def _unbound_mr_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
@@ -690,10 +714,96 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "static_ip_duplicate", "device", entity_id, str(row.get("name") or ""), "primary_address", ip, "同一局点静态设备 IP 重复", "核对设备点表；FIT-AP DHCP 地址不参与此规则"))
         return issues
 
-    def _stations(self, aps: list[TracksideApDTO]) -> list[StationDTO]:
+    def _station_source_counts(self, site_id: str, group_name: str) -> dict[str, tuple[int, str]]:
+        db_path = self.paths.site_db_path(site_id)
+        if not db_path.is_file():
+            return {}
+        with closing(self._connect(db_path)) as conn:
+            target_key = normalize_station_source_value(group_name)[1]
+            groups = [
+                row
+                for row in self._select_rows(conn, "device_groups", ("id", "name"))
+                if normalize_station_source_value(row.get("name"))[1] == target_key
+            ]
+            if not groups:
+                return {}
+            ids = [int(row["id"]) for row in groups if row.get("id") is not None]
+            if not ids:
+                return {}
+            columns = {str(row[1]) for row in conn.execute('PRAGMA table_info("devices")')}
+            selected = [field for field in ("station", "group_id", "updated_at") if field in columns]
+            if "station" not in selected or "group_id" not in selected:
+                return {}
+            placeholders = ", ".join("?" for _ in ids)
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f'SELECT {", ".join(selected)} FROM devices WHERE group_id IN ({placeholders})',
+                    ids,
+                )
+            ]
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            _value, key = normalize_station_source_value(row.get("station"))
+            if key:
+                grouped[key].append(row)
+        return {
+            key: (len(items), max(str(item.get("updated_at") or "") for item in items))
+            for key, items in grouped.items()
+        }
+
+    def _station_issues(self, stations: list[StationDTO]) -> list[DataQualityIssueDTO]:
+        issues: list[DataQualityIssueDTO] = []
+        names = Counter(station.name.casefold() for station in stations if station.name)
+        codes = Counter(station.code.casefold() for station in stations if station.code)
+        source_keys = Counter(station.source_station_key.casefold() for station in stations if station.source_station_key)
+        order_keys = Counter(
+            (station.path_code.casefold(), station.sort_order)
+            for station in stations
+            if station.participates_in_direction and station.sort_order is not None
+        )
+        for station in stations:
+            if not station.name:
+                issues.append(self._issue("error", "station_name_required", "station", station.id, station.name, "name", "", "节点名称不能为空", "补充节点名称"))
+            if station.name and names[station.name.casefold()] > 1:
+                issues.append(self._issue("error", "station_name_duplicate", "station", station.id, station.name, "name", station.name, "同一局点正式节点名称重复", "合并或更正重复节点"))
+            if station.code and codes[station.code.casefold()] > 1:
+                issues.append(self._issue("error", "station_code_duplicate", "station", station.id, station.name, "code", station.code, "同一局点节点编码重复", "核对节点编码"))
+            if station.participates_in_direction:
+                if not station.path_code:
+                    issues.append(self._issue("error", "station_order_missing", "station", station.id, station.name, "path_code", "", "参与方向判断的节点必须填写所属路径", "补充所属路径"))
+                if station.sort_order is None:
+                    issues.append(self._issue("error", "station_order_missing", "station", station.id, station.name, "sort_order", "", "参与方向判断的节点必须填写主线顺序", "补充主线顺序或关闭参与方向判断"))
+            elif station.node_type == "station" and station.sort_order is None:
+                issues.append(self._issue("warning", "station_order_missing", "station", station.id, station.name, "sort_order", "", "普通车站没有主线顺序", "确认是否需要参与方向判断"))
+            if station.participates_in_direction and station.sort_order is not None and order_keys[(station.path_code.casefold(), station.sort_order)] > 1:
+                issues.append(self._issue("error", "station_order_duplicate", "station", station.id, station.name, "sort_order", str(station.sort_order), "同一路径内参与方向判断的主线顺序重复", "调整主线顺序"))
+            if station.node_type in {"parking_lot", "depot"} and station.participates_in_direction:
+                issues.append(self._issue("warning", "station_special_node_in_direction", "station", station.id, station.name, "participates_in_direction", "true", "特殊节点不应默认参与主线方向判断", "关闭参与方向判断或补充拓扑资料"))
+            if station.node_type in {"parking_lot", "depot"} and station.path_code.casefold() == DEFAULT_MAIN_PATH_CODE.casefold() and station.sort_order is not None:
+                issues.append(self._issue("warning", "station_special_node_in_direction", "station", station.id, station.name, "sort_order", str(station.sort_order), "特殊节点设置了 MAIN 顺序但没有拓扑资料", "确认接轨拓扑后再纳入方向判断"))
+            if station.turnback_capable and station.turnback_type == "none":
+                issues.append(self._issue("error", "station_turnback_type_missing", "station", station.id, station.name, "turnback_type", station.turnback_type, "可折返节点必须填写折返类型", "选择折返类型"))
+            if station.is_service_terminal and not station.turnback_capable:
+                issues.append(self._issue("warning", "station_terminal_without_turnback", "station", station.id, station.name, "turnback_capable", "false", "运营终点未标记折返能力", "核对运营终点和折返能力"))
+            if station.turnback_capable and station.turnback_direction == "unknown":
+                issues.append(self._issue("warning", "station_turnback_direction_unknown", "station", station.id, station.name, "turnback_direction", "unknown", "可折返但折返方向未知", "补充折返方向"))
+            if station.source_sync_status == "stale":
+                issues.append(self._issue("warning", "station_source_stale", "station", station.id, station.name, "source_station_value", station.source_station_value, "来源站点已不存在", "核对设备管理 station 字段或保留人工资料"))
+            if station.source_kind == "legacy_ap_derived":
+                issues.append(self._issue("warning", "station_legacy_source_unconfirmed", "station", station.id, station.name, "source_kind", station.source_kind, "旧 AP 派生站点尚未确认来源", "从设备管理来源或模板确认后保存"))
+            if station.source_station_key and source_keys[station.source_station_key.casefold()] > 1:
+                issues.append(self._issue("error", "station_source_ambiguous_match", "station", station.id, station.name, "source_station_key", station.source_station_value, "同一来源键指向多个正式站点", "人工合并重复来源"))
+        return issues
+
+    def _stations(self, aps: list[TracksideApDTO], *, site_id: str = "") -> list[StationDTO]:
         names = {ap.station for ap in aps if ap.station}
         names.update(ap.section_start_station for ap in aps if ap.section_start_station)
         names.update(ap.section_end_station for ap in aps if ap.section_end_station)
+        site_meta = self._site_meta(site_id) if site_id else {}
+        main_path_code = str(site_meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE)
+        source_group = str(site_meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP)
+        source_counts = self._station_source_counts(site_id, source_group) if site_id else {}
         result = []
         for index, name in enumerate(sorted(names, key=self._natural_key), 1):
             metadata_row = next(
@@ -701,6 +811,28 @@ class RailTransitBaseDataQueryService:
                 None,
             )
             metadata = metadata_row.base_metadata if metadata_row else {}
+            source_value = str(metadata.get("source_station_value") or "")
+            source_key = str(metadata.get("source_station_key") or normalize_station_source_value(source_value)[1])
+            node_type = str(metadata.get("node_type") or "station")
+            source_kind = str(metadata.get("source_kind") or ("manual" if metadata_row else "legacy_ap_derived"))
+            special = node_type in {"parking_lot", "depot"}
+            path_code = str(metadata.get("path_code") or (DEFAULT_MAIN_PATH_CODE if not special else "UNASSIGNED"))
+            participates = bool(metadata.get("participates_in_direction", not special))
+            raw_sort_order = metadata.get("sort_order")
+            sort_order = self._int_or_none(raw_sort_order) if raw_sort_order not in (None, "") else (index if source_kind == "legacy_ap_derived" else None)
+            if source_key and source_key in source_counts:
+                source_device_count, source_last_seen_at = source_counts[source_key]
+                sync_status = "matched"
+            else:
+                source_device_count, source_last_seen_at = 0, ""
+                if source_kind == "device_station_field":
+                    sync_status = "stale"
+                elif source_kind == "legacy_ap_derived":
+                    sync_status = "legacy"
+                elif source_kind == "manual":
+                    sync_status = "manual"
+                else:
+                    sync_status = "unavailable"
             related = [ap for ap in aps if ap.station == name and self._is_ap_record(ap)]
             section_names = {
                 ap.section
@@ -714,15 +846,38 @@ class RailTransitBaseDataQueryService:
                     name=name,
                     code=str(metadata.get("code") or ""),
                     line_name=(metadata_row.line_name if metadata_row else "") or next((ap.line_name for ap in related if ap.line_name), ""),
-                    sort_order=int(metadata.get("sort_order") or index),
+                    sort_order=sort_order,
                     ap_count=len(related),
                     section_count=len(section_names),
                     mileage_min=min(mileages, default=None),
                     mileage_max=max(mileages, default=None),
                     remark=str(metadata.get("remark") or (metadata_row.remark if metadata_row else "")),
+                    source_station_value=source_value,
+                    source_station_key=source_key,
+                    node_type=node_type,  # type: ignore[arg-type]
+                    path_code=path_code or main_path_code,
+                    participates_in_direction=participates,
+                    structure_type=str(metadata.get("structure_type") or "unknown"),  # type: ignore[arg-type]
+                    platform_layout=str(metadata.get("platform_layout") or "unknown"),  # type: ignore[arg-type]
+                    is_line_terminal=bool(metadata.get("is_line_terminal", False)),
+                    is_service_terminal=bool(metadata.get("is_service_terminal", False)),
+                    turnback_capable=bool(metadata.get("turnback_capable", False)),
+                    turnback_type=str(metadata.get("turnback_type") or "none"),  # type: ignore[arg-type]
+                    turnback_direction=str(metadata.get("turnback_direction") or "none"),  # type: ignore[arg-type]
+                    enabled=bool(metadata.get("enabled", True)),
+                    source_kind=source_kind,  # type: ignore[arg-type]
+                    source_device_count=source_device_count,
+                    source_sync_status=sync_status,  # type: ignore[arg-type]
+                    source_last_seen_at=source_last_seen_at,
                 )
             )
-        return result
+        source_key_counts = Counter(station.source_station_key for station in result if station.source_station_key)
+        return [
+            station.model_copy(update={"source_sync_status": "conflict"})
+            if station.source_station_key and source_key_counts[station.source_station_key] > 1
+            else station
+            for station in result
+        ]
 
     def _sections(self, aps: list[TracksideApDTO]) -> list[SectionDTO]:
         grouped: dict[tuple[str, str, str, str], list[TracksideApDTO]] = defaultdict(list)

@@ -7,6 +7,7 @@ import {
   getRailTransitBaseDataEditSession,
   getRailTransitImportPolicies,
   getRailTransitSummary,
+  getStationSourcePreview,
   listRailTransitImportChanges,
   listRailTransitImportOperations,
   listDataQualityIssueGroups,
@@ -17,6 +18,7 @@ import {
   listTrains,
   listVehicleMrs,
   previewRailTransitImport,
+  previewStationTemplate,
   rollbackRailTransitImport,
   saveRailTransitBaseDataChanges,
   validateRailTransitBaseDataChanges,
@@ -27,6 +29,7 @@ vi.mock('../api/railTransitBaseData', () => ({
   getRailTransitBaseDataEditSession: vi.fn(),
   getRailTransitImportPolicies: vi.fn(),
   getRailTransitSummary: vi.fn(),
+  getStationSourcePreview: vi.fn(),
   listRailTransitImportChanges: vi.fn(),
   listRailTransitImportOperations: vi.fn(),
   listDataQualityIssueGroups: vi.fn(),
@@ -37,6 +40,7 @@ vi.mock('../api/railTransitBaseData', () => ({
   listTrains: vi.fn(),
   listVehicleMrs: vi.fn(),
   previewRailTransitImport: vi.fn(),
+  previewStationTemplate: vi.fn(),
   rollbackRailTransitImport: vi.fn(),
   saveRailTransitBaseDataChanges: vi.fn(),
   validateRailTransitBaseDataChanges: vi.fn(),
@@ -49,7 +53,11 @@ describe('Rail Transit base data polling store', () => {
     setActivePinia(createPinia())
     vi.mocked(getRailTransitSummary).mockReset().mockResolvedValue({
       site_id: 'demo', site_name: '测试局点', line_name: '测试线', project_type: 'PIS', network_type: 'default',
-      remark: '', created_at: '', updated_at: '', station_count: 0, section_count: 0, ap_count: 0,
+      main_path_code: 'MAIN', increasing_direction_name: '上行', decreasing_direction_name: '下行',
+      station_source_group_name: '车站', station_source_field: 'station',
+      remark: '', created_at: '', updated_at: '', station_count: 0,
+      normal_station_count: 0, special_node_count: 0, source_pending_count: 0, source_conflict_count: 0,
+      source_stale_count: 0, section_count: 0, ap_count: 0,
       train_count: 0, mr_count: 0, missing_location_ap_count: 0, invalid_mileage_count: 0,
       duplicate_ap_mac_count: 0, duplicate_static_ip_count: 0, unbound_mr_count: 0, issue_count: 0, message: '',
     })
@@ -60,6 +68,34 @@ describe('Rail Transit base data polling store', () => {
       ...emptyPage, issue_total: 0, blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
     })
     vi.mocked(previewRailTransitImport).mockReset()
+    vi.mocked(getStationSourcePreview).mockReset().mockResolvedValue({
+      site_id: 'demo',
+      source_group_name: '车站',
+      source_field: 'station',
+      group_found: true,
+      scanned_device_count: 0,
+      empty_station_device_count: 0,
+      unique_station_value_count: 0,
+      normal_station_count: 0,
+      special_node_count: 0,
+      create_count: 0,
+      match_count: 0,
+      conflict_count: 0,
+      warning_count: 0,
+      candidates: [],
+      issues: [],
+    })
+    vi.mocked(previewStationTemplate).mockReset().mockResolvedValue({
+      valid: true,
+      line_metadata: {},
+      rows: [],
+      create_count: 0,
+      update_count: 0,
+      unchanged_count: 0,
+      conflict_count: 0,
+      blocking_count: 0,
+      issues: [],
+    })
     vi.mocked(getRailTransitImportPolicies).mockReset().mockResolvedValue({
       feature_enabled: false, write_enabled: false, copy_write_authorized: false,
       real_write_authorized: false, rollback_enabled: false, write_scope: 'real',
@@ -142,5 +178,101 @@ describe('Rail Transit base data polling store', () => {
     expect(store.canApplyImport()).toBe(true)
     await expect(store.applyImport([])).resolves.toBe('op-1')
     expect(applyRailTransitImport).toHaveBeenCalledOnce()
+  })
+
+  it('stores station source and template previews without invoking save', async () => {
+    vi.mocked(getStationSourcePreview).mockResolvedValue({
+      site_id: 'demo',
+      source_group_name: '车站',
+      source_field: 'station',
+      group_found: true,
+      scanned_device_count: 2,
+      empty_station_device_count: 0,
+      unique_station_value_count: 1,
+      normal_station_count: 1,
+      special_node_count: 0,
+      create_count: 1,
+      match_count: 0,
+      conflict_count: 0,
+      warning_count: 0,
+      candidates: [{
+        candidate_id: 'station-source:wuxiang',
+        source_station_value: '32-五乡',
+        source_station_key: '32-五乡',
+        code: '32',
+        name: '五乡',
+        node_type: 'station',
+        path_code: 'MAIN',
+        sort_order: 32,
+        participates_in_direction: true,
+        source_device_count: 2,
+        match_status: 'create',
+        matched_station_id: '',
+        proposed_station: {
+          id: 'new:source:wuxiang',
+          name: '五乡',
+          code: '32',
+          line_name: '',
+          sort_order: 32,
+          ap_count: 0,
+          section_count: 0,
+          mileage_min: null,
+          mileage_max: null,
+          remark: '',
+          source_station_value: '32-五乡',
+          source_station_key: '32-五乡',
+          node_type: 'station',
+          path_code: 'MAIN',
+          participates_in_direction: true,
+          structure_type: 'unknown',
+          platform_layout: 'unknown',
+          is_line_terminal: false,
+          is_service_terminal: false,
+          turnback_capable: false,
+          turnback_type: 'none',
+          turnback_direction: 'none',
+          enabled: true,
+          source_kind: 'device_station_field',
+          source_device_count: 2,
+          source_sync_status: 'matched',
+          source_last_seen_at: '',
+        },
+        issues: [],
+      }],
+      issues: [],
+    })
+    vi.mocked(previewStationTemplate).mockResolvedValue({
+      valid: true,
+      line_metadata: { station_source_field: 'station' },
+      rows: [{
+        row_number: 2,
+        source_station_value: '33-宝幢',
+        source_station_key: '33-宝幢',
+        code: '33',
+        name: '宝幢',
+        node_type: 'station',
+        path_code: 'MAIN',
+        sort_order: 33,
+        participates_in_direction: true,
+        proposed_station: null,
+        action: 'create',
+        valid: true,
+        issues: [],
+      }],
+      create_count: 1,
+      update_count: 0,
+      unchanged_count: 0,
+      conflict_count: 0,
+      blocking_count: 0,
+      issues: [],
+    })
+    const store = useRailTransitBaseDataStore()
+
+    await expect(store.refreshStationSourcePreview()).resolves.toMatchObject({ unique_station_value_count: 1 })
+    await expect(store.previewStationTemplateFile(new File(['xlsx'], 'stations.xlsx'))).resolves.toMatchObject({ create_count: 1 })
+
+    expect(store.stationSourcePreview?.candidates[0].name).toBe('五乡')
+    expect(store.stationTemplatePreview?.rows[0].name).toBe('宝幢')
+    expect(saveRailTransitBaseDataChanges).not.toHaveBeenCalled()
   })
 })

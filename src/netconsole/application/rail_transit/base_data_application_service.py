@@ -23,6 +23,11 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
+from netconsole.services.rail_transit.station_source_utils import (
+    DEFAULT_MAIN_PATH_CODE,
+    DEFAULT_STATION_SOURCE_GROUP,
+    STATION_SOURCE_FIELD,
+)
 from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
 from netconsole.services.vehicle_mr_online import parse_train_identity
 from netconsole.utils.mileage import parse_track_mileage
@@ -32,6 +37,12 @@ _SENSITIVE_KEYS = {
     "password", "username", "token", "secret", "community", "credential",
     "ssh_password", "telnet_password", "tunnel1_password", "tunnel2_password",
 }
+_NODE_TYPES = {"station", "parking_lot", "depot", "connection_point", "other", "unknown"}
+_STRUCTURE_TYPES = {"underground", "elevated", "at_grade", "cutting", "mixed", "unknown"}
+_PLATFORM_LAYOUTS = {"island", "side", "mixed", "stacked_island", "stacked_side", "separated", "unknown"}
+_TURNBACK_TYPES = {"none", "crossover", "pocket_track", "tail_track", "loop", "depot_connection", "other", "unknown"}
+_TURNBACK_DIRECTIONS = {"none", "both", "increasing_to_decreasing", "decreasing_to_increasing", "unknown"}
+_SOURCE_KINDS = {"device_station_field", "template", "manual", "legacy_ap_derived"}
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
@@ -187,10 +198,18 @@ class RailTransitBaseDataApplicationService:
             raise ValueError("线路名称不能为空")
         if not system_type:
             raise ValueError("项目类型不能为空")
+        station_source_field = str(raw.get("station_source_field") or STATION_SOURCE_FIELD).strip()
+        if station_source_field != STATION_SOURCE_FIELD:
+            raise ValueError("站点来源字段只能为 station")
         return {
             "line_name": line_name[:200],
             "system_type": system_type[:100],
             "network_domain": str(raw.get("network_domain") or "default").strip()[:100],
+            "main_path_code": str(raw.get("main_path_code") or DEFAULT_MAIN_PATH_CODE).strip()[:50] or DEFAULT_MAIN_PATH_CODE,
+            "increasing_direction_name": str(raw.get("increasing_direction_name") or "上行").strip()[:50] or "上行",
+            "decreasing_direction_name": str(raw.get("decreasing_direction_name") or "下行").strip()[:50] or "下行",
+            "station_source_group_name": str(raw.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP).strip()[:100] or DEFAULT_STATION_SOURCE_GROUP,
+            "station_source_field": STATION_SOURCE_FIELD,
             "remark": str(raw.get("remark") or "").strip()[:1000],
         }
 
@@ -200,12 +219,35 @@ class RailTransitBaseDataApplicationService:
         old_name = str(raw.get("old_name") or name).strip()
         if not (old_name if action == "delete" else name):
             raise ValueError("站点名称不能为空")
+        node_type = _enum(raw.get("node_type"), _NODE_TYPES, "station", "节点类型无效")
+        special = node_type in {"parking_lot", "depot"}
+        path_code = str(raw.get("path_code") or ("UNASSIGNED" if special else DEFAULT_MAIN_PATH_CODE)).strip()
+        participates = _bool(raw.get("participates_in_direction"), default=not special)
+        sort_order = _int_or_none(raw.get("sort_order"))
+        turnback_capable = _bool(raw.get("turnback_capable"), default=False)
+        turnback_type = _enum(raw.get("turnback_type"), _TURNBACK_TYPES, "unknown" if turnback_capable else "none", "折返类型无效")
+        if not turnback_capable:
+            turnback_type = "none"
         return {
             "name": name,
             "old_name": old_name,
             "code": str(raw.get("code") or "").strip(),
             "line_name": str(raw.get("line_name") or "").strip(),
-            "sort_order": int(raw.get("sort_order") or 0),
+            "sort_order": sort_order,
+            "source_station_value": str(raw.get("source_station_value") or "").strip(),
+            "source_station_key": str(raw.get("source_station_key") or "").strip(),
+            "node_type": node_type,
+            "path_code": path_code,
+            "participates_in_direction": participates,
+            "structure_type": _enum(raw.get("structure_type"), _STRUCTURE_TYPES, "unknown", "车站结构无效"),
+            "platform_layout": _enum(raw.get("platform_layout"), _PLATFORM_LAYOUTS, "unknown", "站台形式无效"),
+            "is_line_terminal": _bool(raw.get("is_line_terminal"), default=False),
+            "is_service_terminal": _bool(raw.get("is_service_terminal"), default=False),
+            "turnback_capable": turnback_capable,
+            "turnback_type": turnback_type,
+            "turnback_direction": _enum(raw.get("turnback_direction"), _TURNBACK_DIRECTIONS, "none", "折返方向无效"),
+            "enabled": _bool(raw.get("enabled"), default=True),
+            "source_kind": _enum(raw.get("source_kind"), _SOURCE_KINDS, "manual", "站点来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),
         }
 
@@ -302,11 +344,22 @@ class RailTransitBaseDataApplicationService:
 
     def _cross_validate(self, site_id: str, changes: list[dict[str, Any]]) -> list[BaseDataValidationIssueDTO]:
         issues: list[BaseDataValidationIssueDTO] = []
-        station_names = {item.name for item in self.query_service.list_stations(site_id, page_size=200).items}
+        existing_stations = self._all_stations(site_id)
+        station_names = {item.name for item in existing_stations}
         station_codes = {
             item.code.casefold(): item.id
-            for item in self.query_service.list_stations(site_id, page_size=200).items
+            for item in existing_stations
             if item.code
+        }
+        station_source_keys = {
+            item.source_station_key.casefold(): item.id
+            for item in existing_stations
+            if item.source_station_key
+        }
+        station_orders = {
+            (item.path_code.casefold(), item.sort_order): item.id
+            for item in existing_stations
+            if item.participates_in_direction and item.sort_order is not None
         }
         ap_macs = {
             normalize_ap_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")).normalized: f"ap:{row.get('id')}"
@@ -319,17 +372,53 @@ class RailTransitBaseDataApplicationService:
                 continue
             if change["entity_type"] == "station":
                 old_name = values.get("old_name")
+                old_station = next((item for item in existing_stations if item.name == old_name), None)
                 if change["action"] == "delete":
                     station_names.discard(old_name)
+                    if old_station:
+                        if old_station.code:
+                            station_codes.pop(old_station.code.casefold(), None)
+                        if old_station.source_station_key:
+                            station_source_keys.pop(old_station.source_station_key.casefold(), None)
+                        if old_station.participates_in_direction and old_station.sort_order is not None:
+                            station_orders.pop((old_station.path_code.casefold(), old_station.sort_order), None)
                     continue
                 name = values["name"]
-                if name in station_names and change["action"] == "create":
+                if old_station:
+                    if old_station.code:
+                        station_codes.pop(old_station.code.casefold(), None)
+                    if old_station.source_station_key:
+                        station_source_keys.pop(old_station.source_station_key.casefold(), None)
+                    if old_station.participates_in_direction and old_station.sort_order is not None:
+                        station_orders.pop((old_station.path_code.casefold(), old_station.sort_order), None)
+                if name in station_names and (change["action"] == "create" or name != old_name):
                     issues.append(self._issue(index, "STATION_DUPLICATE", "站点名称已存在", "name"))
                 station_names.discard(old_name)
                 station_names.add(name)
                 code = str(values.get("code") or "").casefold()
                 if code and code in station_codes and station_codes[code] != change.get("entity_id"):
                     issues.append(self._issue(index, "STATION_CODE_DUPLICATE", "站点编码已存在", "code"))
+                if code:
+                    station_codes[code] = str(change.get("entity_id") or f"new:{index}")
+                source_key = str(values.get("source_station_key") or "").casefold()
+                if source_key and source_key in station_source_keys and station_source_keys[source_key] != change.get("entity_id"):
+                    issues.append(self._issue(index, "station_source_ambiguous_match", "来源键不能指向多个正式站点", "source_station_key"))
+                if source_key:
+                    station_source_keys[source_key] = str(change.get("entity_id") or f"new:{index}")
+                participates = bool(values.get("participates_in_direction"))
+                path_code = str(values.get("path_code") or "").strip()
+                sort_order = values.get("sort_order")
+                if participates and not path_code:
+                    issues.append(self._issue(index, "station_order_missing", "参与方向判断的节点必须填写所属路径", "path_code"))
+                if participates and sort_order is None:
+                    issues.append(self._issue(index, "station_order_missing", "参与方向判断的节点必须填写主线顺序", "sort_order"))
+                if participates and sort_order is not None:
+                    order_key = (path_code.casefold(), int(sort_order))
+                    if order_key in station_orders and station_orders[order_key] != change.get("entity_id"):
+                        issues.append(self._issue(index, "station_order_duplicate", "同一路径内参与方向判断的主线顺序重复", "sort_order"))
+                    station_orders[order_key] = str(change.get("entity_id") or f"new:{index}")
+                if values.get("turnback_capable") is True and values.get("turnback_type") == "none":
+                    issues.append(self._issue(index, "station_turnback_type_missing", "可折返节点必须填写折返类型", "turnback_type"))
             elif change["entity_type"] == "section" and change["action"] != "delete":
                 for field in ("start_station", "end_station"):
                     if values[field] not in station_names:
@@ -348,6 +437,16 @@ class RailTransitBaseDataApplicationService:
                 if mr and self._mr_has_history(site_id, mr.mr.name):
                     issues.append(self._issue(index, "MR_HISTORY_EXISTS", "车载 MR 已有关联历史，禁止直接删除", "name"))
         return issues
+
+    def _all_stations(self, site_id: str):
+        items = []
+        page = 1
+        while True:
+            page_data = self.query_service.list_stations(site_id, page=page, page_size=200)
+            items.extend(page_data.items)
+            if len(items) >= page_data.total or not page_data.items:
+                return items
+            page += 1
 
     def _mr_has_history(self, site_id: str, name: str) -> bool:
         try:
@@ -399,6 +498,32 @@ class RailTransitBaseDataApplicationService:
             field_name=field_name,
             blocking=True,
         )
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _bool(value: Any, *, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    if text in {"true", "1", "yes", "y", "是"}:
+        return True
+    if text in {"false", "0", "no", "n", "否"}:
+        return False
+    return bool(value)
+
+
+def _enum(value: Any, allowed: set[str], default: str, message: str) -> str:
+    text = str(value or default).strip() or default
+    if text not in allowed:
+        raise ValueError(message)
+    return text
 
 
 __all__ = ["RailTransitBaseDataApplicationError", "RailTransitBaseDataApplicationService"]

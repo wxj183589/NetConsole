@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
+from urllib.parse import quote
+
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.application.rail_transit.base_data_application_service import (
@@ -29,6 +33,8 @@ from netconsole.models.api.rail_transit_base_data import (
     RailTransitSummaryDTO,
     SectionPageDTO,
     StationPageDTO,
+    StationSourcePreviewDTO,
+    StationTemplatePreviewDTO,
     TracksideApDetailDTO,
     TracksideApPageDTO,
     TrainDetailDTO,
@@ -43,6 +49,8 @@ from netconsole.services.rail_transit.import_preview_service import (
     MAX_IMPORT_PREVIEW_BYTES,
     RailTransitImportPreviewService,
 )
+from netconsole.services.rail_transit.station_source_discovery_service import StationSourceDiscoveryService
+from netconsole.services.rail_transit.station_template_service import StationTemplateService
 
 
 router = APIRouter(prefix="/rail-transit/base-data", tags=["rail-transit-base-data"])
@@ -62,6 +70,14 @@ def _import_service(request: Request) -> RailTransitBaseDataImportService:
 
 def _application_service(request: Request) -> RailTransitBaseDataApplicationService:
     return request.app.state.rail_transit_base_data_application_service
+
+
+def _station_source_service(request: Request) -> StationSourceDiscoveryService:
+    return request.app.state.rail_transit_station_source_discovery_service
+
+
+def _station_template_service(request: Request) -> StationTemplateService:
+    return request.app.state.rail_transit_station_template_service
 
 
 def _site_id(request: Request, supplied: str) -> str:
@@ -130,6 +146,51 @@ def stations(
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> StationPageDTO:
     return _query(lambda: _service(request).list_stations(_site_id(request, site_id), query=query, page=page, page_size=page_size, sort_order=sort_order))
+
+
+@router.get("/station-source-preview", response_model=StationSourcePreviewDTO)
+def station_source_preview(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+) -> StationSourcePreviewDTO:
+    return _query(lambda: _station_source_service(request).preview(_site_id(request, site_id)))
+
+
+@router.get("/station-template")
+def station_template(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+):
+    content = _query(lambda: _station_template_service(request).build_blank_template(_site_id(request, site_id)))
+    return _xlsx_response(content, "线路与站点基础资料模板.xlsx")
+
+
+@router.post("/station-template-preview", response_model=StationTemplatePreviewDTO)
+async def station_template_preview(
+    request: Request,
+    file: UploadFile = File(...),
+    site_id: str = Query(default="", max_length=100),
+) -> StationTemplatePreviewDTO:
+    try:
+        content = await file.read(MAX_IMPORT_PREVIEW_BYTES + 1)
+        return _station_template_service(request).preview(
+            _site_id(request, site_id),
+            content,
+            file.filename or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+
+@router.get("/station-template-export")
+def station_template_export(
+    request: Request,
+    site_id: str = Query(default="", max_length=100),
+):
+    content = _query(lambda: _station_template_service(request).export_current(_site_id(request, site_id)))
+    return _xlsx_response(content, "线路与站点基础资料.xlsx")
 
 
 @router.get("/sections", response_model=SectionPageDTO)
@@ -384,6 +445,15 @@ def _query(callback):
             return callback()
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+def _xlsx_response(content: bytes, filename: str) -> StreamingResponse:
+    encoded = quote(filename)
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
 
 
 def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) -> None:

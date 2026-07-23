@@ -35,6 +35,7 @@ Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run 
 - 设备文件：SSH 成功但 SFTP 子系统不可用、主机密钥确认后恢复原连接意图、最近 20 条活动优先、24 小时 `.part` 后台清理边界；
 - Job Center：调度 `COMPLETED` 与业务 `PARTIAL_SUCCESS/WARNING` 分离，列表、详情、筛选、顶部计数和页面 toast 一致；
 - 配置采集：两条勾选快照、跨设备左右选择、空/相同/不同文件、裁剪、差异导航和导出；
+- 轨道交通基础资料：设备来源只读预览必须只读取“车站”分组的 `devices.station`，覆盖空 station、不使用设备名/系统名、200 条以上不截断、停车场/车辆段特殊节点、模板 XLSX 预览/导出、来源 stale、人工字段不被来源确认覆盖、`validate`/`changes` 统一保存和 revision 冲突；
 - MESH/Online MR/Agent：旧日志/缺 Peer Name、按来源独立报告、参数快照、正常/partial/failed 包、LOCAL/AGENT 停止与恢复、真实 fping 与 TCP connect probe 区分。
 
 ## 合并前

@@ -273,6 +273,105 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
         assert tuple(connection.execute("SELECT primary_address, remark FROM devices WHERE device_uuid = 'mr-01-ct'").fetchone()) == ("10.10.0.11", "统一维护")
 
 
+def test_station_source_confirmation_preserves_manual_fields_and_marks_stale_without_deleting(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with Database(database).connect() as connection:
+        before_counts = tuple(
+            connection.execute(
+                "SELECT (SELECT COUNT(*) FROM devices), (SELECT COUNT(*) FROM device_groups)"
+            ).fetchone()
+        )
+    manual_values = {
+        "name": "五乡",
+        "code": "32",
+        "line_name": "测试线",
+        "sort_order": 32,
+        "remark": "人工确认字段",
+        "node_type": "station",
+        "path_code": "MAIN",
+        "participates_in_direction": True,
+        "structure_type": "underground",
+        "platform_layout": "island",
+        "is_line_terminal": True,
+        "is_service_terminal": True,
+        "turnback_capable": True,
+        "turnback_type": "crossover",
+        "turnback_direction": "both",
+        "enabled": True,
+        "source_kind": "manual",
+    }
+    with TestClient(_app(paths, tmp_path)) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        created = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": session["base_revision"],
+                "changes": [{
+                    "entity_type": "station",
+                    "action": "create",
+                    "entity_id": "station:new:wuxiang",
+                    "values": manual_values,
+                }],
+                "explicit_confirmation": True,
+            },
+        )
+        assert created.status_code == 200
+        station = next(
+            item for item in client.get("/api/rail-transit/base-data/stations?page_size=200").json()["items"]
+            if item["name"] == "五乡"
+        )
+        source_values = {
+            **manual_values,
+            "old_name": "五乡",
+            "source_station_value": "32-五乡",
+            "source_station_key": "32-五乡",
+            "source_kind": "device_station_field",
+        }
+        next_session = client.get("/api/rail-transit/base-data/revision").json()
+        confirmed = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": next_session["base_revision"],
+                "changes": [{
+                    "entity_type": "station",
+                    "action": "update",
+                    "entity_id": station["id"],
+                    "values": source_values,
+                }],
+                "explicit_confirmation": True,
+            },
+        )
+        stations = client.get("/api/rail-transit/base-data/stations?page_size=200").json()["items"]
+    assert confirmed.status_code == 200
+    saved = next(item for item in stations if item["name"] == "五乡")
+    assert saved["source_station_value"] == "32-五乡"
+    assert saved["source_kind"] == "device_station_field"
+    assert saved["source_sync_status"] == "stale"
+    assert saved["source_device_count"] == 0
+    assert saved["structure_type"] == "underground"
+    assert saved["platform_layout"] == "island"
+    assert saved["is_line_terminal"] is True
+    assert saved["is_service_terminal"] is True
+    assert saved["turnback_capable"] is True
+    assert saved["turnback_type"] == "crossover"
+    assert saved["turnback_direction"] == "both"
+    assert saved["remark"] == "人工确认字段"
+    with Database(database).connect() as connection:
+        after_counts = tuple(
+            connection.execute(
+                "SELECT (SELECT COUNT(*) FROM devices), (SELECT COUNT(*) FROM device_groups)"
+            ).fetchone()
+        )
+    assert after_counts == before_counts
+
+
 def test_repository_rolls_back_all_changes_when_later_entity_fails(tmp_path: Path) -> None:
     paths, database = build_rail_transit_base_data_fixture(tmp_path)
     repository = RailTransitBaseDataRepository(paths)

@@ -102,10 +102,20 @@ export interface RailTransitSummary {
   line_name: string
   project_type: string
   network_type: string
+  main_path_code: string
+  increasing_direction_name: string
+  decreasing_direction_name: string
+  station_source_group_name: string
+  station_source_field: string
   remark: string
   created_at: string
   updated_at: string
   station_count: number
+  normal_station_count: number
+  special_node_count: number
+  source_pending_count: number
+  source_conflict_count: number
+  source_stale_count: number
   section_count: number
   ap_count: number
   train_count: number
@@ -124,12 +134,109 @@ export interface Station {
   name: string
   code: string
   line_name: string
-  sort_order: number
+  sort_order: number | null
   ap_count: number
   section_count: number
   mileage_min: number | null
   mileage_max: number | null
   remark: string
+  source_station_value: string
+  source_station_key: string
+  node_type: StationNodeType
+  path_code: string
+  participates_in_direction: boolean
+  structure_type: StationStructureType
+  platform_layout: StationPlatformLayout
+  is_line_terminal: boolean
+  is_service_terminal: boolean
+  turnback_capable: boolean
+  turnback_type: StationTurnbackType
+  turnback_direction: StationTurnbackDirection
+  enabled: boolean
+  source_kind: StationSourceKind
+  source_device_count: number
+  source_sync_status: StationSourceSyncStatus
+  source_last_seen_at: string
+}
+
+export type StationNodeType = 'station' | 'parking_lot' | 'depot' | 'connection_point' | 'other' | 'unknown'
+export type StationStructureType = 'underground' | 'elevated' | 'at_grade' | 'cutting' | 'mixed' | 'unknown'
+export type StationPlatformLayout = 'island' | 'side' | 'mixed' | 'stacked_island' | 'stacked_side' | 'separated' | 'unknown'
+export type StationTurnbackType = 'none' | 'crossover' | 'pocket_track' | 'tail_track' | 'loop' | 'depot_connection' | 'other' | 'unknown'
+export type StationTurnbackDirection = 'none' | 'both' | 'increasing_to_decreasing' | 'decreasing_to_increasing' | 'unknown'
+export type StationSourceKind = 'device_station_field' | 'template' | 'manual' | 'legacy_ap_derived'
+export type StationSourceSyncStatus = 'matched' | 'stale' | 'conflict' | 'manual' | 'legacy' | 'unavailable'
+
+export interface StationSourceIssue {
+  severity: 'error' | 'warning' | 'info'
+  code: string
+  message: string
+  field_name: string
+  blocking: boolean
+  entity_id: string
+}
+
+export interface StationSourceCandidate {
+  candidate_id: string
+  source_station_value: string
+  source_station_key: string
+  code: string
+  name: string
+  node_type: StationNodeType
+  path_code: string
+  sort_order: number | null
+  participates_in_direction: boolean
+  source_device_count: number
+  match_status: 'create' | 'matched' | 'conflict' | 'manual_review'
+  matched_station_id: string
+  proposed_station: Station
+  issues: StationSourceIssue[]
+}
+
+export interface StationSourcePreview {
+  site_id: string
+  source_group_name: string
+  source_field: string
+  group_found: boolean
+  scanned_device_count: number
+  empty_station_device_count: number
+  unique_station_value_count: number
+  normal_station_count: number
+  special_node_count: number
+  create_count: number
+  match_count: number
+  conflict_count: number
+  warning_count: number
+  candidates: StationSourceCandidate[]
+  issues: StationSourceIssue[]
+}
+
+export interface StationTemplatePreviewRow {
+  row_number: number
+  source_station_value: string
+  source_station_key: string
+  code: string
+  name: string
+  node_type: StationNodeType
+  path_code: string
+  sort_order: number | null
+  participates_in_direction: boolean
+  proposed_station: Station | null
+  action: 'create' | 'update' | 'unchanged' | 'conflict'
+  valid: boolean
+  issues: StationSourceIssue[]
+}
+
+export interface StationTemplatePreview {
+  valid: boolean
+  line_metadata: Record<string, unknown>
+  rows: StationTemplatePreviewRow[]
+  create_count: number
+  update_count: number
+  unchanged_count: number
+  conflict_count: number
+  blocking_count: number
+  issues: StationSourceIssue[]
 }
 
 export interface Section {

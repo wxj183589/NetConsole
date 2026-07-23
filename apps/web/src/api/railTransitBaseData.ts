@@ -1,4 +1,5 @@
 import { apiRequest } from './client'
+import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   BaseDataChange,
   BaseDataEditSession,
@@ -18,6 +19,8 @@ import type {
   Relation,
   Section,
   Station,
+  StationSourcePreview,
+  StationTemplatePreview,
   TracksideAp,
   Train,
   VehicleMr,
@@ -39,6 +42,7 @@ export const getRailTransitBaseDataEditSession = (): Promise<BaseDataEditSession
 export const validateRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[] }): Promise<BaseDataValidationResult> => apiRequest(`${root}/validate`, { method: 'POST', body: JSON.stringify(payload) })
 export const saveRailTransitBaseDataChanges = (payload: { site_id: string; base_revision: string; changes: BaseDataChange[]; explicit_confirmation: boolean }): Promise<BaseDataSaveResult> => apiRequest(`${root}/changes`, { method: 'POST', body: JSON.stringify(payload) })
 export const listStations = (values: PageQuery = {}): Promise<Page<Station>> => apiRequest(`${root}/stations${queryString(values)}`)
+export const getStationSourcePreview = (): Promise<StationSourcePreview> => apiRequest(`${root}/station-source-preview`)
 export const listSections = (values: PageQuery = {}): Promise<Page<Section>> => apiRequest(`${root}/sections${queryString(values)}`)
 export const listTracksideAps = (values: PageQuery = {}): Promise<Page<TracksideAp>> => apiRequest(`${root}/aps${queryString(values)}`)
 export const listTrains = (values: PageQuery = {}): Promise<Page<Train>> => apiRequest(`${root}/trains${queryString(values)}`)
@@ -52,6 +56,22 @@ export function previewRailTransitImport(file: File): Promise<ImportPreviewResul
   form.append('file', file, file.name)
   return apiRequest(`${root}/import-preview`, { method: 'POST', body: form })
 }
+
+export function previewStationTemplate(file: File): Promise<StationTemplatePreview> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  return apiRequest(`${root}/station-template-preview`, { method: 'POST', body: form })
+}
+
+export const stationTemplateDownloadRequest = (): BackendDownloadRequest => ({
+  apiPath: `${root}/station-template`,
+  suggestedName: '线路与站点基础资料模板.xlsx',
+})
+
+export const stationTemplateExportDownloadRequest = (): BackendDownloadRequest => ({
+  apiPath: `${root}/station-template-export`,
+  suggestedName: '线路与站点基础资料.xlsx',
+})
 
 export const getRailTransitImportPolicies = (): Promise<ImportPolicyStatus> => apiRequest(`${root}/import-policies`)
 

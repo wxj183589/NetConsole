@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { downloadBackendResource } from '../../platform/runtime'
+import { stationTemplateDownloadRequest, stationTemplateExportDownloadRequest } from '../../api/railTransitBaseData'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -22,6 +24,8 @@ import type {
   Relation,
   Section,
   Station,
+  StationSourceCandidate,
+  StationTemplatePreviewRow,
   TracksideAp,
   Train,
   VehicleMr,
@@ -38,6 +42,11 @@ interface BaseDataDraft {
     line_name: string
     system_type: string
     network_domain: string
+    main_path_code: string
+    increasing_direction_name: string
+    decreasing_direction_name: string
+    station_source_group_name: string
+    station_source_field: string
     remark: string
   }
   stations: Station[]
@@ -73,6 +82,10 @@ const writeDeniedReason = computed(() => store.editSession?.write_denial_reason 
 const locationTab = ref('stations')
 const vehicleTab = ref('trains')
 const previewFilter = ref('all')
+const stationSourceDialogVisible = ref(false)
+const stationTemplateDialogVisible = ref(false)
+const selectedStationSourceIds = ref<string[]>([])
+const selectedTemplateRows = ref<number[]>([])
 const applyConfirmed = ref(false)
 const decisionSelections = ref<Record<string, MergeFieldDecision['action'] | ''>>({})
 const mergeRows = computed(() => {
@@ -83,9 +96,16 @@ const previewBlocked = computed(() => {
   const summary = store.importPreview?.merge_plan?.summary
   return Boolean(summary && (summary.blocking_count > 0 || summary.conflict_count > 0))
 })
+const stationSourceCandidates = computed(() => store.stationSourcePreview?.candidates || [])
+const stationTemplateRows = computed(() => store.stationTemplatePreview?.rows || [])
 const issueCodeStats = computed(() => Object.entries(store.issueCodeCounts).sort((left, right) => right[1] - left[1]))
 const summaryCards = computed(() => [
   ['站点', store.summary?.station_count || 0, 'normal'],
+  ['普通车站', store.summary?.normal_station_count || 0, 'normal'],
+  ['特殊节点', store.summary?.special_node_count || 0, 'warning'],
+  ['来源待确认', store.summary?.source_pending_count || 0, 'warning'],
+  ['来源冲突', store.summary?.source_conflict_count || 0, 'danger'],
+  ['来源失效', store.summary?.source_stale_count || 0, 'warning'],
   ['区间', store.summary?.section_count || 0, 'normal'],
   ['轨旁 AP', store.summary?.ap_count || 0, 'normal'],
   ['列车', store.summary?.train_count || 0, 'normal'],
@@ -98,14 +118,18 @@ const summaryCards = computed(() => [
 ])
 
 const stationColumns: NcTableColumn<Station>[] = [
-  { key: 'sort_order', label: '顺序', valueType: 'number', width: 80 },
-  { key: 'name', label: '站点名称', valueType: 'name', minWidth: 180 },
-  { key: 'code', label: '站点编码', minWidth: 120, displayValue: (row) => display(row.code) },
-  { key: 'line_name', label: '线路', minWidth: 130, displayValue: (row) => display(row.line_name) },
-  { key: 'ap_count', label: 'AP 数量', valueType: 'number', width: 110 },
-  { key: 'section_count', label: '关联区间', valueType: 'number', width: 110 },
-  { key: 'mileage_range', label: '里程范围', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
-  { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
+  { key: 'sort_order', label: '主线顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
+  { key: 'code', label: '节点编码', minWidth: 110, displayValue: (row) => display(row.code) },
+  { key: 'name', label: '节点名称', valueType: 'name', minWidth: 170 },
+  { key: 'node_type', label: '节点类型', valueType: 'status', width: 120, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
+  { key: 'path_code', label: '所属路径', minWidth: 115, displayValue: (row) => display(row.path_code) },
+  { key: 'participates_in_direction', label: '参与方向', width: 105, displayValue: (row) => boolText(row.participates_in_direction) },
+  { key: 'structure_platform', label: '结构 / 站台', minWidth: 160, displayValue: (row) => `${structureTypeLabel(row.structure_type)} / ${platformLayoutLabel(row.platform_layout)}` },
+  { key: 'terminals', label: '端点', minWidth: 125, displayValue: (row) => terminalSummary(row) },
+  { key: 'turnback', label: '折返', minWidth: 150, displayValue: (row) => turnbackSummary(row) },
+  { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
+  { key: 'source_sync_status', label: '来源状态', valueType: 'status', width: 115, displayValue: (row) => sourceSyncLabel(row.source_sync_status) },
+  { key: 'remark', label: '备注', valueType: 'description', minWidth: 160, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
 const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'name', label: '区间名称', valueType: 'name', minWidth: 200 },
@@ -185,6 +209,30 @@ const mergeFieldColumns: NcTableColumn<MergeFieldDiff>[] = [
   { key: 'current_value', label: '当前值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.current_value) },
   { key: 'proposed_value', label: '导入值', align: 'left', alignmentReason: 'long-text', minWidth: 160, displayValue: (row) => display(row.proposed_value) },
   { key: 'decision', label: '处置', valueType: 'actions', minWidth: 200, hideable: false },
+]
+const stationSourceColumns: NcTableColumn<StationSourceCandidate>[] = [
+  { key: 'selected', label: '勾选', width: 72, hideable: false },
+  { key: 'source_station_value', label: '来源站点值', minWidth: 160 },
+  { key: 'code', label: '节点编码', width: 100, displayValue: (row) => display(row.code) },
+  { key: 'name', label: '节点名称', valueType: 'name', minWidth: 150 },
+  { key: 'node_type', label: '类型', valueType: 'status', width: 110, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
+  { key: 'path_code', label: '建议路径', width: 110 },
+  { key: 'sort_order', label: '建议顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
+  { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
+  { key: 'match_status', label: '匹配结果', valueType: 'status', width: 110, displayValue: (row) => sourceMatchLabel(row.match_status) },
+  { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || (row.node_type === 'station' ? '--' : '未加入主线路径') },
+]
+const stationTemplateColumns: NcTableColumn<StationTemplatePreviewRow>[] = [
+  { key: 'selected', label: '勾选', width: 72, hideable: false },
+  { key: 'row_number', label: '行号', valueType: 'number', width: 80 },
+  { key: 'source_station_value', label: '来源站点值', minWidth: 160 },
+  { key: 'code', label: '节点编码', width: 100, displayValue: (row) => display(row.code) },
+  { key: 'name', label: '节点名称', valueType: 'name', minWidth: 150 },
+  { key: 'node_type', label: '类型', valueType: 'status', width: 110, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
+  { key: 'path_code', label: '所属路径', width: 110 },
+  { key: 'sort_order', label: '主线顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
+  { key: 'action', label: '动作', valueType: 'status', width: 105 },
+  { key: 'issues', label: '问题', valueType: 'description', minWidth: 220, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || '--' },
 ]
 const operationColumns: NcTableColumn<ImportOperation>[] = [
   { key: 'started_at', label: '开始时间', valueType: 'datetime', minWidth: 180 },
@@ -403,6 +451,11 @@ function captureBaselines(): void {
       line_name: store.summary?.line_name || '',
       system_type: store.summary?.project_type || '',
       network_domain: store.summary?.network_type || 'default',
+      main_path_code: store.summary?.main_path_code || 'MAIN',
+      increasing_direction_name: store.summary?.increasing_direction_name || '上行',
+      decreasing_direction_name: store.summary?.decreasing_direction_name || '下行',
+      station_source_group_name: store.summary?.station_source_group_name || '车站',
+      station_source_field: store.summary?.station_source_field || 'station',
       remark: store.summary?.remark || '',
     },
     stations: cloneDto(store.stations),
@@ -525,7 +578,7 @@ function undoDelete(entityType: BaseDataChange['entity_type'], row: Station | Se
 
 function addStation(): void {
   if (!editingDraft.value) return
-  const row: Station = { id: temporaryId(), name: '', code: '', line_name: store.summary?.line_name || '', sort_order: editingDraft.value.stations.length + 1, ap_count: 0, section_count: 0, mileage_min: null, mileage_max: null, remark: '' }
+  const row: Station = defaultStation({ id: temporaryId(), line_name: store.summary?.line_name || '', sort_order: editingDraft.value.stations.length + 1, source_kind: 'manual', source_sync_status: 'manual' })
   editingDraft.value.stations.push(row); markStation(row)
 }
 function addSection(): void {
@@ -549,7 +602,29 @@ function updateEditState(): void {
 }
 function changeKey(type: string, id: string): string { return `${type}:${id}` }
 function temporaryId(): string { return `new:${Date.now()}:${Math.random().toString(16).slice(2)}` }
-function stationValues(row: Station): Record<string, unknown> { return { name: row.name, code: row.code, line_name: row.line_name, sort_order: row.sort_order, remark: row.remark } }
+function stationValues(row: Station): Record<string, unknown> {
+  return {
+    name: row.name,
+    code: row.code,
+    line_name: row.line_name,
+    sort_order: row.sort_order,
+    remark: row.remark,
+    source_station_value: row.source_station_value,
+    source_station_key: row.source_station_key,
+    node_type: row.node_type,
+    path_code: row.path_code,
+    participates_in_direction: row.participates_in_direction,
+    structure_type: row.structure_type,
+    platform_layout: row.platform_layout,
+    is_line_terminal: row.is_line_terminal,
+    is_service_terminal: row.is_service_terminal,
+    turnback_capable: row.turnback_capable,
+    turnback_type: row.turnback_type,
+    turnback_direction: row.turnback_direction,
+    enabled: row.enabled,
+    source_kind: row.source_kind,
+  }
+}
 function sectionValues(row: Section): Record<string, unknown> { return { name: row.name, start_station: row.start_station, end_station: row.end_station, line_side: row.line_side, remark: row.remark } }
 function apValues(row: TracksideAp): Record<string, unknown> { return { line_name: row.line_name, name: row.name, point_code: row.point_code, mac: row.mac, station: row.station, section: row.section, section_start_station: row.section_start_station, section_end_station: row.section_end_station, mileage: row.mileage.raw, line_side: row.line_side, direction: row.direction, remark: row.remark } }
 function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
@@ -558,6 +633,11 @@ function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unk
     line_name: metadata.line_name,
     system_type: metadata.system_type,
     network_domain: metadata.network_domain,
+    main_path_code: metadata.main_path_code,
+    increasing_direction_name: metadata.increasing_direction_name,
+    decreasing_direction_name: metadata.decreasing_direction_name,
+    station_source_group_name: metadata.station_source_group_name,
+    station_source_field: 'station',
     remark: metadata.remark,
   }
 }
@@ -574,6 +654,161 @@ function withOriginalIdentity(type: BaseDataChange['entity_type'], values: Recor
 }
 function emptyRuntime() { return { fit_ap_status: 'unknown', optical_status: 'no_data', mesh_status: 'unknown', mesh_related_name: '', latest_session_id: '', latest_session_status: '', updated_at: '' } }
 function message(cause: unknown, fallback: string): string { return cause instanceof Error && cause.message ? cause.message : fallback }
+function isStationSourceCandidateSelected(candidate: StationSourceCandidate): boolean {
+  return selectedStationSourceIds.value.includes(candidate.candidate_id)
+}
+
+function isStationSourceCandidateDisabled(candidate: StationSourceCandidate): boolean {
+  return candidate.match_status === 'conflict' || candidate.issues.some((issue) => issue.blocking)
+}
+
+function isStationTemplateRowSelected(row: StationTemplatePreviewRow): boolean {
+  return selectedTemplateRows.value.includes(row.row_number)
+}
+
+function isStationTemplateRowDisabled(row: StationTemplatePreviewRow): boolean {
+  return !row.valid || row.action === 'conflict'
+}
+
+function canApplyStationTemplatePreview(): boolean {
+  return !locked.value && selectedTemplateRows.value.length > 0 && !store.stationTemplatePreview?.blocking_count
+}
+
+async function openStationSourcePreview(): Promise<void> {
+  try {
+    const preview = await store.refreshStationSourcePreview()
+    selectedStationSourceIds.value = preview.candidates
+      .filter((candidate) => !candidate.issues.some((issue) => issue.blocking) && candidate.match_status !== 'conflict')
+      .map((candidate) => candidate.candidate_id)
+    stationSourceDialogVisible.value = true
+  } catch (cause) {
+    ElMessage.error(message(cause, '设备管理站点来源预览失败'))
+  }
+}
+
+function toggleStationSourceCandidate(candidate: StationSourceCandidate, checked: boolean): void {
+  const next = new Set(selectedStationSourceIds.value)
+  if (checked) next.add(candidate.candidate_id)
+  else next.delete(candidate.candidate_id)
+  selectedStationSourceIds.value = [...next]
+}
+
+function applyStationSourceToDraft(): void {
+  if (locked.value || !editingDraft.value) {
+    ElMessage.warning('请先解锁基础资料')
+    return
+  }
+  const selected = new Set(selectedStationSourceIds.value)
+  const candidates = stationSourceCandidates.value.filter((candidate) => selected.has(candidate.candidate_id) && candidate.match_status !== 'conflict')
+  if (!candidates.length) {
+    ElMessage.warning('没有可应用的站点来源候选')
+    return
+  }
+  let applied = 0
+  for (const candidate of candidates) {
+    const proposed = defaultStation(candidate.proposed_station)
+    proposed.line_name = proposed.line_name || editingDraft.value.metadata.line_name || store.summary?.line_name || ''
+    const matched = candidate.matched_station_id
+      ? editingDraft.value.stations.find((station) => station.id === candidate.matched_station_id)
+      : editingDraft.value.stations.find((station) => station.source_station_key && station.source_station_key === candidate.source_station_key)
+    if (matched) {
+      matched.source_station_value = candidate.source_station_value
+      matched.source_station_key = candidate.source_station_key
+      matched.source_kind = 'device_station_field'
+      matched.source_device_count = candidate.source_device_count
+      matched.source_sync_status = 'matched'
+      markStation(matched)
+      applied += 1
+      continue
+    }
+    proposed.id = proposed.id || temporaryId()
+    proposed.source_device_count = candidate.source_device_count
+    proposed.source_sync_status = 'matched'
+    editingDraft.value.stations.push(proposed)
+    markStation(proposed)
+    applied += 1
+  }
+  stationSourceDialogVisible.value = false
+  ElMessage.success(`已应用 ${applied} 个候选到当前草稿，保存后才会写入数据库`)
+}
+
+async function downloadStationTemplate(): Promise<void> {
+  const result = await downloadBackendResource(stationTemplateDownloadRequest())
+  if (result.status === 'saved' || result.status === 'started') ElMessage.success('站点模板下载已开始')
+  else if (result.status === 'failed') ElMessage.error(result.error || '站点模板下载失败')
+}
+
+async function exportCurrentStations(): Promise<void> {
+  const result = await downloadBackendResource(stationTemplateExportDownloadRequest())
+  if (result.status === 'saved' || result.status === 'started') ElMessage.success('当前基础资料导出已开始')
+  else if (result.status === 'failed') ElMessage.error(result.error || '当前基础资料导出失败')
+}
+
+async function handleStationTemplateFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const preview = await store.previewStationTemplateFile(file)
+    selectedTemplateRows.value = preview.rows.filter((row) => row.valid && row.action !== 'conflict').map((row) => row.row_number)
+    stationTemplateDialogVisible.value = true
+    ElMessage.success('站点模板预览完成，未写入数据库')
+  } catch (cause) {
+    ElMessage.error(message(cause, '站点模板预览失败'))
+  } finally {
+    input.value = ''
+  }
+}
+
+function toggleTemplateRow(row: StationTemplatePreviewRow, checked: boolean): void {
+  const next = new Set(selectedTemplateRows.value)
+  if (checked) next.add(row.row_number)
+  else next.delete(row.row_number)
+  selectedTemplateRows.value = [...next]
+}
+
+function applyStationTemplateToDraft(): void {
+  if (locked.value || !editingDraft.value) {
+    ElMessage.warning('请先解锁基础资料')
+    return
+  }
+  const selected = new Set(selectedTemplateRows.value)
+  const rows = stationTemplateRows.value.filter((item) => selected.has(item.row_number) && item.valid && item.proposed_station)
+  if (!rows.length) {
+    ElMessage.warning('没有可应用的模板行')
+    return
+  }
+  let applied = 0
+  for (const row of rows) {
+    const proposed = defaultStation(row.proposed_station || {})
+    const matched = editingDraft.value.stations.find((station) => (
+      (proposed.source_station_key && station.source_station_key === proposed.source_station_key)
+      || (proposed.code && station.code === proposed.code && station.name === proposed.name)
+    ))
+    if (matched) {
+      Object.assign(matched, { ...proposed, id: matched.id, source_device_count: matched.source_device_count, source_sync_status: matched.source_sync_status })
+      markStation(matched)
+    } else {
+      proposed.id = temporaryId()
+      editingDraft.value.stations.push(proposed)
+      markStation(proposed)
+    }
+    applied += 1
+  }
+  const metadata = store.stationTemplatePreview?.line_metadata || {}
+  editingDraft.value.metadata.line_name = String(metadata.line_name || editingDraft.value.metadata.line_name)
+  editingDraft.value.metadata.system_type = String(metadata.system_type || editingDraft.value.metadata.system_type)
+  editingDraft.value.metadata.network_domain = String(metadata.network_domain || editingDraft.value.metadata.network_domain)
+  editingDraft.value.metadata.main_path_code = String(metadata.main_path_code || editingDraft.value.metadata.main_path_code)
+  editingDraft.value.metadata.increasing_direction_name = String(metadata.increasing_direction_name || editingDraft.value.metadata.increasing_direction_name)
+  editingDraft.value.metadata.decreasing_direction_name = String(metadata.decreasing_direction_name || editingDraft.value.metadata.decreasing_direction_name)
+  editingDraft.value.metadata.station_source_group_name = String(metadata.station_source_group_name || editingDraft.value.metadata.station_source_group_name)
+  editingDraft.value.metadata.station_source_field = 'station'
+  editingDraft.value.metadata.remark = String(metadata.remark || editingDraft.value.metadata.remark)
+  markMetadata()
+  stationTemplateDialogVisible.value = false
+  ElMessage.success(`已应用 ${applied} 行模板预览到当前草稿，保存后才会写入数据库`)
+}
 
 async function handleFile(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
@@ -661,6 +896,38 @@ function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' {
 }
 function display(value: unknown): string { return value === null || value === undefined || value === '' ? '--' : String(value) }
 function cloneDto<T>(value: T): T { return structuredClone(toRaw(value)) }
+function defaultStation(values: Partial<Station> = {}): Station {
+  return {
+    id: '',
+    name: '',
+    code: '',
+    line_name: '',
+    sort_order: null,
+    ap_count: 0,
+    section_count: 0,
+    mileage_min: null,
+    mileage_max: null,
+    remark: '',
+    source_station_value: '',
+    source_station_key: '',
+    node_type: 'station',
+    path_code: 'MAIN',
+    participates_in_direction: true,
+    structure_type: 'unknown',
+    platform_layout: 'unknown',
+    is_line_terminal: false,
+    is_service_terminal: false,
+    turnback_capable: false,
+    turnback_type: 'none',
+    turnback_direction: 'none',
+    enabled: true,
+    source_kind: 'manual',
+    source_device_count: 0,
+    source_sync_status: 'manual',
+    source_last_seen_at: '',
+    ...values,
+  }
+}
 function mileageRange(minimum: number | null, maximum: number | null): string {
   if (minimum === null && maximum === null) return '--'
   if (minimum === maximum || maximum === null) return `${minimum} m`
@@ -670,6 +937,41 @@ function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
   return `${(value / 1024 / 1024).toFixed(1)} MiB`
+}
+function boolText(value: boolean): string { return value ? '是' : '否' }
+function stationNodeTypeLabel(value: string): string {
+  return ({ station: '普通车站', parking_lot: '停车场', depot: '车辆段', connection_point: '接轨点', other: '其他', unknown: '待确认' } as Record<string, string>)[value] || value || '--'
+}
+function stationNodeTypeTag(value: string): 'success' | 'warning' | 'info' {
+  return value === 'station' ? 'success' : value === 'parking_lot' || value === 'depot' ? 'warning' : 'info'
+}
+function structureTypeLabel(value: string): string {
+  return ({ underground: '地下', elevated: '高架', at_grade: '地面', cutting: '路堑', mixed: '混合', unknown: '未填写' } as Record<string, string>)[value] || value || '--'
+}
+function platformLayoutLabel(value: string): string {
+  return ({ island: '岛式', side: '侧式', mixed: '混合式', stacked_island: '叠岛式', stacked_side: '叠侧式', separated: '分离式', unknown: '未填写' } as Record<string, string>)[value] || value || '--'
+}
+function turnbackTypeLabel(value: string): string {
+  return ({ none: '无', crossover: '渡线', pocket_track: '中间折返线/存车线', tail_track: '站后折返线', loop: '环形折返', depot_connection: '出入段线', other: '其他', unknown: '类型未知' } as Record<string, string>)[value] || value || '--'
+}
+function turnbackDirectionLabel(value: string): string {
+  return ({ none: '无', both: '双向', increasing_to_decreasing: '递增转递减', decreasing_to_increasing: '递减转递增', unknown: '未知' } as Record<string, string>)[value] || value || '--'
+}
+function sourceSyncLabel(value: string): string {
+  return ({ matched: '已匹配', stale: '来源失效', conflict: '来源冲突', manual: '人工创建', legacy: 'AP旧资料', unavailable: '不可用' } as Record<string, string>)[value] || value || '--'
+}
+function sourceMatchLabel(value: string): string {
+  return ({ create: '新增', matched: '匹配', conflict: '冲突', manual_review: '待确认' } as Record<string, string>)[value] || value || '--'
+}
+function terminalSummary(row: Station): string {
+  const values = []
+  if (row.is_line_terminal) values.push('线路端点')
+  if (row.is_service_terminal) values.push('运营终点')
+  return values.join(' / ') || '--'
+}
+function turnbackSummary(row: Station): string {
+  if (!row.turnback_capable) return '不可折返'
+  return `${turnbackTypeLabel(row.turnback_type)} / ${turnbackDirectionLabel(row.turnback_direction)}`
 }
 </script>
 
@@ -713,6 +1015,7 @@ function formatBytes(value: number): string {
           </div>
           <el-descriptions :column="3" border class="meta-block">
             <el-descriptions-item label="局点 ID">{{ store.summary?.site_id || '--' }}</el-descriptions-item>
+            <el-descriptions-item label="线路与方向参数" :span="2">站序递增方向 = {{ store.summary?.increasing_direction_name || '上行' }}；站序递减方向 = {{ store.summary?.decreasing_direction_name || '下行' }}</el-descriptions-item>
             <el-descriptions-item label="线路名称">
               <el-input
                 v-if="editing && editingDraft"
@@ -750,6 +1053,45 @@ function formatBytes(value: number): string {
               />
               <span v-else>{{ store.summary?.network_type || '--' }}</span>
             </el-descriptions-item>
+            <el-descriptions-item label="主线路径编码">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.main_path_code"
+                maxlength="50"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.main_path_code || 'MAIN' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="站序递增方向">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.increasing_direction_name"
+                maxlength="50"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.increasing_direction_name || '上行' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="站序递减方向">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.decreasing_direction_name"
+                maxlength="50"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.decreasing_direction_name || '下行' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="来源分组">
+              <el-input
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.station_source_group_name"
+                maxlength="100"
+                @input="markMetadata"
+              />
+              <span v-else>{{ store.summary?.station_source_group_name || '车站' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="来源字段">
+              <span>设备管理 · 站点字段</span>
+            </el-descriptions-item>
             <el-descriptions-item label="数据更新时间">{{ store.summary?.updated_at || '--' }}</el-descriptions-item>
             <el-descriptions-item label="备注" :span="2">
               <el-input
@@ -770,12 +1112,46 @@ function formatBytes(value: number): string {
         <el-tab-pane label="站点与区间" name="stations">
           <el-tabs v-model="locationTab" type="card">
             <el-tab-pane label="站点" name="stations">
-              <div class="edit-toolbar"><el-button :disabled="locked || saving" @click="addStation">新增站点</el-button></div>
+              <el-alert class="station-source-note" title="车站初稿来自设备管理中分组为“车站”的设备的“站点”字段。设备名称、系统名和地址不参与站点识别。" type="info" :closable="false" show-icon />
+              <div class="edit-toolbar">
+                <el-button :loading="store.stationSourceLoading" @click="openStationSourcePreview">从设备管理生成</el-button>
+                <el-button :icon="Download" @click="downloadStationTemplate">下载模板</el-button>
+                <label class="inline-file-button">
+                  <el-icon><UploadFilled /></el-icon><span>导入模板</span>
+                  <input type="file" accept=".xlsx" @change="handleStationTemplateFile" />
+                </label>
+                <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
+                <el-button :icon="Plus" :disabled="locked || saving" @click="addStation">新增节点</el-button>
+              </div>
               <NcDataTable table-id="rail-base-stations" route-key="/rail-transit/base-data" :data="stationRows" :columns="stationEditColumns" height="calc(100vh - 410px)" empty-text="暂无站点资料">
-                <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id)" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order }}</span></template>
+                <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id) && row.participates_in_direction" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order ?? '--' }}</span></template>
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('station', row.id, 'name') }" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.code" :class="{ 'field-error': fieldError('station', row.id, 'code') }" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
-                <template #cell-line_name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.line_name" @input="markStation(row)" /><span v-else>{{ display(row.line_name) }}</span></template>
+                <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
+                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.path_code" @input="markStation(row)" /><span v-else>{{ display(row.path_code) }}</span></template>
+                <template #cell-participates_in_direction="{ row }"><el-switch v-if="canEditRow('station', row.id)" v-model="row.participates_in_direction" @change="markStation(row)" /><span v-else>{{ boolText(row.participates_in_direction) }}</span></template>
+                <template #cell-structure_platform="{ row }">
+                  <div v-if="canEditRow('station', row.id)" class="compact-pair">
+                    <el-select v-model="row.structure_type" @change="markStation(row)"><el-option label="未填写" value="unknown" /><el-option label="地下" value="underground" /><el-option label="高架" value="elevated" /><el-option label="地面" value="at_grade" /><el-option label="路堑" value="cutting" /><el-option label="混合" value="mixed" /></el-select>
+                    <el-select v-model="row.platform_layout" @change="markStation(row)"><el-option label="未填写" value="unknown" /><el-option label="岛式" value="island" /><el-option label="侧式" value="side" /><el-option label="混合式" value="mixed" /><el-option label="叠岛式" value="stacked_island" /><el-option label="叠侧式" value="stacked_side" /><el-option label="分离式" value="separated" /></el-select>
+                  </div>
+                  <span v-else>{{ structureTypeLabel(row.structure_type) }} / {{ platformLayoutLabel(row.platform_layout) }}</span>
+                </template>
+                <template #cell-terminals="{ row }">
+                  <div v-if="canEditRow('station', row.id)" class="inline-checks">
+                    <el-checkbox v-model="row.is_line_terminal" @change="markStation(row)">线路</el-checkbox>
+                    <el-checkbox v-model="row.is_service_terminal" @change="markStation(row)">运营</el-checkbox>
+                  </div>
+                  <span v-else>{{ terminalSummary(row) }}</span>
+                </template>
+                <template #cell-turnback="{ row }">
+                  <div v-if="canEditRow('station', row.id)" class="compact-pair">
+                    <el-switch v-model="row.turnback_capable" @change="markStation(row)" />
+                    <el-select v-model="row.turnback_type" :disabled="!row.turnback_capable" @change="markStation(row)"><el-option label="无" value="none" /><el-option label="渡线" value="crossover" /><el-option label="中间折返线/存车线" value="pocket_track" /><el-option label="站后折返线" value="tail_track" /><el-option label="环形折返" value="loop" /><el-option label="出入段线" value="depot_connection" /><el-option label="其他" value="other" /><el-option label="类型未知" value="unknown" /></el-select>
+                  </div>
+                  <span v-else>{{ turnbackSummary(row) }}</span>
+                </template>
+                <template #cell-source_sync_status="{ row }"><el-tag :type="stateType(row.source_sync_status)">{{ sourceSyncLabel(row.source_sync_status) }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.remark" @input="markStation(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('station', row)">移除</el-button><template v-if="isPendingDelete('station', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('station', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('station', row)">删除</el-button></template>
               </NcDataTable>
@@ -931,6 +1307,157 @@ function formatBytes(value: number): string {
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <el-dialog v-model="stationSourceDialogVisible" title="设备管理站点来源预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
+      <div v-if="store.stationSourcePreview" class="preview-dialog">
+        <el-alert
+          v-if="locked"
+          title="请先解锁基础资料"
+          description="锁定状态可以预览设备管理站点字段，但不能应用到当前草稿。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-if="!store.stationSourcePreview.group_found"
+          :title="`未找到设备分组“${store.stationSourcePreview.source_group_name}”`"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <div class="preview-summary source-summary">
+          <article><span>扫描设备数</span><strong>{{ store.stationSourcePreview.scanned_device_count }}</strong></article>
+          <article class="warning"><span>站点字段为空</span><strong>{{ store.stationSourcePreview.empty_station_device_count }}</strong></article>
+          <article><span>唯一站点数</span><strong>{{ store.stationSourcePreview.unique_station_value_count }}</strong></article>
+          <article class="normal"><span>普通车站</span><strong>{{ store.stationSourcePreview.normal_station_count }}</strong></article>
+          <article class="warning"><span>特殊节点</span><strong>{{ store.stationSourcePreview.special_node_count }}</strong></article>
+          <article class="normal"><span>新增</span><strong>{{ store.stationSourcePreview.create_count }}</strong></article>
+          <article><span>匹配</span><strong>{{ store.stationSourcePreview.match_count }}</strong></article>
+          <article class="danger"><span>冲突</span><strong>{{ store.stationSourcePreview.conflict_count }}</strong></article>
+        </div>
+        <div class="source-meta">
+          <el-tag type="info">来源分组：{{ store.stationSourcePreview.source_group_name }}</el-tag>
+          <el-tag type="info">来源字段：设备管理 · 站点字段</el-tag>
+          <el-tag type="warning" v-if="store.stationSourcePreview.warning_count">警告 {{ store.stationSourcePreview.warning_count }}</el-tag>
+        </div>
+        <div v-if="store.stationSourcePreview.issues.length" class="row-issues">
+          <el-tag v-for="issue in store.stationSourcePreview.issues" :key="`${issue.code}:${issue.message}`" :type="issueType(issue.severity)">
+            {{ issue.message }}
+          </el-tag>
+        </div>
+        <NcDataTable
+          v-loading="store.stationSourceLoading"
+          table-id="rail-base-station-source-preview"
+          route-key="/rail-transit/base-data"
+          :data="stationSourceCandidates"
+          :columns="stationSourceColumns"
+          height="420px"
+          empty-text="暂无可用站点来源候选"
+        >
+          <template #cell-selected="{ row }">
+            <el-checkbox
+              :model-value="isStationSourceCandidateSelected(row)"
+              :disabled="isStationSourceCandidateDisabled(row)"
+              @change="(checked: boolean) => toggleStationSourceCandidate(row, checked)"
+            />
+          </template>
+          <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
+          <template #cell-match_status="{ row }"><el-tag :type="row.match_status === 'conflict' ? 'danger' : row.match_status === 'matched' ? 'success' : 'info'">{{ sourceMatchLabel(row.match_status) }}</el-tag></template>
+          <template #cell-issues="{ row }">
+            <div class="row-issues">
+              <el-tag v-if="row.node_type !== 'station'" type="warning">未加入主线路径</el-tag>
+              <el-tag v-for="issue in row.issues" :key="`${row.candidate_id}:${issue.code}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag>
+              <span v-if="row.node_type === 'station' && !row.issues.length">--</span>
+            </div>
+          </template>
+        </NcDataTable>
+      </div>
+      <template #footer>
+        <el-button @click="stationSourceDialogVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="locked || saving || selectedStationSourceIds.length === 0"
+          @click="applyStationSourceToDraft"
+        >应用到当前草稿</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="stationTemplateDialogVisible" title="站点模板导入预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
+      <div v-if="store.stationTemplatePreview" class="preview-dialog">
+        <el-alert
+          v-if="locked"
+          title="请先解锁基础资料"
+          description="模板预览不会写入数据库；解锁后才能应用到当前草稿。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-if="store.stationTemplatePreview.blocking_count"
+          title="模板存在阻断问题"
+          description="请修正枚举、重复来源或来源字段后重新导入。"
+          type="error"
+          :closable="false"
+          show-icon
+        />
+        <el-descriptions :column="3" border class="meta-block">
+          <el-descriptions-item label="线路名称">{{ display(store.stationTemplatePreview.line_metadata.line_name) }}</el-descriptions-item>
+          <el-descriptions-item label="项目类型">{{ display(store.stationTemplatePreview.line_metadata.system_type) }}</el-descriptions-item>
+          <el-descriptions-item label="网络类型">{{ display(store.stationTemplatePreview.line_metadata.network_domain) }}</el-descriptions-item>
+          <el-descriptions-item label="主线路径">{{ display(store.stationTemplatePreview.line_metadata.main_path_code) }}</el-descriptions-item>
+          <el-descriptions-item label="递增方向">{{ display(store.stationTemplatePreview.line_metadata.increasing_direction_name) }}</el-descriptions-item>
+          <el-descriptions-item label="递减方向">{{ display(store.stationTemplatePreview.line_metadata.decreasing_direction_name) }}</el-descriptions-item>
+          <el-descriptions-item label="来源分组">{{ display(store.stationTemplatePreview.line_metadata.station_source_group_name) }}</el-descriptions-item>
+          <el-descriptions-item label="来源字段">设备管理 · 站点字段</el-descriptions-item>
+          <el-descriptions-item label="备注">{{ display(store.stationTemplatePreview.line_metadata.remark) }}</el-descriptions-item>
+        </el-descriptions>
+        <div class="preview-summary template-summary">
+          <article class="normal"><span>新增</span><strong>{{ store.stationTemplatePreview.create_count }}</strong></article>
+          <article><span>更新</span><strong>{{ store.stationTemplatePreview.update_count }}</strong></article>
+          <article><span>不变</span><strong>{{ store.stationTemplatePreview.unchanged_count }}</strong></article>
+          <article class="danger"><span>冲突</span><strong>{{ store.stationTemplatePreview.conflict_count }}</strong></article>
+          <article class="danger"><span>阻断</span><strong>{{ store.stationTemplatePreview.blocking_count }}</strong></article>
+        </div>
+        <div v-if="store.stationTemplatePreview.issues.length" class="row-issues">
+          <el-tag v-for="issue in store.stationTemplatePreview.issues" :key="`${issue.code}:${issue.message}`" :type="issueType(issue.severity)">
+            {{ issue.message }}
+          </el-tag>
+        </div>
+        <NcDataTable
+          v-loading="store.previewLoading"
+          table-id="rail-base-station-template-preview"
+          route-key="/rail-transit/base-data"
+          :data="stationTemplateRows"
+          :columns="stationTemplateColumns"
+          height="420px"
+          empty-text="模板中没有可预览的线路节点"
+        >
+          <template #cell-selected="{ row }">
+            <el-checkbox
+              :model-value="isStationTemplateRowSelected(row)"
+              :disabled="isStationTemplateRowDisabled(row)"
+              @change="(checked: boolean) => toggleTemplateRow(row, checked)"
+            />
+          </template>
+          <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
+          <template #cell-action="{ row }"><el-tag :type="row.action === 'conflict' ? 'danger' : row.action === 'create' ? 'success' : 'info'">{{ row.action }}</el-tag></template>
+          <template #cell-issues="{ row }">
+            <div class="row-issues">
+              <el-tag v-for="issue in row.issues" :key="`${row.row_number}:${issue.code}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag>
+              <span v-if="!row.issues.length">--</span>
+            </div>
+          </template>
+        </NcDataTable>
+      </div>
+      <template #footer>
+        <el-button @click="stationTemplateDialogVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="!canApplyStationTemplatePreview() || saving"
+          @click="applyStationTemplateToDraft"
+        >应用到当前草稿</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -961,19 +1488,30 @@ function formatBytes(value: number): string {
 .file-picker { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; color: var(--nc-text-inverse); background: var(--nc-primary); border-radius: 6px; cursor: pointer; }
 .file-picker input { display: none; }
 .preview-summary { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
+.source-summary { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
+.template-summary { grid-template-columns: repeat(5, minmax(120px, 1fr)); }
 .preview-filter { margin-bottom: 12px; }
 .preview-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .apply-controls { display: flex; align-items: center; gap: 12px; }
 .operation-table, .change-table { margin-top: 16px; }
 .issue-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .row-issues { display: flex; flex-wrap: wrap; gap: 5px; }
+.preview-dialog { display: grid; gap: 12px; }
+.source-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+.inline-file-button { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; color: var(--nc-text-primary); background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 6px; cursor: pointer; }
+.inline-file-button input { display: none; }
+.compact-pair { display: grid; grid-template-columns: minmax(58px, 0.7fr) minmax(115px, 1.3fr); gap: 8px; align-items: center; min-width: 190px; }
+.inline-checks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .field-error :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--nc-danger) inset; }
 @media (max-width: 1360px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
+  .source-summary, .template-summary { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
   .filter-bar { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 900px) {
   .page-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-actions { justify-content: flex-start; }
+  .summary-grid, .source-summary, .template-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .filter-bar { grid-template-columns: 1fr; }
 }
 </style>

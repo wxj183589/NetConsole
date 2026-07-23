@@ -367,7 +367,25 @@ class RailTransitBaseDataRepository:
         now = self._now()
         metadata = {
             key: values.get(key)
-            for key in ("code", "sort_order", "remark")
+            for key in (
+                "code",
+                "sort_order",
+                "remark",
+                "source_station_value",
+                "source_station_key",
+                "node_type",
+                "path_code",
+                "participates_in_direction",
+                "structure_type",
+                "platform_layout",
+                "is_line_terminal",
+                "is_service_terminal",
+                "turnback_capable",
+                "turnback_type",
+                "turnback_direction",
+                "enabled",
+                "source_kind",
+            )
             if values.get(key) not in (None, "")
         }
         payload = {
