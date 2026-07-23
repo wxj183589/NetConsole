@@ -170,15 +170,16 @@ export interface MeshPathChart {
 
 export interface MeshTracksideSignalPointData {
   timestamp: string; timestamp_tag: string; source_file_id: number | null; link_id: number | null; sample_id: number | null
-  local_radio: number | null; role: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
+  local_radio: number | null; role: 'ACTIVE'; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section: string | null
   peer_rssi: number | null; local_rssi: number | null; peer_signal: number | null; local_signal: number | null
-  segment_duration_seconds: number | null; data_source: string
+  segment_sequence?: number | null; segment_start?: string | null; segment_end?: string | null
+  segment_duration_seconds: number | null; break_before?: boolean; data_source: string
 }
 
 export interface MeshTracksideSignalSeriesData {
   series_id: string; peer_name: string | null; peer_mac: string | null; ap_mac: string | null; radio: number | null
-  station: string | null; section: string | null; role: 'ACTIVE' | 'STANDBY' | 'MIXED' | 'UNKNOWN'; data_source: string
+  station: string | null; section: string | null; role: 'ACTIVE'; data_source: string
   total_points: number; returned_points: number; points: MeshTracksideSignalPointData[]
 }
 
@@ -187,7 +188,7 @@ export interface MeshTracksideSignalChartData {
   series: MeshTracksideSignalSeriesData[]; events: MeshChartEvent[]; warnings: string[]
   estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
   total_series: number; returned_series: number; total_points: number; returned_points: number
-  downsampled: boolean; requested_max_points: number; top_n: number; include_standby: boolean
+  downsampled: boolean; requested_max_points: number; effective_max_points?: number; top_n: number; include_standby: boolean
 }
 
 export interface MeshTimelineItem { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }

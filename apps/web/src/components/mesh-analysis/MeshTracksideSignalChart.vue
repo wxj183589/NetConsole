@@ -54,7 +54,7 @@ const props = withDefaults(defineProps<{
   events: () => [],
   locationSegments: () => [],
   showSwitchLines: false,
-  showSwitchPoints: true,
+  showSwitchPoints: false,
   showLocationBand: true,
   active: true,
   initialViewport: null,
@@ -101,7 +101,7 @@ function metric(value: number | null | undefined, unit = ''): string {
 function seriesLabel(series: MeshTracksideSignalSeriesData): string {
   const base = series.peer_name || series.peer_mac || '轨旁 AP 未知'
   const radio = series.radio == null ? '—' : series.radio
-  return `${base} · Radio ${radio} · ${series.role}`
+  return `${base} · Radio ${radio}`
 }
 
 function pointLabel(point: MeshTracksideSignalPointData): string {
@@ -135,6 +135,11 @@ function renderSeries(): RenderedSignalSeries[] {
       for (const point of [...series.points].sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))) {
         const currentTime = pointTimeMillis(point)
         if (
+          rendered.length
+          && point.break_before
+        ) {
+          rendered.push({ value: [point.timestamp, null] })
+        } else if (
           rendered.length
           && previousTime != null
           && currentTime != null
@@ -200,9 +205,11 @@ function buildTooltipPointSection(point: RenderedSignalPoint, index: number): st
     `采样时间：${escapeMeshTooltipHtml(point.value[0])}`,
     `轨旁 AP：${escapeMeshTooltipHtml(pointLabel(meta))}`,
     `AP MAC：${escapeMeshTooltipHtml(meta.peer_ap_mac || series.ap_mac)}`,
-    `Peer RSSI / MR RSSI：${metric(meta.peer_rssi)} / ${metric(meta.local_rssi)}`,
+    `轨旁侧 RSSI：${metric(point.value[1])}`,
+    `MR 侧 RSSI（参考）：${metric(meta.local_rssi)}`,
     `Peer Signal / MR Signal：${metric(meta.peer_signal)} / ${metric(meta.local_signal)}`,
     `站点 / 区间：${escapeMeshTooltipHtml(meta.station)} / ${escapeMeshTooltipHtml(meta.section)}`,
+    '链路状态：ACTIVE',
     `建链持续时间：${metric(meta.segment_duration_seconds, ' s')}`,
     `数据来源：${escapeMeshTooltipHtml(meta.data_source)}`,
   ].join('<br>')
@@ -448,10 +455,10 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       ...renderedSeries.map((item, index) => ({
         name: item.name,
         type: 'line',
-        showSymbol: false,
+        showSymbol: item.data.filter((point) => point.value[1] != null).length < 120,
         connectNulls: false,
         data: item.data,
-        lineStyle: { width: 2, type: item.meta.role === 'STANDBY' ? 'dashed' : 'solid' },
+        lineStyle: { width: 2, type: 'solid' },
         markArea: index === 0 ? markArea : undefined,
         markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
           silent: false,

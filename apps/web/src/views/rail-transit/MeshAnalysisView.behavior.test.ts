@@ -124,6 +124,7 @@ const meshChartStub = defineComponent({
   props: {
     points: { type: Array, default: () => [] },
     series: { type: Array, default: () => [] },
+    events: { type: Array, default: () => [] },
     scope: { type: String, default: '' },
     initialViewport: { type: Object, default: null },
     syncViewport: { type: Object, default: null },
@@ -176,7 +177,7 @@ beforeEach(() => {
   mocks.listLinks.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
-  mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], estimated_interval_seconds: null, continuity_gap_seconds: null, total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, top_n: 3, include_standby: true })
+  mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], estimated_interval_seconds: null, continuity_gap_seconds: null, total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, effective_max_points: 600, top_n: 0, include_standby: false })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
 })
 
@@ -300,9 +301,9 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
-      include_standby: true,
-      top_n: 3,
     })
+    const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')
+    expect(tracksideChart?.props('events')).toEqual([])
 
     await wrapper.findAll('button').find((button) => button.text() === '锁定当前时间范围')!.trigger('click')
     await flushPromises()
@@ -390,8 +391,9 @@ describe('Mesh analysis detail behavior', () => {
       returned_points: 2,
       downsampled: false,
       requested_max_points: 600,
-      top_n: 3,
-      include_standby: true,
+      effective_max_points: 600,
+      top_n: 0,
+      include_standby: false,
     })
 
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
@@ -429,8 +431,6 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
-      include_standby: true,
-      top_n: 3,
     })
     expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
       start_time: '2026-07-20 09:59:55.000',
@@ -459,8 +459,6 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
-      include_standby: true,
-      top_n: 3,
     })
     expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
       start_time: '2026-07-20 09:59:55.000',
@@ -541,8 +539,6 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
-      include_standby: true,
-      top_n: 3,
     })
     expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
       start_time: '2026-07-20 09:59:45.000',

@@ -539,8 +539,6 @@ async function loadTracksideSignal(
     radio: effectiveRange?.radio ?? chartRadio.value,
     time_from: effectiveRange?.start_time,
     time_to: effectiveRange?.end_time,
-    include_standby: true,
-    top_n: 3,
   })
   if (generation !== detailGeneration) return
   tracksideSignal.value = result
@@ -1394,7 +1392,7 @@ function buildResultLabel(value: string): string {
           <h3 class="chart-section-title">轨旁信号图</h3>
           <el-alert v-if="tracksideSignal?.warnings?.length" :title="tracksideSignal.warnings.join('；')" type="warning" :closable="false" show-icon />
           <div class="chart-host" :style="{ height: `${rssiPanel.height.value}px` }">
-            <MeshTracksideSignalChart :series="tracksideSignal?.series || []" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" @viewport-change="updateRssiViewport" @viewport-ready="updateRssiViewport" @select-switch="selectChartSwitch" />
+            <MeshTracksideSignalChart :series="tracksideSignal?.series || []" :events="tracksideSignal?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-location-band="showLocationBand" :active="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" @viewport-change="updateRssiViewport" @viewport-ready="updateRssiViewport" @select-switch="selectChartSwitch" />
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按关键点优先返回 ${chartData.returned_points} 点（请求 ${chartData.requested_max_points}，有效上限 ${chartData.effective_max_points}）` : `主图展示后端返回的 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按 AP / Peer / Radio 分组，使用 Peer 侧 RSSI 字段并按 series 独立降采样。</p>

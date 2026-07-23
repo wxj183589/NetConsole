@@ -395,31 +395,71 @@ def test_active_chart_exposes_location_segments_and_real_switch_rssi(tmp_path: P
         assert event.render_busy_point_timestamp in {point.timestamp for point in chart.points}
 
 
-def test_trackside_signal_chart_groups_active_and_standby_peer_rssi(tmp_path: Path) -> None:
-    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+def test_trackside_signal_chart_keeps_all_active_series_and_ignores_legacy_top_n(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        for offset in range(4, 14):
+            row_id = 100 + offset
+            sample_time = f"2026-07-14 10:00:{offset:02d}.000"
+            peer_mac = f"{offset:012x}"
+            ap_mac = f"{offset + 100:012x}"
+            conn.execute("INSERT INTO samples VALUES (?, 1, 1, ?, '')", (row_id, sample_time))
+            conn.execute(
+                """
+                INSERT INTO mesh_links (
+                    id, sample_id, source_file_id, record_seq, source_line_number, sample_time, radio, link_state,
+                    peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_ap_mac, peer_site,
+                    peer_radio_label, duration_seconds, local_rssi_db, peer_rssi_db, local_tx_busy,
+                    peer_tx_busy, local_rx_busy, peer_rx_busy, peer_match_rule, peer_resolve_source,
+                    peer_radio_mac, timestamp_tag, session_id, local_signal_dbm, peer_signal_dbm
+                ) VALUES (?, ?, 1, ?, ?, ?, 1, 'ACTIVE', ?, ?, ?, ?, ?, '车站A',
+                    'radio2', 1, ?, ?, 2, 1, 78, 77, 'exact', 'mapping', ?, '', 'session-extra',
+                    -53, -50)
+                """,
+                (
+                    row_id,
+                    row_id,
+                    offset,
+                    offset,
+                    sample_time,
+                    peer_mac,
+                    peer_mac,
+                    peer_mac,
+                    f"AP-{offset:02d}",
+                    ap_mac,
+                    40 + offset,
+                    43 + offset,
+                    peer_mac,
+                ),
+            )
     service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
 
-    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10, top_n=10)
-    active_only = service.get_trackside_signal_chart(
+    chart = service.get_trackside_signal_chart(
         "demo",
         session_id,
         radio=1,
         max_points=10,
-        include_standby=False,
-        top_n=10,
+        include_standby=True,
+        top_n=3,
     )
 
     assert chart.source_id == session_id
     assert chart.radio == 1
-    assert chart.total_series >= len(chart.series) >= 1
+    assert chart.total_series == 12
+    assert chart.returned_series == 12
+    assert chart.effective_max_points >= chart.returned_series
     assert chart.returned_points == sum(len(item.points) for item in chart.series)
-    assert any(item.role == "ACTIVE" and item.points[0].peer_rssi is not None for item in chart.series)
-    assert any(item.role == "STANDBY" for item in chart.series)
-    assert {item.data_source for item in chart.series} <= {"peer_rssi_db", "peer_signal_dbm"}
+    assert {item.role for item in chart.series} == {"ACTIVE"}
+    assert "000000000030" not in {item.ap_mac for item in chart.series}
+    assert {item.data_source for item in chart.series} <= {"peer_rssi_db", "peer_signal_dbm", "mixed"}
     assert {point.data_source for item in chart.series for point in item.points} <= {"peer_rssi_db", "peer_signal_dbm"}
     assert any(point.data_source == "peer_signal_dbm" for item in chart.series for point in item.points)
-    assert all(item.role != "STANDBY" for item in active_only.series)
-    assert active_only.include_standby is False
+    assert chart.events == []
+    assert chart.include_standby is False
+    assert chart.top_n == 0
+    assert all("前 3 组" not in warning and "切换事件过多" not in warning for warning in chart.warnings)
+    ap_01 = next(item for item in chart.series if item.peer_name == "AP-01")
+    assert [point.break_before for point in ap_01.points] == [False, True]
 
 
 def test_trackside_signal_chart_falls_back_to_peer_signal_not_local_rssi(tmp_path: Path) -> None:

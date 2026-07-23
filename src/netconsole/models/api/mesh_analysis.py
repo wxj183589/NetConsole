@@ -497,7 +497,7 @@ class MeshTracksideSignalPointDTO(ApiModel):
     link_id: int | None = None
     sample_id: int | None = None
     local_radio: int | None = None
-    role: str = ""
+    role: Literal["ACTIVE"] = "ACTIVE"
     peer_mac: str | None = None
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
@@ -509,7 +509,11 @@ class MeshTracksideSignalPointDTO(ApiModel):
     local_rssi: float | None = None
     peer_signal: float | None = None
     local_signal: float | None = None
+    segment_sequence: int | None = None
+    segment_start: str | None = None
+    segment_end: str | None = None
     segment_duration_seconds: float | None = None
+    break_before: bool = False
     data_source: str = ""
 
 
@@ -521,7 +525,7 @@ class MeshTracksideSignalSeriesDTO(ApiModel):
     radio: int | None = None
     station: str | None = None
     section: str | None = None
-    role: Literal["ACTIVE", "STANDBY", "MIXED", "UNKNOWN"] = "UNKNOWN"
+    role: Literal["ACTIVE"] = "ACTIVE"
     data_source: str = "peer_rssi_db"
     total_points: int = 0
     returned_points: int = 0
@@ -548,8 +552,9 @@ class MeshTracksideSignalChartDTO(ApiModel):
     returned_points: int = 0
     downsampled: bool = False
     requested_max_points: int = 0
+    effective_max_points: int = 0
     top_n: int = 0
-    include_standby: bool = True
+    include_standby: bool = False
 
 
 class MeshLinkTimelineDTO(ApiModel):

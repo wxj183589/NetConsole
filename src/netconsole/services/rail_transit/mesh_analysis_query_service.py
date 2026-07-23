@@ -62,6 +62,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshTimelineDTO,
 )
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json, mesh_analysis_params_to_json
+from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired, SCHEMA_VERSION
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_chart_payload import build_chart_payload, render_indices
@@ -879,13 +880,12 @@ class MeshAnalysisQueryService:
         time_from: str = "",
         time_to: str = "",
         max_points: int = 1_000,
-        include_standby: bool = True,
-        top_n: int = 3,
+        include_standby: bool = False,
+        top_n: int = 0,
     ) -> MeshTracksideSignalChartDTO:
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
-        top_n = min(max(int(top_n), 1), 50)
         if context.detail_db is None:
             return MeshTracksideSignalChartDTO(
                 source_id=context.session_id,
@@ -895,8 +895,9 @@ class MeshAnalysisQueryService:
                     end=time_to or None,
                 ),
                 requested_max_points=max_points,
-                top_n=top_n,
-                include_standby=include_standby,
+                effective_max_points=max_points,
+                top_n=0,
+                include_standby=False,
             )
         repository = self._chart_repository(context)
         payload = repository.query_active_link_chart_segments(
@@ -905,24 +906,13 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
         )
-        chart = self._chart_dto(
-            site_id,
-            context,
-            payload,
-            mode="active_path",
-            max_points=max_points,
-            time_from=time_from,
-            time_to=time_to,
-        )
         return self._trackside_signal_chart_dto(
             context,
-            chart,
+            payload,
             radio=radio,
             time_from=time_from,
             time_to=time_to,
             max_points=max_points,
-            include_standby=include_standby,
-            top_n=top_n,
         )
 
     def get_peer_segment_chart(
@@ -2077,248 +2067,266 @@ class MeshAnalysisQueryService:
     def _trackside_signal_chart_dto(
         self,
         context: _SessionContext,
-        chart: MeshPathChartDTO,
+        payload: dict[str, object],
         *,
         radio: int | None,
         time_from: str,
         time_to: str,
         max_points: int,
-        include_standby: bool,
-        top_n: int,
     ) -> MeshTracksideSignalChartDTO:
+        run_segment = dict(payload.get("run_segment") or {})
+        rows = self._chart_rows_in_window(run_segment.get("rows"), time_from, time_to)
+        rows.sort(
+            key=lambda row: (
+                str(row.get("sample_time") or ""),
+                str(row.get("timestamp_tag") or ""),
+                self._int(row.get("radio")) or 0,
+                int(row.get("id") or 0),
+            )
+        )
+        estimated_interval = self._number(run_segment.get("estimated_interval_seconds"))
+        continuity_gap = self._number(run_segment.get("continuity_gap_seconds"))
+        ap_map = self._ap_map(context.site_id)
+        segment_index = self._chart_segment_index(self._build_rows(context))
         groups: dict[tuple[str, int | None], dict[str, Any]] = {}
+        materialized: list[dict[str, Any]] = []
+        last_by_series: dict[tuple[str, int | None], dict[str, Any]] = {}
+        seen_samples: set[tuple[tuple[str, int | None], int, str, str, int | None]] = set()
+        previous_active_series_key: tuple[str, int | None] | None = None
+        skipped_missing_signal = 0
 
-        def group(
-            *,
-            peer_name: str | None,
-            peer_mac: str | None,
-            ap_mac: str | None,
-            local_radio: int | None,
-            station: str | None,
-            section: str | None,
-            role: str,
-        ) -> dict[str, Any]:
-            identity = self._mac_key(ap_mac or peer_mac) or str(peer_name or "").strip().casefold() or "unknown"
-            key = (identity, local_radio)
-            current = groups.setdefault(
-                key,
+        active_rows = [row for row in rows if str(row.get("link_state") or "").upper() == LINK_STATE_ACTIVE]
+        for row in active_rows:
+            timestamp = str(row.get("sample_time") or "")
+            timestamp_tag = str(row.get("timestamp_tag") or "")
+            local_radio = self._int(row.get("radio"))
+            peer_name = str(row.get("peer_ap_name") or "").strip() or None
+            peer_mac = str(row.get("peer_mac_normalized") or row.get("peer_mac") or row.get("peer_mac_raw") or "").strip() or None
+            ap_mac = str(row.get("peer_ap_mac") or "").strip() or None
+            location = self._locate_ap(
+                ap_map,
                 {
+                    "peer_ap_mac": ap_mac,
+                    "peer_ap_name": peer_name,
+                    "peer_mac_normalized": peer_mac,
+                    "peer_site": row.get("peer_site"),
+                },
+            )
+            peer_name = peer_name or location.name or None
+            ap_mac = ap_mac or location.mac or None
+            station = location.station or str(row.get("peer_site") or "") or None
+            section = location.section or None
+            identity = self._mac_key(ap_mac or peer_mac) or str(peer_name or "").strip().casefold() or "unknown"
+            series_key = (identity, local_radio)
+            peer_rssi = self._number(row.get("peer_rssi_db"))
+            peer_signal = self._number(row.get("peer_signal_dbm"))
+            data_source = self._trackside_signal_data_source(peer_rssi, peer_signal)
+            if not data_source:
+                skipped_missing_signal += 1
+                previous_active_series_key = series_key
+                continue
+            link_id = self._int(row.get("id") or row.get("link_id"))
+            sample_key = (series_key, context.source_id, timestamp, timestamp_tag, link_id)
+            previous_series_key = previous_active_series_key
+            previous_active_series_key = series_key
+            if sample_key in seen_samples:
+                continue
+            seen_samples.add(sample_key)
+            segment = self._chart_segment(segment_index, row) or {}
+            segment_sequence = self._int(segment.get("sequence"))
+            segment_start = str(segment.get("build_start_time") or "") or None
+            segment_end = str(segment.get("build_end_time") or "") or None
+            run_id = (context.source_id, local_radio, identity, segment_sequence, segment_start, segment_end)
+            previous = last_by_series.get(series_key)
+            current_time = self._parse_time(timestamp)
+            previous_time = previous.get("time") if previous else None
+            gap_break = (
+                continuity_gap is not None
+                and previous_time is not None
+                and current_time is not None
+                and (current_time - previous_time).total_seconds() > continuity_gap
+            )
+            break_before = bool(
+                previous
+                and (
+                    previous_series_key != series_key
+                    or previous.get("run_id") != run_id
+                    or gap_break
+                )
+            )
+            point = MeshTracksideSignalPointDTO(
+                timestamp=timestamp,
+                timestamp_tag=timestamp_tag,
+                source_file_id=context.source_id,
+                link_id=link_id,
+                sample_id=link_id,
+                local_radio=local_radio,
+                role="ACTIVE",
+                peer_mac=peer_mac,
+                peer_ap_name=peer_name,
+                peer_ap_mac=ap_mac,
+                peer_radio=str(row.get("peer_radio") or row.get("peer_radio_label") or "") or None,
+                peer_radio_mac=str(row.get("peer_radio_mac") or "") or None,
+                station=station,
+                section=section,
+                peer_rssi=peer_rssi,
+                local_rssi=self._number(row.get("local_rssi_db")),
+                peer_signal=peer_signal,
+                local_signal=self._number(row.get("local_signal_dbm")),
+                segment_sequence=segment_sequence,
+                segment_start=segment_start,
+                segment_end=segment_end,
+                segment_duration_seconds=self._number(segment.get("main_link_duration_seconds")),
+                break_before=break_before,
+                data_source=data_source,
+            )
+            value = peer_rssi if peer_rssi is not None else peer_signal
+            item = {
+                "index": len(materialized),
+                "series_key": series_key,
+                "run_id": run_id,
+                "point": point,
+                "value": value,
+            }
+            group = groups.setdefault(
+                series_key,
+                {
+                    "series_key": series_key,
+                    "series_id": f"{identity}:radio:{local_radio if local_radio is not None else 'all'}",
                     "peer_name": peer_name,
                     "peer_mac": peer_mac,
                     "ap_mac": ap_mac,
                     "radio": local_radio,
                     "station": station,
                     "section": section,
-                    "roles": set(),
-                    "points": [],
+                    "items": [],
+                    "first_index": item["index"],
                 },
             )
-            for field, value in {
+            for field, value_text in {
                 "peer_name": peer_name,
                 "peer_mac": peer_mac,
                 "ap_mac": ap_mac,
                 "station": station,
                 "section": section,
             }.items():
-                if value and not current.get(field):
-                    current[field] = value
-            current["roles"].add(role)
-            return current
+                if value_text and not group.get(field):
+                    group[field] = value_text
+            group["items"].append(item)
+            materialized.append(item)
+            last_by_series[series_key] = {"time": current_time, "run_id": run_id, "index": item["index"]}
 
-        def append_point(
-            *,
-            target: dict[str, Any],
-            timestamp: str,
-            timestamp_tag: str,
-            source_file_id: int | None,
-            link_id: int | None,
-            local_radio: int | None,
-            role: str,
-            peer_mac: str | None,
-            peer_ap_name: str | None,
-            peer_ap_mac: str | None,
-            peer_radio: str | None,
-            peer_radio_mac: str | None,
-            station: str | None,
-            section: str | None,
-            local_rssi: float | None,
-            peer_rssi: float | None,
-            local_signal: float | None,
-            peer_signal: float | None,
-            segment_duration_seconds: float | None,
-        ) -> None:
-            data_source = self._trackside_signal_data_source(peer_rssi, peer_signal)
-            if not data_source:
-                return
-            target["points"].append(
-                MeshTracksideSignalPointDTO(
-                    timestamp=timestamp,
-                    timestamp_tag=timestamp_tag,
-                    source_file_id=source_file_id,
-                    link_id=link_id,
-                    sample_id=link_id,
-                    local_radio=local_radio,
-                    role=role,
-                    peer_mac=peer_mac,
-                    peer_ap_name=peer_ap_name,
-                    peer_ap_mac=peer_ap_mac,
-                    peer_radio=peer_radio,
-                    peer_radio_mac=peer_radio_mac,
-                    station=station,
-                    section=section,
-                    peer_rssi=peer_rssi,
-                    local_rssi=local_rssi,
-                    peer_signal=peer_signal,
-                    local_signal=local_signal,
-                    segment_duration_seconds=segment_duration_seconds,
-                    data_source=data_source,
-                )
-            )
-
-        for point in chart.points:
-            role = "ACTIVE" if str(point.link_state or "").upper() == "ACTIVE" else "UNKNOWN"
-            target = group(
-                peer_name=point.peer_ap_name,
-                peer_mac=point.peer_mac,
-                ap_mac=point.peer_ap_mac,
-                local_radio=point.local_radio,
-                station=point.station,
-                section=point.section,
-                role=role,
-            )
-            append_point(
-                target=target,
-                timestamp=point.timestamp,
-                timestamp_tag=point.timestamp_tag,
-                source_file_id=point.source_file_id,
-                link_id=point.link_id,
-                local_radio=point.local_radio,
-                role=role,
-                peer_mac=point.peer_mac,
-                peer_ap_name=point.peer_ap_name,
-                peer_ap_mac=point.peer_ap_mac,
-                peer_radio=point.peer_radio,
-                peer_radio_mac=point.peer_radio_mac,
-                station=point.station,
-                section=point.section,
-                local_rssi=point.local_rssi,
-                peer_rssi=point.peer_rssi,
-                local_signal=point.local_signal,
-                peer_signal=point.peer_signal,
-                segment_duration_seconds=point.segment_duration_seconds,
-            )
-            if not include_standby:
-                continue
-            for backup in point.backups:
-                backup_role = "STANDBY"
-                backup_target = group(
-                    peer_name=backup.peer_ap_name,
-                    peer_mac=backup.peer_mac,
-                    ap_mac=backup.peer_ap_mac,
-                    local_radio=backup.local_radio,
-                    station=backup.station,
-                    section=backup.section,
-                    role=backup_role,
-                )
-                append_point(
-                    target=backup_target,
-                    timestamp=backup.timestamp,
-                    timestamp_tag=backup.timestamp_tag,
-                    source_file_id=backup.source_file_id or point.source_file_id,
-                    link_id=backup.link_id,
-                    local_radio=backup.local_radio,
-                    role=backup_role,
-                    peer_mac=backup.peer_mac,
-                    peer_ap_name=backup.peer_ap_name,
-                    peer_ap_mac=backup.peer_ap_mac,
-                    peer_radio=backup.peer_radio,
-                    peer_radio_mac=backup.peer_radio_mac,
-                    station=backup.station,
-                    section=backup.section,
-                    local_rssi=backup.local_rssi,
-                    peer_rssi=backup.peer_rssi,
-                    local_signal=backup.local_signal,
-                    peer_signal=backup.peer_signal,
-                    segment_duration_seconds=None,
-                )
-
-        def role_label(roles: set[str]) -> str:
-            values = {role for role in roles if role in {"ACTIVE", "STANDBY"}}
-            if values == {"ACTIVE"}:
-                return "ACTIVE"
-            if values == {"STANDBY"}:
-                return "STANDBY"
-            if values:
-                return "MIXED"
-            return "UNKNOWN"
-
-        ordered = sorted(
-            (item for item in groups.values() if item["points"]),
-            key=lambda item: (
-                0 if "ACTIVE" in item["roles"] else 1,
-                -len(item["points"]),
-                str(item.get("peer_name") or item.get("peer_mac") or ""),
-                item.get("radio") or 0,
-            ),
-        )
-        total_series = len(ordered)
-        total_points = sum(len(item["points"]) for item in ordered)
-        selected = ordered[:top_n]
         warnings: list[str] = []
-        if chart.downsample_warning:
-            warnings.append(chart.downsample_warning)
-        if total_series > len(selected):
-            warnings.append(f"轨旁信号序列共 {total_series} 组，已按采样数返回前 {len(selected)} 组。")
+        if skipped_missing_signal:
+            warnings.append(f"已跳过 {skipped_missing_signal} 个缺少 peer_rssi / peer_signal 的 ACTIVE 采样点。")
+        total_points = len(materialized)
+        requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        effective_max_points = requested_max_points
+        selected_items = materialized
+        if total_points == 0:
+            warnings.append("当前日志没有任何有效 peer_rssi / peer_signal。")
+        elif total_points > requested_max_points:
+            pinned: set[int] = set()
+            important: set[int] = {0, total_points - 1}
+            for group in groups.values():
+                items = list(group["items"])
+                if not items:
+                    continue
+                pinned.add(int(items[0]["index"]))
+                important.update({int(items[0]["index"]), int(items[-1]["index"])})
+                for position, item in enumerate(items):
+                    if item["point"].break_before:
+                        important.add(int(item["index"]))
+                        if position > 0:
+                            important.add(int(items[position - 1]["index"]))
+                valued = [item for item in items if item.get("value") is not None]
+                if valued:
+                    important.add(int(min(valued, key=lambda item: item["value"])["index"]))
+                    important.add(int(max(valued, key=lambda item: item["value"])["index"]))
+            required = important | pinned
+            if len(required) > effective_max_points:
+                if len(required) <= _MAX_CHART_RENDER_POINTS:
+                    effective_max_points = len(required)
+                    warnings.append(
+                        "为保留所有 ACTIVE 序列首点、区段边界和 RSSI 极值，"
+                        f"轨旁图目标点数已从 {requested_max_points} 提升到 {effective_max_points}。"
+                    )
+                else:
+                    effective_max_points = _MAX_CHART_RENDER_POINTS
+                    warnings.append(
+                        f"轨旁 ACTIVE RSSI 关键点共 {len(required)} 个，超过安全渲染上限 "
+                        f"{_MAX_CHART_RENDER_POINTS}，已优先保留各序列首点并抽样返回。"
+                    )
+            selected_indices = set(
+                int(index)
+                for index in render_indices(
+                    total_points,
+                    0,
+                    0,
+                    important,
+                    effective_max_points,
+                    pinned_indices=pinned,
+                )
+            )
+            selected_items = [item for item in materialized if int(item["index"]) in selected_indices]
+            warnings.append(f"轨旁 ACTIVE RSSI 总点数 {total_points}，已按关键点优先返回 {len(selected_items)} 点。")
+
+        selected_by_series: dict[tuple[str, int | None], list[MeshTracksideSignalPointDTO]] = defaultdict(list)
+        last_selected_by_series: dict[tuple[str, int | None], dict[str, Any]] = {}
+        for item in selected_items:
+            series_key = item["series_key"]
+            previous = last_selected_by_series.get(series_key)
+            point = item["point"]
+            break_before = False if previous is None else bool(point.break_before or previous.get("run_id") != item.get("run_id"))
+            selected_by_series[series_key].append(point.model_copy(update={"break_before": break_before}))
+            last_selected_by_series[series_key] = item
 
         series: list[MeshTracksideSignalSeriesDTO] = []
-        for item in selected:
-            points = sorted(
-                item["points"],
-                key=lambda point: (
-                    point.timestamp,
-                    point.timestamp_tag,
-                    point.link_id or 0,
-                ),
-            )
-            identity = self._mac_key(item.get("ap_mac") or item.get("peer_mac")) or str(item.get("peer_name") or "unknown")
+        for group in sorted(groups.values(), key=lambda item: int(item["first_index"])):
+            points = selected_by_series.get(group["series_key"], [])
+            if not points:
+                continue
             data_sources = {point.data_source for point in points if point.data_source}
             series.append(
                 MeshTracksideSignalSeriesDTO(
-                    series_id=f"{identity}:radio:{item.get('radio') or 'all'}",
-                    peer_name=item.get("peer_name"),
-                    peer_mac=item.get("peer_mac"),
-                    ap_mac=item.get("ap_mac"),
-                    radio=item.get("radio"),
-                    station=item.get("station"),
-                    section=item.get("section"),
-                    role=role_label(item["roles"]),
+                    series_id=group["series_id"],
+                    peer_name=group.get("peer_name"),
+                    peer_mac=group.get("peer_mac"),
+                    ap_mac=group.get("ap_mac"),
+                    radio=group.get("radio"),
+                    station=group.get("station"),
+                    section=group.get("section"),
+                    role="ACTIVE",
                     data_source=next(iter(data_sources)) if len(data_sources) == 1 else "mixed" if data_sources else "",
-                    total_points=len(points),
+                    total_points=len(group["items"]),
                     returned_points=len(points),
                     points=points,
                 )
             )
+        returned_points = sum(item.returned_points for item in series)
+        downsampled = returned_points < total_points
 
         return MeshTracksideSignalChartDTO(
             source_id=context.session_id,
             radio=radio,
             time_range=MeshTracksideSignalRangeDTO(
-                start=time_from or chart.first_sample_time,
-                end=time_to or chart.last_sample_time,
+                start=time_from or str(run_segment.get("segment_start") or "") or None,
+                end=time_to or str(run_segment.get("segment_end") or "") or None,
             ),
             series=series,
-            events=chart.events,
+            events=[],
             warnings=warnings,
-            estimated_interval_seconds=chart.summary.estimated_interval_seconds,
-            continuity_gap_seconds=chart.summary.continuity_gap_seconds,
-            total_series=total_series,
+            estimated_interval_seconds=estimated_interval,
+            continuity_gap_seconds=continuity_gap,
+            total_series=len(groups),
             returned_series=len(series),
             total_points=total_points,
-            returned_points=sum(item.returned_points for item in series),
-            downsampled=chart.downsampled or total_series > len(series),
-            requested_max_points=chart.requested_max_points or max_points,
-            top_n=top_n,
-            include_standby=include_standby,
+            returned_points=returned_points,
+            downsampled=downsampled,
+            requested_max_points=requested_max_points,
+            effective_max_points=effective_max_points,
+            top_n=0,
+            include_standby=False,
         )
 
     @staticmethod
