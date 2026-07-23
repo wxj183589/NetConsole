@@ -17,6 +17,7 @@ const entries: TracksideTooltipEntry[] = [
     station: '站点乙',
     section: null,
     activeDurationSeconds: 12.5,
+    color: '#27ae60',
   },
   {
     apName: 'AP-A',
@@ -27,6 +28,7 @@ const entries: TracksideTooltipEntry[] = [
     station: '站点甲',
     section: '区间甲',
     activeDurationSeconds: 7.574,
+    color: '#2f80ed',
   },
 ]
 

@@ -67,6 +67,27 @@ const event: MeshChartEvent = {
 }
 
 describe('MESH RSSI tooltip', () => {
+  it('keeps the upper ACTIVE-path tooltip layout separate from the trackside template', () => {
+    const html = buildMeshRssiTooltip(point)
+
+    expect(html).toBe([
+      '<div class="mesh-rssi-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">',
+      `采样时间：${point.timestamp}`,
+      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35">',
+      '<strong>主链路</strong>',
+      '当前轨旁 AP：&lt;主 AP&gt;',
+      '当前轨旁 AP MAC：main-ap',
+      'MR / 轨旁 AP 接收信号：31 / 29',
+      '归属站点 / 区间：站点&amp;一 / —',
+      '建链持续时间：1 s',
+      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>Radio：radio1<br>归属站点 / 区间：站点二 / 区间二',
+      '',
+      '</div>',
+    ].join('<br>'))
+    expect(html).not.toMatch(/● ACTIVE|○ STANDBY/)
+    expect(html).not.toContain('<br>AP：')
+  })
+
   it('uses RSSI deltas, separates sections, escapes HTML and hides unreliable switch fields', () => {
     const html = buildMeshRssiTooltip(point, event)
 

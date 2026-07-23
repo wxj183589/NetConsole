@@ -7,6 +7,7 @@ export interface TracksideTooltipEntry {
   station: string | null
   section: string | null
   activeDurationSeconds: number | null
+  color: string
 }
 
 export function displayTracksideTooltipMetric(value: number | null): string {

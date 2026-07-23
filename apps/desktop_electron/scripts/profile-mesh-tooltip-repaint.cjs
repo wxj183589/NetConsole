@@ -91,6 +91,14 @@ app.whenReady().then(async () => {
       observer?.observe({ entryTypes: ['longtask'] })
 
       const baseMillis = Date.UTC(2026, 6, 20, 10, 0, 0)
+      const colorAssignmentStarted = performance.now()
+      const seriesColors = Array.from({ length: SERIES_COUNT }, (_, index) => (
+        'hsl(' + (((index + 1) * 137.508) % 360).toFixed(3) + 'deg '
+        + [72, 84, 66, 78][Math.floor(index / 360) % 4] + '% '
+        + [58, 68, 52, 72][Math.floor(index / 90) % 4] + '%)'
+      ))
+      const colorAssignmentMs = performance.now() - colorAssignmentStarted
+      const colorConflictEdgeCount = SERIES_COUNT * (SERIES_COUNT - 1) / 2
       const frameMeta = new Map()
       let nextMetaId = 0
       const series = Array.from({ length: SERIES_COUNT }, (_, seriesIndex) => {
@@ -106,6 +114,7 @@ app.whenReady().then(async () => {
             mrRssi: 18 + (seriesIndex + pointIndex) % 40,
             station: 'station-' + (seriesIndex % 20),
             section: 'section-' + (seriesIndex % 30),
+            color: seriesColors[seriesIndex],
           }
           const entries = frameMeta.get(timestamp)
           if (entries) entries.push(meta)
@@ -123,7 +132,8 @@ app.whenReady().then(async () => {
           progressive: 3_000,
           progressiveThreshold: 3_000,
           connectNulls: false,
-          lineStyle: { width: 1.5 },
+          itemStyle: { color: seriesColors[seriesIndex] },
+          lineStyle: { width: 1.5, color: seriesColors[seriesIndex] },
           data,
         }
       })
@@ -263,6 +273,7 @@ app.whenReady().then(async () => {
           row.className = 'entry'
           const role = document.createElement('div')
           role.className = 'role'
+          role.style.color = entry.color
           role.textContent = (entry.role === 'ACTIVE' ? '● ' : '○ ') + entry.role
           const ap = document.createElement('div')
           ap.className = 'ap'
@@ -342,6 +353,10 @@ app.whenReady().then(async () => {
         point_count: POINT_COUNT,
         switch_line_count: SWITCH_COUNT,
         switch_node_count: switchNodes.length,
+        color_conflict_edge_count: colorConflictEdgeCount,
+        color_used_count: new Set(seriesColors).size,
+        color_conflicting_edges_with_same_color: new Set(seriesColors).size === SERIES_COUNT ? 0 : null,
+        color_assignment_ms: colorAssignmentMs,
         ...rendering,
         external_tooltip: true,
         pointer_update_count: pointerDurations.length,
@@ -401,6 +416,7 @@ app.whenReady().then(async () => {
     const failed = !profile.canvas_content_preserved_after_hide
       || !profile.viewport_preserved
       || !profile.series_data_references_preserved
+      || profile.color_conflicting_edges_with_same_color !== 0
       || profile.tooltip_wheel_bubble_count !== 0
       || profile.echarts_set_option_delta !== 0
       || profile.echarts_clear_delta !== 0

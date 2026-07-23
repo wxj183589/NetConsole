@@ -62,7 +62,11 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
         class="trackside-tooltip-entry__role"
         :class="entry.role === 'ACTIVE' ? 'is-active' : 'is-standby'"
       >
-        {{ entry.role === 'ACTIVE' ? '●' : '○' }} {{ entry.role }}
+        <span
+          class="trackside-tooltip-entry__marker"
+          :style="{ color: entry.color }"
+        >{{ entry.role === 'ACTIVE' ? '●' : '○' }}</span>
+        {{ entry.role }}
       </div>
       <div class="trackside-tooltip-entry__ap">
         AP：{{ tracksideTooltipApLabel(entry) }} · Radio {{ displayTracksideTooltipMetric(entry.radio) }}
@@ -109,5 +113,6 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
 .trackside-tooltip-entry__role { font-weight: 700; }
 .trackside-tooltip-entry__role.is-active { color: var(--nc-success); }
 .trackside-tooltip-entry__role.is-standby { color: var(--nc-text-secondary); }
+.trackside-tooltip-entry__marker { display: inline-block; width: 1em; }
 .trackside-tooltip-entry__ap { margin-top: 2px; font-weight: 600; }
 </style>

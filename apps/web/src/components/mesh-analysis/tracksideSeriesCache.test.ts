@@ -7,6 +7,7 @@ import type {
 import {
   buildTracksideSeriesCache,
   disposeTracksideSeriesCache,
+  findNearestTracksideFrameTimestamp,
   findTracksideFrameMetaIds,
   tracksidePointMeta,
   tracksideViewportSeriesItems,
@@ -131,6 +132,26 @@ describe('trackside compact series cache', () => {
     expect(roles).toEqual(['ACTIVE', 'STANDBY'])
   })
 
+  it('matches the nearest real frame within the payload-derived tolerance', () => {
+    const realFrame = '2024-10-22 14:46:33.852'
+    const cache = buildTracksideSeriesCache([series([
+      point('2024-10-22 14:46:32.852', 1),
+      point(realFrame, 1),
+      point('2024-10-22 14:46:34.852', 1),
+    ])])
+
+    expect(cache.medianFrameIntervalMs).toBe(1_000)
+    expect(cache.frameMatchToleranceMs).toBe(750)
+    expect(findNearestTracksideFrameTimestamp(
+      cache,
+      Date.parse('2024-10-22 14:46:33.607'),
+    )).toBe(Date.parse(realFrame))
+    expect(findNearestTracksideFrameTimestamp(
+      cache,
+      Date.parse('2024-10-22 14:46:36.000'),
+    )).toBeNull()
+  })
+
   it('finds only viewport series with inclusive boundaries and pointer-or-latest RSSI values', () => {
     const start = Date.parse('2026-07-20 10:00:10.000')
     const end = Date.parse('2026-07-20 10:00:20.000')
@@ -205,6 +226,8 @@ describe('trackside compact series cache', () => {
     expect(cache.dataIndexToMetaId.size).toBe(0)
     expect(cache.frameMetaIds.size).toBe(0)
     expect(cache.frameTimestamps).toEqual([])
+    expect(cache.medianFrameIntervalMs).toBe(0)
+    expect(cache.frameMatchToleranceMs).toBe(500)
     expect(cache.totalRenderedPoints).toBe(0)
   })
 

@@ -181,6 +181,8 @@ describe('MESH charts mount and render', () => {
     expect(tooltipHtml).not.toContain('切换耗时')
     expect(tooltipHtml).not.toContain('切换类型')
     expect(tooltipHtml.match(/class="mesh-rssi-tooltip"/g)).toHaveLength(1)
+    expect(wrappers[1].find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    expect(tooltipHtml).not.toMatch(/● ACTIVE|○ STANDBY|<br>AP：/)
     const switchOption = echartsMock.chart.setOption.mock.calls[0][0] as { tooltip: { formatter: (params: unknown) => string } }
     const switchTooltip = switchOption.tooltip.formatter({ seriesName: '切换前', data: { value: [chartPoint.timestamp, -40], meta: chartEvent } })
     expect(switchTooltip).not.toContain('ACTIVE_SWITCH')
@@ -308,7 +310,11 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
-      series: Array<{ id: string; data: Array<[number, number | null, number, number]> }>
+      series: Array<{
+        id: string
+        data: Array<[number, number | null, number, number]>
+        itemStyle: { color: string }
+      }>
     }
     const setOptionCountBeforeSelection = echartsMock.chart.setOption.mock.calls.length
     const dispatchCountBeforeSelection = echartsMock.chart.dispatchAction.mock.calls.length
@@ -323,6 +329,8 @@ describe('MESH charts mount and render', () => {
     expect(wrapper.text()).toContain('轨旁 RSSI：37')
     expect(wrapper.text()).not.toContain('轨旁 RSSI：-37')
     expect(wrapper.text()).not.toMatch(/Peer Radio MAC|peer_radio_mac|Peer MAC|dBm/i)
+    const firstSeriesColor = option.series.find((item) => item.id === selectionSeries[0].series_id)!.itemStyle.color
+    expect((wrapper.get('.trackside-selected-ap__dot').element as HTMLElement).style.backgroundColor).toBe(firstSeriesColor)
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(setOptionCountBeforeSelection)
     expect(echartsMock.chart.dispatchAction).toHaveBeenCalledTimes(dispatchCountBeforeSelection)
     expect(option.series[0].data).toBe(selectedDataReference)
@@ -343,6 +351,9 @@ describe('MESH charts mount and render', () => {
     expect(wrapper.text()).toContain('4073-4d64-e200')
     expect(wrapper.text()).toContain('40734d64e200 · Radio 1 · 最新 RSSI 33')
     expect(wrapper.text()).not.toMatch(/Peer Radio MAC|peer_radio_mac|Peer MAC|series_id|run_id|link_id/i)
+    const firstRangeItem = wrapper.findAll('.trackside-range__item')
+      .find((item) => item.text().includes('鼓楼上行 AP-12'))
+    expect((firstRangeItem!.get('.trackside-range__dot').element as HTMLElement).style.backgroundColor).toBe(firstSeriesColor)
 
     const blankClick = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
     blankClick({})
@@ -510,8 +521,8 @@ describe('MESH charts mount and render', () => {
     }
 
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(10)
-    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(30)
-    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(30)
+    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(20)
+    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(20)
     expect(addListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
     expect(removeListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
     expect(addListener.mock.calls.filter(([event]) => event === 'keydown')).toHaveLength(10)
@@ -786,7 +797,8 @@ describe('MESH charts mount and render', () => {
   })
 
   it('renders the local trackside pointer as an external multiline tooltip without redrawing series', async () => {
-    const frameTime = '2026-07-20T10:05:00.000Z'
+    const frameTime = '2026-07-20 10:05:00.852'
+    const pointerTime = '2026-07-20 10:05:00.607'
     const framePoints: MeshTracksideSignalPointData[] = [
       { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-A', peer_mac: 'peer-a', peer_ap_mac: 'ap-a', peer_radio_mac: 'radio-a', role: 'ACTIVE' },
       { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-D', peer_mac: 'peer-d', peer_ap_mac: 'ap-d', peer_radio_mac: 'radio-d', role: 'STANDBY' },
@@ -812,6 +824,7 @@ describe('MESH charts mount and render', () => {
         type: string
         markLine?: unknown
         data: Array<[number, number | null, number, number]>
+        itemStyle: { color: string }
       }>
       tooltip: {
         showContent: boolean
@@ -824,6 +837,7 @@ describe('MESH charts mount and render', () => {
     expect(option.series.every((item) => item.type === 'line')).toBe(true)
     expect(option.series.every((item) => item.markLine === undefined)).toBe(true)
     expect(option.series.map((item) => item.name).join(' ')).not.toMatch(/ACTIVE|STANDBY|MIXED/)
+    expect(new Set(option.series.map((item) => item.itemStyle.color)).size).toBe(4)
     expect(option.series.flatMap((item) => item.data).every((item) => Array.isArray(item))).toBe(true)
     expect(JSON.stringify(option.series)).not.toContain('peer_ap_name')
     expect(option.tooltip).toMatchObject({ showContent: false, appendToBody: false })
@@ -843,17 +857,20 @@ describe('MESH charts mount and render', () => {
     const initialClearCount = echartsMock.chart.clear.mock.calls.length
     const initialResizeCount = echartsMock.chart.resize.mock.calls.length
     const dataReferences = option.series.map((item) => item.data)
-    const zrenderPointerMove = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'mousemove')?.[1] as (event: { offsetX: number }) => void
     const updateAxisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
     for (let index = 0; index < 500; index += 1) {
-      zrenderPointerMove({ offsetX: index % 2 === 0 ? 100 : 800 })
-      updateAxisPointer({ axesInfo: [{ value: frameTime }] })
+      wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+        bubbles: true,
+        clientX: index % 2 === 0 ? 100 : 800,
+      }))
+      updateAxisPointer({ axesInfo: [{ value: pointerTime }] })
     }
     await nextTick()
 
     const tooltip = wrapper.get('[data-trackside-external-tooltip]')
     const roleRows = tooltip.findAll('.trackside-tooltip-entry__role')
     const apRows = tooltip.findAll('.trackside-tooltip-entry__ap')
+    const markers = tooltip.findAll('.trackside-tooltip-entry__marker')
     expect(roleRows.map((item) => item.text())).toEqual(['● ACTIVE', '○ STANDBY', '○ STANDBY', '○ STANDBY'])
     expect(apRows.map((item) => item.text())).toEqual([
       'AP：AP-A · Radio 1',
@@ -862,7 +879,12 @@ describe('MESH charts mount and render', () => {
       'AP：AP-D · Radio 1',
     ])
     expect(tooltip.text().match(/采样时间：/g)).toHaveLength(1)
+    expect(tooltip.text()).toContain('采样时间：2026-07-20 10:05:00.852')
+    expect(tooltip.text()).not.toContain('当前时刻无有效采样')
     expect(tooltip.text()).toContain('轨旁 / MR RSSI：-45 / -40')
+    expect((markers[0].element as HTMLElement).style.color).toBe(
+      option.series.find((item) => item.name === 'AP-A · Radio 1')?.itemStyle.color,
+    )
     expect(tooltip.text()).not.toMatch(/Peer Radio MAC|Peer MAC|数据来源|dBm|series_id|run_id|link_id/i)
     expect(tooltip.classes()).toContain('is-left')
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
@@ -870,6 +892,21 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.resize).toHaveBeenCalledTimes(initialResizeCount)
     expect(option.series.every((item, index) => item.data === dataReferences[index])).toBe(true)
     expect(wrapper.emitted('viewport-change')).toBeUndefined()
+
+    vi.useFakeTimers()
+    try {
+      const globalout = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'globalout')?.[1] as () => void
+      globalout()
+      await tooltip.trigger('pointerenter')
+      await vi.advanceTimersByTimeAsync(150)
+      expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(true)
+      await tooltip.trigger('pointerleave')
+      await vi.advanceTimersByTimeAsync(150)
+      await nextTick()
+      expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
 
     wrapper.unmount()
   })
@@ -1020,6 +1057,10 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     const initialSetOptionCount = echartsMock.chart.setOption.mock.calls.length
+    const getSeriesColorMap = (wrapper.vm as unknown as {
+      getSeriesColorMap: () => ReadonlyMap<string, string>
+    }).getSeriesColorMap
+    const initialColorMap = getSeriesColorMap()
     const initialData = (echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       series: Array<{ data?: unknown[] }>
     }).series[0].data
@@ -1031,6 +1072,7 @@ describe('MESH charts mount and render', () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(getSeriesColorMap()).toBe(initialColorMap)
     expect(wrapper.emitted('viewport-change')).toHaveLength(1)
     expect(wrapper.emitted('viewport-change')?.[0]?.[0]).toMatchObject({
       start_time: '2026-07-20T10:00:00.500Z',
@@ -1067,6 +1109,7 @@ describe('MESH charts mount and render', () => {
     })
     await flushPromises()
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(getSeriesColorMap()).toBe(initialColorMap)
     expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'dataZoom' }),
       { silent: true },
@@ -1091,12 +1134,14 @@ describe('MESH charts mount and render', () => {
 
     const axisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
     axisPointer({ axesInfo: [{ value: '2026-07-20T10:00:02.500Z' }] })
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
     expect(wrapper.emitted('pointer-change')?.at(-1)?.[0]).toEqual({
       time: '2026-07-20T10:00:02.500Z',
       source_chart: 'trackside-rssi',
     })
     await wrapper.setProps({ syncPointerTime: '2026-07-20T10:00:02.500Z' })
     await flushPromises()
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
     expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(
       { type: 'updateAxisPointer', x: 320, y: 1 },
       { silent: true },

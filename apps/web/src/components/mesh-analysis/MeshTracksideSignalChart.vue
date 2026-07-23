@@ -11,8 +11,6 @@ import {
   createTimeChartInitOptions,
   createTimeChartLinePresentation,
   isLargeTimeChart,
-  normalizedApRadioColorKey,
-  stableTimeChartSeriesColor,
 } from '../charts/multiSeriesTimeChart'
 import type {
   MeshChartEvent,
@@ -38,6 +36,7 @@ import {
 import {
   buildTracksideSeriesCache,
   disposeTracksideSeriesCache,
+  findNearestTracksideFrameTimestamp,
   findTracksideFrameMetaIds,
   tracksidePointMeta,
   tracksideViewportSeriesItems,
@@ -47,6 +46,11 @@ import {
   type TracksideSeriesCache,
   type TracksideViewportSeriesItem,
 } from './tracksideSeriesCache'
+import {
+  assignTracksideSeriesColors,
+  createTracksideSeriesPalette,
+  type TracksideSeriesColorAssignment,
+} from './tracksideSeriesColors'
 import {
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
@@ -109,16 +113,15 @@ let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
 let pointerGlobalOut: (() => void) | null = null
-let zrenderPointerMove: ((event: { offsetX?: number }) => void) | null = null
 let zrenderBlankClick: ((event: { target?: unknown }) => void) | null = null
 let interactiveTimer: ReturnType<typeof setTimeout> | null = null
 let viewportListTimer: ReturnType<typeof setTimeout> | null = null
 let tooltipHideTimer: ReturnType<typeof setTimeout> | null = null
 let tooltipPointerInside = false
-let localPointerActive = false
+let pointerOrigin: TracksidePointerOrigin = 'none'
 let localPointerSide: TracksideTooltipState['side'] = 'right'
-let applyingSharedPointer = false
 let seriesCache: TracksideSeriesCache = markRaw(props.seriesCache ?? buildTracksideSeriesCache(props.series))
+let seriesColors: TracksideSeriesColorAssignment = buildSeriesColors(seriesCache)
 const reportedPhases = new Set<string>()
 const viewportSeries = ref<TracksideViewportListItem[]>([])
 const rangePanelOpen = ref(false)
@@ -153,8 +156,10 @@ interface TracksideTooltipState {
   timestamp: string | null
   entries: TracksideTooltipEntry[]
   side: 'left' | 'right'
-  source: 'local-pointer' | 'none'
+  source: TracksidePointerOrigin
 }
+
+type TracksidePointerOrigin = 'local' | 'shared' | 'none'
 
 const timestamps = (): string[] => [
   seriesCache.firstTimestampMillis,
@@ -175,12 +180,42 @@ function pointLabel(point: CompactTracksidePointMeta): string {
   return point.peerApName || point.peerMac || '轨旁 AP 未知'
 }
 
-function tracksideColorKey(series: CompactTracksideSeriesMeta): string {
-  if (!series.peerRadioMac && !series.apMac && !series.peerMac) return series.seriesId
-  return normalizedApRadioColorKey(
-    series.peerRadioMac || series.apMac,
-    series.peerMac,
-    series.radio,
+function buildSeriesColors(
+  cache: TracksideSeriesCache,
+  theme = readNetConsoleChartTokens(),
+): TracksideSeriesColorAssignment {
+  return markRaw(assignTracksideSeriesColors(
+    cache,
+    createTracksideSeriesPalette(
+      [theme.primary, theme.series[1] || ''],
+      [theme.warning, theme.danger],
+      Math.max(32, cache.series.length),
+    ),
+  ))
+}
+
+function seriesColor(seriesId: string, fallback: string): string {
+  return seriesColors.colorBySeriesId.get(seriesId) || fallback
+}
+
+function handleLocalPointerMove(event: PointerEvent): void {
+  pointerOrigin = 'local'
+  cancelTooltipHide()
+  const bounds = container.value?.getBoundingClientRect()
+  const pointerX = bounds ? event.clientX - bounds.left : event.offsetX
+  if (!Number.isFinite(pointerX)) return
+  localPointerSide = pointerX < (container.value?.clientWidth || 0) / 2 ? 'right' : 'left'
+}
+
+function rebuildSeriesColors(theme = readNetConsoleChartTokens()): void {
+  seriesColors = buildSeriesColors(seriesCache, theme)
+}
+
+function tooltipFrameTimestamp(pointerMillis: number): number | null {
+  return findNearestTracksideFrameTimestamp(
+    seriesCache,
+    pointerMillis,
+    seriesCache.frameMatchToleranceMs,
   )
 }
 
@@ -226,7 +261,7 @@ function selectedSeriesColor(): string {
   const series = seriesCache.seriesMetaById.get(selectedTracksideAp.value?.seriesId || '')
   const theme = readNetConsoleChartTokens()
   return series
-    ? stableTimeChartSeriesColor(tracksideColorKey(series), theme.series) || theme.textSecondary
+    ? seriesColor(series.seriesId, theme.textSecondary)
     : theme.textSecondary
 }
 
@@ -262,12 +297,9 @@ function recomputeViewportSeries(): void {
     bounds[1],
     null,
   ).map((item) => {
-    const series = seriesCache.seriesMetaById.get(item.seriesId)
     return {
       ...item,
-      color: series
-        ? stableTimeChartSeriesColor(tracksideColorKey(series), theme.series) || theme.textSecondary
-        : theme.textSecondary,
+      color: seriesColor(item.seriesId, theme.textSecondary),
     }
   })
   lastViewportListComputeMs = performance.now() - started
@@ -333,7 +365,7 @@ function handleSelectionEscape(event: KeyboardEvent): void {
   if (!handled) return
   event.preventDefault()
   event.stopPropagation()
-  localPointerActive = false
+  pointerOrigin = 'none'
   tooltipPointerInside = false
   hideTracksideTooltip()
   if (selectedTracksideAp.value) clearTracksideSelection()
@@ -342,13 +374,14 @@ function handleSelectionEscape(event: KeyboardEvent): void {
 function rebuildSeriesCache(): void {
   const next = props.seriesCache ?? buildTracksideSeriesCache(props.series)
   if (next !== seriesCache) {
-    localPointerActive = false
+    pointerOrigin = 'none'
     tooltipPointerInside = false
     hideTracksideTooltip()
     clearTracksideSelection(false)
     chart?.clear?.()
     disposeTracksideSeriesCache(seriesCache)
     seriesCache = markRaw(next)
+    rebuildSeriesColors()
   }
   if (import.meta.env.DEV && seriesCache.unorderedSeriesIds.length) {
     console.warn(`轨旁信号 payload 存在未按时间排序的序列：${seriesCache.unorderedSeriesIds.join(', ')}`)
@@ -444,6 +477,7 @@ function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
     station: meta.station ?? series.station,
     section: meta.section ?? series.section,
     activeDurationSeconds: meta.segmentDurationSeconds,
+    color: seriesColor(series.seriesId, '#909399'),
   }
 }
 
@@ -476,15 +510,16 @@ function scheduleTooltipHide(): void {
 }
 
 function showTracksideTooltip(timestampMillis: number): void {
-  const points = findTracksideFrameMetaIds(seriesCache, timestampMillis)
+  const matchedTimestamp = tooltipFrameTimestamp(timestampMillis)
+  const points = (matchedTimestamp === null ? [] : findTracksideFrameMetaIds(seriesCache, matchedTimestamp))
     .map(resolvedPoint)
     .filter((point): point is ResolvedTracksidePoint => Boolean(point))
   tracksideTooltip.value = {
     visible: true,
-    timestamp: formatMeshViewportTimestamp(points[0]?.meta.timestampMillis ?? timestampMillis),
+    timestamp: formatMeshViewportTimestamp(matchedTimestamp ?? timestampMillis),
     entries: points.map(tooltipEntry),
     side: localPointerSide,
-    source: 'local-pointer',
+    source: 'local',
   }
 }
 
@@ -532,25 +567,18 @@ async function ensureChart(): Promise<boolean> {
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
     pointerGlobalOut = () => {
-      localPointerActive = false
+      pointerOrigin = 'none'
       emit('pointer-change', { time: null, source_chart: props.chartId })
       scheduleTooltipHide()
     }
-    zrenderPointerMove = (event) => {
-      localPointerActive = true
-      cancelTooltipHide()
-      const pointerX = Number(event.offsetX)
-      if (!Number.isFinite(pointerX)) return
-      localPointerSide = pointerX < (container.value?.clientWidth || 0) / 2 ? 'right' : 'left'
-    }
-    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: (event: { target?: unknown; offsetX?: number }) => void) => void } }).getZr?.()
+    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: (event: { target?: unknown }) => void) => void } }).getZr?.()
     zrender?.on('globalout', pointerGlobalOut)
-    zrender?.on('mousemove', zrenderPointerMove)
     zrenderBlankClick = (event) => {
       if (!event.target) clearTracksideSelection()
     }
     zrender?.on('click', zrenderBlankClick)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => {
+      rebuildSeriesColors()
       scheduleChartUpdate('theme')
       scheduleViewportSeriesUpdate()
     })
@@ -628,14 +656,12 @@ onBeforeUnmount(() => {
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
   chart?.off('updateAxisPointer', handleAxisPointer)
-  if (pointerGlobalOut || zrenderPointerMove || zrenderBlankClick) {
-    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: (event: { target?: unknown; offsetX?: number }) => void) => void } } | null)?.getZr?.()
+  if (pointerGlobalOut || zrenderBlankClick) {
+    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: (event: { target?: unknown }) => void) => void } } | null)?.getZr?.()
     if (pointerGlobalOut) zrender?.off('globalout', pointerGlobalOut)
-    if (zrenderPointerMove) zrender?.off('mousemove', zrenderPointerMove)
     if (zrenderBlankClick) zrender?.off('click', zrenderBlankClick)
   }
   pointerGlobalOut = null
-  zrenderPointerMove = null
   zrenderBlankClick = null
   if (interactiveTimer) clearTimeout(interactiveTimer)
   interactiveTimer = null
@@ -643,7 +669,7 @@ onBeforeUnmount(() => {
   viewportListTimer = null
   cancelTooltipHide()
   tooltipPointerInside = false
-  localPointerActive = false
+  pointerOrigin = 'none'
   chart?.dispose()
   chart = null
   disposeTracksideSeriesCache(seriesCache)
@@ -662,7 +688,7 @@ watch(() => props.active, (active) => {
     void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize'))
     return
   }
-  localPointerActive = false
+  pointerOrigin = 'none'
   hideTracksideTooltip()
   chart?.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
 })
@@ -711,7 +737,7 @@ function handleChartClick(raw: unknown): void {
 }
 
 function handleDataZoom(raw: unknown): void {
-  localPointerActive = false
+  pointerOrigin = 'none'
   hideTracksideTooltip()
   const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
     boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
@@ -744,7 +770,7 @@ function handleDataZoom(raw: unknown): void {
 }
 
 function handleRestore(): void {
-  localPointerActive = false
+  pointerOrigin = 'none'
   hideTracksideTooltip()
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
@@ -758,7 +784,7 @@ function handleAxisPointer(raw: unknown): void {
   const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
   const millis = meshTimestampMillis(value)
   if (millis === null) return
-  if (!applyingSharedPointer && localPointerActive) showTracksideTooltip(millis)
+  if (pointerOrigin === 'local') showTracksideTooltip(millis)
   emit('pointer-change', {
     time: typeof value === 'string' ? value : formatMeshViewportTimestamp(millis),
     source_chart: props.chartId,
@@ -767,9 +793,8 @@ function handleAxisPointer(raw: unknown): void {
 
 function applySharedPointer(time: string | null): void {
   if (!props.active || !chart) return
-  localPointerActive = false
+  pointerOrigin = 'shared'
   hideTracksideTooltip(false)
-  applyingSharedPointer = true
   try {
     if (!time) {
       chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
@@ -785,7 +810,7 @@ function applySharedPointer(time: string | null): void {
     if (!Number.isFinite(x)) return
     chart.dispatchAction({ type: 'updateAxisPointer', x, y: 1 }, { silent: true })
   } finally {
-    applyingSharedPointer = false
+    pointerOrigin = 'none'
   }
 }
 
@@ -822,6 +847,10 @@ function resetViewport(): void {
 
 function resize(): void {
   if (props.active) scheduleChartUpdate('resize')
+}
+
+function getSeriesColorMap(): ReadonlyMap<string, string> {
+  return seriesColors.colorBySeriesId
 }
 
 function tracksideOverlaySeries(
@@ -875,10 +904,7 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
   const nodeData = nodeSeries?.data
   return [
     ...seriesCache.series.map((item) => {
-      const color = stableTimeChartSeriesColor(
-        tracksideColorKey(item.meta),
-        theme.series,
-      )
+      const color = seriesColor(item.id, theme.textSecondary)
       return {
         id: item.id,
         name: item.name,
@@ -935,7 +961,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
       series: [
         ...seriesCache.series.map((item) => {
-          const color = stableTimeChartSeriesColor(tracksideColorKey(item.meta), theme.series)
+          const color = seriesColor(item.id, theme.textSecondary)
           return { id: item.id, itemStyle: { color }, lineStyle: { color, width: 2 } }
         }),
       ],
@@ -967,6 +993,7 @@ defineExpose({
   resetViewport,
   resize,
   getVisibleTimeRange: getViewport,
+  getSeriesColorMap,
 })
 </script>
 
@@ -1003,7 +1030,11 @@ defineExpose({
         </div>
       </details>
     </div>
-    <div ref="container" class="chart"></div>
+    <div
+      ref="container"
+      class="chart"
+      @pointermove.capture="handleLocalPointerMove"
+    ></div>
     <TracksideExternalTooltip
       :visible="tracksideTooltip.visible"
       :timestamp="tracksideTooltip.timestamp"

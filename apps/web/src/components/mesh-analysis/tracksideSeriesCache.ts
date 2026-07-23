@@ -81,6 +81,8 @@ export interface TracksideSeriesCache {
   dataIndexToMetaId: ReadonlyMap<string, readonly number[]>
   frameMetaIds: ReadonlyMap<number, readonly number[]>
   frameTimestamps: number[]
+  medianFrameIntervalMs: number
+  frameMatchToleranceMs: number
   firstTimestampMillis: number | null
   lastTimestampMillis: number | null
   disposed: boolean
@@ -214,6 +216,8 @@ export function buildTracksideSeriesCache(
     }
   })
 
+  const frameTimestamps = [...frameMetaIds.keys()].sort((left, right) => left - right)
+  const medianFrameIntervalMs = medianTracksideFrameIntervalMs(frameTimestamps)
   return {
     series,
     totalRenderedPoints,
@@ -222,11 +226,62 @@ export function buildTracksideSeriesCache(
     seriesMetaById,
     dataIndexToMetaId,
     frameMetaIds,
-    frameTimestamps: [...frameMetaIds.keys()].sort((left, right) => left - right),
+    frameTimestamps,
+    medianFrameIntervalMs,
+    frameMatchToleranceMs: tracksideFrameMatchToleranceMs(medianFrameIntervalMs),
     firstTimestampMillis,
     lastTimestampMillis,
     disposed: false,
   }
+}
+
+export function medianTracksideFrameIntervalMs(
+  frameTimestamps: readonly number[],
+): number {
+  if (frameTimestamps.length < 2) return 0
+  const intervals: number[] = []
+  for (let index = 1; index < frameTimestamps.length; index += 1) {
+    const interval = frameTimestamps[index] - frameTimestamps[index - 1]
+    if (interval > 0 && Number.isFinite(interval)) intervals.push(interval)
+  }
+  if (!intervals.length) return 0
+  intervals.sort((left, right) => left - right)
+  const middle = intervals.length >>> 1
+  return intervals.length % 2 === 0
+    ? (intervals[middle - 1] + intervals[middle]) / 2
+    : intervals[middle]
+}
+
+export function tracksideFrameMatchToleranceMs(medianFrameIntervalMs: number): number {
+  const candidate = Number.isFinite(medianFrameIntervalMs) && medianFrameIntervalMs > 0
+    ? medianFrameIntervalMs * 0.75
+    : 500
+  return Math.max(500, Math.min(3_000, candidate))
+}
+
+export function findNearestTracksideFrameTimestamp(
+  cache: TracksideSeriesCache,
+  pointerMillis: number,
+  maximumToleranceMs = cache.frameMatchToleranceMs,
+): number | null {
+  if (!Number.isFinite(pointerMillis) || !cache.frameTimestamps.length) return null
+  let low = 0
+  let high = cache.frameTimestamps.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (cache.frameTimestamps[middle] < pointerMillis) low = middle + 1
+    else high = middle
+  }
+  const after = cache.frameTimestamps[low]
+  const before = low > 0 ? cache.frameTimestamps[low - 1] : undefined
+  const matched = before === undefined
+    ? after
+    : after === undefined
+      ? before
+      : pointerMillis - before <= after - pointerMillis ? before : after
+  return matched !== undefined && Math.abs(matched - pointerMillis) <= maximumToleranceMs
+    ? matched
+    : null
 }
 
 export function findTracksideFrameMetaIds(
@@ -381,6 +436,8 @@ export function disposeTracksideSeriesCache(cache: TracksideSeriesCache | null |
   cache.series.length = 0
   cache.unorderedSeriesIds.length = 0
   cache.frameTimestamps.length = 0
+  cache.medianFrameIntervalMs = 0
+  cache.frameMatchToleranceMs = 500
   clearReadonlyMap(cache.pointMetaById)
   clearReadonlyMap(cache.seriesMetaById)
   clearReadonlyMap(cache.dataIndexToMetaId)
