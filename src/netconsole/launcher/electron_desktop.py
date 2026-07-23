@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -8,6 +9,10 @@ from pathlib import Path
 from typing import Mapping
 
 from netconsole.core.runtime_environment import app_root
+
+
+DEFAULT_ELECTRON_DEV_PORT = 5173
+ELECTRON_DEV_PORT_SEARCH_COUNT = 20
 
 
 class ElectronDesktopLaunchError(RuntimeError):
@@ -62,6 +67,8 @@ def build_electron_desktop_launch_plan(
     inherited["NETCONSOLE_PROJECT_ROOT"] = str(root)
     inherited["NETCONSOLE_PYTHON"] = str(python)
     inherited.setdefault("PYTHONUNBUFFERED", "1")
+    if not inherited.get("NETCONSOLE_DEV_PORT", "").strip():
+        inherited["NETCONSOLE_DEV_PORT"] = str(_select_available_dev_port())
     return ElectronDesktopLaunchPlan(
         executable=executable,
         arguments=(str(dev_script),),
@@ -76,6 +83,17 @@ def launch_electron_desktop() -> int:
     except ElectronDesktopLaunchError as exc:
         print(f"NetConsole Electron 启动失败：{exc}", file=sys.stderr)
         return 2
+
+    selected_dev_port = plan.environment.get("NETCONSOLE_DEV_PORT", "").strip()
+    if (
+        selected_dev_port
+        and selected_dev_port != str(DEFAULT_ELECTRON_DEV_PORT)
+        and not os.environ.get("NETCONSOLE_DEV_PORT", "").strip()
+    ):
+        print(
+            f"NetConsole 检测到开发端口 {DEFAULT_ELECTRON_DEV_PORT} 已占用，"
+            f"已自动改用 {selected_dev_port}。"
+        )
 
     try:
         process = subprocess.Popen(
@@ -100,6 +118,29 @@ def launch_electron_desktop() -> int:
         return 130
 
 
+def _select_available_dev_port(
+    start_port: int = DEFAULT_ELECTRON_DEV_PORT,
+    search_count: int = ELECTRON_DEV_PORT_SEARCH_COUNT,
+) -> int:
+    if not 1 <= start_port <= 65535:
+        raise ElectronDesktopLaunchError(f"Electron 开发端口无效：{start_port}")
+    if search_count < 1:
+        raise ElectronDesktopLaunchError("Electron 开发端口搜索次数必须大于 0")
+
+    end_port = min(65535, start_port + search_count - 1)
+    for port in range(start_port, end_port + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise ElectronDesktopLaunchError(
+        f"Electron 开发端口 {start_port}-{end_port} 均已占用，"
+        "请关闭残留的 NetConsole/Vite 开发进程后重试。"
+    )
+
+
 def _electron_executable(desktop_root: Path) -> Path:
     if sys.platform == "win32":
         relative = Path("node_modules/electron/dist/electron.exe")
@@ -120,6 +161,8 @@ def _validated_local_executable(path: Path, label: str) -> Path:
 
 
 __all__ = [
+    "DEFAULT_ELECTRON_DEV_PORT",
+    "ELECTRON_DEV_PORT_SEARCH_COUNT",
     "ElectronDesktopLaunchError",
     "ElectronDesktopLaunchPlan",
     "build_electron_desktop_launch_plan",
