@@ -106,4 +106,12 @@ describe('MESH RSSI tooltip', () => {
     const html = buildMeshRssiTooltip(undefined, { ...event, render_aligned: false, render_point_timestamp: null })
     expect(html).toContain('该切换事件无有效 RSSI 点，未作为折线节点显示。')
   })
+
+  it('keeps the shared pointer time instead of snapping an empty chart to another sample', () => {
+    const pointerTime = '2024-10-22 14:31:50.500'
+    const html = buildMeshRssiTooltip(undefined, undefined, pointerTime)
+    expect(html).toContain(`采样时间：${pointerTime}`)
+    expect(html).toContain('当前时刻无有效采样')
+    expect(html).not.toContain(point.timestamp)
+  })
 })

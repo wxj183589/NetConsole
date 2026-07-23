@@ -3,19 +3,28 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 
 import {
-  createNetConsoleAxisStyle,
-  createNetConsoleDataZoomStyle,
-  createNetConsoleTooltipStyle,
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
+import {
+  createMultiSeriesTimeChartBaseOption,
+  createTimeChartInitOptions,
+  createTimeChartLinePresentation,
+} from '../charts/multiSeriesTimeChart'
 import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
 import {
   createFullMeshViewport,
+  createFullMeshViewportFromDomain,
+  formatMeshViewportTimestamp,
+  meshTimestampMillis,
+  meshViewportRangeEquals,
   normalizeMeshViewport,
-  viewportFromDataZoom,
+  viewportFromDataZoomWithOptions,
   type MeshChartViewport,
+  type MeshRssiChartSource,
+  type MeshSharedPointerChange,
+  type MeshSharedTimeDomain,
 } from './meshChartViewport'
 import { buildMeshRssiTooltip } from './meshRssiTooltip'
 
@@ -34,11 +43,16 @@ const props = withDefaults(defineProps<{
   syncViewport?: MeshChartViewport | null
   lockedViewport?: MeshChartViewport | null
   preserveViewport?: boolean
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true })
+  sharedTimeDomain?: MeshSharedTimeDomain | null
+  chartId?: Exclude<MeshRssiChartSource, 'trackside-rssi' | 'programmatic'>
+  syncPointerTime?: string | null
+  syncPointerSource?: MeshRssiChartSource | null
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
   'viewport-ready': [viewport: MeshChartViewport]
+  'pointer-change': [pointer: MeshSharedPointerChange]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -51,11 +65,18 @@ let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
 let disposed = false
 let currentViewport: MeshChartViewport | null = null
-let applyingViewport = false
 let viewportReady = false
-let viewportTimer: ReturnType<typeof setTimeout> | null = null
+let viewportFrame: number | null = null
+let pendingViewport: MeshChartViewport | null = null
+let pointerGlobalOut: (() => void) | null = null
 
 const timestamps = (): string[] => props.points.map((point) => point.timestamp)
+const pointCount = (): number => props.points.length
+const fullViewport = (source: MeshChartViewport['source'] = 'initial'): MeshChartViewport | null => (
+  props.sharedTimeDomain
+    ? createFullMeshViewportFromDomain(props.sharedTimeDomain, source, props.chartId, currentViewport?.revision ?? 0)
+    : createFullMeshViewport(timestamps(), source)
+)
 
 function findRenderedSwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
   if (event.render_aligned === false) return undefined
@@ -112,9 +133,14 @@ async function ensureChart(): Promise<boolean> {
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
-    chart = core.init(container.value)
+    chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount()))
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
+    chart.on('restore', handleRestore)
+    chart.on('updateAxisPointer', handleAxisPointer)
+    pointerGlobalOut = () => emit('pointer-change', { time: null, source_chart: props.chartId })
+    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: () => void) => void } }).getZr?.()
+    zrender?.on('globalout', pointerGlobalOut)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
     return true
   })().finally(() => { initialization = null })
@@ -122,7 +148,10 @@ async function ensureChart(): Promise<boolean> {
 }
 
 function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'resize' = 'resize'): void {
-  if (reason !== 'resize') pendingRenderReason = reason
+  if (reason !== 'resize') {
+    const priority = { display: 1, theme: 2, data: 3, reset: 4 }
+    if (!pendingRenderReason || priority[reason] >= priority[pendingRenderReason]) pendingRenderReason = reason
+  }
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = null
@@ -141,10 +170,6 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
 
 function handleWindowResize(): void { scheduleChartUpdate() }
 
-function sameViewport(left: MeshChartViewport | null, right: MeshChartViewport | null): boolean {
-  return Boolean(left && right && left.start_time === right.start_time && left.end_time === right.end_time)
-}
-
 onMounted(() => {
   disposed = false
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
@@ -160,18 +185,26 @@ onBeforeUnmount(() => {
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = null
   pendingRenderReason = null
-  if (viewportTimer) clearTimeout(viewportTimer)
-  viewportTimer = null
+  if (viewportFrame !== null) cancelAnimationFrame(viewportFrame)
+  viewportFrame = null
+  pendingViewport = null
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
   chart?.off('datazoom', handleDataZoom)
+  chart?.off('restore', handleRestore)
+  chart?.off('updateAxisPointer', handleAxisPointer)
+  if (pointerGlobalOut) {
+    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: () => void) => void } } | null)?.getZr?.()
+    zrender?.off('globalout', pointerGlobalOut)
+  }
+  pointerGlobalOut = null
   chart?.dispose()
   chart = null
 })
 
-watch(() => props.points, () => scheduleChartUpdate('data'), { deep: true })
-watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => props.points, () => scheduleChartUpdate('data'))
+watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'))
 watch(() => [props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
@@ -182,8 +215,12 @@ watch(() => props.lockedViewport, (viewport, previous) => {
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 watch(() => props.syncViewport, (viewport) => {
-  if (viewport && !sameViewport(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  if (viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
 }, { deep: true })
+watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('display'), { deep: true })
+watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
+  if (source !== props.chartId) void nextTick(() => applySharedPointer(time))
+})
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
@@ -201,36 +238,84 @@ function focusCurrentPoint(): void {
 }
 
 function handleDataZoom(raw: unknown): void {
-  if (applyingViewport) return
-  const viewport = viewportFromDataZoom(raw, timestamps())
+  const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
+    boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
+    fullDomain: props.sharedTimeDomain,
+    sourceChart: props.chartId,
+    revision: (currentViewport?.revision ?? 0) + 1,
+  })
   if (!viewport) return
   currentViewport = viewport
-  if (viewportTimer) clearTimeout(viewportTimer)
-  viewportTimer = setTimeout(() => emit('viewport-change', { ...viewport }), 100)
+  pendingViewport = viewport
+  if (viewportFrame !== null) return
+  viewportFrame = requestAnimationFrame(() => {
+    viewportFrame = null
+    if (!pendingViewport) return
+    emit('viewport-change', { ...pendingViewport })
+    pendingViewport = null
+  })
+}
+
+function handleRestore(): void {
+  const viewport = fullViewport('user_zoom')
+  if (!viewport) return
+  currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
+  emit('viewport-change', { ...currentViewport })
+}
+
+function handleAxisPointer(raw: unknown): void {
+  const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
+  const millis = meshTimestampMillis(value)
+  if (millis === null) return
+  emit('pointer-change', {
+    time: typeof value === 'string' ? value : formatMeshViewportTimestamp(millis),
+    source_chart: props.chartId,
+  })
+}
+
+function applySharedPointer(time: string | null): void {
+  if (!chart) return
+  if (!time) {
+    chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
+    chart.dispatchAction({ type: 'hideTip' }, { silent: true })
+    return
+  }
+  const millis = meshTimestampMillis(time)
+  if (millis === null) return
+  const convertToPixel = (chart as unknown as { convertToPixel?: (finder: { xAxisIndex: number }, value: number) => number | number[] }).convertToPixel
+  if (!convertToPixel) return
+  const pixel = convertToPixel.call(chart, { xAxisIndex: 0 }, millis)
+  const x = Array.isArray(pixel) ? pixel[0] : pixel
+  if (!Number.isFinite(x)) return
+  chart.dispatchAction({ type: 'updateAxisPointer', x, y: 1 }, { silent: true })
 }
 
 function getViewport(): MeshChartViewport | null {
-  return currentViewport ? { ...currentViewport } : createFullMeshViewport(timestamps())
+  return currentViewport ? { ...currentViewport } : fullViewport()
 }
 
 function applyViewport(viewport: MeshChartViewport): void {
   const isLocked = Boolean(props.lockedViewport
     && props.lockedViewport.start_time === viewport.start_time
     && props.lockedViewport.end_time === viewport.end_time)
-  const normalized = normalizeMeshViewport(viewport, isLocked ? [] : timestamps(), 'programmatic')
+  const normalized = normalizeMeshViewport(viewport, isLocked ? [] : timestamps(), 'programmatic', {
+    boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
+    fullDomain: props.sharedTimeDomain,
+    sourceChart: viewport.source_chart,
+    revision: viewport.revision,
+  })
   if (!normalized) return
+  if (meshViewportRangeEquals(currentViewport, normalized) && currentViewport?.revision === normalized.revision) return
   currentViewport = normalized
   if (!chart) return
-  applyingViewport = true
   chart.dispatchAction({
     type: 'dataZoom',
     batch: [0, 1].map((dataZoomIndex) => ({ dataZoomIndex, startValue: normalized.start_time, endValue: normalized.end_time })),
-  })
-  queueMicrotask(() => { applyingViewport = false })
+  }, { silent: true })
 }
 
 function resetViewport(): void {
-  const target = props.lockedViewport || createFullMeshViewport(timestamps())
+  const target = props.lockedViewport || fullViewport('programmatic')
   if (target) applyViewport(target)
 }
 
@@ -238,7 +323,6 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   if (!chart) return
   const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
   const theme = readNetConsoleChartTokens()
-  const axisStyle = createNetConsoleAxisStyle(theme)
   const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
   primarySeriesData = series[0]?.data || []
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
@@ -253,43 +337,49 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       { xAxis: band.end_time },
     ]),
   } : undefined
+  const target = props.lockedViewport || previous || props.initialViewport || fullViewport()
+  const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
+    unit: 'dBm',
+    pointCount: pointCount(),
+    fullDomain: props.sharedTimeDomain,
+    viewport: target,
+  })
   chart.setOption({
-    animation: false,
+    ...baseOption,
     color: [theme.primary, theme.info, theme.warning, theme.danger],
-    textStyle: { color: theme.text },
     tooltip: {
-      trigger: 'axis',
-      ...createNetConsoleTooltipStyle(theme),
+      ...(baseOption.tooltip as Record<string, unknown>),
       formatter: (rawParams: unknown) => {
         const params = Array.isArray(rawParams) ? rawParams : [rawParams]
+        const first = params[0] as { axisValue?: string | number } | undefined
+        const pointerMillis = meshTimestampMillis(first?.axisValue)
+        const pointerTime = pointerMillis === null
+          ? undefined
+          : typeof first?.axisValue === 'string'
+            ? first.axisValue
+            : formatMeshViewportTimestamp(pointerMillis)
         const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
-        const pointParam = params.find((item) => (item as { data?: { meta?: MeshChartPoint } }).data?.meta) as { data?: { meta?: MeshChartPoint } } | undefined
+        const pointParam = params.find((item) => {
+          const point = (item as { data?: { meta?: MeshChartPoint } }).data?.meta
+          return point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
+        }) as { data?: { meta?: MeshChartPoint } } | undefined
         const event = eventParam?.data?.meshEvent
         const point = pointParam?.data?.meta
           || eventParam?.data?.meta
           || (event ? findRenderedSwitchPoint(event) : undefined)
-        return buildMeshRssiTooltip(point, event)
+        const exactPoint = point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
+          ? point
+          : undefined
+        return buildMeshRssiTooltip(exactPoint, event, pointerTime)
       },
     },
-    legend: { bottom: 4, textStyle: { color: theme.textSecondary } },
-    toolbox: { right: 16, feature: { saveAsImage: { title: '保存图像', pixelRatio: 2 } } },
-    grid: { left: 54, right: 22, top: 42, bottom: 74, containLabel: true },
-    xAxis: {
-      type: 'time',
-      min: props.lockedViewport?.start_time,
-      max: props.lockedViewport?.end_time,
-      ...axisStyle,
-    },
-    yAxis: { type: 'value', name: 'RSSI', nameTextStyle: { color: theme.textSecondary }, min: 'dataMin', ...axisStyle },
-    dataZoom: [
-      { type: 'inside', filterMode: 'none' },
-      { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
-    ],
+    yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
     series: [
       ...series.map((item, index) => ({
+      id: item.metric,
       name: item.name,
       type: 'line',
-      showSymbol: false,
+      ...createTimeChartLinePresentation(pointCount()),
       connectNulls: false,
       data: item.data,
       markArea: index === 0 ? markArea : undefined,
@@ -308,8 +398,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
       }] : []),
     ],
-  }, { notMerge: true })
-  const target = props.lockedViewport || previous || props.initialViewport || createFullMeshViewport(timestamps())
+  }, { replaceMerge: ['series'] })
   if (target) {
     applyViewport(target)
     if (!viewportReady && currentViewport) {

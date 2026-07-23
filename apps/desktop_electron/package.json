@@ -11,6 +11,7 @@
     "dev:codex": "node scripts/dev.mjs --codex",
     "smoke:dev": "node scripts/dev.mjs --smoke",
     "smoke:task-window": "node scripts/dev.mjs --smoke --task-window",
+    "profile:mesh-chart": "electron scripts/profile-mesh-chart.cjs",
     "start": "pnpm run build:main && electron .",
     "build": "pnpm run build:main && pnpm run build:web",
     "build:main": "pnpm run typecheck && node scripts/build.mjs",

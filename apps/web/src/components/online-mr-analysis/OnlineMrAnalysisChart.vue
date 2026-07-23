@@ -2,13 +2,14 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 import {
-  createNetConsoleAxisStyle,
-  createNetConsoleDataZoomStyle,
-  createNetConsoleLegendStyle,
-  createNetConsoleTooltipStyle,
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
+import {
+  createMultiSeriesTimeChartBaseOption,
+  createTimeChartInitOptions,
+  createTimeChartLinePresentation,
+} from '../charts/multiSeriesTimeChart'
 import type { OnlineMrMetricSeries } from '../../types/onlineMr'
 
 const props = withDefaults(defineProps<{
@@ -23,6 +24,8 @@ let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
 
+const pointCount = (): number => props.series.reduce((total, item) => total + item.points.length, 0)
+
 onMounted(async () => {
   const [core, charts, components, renderers] = await Promise.all([
     import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
@@ -30,7 +33,7 @@ onMounted(async () => {
   core.use([charts.LineChart, components.GridComponent, components.LegendComponent, components.TooltipComponent, components.DataZoomComponent, components.MarkLineComponent, components.ToolboxComponent, renderers.CanvasRenderer])
   await nextTick()
   if (!container.value) return
-  chart = core.init(container.value)
+  chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount()))
   unsubscribeTheme = subscribeNetConsoleChartTheme(render)
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => resize())
   resizeObserver?.observe(container.value)
@@ -56,12 +59,17 @@ function resize(): void { if (container.value?.clientWidth) chart?.resize() }
 function render(): void {
   if (!chart) return
   const theme = readNetConsoleChartTokens()
-  const axis = createNetConsoleAxisStyle(theme)
+  const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
+    title: props.title,
+    unit: props.unit,
+    pointCount: pointCount(),
+  })
   const events = props.events.filter((event) => event.time)
   const chartSeries = props.series.map((item) => ({
+    id: item.series_key || '默认序列',
     name: item.series_key || '默认序列',
     type: 'line',
-    showSymbol: item.points.length < 120,
+    ...createTimeChartLinePresentation(pointCount()),
     connectNulls: false,
     data: item.points.map((point) => ({ value: [point.timestamp, point.value], dimensions: point.dimensions })),
   }))
@@ -75,13 +83,9 @@ function render(): void {
     })
   }
   chart.setOption({
-    animation: false,
-    color: theme.series,
-    textStyle: { color: theme.text },
-    title: { text: props.title, left: 8, top: 0, textStyle: { color: theme.text, fontSize: 14, fontWeight: 600 } },
+    ...baseOption,
     tooltip: {
-      trigger: 'axis',
-      ...createNetConsoleTooltipStyle(theme),
+      ...(baseOption.tooltip as Record<string, unknown>),
       formatter: (raw: unknown) => {
         const rows = Array.isArray(raw) ? raw : [raw]
         const first = rows[0] as { axisValue?: string } | undefined
@@ -95,15 +99,6 @@ function render(): void {
         return lines.join('<br/>')
       },
     },
-    legend: { type: 'scroll', bottom: 2, ...createNetConsoleLegendStyle(theme) },
-    toolbox: { right: 8, feature: { dataZoom: { yAxisIndex: 'none' }, restore: {}, saveAsImage: {} } },
-    grid: { left: 58, right: 24, top: 32, bottom: 72, containLabel: true },
-    xAxis: { type: 'time', ...axis },
-    yAxis: { type: 'value', name: props.unit, nameTextStyle: { color: theme.textSecondary }, ...axis },
-    dataZoom: [
-      { type: 'inside', filterMode: 'none' },
-      { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
-    ],
     series: chartSeries,
   }, { replaceMerge: ['series'] })
 }

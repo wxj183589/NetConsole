@@ -7,6 +7,7 @@ import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
+import { logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { resolveDesktopStorageContext } from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
@@ -126,6 +127,11 @@ async function startDesktop(): Promise<void> {
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
   rendererDevelopment = Boolean(config.devServerUrl)
+  logDevelopmentGpuFeatureStatus(
+    rendererDevelopment,
+    () => app.getGPUFeatureStatus() as unknown as Record<string, string>,
+    logger,
+  )
   mainWindow = createMainWindow(rendererDevelopment, developmentMenu)
   startupTimeline.mark('electron.window_created')
   mainWindow.on('closed', () => {

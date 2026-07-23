@@ -2,7 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, useAttrs, type Component } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
@@ -128,6 +128,10 @@ const meshChartStub = defineComponent({
     scope: { type: String, default: '' },
     initialViewport: { type: Object, default: null },
     syncViewport: { type: Object, default: null },
+    sharedTimeDomain: { type: Object, default: null },
+    syncPointerTime: { type: String, default: null },
+    syncPointerSource: { type: String, default: null },
+    active: { type: Boolean, default: true },
   },
   setup(_props, { expose }) {
     expose({
@@ -180,6 +184,8 @@ beforeEach(() => {
   mocks.getTracksideSignal.mockResolvedValue({ source_id: 'session', radio: null, time_range: { start: null, end: null }, series: [], events: [], warnings: [], estimated_interval_seconds: null, continuity_gap_seconds: null, total_series: 0, returned_series: 0, total_points: 0, returned_points: 0, downsampled: false, requested_max_points: 600, effective_max_points: 600, top_n: 0, include_standby: false })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
 })
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('Mesh analysis import context behavior', () => {
   it('prepares context, pages VehicleMr by 200, and keeps VehicleMr when profiles fail', async () => {
@@ -328,6 +334,17 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('collapses sessions after opening a source, defaults to build order and lazily keeps charts unloaded', async () => {
+    const intersectionCallbacks: IntersectionObserverCallback[] = []
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { intersectionCallbacks.push(callback) }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords(): IntersectionObserverEntry[] { return [] }
+      root = null
+      rootMargin = '600px 0px'
+      thresholds = [0]
+    })
     const fullStart = '2026-07-20 10:00:00.000'
     const fullMiddle = '2026-07-20 10:30:00.000'
     const fullEnd = '2026-07-20 11:00:00.000'
@@ -422,20 +439,28 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
 
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
-    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
-      start_time: '2026-07-20 09:59:55.000',
+    const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
+      chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
+    ))
+    expect(activeRssiChart?.props('syncViewport')).toMatchObject({
+      start_time: fullStart,
       end_time: '2026-07-20 10:00:15.000',
-    }))
+      full_start_time: fullStart,
+      full_end_time: fullEnd,
+    })
+    const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
+      (chart.props('series') as unknown[]).length > 0
+    ))
+    expect(tracksideChart?.props('active')).toBe(false)
+    intersectionCallbacks[0]?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+    await flushPromises()
+    expect(tracksideChart?.props('active')).toBe(true)
     expect(wrapper.text()).toContain(`最早 ${fullStart}`)
     expect(wrapper.text()).toContain(`最新 ${fullEnd}`)
 
@@ -451,23 +476,19 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
-    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
-      start_time: '2026-07-20 09:59:55.000',
+    expect(activeRssiChart?.props('syncViewport')).toMatchObject({
+      start_time: fullStart,
       end_time: '2026-07-20 10:00:15.000',
-    }))
+    })
 
     await wrapper.findAll('button').find((button) => button.text() === '重置视图')!.trigger('click')
     await flushPromises()
-    expect(mocks.chartResetViewport).toHaveBeenCalled()
+    expect(mocks.chartResetViewport).not.toHaveBeenCalled()
     const rssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
     ))
@@ -531,19 +552,20 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
-      time_from: undefined,
-      time_to: undefined,
     })
-    expect(mocks.chartApplyViewport).toHaveBeenCalledWith(expect.objectContaining({
+    const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
+      chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0
+    ))
+    expect(activeRssiChart?.props('syncViewport')).toMatchObject({
       start_time: '2026-07-20 09:59:45.000',
       end_time: '2026-07-20 10:00:15.000',
-    }))
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+    })
     expect(wrapper.text()).toContain(`最早 ${session.first_sample_time}`)
     expect(wrapper.text()).toContain(`最新 ${session.last_sample_time}`)
     wrapper.unmount()

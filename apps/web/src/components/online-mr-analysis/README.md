@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `OnlineMrAnalysisChart.vue`：渲染 Backend 已归一化的时间序列和切换事件，保留 `null` 断点，并响应主题与容器尺寸变化。
+- `OnlineMrAnalysisChart.vue`：渲染 Backend 已归一化的时间序列和切换事件，保留 `null` 断点，并响应主题与容器尺寸变化；Canvas 初始化、DPR、网格、图例、dataZoom、toolbox、Tooltip 和大数据符号策略复用 `../charts/multiSeriesTimeChart.ts`。
 - `OnlineMrAnalysisChart.test.ts`：验证空值不补零、事件标记以及图表、ResizeObserver 和主题订阅的卸载清理。
 
 ## 边界

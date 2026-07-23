@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { markRaw, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 
 import {
-  createNetConsoleAxisStyle,
-  createNetConsoleDataZoomStyle,
-  createNetConsoleLegendStyle,
-  createNetConsoleTooltipStyle,
   readNetConsoleChartTokens,
   subscribeNetConsoleChartTheme,
 } from '../../theme/echarts'
+import {
+  createMultiSeriesTimeChartBaseOption,
+  createTimeChartInitOptions,
+  createTimeChartLinePresentation,
+  isLargeTimeChart,
+  normalizedApRadioColorKey,
+  stableTimeChartSeriesColor,
+} from '../charts/multiSeriesTimeChart'
 import type {
   MeshChartEvent,
   MeshLocationSegment,
@@ -19,23 +23,24 @@ import type {
 import { buildMeshLocationBands } from './chartSeries'
 import {
   createFullMeshViewport,
+  createFullMeshViewportFromDomain,
+  formatMeshViewportTimestamp,
+  meshTimestampMillis,
+  meshViewportRangeEquals,
   normalizeMeshViewport,
-  viewportFromDataZoom,
+  viewportFromDataZoomWithOptions,
   type MeshChartViewport,
+  type MeshRssiChartSource,
+  type MeshSharedPointerChange,
+  type MeshSharedTimeDomain,
 } from './meshChartViewport'
 import { buildSwitchSection, escapeMeshTooltipHtml } from './meshRssiTooltip'
-
-interface RenderedSignalPoint {
-  value: [string, number | null]
-  meta?: MeshTracksideSignalPointData
-  seriesMeta?: MeshTracksideSignalSeriesData
-}
-
-interface RenderedSignalSeries {
-  name: string
-  data: RenderedSignalPoint[]
-  meta: MeshTracksideSignalSeriesData
-}
+import {
+  buildTracksideSeriesCache,
+  tracksidePointValue,
+  type RenderedTracksideSignalPoint as RenderedSignalPoint,
+  type TracksideSeriesCache,
+} from './tracksideSeriesCache'
 
 const props = withDefaults(defineProps<{
   series: MeshTracksideSignalSeriesData[]
@@ -50,6 +55,10 @@ const props = withDefaults(defineProps<{
   lockedViewport?: MeshChartViewport | null
   continuityGapSeconds?: number | null
   preserveViewport?: boolean
+  sharedTimeDomain?: MeshSharedTimeDomain | null
+  chartId?: Exclude<MeshRssiChartSource, 'active-rssi' | 'programmatic'>
+  syncPointerTime?: string | null
+  syncPointerSource?: MeshRssiChartSource | null
 }>(), {
   events: () => [],
   locationSegments: () => [],
@@ -62,11 +71,16 @@ const props = withDefaults(defineProps<{
   lockedViewport: null,
   continuityGapSeconds: null,
   preserveViewport: true,
+  sharedTimeDomain: null,
+  chartId: 'trackside-rssi',
+  syncPointerTime: null,
+  syncPointerSource: null,
 })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
   'viewport-ready': [viewport: MeshChartViewport]
+  'pointer-change': [pointer: MeshSharedPointerChange]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -78,17 +92,19 @@ let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
 let disposed = false
 let currentViewport: MeshChartViewport | null = null
-let applyingViewport = false
 let viewportReady = false
-let viewportTimer: ReturnType<typeof setTimeout> | null = null
-let renderedSeries: RenderedSignalSeries[] = []
+let viewportFrame: number | null = null
+let pendingViewport: MeshChartViewport | null = null
+let pointerGlobalOut: (() => void) | null = null
+let seriesCache: TracksideSeriesCache = markRaw(buildTracksideSeriesCache([]))
 
-const timestamps = (): string[] => props.series.flatMap((item) => item.points.map((point) => point.timestamp))
-const hasData = () => props.series.some((item) => item.points.some((point) => point.peer_rssi != null || point.peer_signal != null))
-
-function sameViewport(left: MeshChartViewport | null, right: MeshChartViewport | null): boolean {
-  return Boolean(left && right && left.start_time === right.start_time && left.end_time === right.end_time)
-}
+const timestamps = (): string[] => seriesCache.timestamps
+const hasData = () => seriesCache.series.some((item) => item.data.some((point) => point.value[1] != null))
+const fullViewport = (source: MeshChartViewport['source'] = 'initial'): MeshChartViewport | null => (
+  props.sharedTimeDomain
+    ? createFullMeshViewportFromDomain(props.sharedTimeDomain, source, props.chartId, currentViewport?.revision ?? 0)
+    : createFullMeshViewport(timestamps(), source)
+)
 
 function hasRenderableSize(): boolean {
   return Boolean(container.value && container.value.clientWidth > 0 && container.value.clientHeight > 0)
@@ -108,36 +124,15 @@ function pointLabel(point: MeshTracksideSignalPointData): string {
   return point.peer_ap_name || point.peer_mac || '轨旁 AP 未知'
 }
 
-function pointSeriesValue(point: MeshTracksideSignalPointData): number | null {
-  return point.peer_rssi ?? point.peer_signal ?? null
-}
-
-function renderSeries(): RenderedSignalSeries[] {
-  return props.series.map((series) => ({
-    name: seriesLabel(series),
-    meta: series,
-    data: (() => {
-      const rendered: RenderedSignalPoint[] = []
-      let previousRunId: string | null = null
-      for (const point of [...series.points].sort((left, right) => left.timestamp.localeCompare(right.timestamp) || left.timestamp_tag.localeCompare(right.timestamp_tag))) {
-        const currentRunId = point.run_id ?? (point.run_sequence == null ? null : `${series.series_id}:${point.run_sequence}`)
-        if (
-          rendered.length
-          && point.break_before
-          && (currentRunId == null || currentRunId !== previousRunId)
-        ) {
-          rendered.push({ value: [point.timestamp, null] })
-        }
-        rendered.push({
-          value: [point.timestamp, pointSeriesValue(point)],
-          meta: point,
-          seriesMeta: series,
-        })
-        previousRunId = currentRunId
-      }
-      return rendered
-    })(),
+function rebuildSeriesCache(): void {
+  const rawSeries = toRaw(props.series).map((item) => ({
+    ...toRaw(item),
+    points: toRaw(item.points).map((point) => toRaw(point)),
   }))
+  seriesCache = markRaw(buildTracksideSeriesCache(rawSeries))
+  if (import.meta.env.DEV && seriesCache.unorderedSeriesIds.length) {
+    console.warn(`轨旁信号 payload 存在未按时间排序的序列：${seriesCache.unorderedSeriesIds.join(', ')}`)
+  }
 }
 
 function findRenderedSwitchPoint(event: MeshChartEvent): RenderedSignalPoint | undefined {
@@ -145,22 +140,22 @@ function findRenderedSwitchPoint(event: MeshChartEvent): RenderedSignalPoint | u
   const timestamp = event.render_point_timestamp || event.point_timestamp || event.timestamp
   if (!timestamp) return undefined
   const context = event.point_context
-  const exactMatch = renderedSeries.flatMap((item) => item.data).find((point) => (
+  const exactMatch = seriesCache.series.flatMap((item) => item.data).find((point) => (
     Boolean(point.meta)
     && point.value[0] === timestamp
     && (context?.link_id == null || point.meta!.link_id === context.link_id)
     && (context?.timestamp_tag == null || point.meta!.timestamp_tag === context.timestamp_tag)
     && (event.local_radio == null || point.meta!.local_radio === event.local_radio)
-    && pointSeriesValue(point.meta!) != null
-    && pointSeriesValue(point.meta!) !== 0
+    && tracksidePointValue(point.meta!) != null
+    && tracksidePointValue(point.meta!) !== 0
   ))
   if (exactMatch) return exactMatch
-  return renderedSeries.flatMap((item) => item.data).find((point) => (
+  return seriesCache.series.flatMap((item) => item.data).find((point) => (
     Boolean(point.meta)
     && point.value[0] === timestamp
     && (event.local_radio == null || point.meta!.local_radio === event.local_radio)
-    && pointSeriesValue(point.meta!) != null
-    && pointSeriesValue(point.meta!) !== 0
+    && tracksidePointValue(point.meta!) != null
+    && tracksidePointValue(point.meta!) !== 0
   ))
 }
 
@@ -209,9 +204,9 @@ function renderedPointKey(point: RenderedSignalPoint): string {
   ].join('|')
 }
 
-function buildTooltip(points: RenderedSignalPoint[], event?: MeshChartEvent): string {
+function buildTooltip(points: RenderedSignalPoint[], event?: MeshChartEvent, pointerTime?: string): string {
   if (!points.length) {
-    return `<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">采样时间：${escapeMeshTooltipHtml(event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
+    return `<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">采样时间：${escapeMeshTooltipHtml(pointerTime || event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}<br>当前时刻无有效采样${buildSwitchSection(event)}</div>`
   }
   return [
     '<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">',
@@ -247,10 +242,14 @@ async function ensureChart(): Promise<boolean> {
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
-    chart = core.init(container.value)
+    chart = core.init(container.value, undefined, createTimeChartInitOptions(seriesCache.totalRenderedPoints))
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
+    chart.on('updateAxisPointer', handleAxisPointer)
+    pointerGlobalOut = () => emit('pointer-change', { time: null, source_chart: props.chartId })
+    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: () => void) => void } }).getZr?.()
+    zrender?.on('globalout', pointerGlobalOut)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
     return true
   })().finally(() => { initialization = null })
@@ -258,7 +257,10 @@ async function ensureChart(): Promise<boolean> {
 }
 
 function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'resize' = 'resize'): void {
-  if (reason !== 'resize') pendingRenderReason = reason
+  if (reason !== 'resize') {
+    const priority = { display: 1, theme: 2, data: 3, reset: 4 }
+    if (!pendingRenderReason || priority[reason] >= priority[pendingRenderReason]) pendingRenderReason = reason
+  }
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = null
@@ -280,6 +282,7 @@ function handleWindowResize(): void {
 
 onMounted(() => {
   disposed = false
+  rebuildSeriesCache()
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
@@ -294,19 +297,26 @@ onBeforeUnmount(() => {
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = null
   pendingRenderReason = null
-  if (viewportTimer) clearTimeout(viewportTimer)
-  viewportTimer = null
+  if (viewportFrame !== null) cancelAnimationFrame(viewportFrame)
+  viewportFrame = null
+  pendingViewport = null
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
+  chart?.off('updateAxisPointer', handleAxisPointer)
+  if (pointerGlobalOut) {
+    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: () => void) => void } } | null)?.getZr?.()
+    zrender?.off('globalout', pointerGlobalOut)
+  }
+  pointerGlobalOut = null
   chart?.dispose()
   chart = null
 })
 
-watch(() => props.series, () => scheduleChartUpdate('data'), { deep: true })
-watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => props.series, () => { rebuildSeriesCache(); scheduleChartUpdate('data') })
+watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('display'))
 watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.active, (active) => { if (active) void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize')) })
 watch(() => props.lockedViewport, (viewport, previous) => {
@@ -315,9 +325,13 @@ watch(() => props.lockedViewport, (viewport, previous) => {
 }, { deep: true })
 watch(() => props.initialViewport, (viewport) => { if (viewport && !currentViewport) void nextTick(() => applyViewport(viewport)) }, { deep: true })
 watch(() => props.syncViewport, (viewport, previous) => {
-  if (viewport && !sameViewport(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
+  if (viewport && !meshViewportRangeEquals(currentViewport, viewport)) void nextTick(() => applyViewport(viewport))
   else if (!viewport && previous) { currentViewport = null; scheduleChartUpdate('reset') }
 }, { deep: true })
+watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('theme'), { deep: true })
+watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
+  if (source !== props.chartId) void nextTick(() => applySharedPointer(time))
+})
 
 function handleChartClick(raw: unknown): void {
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshTracksideSignalPointData } }).data
@@ -329,54 +343,94 @@ function handleChartClick(raw: unknown): void {
 }
 
 function handleDataZoom(raw: unknown): void {
-  if (applyingViewport) return
-  const viewport = viewportFromDataZoom(raw, timestamps())
+  const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
+    boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
+    fullDomain: props.sharedTimeDomain,
+    sourceChart: props.chartId,
+    revision: (currentViewport?.revision ?? 0) + 1,
+  })
   if (!viewport) return
   currentViewport = viewport
-  if (viewportTimer) clearTimeout(viewportTimer)
-  viewportTimer = setTimeout(() => emit('viewport-change', { ...viewport }), 100)
+  pendingViewport = viewport
+  if (viewportFrame !== null) return
+  viewportFrame = requestAnimationFrame(() => {
+    viewportFrame = null
+    if (!pendingViewport) return
+    emit('viewport-change', { ...pendingViewport })
+    pendingViewport = null
+  })
 }
 
 function handleRestore(): void {
-  const viewport = createFullMeshViewport(timestamps(), 'user_zoom')
+  const viewport = fullViewport('user_zoom')
   if (!viewport) return
-  currentViewport = viewport
-  emit('viewport-change', { ...viewport })
+  currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
+  emit('viewport-change', { ...currentViewport })
+}
+
+function handleAxisPointer(raw: unknown): void {
+  const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
+  const millis = meshTimestampMillis(value)
+  if (millis === null) return
+  emit('pointer-change', {
+    time: typeof value === 'string' ? value : formatMeshViewportTimestamp(millis),
+    source_chart: props.chartId,
+  })
+}
+
+function applySharedPointer(time: string | null): void {
+  if (!chart) return
+  if (!time) {
+    chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
+    chart.dispatchAction({ type: 'hideTip' }, { silent: true })
+    return
+  }
+  const millis = meshTimestampMillis(time)
+  if (millis === null) return
+  const convertToPixel = (chart as unknown as { convertToPixel?: (finder: { xAxisIndex: number }, value: number) => number | number[] }).convertToPixel
+  if (!convertToPixel) return
+  const pixel = convertToPixel.call(chart, { xAxisIndex: 0 }, millis)
+  const x = Array.isArray(pixel) ? pixel[0] : pixel
+  if (!Number.isFinite(x)) return
+  chart.dispatchAction({ type: 'updateAxisPointer', x, y: 1 }, { silent: true })
 }
 
 function getViewport(): MeshChartViewport | null {
-  return currentViewport ? { ...currentViewport } : createFullMeshViewport(timestamps())
+  return currentViewport ? { ...currentViewport } : fullViewport()
 }
 
 function applyViewport(viewport: MeshChartViewport): void {
   const isLocked = Boolean(props.lockedViewport
     && props.lockedViewport.start_time === viewport.start_time
     && props.lockedViewport.end_time === viewport.end_time)
-  const normalized = normalizeMeshViewport(viewport, isLocked ? [] : timestamps(), 'programmatic')
+  const normalized = normalizeMeshViewport(viewport, isLocked ? [] : timestamps(), 'programmatic', {
+    boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
+    fullDomain: props.sharedTimeDomain,
+    sourceChart: viewport.source_chart,
+    revision: viewport.revision,
+  })
   if (!normalized) return
+  if (meshViewportRangeEquals(currentViewport, normalized) && currentViewport?.revision === normalized.revision) return
   currentViewport = normalized
   if (!chart) return
-  applyingViewport = true
   chart.dispatchAction({
     type: 'dataZoom',
     batch: [0, 1].map((dataZoomIndex) => ({ dataZoomIndex, startValue: normalized.start_time, endValue: normalized.end_time })),
-  })
-  queueMicrotask(() => { applyingViewport = false })
+  }, { silent: true })
 }
 
 function resetViewport(): void {
-  const target = props.lockedViewport || createFullMeshViewport(timestamps())
+  const target = props.lockedViewport || fullViewport('programmatic')
   if (target) applyViewport(target)
 }
 
-function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
-  if (!chart) return
-  const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
-  const theme = readNetConsoleChartTokens()
-  const axisStyle = createNetConsoleAxisStyle(theme)
-  renderedSeries = renderSeries()
+function tracksideOverlaySeries(
+  theme: ReturnType<typeof readNetConsoleChartTokens>,
+  clearEmpty = false,
+): Array<Record<string, unknown>> {
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
-  const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
+  const largeMode = isLargeTimeChart(seriesCache.totalRenderedPoints)
+  const nodes = props.showSwitchPoints && !largeMode ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {
     silent: true,
@@ -386,78 +440,119 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       { name: band.label, xAxis: band.start_time },
       { xAxis: band.end_time },
     ]),
-  } : undefined
-  chart.setOption({
-    animation: false,
-    color: theme.series,
-    textStyle: { color: theme.text },
-    tooltip: {
-      trigger: 'axis',
-      ...createNetConsoleTooltipStyle(theme),
-      formatter: (rawParams: unknown) => {
-        const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-        const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent } } | undefined
-        const event = eventParam?.data?.meshEvent
-        const seen = new Set<string>()
-        const pointItems = params.flatMap((item) => {
-          const candidate = item as { data?: RenderedSignalPoint }
-          const point = candidate.data
-          if (!point?.meta || !point.seriesMeta || !Array.isArray(point.value) || point.value[1] == null) return []
-          const key = renderedPointKey(point)
-          if (!key || seen.has(key)) return []
-          seen.add(key)
-          return [point]
-        }).slice(0, 8)
-        return buildTooltip(pointItems, event)
-      },
+  } : clearEmpty ? { data: [] } : undefined
+  const markLine = props.showSwitchLines && switchEvents.length && !largeMode ? {
+    silent: false,
+    symbol: 'none',
+    label: { show: false },
+    lineStyle: { color: theme.warning, type: 'dashed' },
+    data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
+  } : clearEmpty ? { data: [] } : undefined
+  return [
+    ...(seriesCache.series[0] ? [{
+      id: seriesCache.series[0].id,
+      ...(markArea ? { markArea } : {}),
+      ...(markLine ? { markLine } : {}),
+    }] : []),
+    {
+      id: 'trackside-switch-nodes',
+      name: '切换节点',
+      type: 'scatter',
+      symbolSize: 10,
+      data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
     },
-    legend: { type: 'scroll', bottom: 4, ...createNetConsoleLegendStyle(theme) },
-    toolbox: {
-      right: 16,
-      feature: {
-        dataZoom: { yAxisIndex: 'none', title: { zoom: '框选缩放', back: '还原缩放' } },
-        restore: { title: '恢复视图' },
-        saveAsImage: { title: '保存图像', pixelRatio: 2 },
-      },
-    },
-    grid: { left: 54, right: 22, top: 24, bottom: 74, containLabel: true },
-    xAxis: {
-      type: 'time',
-      min: props.lockedViewport?.start_time,
-      max: props.lockedViewport?.end_time,
-      ...axisStyle,
-    },
-    yAxis: { type: 'value', name: 'RSSI', nameTextStyle: { color: theme.textSecondary }, min: 'dataMin', ...axisStyle },
-    dataZoom: [
-      { type: 'inside', filterMode: 'none' },
-      { type: 'slider', height: 18, bottom: 28, filterMode: 'none', ...createNetConsoleDataZoomStyle(theme) },
-    ],
-    series: [
-      ...renderedSeries.map((item, index) => ({
+  ]
+}
+
+function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>): Array<Record<string, unknown>> {
+  const presentation = createTimeChartLinePresentation(seriesCache.totalRenderedPoints)
+  const overlayById = new Map(tracksideOverlaySeries(theme).map((item) => [String(item.id), item]))
+  const nodeSeries = overlayById.get('trackside-switch-nodes')
+  const nodeData = nodeSeries?.data
+  return [
+    ...seriesCache.series.map((item) => {
+      const color = stableTimeChartSeriesColor(
+        normalizedApRadioColorKey(item.meta.ap_mac, item.meta.peer_mac, item.meta.radio),
+        theme.series,
+      )
+      return {
+        id: item.id,
         name: item.name,
         type: 'line',
-        showSymbol: item.data.filter((point) => point.value[1] != null).length < 120,
+        ...presentation,
         connectNulls: false,
         data: item.data,
-        lineStyle: { width: 2, type: 'solid' },
-        markArea: index === 0 ? markArea : undefined,
-        markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
-          silent: false,
-          symbol: 'none',
-          label: { show: false },
-          lineStyle: { color: theme.warning, type: 'dashed' },
-          data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
-        } : undefined,
-      })),
-      ...(nodes.length ? [{
-        name: '切换节点',
-        type: 'scatter',
-        symbolSize: 10,
-        data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
-      }] : []),
-    ],
-  }, { notMerge: true })
-  const target = props.lockedViewport || previous || props.syncViewport || props.initialViewport || createFullMeshViewport(timestamps())
+        itemStyle: { color },
+        lineStyle: { ...presentation.lineStyle, color, type: 'solid' },
+        ...(overlayById.get(item.id) || {}),
+      }
+    }),
+    ...(Array.isArray(nodeData) && nodeData.length ? [nodeSeries!] : []),
+  ]
+}
+
+function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
+  if (!chart) return
+  const previous = reason !== 'reset' && props.preserveViewport ? getViewport() : null
+  const theme = readNetConsoleChartTokens()
+  const target = props.lockedViewport || previous || props.syncViewport || props.initialViewport || fullViewport()
+  const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
+    unit: 'dBm',
+    pointCount: seriesCache.totalRenderedPoints,
+    fullDomain: props.sharedTimeDomain,
+    viewport: target,
+  })
+  const tooltip = {
+    ...(baseOption.tooltip as Record<string, unknown>),
+    formatter: (rawParams: unknown) => {
+      const params = Array.isArray(rawParams) ? rawParams : [rawParams]
+      const first = params[0] as { axisValue?: string | number } | undefined
+      const pointerMillis = meshTimestampMillis(first?.axisValue)
+      const pointerTime = pointerMillis === null
+        ? undefined
+        : typeof first?.axisValue === 'string'
+          ? first.axisValue
+          : formatMeshViewportTimestamp(pointerMillis)
+      const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent } } | undefined
+      const event = eventParam?.data?.meshEvent
+      const seen = new Set<string>()
+      const pointItems = params.flatMap((item) => {
+        const candidate = item as { data?: RenderedSignalPoint }
+        const point = candidate.data
+        if (!point?.meta || !point.seriesMeta || !Array.isArray(point.value) || point.value[1] == null) return []
+        if (pointerMillis !== null && meshTimestampMillis(point.value[0]) !== pointerMillis) return []
+        const key = renderedPointKey(point)
+        if (!key || seen.has(key)) return []
+        seen.add(key)
+        return [point]
+      }).slice(0, 8)
+      return buildTooltip(pointItems, event, pointerTime)
+    },
+  }
+
+  if (reason === 'display') {
+    chart.setOption({ series: tracksideOverlaySeries(theme, true) }, { lazyUpdate: true })
+  } else if (reason === 'theme') {
+    chart.setOption({
+      ...baseOption,
+      tooltip,
+      yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
+      series: seriesCache.series.map((item) => {
+        const color = stableTimeChartSeriesColor(
+          normalizedApRadioColorKey(item.meta.ap_mac, item.meta.peer_mac, item.meta.radio),
+          theme.series,
+        )
+        return { id: item.id, itemStyle: { color }, lineStyle: { color, width: 2 } }
+      }),
+    }, { lazyUpdate: true })
+  } else {
+    chart.setOption({
+      ...baseOption,
+      tooltip,
+      yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
+      series: tracksideDataSeries(theme),
+    }, { replaceMerge: ['series'] })
+  }
   if (target) {
     applyViewport(target)
     if (!viewportReady && currentViewport) {

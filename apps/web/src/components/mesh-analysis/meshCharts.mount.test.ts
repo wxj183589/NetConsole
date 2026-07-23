@@ -9,8 +9,18 @@ import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
 import type { MeshChartEvent, MeshChartPoint, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
 
 const echartsMock = vi.hoisted(() => {
-  const chart = { setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn(), dispatchAction: vi.fn(), on: vi.fn(), off: vi.fn() }
-  return { chart, init: vi.fn(() => chart), use: vi.fn() }
+  const zrender = { on: vi.fn(), off: vi.fn() }
+  const chart = {
+    setOption: vi.fn(),
+    resize: vi.fn(),
+    dispose: vi.fn(),
+    dispatchAction: vi.fn(),
+    on: vi.fn(),
+    off: vi.fn(),
+    convertToPixel: vi.fn(() => 320),
+    getZr: vi.fn(() => zrender),
+  }
+  return { chart, zrender, init: vi.fn(() => chart), use: vi.fn() }
 })
 
 vi.mock('echarts/core', () => ({ init: echartsMock.init, use: echartsMock.use }))
@@ -158,7 +168,7 @@ describe('MESH charts mount and render', () => {
 
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.off).toHaveBeenCalledTimes(4)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
   })
 
   it('renders the trackside signal chart as active peer RSSI lines without default switch markers', async () => {
@@ -376,6 +386,100 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
+  it('updates the shared absolute viewport without rebuilding trackside series data', async () => {
+    const sharedTimeDomain = {
+      full_start_time: '2026-07-20T09:00:00.000Z',
+      full_end_time: '2026-07-20T12:00:00.000Z',
+    }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: tracksideSeries,
+        sharedTimeDomain,
+      },
+    })
+    await flushPromises()
+
+    const initialSetOptionCount = echartsMock.chart.setOption.mock.calls.length
+    const initialData = (echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ data?: unknown[] }>
+    }).series[0].data
+    const dataZoom = echartsMock.chart.on.mock.calls.find(([event]) => event === 'datazoom')?.[1] as (payload: unknown) => void
+    dataZoom({
+      startValue: '2026-07-20T10:00:00.500Z',
+      endValue: '2026-07-20T10:00:03.500Z',
+    })
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(wrapper.emitted('viewport-change')).toHaveLength(1)
+    expect(wrapper.emitted('viewport-change')?.[0]?.[0]).toMatchObject({
+      start_time: '2026-07-20T10:00:00.500Z',
+      end_time: '2026-07-20T10:00:03.500Z',
+      ...sharedTimeDomain,
+      source_chart: 'trackside-rssi',
+    })
+
+    await wrapper.setProps({
+      syncViewport: {
+        start_time: '2026-07-20T10:00:01.500Z',
+        end_time: '2026-07-20T10:00:02.500Z',
+        start_percent: 0,
+        end_percent: 100,
+        ...sharedTimeDomain,
+        source: 'programmatic',
+        source_chart: 'active-rssi',
+        revision: 9,
+      },
+    })
+    await flushPromises()
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'dataZoom' }),
+      { silent: true },
+    )
+    expect(initialData).toBe((echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ data?: unknown[] }>
+    }).series[0].data)
+
+    await wrapper.setProps({ showLocationBand: false })
+    await flushPromises()
+    const displayOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ id?: string; data?: unknown[] }>
+    }
+    expect(displayOption.series.find((item) => item.id === tracksideSeries[0].series_id)?.data).toBeUndefined()
+
+    window.dispatchEvent(new CustomEvent('netconsole:theme-change'))
+    await flushPromises()
+    const themeOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ data?: unknown[] }>
+    }
+    expect(themeOption.series.every((item) => item.data === undefined)).toBe(true)
+
+    const axisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
+    axisPointer({ axesInfo: [{ value: '2026-07-20T10:00:02.500Z' }] })
+    expect(wrapper.emitted('pointer-change')?.at(-1)?.[0]).toEqual({
+      time: '2026-07-20T10:00:02.500Z',
+      source_chart: 'trackside-rssi',
+    })
+    await wrapper.setProps({ syncPointerTime: '2026-07-20T10:00:02.500Z' })
+    await flushPromises()
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(
+      { type: 'updateAxisPointer', x: 320, y: 1 },
+      { silent: true },
+    )
+    await wrapper.setProps({ syncPointerTime: null })
+    await flushPromises()
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith(
+      { type: 'updateAxisPointer', currTrigger: 'leave' },
+      { silent: true },
+    )
+    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(
+      { type: 'hideTip' },
+      { silent: true },
+    )
+    wrapper.unmount()
+  })
+
   it('waits for a visible active container before initializing ECharts', async () => {
     Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 0 })
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 0 })
@@ -520,14 +624,7 @@ describe('MESH charts mount and render', () => {
     await wrapper.setProps({ showPeer: true, showSwitchLines: true, showLocationBand: false })
     await flushPromises()
 
-    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith({
-      type: 'dataZoom',
-      batch: [0, 1].map((dataZoomIndex) => ({
-        dataZoomIndex,
-        startValue: points[1].timestamp,
-        endValue: points[2].timestamp,
-      })),
-    })
+    expect(echartsMock.chart.dispatchAction).not.toHaveBeenCalled()
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,
@@ -537,7 +634,7 @@ describe('MESH charts mount and render', () => {
     window.dispatchEvent(new CustomEvent('netconsole:theme-change'))
     window.dispatchEvent(new Event('resize'))
     await flushPromises()
-    expect(echartsMock.chart.dispatchAction).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'dataZoom' }))
+    expect(echartsMock.chart.dispatchAction).not.toHaveBeenCalled()
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,

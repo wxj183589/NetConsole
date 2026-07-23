@@ -45,9 +45,9 @@ export function buildSwitchSection(event?: MeshChartEvent): string {
   return rows.join('<br>')
 }
 
-export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEvent): string {
+export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEvent, pointerTime?: string): string {
   if (!point) {
-    return `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">采样时间：${escapeMeshTooltipHtml(event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${buildSwitchSection(event)}</div>`
+    return `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">采样时间：${escapeMeshTooltipHtml(pointerTime || event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${pointerTime ? '<br>当前时刻无有效采样' : ''}${buildSwitchSection(event)}</div>`
   }
   return [
     `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">`,

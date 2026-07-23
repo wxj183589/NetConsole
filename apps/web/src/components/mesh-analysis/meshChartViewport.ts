@@ -1,4 +1,16 @@
 export type MeshChartViewportSource = 'user_zoom' | 'programmatic' | 'initial'
+export type MeshRssiChartSource = 'active-rssi' | 'trackside-rssi' | 'programmatic'
+export type MeshViewportBoundaryMode = 'sample' | 'absolute'
+
+export interface MeshSharedTimeDomain {
+  full_start_time: string
+  full_end_time: string
+}
+
+export interface MeshSharedPointerChange {
+  time: string | null
+  source_chart: Exclude<MeshRssiChartSource, 'programmatic'>
+}
 
 export interface MeshChartViewport {
   start_time: string
@@ -8,6 +20,8 @@ export interface MeshChartViewport {
   full_start_time: string
   full_end_time: string
   source: MeshChartViewportSource
+  source_chart?: MeshRssiChartSource
+  revision?: number
 }
 
 export interface MeshChartHandle {
@@ -22,6 +36,13 @@ interface DataZoomValues {
   end?: number
   startValue?: string | number
   endValue?: string | number
+}
+
+export interface MeshViewportNormalizationOptions {
+  boundaryMode?: MeshViewportBoundaryMode
+  fullDomain?: MeshSharedTimeDomain | null
+  sourceChart?: MeshRssiChartSource
+  revision?: number
 }
 
 export function meshTimestampMillis(value: string | number | null | undefined): number | null {
@@ -46,6 +67,12 @@ function orderedTimestamps(values: string[]): Array<{ value: string; millis: num
 function percent(value: number, start: number, end: number): number {
   if (end <= start) return value <= start ? 0 : 100
   return Math.min(100, Math.max(0, ((value - start) / (end - start)) * 100))
+}
+
+export function formatMeshViewportTimestamp(value: number): string {
+  const date = new Date(value)
+  const pad = (number: number, size = 2): string => String(number).padStart(size, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`
 }
 
 function boundaryFromValue(
@@ -94,15 +121,117 @@ export function createFullMeshViewport(
   }
 }
 
+export function createFullMeshViewportFromDomain(
+  domain: MeshSharedTimeDomain,
+  source: MeshChartViewportSource = 'initial',
+  sourceChart: MeshRssiChartSource = 'programmatic',
+  revision = 0,
+): MeshChartViewport | null {
+  const fullStart = meshTimestampMillis(domain.full_start_time)
+  const fullEnd = meshTimestampMillis(domain.full_end_time)
+  if (fullStart === null || fullEnd === null || fullStart >= fullEnd) return null
+  return {
+    start_time: domain.full_start_time,
+    end_time: domain.full_end_time,
+    start_percent: 0,
+    end_percent: 100,
+    full_start_time: domain.full_start_time,
+    full_end_time: domain.full_end_time,
+    source,
+    source_chart: sourceChart,
+    revision,
+  }
+}
+
+export function resolveMeshSharedTimeDomain(
+  preferredStart: string | null | undefined,
+  preferredEnd: string | null | undefined,
+  fallbackTimestamps: string[] = [],
+): MeshSharedTimeDomain | null {
+  const start = meshTimestampMillis(preferredStart)
+  const end = meshTimestampMillis(preferredEnd)
+  if (start !== null && end !== null && start < end) {
+    return {
+      full_start_time: String(preferredStart),
+      full_end_time: String(preferredEnd),
+    }
+  }
+  const points = orderedTimestamps(fallbackTimestamps)
+  if (points.length < 2 || points[0].millis >= points.at(-1)!.millis) return null
+  return {
+    full_start_time: points[0].value,
+    full_end_time: points.at(-1)!.value,
+  }
+}
+
+export function meshViewportRangeEquals(
+  left: MeshChartViewport | null | undefined,
+  right: MeshChartViewport | null | undefined,
+): boolean {
+  return Boolean(
+    left
+    && right
+    && left.start_time === right.start_time
+    && left.end_time === right.end_time
+    && left.full_start_time === right.full_start_time
+    && left.full_end_time === right.full_end_time,
+  )
+}
+
+export function acceptMeshSharedViewport(
+  current: MeshChartViewport | null,
+  incoming: MeshChartViewport,
+  domain: MeshSharedTimeDomain,
+  revision: number,
+): MeshChartViewport | null {
+  const normalized = normalizeMeshViewport(incoming, [], incoming.source, {
+    boundaryMode: 'absolute',
+    fullDomain: domain,
+    sourceChart: incoming.source_chart || 'programmatic',
+    revision,
+  })
+  if (!normalized) return current
+  if (meshViewportRangeEquals(current, normalized)) return current
+  return {
+    ...normalized,
+    source_chart: incoming.source_chart || 'programmatic',
+    revision,
+  }
+}
+
 export function normalizeMeshViewport(
   viewport: MeshChartViewport,
   timestamps: string[],
   source: MeshChartViewportSource = viewport.source,
+  options: MeshViewportNormalizationOptions = {},
 ): MeshChartViewport | null {
-  const points = orderedTimestamps(timestamps)
   const requestedStart = meshTimestampMillis(viewport.start_time)
   const requestedEnd = meshTimestampMillis(viewport.end_time)
   if (requestedStart === null || requestedEnd === null || requestedStart >= requestedEnd) return null
+  if (options.boundaryMode === 'absolute') {
+    const domain = options.fullDomain || {
+      full_start_time: viewport.full_start_time,
+      full_end_time: viewport.full_end_time,
+    }
+    const fullStart = meshTimestampMillis(domain.full_start_time)
+    const fullEnd = meshTimestampMillis(domain.full_end_time)
+    if (fullStart === null || fullEnd === null || fullStart >= fullEnd) return null
+    const startMillis = Math.max(requestedStart, fullStart)
+    const endMillis = Math.min(requestedEnd, fullEnd)
+    if (startMillis >= endMillis) return null
+    return {
+      start_time: startMillis === requestedStart ? viewport.start_time : domain.full_start_time,
+      end_time: endMillis === requestedEnd ? viewport.end_time : domain.full_end_time,
+      start_percent: percent(startMillis, fullStart, fullEnd),
+      end_percent: percent(endMillis, fullStart, fullEnd),
+      full_start_time: domain.full_start_time,
+      full_end_time: domain.full_end_time,
+      source,
+      source_chart: options.sourceChart ?? viewport.source_chart,
+      revision: options.revision ?? viewport.revision,
+    }
+  }
+  const points = orderedTimestamps(timestamps)
   if (!points.length) return { ...viewport, source }
 
   const fullStart = points[0].millis
@@ -136,6 +265,47 @@ export function normalizeMeshViewport(
 }
 
 export function viewportFromDataZoom(raw: unknown, timestamps: string[]): MeshChartViewport | null {
+  return viewportFromDataZoomWithOptions(raw, timestamps)
+}
+
+export function viewportFromDataZoomWithOptions(
+  raw: unknown,
+  timestamps: string[],
+  options: MeshViewportNormalizationOptions = {},
+): MeshChartViewport | null {
+  if (options.boundaryMode === 'absolute' && options.fullDomain) {
+    const full = createFullMeshViewportFromDomain(
+      options.fullDomain,
+      'user_zoom',
+      options.sourceChart,
+      options.revision,
+    )
+    if (!full) return null
+    const values = dataZoomValues(raw)
+    const fullStart = meshTimestampMillis(full.full_start_time)!
+    const fullEnd = meshTimestampMillis(full.full_end_time)!
+    const valueFromZoom = (
+      direct: string | number | undefined,
+      percentage: number | undefined,
+      fallback: string,
+    ): string => {
+      if (direct !== undefined) {
+        if (typeof direct === 'string') return direct
+        if (meshTimestampMillis(direct) !== null) return formatMeshViewportTimestamp(direct)
+      }
+      if (percentage !== undefined && Number.isFinite(percentage)) {
+        const bounded = Math.min(100, Math.max(0, percentage))
+        return formatMeshViewportTimestamp(fullStart + (fullEnd - fullStart) * bounded / 100)
+      }
+      return fallback
+    }
+    return normalizeMeshViewport({
+      ...full,
+      start_time: valueFromZoom(values.startValue, values.start, full.start_time),
+      end_time: valueFromZoom(values.endValue, values.end, full.end_time),
+      source: 'user_zoom',
+    }, [], 'user_zoom', options)
+  }
   const points = orderedTimestamps(timestamps)
   if (points.length < 2) return createFullMeshViewport(timestamps, 'user_zoom')
   const values = dataZoomValues(raw)

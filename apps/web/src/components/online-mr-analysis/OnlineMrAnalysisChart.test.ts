@@ -48,8 +48,21 @@ describe('Online MR analysis chart behavior', () => {
     })
     await flushPromises()
 
+    expect(mocks.init).toHaveBeenCalledWith(
+      expect.any(HTMLElement),
+      undefined,
+      expect.objectContaining({ renderer: 'canvas', useDirtyRect: true }),
+    )
     expect(mocks.setOption).toHaveBeenCalled()
-    const option = mocks.setOption.mock.calls.at(-1)?.[0] as { series: Array<{ data: Array<{ value: [string, number | null] }>; markLine?: unknown }> }
+    const option = mocks.setOption.mock.calls.at(-1)?.[0] as {
+      grid: Record<string, unknown>
+      legend: { type: string }
+      yAxis: { name: string }
+      series: Array<{ data: Array<{ value: [string, number | null] }>; markLine?: unknown }>
+    }
+    expect(option.legend.type).toBe('scroll')
+    expect(option.grid).toEqual({ left: 58, right: 24, top: 32, bottom: 72, containLabel: true })
+    expect(option.yAxis.name).toBe('dBm')
     expect(option.series[0].data.map((row) => row.value[1])).toEqual([-60, null])
     expect(option.series[0].markLine).toBeDefined()
 

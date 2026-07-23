@@ -81,7 +81,12 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 表格列偏好使用稳定表 ID，不包含 session、来源、MR 或局点；Electron 只通过白名单 UI preference Bridge 持久化，Renderer 不获得路径或任意文件能力。
 - Rate 图直接读取 `mesh_links.local_rate_raw/peer_rate_raw` 并明确标注原始值，不猜单位。Retry/Error 图由 Python Query Service 使用同 source、Radio、session/peer 的采样顺序计算非负增量；首样本、缺值和计数器回退/重置返回空值，Vue 不重算。切换 RSSI 复用正式 `switch_events.before_rssi/after_rssi` 事件事实，只展示前后散点，不伪装为连续趋势。
 - MR/源文件切换使用防抖、懒加载和 repository 缓存，避免重复解析和重复查询。
-- RSSI 与空口负载使用独立响应和视口状态。`dataZoom` 以真实毫秒时间为主标识；Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
+- RSSI 与空口负载使用独立响应和视口状态。全部 ACTIVE 主链 RSSI 与轨旁信号图由父级维护唯一的完整日志时间域、绝对毫秒 viewport、来源和 revision；完整时间域优先使用会话 `first_sample_time/last_sample_time`，两个图的 `xAxis.min/max` 和 `dataZoom startValue/endValue` 完全相同，不按各自采样点吸附。用户缩放只产生一次父级状态变更，镜像图以静默 `dispatchAction(dataZoom)` 应用相同 revision，不反向回写；重置、建链顺序、链路明细和切换定位统一更新该 viewport。两图还共享绝对 axis pointer 时间；当前时刻没有本图采样时明确显示无有效采样，不跳到另一采样时刻。
+- Online MR 主链图、离线 ACTIVE 主链图和轨旁信号图复用 `apps/web/src/components/charts/multiSeriesTimeChart.ts` 的 Canvas 初始化、图例、网格、坐标轴、dataZoom、toolbox、Tooltip 基础样式和大数据符号策略。ECharts 显式使用 Canvas `useDirtyRect`；普通数据保留系统 DPR，5,000 点以上上限 1.5，20,000 点以上上限 1.0，图片导出仍使用 pixel ratio 2。Electron 不关闭 Chromium 硬件加速；开发模式只记录 `app.getGPUFeatureStatus()` 的 feature 状态，读取失败时继续软件渲染且不阻止启动。
+- 轨旁 payload 到达时只校验一次序列顺序并建立非深度响应式缓存；viewport、位置带、主题和 resize 复用原 series data，dataZoom 不执行完整 `setOption`，不再重复复制或排序全部 AP 序列。5,000 点以上关闭 animation、symbol、emphasis、每点 label、切换 scatter 和大量 markLine；轨旁图接近可视区域时才初始化 ECharts，但数据请求仍提前完成，初始化后立即应用当前共享 viewport。AP/Radio 系列颜色使用规范化 AP MAC + Radio 稳定计算。
+- Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
+- `active-path` 和 `trackside-signal` 的 RSSI 请求始终读取当前 Radio 的完整日志范围；建链顺序、链路明细、切换定位和图表拖动只改变前端共享 viewport，不把该 viewport 作为 `time_from/time_to` 重新裁剪 RSSI API。锁定范围后的同期空口负载查询仍保留既有 `time_from/time_to` 语义。
+- 固定规模转换回归由 `tracksideSeriesPerformance.test.ts` 覆盖 140 个序列、14,581 点和 6,264 个 run；真实 Chromium Canvas 的 option 构建、首次 `setOption`、首次可交互、dataZoom、resize、主题更新、long task、heap 和 GPU feature status 可在 `apps/desktop_electron` 运行 `pnpm run profile:mesh-chart` 复验。该 smoke 使用隐藏窗口和脱敏合成序列，不访问现场日志或设备。
 - 锁定 RSSI 后进入空口负载，必须使用相同来源、Radio、ACTIVE/Peer 模式、锚点、全部经过标记和 `time_from/time_to` 重新查询，不得只筛选前端降采样数组。响应分别报告 requested、effective、首末实际采样、范围内总点数和返回点数；无 Busy 样本时不扩大范围或伪造 `0`。
 - 表格分页/按需读取，详情导出在独立进程中流式/分批查询完整数据；屏幕行数上限不能被误当成导出上限。
 
