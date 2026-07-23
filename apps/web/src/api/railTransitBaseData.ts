@@ -18,6 +18,7 @@ import type {
   RailTransitSummary,
   Relation,
   Section,
+  SectionGenerationPreview,
   Station,
   StationSourcePreview,
   StationTemplatePreview,
@@ -65,13 +66,30 @@ export function previewStationTemplate(file: File): Promise<StationTemplatePrevi
 
 export const stationTemplateDownloadRequest = (): BackendDownloadRequest => ({
   apiPath: `${root}/station-template`,
-  suggestedName: '线路与站点基础资料模板.xlsx',
+  suggestedName: '线路站点与区间基础资料模板.xlsx',
 })
 
 export const stationTemplateExportDownloadRequest = (): BackendDownloadRequest => ({
   apiPath: `${root}/station-template-export`,
-  suggestedName: '线路与站点基础资料.xlsx',
+  suggestedName: '线路站点与区间基础资料.xlsx',
 })
+
+export function previewSectionGeneration(payload: {
+  site_id: string
+  base_revision: string
+  line_metadata: {
+    main_path_code: string
+    increasing_direction_name: string
+    decreasing_direction_name: string
+  }
+  stations: Station[]
+  current_sections: Section[]
+}): Promise<SectionGenerationPreview> {
+  return apiRequest(`${root}/section-generation-preview`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
 
 export const getRailTransitImportPolicies = (): Promise<ImportPolicyStatus> => apiRequest(`${root}/import-policies`)
 

@@ -150,7 +150,7 @@ class RailTransitBaseDataRepository:
             connection.execute("BEGIN IMMEDIATE")
             if self.base_data_revision(site_id) != expected_revision:
                 raise RailTransitBaseDataRevisionConflict("base data revision changed")
-            for change in changes:
+            for change in sorted(changes, key=self._change_apply_order):
                 entity_type = str(change.get("entity_type") or "")
                 action = str(change.get("action") or "")
                 values = dict(change.get("values") or {})
@@ -289,10 +289,12 @@ class RailTransitBaseDataRepository:
         if action == "update" and old_name != name:
             now = self._now()
             connection.execute(
-                "DELETE FROM ap_extension_points WHERE belong_type = '__base_station__' AND station_name = ?",
-                (old_name,),
+                """
+                UPDATE ap_extension_points SET station_name = ?, updated_at = ?
+                WHERE station_name = ? AND belong_type != '__base_station__'
+                """,
+                (name, now, old_name),
             )
-            connection.execute("UPDATE ap_extension_points SET station_name = ?, updated_at = ? WHERE station_name = ?", (name, now, old_name))
             connection.execute("UPDATE ap_extension_points SET section_start_station = ?, updated_at = ? WHERE section_start_station = ?", (name, now, old_name))
             connection.execute("UPDATE ap_extension_points SET section_end_station = ?, updated_at = ? WHERE section_end_station = ?", (name, now, old_name))
             connection.execute("UPDATE ac_trackside_ap_plan SET station_name = ?, updated_at = ? WHERE station_name = ?", (name, now, old_name))
@@ -324,17 +326,10 @@ class RailTransitBaseDataRepository:
         if action == "update":
             connection.execute(
                 """
-                DELETE FROM ap_extension_points
-                WHERE belong_type = '__base_section__' AND section_name = ?
-                  AND section_start_station = ? AND section_end_station = ? AND line_side = ?
-                """,
-                (old_name, old_start, old_end, old_side),
-            )
-            connection.execute(
-                """
                 UPDATE ap_extension_points
                 SET section_name = ?, section_start_station = ?, section_end_station = ?, line_side = ?, updated_at = ?
                 WHERE section_name = ? AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+                  AND belong_type != '__base_section__'
                 """,
                 (
                     str(values.get("name") or "").strip(),
@@ -360,14 +355,11 @@ class RailTransitBaseDataRepository:
     ) -> None:
         marker = f"__base_{kind}__"
         name_field = "station_name" if kind == "station" else "section_name"
-        connection.execute(
-            f"DELETE FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ?",
-            (marker, old_name),
-        )
         now = self._now()
         metadata = {
             key: values.get(key)
             for key in (
+                "node_uid",
                 "code",
                 "sort_order",
                 "remark",
@@ -378,15 +370,32 @@ class RailTransitBaseDataRepository:
                 "participates_in_direction",
                 "structure_type",
                 "platform_layout",
+                "center_mileage_text",
+                "center_mileage_m",
                 "is_line_terminal",
                 "is_service_terminal",
                 "turnback_capable",
                 "turnback_type",
+                "track_facilities",
                 "turnback_direction",
+                "terminal_extension_enabled",
+                "terminal_endpoint_label",
+                "terminal_extension_distance_m",
+                "terminal_endpoint_mileage_text",
                 "enabled",
                 "source_kind",
+                "section_code",
+                "section_kind",
+                "direction_role",
+                "line_direction",
+                "start_node_type",
+                "start_node_uid",
+                "end_node_type",
+                "end_node_uid",
+                "auto_generated",
+                "generation_key",
             )
-            if values.get(key) not in (None, "")
+            if key in values
         }
         payload = {
             "site_id": site_id,
@@ -404,10 +413,23 @@ class RailTransitBaseDataRepository:
             "created_at": now,
             "updated_at": now,
         }
-        columns = list(payload)
+        existing = connection.execute(
+            f"SELECT id FROM ap_extension_points WHERE belong_type = ? AND {name_field} = ? ORDER BY id LIMIT 1",
+            (marker, old_name),
+        ).fetchone()
+        if existing is None:
+            columns = list(payload)
+            connection.execute(
+                f"INSERT INTO ap_extension_points ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [payload[column] for column in columns],
+            )
+            return
+        update_payload = dict(payload)
+        update_payload.pop("created_at", None)
+        assignments = ", ".join(f'"{field}" = ?' for field in update_payload)
         connection.execute(
-            f"INSERT INTO ap_extension_points ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
-            [payload[column] for column in columns],
+            f"UPDATE ap_extension_points SET {assignments} WHERE id = ?",
+            [*update_payload.values(), int(existing[0])],
         )
 
     def _apply_ap_change(
@@ -535,7 +557,7 @@ class RailTransitBaseDataRepository:
         row = connection.execute(
             """
             SELECT COUNT(*) FROM ap_extension_points
-            WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+            WHERE COALESCE(belong_type, '') != '__base_station__'
               AND (station_name = ? OR section_start_station = ? OR section_end_station = ?)
             """,
             (name, name, name),
@@ -554,11 +576,27 @@ class RailTransitBaseDataRepository:
             """
             SELECT COUNT(*) FROM ap_extension_points
             WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
-              AND section_name = ? AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+              AND section_name = ?
             """,
-            (name, start, end, line_side),
+            (name,),
         ).fetchone()
         return int(row[0] if row else 0)
+
+    @staticmethod
+    def _change_apply_order(change: Mapping[str, Any]) -> int:
+        entity_type = str(change.get("entity_type") or "")
+        action = str(change.get("action") or "")
+        if entity_type == "station" and action != "delete":
+            return 10
+        if entity_type == "section" and action != "delete":
+            return 20
+        if entity_type == "trackside_ap":
+            return 30
+        if entity_type == "section" and action == "delete":
+            return 40
+        if entity_type == "station" and action == "delete":
+            return 50
+        return 25
 
     @staticmethod
     def _connection_hash(connection: sqlite3.Connection) -> str:

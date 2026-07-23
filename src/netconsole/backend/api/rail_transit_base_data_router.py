@@ -31,6 +31,8 @@ from netconsole.models.api.rail_transit_base_data import (
     ImportRollbackResultDTO,
     RailTransitRelationPageDTO,
     RailTransitSummaryDTO,
+    SectionGenerationPreviewDTO,
+    SectionGenerationPreviewRequestDTO,
     SectionPageDTO,
     StationPageDTO,
     StationSourcePreviewDTO,
@@ -51,6 +53,7 @@ from netconsole.services.rail_transit.import_preview_service import (
 )
 from netconsole.services.rail_transit.station_source_discovery_service import StationSourceDiscoveryService
 from netconsole.services.rail_transit.station_template_service import StationTemplateService
+from netconsole.services.rail_transit.section_generation_service import SectionGenerationError
 
 
 router = APIRouter(prefix="/rail-transit/base-data", tags=["rail-transit-base-data"])
@@ -162,7 +165,7 @@ def station_template(
     site_id: str = Query(default="", max_length=100),
 ):
     content = _query(lambda: _station_template_service(request).build_blank_template(_site_id(request, site_id)))
-    return _xlsx_response(content, "线路与站点基础资料模板.xlsx")
+    return _xlsx_response(content, "线路站点与区间基础资料模板.xlsx")
 
 
 @router.post("/station-template-preview", response_model=StationTemplatePreviewDTO)
@@ -190,7 +193,7 @@ def station_template_export(
     site_id: str = Query(default="", max_length=100),
 ):
     content = _query(lambda: _station_template_service(request).export_current(_site_id(request, site_id)))
-    return _xlsx_response(content, "线路与站点基础资料.xlsx")
+    return _xlsx_response(content, "线路站点与区间基础资料.xlsx")
 
 
 @router.get("/sections", response_model=SectionPageDTO)
@@ -204,6 +207,32 @@ def sections(
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> SectionPageDTO:
     return _query(lambda: _service(request).list_sections(_site_id(request, site_id), station=station, query=query, page=page, page_size=page_size, sort_order=sort_order))
+
+
+@router.post(
+    "/section-generation-preview",
+    response_model=SectionGenerationPreviewDTO,
+    summary="根据当前站点草稿预览双向区间",
+)
+def section_generation_preview(
+    request: Request,
+    payload: SectionGenerationPreviewRequestDTO,
+) -> SectionGenerationPreviewDTO:
+    try:
+        site_id = _site_id(request, payload.site_id)
+        return _application_service(request).preview_section_generation(
+            payload.model_copy(update={"site_id": site_id})
+        )
+    except SectionGenerationError as exc:
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if exc.code == "BASE_DATA_REVISION_CONFLICT"
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @router.get("/aps", response_model=TracksideApPageDTO)

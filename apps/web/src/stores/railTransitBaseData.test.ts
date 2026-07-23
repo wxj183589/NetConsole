@@ -18,6 +18,7 @@ import {
   listTrains,
   listVehicleMrs,
   previewRailTransitImport,
+  previewSectionGeneration,
   previewStationTemplate,
   rollbackRailTransitImport,
   saveRailTransitBaseDataChanges,
@@ -40,6 +41,7 @@ vi.mock('../api/railTransitBaseData', () => ({
   listTrains: vi.fn(),
   listVehicleMrs: vi.fn(),
   previewRailTransitImport: vi.fn(),
+  previewSectionGeneration: vi.fn(),
   previewStationTemplate: vi.fn(),
   rollbackRailTransitImport: vi.fn(),
   saveRailTransitBaseDataChanges: vi.fn(),
@@ -69,6 +71,7 @@ describe('Rail Transit base data polling store', () => {
       ...emptyPage, issue_total: 0, blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
     })
     vi.mocked(previewRailTransitImport).mockReset()
+    vi.mocked(previewSectionGeneration).mockReset()
     vi.mocked(getStationSourcePreview).mockReset().mockResolvedValue({
       site_id: 'demo',
       source_group_name: '车站',
@@ -90,6 +93,8 @@ describe('Rail Transit base data polling store', () => {
       valid: true,
       line_metadata: {},
       rows: [],
+      section_rows: [],
+      section_sheet_present: true,
       create_count: 0,
       update_count: 0,
       unchanged_count: 0,
@@ -211,6 +216,7 @@ describe('Rail Transit base data polling store', () => {
         matched_station_id: '',
         proposed_station: {
           id: 'new:source:wuxiang',
+          node_uid: 'node-wuxiang',
           name: '五乡',
           code: '32',
           line_name: '',
@@ -227,11 +233,18 @@ describe('Rail Transit base data polling store', () => {
           participates_in_direction: true,
           structure_type: 'unknown',
           platform_layout: 'unknown',
+          center_mileage_text: '',
+          center_mileage_m: null,
           is_line_terminal: false,
           is_service_terminal: false,
           turnback_capable: false,
           turnback_type: 'none',
+          track_facilities: [],
           turnback_direction: 'none',
+          terminal_extension_enabled: false,
+          terminal_endpoint_label: '端点',
+          terminal_extension_distance_m: null,
+          terminal_endpoint_mileage_text: '',
           enabled: true,
           source_kind: 'device_station_field',
           source_device_count: 2,
@@ -260,6 +273,8 @@ describe('Rail Transit base data polling store', () => {
         valid: true,
         issues: [],
       }],
+      section_rows: [],
+      section_sheet_present: true,
       create_count: 1,
       update_count: 0,
       unchanged_count: 0,
@@ -274,6 +289,45 @@ describe('Rail Transit base data polling store', () => {
 
     expect(store.stationSourcePreview?.candidates[0].name).toBe('五乡')
     expect(store.stationTemplatePreview?.rows[0].name).toBe('宝幢')
+    expect(saveRailTransitBaseDataChanges).not.toHaveBeenCalled()
+  })
+
+  it('forwards the current draft to section generation preview without saving', async () => {
+    vi.mocked(previewSectionGeneration).mockResolvedValue({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      generated_sections: [],
+      create_count: 0,
+      update_count: 0,
+      unchanged_count: 0,
+      conflict_count: 0,
+      stale_count: 0,
+      blocking_count: 0,
+      issues: [],
+    })
+    const store = useRailTransitBaseDataStore()
+
+    await expect(store.previewSectionsFromDraft(
+      {
+        main_path_code: 'MAIN',
+        increasing_direction_name: '上行',
+        decreasing_direction_name: '下行',
+      },
+      [],
+      [],
+    )).resolves.toMatchObject({ site_id: 'demo', generated_sections: [] })
+
+    expect(previewSectionGeneration).toHaveBeenCalledWith({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      line_metadata: {
+        main_path_code: 'MAIN',
+        increasing_direction_name: '上行',
+        decreasing_direction_name: '下行',
+      },
+      stations: [],
+      current_sections: [],
+    })
     expect(saveRailTransitBaseDataChanges).not.toHaveBeenCalled()
   })
 })

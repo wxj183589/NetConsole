@@ -16,9 +16,24 @@ StationStructureType = Literal["underground", "elevated", "at_grade", "cutting",
 StationPlatformLayout = Literal["island", "side", "mixed", "stacked_island", "stacked_side", "separated", "unknown"]
 StationTurnbackType = Literal["none", "crossover", "pocket_track", "tail_track", "loop", "depot_connection", "other", "unknown"]
 StationTurnbackDirection = Literal["none", "both", "increasing_to_decreasing", "decreasing_to_increasing", "unknown"]
+StationTrackFacility = Literal[
+    "turnback_track",
+    "crossover",
+    "storage_track",
+    "depot_connection",
+    "tail_track",
+    "loop",
+    "siding",
+    "other",
+]
 StationSourceKind = Literal["device_station_field", "template", "manual", "legacy_ap_derived"]
 StationSourceSyncStatus = Literal["matched", "stale", "conflict", "manual", "legacy", "unavailable"]
 StationSourceMatchStatus = Literal["create", "matched", "conflict", "manual_review"]
+SectionKind = Literal["between_stations", "terminal_extension", "depot_connection", "manual", "legacy"]
+SectionDirectionRole = Literal["increasing", "decreasing", "none", "unknown"]
+SectionNodeType = Literal["station", "terminal_endpoint", "legacy", "unknown"]
+SectionSourceKind = Literal["generated", "manual", "template", "legacy_ap_derived"]
+SectionGenerationResult = Literal["CREATE", "UPDATE", "UNCHANGED", "CONFLICT", "STALE"]
 MrPositionCode = Literal["CT", "CW", "unknown"]
 MrPhysicalEnd = Literal["car_1_end", "car_6_end", "unknown"]
 IncreasingDirectionLeadingEnd = MrPhysicalEnd
@@ -169,6 +184,7 @@ class RailTransitSummaryDTO(ApiModel):
 
 class StationDTO(ApiModel):
     id: str
+    node_uid: str = ""
     name: str
     code: str = ""
     line_name: str = ""
@@ -185,11 +201,18 @@ class StationDTO(ApiModel):
     participates_in_direction: bool = True
     structure_type: StationStructureType = "unknown"
     platform_layout: StationPlatformLayout = "unknown"
+    center_mileage_text: str = ""
+    center_mileage_m: float | None = None
     is_line_terminal: bool = False
     is_service_terminal: bool = False
     turnback_capable: bool = False
     turnback_type: StationTurnbackType = "none"
+    track_facilities: list[StationTrackFacility] = Field(default_factory=list)
     turnback_direction: StationTurnbackDirection = "none"
+    terminal_extension_enabled: bool = False
+    terminal_endpoint_label: str = "端点"
+    terminal_extension_distance_m: float | None = None
+    terminal_endpoint_mileage_text: str = ""
     enabled: bool = True
     source_kind: StationSourceKind = "legacy_ap_derived"
     source_device_count: int = 0
@@ -257,10 +280,30 @@ class StationTemplatePreviewRowDTO(ApiModel):
     issues: list[StationSourceIssueDTO] = Field(default_factory=list)
 
 
+class StationTemplateSectionPreviewRowDTO(ApiModel):
+    row_number: int
+    section_code: str = ""
+    name: str = ""
+    section_kind: SectionKind = "manual"
+    path_code: str = "MAIN"
+    direction_role: SectionDirectionRole = "none"
+    line_direction: str = ""
+    start_node_type: SectionNodeType = "unknown"
+    start_station: str = ""
+    end_node_type: SectionNodeType = "unknown"
+    end_station: str = ""
+    proposed_section: SectionDTO | None = None
+    action: Literal["create", "update", "unchanged", "conflict"] = "create"
+    valid: bool = True
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
 class StationTemplatePreviewDTO(ApiModel):
     valid: bool = True
     line_metadata: dict[str, Any] = Field(default_factory=dict)
     rows: list[StationTemplatePreviewRowDTO] = Field(default_factory=list)
+    section_rows: list[StationTemplateSectionPreviewRowDTO] = Field(default_factory=list)
+    section_sheet_present: bool = True
     create_count: int = 0
     update_count: int = 0
     unchanged_count: int = 0
@@ -272,13 +315,63 @@ class StationTemplatePreviewDTO(ApiModel):
 class SectionDTO(ApiModel):
     id: str
     name: str
+    section_code: str = ""
+    section_kind: SectionKind = "legacy"
+    path_code: str = "MAIN"
+    direction_role: SectionDirectionRole = "unknown"
+    line_direction: str = ""
+    start_node_type: SectionNodeType = "legacy"
+    start_node_uid: str = ""
     start_station: str = ""
+    end_node_type: SectionNodeType = "legacy"
+    end_node_uid: str = ""
     end_station: str = ""
     line_side: str = ""
+    auto_generated: bool = False
+    generation_key: str = ""
+    enabled: bool = True
+    source_kind: SectionSourceKind = "legacy_ap_derived"
     ap_count: int = 0
     mileage_min: float | None = None
     mileage_max: float | None = None
     remark: str = ""
+
+
+class SectionGenerationLineMetadataDTO(ApiModel):
+    main_path_code: str = "MAIN"
+    increasing_direction_name: str = "上行"
+    decreasing_direction_name: str = "下行"
+
+
+class SectionGenerationPreviewRequestDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    line_metadata: SectionGenerationLineMetadataDTO
+    stations: list[StationDTO] = Field(default_factory=list, max_length=2000)
+    current_sections: list[SectionDTO] = Field(default_factory=list, max_length=4000)
+
+
+class SectionGenerationPreviewItemDTO(ApiModel):
+    item_id: str
+    result: SectionGenerationResult
+    proposed_section: SectionDTO | None = None
+    current_section: SectionDTO | None = None
+    selected_by_default: bool = False
+    selectable: bool = True
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
+
+
+class SectionGenerationPreviewDTO(ApiModel):
+    site_id: str
+    base_revision: str
+    generated_sections: list[SectionGenerationPreviewItemDTO] = Field(default_factory=list)
+    create_count: int = 0
+    update_count: int = 0
+    unchanged_count: int = 0
+    conflict_count: int = 0
+    stale_count: int = 0
+    blocking_count: int = 0
+    issues: list[StationSourceIssueDTO] = Field(default_factory=list)
 
 
 class MeshRadioDTO(ApiModel):

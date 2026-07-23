@@ -21,6 +21,7 @@ import {
   listManagedFiles,
   startFileDownload,
 } from '../../web/src/api/fileManagement'
+import { stationTemplateDownloadRequest } from '../../web/src/api/railTransitBaseData'
 import {
   initializePlatformRuntime,
   resetPlatformRuntimeForTests,
@@ -113,6 +114,28 @@ describe('real Python backend integration', () => {
         completed.result!.name,
       ))).resolves.toMatchObject({ status: 'saved', capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/) })
       await expect(readFile(savedPath, 'utf8')).resolves.toBe('dynamic-port-download')
+
+      const templatePath = resolve(dataRoot, '线路站点与区间基础资料模板.xlsx')
+      const templateDownloadManager = new BackendDownloadManager({
+        backend: manager,
+        dialog: { showSaveDialog: vi.fn(async () => ({ canceled: false, filePath: templatePath })) },
+        window: {},
+        pathRegistry: new GrantedPathRegistry(),
+      })
+      await expect(templateDownloadManager.download(stationTemplateDownloadRequest())).resolves.toMatchObject({
+        status: 'saved',
+        capabilityId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      })
+      const sheetNames = JSON.parse(execFileSync(
+        findProjectPython(),
+        [
+          '-c',
+          'import json,sys; from openpyxl import load_workbook; wb=load_workbook(sys.argv[1], read_only=True); print(json.dumps(wb.sheetnames, ensure_ascii=True))',
+          templatePath,
+        ],
+        { encoding: 'utf8' },
+      )) as string[]
+      expect(sheetNames).toEqual(['01_线路参数', '02_线路节点', '03_区间配置', '字段说明'])
       expect(new URL(runtime.baseUrl).port).not.toBe('8000')
       expect(logs.join('\n')).not.toContain(runtime.apiToken)
     } finally {

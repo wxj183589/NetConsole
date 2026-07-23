@@ -6,6 +6,7 @@ from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from uuid import NAMESPACE_URL, uuid5
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -22,6 +23,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     STATION_SOURCE_FIELD,
     normalize_station_source_value,
     parse_station_source_value,
+    station_structure_defaults,
 )
 
 
@@ -170,6 +172,7 @@ class StationSourceDiscoveryService:
                 order_keys[(parsed.path_code.casefold(), parsed.sort_order)].append(key)
 
         existing = self._list_existing_stations(site_id)
+        existing_by_id = {station.id: station for station in existing}
         existing_source_key = self._map_existing(existing, "source_station_key")
         existing_source_value = self._map_existing_by_source_value(existing)
         existing_code_name = self._map_existing_code_name(existing)
@@ -214,8 +217,19 @@ class StationSourceDiscoveryService:
             if any(issue.blocking for issue in row_issues):
                 match_status = "conflict"
             last_seen = max(str(row.get("updated_at") or "") for row in rows)
+            structure_type, platform_layout = station_structure_defaults(
+                parsed.node_type,
+                parsed.path_code,
+                main_path_code,
+            )
+            matched_station = existing_by_id.get(matched_station_id)
             proposed = StationDTO(
                 id=matched_station_id or f"new:{self._candidate_digest(key)}",
+                node_uid=(
+                    matched_station.node_uid
+                    if matched_station
+                    else str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station-source:{key}"))
+                ),
                 name=parsed.name,
                 code=parsed.code,
                 line_name="",
@@ -226,6 +240,8 @@ class StationSourceDiscoveryService:
                 node_type=parsed.node_type,  # type: ignore[arg-type]
                 path_code=parsed.path_code,
                 participates_in_direction=parsed.participates_in_direction,
+                structure_type=structure_type,  # type: ignore[arg-type]
+                platform_layout=platform_layout,  # type: ignore[arg-type]
                 source_kind="device_station_field",
                 source_device_count=len(rows),
                 source_sync_status="conflict" if match_status == "conflict" else "matched",

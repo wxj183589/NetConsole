@@ -132,6 +132,7 @@ export interface RailTransitSummary {
 
 export interface Station {
   id: string
+  node_uid: string
   name: string
   code: string
   line_name: string
@@ -148,11 +149,18 @@ export interface Station {
   participates_in_direction: boolean
   structure_type: StationStructureType
   platform_layout: StationPlatformLayout
+  center_mileage_text: string
+  center_mileage_m: number | null
   is_line_terminal: boolean
   is_service_terminal: boolean
   turnback_capable: boolean
   turnback_type: StationTurnbackType
+  track_facilities: StationTrackFacility[]
   turnback_direction: StationTurnbackDirection
+  terminal_extension_enabled: boolean
+  terminal_endpoint_label: string
+  terminal_extension_distance_m: number | null
+  terminal_endpoint_mileage_text: string
   enabled: boolean
   source_kind: StationSourceKind
   source_device_count: number
@@ -164,6 +172,7 @@ export type StationNodeType = 'station' | 'parking_lot' | 'depot' | 'connection_
 export type StationStructureType = 'underground' | 'elevated' | 'at_grade' | 'cutting' | 'mixed' | 'unknown'
 export type StationPlatformLayout = 'island' | 'side' | 'mixed' | 'stacked_island' | 'stacked_side' | 'separated' | 'unknown'
 export type StationTurnbackType = 'none' | 'crossover' | 'pocket_track' | 'tail_track' | 'loop' | 'depot_connection' | 'other' | 'unknown'
+export type StationTrackFacility = 'turnback_track' | 'crossover' | 'storage_track' | 'depot_connection' | 'tail_track' | 'loop' | 'siding' | 'other'
 export type StationTurnbackDirection = 'none' | 'both' | 'increasing_to_decreasing' | 'decreasing_to_increasing' | 'unknown'
 export type StationSourceKind = 'device_station_field' | 'template' | 'manual' | 'legacy_ap_derived'
 export type StationSourceSyncStatus = 'matched' | 'stale' | 'conflict' | 'manual' | 'legacy' | 'unavailable'
@@ -232,6 +241,8 @@ export interface StationTemplatePreview {
   valid: boolean
   line_metadata: Record<string, unknown>
   rows: StationTemplatePreviewRow[]
+  section_rows: StationTemplateSectionPreviewRow[]
+  section_sheet_present: boolean
   create_count: number
   update_count: number
   unchanged_count: number
@@ -240,16 +251,76 @@ export interface StationTemplatePreview {
   issues: StationSourceIssue[]
 }
 
+export interface StationTemplateSectionPreviewRow {
+  row_number: number
+  section_code: string
+  name: string
+  section_kind: SectionKind
+  path_code: string
+  direction_role: SectionDirectionRole
+  line_direction: string
+  start_node_type: SectionNodeType
+  start_station: string
+  end_node_type: SectionNodeType
+  end_station: string
+  proposed_section: Section | null
+  action: 'create' | 'update' | 'unchanged' | 'conflict'
+  valid: boolean
+  issues: StationSourceIssue[]
+}
+
 export interface Section {
   id: string
   name: string
+  section_code: string
+  section_kind: SectionKind
+  path_code: string
+  direction_role: SectionDirectionRole
+  line_direction: string
+  start_node_type: SectionNodeType
+  start_node_uid: string
   start_station: string
+  end_node_type: SectionNodeType
+  end_node_uid: string
   end_station: string
   line_side: string
+  auto_generated: boolean
+  generation_key: string
+  enabled: boolean
+  source_kind: SectionSourceKind
   ap_count: number
   mileage_min: number | null
   mileage_max: number | null
   remark: string
+}
+
+export type SectionKind = 'between_stations' | 'terminal_extension' | 'depot_connection' | 'manual' | 'legacy'
+export type SectionDirectionRole = 'increasing' | 'decreasing' | 'none' | 'unknown'
+export type SectionNodeType = 'station' | 'terminal_endpoint' | 'legacy' | 'unknown'
+export type SectionSourceKind = 'generated' | 'manual' | 'template' | 'legacy_ap_derived'
+export type SectionGenerationResult = 'CREATE' | 'UPDATE' | 'UNCHANGED' | 'CONFLICT' | 'STALE'
+
+export interface SectionGenerationPreviewItem {
+  item_id: string
+  result: SectionGenerationResult
+  proposed_section: Section | null
+  current_section: Section | null
+  selected_by_default: boolean
+  selectable: boolean
+  issues: StationSourceIssue[]
+}
+
+export interface SectionGenerationPreview {
+  site_id: string
+  base_revision: string
+  generated_sections: SectionGenerationPreviewItem[]
+  create_count: number
+  update_count: number
+  unchanged_count: number
+  conflict_count: number
+  stale_count: number
+  blocking_count: number
+  issues: StationSourceIssue[]
 }
 
 export interface MeshRadio {

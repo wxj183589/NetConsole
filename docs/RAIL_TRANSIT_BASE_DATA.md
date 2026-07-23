@@ -39,7 +39,9 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - 站点查询优先读取正式 `__base_station__` 资料，再用 AP 点位的 `station_name`、区间起终点作为兼容补充；设备管理来源只用于预览、来源设备数和 `matched/stale/conflict/manual/legacy` 状态。
 - 区间由 `section_name + 起点 + 终点 + 线别` 派生；站点为空但区间有效是合法资料。
 - 线路级 metadata 增加主线路径编码、站序递增/递减方向名称、`increasing_direction_leading_end`、站点来源分组和固定来源字段。`increasing_direction_leading_end` 仅允许 `car_1_end / car_6_end / unknown`，默认 `unknown`；方向判断基于正式节点的 `sort_order`，不直接使用节点编码。
-- 站点模型包含来源站点值、来源键、节点类型、路径、方向参与、结构、站台形式、端点、折返、启用和来源类型。旧 AP 派生站点保留为 `legacy_ap_derived`，不会启动时自动转换。
+- 站点模型包含稳定 `node_uid`、来源站点值/来源键、节点类型、路径、方向参与、结构、站台形式、中心里程、终点属性、轨道设施、端点延伸、启用和来源类型。`track_facilities` 是允许多选的正式字段，支持折返线、渡线、存车线、出入段线、站后折返线、环形折返、其他侧线和其他；`turnback_capable` 仍表示实际运营折返能力，不能由任意设施自动推断。旧 `turnback_type` 继续兼容读取和导出，其中 `pocket_track` 安全映射为折返线与存车线。旧 AP 派生站点保留为 `legacy_ap_derived`，不会启动时自动转换。
+- MAIN 路径的新普通车站在手工新增、设备来源预览和模板空单元格场景默认 `underground / island`；停车场、车辆段、接轨点和其他路径默认 `unknown / unknown`。已有高架、地面、侧式等明确值不会被覆盖；设备来源再次应用到草稿时，只允许补齐 MAIN 普通站仍为 `unknown` 的字段，不在页面加载或应用启动时静默写库。
+- `center_mileage_text` 保留业务原文，`center_mileage_m` 保存安全解析结果；支持 `ZDK12+345`、`YDK12+345`、`K12+345`、`12+345` 和纯米数。本字段用于后续站点定位、区间设计与方向分析，本阶段不作为 MR 方向判断硬条件，也不冒充 AP 实际覆盖里程。
 - `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
 - AP 正式名称与 AP 点位编号分字段保留。正式名称为空时页面可显示点位编号，但不得把点位编号写回为正式名称。
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
@@ -54,9 +56,19 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 
 默认解析 `^\d+[-－—_].+` 形式的 station 值，保留节点编码前导零并把数字转为普通车站主线顺序；没有数字前缀时不丢弃候选，只提示需要人工确认顺序。以 `停车场`、`车辆段` 或非普通站名的 `车场` 结尾时识别为特殊节点，默认 `path_code=UNASSIGNED`、`sort_order=null`、`participates_in_direction=false`，不会因为编码较大被排入主线。
 
-来源预览只给出候选、匹配和冲突，不提供直接写库接口。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构、站台、顺序、路径、端点、折返、启用和备注等人工字段不会被来源同步覆盖。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
+来源预览只给出候选、匹配和冲突，不提供直接写库接口。前端“从设备管理生成”和“导入模板”都只能应用到当前解锁草稿，最后仍通过全局 `validate` 与 `changes` 保存，继续保留 `base_revision`、明确确认、事务回滚和保存失败保留草稿。来源确认默认只补充 `source_station_value/source_station_key/source_kind` 以及响应中的设备数量状态；结构和站台仅在 MAIN 普通站仍为 `unknown` 时补齐默认值，顺序、路径、端点、轨道设施、启用、备注和已有明确结构/站台等人工字段不会被来源同步覆盖。设备管理中来源后来消失时只把正式站点标为 `stale`，不删除站点，也不修改 `devices` 或 `device_groups`。
 
-站点模板为 XLSX，包含 `01_线路参数`、`02_线路节点` 和 `字段说明` 三个工作表。线路参数包含线路名称、项目类型、网络类型、主线路径编码、站序递增/递减方向、设备来源分组、固定来源字段 `station` 和备注；线路节点包含来源站点值、节点编码/名称、节点类型、路径、主线顺序、方向参与、结构、站台、端点、折返、启用和备注。导入预览会映射中文枚举和 `是/否、true/false、1/0` 布尔值，模板文件路径和原文件内容不写入正式数据库。
+站点模板为 XLSX，包含 `01_线路参数`、`02_线路节点`、`03_区间配置` 和 `字段说明` 四个工作表。线路参数包含线路名称、项目类型、网络类型、主线路径编码、站序递增/递减方向、设备来源分组、固定来源字段 `station` 和备注；线路节点包含中心里程、多轨道设施与端点延伸字段；区间配置包含稳定生成标识、正式起终节点和只读 AP 数量/里程范围。旧三工作表模板仍可导入，缺少区间页时只提示“模板未包含区间配置”，不删除现有区间。导入预览会映射中文枚举、设施分隔符和 `是/否、true/false、1/0` 布尔值，模板文件路径和原文件内容不写入正式数据库。
+
+桌面下载通过受控 `downloadBackendResource` 白名单、当前 Electron Session 和原子 `.part` 文件保存；取消保存不显示成功，API、IPC 或文件系统失败返回安全错误。浏览器模式继续使用原生下载。模板文件名为 `线路站点与区间基础资料模板.xlsx`，正式导出文件名为 `线路站点与区间基础资料.xlsx`；导出始终读取已保存版本，页面有未保存草稿时明确提示其不包含在导出中。
+
+## 区间生成与统计
+
+- `POST /api/rail-transit/base-data/section-generation-preview` 接收当前线路参数、站点草稿和区间草稿，只计算预览，不读取一轮前的站点顺序，也不写数据库。前端只选择结果并应用到 `editingDraft.sections`，最终仍由全局保存统一提交。
+- 每条路径按启用、参与方向判断、普通车站和非空顺序筛选，相邻站生成递增/递减两个区间。区间名称始终使用低序站到高序站的物理站对，因此下行名称仍为“低序站-高序站-下行”，但起点和终点按实际方向反转。
+- 自动区间以 `path_code + node_uid + direction_role` 形成稳定 `generation_key`。站点改名只更新显示名称，不改变身份。只更新 `auto_generated=true` 且生成标识匹配的区间；人工区间不覆盖，旧自动区间只标记 `STALE` 并默认保留，人工备注继续保留。
+- MAIN 低序和高序线路端点分别使用 `endpoint:MAIN:low` 与 `endpoint:MAIN:high`，各生成两个方向的端点延伸区间。端点是正式端点节点，不伪装成普通车站；用户可在预览中取消任一方向。
+- 区间 `ap_count`、`mileage_min` 和 `mileage_max` 由轨旁 AP 正式归属实时聚合。无 AP 时数量为 `0`，无有效 AP 里程时范围为 `--`；模板中的 AP 数量和里程范围只展示，导入时忽略，站点中心里程不会替代 AP 实际范围。
 
 ## 正式资料、导入来源与运行态
 
@@ -123,6 +135,7 @@ POST /api/rail-transit/base-data/changes
 ```text
 POST /api/rail-transit/base-data/import-preview
 POST /api/rail-transit/base-data/station-template-preview
+POST /api/rail-transit/base-data/section-generation-preview
 ```
 
 受控导入与只读审计接口：
@@ -198,7 +211,7 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 ## 当前限制
 
 - 真实局点维护只允许正常持久化 Electron 受管会话；站点/区间存在 AP 引用时不能删除，车载 MR 存在 Online MR 历史时不能直接删除；
-- 本阶段不实现区间拓扑自动生成、停车场/车辆段接轨拓扑、折返事件识别、MR 行驶方向识别、行程区段评分或启动时自动同步站点来源；`mr_end_role_service.py` 已提供运行端位语义与计算规则，但尚未接入 MESH 行程分析、页面或报告；
+- 本阶段不自动生成停车场/车辆段接轨拓扑，不实现折返事件识别、MR 行驶方向识别、行程区段评分或启动时自动同步站点来源；`mr_end_role_service.py` 已提供运行端位语义与计算规则，但尚未接入 MESH 行程分析、页面或报告；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
 - AP Identity 生产接管；

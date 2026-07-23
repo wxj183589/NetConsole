@@ -17,6 +17,7 @@ import {
   listTrains,
   listVehicleMrs,
   previewRailTransitImport,
+  previewSectionGeneration,
   previewStationTemplate,
   rollbackRailTransitImport,
   saveRailTransitBaseDataChanges,
@@ -37,6 +38,7 @@ import type {
   RailTransitSummary,
   Relation,
   Section,
+  SectionGenerationPreview,
   Station,
   StationSourcePreview,
   StationTemplatePreview,
@@ -65,6 +67,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const importPreview = ref<ImportPreviewResult | null>(null)
   const stationSourcePreview = ref<StationSourcePreview | null>(null)
   const stationTemplatePreview = ref<StationTemplatePreview | null>(null)
+  const sectionGenerationPreview = ref<SectionGenerationPreview | null>(null)
   const importPolicies = ref<ImportPolicyStatus | null>(null)
   const importOperations = ref<ImportOperation[]>([])
   const importChanges = ref<ImportChange[]>([])
@@ -73,6 +76,7 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
   const loading = ref(false)
   const previewLoading = ref(false)
   const stationSourceLoading = ref(false)
+  const sectionGenerationLoading = ref(false)
   const applyLoading = ref(false)
   const failures = ref(0)
   const error = ref('')
@@ -181,6 +185,35 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
       recordFailure(cause)
       throw cause
     } finally { previewLoading.value = false }
+  }
+
+  async function previewSectionsFromDraft(
+    metadata: {
+      main_path_code: string
+      increasing_direction_name: string
+      decreasing_direction_name: string
+    },
+    stations: Station[],
+    currentSections: Section[],
+  ): Promise<SectionGenerationPreview> {
+    if (!editSession.value) await refreshEditSession()
+    sectionGenerationLoading.value = true
+    try {
+      sectionGenerationPreview.value = await previewSectionGeneration({
+        site_id: editSession.value!.site_id,
+        base_revision: editSession.value!.base_revision,
+        line_metadata: metadata,
+        stations,
+        current_sections: currentSections,
+      })
+      recordSuccess()
+      return sectionGenerationPreview.value
+    } catch (cause) {
+      recordFailure(cause)
+      throw cause
+    } finally {
+      sectionGenerationLoading.value = false
+    }
   }
 
   async function refreshImportGovernance(): Promise<void> {
@@ -297,10 +330,10 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
 
   return {
     summary, editSession, stations, sections, aps, trains, mrs, issues, issueGroups, relations,
-    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, stationSourcePreview, stationTemplatePreview, importPolicies,
+    apTotal, trainTotal, mrTotal, issueTotal, issueGroupTotal, issueCodeCounts, importPreview, stationSourcePreview, stationTemplatePreview, sectionGenerationPreview, importPolicies,
     importOperations, importChanges, selectedOperationId, selectedFileName,
-    loading, previewLoading, stationSourceLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
-    refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile,
+    loading, previewLoading, stationSourceLoading, sectionGenerationLoading, applyLoading, failures, error, apFilters, mrFilters, issueFilters,
+    refreshSummary, refreshRuntime, refreshStatic, manualRefresh, previewImport, refreshStationSourcePreview, previewStationTemplateFile, previewSectionsFromDraft,
     refreshImportGovernance, refreshEditSession, validateChanges, saveChanges, canApplyImport, applyImport, selectImportOperation, rollbackImport,
     applyApFilters, setApPage, applyMrFilters, setMrPage, applyIssueFilters, setIssuePage,
     startPolling, stopPolling,

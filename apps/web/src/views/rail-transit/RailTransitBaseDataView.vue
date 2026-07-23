@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
+import { Connection, Download, Plus, Refresh, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { downloadBackendResource } from '../../platform/runtime'
@@ -24,8 +24,10 @@ import type {
   Relation,
   RailTransitSummary,
   Section,
+  SectionGenerationPreviewItem,
   Station,
   StationSourceCandidate,
+  StationTemplateSectionPreviewRow,
   StationTemplatePreviewRow,
   TracksideAp,
   Train,
@@ -86,8 +88,11 @@ const vehicleTab = ref('trains')
 const previewFilter = ref('all')
 const stationSourceDialogVisible = ref(false)
 const stationTemplateDialogVisible = ref(false)
+const sectionGenerationDialogVisible = ref(false)
 const selectedStationSourceIds = ref<string[]>([])
 const selectedTemplateRows = ref<number[]>([])
+const selectedTemplateSectionRows = ref<number[]>([])
+const selectedSectionGenerationIds = ref<string[]>([])
 const applyConfirmed = ref(false)
 const decisionSelections = ref<Record<string, MergeFieldDecision['action'] | ''>>({})
 const mergeRows = computed(() => {
@@ -100,6 +105,39 @@ const previewBlocked = computed(() => {
 })
 const stationSourceCandidates = computed(() => store.stationSourcePreview?.candidates || [])
 const stationTemplateRows = computed(() => store.stationTemplatePreview?.rows || [])
+const stationTemplateSectionRows = computed(() => store.stationTemplatePreview?.section_rows || [])
+const sectionGenerationRows = computed(() => store.sectionGenerationPreview?.generated_sections || [])
+const sectionNodeOptions = computed(() => {
+  const rows = editingDraft.value?.stations ?? store.stations
+  const options: Array<{ label: string; value: string; uid: string; type: 'station' | 'terminal_endpoint' }> = rows
+    .filter((station) => station.enabled)
+    .map((station) => ({
+      label: station.name,
+      value: station.name,
+      uid: station.node_uid,
+      type: 'station',
+    }))
+  for (const station of rows) {
+    if (!station.enabled || !station.is_line_terminal || !station.terminal_extension_enabled) continue
+    const ordered = rows
+      .filter((item) => item.enabled && item.participates_in_direction && item.node_type === 'station' && item.path_code === station.path_code && item.sort_order !== null)
+      .sort((left, right) => Number(left.sort_order) - Number(right.sort_order))
+    const side = ordered[0]?.node_uid === station.node_uid
+      ? 'low'
+      : ordered.at(-1)?.node_uid === station.node_uid
+        ? 'high'
+        : ''
+    if (!side) continue
+    const label = `${station.terminal_endpoint_label || '端点'}（${station.name}端）`
+    options.push({
+      label,
+      value: label,
+      uid: `endpoint:${station.path_code}:${side}`,
+      type: 'terminal_endpoint',
+    })
+  }
+  return options
+})
 const issueCodeStats = computed(() => Object.entries(store.issueCodeCounts).sort((left, right) => right[1] - left[1]))
 const summaryCards = computed(() => [
   ['站点', store.summary?.station_count || 0, 'normal'],
@@ -126,20 +164,27 @@ const stationColumns: NcTableColumn<Station>[] = [
   { key: 'node_type', label: '节点类型', valueType: 'status', width: 120, displayValue: (row) => stationNodeTypeLabel(row.node_type) },
   { key: 'path_code', label: '所属路径', minWidth: 115, displayValue: (row) => display(row.path_code) },
   { key: 'participates_in_direction', label: '参与方向', width: 105, displayValue: (row) => boolText(row.participates_in_direction) },
+  { key: 'center_mileage_text', label: '中心里程', valueType: 'mileage', minWidth: 145, displayValue: (row) => display(row.center_mileage_text) },
   { key: 'structure_platform', label: '结构 / 站台', minWidth: 160, displayValue: (row) => `${structureTypeLabel(row.structure_type)} / ${platformLayoutLabel(row.platform_layout)}` },
-  { key: 'terminals', label: '端点', minWidth: 125, displayValue: (row) => terminalSummary(row) },
-  { key: 'turnback', label: '折返', minWidth: 150, displayValue: (row) => turnbackSummary(row) },
+  { key: 'terminals', label: '终点属性', minWidth: 180, displayValue: (row) => terminalSummary(row) },
+  { key: 'track_facilities', label: '轨道设施', minWidth: 220, displayValue: (row) => trackFacilitiesSummary(row) },
+  { key: 'turnback', label: '折返能力 / 方向', minWidth: 170, displayValue: (row) => turnbackSummary(row) },
+  { key: 'terminal_extension', label: '端点延伸区间', minWidth: 300, displayValue: (row) => terminalExtensionSummary(row) },
   { key: 'source_device_count', label: '来源设备数', valueType: 'number', width: 120 },
   { key: 'source_sync_status', label: '来源状态', valueType: 'status', width: 115, displayValue: (row) => sourceSyncLabel(row.source_sync_status) },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 160, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
 const sectionColumns: NcTableColumn<Section>[] = [
   { key: 'name', label: '区间名称', valueType: 'name', minWidth: 200 },
-  { key: 'start_station', label: '起始站', minWidth: 140, displayValue: (row) => display(row.start_station) },
-  { key: 'end_station', label: '终点站', minWidth: 140, displayValue: (row) => display(row.end_station) },
-  { key: 'line_side', label: '线路方向', minWidth: 120, displayValue: (row) => display(row.line_side) },
+  { key: 'section_kind', label: '类型', valueType: 'status', minWidth: 120, displayValue: (row) => sectionKindLabel(row.section_kind) },
+  { key: 'path_code', label: '所属路径', minWidth: 110, displayValue: (row) => display(row.path_code) },
+  { key: 'start_station', label: '起始节点', minWidth: 170, displayValue: (row) => display(row.start_station) },
+  { key: 'end_station', label: '终到节点', minWidth: 170, displayValue: (row) => display(row.end_station) },
+  { key: 'line_direction', label: '线路方向', minWidth: 120, displayValue: (row) => display(row.line_direction || row.line_side) },
   { key: 'ap_count', label: 'AP 数量', valueType: 'number', width: 110 },
   { key: 'mileage_range', label: '里程范围', valueType: 'mileage', minWidth: 160, displayValue: (row) => mileageRange(row.mileage_min, row.mileage_max) },
+  { key: 'source_kind', label: '来源', valueType: 'status', width: 120, displayValue: (row) => sectionSourceLabel(row) },
+  { key: 'enabled', label: '状态', valueType: 'status', width: 90, displayValue: (row) => row.enabled ? '启用' : '停用' },
   { key: 'remark', label: '备注', valueType: 'description', minWidth: 180, displayValue: (row) => display(row.remark), alignmentReason: 'long-text' },
 ]
 const apColumns: NcTableColumn<TracksideAp>[] = [
@@ -237,6 +282,30 @@ const stationTemplateColumns: NcTableColumn<StationTemplatePreviewRow>[] = [
   { key: 'sort_order', label: '主线顺序', valueType: 'number', width: 105, displayValue: (row) => row.sort_order ?? '--' },
   { key: 'action', label: '动作', valueType: 'status', width: 105 },
   { key: 'issues', label: '问题', valueType: 'description', minWidth: 220, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || '--' },
+]
+const stationTemplateSectionColumns: NcTableColumn<StationTemplateSectionPreviewRow>[] = [
+  { key: 'selected', label: '勾选', width: 72, hideable: false },
+  { key: 'row_number', label: '行号', valueType: 'number', width: 80 },
+  { key: 'section_code', label: '区间编码', minWidth: 130, displayValue: (row) => display(row.section_code) },
+  { key: 'name', label: '区间名称', valueType: 'name', minWidth: 210 },
+  { key: 'section_kind', label: '类型', valueType: 'status', width: 120, displayValue: (row) => sectionKindLabel(row.section_kind) },
+  { key: 'path_code', label: '所属路径', width: 110 },
+  { key: 'line_direction', label: '线路方向', width: 110, displayValue: (row) => display(row.line_direction) },
+  { key: 'start_station', label: '起始节点', minWidth: 160 },
+  { key: 'end_station', label: '终到节点', minWidth: 160 },
+  { key: 'action', label: '动作', valueType: 'status', width: 105 },
+  { key: 'issues', label: '问题', valueType: 'description', minWidth: 220, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || '--' },
+]
+const sectionGenerationColumns: NcTableColumn<SectionGenerationPreviewItem>[] = [
+  { key: 'selected', label: '勾选', width: 72, hideable: false },
+  { key: 'name', label: '区间名称', valueType: 'name', minWidth: 220, displayValue: (row) => generationSection(row)?.name || '--' },
+  { key: 'section_kind', label: '类型', valueType: 'status', width: 120, displayValue: (row) => sectionKindLabel(generationSection(row)?.section_kind || 'manual') },
+  { key: 'path_code', label: '所属路径', width: 110, displayValue: (row) => generationSection(row)?.path_code || '--' },
+  { key: 'line_direction', label: '线路方向', width: 110, displayValue: (row) => generationSection(row)?.line_direction || '--' },
+  { key: 'start_station', label: '起始节点', minWidth: 170, displayValue: (row) => generationSection(row)?.start_station || '--' },
+  { key: 'end_station', label: '终到节点', minWidth: 170, displayValue: (row) => generationSection(row)?.end_station || '--' },
+  { key: 'result', label: '处理结果', valueType: 'status', width: 110 },
+  { key: 'issues', label: '问题', valueType: 'description', minWidth: 240, alignmentReason: 'long-text', displayValue: (row) => row.issues.map((item) => item.message).join('；') || '--' },
 ]
 const operationColumns: NcTableColumn<ImportOperation>[] = [
   { key: 'started_at', label: '开始时间', valueType: 'datetime', minWidth: 180 },
@@ -413,6 +482,8 @@ async function saveAllChanges(): Promise<boolean> {
       ElMessage.error(validation.issues[0]?.message || '基础资料校验失败')
       return false
     }
+    const validationWarnings = validation.issues.filter((issue) => !issue.blocking)
+    if (validationWarnings.length) ElMessage.warning(`存在 ${validationWarnings.length} 条非阻断提示，将继续保存`)
     editState.value = 'SAVING'
     const result = await store.saveChanges(changes)
     pendingChanges.value = {}
@@ -425,7 +496,7 @@ async function saveAllChanges(): Promise<boolean> {
     serverSnapshot.value = null
     editingDraft.value = null
     store.startPolling()
-    ElMessage.success(`基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}`)
+    ElMessage.success(`基础资料已保存：新增 ${result.created_count}，更新 ${result.updated_count}，删除 ${result.deleted_count}${result.warnings.length ? `，提示 ${result.warnings.length}` : ''}`)
     return true
   } catch (cause) {
     editState.value = 'SAVE_FAILED'
@@ -583,12 +654,26 @@ function undoDelete(entityType: BaseDataChange['entity_type'], row: Station | Se
 
 function addStation(): void {
   if (!editingDraft.value) return
-  const row: Station = defaultStation({ id: temporaryId(), line_name: store.summary?.line_name || '', sort_order: editingDraft.value.stations.length + 1, source_kind: 'manual', source_sync_status: 'manual' })
+  const row: Station = defaultStation({
+    id: temporaryId(),
+    node_uid: newNodeUid(),
+    line_name: store.summary?.line_name || '',
+    path_code: editingDraft.value.metadata.main_path_code || 'MAIN',
+    sort_order: editingDraft.value.stations.length + 1,
+    structure_type: 'underground',
+    platform_layout: 'island',
+    source_kind: 'manual',
+    source_sync_status: 'manual',
+  })
   editingDraft.value.stations.push(row); markStation(row)
 }
 function addSection(): void {
   if (!editingDraft.value) return
-  const row: Section = { id: temporaryId(), name: '', start_station: '', end_station: '', line_side: '', ap_count: 0, mileage_min: null, mileage_max: null, remark: '' }
+  const row = defaultSection({
+    id: temporaryId(),
+    path_code: editingDraft.value.metadata.main_path_code || 'MAIN',
+    source_kind: 'manual',
+  })
   editingDraft.value.sections.push(row); markSection(row)
 }
 function addAp(): void {
@@ -607,8 +692,14 @@ function updateEditState(): void {
 }
 function changeKey(type: string, id: string): string { return `${type}:${id}` }
 function temporaryId(): string { return `new:${Date.now()}:${Math.random().toString(16).slice(2)}` }
+function newNodeUid(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
 function stationValues(row: Station): Record<string, unknown> {
   return {
+    node_uid: row.node_uid,
     name: row.name,
     code: row.code,
     line_name: row.line_name,
@@ -621,16 +712,44 @@ function stationValues(row: Station): Record<string, unknown> {
     participates_in_direction: row.participates_in_direction,
     structure_type: row.structure_type,
     platform_layout: row.platform_layout,
+    center_mileage_text: row.center_mileage_text,
+    center_mileage_m: row.center_mileage_m,
     is_line_terminal: row.is_line_terminal,
     is_service_terminal: row.is_service_terminal,
     turnback_capable: row.turnback_capable,
     turnback_type: row.turnback_type,
+    track_facilities: row.track_facilities,
     turnback_direction: row.turnback_direction,
+    terminal_extension_enabled: row.terminal_extension_enabled,
+    terminal_endpoint_label: row.terminal_endpoint_label,
+    terminal_extension_distance_m: row.terminal_extension_distance_m,
+    terminal_endpoint_mileage_text: row.terminal_endpoint_mileage_text,
     enabled: row.enabled,
     source_kind: row.source_kind,
   }
 }
-function sectionValues(row: Section): Record<string, unknown> { return { name: row.name, start_station: row.start_station, end_station: row.end_station, line_side: row.line_side, remark: row.remark } }
+function sectionValues(row: Section): Record<string, unknown> {
+  return {
+    name: row.name,
+    section_code: row.section_code,
+    section_kind: row.section_kind,
+    path_code: row.path_code,
+    direction_role: row.direction_role,
+    line_direction: row.line_direction,
+    start_node_type: row.start_node_type,
+    start_node_uid: row.start_node_uid,
+    start_station: row.start_station,
+    end_node_type: row.end_node_type,
+    end_node_uid: row.end_node_uid,
+    end_station: row.end_station,
+    line_side: row.line_side,
+    auto_generated: row.auto_generated,
+    generation_key: row.generation_key,
+    enabled: row.enabled,
+    source_kind: row.source_kind,
+    remark: row.remark,
+  }
+}
 function apValues(row: TracksideAp): Record<string, unknown> { return { line_name: row.line_name, name: row.name, point_code: row.point_code, mac: row.mac, station: row.station, section: row.section, section_start_station: row.section_start_station, section_end_station: row.section_end_station, mileage: row.mileage.raw, line_side: row.line_side, direction: row.direction, remark: row.remark } }
 function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
 function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unknown> {
@@ -676,8 +795,45 @@ function isStationTemplateRowDisabled(row: StationTemplatePreviewRow): boolean {
   return !row.valid || row.action === 'conflict'
 }
 
+function isStationTemplateSectionRowSelected(row: StationTemplateSectionPreviewRow): boolean {
+  return selectedTemplateSectionRows.value.includes(row.row_number)
+}
+
+function isStationTemplateSectionRowDisabled(row: StationTemplateSectionPreviewRow): boolean {
+  return !row.valid || row.action === 'conflict'
+}
+
 function canApplyStationTemplatePreview(): boolean {
-  return !locked.value && selectedTemplateRows.value.length > 0 && !store.stationTemplatePreview?.blocking_count
+  return !locked.value
+    && (selectedTemplateRows.value.length > 0 || selectedTemplateSectionRows.value.length > 0)
+    && !store.stationTemplatePreview?.blocking_count
+}
+
+function handleStationClassificationChange(row: Station): void {
+  const mainPath = editingDraft.value?.metadata.main_path_code || store.summary?.main_path_code || 'MAIN'
+  if (row.node_type === 'station' && row.path_code === mainPath) {
+    if (row.structure_type === 'unknown') row.structure_type = 'underground'
+    if (row.platform_layout === 'unknown') row.platform_layout = 'island'
+  }
+  markStation(row)
+}
+
+function handleLineTerminalChange(row: Station): void {
+  if (!row.is_line_terminal) row.terminal_extension_enabled = false
+  markStation(row)
+}
+
+function handleSectionNodeChange(row: Section, endpoint: 'start' | 'end'): void {
+  const field = endpoint === 'start' ? 'start_station' : 'end_station'
+  const selected = sectionNodeOptions.value.find((item) => item.value === row[field])
+  if (endpoint === 'start') {
+    row.start_node_type = selected?.type || 'legacy'
+    row.start_node_uid = selected?.uid || ''
+  } else {
+    row.end_node_type = selected?.type || 'legacy'
+    row.end_node_uid = selected?.uid || ''
+  }
+  markSection(row)
 }
 
 async function openStationSourcePreview(): Promise<void> {
@@ -723,11 +879,16 @@ function applyStationSourceToDraft(): void {
       matched.source_kind = 'device_station_field'
       matched.source_device_count = candidate.source_device_count
       matched.source_sync_status = 'matched'
+      if (matched.node_type === 'station' && matched.path_code === editingDraft.value.metadata.main_path_code) {
+        if (matched.structure_type === 'unknown') matched.structure_type = 'underground'
+        if (matched.platform_layout === 'unknown') matched.platform_layout = 'island'
+      }
       markStation(matched)
       applied += 1
       continue
     }
     proposed.id = proposed.id || temporaryId()
+    proposed.node_uid = proposed.node_uid || newNodeUid()
     proposed.source_device_count = candidate.source_device_count
     proposed.source_sync_status = 'matched'
     editingDraft.value.stations.push(proposed)
@@ -739,15 +900,26 @@ function applyStationSourceToDraft(): void {
 }
 
 async function downloadStationTemplate(): Promise<void> {
-  const result = await downloadBackendResource(stationTemplateDownloadRequest())
-  if (result.status === 'saved' || result.status === 'started') ElMessage.success('站点模板下载已开始')
-  else if (result.status === 'failed') ElMessage.error(result.error || '站点模板下载失败')
+  try {
+    const result = await downloadBackendResource(stationTemplateDownloadRequest())
+    if (result.status === 'saved') ElMessage.success('线路站点与区间模板已保存')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始下载线路站点与区间模板')
+    else if (result.status === 'failed') ElMessage.error(result.error || '基础资料模板下载失败')
+  } catch (cause) {
+    ElMessage.error(message(cause, '基础资料模板下载失败'))
+  }
 }
 
 async function exportCurrentStations(): Promise<void> {
-  const result = await downloadBackendResource(stationTemplateExportDownloadRequest())
-  if (result.status === 'saved' || result.status === 'started') ElMessage.success('当前基础资料导出已开始')
-  else if (result.status === 'failed') ElMessage.error(result.error || '当前基础资料导出失败')
+  if (dirty.value) ElMessage.warning('未保存修改不包含在本次导出中')
+  try {
+    const result = await downloadBackendResource(stationTemplateExportDownloadRequest())
+    if (result.status === 'saved') ElMessage.success('已保存当前正式基础资料')
+    else if (result.status === 'started') ElMessage.success('浏览器已开始导出当前正式基础资料')
+    else if (result.status === 'failed') ElMessage.error(result.error || '当前基础资料导出失败')
+  } catch (cause) {
+    ElMessage.error(message(cause, '当前基础资料导出失败'))
+  }
 }
 
 async function handleStationTemplateFile(event: Event): Promise<void> {
@@ -757,6 +929,7 @@ async function handleStationTemplateFile(event: Event): Promise<void> {
   try {
     const preview = await store.previewStationTemplateFile(file)
     selectedTemplateRows.value = preview.rows.filter((row) => row.valid && row.action !== 'conflict').map((row) => row.row_number)
+    selectedTemplateSectionRows.value = preview.section_rows.filter((row) => row.valid && row.action !== 'conflict').map((row) => row.row_number)
     stationTemplateDialogVisible.value = true
     ElMessage.success('站点模板预览完成，未写入数据库')
   } catch (cause) {
@@ -773,6 +946,13 @@ function toggleTemplateRow(row: StationTemplatePreviewRow, checked: boolean): vo
   selectedTemplateRows.value = [...next]
 }
 
+function toggleTemplateSectionRow(row: StationTemplateSectionPreviewRow, checked: boolean): void {
+  const next = new Set(selectedTemplateSectionRows.value)
+  if (checked) next.add(row.row_number)
+  else next.delete(row.row_number)
+  selectedTemplateSectionRows.value = [...next]
+}
+
 function applyStationTemplateToDraft(): void {
   if (locked.value || !editingDraft.value) {
     ElMessage.warning('请先解锁基础资料')
@@ -780,7 +960,9 @@ function applyStationTemplateToDraft(): void {
   }
   const selected = new Set(selectedTemplateRows.value)
   const rows = stationTemplateRows.value.filter((item) => selected.has(item.row_number) && item.valid && item.proposed_station)
-  if (!rows.length) {
+  const selectedSections = new Set(selectedTemplateSectionRows.value)
+  const sectionRows = stationTemplateSectionRows.value.filter((item) => selectedSections.has(item.row_number) && item.valid && item.proposed_section)
+  if (!rows.length && !sectionRows.length) {
     ElMessage.warning('没有可应用的模板行')
     return
   }
@@ -796,8 +978,32 @@ function applyStationTemplateToDraft(): void {
       markStation(matched)
     } else {
       proposed.id = temporaryId()
+      proposed.node_uid = proposed.node_uid || newNodeUid()
       editingDraft.value.stations.push(proposed)
       markStation(proposed)
+    }
+    applied += 1
+  }
+  for (const row of sectionRows) {
+    const proposed = defaultSection(row.proposed_section || {})
+    const matched = editingDraft.value.sections.find((section) => (
+      (proposed.generation_key && section.generation_key === proposed.generation_key)
+      || (proposed.section_code && section.section_code === proposed.section_code)
+      || section.name === proposed.name
+    ))
+    if (matched) {
+      Object.assign(matched, {
+        ...proposed,
+        id: matched.id,
+        ap_count: matched.ap_count,
+        mileage_min: matched.mileage_min,
+        mileage_max: matched.mileage_max,
+      })
+      markSection(matched)
+    } else {
+      proposed.id = temporaryId()
+      editingDraft.value.sections.push(proposed)
+      markSection(proposed)
     }
     applied += 1
   }
@@ -814,6 +1020,107 @@ function applyStationTemplateToDraft(): void {
   markMetadata()
   stationTemplateDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 行模板预览到当前草稿，保存后才会写入数据库`)
+}
+
+async function openSectionGenerationPreview(): Promise<void> {
+  const metadata = editingDraft.value?.metadata
+  const stations = editingDraft.value?.stations ?? store.stations
+  const sections = editingDraft.value?.sections ?? store.sections
+  try {
+    const preview = await store.previewSectionsFromDraft(
+      {
+        main_path_code: metadata?.main_path_code || store.summary?.main_path_code || 'MAIN',
+        increasing_direction_name: metadata?.increasing_direction_name || store.summary?.increasing_direction_name || '上行',
+        decreasing_direction_name: metadata?.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行',
+      },
+      cloneDto(stations),
+      cloneDto(sections),
+    )
+    selectedSectionGenerationIds.value = preview.generated_sections
+      .filter((item) => item.selectable && item.selected_by_default)
+      .map((item) => item.item_id)
+    sectionGenerationDialogVisible.value = true
+  } catch (cause) {
+    ElMessage.error(message(cause, '区间生成预览失败'))
+  }
+}
+
+function generationSection(row: SectionGenerationPreviewItem): Section | null {
+  return row.proposed_section || row.current_section
+}
+
+function isSectionGenerationSelected(row: SectionGenerationPreviewItem): boolean {
+  return selectedSectionGenerationIds.value.includes(row.item_id)
+}
+
+function toggleSectionGenerationRow(row: SectionGenerationPreviewItem, checked: boolean): void {
+  const next = new Set(selectedSectionGenerationIds.value)
+  if (checked) next.add(row.item_id)
+  else next.delete(row.item_id)
+  selectedSectionGenerationIds.value = [...next]
+}
+
+function markSectionForDeletion(row: Section): void {
+  const key = changeKey('section', row.id)
+  if (row.id.startsWith('new:')) {
+    delete pendingChanges.value[key]
+    baselines.delete(key)
+    removeDraftRow('section', row.id)
+    return
+  }
+  const baseline = baselines.get(key) || sectionValues(row)
+  pendingChanges.value[key] = {
+    entity_type: 'section',
+    action: 'delete',
+    entity_id: row.id,
+    values: withOriginalIdentity('section', baseline, baseline),
+  }
+}
+
+function applySectionGenerationToDraft(): void {
+  if (locked.value || !editingDraft.value) {
+    ElMessage.warning('请先解锁基础资料')
+    return
+  }
+  const selected = new Set(selectedSectionGenerationIds.value)
+  let applied = 0
+  for (const item of sectionGenerationRows.value) {
+    if (!selected.has(item.item_id) || !item.selectable || item.result === 'CONFLICT') continue
+    if (item.result === 'STALE' && item.current_section) {
+      const current = editingDraft.value.sections.find((section) => section.id === item.current_section?.id)
+      if (current) {
+        markSectionForDeletion(current)
+        applied += 1
+      }
+      continue
+    }
+    if (!item.proposed_section || item.result === 'UNCHANGED') continue
+    const proposed = defaultSection(item.proposed_section)
+    const current = editingDraft.value.sections.find((section) => (
+      section.id === item.current_section?.id
+      || (proposed.generation_key && section.generation_key === proposed.generation_key)
+    ))
+    if (current) {
+      Object.assign(current, {
+        ...proposed,
+        id: current.id,
+        remark: current.remark,
+        ap_count: current.ap_count,
+        mileage_min: current.mileage_min,
+        mileage_max: current.mileage_max,
+      })
+      markSection(current)
+    } else {
+      proposed.id = proposed.id.startsWith('new:') ? proposed.id : temporaryId()
+      editingDraft.value.sections.push(proposed)
+      markSection(proposed)
+    }
+    applied += 1
+  }
+  pendingChanges.value = { ...pendingChanges.value }
+  updateEditState()
+  sectionGenerationDialogVisible.value = false
+  ElMessage.success(`已应用 ${applied} 项区间生成结果到当前草稿，保存后才会写入数据库`)
 }
 
 async function handleFile(event: Event): Promise<void> {
@@ -904,10 +1211,11 @@ function display(value: unknown): string { return value === null || value === un
 function physicalEndLabel(value: VehicleMr['physical_end'] | RailTransitSummary['increasing_direction_leading_end']): string {
   return value === 'car_1_end' ? '1车厢端' : value === 'car_6_end' ? '6车厢端' : '未设置'
 }
-function cloneDto<T>(value: T): T { return structuredClone(toRaw(value)) }
+function cloneDto<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function defaultStation(values: Partial<Station> = {}): Station {
   return {
     id: '',
+    node_uid: '',
     name: '',
     code: '',
     line_name: '',
@@ -924,16 +1232,50 @@ function defaultStation(values: Partial<Station> = {}): Station {
     participates_in_direction: true,
     structure_type: 'unknown',
     platform_layout: 'unknown',
+    center_mileage_text: '',
+    center_mileage_m: null,
     is_line_terminal: false,
     is_service_terminal: false,
     turnback_capable: false,
     turnback_type: 'none',
+    track_facilities: [],
     turnback_direction: 'none',
+    terminal_extension_enabled: false,
+    terminal_endpoint_label: '端点',
+    terminal_extension_distance_m: null,
+    terminal_endpoint_mileage_text: '',
     enabled: true,
     source_kind: 'manual',
     source_device_count: 0,
     source_sync_status: 'manual',
     source_last_seen_at: '',
+    ...values,
+  }
+}
+function defaultSection(values: Partial<Section> = {}): Section {
+  return {
+    id: '',
+    name: '',
+    section_code: '',
+    section_kind: 'manual',
+    path_code: 'MAIN',
+    direction_role: 'none',
+    line_direction: '',
+    start_node_type: 'legacy',
+    start_node_uid: '',
+    start_station: '',
+    end_node_type: 'legacy',
+    end_node_uid: '',
+    end_station: '',
+    line_side: '',
+    auto_generated: false,
+    generation_key: '',
+    enabled: true,
+    source_kind: 'manual',
+    ap_count: 0,
+    mileage_min: null,
+    mileage_max: null,
+    remark: '',
     ...values,
   }
 }
@@ -960,9 +1302,6 @@ function structureTypeLabel(value: string): string {
 function platformLayoutLabel(value: string): string {
   return ({ island: '岛式', side: '侧式', mixed: '混合式', stacked_island: '叠岛式', stacked_side: '叠侧式', separated: '分离式', unknown: '未填写' } as Record<string, string>)[value] || value || '--'
 }
-function turnbackTypeLabel(value: string): string {
-  return ({ none: '无', crossover: '渡线', pocket_track: '中间折返线/存车线', tail_track: '站后折返线', loop: '环形折返', depot_connection: '出入段线', other: '其他', unknown: '类型未知' } as Record<string, string>)[value] || value || '--'
-}
 function turnbackDirectionLabel(value: string): string {
   return ({ none: '无', both: '双向', increasing_to_decreasing: '递增转递减', decreasing_to_increasing: '递减转递增', unknown: '未知' } as Record<string, string>)[value] || value || '--'
 }
@@ -975,12 +1314,34 @@ function sourceMatchLabel(value: string): string {
 function terminalSummary(row: Station): string {
   const values = []
   if (row.is_line_terminal) values.push('线路端点')
-  if (row.is_service_terminal) values.push('运营终点')
+  if (row.is_service_terminal) values.push('运营终到/折返')
   return values.join(' / ') || '--'
+}
+function trackFacilityLabel(value: string): string {
+  return ({ turnback_track: '折返线', crossover: '渡线', storage_track: '存车线', depot_connection: '出入段线', tail_track: '站后折返线', loop: '环形折返', siding: '其他侧线', other: '其他' } as Record<string, string>)[value] || value
+}
+function trackFacilitiesSummary(row: Station): string {
+  return row.track_facilities.map(trackFacilityLabel).join(' / ') || '--'
 }
 function turnbackSummary(row: Station): string {
   if (!row.turnback_capable) return '不可折返'
-  return `${turnbackTypeLabel(row.turnback_type)} / ${turnbackDirectionLabel(row.turnback_direction)}`
+  return `可折返 / ${turnbackDirectionLabel(row.turnback_direction)}`
+}
+function terminalExtensionSummary(row: Station): string {
+  if (!row.is_line_terminal || !row.terminal_extension_enabled) return '--'
+  const detail = [
+    row.terminal_endpoint_label || '端点',
+    row.terminal_extension_distance_m === null ? '' : `${row.terminal_extension_distance_m} m`,
+    row.terminal_endpoint_mileage_text,
+  ].filter(Boolean)
+  return detail.join(' / ')
+}
+function sectionKindLabel(value: string): string {
+  return ({ between_stations: '站间区间', terminal_extension: '端点延伸', depot_connection: '出入段连接', manual: '人工区间', legacy: '兼容区间' } as Record<string, string>)[value] || value || '--'
+}
+function sectionSourceLabel(row: Section): string {
+  if (row.section_kind === 'terminal_extension') return '端点延伸'
+  return ({ generated: '自动生成', manual: '人工维护', template: '模板导入', legacy_ap_derived: '兼容数据' } as Record<string, string>)[row.source_kind] || row.source_kind || '--'
 }
 </script>
 
@@ -1148,9 +1509,24 @@ function turnbackSummary(row: Station): string {
                 <template #cell-sort_order="{ row }"><el-input-number v-if="canEditRow('station', row.id) && row.participates_in_direction" v-model="row.sort_order" :min="0" controls-position="right" @change="markStation(row)" /><span v-else>{{ row.sort_order ?? '--' }}</span></template>
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('station', row.id, 'name') }" @input="markStation(row)" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.code" :class="{ 'field-error': fieldError('station', row.id, 'code') }" @input="markStation(row)" /><span v-else>{{ display(row.code) }}</span></template>
-                <template #cell-node_type="{ row }"><el-tag :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag></template>
-                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.path_code" @input="markStation(row)" /><span v-else>{{ display(row.path_code) }}</span></template>
+                <template #cell-node_type="{ row }">
+                  <el-select v-if="canEditRow('station', row.id)" v-model="row.node_type" @change="handleStationClassificationChange(row)">
+                    <el-option label="普通车站" value="station" />
+                    <el-option label="停车场" value="parking_lot" />
+                    <el-option label="车辆段" value="depot" />
+                    <el-option label="接轨点" value="connection_point" />
+                    <el-option label="其他" value="other" />
+                  </el-select>
+                  <el-tag v-else :type="stationNodeTypeTag(row.node_type)">{{ stationNodeTypeLabel(row.node_type) }}</el-tag>
+                </template>
+                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.path_code" @change="handleStationClassificationChange(row)" /><span v-else>{{ display(row.path_code) }}</span></template>
                 <template #cell-participates_in_direction="{ row }"><el-switch v-if="canEditRow('station', row.id)" v-model="row.participates_in_direction" @change="markStation(row)" /><span v-else>{{ boolText(row.participates_in_direction) }}</span></template>
+                <template #cell-center_mileage_text="{ row }">
+                  <el-tooltip content="站点在线路上的中心参考里程，用于后续区间定位和运行方向分析。" placement="top">
+                    <el-input v-if="canEditRow('station', row.id)" v-model="row.center_mileage_text" placeholder="如 K12+345" @input="markStation(row)" />
+                    <span v-else>{{ display(row.center_mileage_text) }}</span>
+                  </el-tooltip>
+                </template>
                 <template #cell-structure_platform="{ row }">
                   <div v-if="canEditRow('station', row.id)" class="compact-pair">
                     <el-select v-model="row.structure_type" @change="markStation(row)"><el-option label="未填写" value="unknown" /><el-option label="地下" value="underground" /><el-option label="高架" value="elevated" /><el-option label="地面" value="at_grade" /><el-option label="路堑" value="cutting" /><el-option label="混合" value="mixed" /></el-select>
@@ -1160,17 +1536,52 @@ function turnbackSummary(row: Station): string {
                 </template>
                 <template #cell-terminals="{ row }">
                   <div v-if="canEditRow('station', row.id)" class="inline-checks">
-                    <el-checkbox v-model="row.is_line_terminal" @change="markStation(row)">线路</el-checkbox>
-                    <el-checkbox v-model="row.is_service_terminal" @change="markStation(row)">运营</el-checkbox>
+                    <el-tooltip content="线路端点：轨道线路实际到这里结束，通常是主线起点或终点。" placement="top">
+                      <el-checkbox v-model="row.is_line_terminal" @change="handleLineTerminalChange(row)">线路端点</el-checkbox>
+                    </el-tooltip>
+                    <el-tooltip content="运营终到/折返：正常运营列车会在这里作为终到、始发或折返站。" placement="top">
+                      <el-checkbox v-model="row.is_service_terminal" @change="markStation(row)">运营终到/折返</el-checkbox>
+                    </el-tooltip>
                   </div>
                   <span v-else>{{ terminalSummary(row) }}</span>
+                </template>
+                <template #cell-track_facilities="{ row }">
+                  <el-tooltip content="该站具备的实际轨道设施，可同时选择折返线、渡线、存车线、出入段线等多项。" placement="top">
+                    <el-select v-if="canEditRow('station', row.id)" v-model="row.track_facilities" multiple clearable collapse-tags :max-collapse-tags="2" @change="markStation(row)">
+                      <el-option label="折返线" value="turnback_track" />
+                      <el-option label="渡线" value="crossover" />
+                      <el-option label="存车线" value="storage_track" />
+                      <el-option label="出入段线" value="depot_connection" />
+                      <el-option label="站后折返线" value="tail_track" />
+                      <el-option label="环形折返" value="loop" />
+                      <el-option label="其他侧线" value="siding" />
+                      <el-option label="其他" value="other" />
+                    </el-select>
+                    <div v-else class="facility-tags">
+                      <el-tag v-for="facility in row.track_facilities" :key="facility" type="info">{{ trackFacilityLabel(facility) }}</el-tag>
+                      <span v-if="!row.track_facilities.length">--</span>
+                    </div>
+                  </el-tooltip>
                 </template>
                 <template #cell-turnback="{ row }">
                   <div v-if="canEditRow('station', row.id)" class="compact-pair">
                     <el-switch v-model="row.turnback_capable" @change="markStation(row)" />
-                    <el-select v-model="row.turnback_type" :disabled="!row.turnback_capable" @change="markStation(row)"><el-option label="无" value="none" /><el-option label="渡线" value="crossover" /><el-option label="中间折返线/存车线" value="pocket_track" /><el-option label="站后折返线" value="tail_track" /><el-option label="环形折返" value="loop" /><el-option label="出入段线" value="depot_connection" /><el-option label="其他" value="other" /><el-option label="类型未知" value="unknown" /></el-select>
+                    <el-select v-model="row.turnback_direction" :disabled="!row.turnback_capable" @change="markStation(row)"><el-option label="无" value="none" /><el-option label="双向" value="both" /><el-option label="递增转递减" value="increasing_to_decreasing" /><el-option label="递减转递增" value="decreasing_to_increasing" /><el-option label="未知" value="unknown" /></el-select>
                   </div>
                   <span v-else>{{ turnbackSummary(row) }}</span>
+                </template>
+                <template #cell-terminal_extension="{ row }">
+                  <el-tooltip content="终点站外侧至线路物理端点之间仍存在一段轨道时启用。" placement="top">
+                    <div v-if="canEditRow('station', row.id) && row.is_line_terminal" class="terminal-extension-editor">
+                      <el-checkbox v-model="row.terminal_extension_enabled" @change="markStation(row)">启用</el-checkbox>
+                      <template v-if="row.terminal_extension_enabled">
+                        <el-input v-model="row.terminal_endpoint_label" placeholder="端点名称" @input="markStation(row)" />
+                        <el-input-number v-model="row.terminal_extension_distance_m" :min="0" :precision="1" controls-position="right" placeholder="距离" @change="markStation(row)" />
+                        <el-input v-model="row.terminal_endpoint_mileage_text" placeholder="端点里程" @input="markStation(row)" />
+                      </template>
+                    </div>
+                    <span v-else>{{ terminalExtensionSummary(row) }}</span>
+                  </el-tooltip>
                 </template>
                 <template #cell-source_sync_status="{ row }"><el-tag :type="stateType(row.source_sync_status)">{{ sourceSyncLabel(row.source_sync_status) }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('station', row.id)" v-model="row.remark" @input="markStation(row)" /><span v-else>{{ display(row.remark) }}</span></template>
@@ -1178,12 +1589,43 @@ function turnbackSummary(row: Station): string {
               </NcDataTable>
             </el-tab-pane>
             <el-tab-pane label="区间" name="sections">
-              <div class="edit-toolbar"><el-button :disabled="locked || saving" @click="addSection">新增区间</el-button></div>
+              <div class="edit-toolbar">
+                <el-button :icon="Connection" :loading="store.sectionGenerationLoading" @click="openSectionGenerationPreview">根据站点生成区间</el-button>
+                <label class="inline-file-button">
+                  <el-icon><UploadFilled /></el-icon><span>导入模板</span>
+                  <input type="file" accept=".xlsx" @change="handleStationTemplateFile" />
+                </label>
+                <el-button :icon="Download" @click="exportCurrentStations">导出当前</el-button>
+                <el-button :icon="Plus" :disabled="locked || saving" @click="addSection">新增区间</el-button>
+              </div>
               <NcDataTable table-id="rail-base-sections" route-key="/rail-transit/base-data" :data="sectionRows" :columns="sectionEditColumns" height="calc(100vh - 410px)" empty-text="暂无区间资料">
-                <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSection(row)" /><span v-else>{{ display(row.name) }}</span></template>
-                <template #cell-start_station="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.start_station" @input="markSection(row)" /><span v-else>{{ display(row.start_station) }}</span></template>
-                <template #cell-end_station="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.end_station" @input="markSection(row)" /><span v-else>{{ display(row.end_station) }}</span></template>
-                <template #cell-line_side="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.line_side" @input="markSection(row)" /><span v-else>{{ display(row.line_side) }}</span></template>
+                <template #cell-name="{ row }"><el-input v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.name" :class="{ 'field-error': fieldError('section', row.id, 'name') }" @input="markSection(row)" /><span v-else>{{ display(row.name) }}</span></template>
+                <template #cell-section_kind="{ row }">
+                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.section_kind" @change="markSection(row)"><el-option label="人工区间" value="manual" /><el-option label="出入段连接" value="depot_connection" /></el-select>
+                  <el-tag v-else :type="row.section_kind === 'terminal_extension' ? 'warning' : row.auto_generated ? 'success' : 'info'">{{ sectionKindLabel(row.section_kind) }}</el-tag>
+                </template>
+                <template #cell-path_code="{ row }"><el-input v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.path_code" @input="markSection(row)" /><span v-else>{{ display(row.path_code) }}</span></template>
+                <template #cell-start_station="{ row }">
+                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.start_station" filterable allow-create default-first-option @change="handleSectionNodeChange(row, 'start')">
+                    <el-option v-for="option in sectionNodeOptions" :key="`start:${option.uid}`" :label="option.label" :value="option.value" />
+                  </el-select>
+                  <span v-else>{{ display(row.start_station) }}</span>
+                </template>
+                <template #cell-end_station="{ row }">
+                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.end_station" filterable allow-create default-first-option @change="handleSectionNodeChange(row, 'end')">
+                    <el-option v-for="option in sectionNodeOptions" :key="`end:${option.uid}`" :label="option.label" :value="option.value" />
+                  </el-select>
+                  <span v-else>{{ display(row.end_station) }}</span>
+                </template>
+                <template #cell-line_direction="{ row }">
+                  <el-select v-if="canEditRow('section', row.id) && !row.auto_generated" v-model="row.line_direction" @change="() => { row.line_side = row.line_direction; markSection(row) }">
+                    <el-option :label="editingDraft?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'" :value="editingDraft?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'" />
+                    <el-option :label="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" :value="editingDraft?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'" />
+                  </el-select>
+                  <span v-else>{{ display(row.line_direction || row.line_side) }}</span>
+                </template>
+                <template #cell-source_kind="{ row }"><el-tag :type="row.auto_generated ? 'success' : row.source_kind === 'legacy_ap_derived' ? 'warning' : 'info'">{{ sectionSourceLabel(row) }}</el-tag></template>
+                <template #cell-enabled="{ row }"><el-switch v-if="canEditRow('section', row.id)" v-model="row.enabled" @change="markSection(row)" /><el-tag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('section', row.id)" v-model="row.remark" @input="markSection(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('section', row)">移除</el-button><template v-if="isPendingDelete('section', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('section', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="locked || saving" @click="deleteEntity('section', row)">删除</el-button></template>
               </NcDataTable>
@@ -1403,7 +1845,7 @@ function turnbackSummary(row: Station): string {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="stationTemplateDialogVisible" title="站点模板导入预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
+    <el-dialog v-model="stationTemplateDialogVisible" title="基础资料模板导入预览" width="min(1280px, 96vw)" append-to-body destroy-on-close>
       <div v-if="store.stationTemplatePreview" class="preview-dialog">
         <el-alert
           v-if="locked"
@@ -1418,6 +1860,14 @@ function turnbackSummary(row: Station): string {
           title="模板存在阻断问题"
           description="请修正枚举、重复来源或来源字段后重新导入。"
           type="error"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-if="!store.stationTemplatePreview.section_sheet_present"
+          title="模板未包含区间配置"
+          description="本次只预览线路和站点，不会删除或修改当前区间草稿。"
+          type="info"
           :closable="false"
           show-icon
         />
@@ -1444,6 +1894,7 @@ function turnbackSummary(row: Station): string {
             {{ issue.message }}
           </el-tag>
         </div>
+        <el-divider content-position="left">线路节点</el-divider>
         <NcDataTable
           v-loading="store.previewLoading"
           table-id="rail-base-station-template-preview"
@@ -1469,6 +1920,32 @@ function turnbackSummary(row: Station): string {
             </div>
           </template>
         </NcDataTable>
+        <template v-if="store.stationTemplatePreview.section_sheet_present">
+          <el-divider content-position="left">区间配置</el-divider>
+          <NcDataTable
+            table-id="rail-base-section-template-preview"
+            route-key="/rail-transit/base-data"
+            :data="stationTemplateSectionRows"
+            :columns="stationTemplateSectionColumns"
+            height="320px"
+            empty-text="模板中没有区间配置"
+          >
+            <template #cell-selected="{ row }">
+              <el-checkbox
+                :model-value="isStationTemplateSectionRowSelected(row)"
+                :disabled="isStationTemplateSectionRowDisabled(row)"
+                @change="(checked: boolean) => toggleTemplateSectionRow(row, checked)"
+              />
+            </template>
+            <template #cell-action="{ row }"><el-tag :type="row.action === 'conflict' ? 'danger' : row.action === 'create' ? 'success' : 'info'">{{ row.action }}</el-tag></template>
+            <template #cell-issues="{ row }">
+              <div class="row-issues">
+                <el-tag v-for="issue in row.issues" :key="`section:${row.row_number}:${issue.code}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag>
+                <span v-if="!row.issues.length">--</span>
+              </div>
+            </template>
+          </NcDataTable>
+        </template>
       </div>
       <template #footer>
         <el-button @click="stationTemplateDialogVisible = false">关闭</el-button>
@@ -1476,6 +1953,69 @@ function turnbackSummary(row: Station): string {
           type="primary"
           :disabled="!canApplyStationTemplatePreview() || saving"
           @click="applyStationTemplateToDraft"
+        >应用到当前草稿</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="sectionGenerationDialogVisible" title="根据站点生成区间" width="min(1380px, 96vw)" append-to-body destroy-on-close>
+      <div v-if="store.sectionGenerationPreview" class="preview-dialog">
+        <el-alert
+          v-if="locked"
+          title="请先解锁基础资料"
+          description="锁定状态可以查看生成预览，但不能应用到当前草稿。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-if="store.sectionGenerationPreview.blocking_count"
+          title="生成预览存在阻断问题"
+          description="重复站序、节点身份缺失或区间冲突必须先处理。"
+          type="error"
+          :closable="false"
+          show-icon
+        />
+        <div class="preview-summary section-generation-summary">
+          <article class="normal"><span>新增</span><strong>{{ store.sectionGenerationPreview.create_count }}</strong></article>
+          <article><span>更新</span><strong>{{ store.sectionGenerationPreview.update_count }}</strong></article>
+          <article><span>不变</span><strong>{{ store.sectionGenerationPreview.unchanged_count }}</strong></article>
+          <article class="danger"><span>冲突</span><strong>{{ store.sectionGenerationPreview.conflict_count }}</strong></article>
+          <article class="warning"><span>已过期</span><strong>{{ store.sectionGenerationPreview.stale_count }}</strong></article>
+        </div>
+        <div v-if="store.sectionGenerationPreview.issues.length" class="row-issues">
+          <el-tag v-for="issue in store.sectionGenerationPreview.issues" :key="`generation:${issue.code}:${issue.entity_id}:${issue.message}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag>
+        </div>
+        <NcDataTable
+          v-loading="store.sectionGenerationLoading"
+          table-id="rail-base-section-generation-preview"
+          route-key="/rail-transit/base-data"
+          :data="sectionGenerationRows"
+          :columns="sectionGenerationColumns"
+          height="460px"
+          empty-text="当前站点草稿没有可生成区间"
+        >
+          <template #cell-selected="{ row }">
+            <el-checkbox
+              :model-value="isSectionGenerationSelected(row)"
+              :disabled="!row.selectable || row.result === 'CONFLICT'"
+              @change="(checked: boolean) => toggleSectionGenerationRow(row, checked)"
+            />
+          </template>
+          <template #cell-result="{ row }"><el-tag :type="row.result === 'CONFLICT' ? 'danger' : row.result === 'STALE' ? 'warning' : row.result === 'CREATE' || row.result === 'UPDATE' ? 'success' : 'info'">{{ row.result }}</el-tag></template>
+          <template #cell-issues="{ row }">
+            <div class="row-issues">
+              <el-tag v-for="issue in row.issues" :key="`${row.item_id}:${issue.code}`" :type="issueType(issue.severity)">{{ issue.message }}</el-tag>
+              <span v-if="!row.issues.length">--</span>
+            </div>
+          </template>
+        </NcDataTable>
+      </div>
+      <template #footer>
+        <el-button @click="sectionGenerationDialogVisible = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :disabled="locked || saving || selectedSectionGenerationIds.length === 0 || Boolean(store.sectionGenerationPreview?.blocking_count)"
+          @click="applySectionGenerationToDraft"
         >应用到当前草稿</el-button>
       </template>
     </el-dialog>
@@ -1523,16 +2063,20 @@ function turnbackSummary(row: Station): string {
 .inline-file-button input { display: none; }
 .compact-pair { display: grid; grid-template-columns: minmax(58px, 0.7fr) minmax(115px, 1.3fr); gap: 8px; align-items: center; min-width: 190px; }
 .inline-checks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.facility-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 160px; }
+.terminal-extension-editor { display: grid; grid-template-columns: auto minmax(100px, 1fr) 130px minmax(110px, 1fr); gap: 6px; align-items: center; min-width: 420px; }
+.terminal-extension-editor .el-input-number { width: 130px; }
+.section-generation-summary { grid-template-columns: repeat(5, minmax(120px, 1fr)); }
 .field-error :deep(.el-input__wrapper) { box-shadow: 0 0 0 1px var(--nc-danger) inset; }
 @media (max-width: 1360px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
-  .source-summary, .template-summary { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+  .source-summary, .template-summary, .section-generation-summary { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
   .filter-bar { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 900px) {
   .page-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-actions { justify-content: flex-start; }
-  .summary-grid, .source-summary, .template-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .summary-grid, .source-summary, .template-summary, .section-generation-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .filter-bar { grid-template-columns: 1fr; }
 }
 </style>

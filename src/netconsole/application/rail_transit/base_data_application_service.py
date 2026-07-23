@@ -4,6 +4,7 @@ import ipaddress
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -13,6 +14,8 @@ from netconsole.models.api.rail_transit_base_data import (
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
     BaseDataValidationResultDTO,
+    SectionGenerationPreviewDTO,
+    SectionGenerationPreviewRequestDTO,
 )
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataCompensationError,
@@ -23,10 +26,14 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
+from netconsole.services.rail_transit.section_generation_service import SectionGenerationService
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
     STATION_SOURCE_FIELD,
+    legacy_turnback_type_for_facilities,
+    normalize_track_facilities,
+    station_structure_defaults,
 )
 from netconsole.services.trackside_ap_plan_io import normalize_trackside_plan_rows
 from netconsole.services.vehicle_mr_online import parse_train_identity
@@ -42,14 +49,25 @@ _STRUCTURE_TYPES = {"underground", "elevated", "at_grade", "cutting", "mixed", "
 _PLATFORM_LAYOUTS = {"island", "side", "mixed", "stacked_island", "stacked_side", "separated", "unknown"}
 _TURNBACK_TYPES = {"none", "crossover", "pocket_track", "tail_track", "loop", "depot_connection", "other", "unknown"}
 _TURNBACK_DIRECTIONS = {"none", "both", "increasing_to_decreasing", "decreasing_to_increasing", "unknown"}
-_SOURCE_KINDS = {"device_station_field", "template", "manual", "legacy_ap_derived"}
 _INCREASING_DIRECTION_LEADING_ENDS = {"car_1_end", "car_6_end", "unknown"}
+_SOURCE_KINDS = {"device_station_field", "template", "manual", "legacy_ap_derived"}
+_SECTION_KINDS = {"between_stations", "terminal_extension", "depot_connection", "manual", "legacy"}
+_SECTION_DIRECTIONS = {"increasing", "decreasing", "none", "unknown"}
+_SECTION_NODE_TYPES = {"station", "terminal_endpoint", "legacy", "unknown"}
+_SECTION_SOURCE_KINDS = {"generated", "manual", "template", "legacy_ap_derived"}
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class BaseDataFieldValidationError(ValueError):
+    def __init__(self, code: str, message: str, field_name: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.field_name = field_name
 
 
 class RailTransitBaseDataApplicationService:
@@ -66,6 +84,7 @@ class RailTransitBaseDataApplicationService:
         self.query_service = query_service
         self.guard = guard
         self.repository = repository or RailTransitBaseDataRepository(paths)
+        self.section_generation_service = SectionGenerationService(self.repository)
 
     def get_edit_session(self, site_id: str) -> BaseDataEditSessionDTO:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
@@ -83,6 +102,19 @@ class RailTransitBaseDataApplicationService:
             write_denial_reason=denial_reason,
         )
 
+    def preview_section_generation(
+        self,
+        payload: SectionGenerationPreviewRequestDTO,
+    ) -> SectionGenerationPreviewDTO:
+        site_id = SiteManager(self.paths).validate_site_name(payload.site_id)
+        return self.section_generation_service.preview(
+            site_id=site_id,
+            base_revision=payload.base_revision,
+            line_metadata=payload.line_metadata,
+            stations=payload.stations,
+            current_sections=payload.current_sections,
+        )
+
     def validate_changes(
         self,
         site_id: str,
@@ -90,13 +122,30 @@ class RailTransitBaseDataApplicationService:
         changes: Iterable[BaseDataChangeDTO],
     ) -> tuple[BaseDataValidationResultDTO, list[dict[str, Any]]]:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
+        change_rows = list(changes)
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        main_path_code = str(
+            metadata.get("main_path_code") or DEFAULT_MAIN_PATH_CODE
+        ).strip() or DEFAULT_MAIN_PATH_CODE
+        for change in change_rows:
+            if change.entity_type != "site_metadata" or change.action != "update":
+                continue
+            requested_main_path = str(
+                change.values.get("main_path_code") or ""
+            ).strip()
+            if requested_main_path:
+                main_path_code = requested_main_path
         issues: list[BaseDataValidationIssueDTO] = []
         if self.repository.base_data_revision(site_id) != base_revision:
             issues.append(self._issue(0, "BASE_DATA_REVISION_CONFLICT", "基础资料已被其他操作更新，请重新加载"))
         normalized: list[dict[str, Any]] = []
-        for index, change in enumerate(changes):
+        for index, change in enumerate(change_rows):
             try:
-                normalized.append(self._normalize_change(change))
+                normalized.append(
+                    self._normalize_change(change, main_path_code=main_path_code)
+                )
+            except BaseDataFieldValidationError as exc:
+                issues.append(self._issue(index, exc.code, str(exc), exc.field_name))
             except ValueError as exc:
                 issues.append(self._issue(index, "BASE_DATA_VALIDATION_FAILED", str(exc)))
         if not issues:
@@ -145,10 +194,16 @@ class RailTransitBaseDataApplicationService:
             created_count=int(result["created_count"]),
             updated_count=int(result["updated_count"]),
             deleted_count=int(result["deleted_count"]),
+            warnings=[issue.message for issue in validation.issues if not issue.blocking],
             validation_issues=validation.issues,
         )
 
-    def _normalize_change(self, change: BaseDataChangeDTO) -> dict[str, Any]:
+    def _normalize_change(
+        self,
+        change: BaseDataChangeDTO,
+        *,
+        main_path_code: str = DEFAULT_MAIN_PATH_CODE,
+    ) -> dict[str, Any]:
         raw = dict(change.values)
         self._reject_sensitive(raw)
         entity_type = change.entity_type
@@ -166,7 +221,11 @@ class RailTransitBaseDataApplicationService:
         if entity_type == "site_metadata":
             values = self._site_metadata_values(raw)
         elif entity_type == "station":
-            values = self._station_values(raw, action)
+            values = self._station_values(
+                raw,
+                action,
+                main_path_code=main_path_code,
+            )
         elif entity_type == "section":
             values = self._section_values(raw, action)
         elif entity_type == "trackside_ap":
@@ -221,7 +280,12 @@ class RailTransitBaseDataApplicationService:
         }
 
     @staticmethod
-    def _station_values(raw: Mapping[str, Any], action: str) -> dict[str, Any]:
+    def _station_values(
+        raw: Mapping[str, Any],
+        action: str,
+        *,
+        main_path_code: str = DEFAULT_MAIN_PATH_CODE,
+    ) -> dict[str, Any]:
         name = str(raw.get("name") or "").strip()
         old_name = str(raw.get("old_name") or name).strip()
         if not (old_name if action == "delete" else name):
@@ -232,10 +296,47 @@ class RailTransitBaseDataApplicationService:
         participates = _bool(raw.get("participates_in_direction"), default=not special)
         sort_order = _int_or_none(raw.get("sort_order"))
         turnback_capable = _bool(raw.get("turnback_capable"), default=False)
-        turnback_type = _enum(raw.get("turnback_type"), _TURNBACK_TYPES, "unknown" if turnback_capable else "none", "折返类型无效")
-        if not turnback_capable:
-            turnback_type = "none"
+        legacy_turnback_type = _enum(
+            raw.get("turnback_type"),
+            _TURNBACK_TYPES,
+            "unknown" if turnback_capable else "none",
+            "折返类型无效",
+        )
+        try:
+            track_facilities = normalize_track_facilities(
+                raw.get("track_facilities") if "track_facilities" in raw else None,
+                legacy_turnback_type=legacy_turnback_type,
+            )
+        except ValueError as exc:
+            raise BaseDataFieldValidationError(
+                "station_facility_invalid",
+                str(exc),
+                "track_facilities",
+            ) from exc
+        turnback_type = legacy_turnback_type_for_facilities(track_facilities)
+        structure_default, platform_default = station_structure_defaults(
+            node_type,
+            path_code,
+            main_path_code,
+        )
+        center_mileage_text = str(raw.get("center_mileage_text") or "").strip()
+        center_mileage = parse_track_mileage(center_mileage_text)
+        if center_mileage_text and center_mileage.error:
+            raise BaseDataFieldValidationError(
+                "station_center_mileage_invalid",
+                "中心里程格式无效",
+                "center_mileage_text",
+            )
+        terminal_distance = _float_or_none(raw.get("terminal_extension_distance_m"))
+        if terminal_distance is not None and terminal_distance < 0:
+            raise BaseDataFieldValidationError(
+                "station_terminal_extension_distance_invalid",
+                "端点距离不能为负数",
+                "terminal_extension_distance_m",
+            )
+        terminal_mileage_text = str(raw.get("terminal_endpoint_mileage_text") or "").strip()
         return {
+            "node_uid": str(raw.get("node_uid") or (uuid4() if action == "create" else "")).strip(),
             "name": name,
             "old_name": old_name,
             "code": str(raw.get("code") or "").strip(),
@@ -246,13 +347,20 @@ class RailTransitBaseDataApplicationService:
             "node_type": node_type,
             "path_code": path_code,
             "participates_in_direction": participates,
-            "structure_type": _enum(raw.get("structure_type"), _STRUCTURE_TYPES, "unknown", "车站结构无效"),
-            "platform_layout": _enum(raw.get("platform_layout"), _PLATFORM_LAYOUTS, "unknown", "站台形式无效"),
+            "structure_type": _enum(raw.get("structure_type"), _STRUCTURE_TYPES, structure_default, "车站结构无效"),
+            "platform_layout": _enum(raw.get("platform_layout"), _PLATFORM_LAYOUTS, platform_default, "站台形式无效"),
+            "center_mileage_text": center_mileage_text,
+            "center_mileage_m": center_mileage.meters,
             "is_line_terminal": _bool(raw.get("is_line_terminal"), default=False),
             "is_service_terminal": _bool(raw.get("is_service_terminal"), default=False),
             "turnback_capable": turnback_capable,
             "turnback_type": turnback_type,
+            "track_facilities": track_facilities,
             "turnback_direction": _enum(raw.get("turnback_direction"), _TURNBACK_DIRECTIONS, "none", "折返方向无效"),
+            "terminal_extension_enabled": _bool(raw.get("terminal_extension_enabled"), default=False),
+            "terminal_endpoint_label": str(raw.get("terminal_endpoint_label") or "端点").strip()[:100] or "端点",
+            "terminal_extension_distance_m": terminal_distance,
+            "terminal_endpoint_mileage_text": terminal_mileage_text,
             "enabled": _bool(raw.get("enabled"), default=True),
             "source_kind": _enum(raw.get("source_kind"), _SOURCE_KINDS, "manual", "站点来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),
@@ -267,15 +375,42 @@ class RailTransitBaseDataApplicationService:
             raise ValueError("区间名称不能为空")
         if action != "delete" and (not start or not end or start == end):
             raise ValueError("区间起止站必须填写且不能相同")
+        direction_role = _enum(
+            raw.get("direction_role"),
+            _SECTION_DIRECTIONS,
+            "none",
+            "方向角色无效",
+        )
+        auto_generated = _bool(raw.get("auto_generated"), default=False)
+        generation_key = str(raw.get("generation_key") or "").strip()
+        if auto_generated and not generation_key:
+            raise BaseDataFieldValidationError(
+                "section_duplicate_generation_key",
+                "自动区间必须包含稳定生成标识",
+                "generation_key",
+            )
         return {
             "name": name,
             "old_name": str(raw.get("old_name") or name).strip(),
+            "section_code": str(raw.get("section_code") or "").strip(),
+            "section_kind": _enum(raw.get("section_kind"), _SECTION_KINDS, "manual", "区间类型无效"),
+            "path_code": str(raw.get("path_code") or DEFAULT_MAIN_PATH_CODE).strip() or DEFAULT_MAIN_PATH_CODE,
+            "direction_role": direction_role,
+            "line_direction": str(raw.get("line_direction") or raw.get("line_side") or "").strip(),
+            "start_node_type": _enum(raw.get("start_node_type"), _SECTION_NODE_TYPES, "legacy", "起始节点类型无效"),
+            "start_node_uid": str(raw.get("start_node_uid") or "").strip(),
             "start_station": start,
             "old_start_station": str(raw.get("old_start_station") or start).strip(),
+            "end_node_type": _enum(raw.get("end_node_type"), _SECTION_NODE_TYPES, "legacy", "终到节点类型无效"),
+            "end_node_uid": str(raw.get("end_node_uid") or "").strip(),
             "end_station": end,
             "old_end_station": str(raw.get("old_end_station") or end).strip(),
             "line_side": str(raw.get("line_side") or "").strip(),
             "old_line_side": str(raw.get("old_line_side") or raw.get("line_side") or "").strip(),
+            "auto_generated": auto_generated,
+            "generation_key": generation_key,
+            "enabled": _bool(raw.get("enabled"), default=True),
+            "source_kind": _enum(raw.get("source_kind"), _SECTION_SOURCE_KINDS, "manual", "区间来源类型无效"),
             "remark": str(raw.get("remark") or "").strip(),
         }
 
@@ -353,6 +488,8 @@ class RailTransitBaseDataApplicationService:
         issues: list[BaseDataValidationIssueDTO] = []
         existing_stations = self._all_stations(site_id)
         station_names = {item.name for item in existing_stations}
+        station_by_name = {item.name: item.node_uid for item in existing_stations}
+        station_uids = {item.node_uid: item.id for item in existing_stations if item.node_uid}
         station_codes = {
             item.code.casefold(): item.id
             for item in existing_stations
@@ -367,6 +504,13 @@ class RailTransitBaseDataApplicationService:
             (item.path_code.casefold(), item.sort_order): item.id
             for item in existing_stations
             if item.participates_in_direction and item.sort_order is not None
+        }
+        existing_sections = self._all_sections(site_id)
+        section_names = {item.name.casefold(): item.id for item in existing_sections if item.name}
+        generation_keys = {
+            item.generation_key: item.id
+            for item in existing_sections
+            if item.generation_key
         }
         ap_macs = {
             normalize_ap_mac(row.get("ap_mac_norm") or row.get("ap_mac_display")).normalized: f"ap:{row.get('id')}"
@@ -383,6 +527,9 @@ class RailTransitBaseDataApplicationService:
                 if change["action"] == "delete":
                     station_names.discard(old_name)
                     if old_station:
+                        station_by_name.pop(old_station.name, None)
+                        if old_station.node_uid:
+                            station_uids.pop(old_station.node_uid, None)
                         if old_station.code:
                             station_codes.pop(old_station.code.casefold(), None)
                         if old_station.source_station_key:
@@ -392,6 +539,11 @@ class RailTransitBaseDataApplicationService:
                     continue
                 name = values["name"]
                 if old_station:
+                    if not values.get("node_uid"):
+                        values["node_uid"] = old_station.node_uid
+                    station_by_name.pop(old_station.name, None)
+                    if old_station.node_uid:
+                        station_uids.pop(old_station.node_uid, None)
                     if old_station.code:
                         station_codes.pop(old_station.code.casefold(), None)
                     if old_station.source_station_key:
@@ -402,6 +554,14 @@ class RailTransitBaseDataApplicationService:
                     issues.append(self._issue(index, "STATION_DUPLICATE", "站点名称已存在", "name"))
                 station_names.discard(old_name)
                 station_names.add(name)
+                node_uid = str(values.get("node_uid") or "")
+                if not node_uid:
+                    issues.append(self._issue(index, "section_generation_node_identity_missing", "站点缺少稳定节点标识", "node_uid"))
+                elif node_uid in station_uids and station_uids[node_uid] != change.get("entity_id"):
+                    issues.append(self._issue(index, "section_generation_node_identity_missing", "站点稳定节点标识重复", "node_uid"))
+                else:
+                    station_uids[node_uid] = str(change.get("entity_id") or f"new:{index}")
+                    station_by_name[name] = node_uid
                 code = str(values.get("code") or "").casefold()
                 if code and code in station_codes and station_codes[code] != change.get("entity_id"):
                     issues.append(self._issue(index, "STATION_CODE_DUPLICATE", "站点编码已存在", "code"))
@@ -424,12 +584,60 @@ class RailTransitBaseDataApplicationService:
                     if order_key in station_orders and station_orders[order_key] != change.get("entity_id"):
                         issues.append(self._issue(index, "station_order_duplicate", "同一路径内参与方向判断的主线顺序重复", "sort_order"))
                     station_orders[order_key] = str(change.get("entity_id") or f"new:{index}")
-                if values.get("turnback_capable") is True and values.get("turnback_type") == "none":
-                    issues.append(self._issue(index, "station_turnback_type_missing", "可折返节点必须填写折返类型", "turnback_type"))
-            elif change["entity_type"] == "section" and change["action"] != "delete":
-                for field in ("start_station", "end_station"):
-                    if values[field] not in station_names:
-                        issues.append(self._issue(index, "SECTION_STATION_UNKNOWN", "区间引用的站点不存在", field))
+                facilities = set(values.get("track_facilities") or [])
+                turnback_facilities = {"turnback_track", "crossover", "storage_track", "tail_track", "loop"}
+                if not values.get("turnback_capable") and facilities & turnback_facilities:
+                    issues.append(self._issue(index, "station_turnback_facility_mismatch", "已配置折返相关轨道设施，但未标记具备折返能力", "track_facilities", blocking=False))
+                if values.get("turnback_capable") and not facilities & turnback_facilities:
+                    issues.append(self._issue(index, "station_turnback_facility_mismatch", "已标记具备折返能力，但未配置相关轨道设施", "track_facilities", blocking=False))
+                if values.get("turnback_capable") and facilities == {"depot_connection"}:
+                    issues.append(self._issue(index, "station_turnback_facility_mismatch", "仅有出入段线不等同于正常运营折返", "track_facilities", blocking=False))
+                if values.get("is_service_terminal") and not facilities:
+                    issues.append(self._issue(index, "station_turnback_facility_mismatch", "运营终到/折返站未配置轨道设施", "track_facilities", blocking=False))
+                if values.get("turnback_capable") and values.get("turnback_direction") == "unknown":
+                    issues.append(self._issue(index, "station_turnback_direction_unknown", "具备折返能力但折返方向未知", "turnback_direction", blocking=False))
+                if values.get("terminal_extension_enabled") and not values.get("is_line_terminal"):
+                    issues.append(self._issue(index, "station_terminal_extension_without_terminal", "非线路端点不能启用端点延伸区间", "terminal_extension_enabled", blocking=False))
+                terminal_mileage = str(values.get("terminal_endpoint_mileage_text") or "")
+                if terminal_mileage and parse_track_mileage(terminal_mileage).error:
+                    issues.append(self._issue(index, "station_terminal_endpoint_mileage_invalid", "端点里程格式无效", "terminal_endpoint_mileage_text", blocking=False))
+            elif change["entity_type"] == "section":
+                old_name = str(values.get("old_name") or "")
+                old_section = next((item for item in existing_sections if item.name == old_name), None)
+                if old_section:
+                    section_names.pop(old_section.name.casefold(), None)
+                    if old_section.generation_key:
+                        generation_keys.pop(old_section.generation_key, None)
+                if change["action"] == "delete":
+                    continue
+                name_key = str(values.get("name") or "").casefold()
+                if name_key in section_names and section_names[name_key] != change.get("entity_id"):
+                    issues.append(self._issue(index, "section_generation_conflict", "区间名称已存在", "name"))
+                section_names[name_key] = str(change.get("entity_id") or f"new:{index}")
+                generation_key = str(values.get("generation_key") or "")
+                if generation_key:
+                    if generation_key in generation_keys and generation_keys[generation_key] != change.get("entity_id"):
+                        issues.append(self._issue(index, "section_duplicate_generation_key", "自动区间生成标识重复", "generation_key"))
+                    generation_keys[generation_key] = str(change.get("entity_id") or f"new:{index}")
+                for prefix in ("start", "end"):
+                    node_type = str(values.get(f"{prefix}_node_type") or "legacy")
+                    node_uid = str(values.get(f"{prefix}_node_uid") or "")
+                    station_name = str(values.get(f"{prefix}_station") or "")
+                    if node_type == "station" and not node_uid and station_name in station_by_name:
+                        node_uid = station_by_name[station_name]
+                        values[f"{prefix}_node_uid"] = node_uid
+                    if node_type == "station" and node_uid not in station_uids:
+                        code = "section_generation_node_identity_missing" if values.get("auto_generated") else "SECTION_STATION_UNKNOWN"
+                        issues.append(self._issue(index, code, "区间引用的正式站点不存在", f"{prefix}_node_uid"))
+                    elif node_type == "terminal_endpoint" and not node_uid.startswith("endpoint:"):
+                        issues.append(self._issue(index, "section_generation_node_identity_missing", "区间端点稳定标识无效", f"{prefix}_node_uid"))
+                    elif node_type in {"legacy", "unknown"} and not node_uid:
+                        issues.append(self._issue(index, "section_legacy_node_unresolved", "区间尚未关联正式节点", f"{prefix}_node_uid", blocking=False))
+                if (
+                    values.get("start_node_uid")
+                    and values.get("start_node_uid") == values.get("end_node_uid")
+                ):
+                    issues.append(self._issue(index, "section_direction_mismatch", "区间起始节点和终到节点不能相同", "start_node_uid"))
             elif change["entity_type"] == "trackside_ap":
                 if change["action"] in {"update", "delete"}:
                     ap_macs = {mac: entity for mac, entity in ap_macs.items() if entity != change.get("entity_id")}
@@ -450,6 +658,16 @@ class RailTransitBaseDataApplicationService:
         page = 1
         while True:
             page_data = self.query_service.list_stations(site_id, page=page, page_size=200)
+            items.extend(page_data.items)
+            if len(items) >= page_data.total or not page_data.items:
+                return items
+            page += 1
+
+    def _all_sections(self, site_id: str):
+        items = []
+        page = 1
+        while True:
+            page_data = self.query_service.list_sections(site_id, page=page, page_size=200)
             items.extend(page_data.items)
             if len(items) >= page_data.total or not page_data.items:
                 return items
@@ -497,13 +715,20 @@ class RailTransitBaseDataApplicationService:
                 cls._reject_sensitive(item)
 
     @staticmethod
-    def _issue(index: int, code: str, message: str, field_name: str = "") -> BaseDataValidationIssueDTO:
+    def _issue(
+        index: int,
+        code: str,
+        message: str,
+        field_name: str = "",
+        *,
+        blocking: bool = True,
+    ) -> BaseDataValidationIssueDTO:
         return BaseDataValidationIssueDTO(
             change_index=index,
             code=code,
             message=message,
             field_name=field_name,
-            blocking=True,
+            blocking=blocking,
         )
 
 
@@ -511,6 +736,12 @@ def _int_or_none(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
 
 
 def _bool(value: Any, *, default: bool) -> bool:

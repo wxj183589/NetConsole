@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable, TypeVar
+from uuid import NAMESPACE_URL, uuid5
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import (
@@ -47,6 +48,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
     STATION_SOURCE_FIELD,
+    normalize_track_facilities,
     normalize_station_source_value,
 )
 from netconsole.utils.mileage import parse_track_mileage
@@ -652,7 +654,11 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "mr_role_duplicate", "mr", mr.id, mr.name, "role", mr.role, "同一列车存在重复 MR 角色", "核对列车 MR 配置"))
         issues.extend(self._unbound_mr_issues(site_id))
         issues.extend(self._static_ip_issues(site_id))
-        issues.extend(self._station_issues(self._stations(self._all_points(site_id, include_runtime=False), site_id=site_id)))
+        points = self._all_points(site_id, include_runtime=False)
+        stations = self._stations(points, site_id=site_id)
+        sections = self._sections(points)
+        issues.extend(self._station_issues(stations))
+        issues.extend(self._section_issues(sections, stations))
         return issues
 
     def _unbound_mr_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
@@ -791,24 +797,112 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("warning", "station_special_node_in_direction", "station", station.id, station.name, "participates_in_direction", "true", "特殊节点不应默认参与主线方向判断", "关闭参与方向判断或补充拓扑资料"))
             if station.node_type in {"parking_lot", "depot"} and station.path_code.casefold() == DEFAULT_MAIN_PATH_CODE.casefold() and station.sort_order is not None:
                 issues.append(self._issue("warning", "station_special_node_in_direction", "station", station.id, station.name, "sort_order", str(station.sort_order), "特殊节点设置了 MAIN 顺序但没有拓扑资料", "确认接轨拓扑后再纳入方向判断"))
-            if station.turnback_capable and station.turnback_type == "none":
-                issues.append(self._issue("error", "station_turnback_type_missing", "station", station.id, station.name, "turnback_type", station.turnback_type, "可折返节点必须填写折返类型", "选择折返类型"))
-            if station.is_service_terminal and not station.turnback_capable:
-                issues.append(self._issue("warning", "station_terminal_without_turnback", "station", station.id, station.name, "turnback_capable", "false", "运营终点未标记折返能力", "核对运营终点和折返能力"))
+            if not station.center_mileage_text:
+                issues.append(self._issue("warning", "station_center_mileage_missing", "station", station.id, station.name, "center_mileage_text", "", "中心里程为空", "按正式线路资料补充中心里程"))
+            elif parse_track_mileage(station.center_mileage_text).error:
+                issues.append(self._issue("error", "station_center_mileage_invalid", "station", station.id, station.name, "center_mileage_text", station.center_mileage_text, "中心里程格式无效", "使用 K12+345、12+345 或米数格式"))
+            turnback_facilities = {"turnback_track", "crossover", "storage_track", "tail_track", "loop"}
+            if not station.turnback_capable and set(station.track_facilities) & turnback_facilities:
+                issues.append(self._issue("warning", "station_turnback_facility_mismatch", "station", station.id, station.name, "track_facilities", "、".join(station.track_facilities), "已配置折返相关轨道设施，但未标记具备折返能力", "核对实际折返能力"))
+            if station.turnback_capable and not (set(station.track_facilities) & turnback_facilities):
+                issues.append(self._issue("warning", "station_turnback_facility_mismatch", "station", station.id, station.name, "track_facilities", "、".join(station.track_facilities), "已标记具备折返能力，但未配置相关轨道设施", "补充轨道设施或取消折返能力"))
+            if station.turnback_capable and set(station.track_facilities) == {"depot_connection"}:
+                issues.append(self._issue("warning", "station_turnback_facility_mismatch", "station", station.id, station.name, "track_facilities", "depot_connection", "仅有出入段线不等同于正常运营折返", "核对折返能力"))
+            if station.is_service_terminal and not station.track_facilities:
+                issues.append(self._issue("warning", "station_turnback_facility_mismatch", "station", station.id, station.name, "track_facilities", "", "运营终到/折返站未配置轨道设施", "补充实际轨道设施"))
             if station.turnback_capable and station.turnback_direction == "unknown":
                 issues.append(self._issue("warning", "station_turnback_direction_unknown", "station", station.id, station.name, "turnback_direction", "unknown", "可折返但折返方向未知", "补充折返方向"))
+            if station.terminal_extension_enabled and not station.is_line_terminal:
+                issues.append(self._issue("warning", "station_terminal_extension_without_terminal", "station", station.id, station.name, "terminal_extension_enabled", "true", "非线路端点不能启用端点延伸区间", "先确认线路端点"))
+            if station.terminal_extension_distance_m is not None and station.terminal_extension_distance_m < 0:
+                issues.append(self._issue("error", "station_terminal_extension_distance_invalid", "station", station.id, station.name, "terminal_extension_distance_m", str(station.terminal_extension_distance_m), "端点距离不能为负数", "修正端点距离"))
+            if station.terminal_endpoint_mileage_text and parse_track_mileage(station.terminal_endpoint_mileage_text).error:
+                issues.append(self._issue("warning", "station_terminal_endpoint_mileage_invalid", "station", station.id, station.name, "terminal_endpoint_mileage_text", station.terminal_endpoint_mileage_text, "端点里程格式无效", "使用 K12+345、12+345 或米数格式"))
             if station.source_sync_status == "stale":
                 issues.append(self._issue("warning", "station_source_stale", "station", station.id, station.name, "source_station_value", station.source_station_value, "来源站点已不存在", "核对设备管理 station 字段或保留人工资料"))
             if station.source_kind == "legacy_ap_derived":
                 issues.append(self._issue("warning", "station_legacy_source_unconfirmed", "station", station.id, station.name, "source_kind", station.source_kind, "旧 AP 派生站点尚未确认来源", "从设备管理来源或模板确认后保存"))
             if station.source_station_key and source_keys[station.source_station_key.casefold()] > 1:
                 issues.append(self._issue("error", "station_source_ambiguous_match", "station", station.id, station.name, "source_station_key", station.source_station_value, "同一来源键指向多个正式站点", "人工合并重复来源"))
+        main_stations = [
+            station
+            for station in stations
+            if station.enabled
+            and station.node_type == "station"
+            and station.path_code.casefold() == DEFAULT_MAIN_PATH_CODE.casefold()
+        ]
+        if main_stations and not any(station.is_line_terminal for station in main_stations):
+            issues.append(self._issue("warning", "section_generation_endpoint_ambiguous", "station", "", "MAIN", "is_line_terminal", "", "MAIN 路径没有标记线路端点", "标记主线低序和高序线路端点"))
+        for station in main_stations:
+            if station.is_line_terminal and not station.terminal_extension_enabled:
+                issues.append(self._issue("warning", "station_terminal_extension_disabled", "station", station.id, station.name, "terminal_extension_enabled", "false", "线路端点未配置端点延伸区间", "确认终点站外侧是否仍有轨道"))
+        return issues
+
+    def _section_issues(
+        self,
+        sections: list[SectionDTO],
+        stations: list[StationDTO],
+    ) -> list[DataQualityIssueDTO]:
+        issues: list[DataQualityIssueDTO] = []
+        station_uids = {station.node_uid for station in stations if station.node_uid}
+        generation_keys = Counter(section.generation_key for section in sections if section.generation_key)
+        names = Counter(section.name.casefold() for section in sections if section.name)
+        for section in sections:
+            if section.name and names[section.name.casefold()] > 1:
+                issues.append(self._issue("error", "section_generation_conflict", "section", section.id, section.name, "name", section.name, "区间名称重复", "核对人工区间和自动生成区间"))
+            if section.generation_key and generation_keys[section.generation_key] > 1:
+                issues.append(self._issue("error", "section_duplicate_generation_key", "section", section.id, section.name, "generation_key", section.generation_key, "自动区间生成标识重复", "删除或修正重复自动区间"))
+            if (
+                section.start_node_uid
+                and section.end_node_uid
+                and section.start_node_uid == section.end_node_uid
+            ) or (
+                not section.start_node_uid
+                and not section.end_node_uid
+                and section.start_station
+                and section.start_station == section.end_station
+            ):
+                issues.append(self._issue("error", "section_direction_mismatch", "section", section.id, section.name, "start_node_uid", section.start_station, "区间起始节点和终到节点不能相同", "修正区间节点"))
+            if section.direction_role not in {"increasing", "decreasing", "none", "unknown"}:
+                issues.append(self._issue("error", "section_direction_mismatch", "section", section.id, section.name, "direction_role", section.direction_role, "区间方向角色无效", "修正方向角色"))
+            if section.auto_generated:
+                for field, node_type, node_uid in (
+                    ("start_node_uid", section.start_node_type, section.start_node_uid),
+                    ("end_node_uid", section.end_node_type, section.end_node_uid),
+                ):
+                    valid = (
+                        node_type == "station" and node_uid in station_uids
+                    ) or (
+                        node_type == "terminal_endpoint" and node_uid.startswith("endpoint:")
+                    )
+                    if not valid:
+                        issues.append(self._issue("error", "section_generation_node_identity_missing", "section", section.id, section.name, field, node_uid, "自动区间引用的稳定节点不存在", "重新生成区间并核对站点"))
+            elif not section.start_node_uid or not section.end_node_uid:
+                issues.append(self._issue("warning", "section_legacy_node_unresolved", "section", section.id, section.name, "start_node_uid/end_node_uid", "", "旧区间尚未关联正式节点", "在区间维护中关联正式站点或端点"))
+            if section.ap_count == 0:
+                issues.append(self._issue("warning", "section_ap_reference_unresolved", "section", section.id, section.name, "ap_count", "0", "区间没有关联轨旁 AP", "核对轨旁 AP 正式区间归属"))
         return issues
 
     def _stations(self, aps: list[TracksideApDTO], *, site_id: str = "") -> list[StationDTO]:
+        endpoint_names: set[str] = set()
+        for ap in aps:
+            if ap.record_kind != "__base_section__":
+                continue
+            if ap.base_metadata.get("start_node_type") == "terminal_endpoint" and ap.section_start_station:
+                endpoint_names.add(ap.section_start_station)
+            if ap.base_metadata.get("end_node_type") == "terminal_endpoint" and ap.section_end_station:
+                endpoint_names.add(ap.section_end_station)
         names = {ap.station for ap in aps if ap.station}
-        names.update(ap.section_start_station for ap in aps if ap.section_start_station)
-        names.update(ap.section_end_station for ap in aps if ap.section_end_station)
+        names.update(
+            ap.section_start_station
+            for ap in aps
+            if ap.section_start_station and ap.section_start_station not in endpoint_names
+        )
+        names.update(
+            ap.section_end_station
+            for ap in aps
+            if ap.section_end_station and ap.section_end_station not in endpoint_names
+        )
         site_meta = self._site_meta(site_id) if site_id else {}
         main_path_code = str(site_meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE)
         source_group = str(site_meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP)
@@ -820,6 +914,10 @@ class RailTransitBaseDataQueryService:
                 None,
             )
             metadata = metadata_row.base_metadata if metadata_row else {}
+            node_uid = str(metadata.get("node_uid") or "")
+            if not node_uid:
+                identity = metadata_row.id if metadata_row else f"legacy:{name}"
+                node_uid = str(uuid5(NAMESPACE_URL, f"netconsole:{site_id}:station:{identity}"))
             source_value = str(metadata.get("source_station_value") or "")
             source_key = str(metadata.get("source_station_key") or normalize_station_source_value(source_value)[1])
             node_type = str(metadata.get("node_type") or "station")
@@ -829,6 +927,16 @@ class RailTransitBaseDataQueryService:
             participates = bool(metadata.get("participates_in_direction", not special))
             raw_sort_order = metadata.get("sort_order")
             sort_order = self._int_or_none(raw_sort_order) if raw_sort_order not in (None, "") else (index if source_kind == "legacy_ap_derived" else None)
+            turnback_type = str(metadata.get("turnback_type") or "none")
+            try:
+                track_facilities = normalize_track_facilities(
+                    metadata.get("track_facilities"),
+                    legacy_turnback_type=turnback_type,
+                )
+            except ValueError:
+                track_facilities = normalize_track_facilities(None, legacy_turnback_type=turnback_type)
+            center_mileage_text = str(metadata.get("center_mileage_text") or "")
+            center_mileage = parse_track_mileage(center_mileage_text)
             if source_key and source_key in source_counts:
                 source_device_count, source_last_seen_at = source_counts[source_key]
                 sync_status = "matched"
@@ -851,7 +959,8 @@ class RailTransitBaseDataQueryService:
             mileages = [ap.mileage.meters for ap in related if ap.mileage.meters is not None]
             result.append(
                 StationDTO(
-                    id=self._derived_id("station", name),
+                    id=self._derived_id("station", node_uid),
+                    node_uid=node_uid,
                     name=name,
                     code=str(metadata.get("code") or ""),
                     line_name=(metadata_row.line_name if metadata_row else "") or next((ap.line_name for ap in related if ap.line_name), ""),
@@ -868,11 +977,18 @@ class RailTransitBaseDataQueryService:
                     participates_in_direction=participates,
                     structure_type=str(metadata.get("structure_type") or "unknown"),  # type: ignore[arg-type]
                     platform_layout=str(metadata.get("platform_layout") or "unknown"),  # type: ignore[arg-type]
+                    center_mileage_text=center_mileage_text,
+                    center_mileage_m=center_mileage.meters,
                     is_line_terminal=bool(metadata.get("is_line_terminal", False)),
                     is_service_terminal=bool(metadata.get("is_service_terminal", False)),
                     turnback_capable=bool(metadata.get("turnback_capable", False)),
-                    turnback_type=str(metadata.get("turnback_type") or "none"),  # type: ignore[arg-type]
+                    turnback_type=turnback_type,  # type: ignore[arg-type]
+                    track_facilities=track_facilities,  # type: ignore[arg-type]
                     turnback_direction=str(metadata.get("turnback_direction") or "none"),  # type: ignore[arg-type]
+                    terminal_extension_enabled=bool(metadata.get("terminal_extension_enabled", False)),
+                    terminal_endpoint_label=str(metadata.get("terminal_endpoint_label") or "端点"),
+                    terminal_extension_distance_m=self._float_or_none(metadata.get("terminal_extension_distance_m")),
+                    terminal_endpoint_mileage_text=str(metadata.get("terminal_endpoint_mileage_text") or ""),
                     enabled=bool(metadata.get("enabled", True)),
                     source_kind=source_kind,  # type: ignore[arg-type]
                     source_device_count=source_device_count,
@@ -889,28 +1005,66 @@ class RailTransitBaseDataQueryService:
         ]
 
     def _sections(self, aps: list[TracksideApDTO]) -> list[SectionDTO]:
+        result: list[SectionDTO] = []
+        actual_aps = [ap for ap in aps if self._is_ap_record(ap)]
+        formal_rows = [ap for ap in aps if ap.record_kind == "__base_section__" and ap.section]
+        formal_names = {row.section for row in formal_rows}
+        for metadata_row in formal_rows:
+            metadata = metadata_row.base_metadata
+            ap_rows = [ap for ap in actual_aps if ap.section == metadata_row.section]
+            mileages = [ap.mileage.meters for ap in ap_rows if ap.mileage.meters is not None]
+            generation_key = str(metadata.get("generation_key") or "")
+            identity = generation_key or metadata_row.id
+            line_direction = str(metadata.get("line_direction") or metadata_row.line_side)
+            result.append(
+                SectionDTO(
+                    id=self._derived_id("section", identity),
+                    name=metadata_row.section,
+                    section_code=str(metadata.get("section_code") or ""),
+                    section_kind=str(metadata.get("section_kind") or "manual"),  # type: ignore[arg-type]
+                    path_code=str(metadata.get("path_code") or DEFAULT_MAIN_PATH_CODE),
+                    direction_role=str(metadata.get("direction_role") or "unknown"),  # type: ignore[arg-type]
+                    line_direction=line_direction,
+                    start_node_type=str(metadata.get("start_node_type") or "legacy"),  # type: ignore[arg-type]
+                    start_node_uid=str(metadata.get("start_node_uid") or ""),
+                    start_station=metadata_row.section_start_station,
+                    end_node_type=str(metadata.get("end_node_type") or "legacy"),  # type: ignore[arg-type]
+                    end_node_uid=str(metadata.get("end_node_uid") or ""),
+                    end_station=metadata_row.section_end_station,
+                    line_side=metadata_row.line_side,
+                    auto_generated=bool(metadata.get("auto_generated", False)),
+                    generation_key=generation_key,
+                    enabled=bool(metadata.get("enabled", True)),
+                    source_kind=str(metadata.get("source_kind") or "manual"),  # type: ignore[arg-type]
+                    ap_count=len(ap_rows),
+                    mileage_min=min(mileages, default=None),
+                    mileage_max=max(mileages, default=None),
+                    remark=str(metadata.get("remark") or metadata_row.remark),
+                )
+            )
         grouped: dict[tuple[str, str, str, str], list[TracksideApDTO]] = defaultdict(list)
-        for ap in aps:
-            if ap.section:
+        for ap in actual_aps:
+            if ap.section and ap.section not in formal_names:
                 grouped[(ap.section, ap.section_start_station, ap.section_end_station, ap.line_side)].append(ap)
-        result = []
         for key, rows in grouped.items():
             name, start, end, line_side = key
-            metadata_row = next((ap for ap in rows if ap.record_kind == "__base_section__"), None)
-            metadata = metadata_row.base_metadata if metadata_row else {}
-            ap_rows = [ap for ap in rows if self._is_ap_record(ap)]
-            mileages = [ap.mileage.meters for ap in ap_rows if ap.mileage.meters is not None]
+            mileages = [ap.mileage.meters for ap in rows if ap.mileage.meters is not None]
             result.append(
                 SectionDTO(
                     id=self._derived_id("section", *key),
                     name=name,
+                    section_kind="legacy",
+                    direction_role="unknown",
+                    line_direction=line_side,
+                    start_node_type="legacy",
                     start_station=start,
+                    end_node_type="legacy",
                     end_station=end,
                     line_side=line_side,
-                    ap_count=len(ap_rows),
+                    source_kind="legacy_ap_derived",
+                    ap_count=len(rows),
                     mileage_min=min(mileages, default=None),
                     mileage_max=max(mileages, default=None),
-                    remark=str(metadata.get("remark") or (metadata_row.remark if metadata_row else "")),
                 )
             )
         return result
@@ -1101,6 +1255,13 @@ class RailTransitBaseDataQueryService:
     def _int_or_none(value: Any) -> int | None:
         try:
             return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        try:
+            return float(value) if value not in (None, "") else None
         except (TypeError, ValueError):
             return None
 

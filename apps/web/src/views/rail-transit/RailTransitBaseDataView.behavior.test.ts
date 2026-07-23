@@ -19,7 +19,13 @@ const mocks = vi.hoisted(() => ({
   importOperations: vi.fn(),
   stationSourcePreview: vi.fn(),
   stationTemplatePreview: vi.fn(),
+  sectionGenerationPreview: vi.fn(),
+  stationsPage: vi.fn(),
+  sectionsPage: vi.fn(),
   download: vi.fn(),
+  messageSuccess: vi.fn(),
+  messageWarning: vi.fn(),
+  messageError: vi.fn(),
 }))
 
 vi.mock('../../api/railTransitBaseData', () => ({
@@ -31,24 +37,37 @@ vi.mock('../../api/railTransitBaseData', () => ({
   listRailTransitImportOperations: mocks.importOperations,
   listDataQualityIssueGroups: mocks.issuePage,
   listRelations: mocks.emptyPage,
-  listSections: mocks.emptyPage,
-  listStations: mocks.emptyPage,
+  listSections: mocks.sectionsPage,
+  listStations: mocks.stationsPage,
   listTracksideAps: mocks.emptyPage,
   listTrains: mocks.emptyPage,
   listVehicleMrs: mocks.emptyPage,
   previewRailTransitImport: vi.fn(),
+  previewSectionGeneration: mocks.sectionGenerationPreview,
   getStationSourcePreview: mocks.stationSourcePreview,
   previewStationTemplate: mocks.stationTemplatePreview,
   rollbackRailTransitImport: vi.fn(),
   saveRailTransitBaseDataChanges: mocks.save,
-  stationTemplateDownloadRequest: vi.fn(() => ({ apiPath: '/api/rail-transit/base-data/station-template', suggestedName: '线路与站点基础资料模板.xlsx' })),
-  stationTemplateExportDownloadRequest: vi.fn(() => ({ apiPath: '/api/rail-transit/base-data/station-template-export', suggestedName: '线路与站点基础资料.xlsx' })),
+  stationTemplateDownloadRequest: vi.fn(() => ({ apiPath: '/api/rail-transit/base-data/station-template', suggestedName: '线路站点与区间基础资料模板.xlsx' })),
+  stationTemplateExportDownloadRequest: vi.fn(() => ({ apiPath: '/api/rail-transit/base-data/station-template-export', suggestedName: '线路站点与区间基础资料.xlsx' })),
   validateRailTransitBaseDataChanges: mocks.validate,
 }))
 
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.download,
 }))
+
+vi.mock('element-plus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('element-plus')>()
+  return {
+    ...actual,
+    ElMessage: {
+      success: mocks.messageSuccess,
+      warning: mocks.messageWarning,
+      error: mocks.messageError,
+    },
+  }
+})
 
 vi.mock('../../components/feedback/useConfirm', () => ({
   useConfirm: () => ({
@@ -87,7 +106,7 @@ const InputStub = defineComponent({
 })
 const SelectStub = defineComponent({
   inheritAttrs: false,
-  props: { modelValue: { type: [String, Boolean], default: '' }, disabled: Boolean },
+  props: { modelValue: { type: [String, Boolean, Array], default: '' }, disabled: Boolean },
   emits: ['update:modelValue', 'change'],
   methods: {
     update(event: Event) {
@@ -139,8 +158,13 @@ const DataTableStub = defineComponent({
         <slot name="cell-selected" :row="row" />
         <slot name="cell-issues" :row="row" />
         <slot name="cell-node_type" :row="row" />
+        <slot name="cell-name" :row="row" />
         <slot name="cell-match_status" :row="row" />
         <slot name="cell-action" :row="row" />
+        <slot name="cell-center_mileage_text" :row="row" />
+        <slot name="cell-track_facilities" :row="row" />
+        <slot name="cell-structure_platform" :row="row" />
+        <slot name="cell-result" :row="row" />
       </div>
       <slot />
     </div>
@@ -193,6 +217,7 @@ const writableSession = {
 }
 const sourceStationWuxiang = {
   id: 'new:source:wuxiang',
+  node_uid: 'node-wuxiang',
   name: '五乡',
   code: '32',
   line_name: '',
@@ -207,13 +232,20 @@ const sourceStationWuxiang = {
   node_type: 'station',
   path_code: 'MAIN',
   participates_in_direction: true,
-  structure_type: 'unknown',
-  platform_layout: 'unknown',
+  structure_type: 'underground',
+  platform_layout: 'island',
+  center_mileage_text: '',
+  center_mileage_m: null,
   is_line_terminal: false,
   is_service_terminal: false,
   turnback_capable: false,
   turnback_type: 'none',
+  track_facilities: [],
   turnback_direction: 'none',
+  terminal_extension_enabled: false,
+  terminal_endpoint_label: '端点',
+  terminal_extension_distance_m: null,
+  terminal_endpoint_mileage_text: '',
   enabled: true,
   source_kind: 'device_station_field',
   source_device_count: 2,
@@ -231,6 +263,8 @@ const sourceParkingLot = {
   node_type: 'parking_lot',
   path_code: 'UNASSIGNED',
   participates_in_direction: false,
+  structure_type: 'unknown',
+  platform_layout: 'unknown',
   source_device_count: 1,
 }
 const sourceConflict = {
@@ -365,10 +399,108 @@ const stationTemplatePreviewPayload = {
     valid: true,
     issues: [],
   }],
+  section_rows: [],
+  section_sheet_present: true,
   create_count: 1,
   update_count: 0,
   unchanged_count: 0,
   conflict_count: 0,
+  blocking_count: 0,
+  issues: [],
+}
+const generatedIncreasingSection = {
+  id: 'new:auto:increasing',
+  name: '高桥西-高桥-上行',
+  section_code: 'AUTO-INCREASING',
+  section_kind: 'between_stations',
+  path_code: 'MAIN',
+  direction_role: 'increasing',
+  line_direction: '上行',
+  start_node_type: 'station',
+  start_node_uid: 'node-low',
+  start_station: '高桥西',
+  end_node_type: 'station',
+  end_node_uid: 'node-high',
+  end_station: '高桥',
+  line_side: '上行',
+  auto_generated: true,
+  generation_key: 'MAIN|between|node-low|node-high|increasing',
+  enabled: true,
+  source_kind: 'generated',
+  ap_count: 0,
+  mileage_min: null,
+  mileage_max: null,
+  remark: '',
+}
+const generatedDecreasingSection = {
+  ...generatedIncreasingSection,
+  id: 'new:auto:decreasing',
+  name: '高桥西-高桥-下行',
+  section_code: 'AUTO-DECREASING',
+  direction_role: 'decreasing',
+  line_direction: '下行',
+  start_node_uid: 'node-high',
+  start_station: '高桥',
+  end_node_uid: 'node-low',
+  end_station: '高桥西',
+  line_side: '下行',
+  generation_key: 'MAIN|between|node-low|node-high|decreasing',
+}
+const staleGeneratedSection = {
+  ...generatedIncreasingSection,
+  id: 'section:stale',
+  name: '旧区间-上行',
+  section_code: 'AUTO-STALE',
+  start_node_uid: 'node-old-low',
+  start_station: '旧站甲',
+  end_node_uid: 'node-old-high',
+  end_station: '旧站乙',
+  generation_key: 'MAIN|between|node-old-low|node-old-high|increasing',
+}
+const sectionGenerationPreviewPayload = {
+  site_id: 'demo',
+  base_revision: 'a'.repeat(64),
+  generated_sections: [
+    {
+      item_id: 'generation:create:increasing',
+      result: 'CREATE',
+      proposed_section: generatedIncreasingSection,
+      current_section: null,
+      selected_by_default: true,
+      selectable: true,
+      issues: [],
+    },
+    {
+      item_id: 'generation:create:decreasing',
+      result: 'CREATE',
+      proposed_section: generatedDecreasingSection,
+      current_section: null,
+      selected_by_default: true,
+      selectable: true,
+      issues: [],
+    },
+    {
+      item_id: 'generation:stale',
+      result: 'STALE',
+      proposed_section: null,
+      current_section: staleGeneratedSection,
+      selected_by_default: false,
+      selectable: true,
+      issues: [{
+        severity: 'warning',
+        code: 'section_generation_stale',
+        message: '旧自动区间已过期，默认保留',
+        field_name: 'generation_key',
+        blocking: false,
+        entity_id: 'section:stale',
+      }],
+    },
+  ],
+  create_count: 2,
+  update_count: 0,
+  unchanged_count: 0,
+  conflict_count: 0,
+  stale_count: 1,
   blocking_count: 0,
   issues: [],
 }
@@ -384,6 +516,8 @@ describe('轨道交通基础资料编辑闭环', () => {
       warnings: [], validation_issues: [],
     })
     mocks.emptyPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+    mocks.stationsPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
+    mocks.sectionsPage.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
     mocks.issuePage.mockResolvedValue({
       items: [], total: 0, page: 1, page_size: 50, issue_total: 0,
       blocking_total: 0, warning_total: 0, info_total: 0, code_counts: {},
@@ -396,6 +530,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     mocks.importOperations.mockResolvedValue([])
     mocks.stationSourcePreview.mockResolvedValue(stationSourcePreviewPayload)
     mocks.stationTemplatePreview.mockResolvedValue(stationTemplatePreviewPayload)
+    mocks.sectionGenerationPreview.mockResolvedValue(sectionGenerationPreviewPayload)
     mocks.download.mockResolvedValue({ status: 'saved' })
   })
 
@@ -552,7 +687,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     await flushPromises()
 
     expect(mocks.stationTemplatePreview).toHaveBeenCalledOnce()
-    expect(wrapper.text()).toContain('站点模板导入预览')
+    expect(wrapper.text()).toContain('基础资料模板导入预览')
     expect(wrapper.text()).toContain('宝幢')
     await button(wrapper, '应用到当前草稿').trigger('click')
     await nextTick()
@@ -579,6 +714,231 @@ describe('轨道交通基础资料编辑闭环', () => {
       }),
     ]))
     expect(mocks.save).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('下载模板区分桌面保存、用户取消和真实失败', async () => {
+    const wrapper = await mountView()
+
+    await button(wrapper, '下载模板').trigger('click')
+    await flushPromises()
+    expect(mocks.download).toHaveBeenLastCalledWith({
+      apiPath: '/api/rail-transit/base-data/station-template',
+      suggestedName: '线路站点与区间基础资料模板.xlsx',
+    })
+    expect(mocks.messageSuccess).toHaveBeenLastCalledWith('线路站点与区间模板已保存')
+
+    mocks.messageSuccess.mockClear()
+    mocks.download.mockResolvedValueOnce({ status: 'cancelled' })
+    await button(wrapper, '下载模板').trigger('click')
+    await flushPromises()
+    expect(mocks.messageSuccess).not.toHaveBeenCalled()
+    expect(mocks.messageError).not.toHaveBeenCalled()
+
+    mocks.download.mockResolvedValueOnce({ status: 'failed', error: '目标文件不可写' })
+    await button(wrapper, '下载模板').trigger('click')
+    await flushPromises()
+    expect(mocks.messageError).toHaveBeenLastCalledWith('目标文件不可写')
+    wrapper.unmount()
+  })
+
+  it('未保存草稿导出正式数据时给出提示并调用正确接口', async () => {
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    await button(wrapper, '新增节点').trigger('click')
+    await nextTick()
+
+    await button(wrapper, '导出当前').trigger('click')
+    await flushPromises()
+
+    expect(mocks.messageWarning).toHaveBeenCalledWith('未保存修改不包含在本次导出中')
+    expect(mocks.download).toHaveBeenLastCalledWith({
+      apiPath: '/api/rail-transit/base-data/station-template-export',
+      suggestedName: '线路站点与区间基础资料.xlsx',
+    })
+    wrapper.unmount()
+  })
+
+  it('MAIN 手工新站默认地下岛式且中心里程进入待保存变更', async () => {
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    await button(wrapper, '新增节点').trigger('click')
+    await nextTick()
+
+    const stationTable = wrapper.get('[data-table-id="rail-base-stations"]')
+    await stationTable.get('input:not([type])').setValue('高桥西')
+    await stationTable.get('input[placeholder="如 K12+345"]').setValue('K12+345')
+    await nextTick()
+    expect(wrapper.text()).toContain('未保存修改')
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const payload = mocks.validate.mock.calls.at(-1)?.[0]
+    expect(payload.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entity_type: 'station',
+        action: 'create',
+        values: expect.objectContaining({
+          name: '高桥西',
+          path_code: 'MAIN',
+          structure_type: 'underground',
+          platform_layout: 'island',
+          center_mileage_text: 'K12+345',
+        }),
+      }),
+    ]))
+    wrapper.unmount()
+  })
+
+  it('锁定状态以多个标签展示轨道设施并允许模板预览但禁止应用', async () => {
+    mocks.stationsPage.mockResolvedValue({
+      items: [{
+        ...sourceStationWuxiang,
+        id: 'station:wuxiang',
+        track_facilities: ['turnback_track', 'storage_track', 'depot_connection'],
+      }],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    const wrapper = await mountView()
+    const stationTable = wrapper.get('[data-table-id="rail-base-stations"]')
+    expect(stationTable.text()).toContain('折返线')
+    expect(stationTable.text()).toContain('存车线')
+    expect(stationTable.text()).toContain('出入段线')
+
+    const input = wrapper.get('input[accept=".xlsx"]')
+    Object.defineProperty(input.element, 'files', {
+      value: [new File(['xlsx'], '线路站点与区间基础资料.xlsx')],
+      configurable: true,
+    })
+    await input.trigger('change')
+    await flushPromises()
+    expect(wrapper.text()).toContain('基础资料模板导入预览')
+    expect(button(wrapper, '应用到当前草稿').attributes('disabled')).toBeDefined()
+    expect(mocks.save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('区间生成预览使用当前草稿，默认保留过期项并可取消单个方向', async () => {
+    mocks.stationsPage.mockResolvedValue({
+      items: [
+        {
+          ...sourceStationWuxiang,
+          id: 'station:low',
+          node_uid: 'node-low',
+          name: '高桥西',
+          code: '11',
+          sort_order: 11,
+        },
+        {
+          ...sourceStationWuxiang,
+          id: 'station:high',
+          node_uid: 'node-high',
+          name: '高桥',
+          code: '12',
+          sort_order: 12,
+        },
+      ],
+      total: 2,
+      page: 1,
+      page_size: 50,
+    })
+    mocks.sectionsPage.mockResolvedValue({
+      items: [staleGeneratedSection],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+
+    await button(wrapper, '根据站点生成区间').trigger('click')
+    await flushPromises()
+
+    expect(mocks.sectionGenerationPreview).toHaveBeenCalledWith(expect.objectContaining({
+      site_id: 'demo',
+      base_revision: 'a'.repeat(64),
+      stations: expect.arrayContaining([
+        expect.objectContaining({ name: '高桥西', node_uid: 'node-low' }),
+        expect.objectContaining({ name: '高桥', node_uid: 'node-high' }),
+      ]),
+      current_sections: [expect.objectContaining({ id: 'section:stale' })],
+    }))
+    const previewTable = wrapper.get('[data-table-id="rail-base-section-generation-preview"]')
+    expect(previewTable.text()).toContain('高桥西-高桥-上行')
+    expect(previewTable.text()).toContain('高桥西-高桥-下行')
+    const checkboxes = previewTable.findAll('input[type="checkbox"]')
+    expect(checkboxes).toHaveLength(3)
+    expect((checkboxes[0].element as HTMLInputElement).checked).toBe(true)
+    expect((checkboxes[1].element as HTMLInputElement).checked).toBe(true)
+    expect((checkboxes[2].element as HTMLInputElement).checked).toBe(false)
+
+    await checkboxes[1].setValue(false)
+    await button(wrapper, '应用到当前草稿').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('未保存修改')
+    expect(mocks.save).not.toHaveBeenCalled()
+
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+    const payload = mocks.validate.mock.calls.at(-1)?.[0]
+    const sectionChanges = payload.changes.filter((change: { entity_type: string }) => change.entity_type === 'section')
+    expect(sectionChanges).toHaveLength(1)
+    expect(sectionChanges[0]).toMatchObject({
+      action: 'create',
+      values: {
+        name: '高桥西-高桥-上行',
+        start_station: '高桥西',
+        end_station: '高桥',
+      },
+    })
+    wrapper.unmount()
+  })
+
+  it('区间生成冲突项不可勾选', async () => {
+    mocks.sectionGenerationPreview.mockResolvedValue({
+      ...sectionGenerationPreviewPayload,
+      generated_sections: [{
+        item_id: 'generation:conflict',
+        result: 'CONFLICT',
+        proposed_section: generatedIncreasingSection,
+        current_section: {
+          ...generatedIncreasingSection,
+          id: 'section:manual',
+          auto_generated: false,
+          generation_key: '',
+          source_kind: 'manual',
+        },
+        selected_by_default: false,
+        selectable: false,
+        issues: [{
+          severity: 'error',
+          code: 'section_generation_conflict',
+          message: '与人工区间同名',
+          field_name: 'name',
+          blocking: true,
+          entity_id: 'section:manual',
+        }],
+      }],
+      create_count: 0,
+      conflict_count: 1,
+      stale_count: 0,
+      blocking_count: 1,
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '解锁').trigger('click')
+    await flushPromises()
+    await button(wrapper, '根据站点生成区间').trigger('click')
+    await flushPromises()
+
+    const checkbox = wrapper.get('[data-table-id="rail-base-section-generation-preview"] input[type="checkbox"]')
+    expect(checkbox.attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '应用到当前草稿').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 })

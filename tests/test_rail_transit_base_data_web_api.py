@@ -4,6 +4,7 @@ import hashlib
 import json
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
@@ -34,6 +35,20 @@ def _app(paths, tmp_path: Path):
         agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
         traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
+    )
+
+
+def _desktop_app(paths, tmp_path: Path):
+    return create_app(
+        RuntimeMode.DESKTOP,
+        paths=paths,
+        task_service=object(),  # type: ignore[arg-type]
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+        desktop_session_token="d" * 40,
+        rail_base_data_write_feature_enabled=True,
+        rail_base_data_desktop_write_enabled=True,
     )
 
 
@@ -152,6 +167,7 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
     assert {path for path, method in routes if method == "POST"} == {
         "/api/rail-transit/base-data/import-preview",
         "/api/rail-transit/base-data/station-template-preview",
+        "/api/rail-transit/base-data/section-generation-preview",
         "/api/rail-transit/base-data/import-apply",
         "/api/rail-transit/base-data/import-operations/{operation_id}/rollback",
         "/api/rail-transit/base-data/validate",
@@ -180,12 +196,16 @@ def test_station_source_preview_uses_station_field_only_and_is_read_only(tmp_pat
     assert by_name["五乡"]["code"] == "32"
     assert by_name["五乡"]["sort_order"] == 32
     assert by_name["五乡"]["source_device_count"] == 2
+    assert by_name["五乡"]["proposed_station"]["structure_type"] == "underground"
+    assert by_name["五乡"]["proposed_station"]["platform_layout"] == "island"
     assert by_name["宝幢"]["code"] == "33"
     assert by_name["批量站"]["source_device_count"] == 205
     assert by_name["高桥西停车场"]["node_type"] == "parking_lot"
     assert by_name["高桥西停车场"]["path_code"] == "UNASSIGNED"
     assert by_name["高桥西停车场"]["sort_order"] is None
     assert by_name["高桥西停车场"]["participates_in_direction"] is False
+    assert by_name["高桥西停车场"]["proposed_station"]["structure_type"] == "unknown"
+    assert by_name["高桥西停车场"]["proposed_station"]["platform_layout"] == "unknown"
     assert by_name["天童庄车辆段"]["node_type"] == "depot"
     assert by_name["天童庄车辆段"]["sort_order"] is None
     text = response.text
@@ -252,11 +272,15 @@ def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_pa
         exported = client.get("/api/rail-transit/base-data/station-template-export")
     assert template.status_code == 200
     assert exported.status_code == 200
+    assert template.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert "线路站点与区间基础资料模板.xlsx" in unquote(template.headers["content-disposition"])
+    assert "线路站点与区间基础资料.xlsx" in unquote(exported.headers["content-disposition"])
     workbook = load_workbook(BytesIO(template.content))
-    assert workbook.sheetnames == ["01_线路参数", "02_线路节点", "字段说明"]
+    assert workbook.sheetnames == ["01_线路参数", "02_线路节点", "03_区间配置", "字段说明"]
     assert workbook["01_线路参数"]["H2"].value == "station"
     exported_wb = load_workbook(BytesIO(exported.content))
     assert exported_wb["02_线路节点"].max_row >= 2
+    assert "03_区间配置" in exported_wb.sheetnames
 
     upload = Workbook()
     upload.active.title = "01_线路参数"
@@ -283,3 +307,346 @@ def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_pa
     assert payload["rows"][0]["proposed_station"]["structure_type"] == "underground"
     assert payload["rows"][1]["proposed_station"]["node_type"] == "parking_lot"
     assert payload["rows"][1]["proposed_station"]["sort_order"] is None
+
+
+def test_section_generation_preview_uses_request_draft_and_is_read_only(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
+        before = _fingerprint(db_path)
+        request = {
+            "site_id": "demo",
+            "base_revision": revision,
+            "line_metadata": {
+                "main_path_code": "MAIN",
+                "increasing_direction_name": "上行",
+                "decreasing_direction_name": "下行",
+            },
+            "stations": [
+                {
+                    "id": "new:low",
+                    "node_uid": "node-low",
+                    "name": "草稿甲站",
+                    "sort_order": 11,
+                    "path_code": "MAIN",
+                    "participates_in_direction": True,
+                    "structure_type": "underground",
+                    "platform_layout": "island",
+                },
+                {
+                    "id": "new:high",
+                    "node_uid": "node-high",
+                    "name": "草稿乙站",
+                    "sort_order": 20,
+                    "path_code": "MAIN",
+                    "participates_in_direction": True,
+                    "structure_type": "underground",
+                    "platform_layout": "island",
+                },
+            ],
+            "current_sections": [],
+        }
+        preview = client.post(
+            "/api/rail-transit/base-data/section-generation-preview",
+            json=request,
+        )
+        stale = client.post(
+            "/api/rail-transit/base-data/section-generation-preview",
+            json={**request, "base_revision": "0" * 64},
+        )
+
+    assert preview.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "BASE_DATA_REVISION_CONFLICT"
+    assert _fingerprint(db_path) == before
+    sections = {
+        item["proposed_section"]["name"]: item["proposed_section"]
+        for item in preview.json()["generated_sections"]
+    }
+    assert sections["草稿甲站-草稿乙站-上行"]["start_station"] == "草稿甲站"
+    assert sections["草稿甲站-草稿乙站-下行"]["start_station"] == "草稿乙站"
+
+
+def test_station_template_real_file_preview_save_export_and_reimport_round_trip(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    template_path = tmp_path / "线路站点与区间基础资料模板.xlsx"
+    edited_path = tmp_path / "线路站点与区间基础资料导入.xlsx"
+    exported_path = tmp_path / "线路站点与区间基础资料.xlsx"
+
+    with TestClient(_desktop_app(paths, tmp_path)) as client:
+        session_response = client.post(
+            "/__desktop_session",
+            data={"token": "d" * 40},
+            follow_redirects=False,
+        )
+        assert session_response.status_code == 303
+
+        template = client.get("/api/rail-transit/base-data/station-template")
+        assert template.status_code == 200
+        template_path.write_bytes(template.content)
+        workbook = load_workbook(template_path)
+        assert workbook.sheetnames == [
+            "01_线路参数",
+            "02_线路节点",
+            "03_区间配置",
+            "字段说明",
+        ]
+        line_sheet = workbook["01_线路参数"]
+        line_sheet.append([])
+        line_sheet["A2"] = "XLSX闭环验收线"
+        line_sheet["B2"] = "PIS"
+        node_sheet = workbook["02_线路节点"]
+        node_sheet.append([
+            "81-验收甲站",
+            "81",
+            "验收甲站",
+            "普通车站",
+            "MAIN",
+            81,
+            "是",
+            "K81+000",
+            "地下",
+            "岛式",
+            "是",
+            "是",
+            "是",
+            "折返线、存车线",
+            "双向",
+            "是",
+            "端点",
+            120,
+            "K80+880",
+            "是",
+            "多设施验收",
+        ])
+        node_sheet.append([
+            "82-验收乙站",
+            "82",
+            "验收乙站",
+            "普通车站",
+            "MAIN",
+            82,
+            "是",
+            "82+250.5",
+            "",
+            "",
+            "否",
+            "否",
+            "否",
+            "",
+            "无",
+            "否",
+            "端点",
+            "",
+            "",
+            "是",
+            "",
+        ])
+        section_sheet = workbook["03_区间配置"]
+        section_sheet.append([
+            "AUTO-ROUNDTRIP",
+            "验收甲站-验收乙站-上行",
+            "站间区间",
+            "MAIN",
+            "站序递增",
+            "上行",
+            "车站",
+            "验收甲站",
+            "车站",
+            "验收乙站",
+            "是",
+            "MAIN|between|acceptance-low|acceptance-high|increasing",
+            "是",
+            9,
+            "0-99999 m",
+            "区间往返验收",
+        ])
+        workbook.save(edited_path)
+        load_workbook(edited_path).close()
+
+        before_preview_revision = client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"]
+        preview = client.post(
+            "/api/rail-transit/base-data/station-template-preview",
+            files={
+                "file": (
+                    edited_path.name,
+                    edited_path.read_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert preview.status_code == 200
+        payload = preview.json()
+        assert payload["valid"] is True
+        assert payload["create_count"] == 3
+        assert client.get(
+            "/api/rail-transit/base-data/revision"
+        ).json()["base_revision"] == before_preview_revision
+
+        station_value_fields = {
+            "node_uid",
+            "name",
+            "code",
+            "line_name",
+            "sort_order",
+            "remark",
+            "source_station_value",
+            "source_station_key",
+            "node_type",
+            "path_code",
+            "participates_in_direction",
+            "structure_type",
+            "platform_layout",
+            "center_mileage_text",
+            "center_mileage_m",
+            "is_line_terminal",
+            "is_service_terminal",
+            "turnback_capable",
+            "turnback_type",
+            "track_facilities",
+            "turnback_direction",
+            "terminal_extension_enabled",
+            "terminal_endpoint_label",
+            "terminal_extension_distance_m",
+            "terminal_endpoint_mileage_text",
+            "enabled",
+            "source_kind",
+        }
+        section_value_fields = {
+            "name",
+            "section_code",
+            "section_kind",
+            "path_code",
+            "direction_role",
+            "line_direction",
+            "start_node_type",
+            "start_node_uid",
+            "start_station",
+            "end_node_type",
+            "end_node_uid",
+            "end_station",
+            "line_side",
+            "auto_generated",
+            "generation_key",
+            "enabled",
+            "source_kind",
+            "remark",
+        }
+        changes = [
+            {
+                "entity_type": "site_metadata",
+                "action": "update",
+                "entity_id": "current",
+                "values": payload["line_metadata"],
+            },
+            *[
+                {
+                    "entity_type": "station",
+                    "action": "create",
+                    "entity_id": f"new:roundtrip-station:{index}",
+                    "values": {
+                        key: value
+                        for key, value in row["proposed_station"].items()
+                        if key in station_value_fields
+                    },
+                }
+                for index, row in enumerate(payload["rows"], start=1)
+            ],
+            *[
+                {
+                    "entity_type": "section",
+                    "action": "create",
+                    "entity_id": f"new:roundtrip-section:{index}",
+                    "values": {
+                        key: value
+                        for key, value in row["proposed_section"].items()
+                        if key in section_value_fields
+                    },
+                }
+                for index, row in enumerate(payload["section_rows"], start=1)
+            ],
+        ]
+        validation = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": before_preview_revision,
+                "changes": changes,
+            },
+        )
+        assert validation.status_code == 200
+        assert validation.json()["valid"] is True
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": before_preview_revision,
+                "changes": changes,
+                "explicit_confirmation": True,
+            },
+        )
+        assert saved.status_code == 200
+
+        before_export = _fingerprint(db_path)
+        exported = client.get("/api/rail-transit/base-data/station-template-export")
+        assert exported.status_code == 200
+        exported_path.write_bytes(exported.content)
+        assert _fingerprint(db_path) == before_export
+        exported_workbook = load_workbook(exported_path)
+        exported_nodes = {
+            row[2].value: row
+            for row in exported_workbook["02_线路节点"].iter_rows(min_row=2)
+            if row[2].value
+        }
+        exported_sections = {
+            row[1].value: row
+            for row in exported_workbook["03_区间配置"].iter_rows(min_row=2)
+            if row[1].value
+        }
+        assert exported_nodes["验收甲站"][7].value == "K81+000"
+        assert exported_nodes["验收甲站"][13].value == "折返线、存车线"
+        assert exported_nodes["验收乙站"][7].value == "82+250.5"
+        section_row = exported_sections["验收甲站-验收乙站-上行"]
+        assert section_row[11].value == "MAIN|between|acceptance-low|acceptance-high|increasing"
+        assert section_row[13].value == 0
+        assert section_row[14].value == "--"
+        exported_workbook.close()
+
+        reimported = client.post(
+            "/api/rail-transit/base-data/station-template-preview",
+            files={
+                "file": (
+                    exported_path.name,
+                    exported_path.read_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert reimported.status_code == 200
+        reimported_payload = reimported.json()
+        first_station = next(
+            row["proposed_station"]
+            for row in reimported_payload["rows"]
+            if row["name"] == "验收甲站"
+        )
+        first_section = next(
+            row["proposed_section"]
+            for row in reimported_payload["section_rows"]
+            if row["name"] == "验收甲站-验收乙站-上行"
+        )
+        assert first_station["track_facilities"] == [
+            "turnback_track",
+            "storage_track",
+        ]
+        assert first_station["center_mileage_m"] == 81000
+        assert first_section["ap_count"] == 0
+        assert first_section["mileage_min"] is None
+        assert first_section["mileage_max"] is None
