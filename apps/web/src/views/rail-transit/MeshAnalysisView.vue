@@ -70,6 +70,7 @@ import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
+import { requestWorkspaceTabTitle } from '../../workspace/runtime'
 import type {
   RendererWorkloadPhase,
 } from '../../../../desktop_electron/src/shared/bridge'
@@ -763,6 +764,18 @@ function disposeMeshAnalysisPage(): void {
 onMounted(async () => {
   window.addEventListener('keydown', handleRssiLayoutKeydown)
   await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
+  const currentRoute = router.currentRoute?.value
+  const routeSessionId = typeof currentRoute?.query.session_id === 'string'
+    && /^[A-Za-z0-9_-]{1,160}$/.test(currentRoute.query.session_id)
+    ? currentRoute.query.session_id
+    : ''
+  if (routeSessionId && !selected.value) {
+    let row = sessions.value.find((item) => item.session_id === routeSessionId)
+    if (!row) {
+      try { row = (await getMeshAnalysisSession(routeSessionId)).session } catch { /* 资源删除由页面现有空态处理 */ }
+    }
+    if (row) await openSession(row)
+  }
   if (!pageActive.value) return
   await restoreRendererRecoveryOnce()
   if (pageActive.value) scheduleRefresh()
@@ -847,6 +860,11 @@ async function openSession(row: MeshAnalysisSession, preserveRecovery = false): 
     const detail = await getMeshAnalysisSession(id)
     if (generation !== detailGeneration) return
     selected.value = detail
+    requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
+    const currentRoute = router.currentRoute?.value
+    if (currentRoute && currentRoute.query.session_id !== id) {
+      void router.replace({ path: currentRoute.path, query: { session_id: id } })
+    }
     reportRendererWorkload('session-selected')
     ensureSharedRssiViewport()
     restoreSessionExpansionForDetail()

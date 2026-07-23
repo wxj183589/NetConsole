@@ -1,10 +1,12 @@
 # Desktop Native Bridge 契约
 
-## 任务窗口 DTO
+## 任务与工作区窗口 DTO
 
 `openTaskWindow` 只接受可选的 `taskId`、`module`、`status`。`taskId` 仅允许受控 ID 字符，`module` 固定为 `devices/config/files`，`status` 固定为任务状态枚举；未知字段和任意 URL、路径、程序或 argv 均拒绝。主窗口和任务窗口可作为 IPC sender，文件对话框以实际调用窗口为父窗口。
 
 受控 Artifact 保存对话框同样以 IPC 调用窗口为父窗口。任务 DTO 只返回 owner 授权的下载 endpoint、opaque Artifact ID、显示名、大小和类型；保存完成后 Renderer 不接收本机路径，只有安全可打开/定位的文件才得到临时 capability ID，仅保存类型返回 `saved` 但不返回 capability。本机路径只存在于 Electron Main 的有界内存授权表。
+
+`openWorkspaceWindow` 只接受长度受限的内部路由和清理后的标题；preload 与 main 双重拒绝外部 URL、`file:`、反斜杠、路径遍历、专用任务/API/WebSocket 路由、敏感 query、绝对路径和未知字段。读取/保存工作区快照仅作用于 sender 所属的受管窗口，并校验 schema、窗口 ID、标签数量和每个标签的受控字段；Renderer 不能创建任意 `BrowserWindow`，也不能传入位置、尺寸或加载地址。
 
 ## 当前状态
 
@@ -32,6 +34,10 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `getAppInfo` | 无 | 只返回版本、平台、是否打包 | 状态展示 |
 | `getBackendStatus` | 无 | 不返回令牌 | 生命周期展示 |
 | `getRuntimeConfig` | 无 | 仅后端 `ready` 且受信 sender 可取 | Vue 内存 API 配置 |
+| `openWorkspaceWindow` | 受控内部路由、已清理标题 | preload/main 校验路由和标题；Main 创建受管窗口，复用唯一 Backend | 当前标签或 Dashboard 在独立工作区打开 |
+| `getWorkspaceWindowState` / `saveWorkspaceWindowState` | 无 / 当前窗口的强类型快照 | sender 必须属于 `WorkspaceWindowController`；严禁跨窗口写入、绝对路径和敏感字段 | 恢复标签与窗口布局 |
+| `setWorkspaceWindowTitle` | 已清理标题 | 仅更新 sender 所属受管窗口标题，不接受路径、控制字符或敏感字段 | 动态标签标题 |
+| `getCloseToTrayState` / `setCloseToTrayEnabled` / `onCloseToTrayChanged` | 无 / 布尔值 / 固定回调 | 只读写 Electron `UiPreferenceStore` 的桌面偏好并广播脱敏状态；不访问局点数据库或 Backend API | 系统设置与托盘开关同步 |
 | `selectFile` | 过滤器、是否多选 | 数量、名称、扩展名、未知字段白名单 | 原生选择器 |
 | `selectDirectory` | 无 | 原生目录选择器 | 原生选择器 |
 | `chooseSavePath` | 安全文件名、过滤器、可选的本会话已授权目录 | 目录必须来自 `selectDirectory`，不接受未授权路径或把路径/命令伪装为文件名 | 只选择目标位置 |

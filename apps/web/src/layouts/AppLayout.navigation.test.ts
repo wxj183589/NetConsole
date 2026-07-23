@@ -4,8 +4,10 @@ import ElementPlus from 'element-plus'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { createPinia } from 'pinia'
 import { describe, expect, it, vi } from 'vitest'
 
+import { useWorkspaceStore } from '../stores/workspace'
 import AppLayout from './AppLayout.vue'
 
 vi.mock('../api/client', () => ({
@@ -49,11 +51,17 @@ describe('AppLayout 轨道交通导航', () => {
     })
     await router.push('/rail-transit/mesh-analysis')
     await router.isReady()
+    const pinia = createPinia()
+    const workspace = useWorkspaceStore(pinia)
+    await workspace.initialize(router)
     const Root = defineComponent({ template: '<RouterView />' })
     const wrapper = mount(Root, {
       global: {
-        plugins: [router, ElementPlus],
-        stubs: { DesktopRuntimeStatus: true },
+        plugins: [pinia, router, ElementPlus],
+        stubs: {
+          DesktopRuntimeStatus: true,
+          AppRouteView: { template: '<RouterView />' },
+        },
       },
     })
     await flushPromises()
@@ -68,5 +76,6 @@ describe('AppLayout 轨道交通导航', () => {
     expect(wrapper.find('.header-title').text()).toBe('轨道交通 / 基础资料')
     expect(wrapper.find('[data-test="base-data-page"]').exists()).toBe(true)
     wrapper.unmount()
+    workspace.dispose()
   })
 })

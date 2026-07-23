@@ -23,15 +23,19 @@ import {
 } from '../navigation/registry'
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
+import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
 import { navigationTitle, t } from '../i18n/runtime'
+import { useWorkspaceStore } from '../stores/workspace'
 import AppRouteView from './AppRouteView.vue'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
 const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
 const BUILD_MISMATCH_MESSAGE = '当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。'
+const BRAND_LOGO_URL = '/branding/netconsole.png'
 
 const route = useRoute()
 const router = useRouter()
+const workspace = useWorkspaceStore()
 const version = ref('')
 const backendBuildId = ref('')
 const frontendBuildId = ref('')
@@ -106,7 +110,7 @@ async function selectNavigation(path: string): Promise<void> {
     await router.push(path)
     return
   }
-  await router.push(path)
+  await workspace.openOrActivateRoute(path)
   if (mobile.value) drawerOpen.value = false
 }
 
@@ -172,7 +176,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
       :class="['app-sidebar', { collapsed: sidebarCollapsed, mobile, open: drawerOpen }]"
     >
       <div class="brand">
-        <img class="brand-logo" src="/branding/netconsole.png" alt="NetConsole" />
+        <img class="brand-logo" :src="BRAND_LOGO_URL" alt="NetConsole" />
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
           <span>{{ t('shell.console', 'Web Console') }}</span>
@@ -218,7 +222,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
         <div class="header-leading">
           <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" :aria-label="t('shell.toggle_navigation', '切换导航')" @click="toggleSidebar" />
           <div>
-            <div class="header-title">{{ route.meta.title || 'Dashboard' }}</div>
+            <div class="header-title">{{ workspace.activeTab?.title || route.meta.title || 'Dashboard' }}</div>
             <div class="header-subtitle">{{ t('shell.subtitle', 'Vue、FastAPI 与 Python ApplicationService 共用同一业务核心') }}</div>
           </div>
         </div>
@@ -233,6 +237,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           <span>v{{ version || '--' }}</span>
         </div>
       </el-header>
+      <WorkspaceTabBar />
       <el-main class="app-main">
         <el-alert
           v-if="frontendMismatch"

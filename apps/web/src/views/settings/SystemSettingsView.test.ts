@@ -4,7 +4,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/systemSettings'
 import { loadWebFeatures } from '../../features'
@@ -66,8 +66,37 @@ beforeEach(() => {
   settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
   settingsBridge.executeSettingsAction.mockResolvedValue({ success: true })
 })
+afterEach(() => Reflect.deleteProperty(window, 'netconsoleDesktop'))
 
 describe('SystemSettingsView mounted behavior', () => {
+  it('synchronizes the close-to-tray setting through the desktop bridge', async () => {
+    const setCloseToTrayEnabled = vi.fn(async (enabled: boolean) => ({ enabled, available: true }))
+    let listener: ((state: { enabled: boolean; available: boolean }) => void) | undefined
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: {
+        getCloseToTrayState: vi.fn(async () => ({ enabled: true, available: true })),
+        setCloseToTrayEnabled,
+        onCloseToTrayChanged: vi.fn((next) => {
+          listener = next
+          return vi.fn()
+        }),
+      },
+    })
+    const { wrapper } = await mounted()
+    const toggle = wrapper.findComponent('[data-testid="close-to-tray"]') as VueWrapper<any>
+    expect(toggle.props('modelValue')).toBe(true)
+    toggle.vm.$emit('update:modelValue', false)
+    toggle.vm.$emit('change', false)
+    await flushPromises()
+    expect(setCloseToTrayEnabled).toHaveBeenCalledWith(false)
+
+    listener?.({ enabled: true, available: true })
+    await nextTick()
+    expect(toggle.props('modelValue')).toBe(true)
+    wrapper.unmount()
+  })
+
   it('previews appearance and restores the saved baseline after save failure and route discard', async () => {
     const { wrapper, router } = await mounted()
     await change(wrapper, 'theme', 'dark'); await change(wrapper, 'language', 'en_US')

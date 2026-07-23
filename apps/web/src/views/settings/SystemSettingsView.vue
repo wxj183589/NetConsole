@@ -42,7 +42,12 @@ const saving = ref(false)
 const error = ref('')
 const siteStorageFocused = ref(false)
 const siteStoragePanel = ref<InstanceType<typeof SiteStoragePanel> | null>(null)
+const closeToTrayEnabled = ref(true)
+const closeToTrayAvailable = ref(false)
+const closeToTraySaving = ref(false)
+const desktopHost = Boolean(window.netconsoleDesktop)
 let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
+let removeCloseToTrayListener: (() => void) | undefined
 const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const featuresDirty = computed(() => JSON.stringify(features.value) !== featureBaseline.value)
@@ -66,11 +71,20 @@ const featureColumns: NcTableColumn<FeatureSetting>[] = [
   { key: 'internal_only', label: '内部', valueType: 'status' },
 ]
 
-onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
+onMounted(() => {
+  window.addEventListener('beforeunload', beforeUnload)
+  void load()
+  void loadCloseToTrayState()
+  removeCloseToTrayListener = window.netconsoleDesktop?.onCloseToTrayChanged?.((state) => {
+    closeToTrayEnabled.value = state.enabled
+    closeToTrayAvailable.value = state.available
+  })
+})
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnload)
   if (siteStorageFocusTimer) clearTimeout(siteStorageFocusTimer)
   if (dirty.value) restoreAppearance()
+  removeCloseToTrayListener?.()
 })
 onBeforeRouteLeave(async () => {
   if (!anyDirty.value) return true
@@ -88,6 +102,33 @@ async function load(): Promise<void> {
     await loadFeatureSettings()
   } catch (cause) { error.value = message(cause, '系统设置加载失败') }
   finally { loading.value = false }
+}
+
+async function loadCloseToTrayState(): Promise<void> {
+  if (!window.netconsoleDesktop?.getCloseToTrayState) return
+  try {
+    const state = await window.netconsoleDesktop.getCloseToTrayState()
+    closeToTrayEnabled.value = state.enabled
+    closeToTrayAvailable.value = state.available
+  } catch {
+    closeToTrayAvailable.value = false
+  }
+}
+
+async function updateCloseToTray(value: boolean): Promise<void> {
+  if (!window.netconsoleDesktop?.setCloseToTrayEnabled || !closeToTrayAvailable.value) return
+  closeToTraySaving.value = true
+  try {
+    const state = await window.netconsoleDesktop.setCloseToTrayEnabled(value)
+    closeToTrayEnabled.value = state.enabled
+    closeToTrayAvailable.value = state.available
+    ElMessage.success(value ? '已启用关闭到通知区域' : '已关闭通知区域驻留')
+  } catch {
+    closeToTrayEnabled.value = !value
+    ElMessage.error('通知区域设置保存失败')
+  } finally {
+    closeToTraySaving.value = false
+  }
 }
 
 async function save(): Promise<void> {
@@ -273,6 +314,28 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </el-form>
     </section>
 
+    <section class="settings-band"><h2>桌面外壳</h2>
+      <div class="desktop-shell-setting">
+        <div>
+          <strong>关闭主窗口后继续驻留通知区域</strong>
+          <p>关闭窗口只暂停页面显示，Python Backend 和后台任务继续运行。</p>
+        </div>
+        <el-switch
+          v-model="closeToTrayEnabled"
+          data-testid="close-to-tray"
+          :disabled="!closeToTrayAvailable || closeToTraySaving"
+          :loading="closeToTraySaving"
+          @change="updateCloseToTray"
+        />
+      </div>
+      <el-alert
+        v-if="desktopHost && !closeToTrayAvailable"
+        title="系统托盘当前不可用，关闭主窗口将按正常退出处理。"
+        type="warning"
+        :closable="false"
+      />
+    </section>
+
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" />
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
@@ -306,5 +369,5 @@ function message(cause: unknown, fallback: string): string { return cause instan
 </template>
 
 <style scoped>
-.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1500px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.section-heading h2{margin-bottom:0}@media(max-width:900px){.settings-toolbar,.section-heading{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
+.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1500px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.section-heading h2{margin-bottom:0}@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
 </style>

@@ -1,16 +1,16 @@
 <template>
   <RouterView v-slot="{ Component, route: viewRoute }">
-    <KeepAlive :max="1">
+    <KeepAlive :max="10">
       <component
         :is="Component"
-        v-if="viewRoute.meta.keepAlive"
-        :key="String(viewRoute.name)"
+        :key="workspace.activeCacheKey || viewRoute.fullPath"
       />
     </KeepAlive>
-    <component
-      :is="Component"
-      v-if="!viewRoute.meta.keepAlive"
-      :key="viewRoute.fullPath"
-    />
   </RouterView>
 </template>
+
+<script setup lang="ts">
+import { useWorkspaceStore } from '../stores/workspace'
+
+const workspace = useWorkspaceStore()
+</script>

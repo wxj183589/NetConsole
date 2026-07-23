@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Refresh, Search, View } from '@element-plus/icons-vue'
@@ -144,6 +144,8 @@ onMounted(() => {
   void refreshAll()
   startPolling()
 })
+onActivated(startPolling)
+onDeactivated(stopPolling)
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibility)

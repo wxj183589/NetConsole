@@ -20,8 +20,9 @@ if (!Number.isInteger(devPort) || devPort < 1 || devPort > 65_535) throw new Err
 const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
 const taskWindowSmoke = process.argv.includes('--task-window')
+const workspaceTraySmoke = process.argv.includes('--workspace-tray')
 const codex = process.argv.includes('--codex')
-const isolated = codex || smoke || taskWindowSmoke
+const isolated = codex || smoke || taskWindowSmoke || workspaceTraySmoke
 const codexBackendPort = 8000
 const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
 const codexSessionToken = codex ? randomBytes(32).toString('base64url') : ''
@@ -260,7 +261,7 @@ try {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
         NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: isolatedRuntime.userDataRoot,
-        ...(taskWindowSmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
+        ...(taskWindowSmoke || workspaceTraySmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
         ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),
         NETCONSOLE_DEV_SESSION_TOKEN: codexSessionToken,
@@ -268,6 +269,7 @@ try {
       } : {}),
       ...(smoke ? { NETCONSOLE_ELECTRON_SMOKE_TEST: '1' } : {}),
       ...(taskWindowSmoke ? { NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE: '1' } : {}),
+      ...(workspaceTraySmoke ? { NETCONSOLE_ELECTRON_WORKSPACE_TRAY_SMOKE: '1' } : {}),
     },
   })
   if (codex) {

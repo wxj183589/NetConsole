@@ -22,7 +22,7 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 
 `pnpm build` 属于受影响前端切片完成后的集成门。开发机明确处于低干扰模式时，先运行对应 Vitest 文件和 `vue-tsc --noEmit`（如本切片需要），将完整生产构建记录为待补，不以牺牲用户前台工作负载换取重复验证。
 
-Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run typecheck` 和 `pnpm run build:main`；触及启动链、preload 或 Vue runtime adapter 时运行 `pnpm smoke:dev`。该冒烟覆盖源码图形环境，不替代 Windows 安装包、签名、升级或目标系统实机验收。
+Electron 改动还需在 `apps/desktop_electron` 运行 `pnpm test`、`pnpm run typecheck` 和 `pnpm run build:main`；触及启动链、preload 或 Vue runtime adapter 时运行 `pnpm smoke:dev`。工作区、窗口生命周期或托盘改动还需运行 `pnpm smoke:workspace-tray`，覆盖附加工作区窗口、主窗口隐藏后 Backend 保持 ready、恢复窗口和明确退出回收。该冒烟覆盖源码图形环境，不替代 Windows 安装包、签名、升级、通知区域交互、图标缩放或目标系统实机验收。
 
 触及本机 Codex/浏览器调试链时，额外运行 `pnpm exec node scripts/dev.mjs --codex --smoke`，并确认 `127.0.0.1:5173`、`127.0.0.1:8000` 和受管子进程均已回收。开发状态接口必须覆盖：显式开关、回环来源、Session 鉴权、路径/令牌脱敏，以及生产运行时路由不存在。Playwright 浏览器/Electron E2E 只有在对应脚本和断言实际落地后才能计入门禁；普通 Vitest、API TestClient 和启动 smoke 不等同于 E2E。
 

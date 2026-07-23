@@ -16,6 +16,7 @@ import {
   createRouter,
   RouterView,
 } from 'vue-router'
+import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -80,8 +81,8 @@ beforeEach(() => {
   ordinaryLifecycle.unmounted = 0
 })
 
-describe('AppLayout controlled route cache', () => {
-  it('keeps one mesh analysis instance while ordinary routes still unmount', async () => {
+describe('AppLayout workspace route cache', () => {
+  it('keeps cached workspace page instances while routes switch', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{
@@ -106,7 +107,7 @@ describe('AppLayout controlled route cache', () => {
     await router.push('/rail-transit/mesh-analysis')
     const wrapper = mount(root, {
       global: {
-        plugins: [router],
+        plugins: [createPinia(), router],
       },
     })
     await flushPromises()
@@ -130,10 +131,11 @@ describe('AppLayout controlled route cache', () => {
     expect(lifecycle.deactivated).toBe(20)
     expect(lifecycle.unmounted).toBe(0)
     expect(mocks.loadChart).toHaveBeenCalledTimes(1)
-    expect(ordinaryLifecycle.mounted).toBe(20)
-    expect(ordinaryLifecycle.unmounted).toBe(20)
+    expect(ordinaryLifecycle.mounted).toBe(1)
+    expect(ordinaryLifecycle.unmounted).toBe(0)
 
     wrapper.unmount()
     expect(lifecycle.unmounted).toBe(1)
+    expect(ordinaryLifecycle.unmounted).toBe(1)
   })
 })

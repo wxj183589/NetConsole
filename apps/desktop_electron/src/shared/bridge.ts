@@ -111,7 +111,7 @@ export interface BackendDownloadResult {
 export interface RendererReadyReport {
   healthOk: boolean
   phase: 'mounted' | 'interactive' | 'failed'
-  surface?: 'main' | 'task-window'
+  surface?: 'main' | 'task-window' | 'workspace-window'
 }
 
 export type DesktopResolvedTheme = 'light' | 'dark'
@@ -169,7 +169,43 @@ export interface TaskWindowContext {
   status?: 'PENDING' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 }
 
+export interface WorkspaceWindowOpenRequest {
+  routeFullPath: string
+  title: string
+}
+
+export interface WorkspaceTabSnapshot {
+  id: string
+  instanceId: string
+  routeName?: string
+  routeFullPath: string
+  title: string
+  identityKey: string
+  cacheKey: string
+  pinned: boolean
+  openedAt: number
+  lastActivatedAt: number
+}
+
+export interface WorkspaceWindowSnapshot {
+  schemaVersion: 1
+  windowId: string
+  activeTabId: string
+  tabs: WorkspaceTabSnapshot[]
+}
+
+export interface WorkspaceWindowStateResult {
+  windowId: string
+  snapshot: WorkspaceWindowSnapshot | null
+}
+
+export interface CloseToTrayState {
+  enabled: boolean
+  available: boolean
+}
+
 export const UI_PREFERENCE_KEYS = Object.freeze([
+  'desktop.close-to-tray',
   'mesh-analysis-rssi.layout-mode',
   'mesh-analysis-rssi.compare-split-ratio',
   'mesh-analysis-rssi.show-switch-lines',
@@ -196,6 +232,13 @@ export interface NetConsoleDesktopBridge {
   getUiPreference?(key: UiPreferenceKey): Promise<unknown | null>
   setUiPreference?(key: UiPreferenceKey, value: unknown | null): Promise<void>
   openTaskWindow(context?: TaskWindowContext): Promise<NativeActionResult>
+  openWorkspaceWindow?(request: WorkspaceWindowOpenRequest): Promise<NativeActionResult>
+  getWorkspaceWindowState?(): Promise<WorkspaceWindowStateResult>
+  saveWorkspaceWindowState?(snapshot: WorkspaceWindowSnapshot): Promise<void>
+  setWorkspaceWindowTitle?(title: string): void
+  getCloseToTrayState?(): Promise<CloseToTrayState>
+  setCloseToTrayEnabled?(enabled: boolean): Promise<CloseToTrayState>
+  onCloseToTrayChanged?(listener: (state: CloseToTrayState) => void): () => void
   selectFile(options?: SelectFileOptions): Promise<SelectFileResult>
   selectDirectory(): Promise<SelectDirectoryResult>
   selectSettingsTool(toolId: SettingsToolId): Promise<SettingsPathResult>
@@ -229,6 +272,13 @@ export const DESKTOP_IPC = Object.freeze({
   getUiPreference: 'netconsole:desktop:get-ui-preference',
   setUiPreference: 'netconsole:desktop:set-ui-preference',
   openTaskWindow: 'netconsole:desktop:open-task-window',
+  openWorkspaceWindow: 'netconsole:desktop:open-workspace-window',
+  getWorkspaceWindowState: 'netconsole:desktop:get-workspace-window-state',
+  saveWorkspaceWindowState: 'netconsole:desktop:save-workspace-window-state',
+  setWorkspaceWindowTitle: 'netconsole:desktop:set-workspace-window-title',
+  getCloseToTrayState: 'netconsole:desktop:get-close-to-tray-state',
+  setCloseToTrayEnabled: 'netconsole:desktop:set-close-to-tray-enabled',
+  closeToTrayChanged: 'netconsole:desktop:close-to-tray-changed',
   selectFile: 'netconsole:desktop:select-file',
   selectDirectory: 'netconsole:desktop:select-directory',
   selectSettingsTool: 'netconsole:desktop:select-settings-tool',
@@ -262,6 +312,11 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.getUiPreference,
   DESKTOP_IPC.setUiPreference,
   DESKTOP_IPC.openTaskWindow,
+  DESKTOP_IPC.openWorkspaceWindow,
+  DESKTOP_IPC.getWorkspaceWindowState,
+  DESKTOP_IPC.saveWorkspaceWindowState,
+  DESKTOP_IPC.getCloseToTrayState,
+  DESKTOP_IPC.setCloseToTrayEnabled,
   DESKTOP_IPC.selectFile,
   DESKTOP_IPC.selectDirectory,
   DESKTOP_IPC.selectSettingsTool,

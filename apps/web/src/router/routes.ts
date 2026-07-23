@@ -4,6 +4,7 @@ import type { RouteRecordRaw } from 'vue-router'
 export const appRoutes: RouteRecordRaw[] = [
   {
     path: '/desktop/tasks',
+    meta: { workspace: { enabled: false } },
     component: () => import('../layouts/TaskWindowLayout.vue'),
     children: [
       { path: '', name: 'desktop-tasks', component: () => import('../views/job-center/JobCenterView.vue'), meta: { featureId: 'web.job_center', moduleId: 'tasks', title: '任务中心', desktopOnly: true, hiddenRoute: true } },
@@ -15,7 +16,7 @@ export const appRoutes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { navigationId: 'dashboard', moduleId: 'dashboard', title: 'Dashboard', desktopOnly: false } },
       { path: 'network/devices', name: 'device-management', component: () => import('../views/devices/DeviceManagementView.vue'), meta: { navigationId: 'devices', featureId: 'web.device_management', moduleId: 'devices', title: '设备管理', desktopOnly: false } },
-      { path: 'devices/:deviceId', name: 'device-detail', component: () => import('../views/devices/DeviceDetailView.vue'), meta: { navigationId: 'devices', featureId: 'web.device_management', moduleId: 'devices', title: '设备完整详情', desktopOnly: false, hiddenRoute: true } },
+      { path: 'devices/:deviceId', name: 'device-detail', component: () => import('../views/devices/DeviceDetailView.vue'), meta: { navigationId: 'devices', featureId: 'web.device_management', moduleId: 'devices', title: '设备完整详情', desktopOnly: false, hiddenRoute: true, workspace: { identity: 'resource', resourceParams: ['deviceId'] } } },
       { path: 'ac-management', redirect: { name: 'ac-fit-aps' }, meta: { moduleId: 'ac', title: 'AC 管理', desktopOnly: false, hiddenRoute: true } },
       { path: 'ac-management/fit-aps', name: 'ac-fit-aps', component: () => import('../views/ac-management/AcManagementView.vue'), meta: { navigationId: 'ac.fit-aps', featureId: 'web.ac_fit_ap_resources', moduleId: 'ac', title: 'AC 管理 / FIT-AP 资源', desktopOnly: false } },
       { path: 'ac-management/optical', name: 'ac-optical', redirect: { name: 'ac-fit-aps' }, meta: { moduleId: 'ac', title: 'AC 管理 / FIT-AP 资源', desktopOnly: false, hiddenRoute: true } },
@@ -29,9 +30,9 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'rail-transit/train-communication', name: 'train-communication', component: () => import('../views/rail-transit/TrainCommunicationView.vue'), meta: { navigationId: 'rail.train-communication', featureId: 'web.train_communication_monitoring', moduleId: 'rail', title: '轨道交通 / 车内通信检测', desktopOnly: false } },
       { path: 'rail-transit/trackside-ap-business', name: 'rail-trackside-ap-business', component: () => import('../views/rail-transit/TracksideApBusinessView.vue'), meta: { navigationId: 'rail.trackside-ap-business', featureId: 'web.rail_trackside_ap_business', moduleId: 'rail', title: '轨道交通 / 轨旁 AP 业务', desktopOnly: false } },
       { path: 'rail-transit/trackside-ap-plan', name: 'rail-trackside-ap-plan', redirect: { name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' } }, meta: { moduleId: 'rail', title: '轨道交通 / 基础资料 / 轨旁 AP 规划', desktopOnly: false, hiddenRoute: true } },
-      { path: 'rail-transit/mesh-analysis', name: 'mesh-analysis', component: () => import('../views/rail-transit/MeshAnalysisView.vue'), meta: { navigationId: 'rail.mesh-analysis', featureId: 'web.mesh_analysis', moduleId: 'rail', title: '轨道交通 / MR 原始 MESH 日志分析', desktopOnly: false, keepAlive: true } },
+      { path: 'rail-transit/mesh-analysis', name: 'mesh-analysis', component: () => import('../views/rail-transit/MeshAnalysisView.vue'), meta: { navigationId: 'rail.mesh-analysis', featureId: 'web.mesh_analysis', moduleId: 'rail', title: '轨道交通 / MR 原始 MESH 日志分析', desktopOnly: false, workspace: { identity: 'resource', resourceQuery: ['session_id'], cache: true } } },
       { path: 'rail-transit/online-mr', name: 'online-mr-realtime', component: () => import('../views/rail-transit/OnlineMrRealtimeView.vue'), meta: { navigationId: 'rail.online-mr', featureId: 'web.online_mr_realtime', moduleId: 'rail', title: '轨道交通 / 车载 MR 实时收集', desktopOnly: false } },
-      { path: 'rail-transit/online-mr-analysis', name: 'online-mr-analysis', component: () => import('../views/rail-transit/OnlineMrAnalysisView.vue'), meta: { navigationId: 'rail.online-mr-analysis', featureId: 'web.online_mr_analysis', moduleId: 'rail', title: '轨道交通 / 车载 MR 收集分析', desktopOnly: false } },
+      { path: 'rail-transit/online-mr-analysis', name: 'online-mr-analysis', component: () => import('../views/rail-transit/OnlineMrAnalysisView.vue'), meta: { navigationId: 'rail.online-mr-analysis', featureId: 'web.online_mr_analysis', moduleId: 'rail', title: '轨道交通 / 车载 MR 收集分析', desktopOnly: false, workspace: { identity: 'resource', resourceQuery: ['session_id'], cache: true } } },
       { path: 'config-center', name: 'config-collection', component: () => import('../views/config-collection/ConfigCollectionView.vue'), meta: { navigationId: 'config', featureId: 'web.config_collection', moduleId: 'config', title: '配置采集中心', desktopOnly: false } },
       { path: 'device-files', name: 'device-file-downloads', component: () => import('../views/file-management/FileManagementView.vue'), meta: { navigationId: 'files', featureId: 'web.file_management', moduleId: 'files', title: '设备文件下载', desktopOnly: false } },
       { path: 'file-manager', redirect: { name: 'device-file-downloads' }, meta: { navigationId: 'files', moduleId: 'files', title: '设备文件下载', desktopOnly: false, hiddenRoute: true } },

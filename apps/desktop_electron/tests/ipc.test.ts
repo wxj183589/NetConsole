@@ -10,6 +10,8 @@ import type {
   RendererRecoveryState,
   RendererWorkloadReport,
   TaskWindowContext,
+  WorkspaceWindowOpenRequest,
+  WorkspaceWindowSnapshot,
 } from '../src/shared/bridge'
 import { DESKTOP_HANDLED_CHANNELS, DESKTOP_IPC } from '../src/shared/bridge'
 
@@ -36,6 +38,10 @@ function createHarness(overrides: {
   onRendererWorkload?: (report: RendererWorkloadReport, window: unknown) => void
   getRendererRecoveryState?: (window: unknown) => RendererRecoveryState | null
   openTaskWindow?: (value: TaskWindowContext) => NativeActionResult | Promise<NativeActionResult>
+  openWorkspaceWindow?: (value: WorkspaceWindowOpenRequest) => NativeActionResult | Promise<NativeActionResult>
+  getWorkspaceWindowState?: (window: unknown) => { windowId: string; snapshot: WorkspaceWindowSnapshot | null }
+  saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
+  setWorkspaceWindowTitle?: (window: unknown, title: string) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
 } = {}) {
@@ -75,6 +81,10 @@ function createHarness(overrides: {
     onRendererWorkload: overrides.onRendererWorkload,
     getRendererRecoveryState: overrides.getRendererRecoveryState,
     openTaskWindow: overrides.openTaskWindow,
+    openWorkspaceWindow: overrides.openWorkspaceWindow,
+    getWorkspaceWindowState: overrides.getWorkspaceWindowState,
+    saveWorkspaceWindowState: overrides.saveWorkspaceWindowState,
+    setWorkspaceWindowTitle: overrides.setWorkspaceWindowTitle,
     fetchImpl: overrides.fetchImpl,
   })
   return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
@@ -93,6 +103,35 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.getRuntimeConfig)!
 
     expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
+  })
+
+  it('opens workspace windows only through validated trusted requests', async () => {
+    const managedWindow = {}
+    const openWorkspaceWindow = vi.fn(async () => ({ success: true }))
+    const setWorkspaceWindowTitle = vi.fn()
+    const { ipcMain, sender } = createHarness({
+      openWorkspaceWindow,
+      setWorkspaceWindowTitle,
+      windowForEvent: () => managedWindow,
+    })
+    const event = { sender }
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.openWorkspaceWindow)?.(event, {
+      routeFullPath: '/rail-transit/mesh-analysis?session_id=session-1',
+      title: 'MESH：列车07',
+    })).resolves.toEqual({ success: true })
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.openWorkspaceWindow)?.(event, {
+      routeFullPath: 'https://example.com',
+      title: '外部页面',
+    })).rejects.toThrow()
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.openWorkspaceWindow)?.(
+      { sender: {} },
+      { routeFullPath: '/', title: 'Dashboard' },
+    )).toThrow('未知渲染进程')
+
+    ipcMain.listeners.get(DESKTOP_IPC.setWorkspaceWindowTitle)?.(event, '设备：AC1')
+    ipcMain.listeners.get(DESKTOP_IPC.setWorkspaceWindowTitle)?.({ sender: {} }, '设备：AC2')
+    expect(setWorkspaceWindowTitle).toHaveBeenCalledWith(managedWindow, '设备：AC1')
+    expect(setWorkspaceWindowTitle).toHaveBeenCalledOnce()
   })
 
   it('accepts only validated one-way workload reports and returns in-memory recovery state', () => {

@@ -37,7 +37,8 @@ describe('App layout foundation', () => {
     expect(styles).toContain('html, body, #app { width: 100%; min-width: 0;')
     expect(source).toContain("'var(--nc-shell-sidebar-width)'")
     expect(source).toContain('class="brand-logo"')
-    expect(source).toContain('src="/branding/netconsole.png"')
+    expect(source).toContain("const BRAND_LOGO_URL = '/branding/netconsole.png'")
+    expect(source).toContain(':src="BRAND_LOGO_URL"')
     expect(source).toContain('alt="NetConsole"')
     expect(source).not.toMatch(/>\s*NC\s*</)
     expect(styles).toContain('.brand-logo { flex: 0 0 auto; width: 64px; max-height: 38px; object-fit: contain; }')
@@ -47,14 +48,12 @@ describe('App layout foundation', () => {
     expect(styles).not.toContain('min-width: 960px')
   })
 
-  it('only keeps the mesh analysis route alive with one stable route-name key', () => {
-    expect(routesSource).toMatch(/name: 'mesh-analysis'.*keepAlive: true/)
-    expect(routesSource.match(/keepAlive: true/g)).toHaveLength(1)
+  it('keeps workspace routes alive by isolated tab cache keys', () => {
+    expect(routesSource).toMatch(/name: 'mesh-analysis'.*identity: 'resource'/)
     expect(source).toContain('<AppRouteView />')
-    expect(routeViewSource).toContain('<KeepAlive :max="1">')
-    expect(routeViewSource).toContain(':key="String(viewRoute.name)"')
-    expect(routeViewSource).toContain('v-if="viewRoute.meta.keepAlive"')
-    expect(routeViewSource).toContain('v-if="!viewRoute.meta.keepAlive"')
+    expect(source).toContain('<WorkspaceTabBar />')
+    expect(routeViewSource).toContain('<KeepAlive :max="10">')
+    expect(routeViewSource).toContain(':key="workspace.activeCacheKey || viewRoute.fullPath"')
   })
 
   it('keeps the root menu on the sidebar palette after lazy Element Plus styles load', () => {

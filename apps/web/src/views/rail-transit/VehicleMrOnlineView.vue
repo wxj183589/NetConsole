@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
 
@@ -266,6 +266,10 @@ onMounted(() => {
   filters.query = String(route.query.query || route.query.mr_name || route.query.peer_ap_name || '')
   void Promise.all([loadTrains(), loadMappings(), loadControllers(), recoverTasks()])
 })
+onActivated(() => {
+  if (task.value && !terminalStates.has(task.value.status)) poll()
+})
+onDeactivated(stopPolling)
 onBeforeUnmount(stopPolling)
 </script>
 
