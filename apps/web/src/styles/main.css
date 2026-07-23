@@ -20,7 +20,8 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .app-sidebar { z-index: 20; display: flex; flex-direction: column; min-height: 0; color: var(--nc-text-primary); background: var(--nc-bg-sidebar); border-right: 1px solid var(--nc-divider); box-shadow: var(--nc-shadow-sidebar); transition: width var(--nc-transition-fast), transform var(--nc-transition-fast); }
 .brand { display: flex; align-items: center; gap: var(--nc-space-3); height: var(--nc-shell-header-height); padding: 0 var(--nc-space-5); border-bottom: 1px solid var(--nc-divider); }
 .app-sidebar.collapsed .brand { justify-content: center; padding: 0; }
-.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; font-weight: 800; color: var(--nc-text-inverse); background: var(--nc-primary); border-radius: var(--nc-radius-lg); box-shadow: 0 5px 12px color-mix(in srgb, var(--nc-primary), transparent 72%); }
+.brand-logo { flex: 0 0 auto; width: 64px; max-height: 38px; object-fit: contain; }
+.app-sidebar.collapsed .brand-logo { width: 44px; max-height: 30px; }
 .brand-copy { min-width: 0; }
 .brand strong, .brand span { display: block; }
 .brand strong { color: var(--nc-text-primary); font-size: 17px; letter-spacing: .2px; }

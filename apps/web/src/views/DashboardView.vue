@@ -168,10 +168,12 @@ onMounted(async () => {
 .dashboard-card-heading p{margin:8px 0 0;color:var(--nc-text-secondary);line-height:1.6}
 .dashboard-card-body{display:flex;flex-direction:column;gap:8px}
 .dashboard-card-body p{margin:0;color:var(--nc-text-primary);line-height:1.7}
+.dashboard-card--warning .dashboard-card-body p{color:var(--nc-danger);font-weight:700}
 .dashboard-card--warning .dashboard-card-body p:last-child,
 .dashboard-card--neutral .dashboard-card-body p:last-child,
 .dashboard-card--info .dashboard-card-body p:last-child,
 .dashboard-card--success .dashboard-card-body p:last-child{color:var(--nc-text-secondary)}
+.dashboard-card--warning .dashboard-card-body p:last-child{color:var(--nc-danger)}
 .dashboard-card--neutral{border-top:3px solid var(--nc-primary)}
 .dashboard-card--info{border-top:3px solid var(--nc-info)}
 .dashboard-card--warning{border-top:3px solid var(--nc-warning)}

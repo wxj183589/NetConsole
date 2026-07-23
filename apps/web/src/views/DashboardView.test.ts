@@ -98,6 +98,8 @@ describe('Dashboard home page', () => {
     expect(source).toContain('打开任务中心')
     expect(source).toContain('不提供删除设备、重启设备等高风险设备操作命令')
     expect(source).toContain('不向 Web 页面开放任意命令执行能力')
+    expect(source).toContain('.dashboard-card--warning .dashboard-card-body p{color:var(--nc-danger);font-weight:700}')
+    expect(source).toContain('.dashboard-card--warning .dashboard-card-body p:last-child{color:var(--nc-danger)}')
     expect(source).not.toContain('<el-input')
     expect(source).not.toContain('<textarea')
     expect(source).not.toContain("router.push('/tasks')")

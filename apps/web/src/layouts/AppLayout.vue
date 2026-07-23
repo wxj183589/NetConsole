@@ -170,7 +170,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
       :class="['app-sidebar', { collapsed: sidebarCollapsed, mobile, open: drawerOpen }]"
     >
       <div class="brand">
-        <div class="brand-mark">NC</div>
+        <img class="brand-logo" src="/branding/netconsole.png" alt="NetConsole" />
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
           <span>{{ t('shell.console', 'Web Console') }}</span>

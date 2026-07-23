@@ -18,6 +18,7 @@ import {
   type RendererFailureActions,
   type RendererProcessFailure,
 } from './renderer-diagnostics'
+import { NETCONSOLE_TASK_WINDOW_TITLE, NETCONSOLE_WINDOW_TITLE, resolveDesktopIconPath } from './branding'
 import {
   MANAGED_RENDERER_OPEN_LOGS_ACTION,
   MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
@@ -150,9 +151,8 @@ async function startDesktop(): Promise<void> {
   installManagedWindowDiagnostics(mainWindow, true)
   taskWindowController = new TaskWindowController({
     createWindow: () => {
-      const window = createMainWindow(rendererDevelopment)
+      const window = createMainWindow(rendererDevelopment, false, NETCONSOLE_TASK_WINDOW_TITLE)
       taskWindow = window
-      window.setTitle('NetConsole 任务中心')
       window.on('close', (event) => {
         if (allowQuit) return
         event.preventDefault()
@@ -268,9 +268,18 @@ async function startDesktop(): Promise<void> {
   }
 }
 
-function createMainWindow(development: boolean, developmentMenu = false): BrowserWindow {
+function createMainWindow(
+  development: boolean,
+  developmentMenu = false,
+  title = NETCONSOLE_WINDOW_TITLE,
+): BrowserWindow {
   const window = new BrowserWindow({
-    title: 'NetConsole',
+    title,
+    icon: resolveDesktopIconPath({
+      isPackaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath,
+    }),
     width: 1360,
     height: 860,
     minWidth: 1024,
@@ -283,6 +292,11 @@ function createMainWindow(development: boolean, developmentMenu = false): Browse
       development,
     ),
   })
+  window.on('page-title-updated', (event) => {
+    event.preventDefault()
+    window.setTitle(title)
+  })
+  window.setTitle(title)
   installWindowSecurity(
     window,
     () => [...rendererOrigins],

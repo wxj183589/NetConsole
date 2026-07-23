@@ -34,7 +34,7 @@
   },
   "build": {
     "appId": "com.loveok.netconsole",
-    "productName": "NetConsole",
+    "productName": "NetConsole v1.4.1 by wxj",
     "electronDist": "node_modules/electron/dist",
     "asar": true,
     "directories": {
@@ -49,9 +49,18 @@
       {
         "from": "dist/package-resources/backend",
         "to": "backend"
+      },
+      {
+        "from": "../../resources/branding",
+        "to": "branding",
+        "filter": [
+          "netconsole.ico",
+          "netconsole.png"
+        ]
       }
     ],
     "win": {
+      "icon": "../../resources/branding/netconsole.ico",
       "target": [
         {
           "target": "nsis",
@@ -66,6 +75,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
+      "installerIcon": "../../resources/branding/netconsole.ico",
+      "uninstallerIcon": "../../resources/branding/netconsole.ico",
+      "installerHeaderIcon": "../../resources/branding/netconsole.ico",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     }

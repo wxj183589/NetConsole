@@ -13,11 +13,21 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toContain('electron-builder')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
+    expect(packageJson.build.productName).toBe('NetConsole v1.4.1 by wxj')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
       from: 'dist/package-resources/backend',
       to: 'backend',
     })
+    expect(packageJson.build.extraResources).toContainEqual({
+      from: '../../resources/branding',
+      to: 'branding',
+      filter: ['netconsole.ico', 'netconsole.png'],
+    })
+    expect(packageJson.build.win.icon).toBe('../../resources/branding/netconsole.ico')
+    expect(packageJson.build.nsis.installerIcon).toBe('../../resources/branding/netconsole.ico')
+    expect(packageJson.build.nsis.uninstallerIcon).toBe('../../resources/branding/netconsole.ico')
+    expect(packageJson.build.nsis.installerHeaderIcon).toBe('../../resources/branding/netconsole.ico')
     expect(packageJson.build.nsis.deleteAppDataOnUninstall).toBe(false)
     expect(packageJson.build.win.target[0]).toEqual({ target: 'nsis', arch: ['x64'] })
   })

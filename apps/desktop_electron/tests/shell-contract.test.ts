@@ -8,6 +8,10 @@ const source = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'index.ts'),
   'utf8',
 )
+const brandingSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'branding.ts'),
+  'utf8',
+)
 const displayGateSource = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'renderer-theme-display-gate.ts'),
   'utf8',
@@ -18,8 +22,20 @@ const devSource = readFileSync(
 )
 
 describe('Electron shell product contract', () => {
-  it('uses the product title and hides the default menu unless development opts in', () => {
-    expect(source).toContain("title: 'NetConsole'")
+  it('uses the branded product title, icon, and hides the default menu unless development opts in', () => {
+    expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole v1.4.1 by wxj'")
+    expect(brandingSource).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
+    expect(brandingSource).toContain("resolve(context.resourcesPath, 'branding', 'netconsole.ico')")
+    expect(brandingSource).toContain("resolve(context.appPath, '..', '..', 'resources', 'branding', 'netconsole.ico')")
+    expect(source).toContain('title = NETCONSOLE_WINDOW_TITLE')
+    expect(source).toContain('title,')
+    expect(source).toContain('icon: resolveDesktopIconPath')
+    expect(source).toContain("window.on('page-title-updated'")
+    expect(source).toContain('event.preventDefault()')
+    expect(source).toContain('window.setTitle(title)')
+    expect(source).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
+    expect(source).not.toContain("title: 'NetConsole'")
+    expect(source).not.toContain("window.setTitle('NetConsole 任务中心')")
     expect(source).toContain('autoHideMenuBar: !developmentMenu')
     expect(source).toContain('Menu.setApplicationMenu(null)')
     expect(source).toContain('isDevelopmentMenuEnabled(config.devServerUrl)')
@@ -70,7 +86,7 @@ describe('Electron shell product contract', () => {
       source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
     )
     expect(source).toContain('return taskWindowController.open(context)')
-    expect(retrySource).toContain('const target = windowRendererTargets.get(window)')
+    expect(retrySource).toContain('let target = windowRendererTargets.get(window)')
     expect(retrySource).toContain('isAllowedNavigation(target, [...rendererOrigins])')
     expect(retrySource.indexOf('armRendererThemeDisplay(window)')).toBeLessThan(
       retrySource.indexOf('await window.loadURL(target)'),
