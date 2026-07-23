@@ -74,6 +74,8 @@ describe('MESH RSSI tooltip', () => {
     expect(html.match(/class="mesh-rssi-tooltip__divider"/g)).toHaveLength(3)
     expect(html).toContain('MR / 轨旁 AP 接收信号：31 / 29')
     expect(html).toContain('MR / 轨旁 AP 接收信号：30 / 28')
+    expect(html).not.toContain('MR / 轨旁 AP 接收信号：-31 / -29')
+    expect(html.toLowerCase()).not.toContain('dbm')
     expect(html).not.toContain('-49')
     expect(html).not.toContain('-45')
     expect(html).not.toContain('切换耗时')
@@ -89,6 +91,18 @@ describe('MESH RSSI tooltip', () => {
     expect(html).toContain('MR / 轨旁 AP 接收信号：— / —')
     expect(html).toContain('<strong>备份链路：无</strong>')
     expect(html).not.toContain('：0 / 0')
+  })
+
+  it('keeps positive RSSI values unchanged and unitless', () => {
+    const html = buildMeshRssiTooltip({
+      ...point,
+      local_rssi: 29,
+      peer_rssi: 21,
+      backups: [],
+    })
+    expect(html).toContain('MR / 轨旁 AP 接收信号：29 / 21')
+    expect(html).not.toContain('-29')
+    expect(html.toLowerCase()).not.toContain('dbm')
   })
 
   it('removes event type and duration from the independent switch RSSI chart tooltip', () => {

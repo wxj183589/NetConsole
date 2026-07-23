@@ -11,8 +11,8 @@ const entries: TracksideTooltipEntry[] = [
     apName: 'AP-B',
     radio: 2,
     role: 'STANDBY',
-    tracksideRssi: -51,
-    mrRssi: -48,
+    tracksideRssi: 0,
+    mrRssi: 0,
     station: '站点乙',
     section: null,
     activeDurationSeconds: 12.5,
@@ -21,8 +21,8 @@ const entries: TracksideTooltipEntry[] = [
     apName: 'AP-A',
     radio: 1,
     role: 'ACTIVE',
-    tracksideRssi: -41,
-    mrRssi: -38,
+    tracksideRssi: 29,
+    mrRssi: 21,
     station: '站点甲',
     section: '区间甲',
     activeDurationSeconds: 7.574,
@@ -36,7 +36,10 @@ describe('trackside tooltip', () => {
     expect(html.match(/采样时间：/g)).toHaveLength(1)
     expect(html).toContain('● ACTIVE　AP-A · Radio 1')
     expect(html).toContain('○ STANDBY　AP-B · Radio 2')
-    expect(html).toContain('轨旁 / MR RSSI：-41 / -38 dBm')
+    expect(html).toContain('轨旁 / MR RSSI：29 / 21')
+    expect(html).toContain('轨旁 / MR RSSI：0 / 0')
+    expect(html).not.toContain('轨旁 / MR RSSI：-29 / -21')
+    expect(html.toLowerCase()).not.toContain('dbm')
     expect(html).toContain('站点 / 区间：站点乙 / —')
     expect(html.match(/主链持续：/g)).toHaveLength(1)
     expect(html.indexOf('ACTIVE')).toBeLessThan(html.indexOf('STANDBY'))
@@ -59,6 +62,16 @@ describe('trackside tooltip', () => {
       { ...entries[1], radio: 1 },
     ])
     expect(html.indexOf('Radio 1')).toBeLessThan(html.indexOf('Radio 2'))
+  })
+
+  it('keeps missing RSSI values empty without adding a unit', () => {
+    const html = buildTracksideTooltip('2026-07-20 13:53:19.181', [{
+      ...entries[1],
+      tracksideRssi: null,
+      mrRssi: null,
+    }])
+    expect(html).toContain('轨旁 / MR RSSI：— / —')
+    expect(html.toLowerCase()).not.toContain('dbm')
   })
 
   it('stays fixed within each half and flips only across the center', () => {

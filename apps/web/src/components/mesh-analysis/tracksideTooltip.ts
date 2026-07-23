@@ -58,7 +58,7 @@ export function buildTracksideTooltip(
     return [
       index === 0 ? '' : `<hr style="${DIVIDER_STYLE}">`,
       `<strong>${symbol} ${escapeMeshTooltipHtml(entry.role)}　${escapeMeshTooltipHtml(entryLabel(entry))} · Radio ${metric(entry.radio)}</strong>`,
-      `<br>轨旁 / MR RSSI：${metric(entry.tracksideRssi)} / ${metric(entry.mrRssi)} dBm`,
+      `<br>轨旁 / MR RSSI：${metric(entry.tracksideRssi)} / ${metric(entry.mrRssi)}`,
       `<br>站点 / 区间：${escapeMeshTooltipHtml(location)}`,
       duration,
     ].join('')

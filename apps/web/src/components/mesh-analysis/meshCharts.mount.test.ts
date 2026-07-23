@@ -153,7 +153,8 @@ describe('MESH charts mount and render', () => {
     expect((echartsMock.chart.setOption.mock.calls[2][0] as { series: Array<{ name: string }> }).series.map((item) => item.name)).not.toContain('切换节点')
     expect((echartsMock.chart.setOption.mock.calls[1][0] as { series: Array<{ markArea?: unknown }> }).series[0].markArea).toBeDefined()
 
-    const rssiOption = echartsMock.chart.setOption.mock.calls[1][0] as { dataZoom: unknown[]; toolbox: { feature: { saveAsImage: unknown } }; tooltip: { formatter: (params: unknown) => string } }
+    const rssiOption = echartsMock.chart.setOption.mock.calls[1][0] as { yAxis: { name: string }; dataZoom: unknown[]; toolbox: { feature: { saveAsImage: unknown } }; tooltip: { formatter: (params: unknown) => string } }
+    expect(rssiOption.yAxis.name).toBe('RSSI')
     expect(rssiOption.dataZoom).toHaveLength(2)
     expect(rssiOption.toolbox.feature.saveAsImage).toBeDefined()
     const tooltipHtml = rssiOption.tooltip.formatter([{ data: { meta: chartPoint } }, { data: { meta: chartPoint, meshEvent: chartEvent } }])
@@ -161,6 +162,7 @@ describe('MESH charts mount and render', () => {
     expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：-40 / -45')
     expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：-60 / -62')
     expect(tooltipHtml).not.toContain('MR / 轨旁 AP 接收信号：-50 / -55')
+    expect(tooltipHtml.toLowerCase()).not.toContain('dbm')
     expect(tooltipHtml).not.toContain('切换耗时')
     expect(tooltipHtml).not.toContain('切换类型')
     expect(tooltipHtml.match(/class="mesh-rssi-tooltip"/g)).toHaveLength(1)
@@ -191,6 +193,7 @@ describe('MESH charts mount and render', () => {
 
     expect(echartsMock.init).toHaveBeenCalledTimes(1)
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      yAxis: { name: string }
       legend: { type?: string }
       series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<[number, number | null, number, number]> }>
       tooltip: {
@@ -209,6 +212,7 @@ describe('MESH charts mount and render', () => {
       'AP-1 · Radio 1',
       'AP-2 · Radio 1',
     ])
+    expect(option.yAxis.name).toBe('RSSI')
     expect(option.series.map((item) => item.name)).not.toContain('切换节点')
     expect(option.series[0].markLine).toBeUndefined()
     expect(option.series[0].connectNulls).toBe(false)
@@ -219,8 +223,10 @@ describe('MESH charts mount and render', () => {
     expect(option.toolbox.feature.dataZoom).toBeDefined()
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
-    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('轨旁 / MR RSSI：-45 / -40 dBm')
-    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('● ACTIVE　AP-1 · Radio 1')
+    const tracksideTooltip = option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])
+    expect(tracksideTooltip).toContain('轨旁 / MR RSSI：-45 / -40')
+    expect(tracksideTooltip.toLowerCase()).not.toContain('dbm')
+    expect(tracksideTooltip).toContain('● ACTIVE　AP-1 · Radio 1')
     const dedupedTooltip = option.tooltip.formatter([
       { axisValue: tracksideChartPoint.timestamp },
       { axisValue: tracksideChartPoint.timestamp },

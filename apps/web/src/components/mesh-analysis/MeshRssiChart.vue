@@ -364,7 +364,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   } : undefined
   const target = props.lockedViewport || previous || props.initialViewport || fullViewport()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
-    unit: 'dBm',
+    unit: 'RSSI',
     pointCount: pointCount(),
     fullDomain: props.sharedTimeDomain,
     viewport: target,

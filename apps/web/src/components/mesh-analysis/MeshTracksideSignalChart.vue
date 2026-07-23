@@ -613,7 +613,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   const theme = readNetConsoleChartTokens()
   const target = props.lockedViewport || previous || props.syncViewport || props.initialViewport || fullViewport()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
-    unit: 'dBm',
+    unit: 'RSSI',
     pointCount: seriesCache.totalRenderedPoints,
     fullDomain: props.sharedTimeDomain,
     viewport: target,
