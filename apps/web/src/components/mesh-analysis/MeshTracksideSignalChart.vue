@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 
 import {
@@ -19,6 +19,7 @@ import type {
   MeshLocationSegment,
   MeshTracksideSignalSeriesData,
 } from '../../types/meshAnalysis'
+import TracksideExternalTooltip from './TracksideExternalTooltip.vue'
 import { buildMeshLocationBands } from './chartSeries'
 import {
   createFullMeshViewport,
@@ -47,8 +48,6 @@ import {
   type TracksideViewportSeriesItem,
 } from './tracksideSeriesCache'
 import {
-  buildTracksideTooltip,
-  resolveTracksideTooltipPosition,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
 
@@ -110,16 +109,28 @@ let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
 let pointerGlobalOut: (() => void) | null = null
+let zrenderPointerMove: ((event: { offsetX?: number }) => void) | null = null
 let zrenderBlankClick: ((event: { target?: unknown }) => void) | null = null
 let interactiveTimer: ReturnType<typeof setTimeout> | null = null
 let viewportListTimer: ReturnType<typeof setTimeout> | null = null
+let tooltipHideTimer: ReturnType<typeof setTimeout> | null = null
+let tooltipPointerInside = false
+let localPointerActive = false
+let localPointerSide: TracksideTooltipState['side'] = 'right'
+let applyingSharedPointer = false
 let seriesCache: TracksideSeriesCache = markRaw(props.seriesCache ?? buildTracksideSeriesCache(props.series))
 const reportedPhases = new Set<string>()
-const guardedTooltipElements = new Set<HTMLElement>()
 const viewportSeries = ref<TracksideViewportListItem[]>([])
 const rangePanelOpen = ref(false)
 const selectedTracksideAp = ref<SelectedTracksideAp | null>(null)
 const selectedOutsideRange = ref(false)
+const tracksideTooltip = shallowRef<TracksideTooltipState>({
+  visible: false,
+  timestamp: null,
+  entries: [],
+  side: 'right',
+  source: 'none',
+})
 let lastViewportListComputeMs = 0
 let lastSelectionStyleUpdateMs = 0
 
@@ -135,6 +146,14 @@ interface SelectedTracksideAp {
 
 interface TracksideViewportListItem extends TracksideViewportSeriesItem {
   color: string
+}
+
+interface TracksideTooltipState {
+  visible: boolean
+  timestamp: string | null
+  entries: TracksideTooltipEntry[]
+  side: 'left' | 'right'
+  source: 'local-pointer' | 'none'
 }
 
 const timestamps = (): string[] => [
@@ -309,15 +328,23 @@ function handleRangePanelToggle(event: Event): void {
 }
 
 function handleSelectionEscape(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !props.active || !selectedTracksideAp.value) return
+  if (event.key !== 'Escape' || !props.active) return
+  const handled = tracksideTooltip.value.visible || Boolean(selectedTracksideAp.value)
+  if (!handled) return
   event.preventDefault()
   event.stopPropagation()
-  clearTracksideSelection()
+  localPointerActive = false
+  tooltipPointerInside = false
+  hideTracksideTooltip()
+  if (selectedTracksideAp.value) clearTracksideSelection()
 }
 
 function rebuildSeriesCache(): void {
   const next = props.seriesCache ?? buildTracksideSeriesCache(props.series)
   if (next !== seriesCache) {
+    localPointerActive = false
+    tooltipPointerInside = false
+    hideTracksideTooltip()
     clearTracksideSelection(false)
     chart?.clear?.()
     disposeTracksideSeriesCache(seriesCache)
@@ -420,21 +447,55 @@ function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
   }
 }
 
-function stopTooltipWheelPropagation(event: WheelEvent): void {
-  event.stopPropagation()
+function cancelTooltipHide(): void {
+  if (tooltipHideTimer) clearTimeout(tooltipHideTimer)
+  tooltipHideTimer = null
 }
 
-function guardTooltipWheel(element: HTMLElement): void {
-  if (guardedTooltipElements.has(element)) return
-  guardedTooltipElements.add(element)
-  element.addEventListener('wheel', stopTooltipWheelPropagation, { passive: true })
-}
-
-function releaseTooltipWheelGuards(): void {
-  for (const element of guardedTooltipElements) {
-    element.removeEventListener('wheel', stopTooltipWheelPropagation)
+function hideTracksideTooltip(hideEchartsTip = true): void {
+  cancelTooltipHide()
+  const side = tracksideTooltip.value.side
+  tracksideTooltip.value = {
+    visible: false,
+    timestamp: null,
+    entries: [],
+    side,
+    source: 'none',
   }
-  guardedTooltipElements.clear()
+  if (hideEchartsTip) {
+    chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
+  }
+}
+
+function scheduleTooltipHide(): void {
+  cancelTooltipHide()
+  tooltipHideTimer = setTimeout(() => {
+    tooltipHideTimer = null
+    if (!tooltipPointerInside) hideTracksideTooltip()
+  }, 100)
+}
+
+function showTracksideTooltip(timestampMillis: number): void {
+  const points = findTracksideFrameMetaIds(seriesCache, timestampMillis)
+    .map(resolvedPoint)
+    .filter((point): point is ResolvedTracksidePoint => Boolean(point))
+  tracksideTooltip.value = {
+    visible: true,
+    timestamp: formatMeshViewportTimestamp(points[0]?.meta.timestampMillis ?? timestampMillis),
+    entries: points.map(tooltipEntry),
+    side: localPointerSide,
+    source: 'local-pointer',
+  }
+}
+
+function handleTooltipPointerEnter(): void {
+  tooltipPointerInside = true
+  cancelTooltipHide()
+}
+
+function handleTooltipPointerLeave(): void {
+  tooltipPointerInside = false
+  scheduleTooltipHide()
 }
 
 async function ensureChart(): Promise<boolean> {
@@ -463,14 +524,28 @@ async function ensureChart(): Promise<boolean> {
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
     reportWorkloadPhase('echarts-init')
-    chart = core.init(container.value, undefined, createTimeChartInitOptions(seriesCache.totalRenderedPoints))
+    chart = core.init(container.value, undefined, createTimeChartInitOptions(seriesCache.totalRenderedPoints, {
+      useDirtyRect: false,
+    }))
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
-    pointerGlobalOut = () => emit('pointer-change', { time: null, source_chart: props.chartId })
-    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: (event: { target?: unknown }) => void) => void } }).getZr?.()
+    pointerGlobalOut = () => {
+      localPointerActive = false
+      emit('pointer-change', { time: null, source_chart: props.chartId })
+      scheduleTooltipHide()
+    }
+    zrenderPointerMove = (event) => {
+      localPointerActive = true
+      cancelTooltipHide()
+      const pointerX = Number(event.offsetX)
+      if (!Number.isFinite(pointerX)) return
+      localPointerSide = pointerX < (container.value?.clientWidth || 0) / 2 ? 'right' : 'left'
+    }
+    const zrender = (chart as unknown as { getZr?: () => { on: (event: string, listener: (event: { target?: unknown; offsetX?: number }) => void) => void } }).getZr?.()
     zrender?.on('globalout', pointerGlobalOut)
+    zrender?.on('mousemove', zrenderPointerMove)
     zrenderBlankClick = (event) => {
       if (!event.target) clearTracksideSelection()
     }
@@ -553,18 +628,22 @@ onBeforeUnmount(() => {
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
   chart?.off('updateAxisPointer', handleAxisPointer)
-  if (pointerGlobalOut || zrenderBlankClick) {
-    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: (event: { target?: unknown }) => void) => void } } | null)?.getZr?.()
+  if (pointerGlobalOut || zrenderPointerMove || zrenderBlankClick) {
+    const zrender = (chart as unknown as { getZr?: () => { off: (event: string, listener: (event: { target?: unknown; offsetX?: number }) => void) => void } } | null)?.getZr?.()
     if (pointerGlobalOut) zrender?.off('globalout', pointerGlobalOut)
+    if (zrenderPointerMove) zrender?.off('mousemove', zrenderPointerMove)
     if (zrenderBlankClick) zrender?.off('click', zrenderBlankClick)
   }
   pointerGlobalOut = null
+  zrenderPointerMove = null
   zrenderBlankClick = null
   if (interactiveTimer) clearTimeout(interactiveTimer)
   interactiveTimer = null
   if (viewportListTimer) clearTimeout(viewportListTimer)
   viewportListTimer = null
-  releaseTooltipWheelGuards()
+  cancelTooltipHide()
+  tooltipPointerInside = false
+  localPointerActive = false
   chart?.dispose()
   chart = null
   disposeTracksideSeriesCache(seriesCache)
@@ -583,8 +662,9 @@ watch(() => props.active, (active) => {
     void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize'))
     return
   }
+  localPointerActive = false
+  hideTracksideTooltip()
   chart?.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
-  chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
 })
 watch(() => props.lockedViewport, (viewport, previous) => {
   if (viewport) void nextTick(() => applyViewport(viewport))
@@ -631,6 +711,8 @@ function handleChartClick(raw: unknown): void {
 }
 
 function handleDataZoom(raw: unknown): void {
+  localPointerActive = false
+  hideTracksideTooltip()
   const viewport = viewportFromDataZoomWithOptions(raw, timestamps(), {
     boundaryMode: props.sharedTimeDomain ? 'absolute' : 'sample',
     fullDomain: props.sharedTimeDomain,
@@ -662,6 +744,8 @@ function handleDataZoom(raw: unknown): void {
 }
 
 function handleRestore(): void {
+  localPointerActive = false
+  hideTracksideTooltip()
   const viewport = fullViewport('user_zoom')
   if (!viewport) return
   currentViewport = { ...viewport, revision: (currentViewport?.revision ?? 0) + 1 }
@@ -674,6 +758,7 @@ function handleAxisPointer(raw: unknown): void {
   const value = (raw as { axesInfo?: Array<{ value?: string | number }> }).axesInfo?.[0]?.value
   const millis = meshTimestampMillis(value)
   if (millis === null) return
+  if (!applyingSharedPointer && localPointerActive) showTracksideTooltip(millis)
   emit('pointer-change', {
     time: typeof value === 'string' ? value : formatMeshViewportTimestamp(millis),
     source_chart: props.chartId,
@@ -682,19 +767,26 @@ function handleAxisPointer(raw: unknown): void {
 
 function applySharedPointer(time: string | null): void {
   if (!props.active || !chart) return
-  if (!time) {
-    chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
-    chart.dispatchAction({ type: 'hideTip' }, { silent: true })
-    return
+  localPointerActive = false
+  hideTracksideTooltip(false)
+  applyingSharedPointer = true
+  try {
+    if (!time) {
+      chart.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
+      chart.dispatchAction({ type: 'hideTip' }, { silent: true })
+      return
+    }
+    const millis = meshTimestampMillis(time)
+    if (millis === null) return
+    const convertToPixel = (chart as unknown as { convertToPixel?: (finder: { xAxisIndex: number }, value: number) => number | number[] }).convertToPixel
+    if (!convertToPixel) return
+    const pixel = convertToPixel.call(chart, { xAxisIndex: 0 }, millis)
+    const x = Array.isArray(pixel) ? pixel[0] : pixel
+    if (!Number.isFinite(x)) return
+    chart.dispatchAction({ type: 'updateAxisPointer', x, y: 1 }, { silent: true })
+  } finally {
+    applyingSharedPointer = false
   }
-  const millis = meshTimestampMillis(time)
-  if (millis === null) return
-  const convertToPixel = (chart as unknown as { convertToPixel?: (finder: { xAxisIndex: number }, value: number) => number | number[] }).convertToPixel
-  if (!convertToPixel) return
-  const pixel = convertToPixel.call(chart, { xAxisIndex: 0 }, millis)
-  const x = Array.isArray(pixel) ? pixel[0] : pixel
-  if (!Number.isFinite(x)) return
-  chart.dispatchAction({ type: 'updateAxisPointer', x, y: 1 }, { silent: true })
 }
 
 function getViewport(): MeshChartViewport | null {
@@ -829,45 +921,9 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   })
   const tooltip = {
     ...(baseOption.tooltip as Record<string, unknown>),
-    enterable: true,
-    confine: true,
+    showContent: false,
+    appendToBody: false,
     transitionDuration: 0,
-    hideDelay: 50,
-    position: (
-      point: [number, number],
-      _params: unknown,
-      dom: HTMLElement,
-      _rect: unknown,
-      size: { contentSize: [number, number]; viewSize: [number, number] },
-    ) => {
-      guardTooltipWheel(dom)
-      const contentWidth = Math.max(0, Math.min(340, size.viewSize[0] - 24))
-      const content = dom.querySelector<HTMLElement>('.mesh-trackside-signal-tooltip')
-      if (content) {
-        content.style.width = `${contentWidth}px`
-        content.style.minWidth = `${Math.min(260, contentWidth)}px`
-      }
-      return resolveTracksideTooltipPosition(point[0], size.viewSize[0], contentWidth)
-    },
-    formatter: (rawParams: unknown) => {
-      const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-      const first = params[0] as { axisValue?: string | number } | undefined
-      const pointerMillis = meshTimestampMillis(first?.axisValue)
-      const pointerTime = pointerMillis === null
-        ? undefined
-        : typeof first?.axisValue === 'string'
-          ? first.axisValue
-          : formatMeshViewportTimestamp(pointerMillis)
-      const pointItems = pointerMillis === null
-        ? []
-        : findTracksideFrameMetaIds(seriesCache, pointerMillis)
-          .map(resolvedPoint)
-          .filter((point): point is ResolvedTracksidePoint => Boolean(point))
-      return buildTracksideTooltip(
-        pointItems[0] ? formatMeshViewportTimestamp(pointItems[0].meta.timestampMillis) : pointerTime,
-        pointItems.map(tooltipEntry),
-      )
-    },
   }
 
   if (reason === 'display') {
@@ -948,6 +1004,14 @@ defineExpose({
       </details>
     </div>
     <div ref="container" class="chart"></div>
+    <TracksideExternalTooltip
+      :visible="tracksideTooltip.visible"
+      :timestamp="tracksideTooltip.timestamp"
+      :entries="tracksideTooltip.entries"
+      :side="tracksideTooltip.side"
+      @pointerenter="handleTooltipPointerEnter"
+      @pointerleave="handleTooltipPointerLeave"
+    />
     <el-empty v-if="!hasData()" class="empty" description="暂无轨旁信号数据" :image-size="60" />
   </div>
 </template>

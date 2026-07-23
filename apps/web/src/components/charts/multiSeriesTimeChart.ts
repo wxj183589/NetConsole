@@ -45,14 +45,21 @@ export function resolveChartDevicePixelRatio(
   return current
 }
 
-export function createTimeChartInitOptions(pointCount: number): {
+export interface TimeChartInitOverrides {
+  useDirtyRect?: boolean
+}
+
+export function createTimeChartInitOptions(
+  pointCount: number,
+  overrides: TimeChartInitOverrides = {},
+): {
   renderer: 'canvas'
-  useDirtyRect: true
+  useDirtyRect: boolean
   devicePixelRatio: number
 } {
   return {
     renderer: 'canvas',
-    useDirtyRect: true,
+    useDirtyRect: overrides.useDirtyRect ?? true,
     devicePixelRatio: resolveChartDevicePixelRatio(pointCount),
   }
 }

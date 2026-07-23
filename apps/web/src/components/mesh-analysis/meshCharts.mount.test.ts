@@ -17,6 +17,7 @@ const echartsMock = vi.hoisted(() => {
   const zrender = { on: vi.fn(), off: vi.fn() }
   const chart = {
     setOption: vi.fn(),
+    clear: vi.fn(),
     resize: vi.fn(),
     dispose: vi.fn(),
     dispatchAction: vi.fn(),
@@ -148,6 +149,15 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
 
     expect(echartsMock.init).toHaveBeenCalledTimes(3)
+    const rssiInitOptions = (echartsMock.init.mock.calls[1] as unknown as [
+      unknown,
+      unknown,
+      Record<string, unknown>,
+    ] | undefined)?.[2]
+    expect(rssiInitOptions).toMatchObject({
+      renderer: 'canvas',
+      useDirtyRect: false,
+    })
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(3)
     const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as { series: Array<{ name: string; type: string }> })
     expect(options[0].series.every((item) => item.type === 'scatter')).toBe(true)
@@ -204,14 +214,10 @@ describe('MESH charts mount and render', () => {
       dataZoom: Array<{ bottom?: number }>
       series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<[number, number | null, number, number]> }>
       tooltip: {
-        formatter: (params: unknown) => string
-        position: (
-          point: [number, number],
-          params: unknown,
-          dom: HTMLElement,
-          rect: unknown,
-          size: { contentSize: [number, number]; viewSize: [number, number] },
-        ) => [number, number]
+        showContent: boolean
+        appendToBody: boolean
+        formatter?: unknown
+        position?: unknown
       }
       toolbox: { feature: { dataZoom?: unknown; restore?: unknown; saveAsImage?: unknown } }
     }
@@ -232,29 +238,9 @@ describe('MESH charts mount and render', () => {
     expect(option.toolbox.feature.dataZoom).toBeDefined()
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
-    const tracksideTooltip = option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])
-    expect(tracksideTooltip).toContain('轨旁 / MR RSSI：-45 / -40')
-    expect(tracksideTooltip.toLowerCase()).not.toContain('dbm')
-    expect(tracksideTooltip).toContain('● ACTIVE　AP-1 · Radio 1')
-    const dedupedTooltip = option.tooltip.formatter([
-      { axisValue: tracksideChartPoint.timestamp },
-      { axisValue: tracksideChartPoint.timestamp },
-    ])
-    expect(dedupedTooltip.split('AP-1 · Radio 1').length - 1).toBe(1)
-    const tooltipElement = document.createElement('div')
-    tooltipElement.className = 'mesh-trackside-signal-tooltip'
-    document.body.append(tooltipElement)
-    option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])
-    option.tooltip.position([100, 0], [], tooltipElement, null, {
-      contentSize: [340, 300],
-      viewSize: [900, 430],
-    })
-    const bubbledWheel = vi.fn()
-    document.body.addEventListener('wheel', bubbledWheel)
-    tooltipElement.dispatchEvent(new WheelEvent('wheel', { bubbles: true }))
-    expect(bubbledWheel).not.toHaveBeenCalled()
-    document.body.removeEventListener('wheel', bubbledWheel)
-    tooltipElement.remove()
+    expect(option.tooltip).toMatchObject({ showContent: false, appendToBody: false })
+    expect(option.tooltip.formatter).toBeUndefined()
+    expect(option.tooltip.position).toBeUndefined()
     const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
     click({ seriesId: option.series[0].name, data: option.series[0].data?.[0] })
     expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([chartEvent])
@@ -524,8 +510,8 @@ describe('MESH charts mount and render', () => {
     }
 
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(10)
-    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(20)
-    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(20)
+    expect(echartsMock.zrender.on).toHaveBeenCalledTimes(30)
+    expect(echartsMock.zrender.off).toHaveBeenCalledTimes(30)
     expect(addListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
     expect(removeListener.mock.calls.filter(([event]) => event === 'resize')).toHaveLength(10)
     expect(addListener.mock.calls.filter(([event]) => event === 'keydown')).toHaveLength(10)
@@ -799,7 +785,7 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
-  it('shows every ACTIVE and STANDBY link in one frame tooltip in role and AP order', async () => {
+  it('renders the local trackside pointer as an external multiline tooltip without redrawing series', async () => {
     const frameTime = '2026-07-20T10:05:00.000Z'
     const framePoints: MeshTracksideSignalPointData[] = [
       { ...tracksideChartPoint, timestamp: frameTime, peer_ap_name: 'AP-A', peer_mac: 'peer-a', peer_ap_mac: 'ap-a', peer_radio_mac: 'radio-a', role: 'ACTIVE' },
@@ -828,14 +814,10 @@ describe('MESH charts mount and render', () => {
         data: Array<[number, number | null, number, number]>
       }>
       tooltip: {
-        formatter: (params: unknown) => string
-        position: (
-          point: [number, number],
-          params: unknown,
-          dom: HTMLElement,
-          rect: unknown,
-          size: { contentSize: [number, number]; viewSize: [number, number] },
-        ) => [number, number]
+        showContent: boolean
+        appendToBody: boolean
+        formatter?: unknown
+        position?: unknown
       }
     }
     expect(option.series).toHaveLength(4)
@@ -844,13 +826,50 @@ describe('MESH charts mount and render', () => {
     expect(option.series.map((item) => item.name).join(' ')).not.toMatch(/ACTIVE|STANDBY|MIXED/)
     expect(option.series.flatMap((item) => item.data).every((item) => Array.isArray(item))).toBe(true)
     expect(JSON.stringify(option.series)).not.toContain('peer_ap_name')
-    const tooltip = option.tooltip.formatter(option.series.map((item) => ({ axisValue: frameTime, data: item.data[0] })))
-    expect(tooltip.match(/● ACTIVE/g)).toHaveLength(1)
-    expect(tooltip.match(/○ STANDBY/g)).toHaveLength(3)
-    expect(tooltip.indexOf('AP-A')).toBeLessThan(tooltip.indexOf('AP-B'))
-    expect(tooltip.indexOf('AP-B')).toBeLessThan(tooltip.indexOf('AP-C'))
-    expect(tooltip.indexOf('AP-C')).toBeLessThan(tooltip.indexOf('AP-D'))
-    expect(tooltip).not.toContain('Peer Radio MAC：')
+    expect(option.tooltip).toMatchObject({ showContent: false, appendToBody: false })
+    expect(option.tooltip.formatter).toBeUndefined()
+    expect(option.tooltip.position).toBeUndefined()
+    const tracksideInitOptions = (echartsMock.init.mock.calls.at(-1) as unknown as [
+      unknown,
+      unknown,
+      Record<string, unknown>,
+    ] | undefined)?.[2]
+    expect(tracksideInitOptions).toMatchObject({
+      renderer: 'canvas',
+      useDirtyRect: false,
+    })
+
+    const initialSetOptionCount = echartsMock.chart.setOption.mock.calls.length
+    const initialClearCount = echartsMock.chart.clear.mock.calls.length
+    const initialResizeCount = echartsMock.chart.resize.mock.calls.length
+    const dataReferences = option.series.map((item) => item.data)
+    const zrenderPointerMove = echartsMock.zrender.on.mock.calls.find(([event]) => event === 'mousemove')?.[1] as (event: { offsetX: number }) => void
+    const updateAxisPointer = echartsMock.chart.on.mock.calls.find(([event]) => event === 'updateAxisPointer')?.[1] as (payload: unknown) => void
+    for (let index = 0; index < 500; index += 1) {
+      zrenderPointerMove({ offsetX: index % 2 === 0 ? 100 : 800 })
+      updateAxisPointer({ axesInfo: [{ value: frameTime }] })
+    }
+    await nextTick()
+
+    const tooltip = wrapper.get('[data-trackside-external-tooltip]')
+    const roleRows = tooltip.findAll('.trackside-tooltip-entry__role')
+    const apRows = tooltip.findAll('.trackside-tooltip-entry__ap')
+    expect(roleRows.map((item) => item.text())).toEqual(['● ACTIVE', '○ STANDBY', '○ STANDBY', '○ STANDBY'])
+    expect(apRows.map((item) => item.text())).toEqual([
+      'AP：AP-A · Radio 1',
+      'AP：AP-B · Radio 1',
+      'AP：AP-C · Radio 1',
+      'AP：AP-D · Radio 1',
+    ])
+    expect(tooltip.text().match(/采样时间：/g)).toHaveLength(1)
+    expect(tooltip.text()).toContain('轨旁 / MR RSSI：-45 / -40')
+    expect(tooltip.text()).not.toMatch(/Peer Radio MAC|Peer MAC|数据来源|dBm|series_id|run_id|link_id/i)
+    expect(tooltip.classes()).toContain('is-left')
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
+    expect(echartsMock.chart.clear).toHaveBeenCalledTimes(initialClearCount)
+    expect(echartsMock.chart.resize).toHaveBeenCalledTimes(initialResizeCount)
+    expect(option.series.every((item, index) => item.data === dataReferences[index])).toBe(true)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
 
     wrapper.unmount()
   })

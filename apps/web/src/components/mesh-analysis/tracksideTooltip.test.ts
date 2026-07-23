@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  buildTracksideTooltip,
-  resolveTracksideTooltipPosition,
+  displayTracksideTooltipMetric,
+  sortTracksideTooltipEntries,
+  tracksideTooltipApLabel,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
 
@@ -29,75 +30,31 @@ const entries: TracksideTooltipEntry[] = [
   },
 ]
 
-describe('trackside tooltip', () => {
-  it('keeps only the compact business fields and one timestamp', () => {
-    const html = buildTracksideTooltip('2026-07-20 13:53:19.181', entries)
-
-    expect(html.match(/采样时间：/g)).toHaveLength(1)
-    expect(html).toContain('● ACTIVE　AP-A · Radio 1')
-    expect(html).toContain('○ STANDBY　AP-B · Radio 2')
-    expect(html).toContain('轨旁 / MR RSSI：29 / 21')
-    expect(html).toContain('轨旁 / MR RSSI：0 / 0')
-    expect(html).not.toContain('轨旁 / MR RSSI：-29 / -21')
-    expect(html.toLowerCase()).not.toContain('dbm')
-    expect(html).toContain('站点 / 区间：站点乙 / —')
-    expect(html.match(/主链持续：/g)).toHaveLength(1)
-    expect(html.indexOf('ACTIVE')).toBeLessThan(html.indexOf('STANDBY'))
-    for (const removed of [
-      '序列：',
-      'AP MAC：',
-      'Peer MAC：',
-      'Peer Radio MAC：',
-      'Peer Signal / MR Signal：',
-      '数据来源：',
-      'peer_rssi_db',
-      'run_id',
-      'link_id',
-    ]) expect(html).not.toContain(removed)
-  })
-
-  it('sorts equal AP names by Radio after role', () => {
-    const html = buildTracksideTooltip('2026-07-20 13:53:19.181', [
+describe('trackside tooltip view-model helpers', () => {
+  it('sorts by role, AP label, and Radio without changing entries', () => {
+    const sorted = sortTracksideTooltipEntries([
       { ...entries[1], radio: 2 },
+      entries[0],
       { ...entries[1], radio: 1 },
     ])
-    expect(html.indexOf('Radio 1')).toBeLessThan(html.indexOf('Radio 2'))
+
+    expect(sorted.map((entry) => `${entry.role}:${entry.apName}:${entry.radio}`)).toEqual([
+      'ACTIVE:AP-A:1',
+      'ACTIVE:AP-A:2',
+      'STANDBY:AP-B:2',
+    ])
+    expect(entries[0].role).toBe('STANDBY')
   })
 
-  it('keeps missing RSSI values empty without adding a unit', () => {
-    const html = buildTracksideTooltip('2026-07-20 13:53:19.181', [{
-      ...entries[1],
-      tracksideRssi: null,
-      mrRssi: null,
-    }])
-    expect(html).toContain('轨旁 / MR RSSI：— / —')
-    expect(html.toLowerCase()).not.toContain('dbm')
+  it('keeps raw RSSI values and renders missing values as an em dash', () => {
+    expect(displayTracksideTooltipMetric(29)).toBe('29')
+    expect(displayTracksideTooltipMetric(0)).toBe('0')
+    expect(displayTracksideTooltipMetric(null)).toBe('—')
+    expect(displayTracksideTooltipMetric(Number.NaN)).toBe('—')
   })
 
-  it('stays fixed within each half and flips only across the center', () => {
-    expect(resolveTracksideTooltipPosition(100, 1_000, 340)).toEqual([648, 12])
-    expect(resolveTracksideTooltipPosition(400, 1_000, 340)).toEqual([648, 12])
-    expect(resolveTracksideTooltipPosition(600, 1_000, 340)).toEqual([12, 12])
-    expect(resolveTracksideTooltipPosition(900, 1_000, 340)).toEqual([12, 12])
-    expect(resolveTracksideTooltipPosition(50, 300, 340)).toEqual([12, 12])
-  })
-
-  it('builds 100 current-frame tooltips below the 5ms target', () => {
-    const frameEntries = Array.from({ length: 16 }, (_, index) => ({
-      ...entries[index % entries.length],
-      apName: `AP-${String(index).padStart(2, '0')}`,
-      radio: index % 2 + 1,
-    }))
-    const durations: number[] = []
-    for (let index = 0; index < 100; index += 1) {
-      const started = performance.now()
-      buildTracksideTooltip('2026-07-20 13:53:19.181', frameEntries)
-      durations.push(performance.now() - started)
-    }
-    const average = durations.reduce((sum, item) => sum + item, 0) / durations.length
-    const maximum = Math.max(...durations)
-    console.info(`trackside tooltip profile: avg=${average.toFixed(3)}ms max=${maximum.toFixed(3)}ms`)
-    expect(average).toBeLessThan(5)
-    expect(maximum).toBeLessThan(5)
+  it('uses a stable user-facing fallback for a missing AP name', () => {
+    expect(tracksideTooltipApLabel(entries[1])).toBe('AP-A')
+    expect(tracksideTooltipApLabel({ ...entries[1], apName: null })).toBe('轨旁 AP 未知')
   })
 })

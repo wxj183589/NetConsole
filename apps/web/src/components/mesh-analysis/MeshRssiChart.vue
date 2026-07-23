@@ -137,7 +137,9 @@ async function ensureChart(): Promise<boolean> {
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
-    chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount()))
+    chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount(), {
+      useDirtyRect: false,
+    }))
     chart.on('click', handleChartClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)

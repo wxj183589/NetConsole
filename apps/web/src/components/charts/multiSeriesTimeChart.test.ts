@@ -32,6 +32,11 @@ describe('shared multi-series time chart core', () => {
       renderer: 'canvas',
       useDirtyRect: true,
     })
+    expect(createTimeChartInitOptions(14_581, { useDirtyRect: false })).toEqual({
+      renderer: 'canvas',
+      useDirtyRect: false,
+      devicePixelRatio: 1,
+    })
     expect(resolveChartDevicePixelRatio(1_000, 2.5)).toBe(2.5)
     expect(resolveChartDevicePixelRatio(14_581, 2.5)).toBe(1.5)
     expect(resolveChartDevicePixelRatio(25_000, 2.5)).toBe(1)
