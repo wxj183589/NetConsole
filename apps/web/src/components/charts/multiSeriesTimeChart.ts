@@ -9,6 +9,7 @@ import {
 export const LARGE_TIME_CHART_POINT_COUNT = 5_000
 export const EXTREME_TIME_CHART_POINT_COUNT = 20_000
 export const TIME_CHART_SYMBOL_THRESHOLD = 120
+export const MIN_TIME_CHART_VIEWPORT_SPAN_MS = 1_000
 
 export interface TimeChartDomain {
   full_start_time: string
@@ -79,6 +80,13 @@ export function normalizedApRadioColorKey(
   return `${mac || 'unknown'}:radio:${radio ?? 'unknown'}`
 }
 
+export function formatTimeChartAxisSecond(value: string | number): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  const pad = (item: number): string => String(item).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 export function createMultiSeriesTimeChartBaseOption(
   theme: NetConsoleChartTokens,
   options: MultiSeriesTimeChartBaseOptions,
@@ -119,8 +127,13 @@ export function createMultiSeriesTimeChartBaseOption(
       type: 'time',
       min: options.fullDomain?.full_start_time,
       max: options.fullDomain?.full_end_time,
+      minInterval: MIN_TIME_CHART_VIEWPORT_SPAN_MS,
       axisPointer: { snap: false },
       ...axis,
+      axisLabel: {
+        ...axis.axisLabel,
+        formatter: formatTimeChartAxisSecond,
+      },
     },
     yAxis: {
       type: 'value',
@@ -132,6 +145,7 @@ export function createMultiSeriesTimeChartBaseOption(
       {
         type: 'inside',
         filterMode: 'none',
+        minValueSpan: MIN_TIME_CHART_VIEWPORT_SPAN_MS,
         startValue: options.viewport?.start_time,
         endValue: options.viewport?.end_time,
       },
@@ -140,6 +154,7 @@ export function createMultiSeriesTimeChartBaseOption(
         height: 18,
         bottom: 28,
         filterMode: 'none',
+        minValueSpan: MIN_TIME_CHART_VIEWPORT_SPAN_MS,
         startValue: options.viewport?.start_time,
         endValue: options.viewport?.end_time,
         ...createNetConsoleDataZoomStyle(theme),

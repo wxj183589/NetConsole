@@ -218,6 +218,43 @@ app.whenReady().then(async () => {
         cache.frameTimestamps.length = 0
       }
 
+      function escapeTooltipHtml(value) {
+        const text = value == null || value === '' ? '—' : String(value)
+        return text.replace(/[&<>"']/g, (char) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;',
+        })[char] || char)
+      }
+
+      function buildTracksideTooltip(cache, timestampMillis) {
+        const entries = (cache.frameMetaIds.get(timestampMillis) || [])
+          .map((metaId) => cache.pointMetaById.get(metaId))
+          .filter(Boolean)
+          .sort((left, right) => (
+            (left.role === 'ACTIVE' ? 0 : 1) - (right.role === 'ACTIVE' ? 0 : 1)
+            || String(left.peerApName || left.peerMac || '').localeCompare(String(right.peerApName || right.peerMac || ''), 'zh-CN')
+            || (left.localRadio ?? Number.MAX_SAFE_INTEGER) - (right.localRadio ?? Number.MAX_SAFE_INTEGER)
+          ))
+        const rows = entries.map((entry) => {
+          const symbol = entry.role === 'ACTIVE' ? '●' : '○'
+          const duration = entry.role === 'ACTIVE'
+            && entry.segmentDurationSeconds != null
+            && Number.isFinite(entry.segmentDurationSeconds)
+            ? '<br>主链持续：' + entry.segmentDurationSeconds + ' s'
+            : ''
+          return '<strong>' + symbol + ' ' + entry.role + '　'
+            + escapeTooltipHtml(entry.peerApName || entry.peerMac || '轨旁 AP 未知')
+            + ' · Radio ' + escapeTooltipHtml(entry.localRadio) + '</strong>'
+            + '<br>轨旁 / MR RSSI：' + escapeTooltipHtml(entry.rssi) + ' / ' + escapeTooltipHtml(entry.localRssi) + ' dBm'
+            + '<br>站点 / 区间：' + escapeTooltipHtml(entry.station) + ' / ' + escapeTooltipHtml(entry.section)
+            + duration
+        })
+        return '<div>采样时间：' + new Date(timestampMillis).toISOString() + rows.join('') + '</div>'
+      }
+
       function createOption(cache) {
         return {
           animation: false,
@@ -236,11 +273,11 @@ app.whenReady().then(async () => {
             },
           },
           grid: { left: 58, right: 24, top: 32, bottom: 72, containLabel: true },
-          xAxis: { type: 'time' },
+          xAxis: { type: 'time', minInterval: 1000 },
           yAxis: { type: 'value', name: 'dBm' },
           dataZoom: [
-            { type: 'inside', filterMode: 'none' },
-            { type: 'slider', height: 18, bottom: 28, filterMode: 'none' },
+            { type: 'inside', filterMode: 'none', minValueSpan: 1000 },
+            { type: 'slider', height: 18, bottom: 28, filterMode: 'none', minValueSpan: 1000 },
           ],
           series: cache.series.map((item) => ({
             id: item.id,
@@ -275,6 +312,9 @@ app.whenReady().then(async () => {
       let dirtyRectEnabled = false
       let devicePixelRatio = null
       let preservedDataReference = false
+      let tooltipFrameLinkCount = 0
+      let tooltipBuildAverageMs = 0
+      let tooltipBuildMaximumMs = 0
 
       for (let sessionIndex = 0; sessionIndex < SESSION_COUNT; sessionIndex += 1) {
         await collectGarbage()
@@ -308,6 +348,19 @@ app.whenReady().then(async () => {
           cacheBuildMs = builtCacheMs
           optionBuildMs = builtOptionMs
           preservedDataReference = option.series[0].data === cache.series[0].data
+          const tooltipFrame = cache.frameTimestamps.reduce((selected, timestamp) => (
+            (cache.frameMetaIds.get(timestamp)?.length || 0) > (cache.frameMetaIds.get(selected)?.length || 0)
+              ? timestamp
+              : selected
+          ), cache.frameTimestamps[0])
+          tooltipFrameLinkCount = cache.frameMetaIds.get(tooltipFrame)?.length || 0
+          const tooltipDurations = Array.from({ length: 100 }, () => {
+            const tooltipStarted = performance.now()
+            buildTracksideTooltip(cache, tooltipFrame)
+            return performance.now() - tooltipStarted
+          })
+          tooltipBuildAverageMs = tooltipDurations.reduce((total, value) => total + value, 0) / tooltipDurations.length
+          tooltipBuildMaximumMs = Math.max(...tooltipDurations)
         }
         tracksideSignal.value = Vue.markRaw({
           ...payload,
@@ -376,6 +429,10 @@ app.whenReady().then(async () => {
         residual_heap_growth_bytes: residualHeaps.length < 2 ? null : residualHeaps.at(-1) - residualHeaps[0],
         steady_state_residual_growth_bytes: residualHeaps.length < 3 ? null : residualHeaps.at(-1) - residualHeaps[1],
         series_data_reference_preserved: preservedDataReference,
+        tooltip_profile_iterations: 100,
+        tooltip_frame_link_count: tooltipFrameLinkCount,
+        tooltip_build_average_ms: Number(tooltipBuildAverageMs.toFixed(3)),
+        tooltip_build_maximum_ms: Number(tooltipBuildMaximumMs.toFixed(3)),
         sessions: sessionProfiles,
       }
     })()`, true)

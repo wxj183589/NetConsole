@@ -17,6 +17,7 @@ import {
   createFullMeshViewport,
   createFullMeshViewportFromDomain,
   formatMeshViewportTimestamp,
+  meshDataZoomRequiresCorrection,
   meshTimestampMillis,
   meshViewportRangeEquals,
   normalizeMeshViewport,
@@ -78,10 +79,13 @@ const fullViewport = (source: MeshChartViewport['source'] = 'initial'): MeshChar
     : createFullMeshViewport(timestamps(), source)
 )
 
+function renderedSwitchTimestamp(event: MeshChartEvent): string {
+  return event.render_point_timestamp || event.point_timestamp || event.timestamp
+}
+
 function findRenderedSwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
   if (event.render_aligned === false) return undefined
-  const timestamp = event.render_point_timestamp || event.point_timestamp
-  if (!timestamp) return undefined
+  const timestamp = renderedSwitchTimestamp(event)
   const context = event.point_context
   return props.points.find((point) => (
     point.timestamp === timestamp
@@ -245,6 +249,16 @@ function handleDataZoom(raw: unknown): void {
     revision: (currentViewport?.revision ?? 0) + 1,
   })
   if (!viewport) return
+  if (meshDataZoomRequiresCorrection(raw, viewport)) {
+    chart?.dispatchAction({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: viewport.start_time,
+        endValue: viewport.end_time,
+      })),
+    }, { silent: true })
+  }
   currentViewport = viewport
   pendingViewport = viewport
   if (viewportFrame !== null) return
@@ -388,7 +402,11 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         symbol: 'none',
         label: { show: false },
         lineStyle: { color: theme.warning, type: 'dashed' },
-        data: switchEvents.map((event) => ({ name: event.timestamp, xAxis: event.timestamp, meshEvent: event })),
+        data: switchEvents.map((event) => ({
+          name: renderedSwitchTimestamp(event),
+          xAxis: renderedSwitchTimestamp(event),
+          meshEvent: event,
+        })),
       } : undefined,
       })),
       ...(nodes.length ? [{

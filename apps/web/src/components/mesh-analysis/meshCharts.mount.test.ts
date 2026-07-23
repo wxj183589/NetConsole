@@ -142,7 +142,7 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(3)
     const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as { series: Array<{ name: string; type: string }> })
     expect(options[0].series.every((item) => item.type === 'scatter')).toBe(true)
-    expect(options[1].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI'])
+    expect(options[1].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI', '切换节点'])
     expect(options[2].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 TxBusy', '当前 ACTIVE MR 侧 RxBusy'])
     expect((echartsMock.chart.setOption.mock.calls[1][0] as { series: Array<{ markLine?: { silent: boolean }; markArea?: unknown }> }).series[0].markLine).toBeUndefined()
     expect((echartsMock.chart.setOption.mock.calls[2][0] as { series: Array<{ markLine?: { silent: boolean }; markArea?: unknown }> }).series[0].markLine).toBeUndefined()
@@ -189,7 +189,16 @@ describe('MESH charts mount and render', () => {
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       legend: { type?: string }
       series: Array<{ name: string; showSymbol?: boolean; connectNulls?: boolean; markLine?: unknown; data?: Array<[number, number | null, number, number]> }>
-      tooltip: { formatter: (params: unknown) => string }
+      tooltip: {
+        formatter: (params: unknown) => string
+        position: (
+          point: [number, number],
+          params: unknown,
+          dom: HTMLElement,
+          rect: unknown,
+          size: { contentSize: [number, number]; viewSize: [number, number] },
+        ) => [number, number]
+      }
       toolbox: { feature: { dataZoom?: unknown; restore?: unknown; saveAsImage?: unknown } }
     }
     expect(option.series.map((item) => item.name)).toEqual([
@@ -206,13 +215,27 @@ describe('MESH charts mount and render', () => {
     expect(option.toolbox.feature.dataZoom).toBeDefined()
     expect(option.toolbox.feature.restore).toBeDefined()
     expect(option.toolbox.feature.saveAsImage).toBeDefined()
-    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('轨旁侧 RSSI：-45')
-    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('链路角色：ACTIVE')
+    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('轨旁 / MR RSSI：-45 / -40 dBm')
+    expect(option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])).toContain('● ACTIVE　AP-1 · Radio 1')
     const dedupedTooltip = option.tooltip.formatter([
       { axisValue: tracksideChartPoint.timestamp },
       { axisValue: tracksideChartPoint.timestamp },
     ])
     expect(dedupedTooltip.split('AP-1 · Radio 1').length - 1).toBe(1)
+    const tooltipElement = document.createElement('div')
+    tooltipElement.className = 'mesh-trackside-signal-tooltip'
+    document.body.append(tooltipElement)
+    option.tooltip.formatter([{ axisValue: tracksideChartPoint.timestamp }])
+    option.tooltip.position([100, 0], [], tooltipElement, null, {
+      contentSize: [340, 300],
+      viewSize: [900, 430],
+    })
+    const bubbledWheel = vi.fn()
+    document.body.addEventListener('wheel', bubbledWheel)
+    tooltipElement.dispatchEvent(new WheelEvent('wheel', { bubbles: true }))
+    expect(bubbledWheel).not.toHaveBeenCalled()
+    document.body.removeEventListener('wheel', bubbledWheel)
+    tooltipElement.remove()
     const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
     click({ seriesId: option.series[0].name, data: option.series[0].data?.[0] })
     expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([chartEvent])
@@ -419,6 +442,71 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
+  it('anchors one trackside switch node to the target ACTIVE peer signal fallback', async () => {
+    const timestamp = '2026-07-20T10:00:00.181Z'
+    const standby = {
+      ...tracksideChartPoint,
+      timestamp,
+      role: 'STANDBY' as const,
+      peer_mac: 'peer-standby',
+      peer_ap_name: 'AP-STANDBY',
+      peer_rssi: -20,
+    }
+    const active = {
+      ...tracksideChartPoint,
+      timestamp,
+      role: 'ACTIVE' as const,
+      peer_mac: 'peer-target',
+      peer_ap_name: 'AP-TARGET',
+      peer_ap_mac: 'ap-target',
+      peer_rssi: null,
+      peer_signal: -55,
+      local_rssi: -40,
+    }
+    const event: MeshChartEvent = {
+      ...chartEvent,
+      timestamp: '2026-07-20T10:00:00.010Z',
+      point_timestamp: '2026-07-20T10:00:00.100Z',
+      render_point_timestamp: timestamp,
+      render_aligned: true,
+      to_peer_mac: active.peer_mac,
+      to_ap_name: active.peer_ap_name,
+      point_context: null,
+    }
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [
+          { ...tracksideSeries[0], series_id: 'standby', peer_name: standby.peer_ap_name, peer_mac: standby.peer_mac, points: [standby] },
+          { ...tracksideSeries[0], series_id: 'active', peer_name: active.peer_ap_name, peer_mac: active.peer_mac, points: [active] },
+        ],
+        events: [event, { ...event }],
+        showSwitchLines: true,
+        showSwitchPoints: true,
+      },
+    })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        type: string
+        markLine?: { data: Array<{ xAxis: string }> }
+        data?: Array<{ value: [number, number, number] }>
+      }>
+    }
+    expect(option.series[0].markLine?.data).toHaveLength(1)
+    expect(option.series[0].markLine?.data[0].xAxis).toBe(timestamp)
+    const scatter = option.series.find((item) => item.type === 'scatter')
+    expect(scatter?.data).toHaveLength(1)
+    expect(scatter?.data?.[0].value.slice(0, 2)).toEqual([Date.parse(timestamp), -55])
+    expect(scatter?.data?.[0].value[1]).not.toBe(active.local_rssi)
+    expect(scatter?.data?.[0].value[1]).not.toBe(standby.peer_rssi)
+    const click = echartsMock.chart.on.mock.calls.find(([name]) => name === 'click')?.[1] as (payload: unknown) => void
+    click({ seriesId: 'active', data: { eventIndex: 0 } })
+    expect(wrapper.emitted('selectSwitch')?.[0]).toEqual([event])
+
+    wrapper.unmount()
+  })
+
   it('keeps ACTIVE and STANDBY role changes in one legend and one color', async () => {
     const points: MeshTracksideSignalPointData[] = [
       { ...tracksideChartPoint, timestamp: '2026-07-20T10:00:00.000Z', role: 'ACTIVE', run_id: 'link-run-1', run_sequence: 1 },
@@ -487,7 +575,16 @@ describe('MESH charts mount and render', () => {
         markLine?: unknown
         data: Array<[number, number | null, number, number]>
       }>
-      tooltip: { formatter: (params: unknown) => string }
+      tooltip: {
+        formatter: (params: unknown) => string
+        position: (
+          point: [number, number],
+          params: unknown,
+          dom: HTMLElement,
+          rect: unknown,
+          size: { contentSize: [number, number]; viewSize: [number, number] },
+        ) => [number, number]
+      }
     }
     expect(option.series).toHaveLength(4)
     expect(option.series.every((item) => item.type === 'line')).toBe(true)
@@ -496,20 +593,17 @@ describe('MESH charts mount and render', () => {
     expect(option.series.flatMap((item) => item.data).every((item) => Array.isArray(item))).toBe(true)
     expect(JSON.stringify(option.series)).not.toContain('peer_ap_name')
     const tooltip = option.tooltip.formatter(option.series.map((item) => ({ axisValue: frameTime, data: item.data[0] })))
-    expect(tooltip.match(/链路角色：/g)).toHaveLength(4)
-    expect(tooltip.match(/链路角色：ACTIVE/g)).toHaveLength(1)
-    expect(tooltip.match(/链路角色：STANDBY/g)).toHaveLength(3)
+    expect(tooltip.match(/● ACTIVE/g)).toHaveLength(1)
+    expect(tooltip.match(/○ STANDBY/g)).toHaveLength(3)
     expect(tooltip.indexOf('AP-A')).toBeLessThan(tooltip.indexOf('AP-B'))
     expect(tooltip.indexOf('AP-B')).toBeLessThan(tooltip.indexOf('AP-C'))
     expect(tooltip.indexOf('AP-C')).toBeLessThan(tooltip.indexOf('AP-D'))
-    for (const radioMac of ['radio-a', 'radio-b', 'radio-c', 'radio-d']) {
-      expect(tooltip).toContain(`Peer Radio MAC：${radioMac}`)
-    }
+    expect(tooltip).not.toContain('Peer Radio MAC：')
 
     wrapper.unmount()
   })
 
-  it('keeps mixed-role large data as one line without role scatter or markLine', async () => {
+  it('keeps switch scatter and one markLine config enabled in large mode', async () => {
     const points: MeshTracksideSignalPointData[] = Array.from({ length: 5_000 }, (_, index) => ({
       ...tracksideChartPoint,
       link_id: index + 1,
@@ -527,7 +621,7 @@ describe('MESH charts mount and render', () => {
           returned_points: points.length,
           points,
         }],
-        events: [chartEvent],
+        events: [{ ...chartEvent, render_point_timestamp: points[0].timestamp, render_aligned: true }],
         showSwitchLines: true,
         showSwitchPoints: true,
       },
@@ -537,11 +631,106 @@ describe('MESH charts mount and render', () => {
     const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       series: Array<{ type: string; showSymbol: boolean; markLine?: unknown; data: unknown[] }>
     }
-    expect(option.series).toHaveLength(1)
+    expect(option.series).toHaveLength(2)
     expect(option.series[0].type).toBe('line')
     expect(option.series[0].showSymbol).toBe(false)
-    expect(option.series[0].markLine).toBeUndefined()
+    expect(option.series[0].markLine).toBeDefined()
     expect(option.series[0].data).toHaveLength(5_000)
+    expect(option.series.filter((item) => item.type === 'scatter')).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('uses one scatter overlay and one markLine config for 481 series and 708 events', async () => {
+    const baseMillis = Date.parse('2026-07-20T10:00:00.000Z')
+    const seriesCount = 481
+    const extraPointSeries = 334
+    const largeSeries = Array.from({ length: seriesCount }, (_, seriesIndex) => {
+      const pointCount = 15 + (seriesIndex < extraPointSeries ? 1 : 0)
+      const peerMac = `peer-${seriesIndex}`
+      const peerName = `AP-${seriesIndex}`
+      const role = seriesIndex === 0 ? 'ACTIVE' as const : 'STANDBY' as const
+      const points = Array.from({ length: pointCount }, (_, pointIndex) => ({
+        ...tracksideChartPoint,
+        link_id: seriesIndex * 100 + pointIndex,
+        timestamp: new Date(baseMillis + pointIndex).toISOString(),
+        role,
+        peer_mac: peerMac,
+        peer_ap_name: peerName,
+        peer_ap_mac: `ap-${seriesIndex}`,
+        peer_rssi: -40 - seriesIndex % 20,
+        run_id: `run-${seriesIndex}`,
+        run_sequence: seriesIndex + 1,
+      }))
+      return {
+        ...tracksideSeries[0],
+        series_id: `series-${seriesIndex}`,
+        peer_name: peerName,
+        peer_mac: peerMac,
+        ap_mac: `ap-${seriesIndex}`,
+        roles_present: [role],
+        total_points: pointCount,
+        returned_points: pointCount,
+        points,
+      }
+    })
+    const events = Array.from({ length: 708 }, (_, eventIndex): MeshChartEvent => ({
+      ...chartEvent,
+      event_id: eventIndex + 1,
+      timestamp: new Date(baseMillis + eventIndex).toISOString(),
+      render_point_timestamp: new Date(baseMillis + eventIndex).toISOString(),
+      render_aligned: true,
+      from_peer_mac: `from-${eventIndex}`,
+      to_peer_mac: 'peer-0',
+      to_ap_name: 'AP-0',
+      point_context: null,
+    }))
+    expect(largeSeries.reduce((sum, item) => sum + item.points.length, 0)).toBe(7_549)
+
+    const wrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: largeSeries,
+        events,
+        showSwitchLines: false,
+        showSwitchPoints: false,
+      },
+    })
+    await flushPromises()
+
+    const initialOption = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{
+        type: string
+        data?: unknown[]
+      }>
+    }
+    expect(initialOption.series.filter((item) => item.type === 'line')).toHaveLength(481)
+    expect(initialOption.series.filter((item) => item.type === 'scatter')).toHaveLength(0)
+    const businessData = initialOption.series.map((item) => item.data)
+    const beforeOverlaySetOptionCount = echartsMock.chart.setOption.mock.calls.length
+    const overlayStarted = performance.now()
+    await wrapper.setProps({ showSwitchLines: true, showSwitchPoints: true })
+    await flushPromises()
+    const overlayUpdateMs = performance.now() - overlayStarted
+    console.info(`trackside overlay profile: ${overlayUpdateMs.toFixed(3)}ms`)
+    expect(overlayUpdateMs).toBeLessThan(50)
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(beforeOverlaySetOptionCount + 1)
+    const openedOverlay = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ id?: string; type?: string; data?: unknown[]; markLine?: { data: unknown[] } }>
+    }
+    expect(openedOverlay.series.filter((item) => item.type === 'scatter')).toHaveLength(1)
+    expect(openedOverlay.series[0].data).toBeUndefined()
+    expect(openedOverlay.series[0].markLine?.data).toHaveLength(708)
+    expect(openedOverlay.series.find((item) => item.id === 'trackside-switch-nodes')?.data).toHaveLength(16)
+    expect(initialOption.series.every((item, index) => item.data === businessData[index])).toBe(true)
+
+    await wrapper.setProps({ showSwitchLines: false, showSwitchPoints: false })
+    await flushPromises()
+    const closedOverlay = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      series: Array<{ id?: string; data?: unknown[]; markLine?: { data: unknown[] } }>
+    }
+    expect(closedOverlay.series[0].data).toBeUndefined()
+    expect(closedOverlay.series[0].markLine?.data).toEqual([])
+    expect(closedOverlay.series.find((item) => item.id === 'trackside-switch-nodes')?.data).toEqual([])
 
     wrapper.unmount()
   })
@@ -578,6 +767,20 @@ describe('MESH charts mount and render', () => {
       ...sharedTimeDomain,
       source_chart: 'trackside-rssi',
     })
+    dataZoom({
+      startValue: '2026-07-20T10:00:00.500Z',
+      endValue: '2026-07-20T10:00:00.600Z',
+    })
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const correctedViewport = wrapper.emitted('viewport-change')?.at(-1)?.[0] as {
+      start_time: string
+      end_time: string
+    }
+    expect(Date.parse(correctedViewport.end_time) - Date.parse(correctedViewport.start_time)).toBe(1_000)
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'dataZoom' }),
+      { silent: true },
+    )
 
     await wrapper.setProps({
       syncViewport: {
@@ -637,6 +840,40 @@ describe('MESH charts mount and render', () => {
       { type: 'hideTip' },
       { silent: true },
     )
+    expect(wrapper.emitted('viewport-change')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('silently corrects a main RSSI dataZoom before emitting one shared 1-second viewport', async () => {
+    const sharedTimeDomain = {
+      full_start_time: '2026-07-20T09:00:00.000Z',
+      full_end_time: '2026-07-20T12:00:00.000Z',
+    }
+    const wrapper = mount(MeshRssiChart, {
+      props: {
+        points: [chartPoint, chartPointAfterGap],
+        sharedTimeDomain,
+      },
+    })
+    await flushPromises()
+    echartsMock.chart.dispatchAction.mockClear()
+    const dataZoom = echartsMock.chart.on.mock.calls.find(([event]) => event === 'datazoom')?.[1] as (payload: unknown) => void
+    dataZoom({
+      startValue: '2026-07-20T10:00:00.500Z',
+      endValue: '2026-07-20T10:00:00.600Z',
+    })
+    expect(echartsMock.chart.dispatchAction).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'dataZoom' }),
+      { silent: true },
+    )
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+    const emitted = wrapper.emitted('viewport-change')?.[0]?.[0] as {
+      start_time: string
+      end_time: string
+    }
+    expect(Date.parse(emitted.end_time) - Date.parse(emitted.start_time)).toBe(1_000)
+    expect(wrapper.emitted('viewport-change')).toHaveLength(1)
     wrapper.unmount()
   })
 
@@ -784,7 +1021,7 @@ describe('MESH charts mount and render', () => {
     await wrapper.setProps({ showPeer: true, showSwitchLines: true, showLocationBand: false })
     await flushPromises()
 
-    expect(echartsMock.chart.dispatchAction).not.toHaveBeenCalled()
+    expect(echartsMock.chart.dispatchAction.mock.calls.some(([action]) => action.type === 'dataZoom')).toBe(false)
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,
@@ -794,7 +1031,7 @@ describe('MESH charts mount and render', () => {
     window.dispatchEvent(new CustomEvent('netconsole:theme-change'))
     window.dispatchEvent(new Event('resize'))
     await flushPromises()
-    expect(echartsMock.chart.dispatchAction).not.toHaveBeenCalled()
+    expect(echartsMock.chart.dispatchAction.mock.calls.some(([action]) => action.type === 'dataZoom')).toBe(false)
     expect((wrapper.vm as unknown as { getVisibleTimeRange: () => { start_time: string; end_time: string } }).getVisibleTimeRange()).toMatchObject({
       start_time: points[1].timestamp,
       end_time: points[2].timestamp,

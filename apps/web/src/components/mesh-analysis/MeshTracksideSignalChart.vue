@@ -24,6 +24,7 @@ import {
   createFullMeshViewport,
   createFullMeshViewportFromDomain,
   formatMeshViewportTimestamp,
+  meshDataZoomRequiresCorrection,
   meshTimestampMillis,
   meshViewportRangeEquals,
   normalizeMeshViewport,
@@ -33,7 +34,6 @@ import {
   type MeshSharedPointerChange,
   type MeshSharedTimeDomain,
 } from './meshChartViewport'
-import { buildSwitchSection, escapeMeshTooltipHtml } from './meshRssiTooltip'
 import {
   buildTracksideSeriesCache,
   disposeTracksideSeriesCache,
@@ -44,6 +44,11 @@ import {
   type CompactTracksideSeriesMeta,
   type TracksideSeriesCache,
 } from './tracksideSeriesCache'
+import {
+  buildTracksideTooltip,
+  resolveTracksideTooltipPosition,
+  type TracksideTooltipEntry,
+} from './tracksideTooltip'
 
 const props = withDefaults(defineProps<{
   series?: MeshTracksideSignalSeriesData[]
@@ -106,6 +111,7 @@ let pointerGlobalOut: (() => void) | null = null
 let interactiveTimer: ReturnType<typeof setTimeout> | null = null
 let seriesCache: TracksideSeriesCache = markRaw(props.seriesCache ?? buildTracksideSeriesCache(props.series))
 const reportedPhases = new Set<string>()
+const guardedTooltipElements = new Set<HTMLElement>()
 
 const timestamps = (): string[] => [
   seriesCache.firstTimestampMillis,
@@ -120,14 +126,6 @@ const fullViewport = (source: MeshChartViewport['source'] = 'initial'): MeshChar
 
 function hasRenderableSize(): boolean {
   return Boolean(container.value && container.value.clientWidth > 0 && container.value.clientHeight > 0)
-}
-
-function metric(value: number | null | undefined, unit = ''): string {
-  return value == null ? '—' : `${value}${unit}`
-}
-
-function seriesLabel(series: CompactTracksideSeriesMeta): string {
-  return series.name
 }
 
 function pointLabel(point: CompactTracksidePointMeta): string {
@@ -161,6 +159,13 @@ interface ResolvedTracksidePoint {
   series: CompactTracksideSeriesMeta
 }
 
+interface ResolvedSwitchEvent {
+  event: MeshChartEvent
+  eventIndex: number
+  timestamp: string
+  timestampMillis: number
+}
+
 function resolvedPoint(metaId: number): ResolvedTracksidePoint | undefined {
   const meta = tracksidePointMeta(seriesCache, metaId)
   const series = meta ? seriesCache.seriesMetaById.get(meta.seriesId) : undefined
@@ -172,73 +177,88 @@ function resolvedPoint(metaId: number): ResolvedTracksidePoint | undefined {
   }
 }
 
-function findRenderedSwitchPoint(event: MeshChartEvent): ResolvedTracksidePoint | undefined {
-  if (event.render_aligned === false) return undefined
-  const timestamp = event.render_point_timestamp || event.point_timestamp || event.timestamp
-  const timestampMillis = meshTimestampMillis(timestamp)
-  if (timestampMillis === null) return undefined
-  const context = event.point_context
-  const points = findTracksideFrameMetaIds(seriesCache, timestampMillis)
-    .map(resolvedPoint)
-    .filter((point): point is ResolvedTracksidePoint => Boolean(point))
-  const exactMatch = points.find(({ meta }) => (
-    (context?.link_id == null || meta.linkId === context.link_id)
-    && (context?.timestamp_tag == null || meta.timestampTag === context.timestamp_tag)
-    && (event.local_radio == null || meta.localRadio === event.local_radio)
-    && meta.rssi != null
-    && meta.rssi !== 0
-  ))
-  if (exactMatch) return exactMatch
-  return points.find(({ meta }) => (
-    (event.local_radio == null || meta.localRadio === event.local_radio)
-    && meta.rssi != null
-    && meta.rssi !== 0
-  ))
+function normalizedIdentity(value: string | null | undefined): string {
+  return String(value || '').trim().toLocaleLowerCase().replace(/[^0-9a-z\u4e00-\u9fff]/g, '')
 }
 
-function switchNodeData(events: MeshChartEvent[]): Array<{ value: [number, number, number]; symbol: string }> {
-  return events.flatMap((event, eventIndex) => {
+function authoritativeSwitchEvents(): ResolvedSwitchEvent[] {
+  const seen = new Set<string>()
+  return props.events.flatMap((event, eventIndex) => {
+    if (event.event_type !== 'ACTIVE_SWITCH') return []
+    const timestamp = event.render_point_timestamp || event.point_timestamp || event.timestamp
+    const timestampMillis = meshTimestampMillis(timestamp)
+    if (timestampMillis === null) return []
+    const key = [
+      timestampMillis,
+      event.local_radio ?? '',
+      normalizedIdentity(event.from_peer_mac),
+      normalizedIdentity(event.to_peer_mac),
+    ].join(':')
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [{ event, eventIndex, timestamp, timestampMillis }]
+  })
+}
+
+function findRenderedSwitchPoint(item: ResolvedSwitchEvent): ResolvedTracksidePoint | undefined {
+  const { event, timestampMillis } = item
+  if (event.render_aligned === false) return undefined
+  const context = event.point_context
+  return findTracksideFrameMetaIds(seriesCache, timestampMillis)
+    .map(resolvedPoint)
+    .filter((point): point is ResolvedTracksidePoint => Boolean(point))
+    .find(({ meta }) => (
+      meta.role === 'ACTIVE'
+      && (context?.link_id == null || meta.linkId === context.link_id)
+      && (context?.timestamp_tag == null || meta.timestampTag === context.timestamp_tag)
+      && (event.local_radio == null || meta.localRadio === event.local_radio)
+      && (!event.to_peer_mac || normalizedIdentity(meta.peerMac) === normalizedIdentity(event.to_peer_mac))
+      && (!event.to_ap_name || normalizedIdentity(meta.peerApName) === normalizedIdentity(event.to_ap_name))
+      && meta.rssi != null
+      && meta.rssi !== 0
+    ))
+}
+
+function switchNodeData(events: ResolvedSwitchEvent[]): Array<{ value: [number, number, number]; symbol: string }> {
+  return events.flatMap((event) => {
     const point = findRenderedSwitchPoint(event)
     if (!point || point.data[1] == null) return []
     return [{
-      value: [point.data[0], point.data[1], eventIndex],
+      value: [point.data[0], point.data[1], event.eventIndex],
       symbol: 'circle',
     }]
   })
 }
 
-function buildTooltipPointSection(point: ResolvedTracksidePoint, index: number): string {
+function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
   const { meta, series } = point
-  return [
-    index === 0 ? '<strong>轨旁信号</strong>' : '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35">',
-    `序列：${escapeMeshTooltipHtml(seriesLabel(series))}`,
-    `采样时间：${escapeMeshTooltipHtml(formatMeshViewportTimestamp(meta.timestampMillis))}`,
-    `轨旁 AP：${escapeMeshTooltipHtml(pointLabel(meta))}`,
-    `AP MAC：${escapeMeshTooltipHtml(meta.peerApMac || series.apMac)}`,
-    `Peer MAC：${escapeMeshTooltipHtml(meta.peerMac)}`,
-    `Peer Radio MAC：${escapeMeshTooltipHtml(meta.peerRadioMac)}`,
-    `Radio：${metric(meta.localRadio)}`,
-    `链路角色：${escapeMeshTooltipHtml(meta.role)}`,
-    `轨旁侧 RSSI：${metric(meta.rssi)}`,
-    `MR 侧 RSSI（参考）：${metric(meta.localRssi)}`,
-    `Peer Signal / MR Signal：${metric(meta.peerSignal)} / ${metric(meta.localSignal)}`,
-    `站点 / 区间：${escapeMeshTooltipHtml(meta.station)} / ${escapeMeshTooltipHtml(meta.section)}`,
-    ...(meta.segmentDurationSeconds == null ? [] : [`主链建链持续时间：${metric(meta.segmentDurationSeconds, ' s')}`]),
-    `数据来源：${escapeMeshTooltipHtml(meta.dataSource)}`,
-  ].join('<br>')
+  return {
+    apName: pointLabel(meta),
+    radio: meta.localRadio ?? series.radio,
+    role: meta.role,
+    tracksideRssi: meta.rssi,
+    mrRssi: meta.localRssi,
+    station: meta.station ?? series.station,
+    section: meta.section ?? series.section,
+    activeDurationSeconds: meta.segmentDurationSeconds,
+  }
 }
 
-function buildTooltip(points: ResolvedTracksidePoint[], event?: MeshChartEvent, pointerTime?: string): string {
-  if (!points.length) {
-    return `<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">采样时间：${escapeMeshTooltipHtml(pointerTime || event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}<br>当前时刻无有效采样${buildSwitchSection(event)}</div>`
+function stopTooltipWheelPropagation(event: WheelEvent): void {
+  event.stopPropagation()
+}
+
+function guardTooltipWheel(element: HTMLElement): void {
+  if (guardedTooltipElements.has(element)) return
+  guardedTooltipElements.add(element)
+  element.addEventListener('wheel', stopTooltipWheelPropagation, { passive: true })
+}
+
+function releaseTooltipWheelGuards(): void {
+  for (const element of guardedTooltipElements) {
+    element.removeEventListener('wheel', stopTooltipWheelPropagation)
   }
-  return [
-    '<div class="mesh-trackside-signal-tooltip" style="min-width:280px;max-width:420px;white-space:normal;overflow-wrap:anywhere;line-height:1.6">',
-    `采样时间：${escapeMeshTooltipHtml(formatMeshViewportTimestamp(points[0].meta.timestampMillis))}`,
-    points.map((point, index) => buildTooltipPointSection(point, index)).join(''),
-    buildSwitchSection(event),
-    '</div>',
-  ].join('<br>')
+  guardedTooltipElements.clear()
 }
 
 async function ensureChart(): Promise<boolean> {
@@ -354,6 +374,7 @@ onBeforeUnmount(() => {
   pointerGlobalOut = null
   if (interactiveTimer) clearTimeout(interactiveTimer)
   interactiveTimer = null
+  releaseTooltipWheelGuards()
   chart?.dispose()
   chart = null
   disposeTracksideSeriesCache(seriesCache)
@@ -385,10 +406,14 @@ watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, s
 function handleChartClick(raw: unknown): void {
   const candidate = raw as {
     seriesId?: string
-    data?: CompactTracksideChartPoint | { value?: [number, number, number] }
+    data?: CompactTracksideChartPoint | { value?: [number, number, number]; eventIndex?: number }
   }
   const nodeValue = !Array.isArray(candidate.data) ? candidate.data?.value : undefined
-  const eventIndex = candidate.seriesId === 'trackside-switch-nodes' ? nodeValue?.[2] : undefined
+  const eventIndex = candidate.seriesId === 'trackside-switch-nodes'
+    ? nodeValue?.[2]
+    : !Array.isArray(candidate.data)
+      ? candidate.data?.eventIndex
+      : undefined
   const pointValue = Array.isArray(candidate.data) ? candidate.data : undefined
   const pointMeta = pointValue ? tracksidePointMeta(seriesCache, pointValue[2]) : undefined
   const event = Number.isSafeInteger(eventIndex)
@@ -409,6 +434,16 @@ function handleDataZoom(raw: unknown): void {
     revision: (currentViewport?.revision ?? 0) + 1,
   })
   if (!viewport) return
+  if (meshDataZoomRequiresCorrection(raw, viewport)) {
+    chart?.dispatchAction({
+      type: 'dataZoom',
+      batch: [0, 1].map((dataZoomIndex) => ({
+        dataZoomIndex,
+        startValue: viewport.start_time,
+        endValue: viewport.end_time,
+      })),
+    }, { silent: true })
+  }
   currentViewport = viewport
   pendingViewport = viewport
   if (viewportFrame !== null) return
@@ -487,9 +522,8 @@ function tracksideOverlaySeries(
   theme: ReturnType<typeof readNetConsoleChartTokens>,
   clearEmpty = false,
 ): Array<Record<string, unknown>> {
-  const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
-  const largeMode = isLargeTimeChart(seriesCache.totalRenderedPoints)
-  const nodes = props.showSwitchPoints && !largeMode ? switchNodeData(switchEvents) : []
+  const switchEvents = authoritativeSwitchEvents()
+  const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {
     silent: true,
@@ -500,15 +534,15 @@ function tracksideOverlaySeries(
       { xAxis: band.end_time },
     ]),
   } : clearEmpty ? { data: [] } : undefined
-  const markLine = props.showSwitchLines && switchEvents.length && !largeMode ? {
+  const markLine = props.showSwitchLines && switchEvents.length ? {
     silent: false,
     symbol: 'none',
     label: { show: false },
     lineStyle: { color: theme.warning, type: 'dashed' },
-    data: switchEvents.map((event, eventIndex) => ({
+    data: switchEvents.map((event) => ({
       name: event.timestamp,
       xAxis: event.timestamp,
-      eventIndex,
+      eventIndex: event.eventIndex,
     })),
   } : clearEmpty ? { data: [] } : undefined
   return [
@@ -575,6 +609,26 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   })
   const tooltip = {
     ...(baseOption.tooltip as Record<string, unknown>),
+    enterable: true,
+    confine: true,
+    transitionDuration: 0,
+    hideDelay: 50,
+    position: (
+      point: [number, number],
+      _params: unknown,
+      dom: HTMLElement,
+      _rect: unknown,
+      size: { contentSize: [number, number]; viewSize: [number, number] },
+    ) => {
+      guardTooltipWheel(dom)
+      const contentWidth = Math.max(0, Math.min(340, size.viewSize[0] - 24))
+      const content = dom.querySelector<HTMLElement>('.mesh-trackside-signal-tooltip')
+      if (content) {
+        content.style.width = `${contentWidth}px`
+        content.style.minWidth = `${Math.min(260, contentWidth)}px`
+      }
+      return resolveTracksideTooltipPosition(point[0], size.viewSize[0], contentWidth)
+    },
     formatter: (rawParams: unknown) => {
       const params = Array.isArray(rawParams) ? rawParams : [rawParams]
       const first = params[0] as { axisValue?: string | number } | undefined
@@ -584,23 +638,15 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         : typeof first?.axisValue === 'string'
           ? first.axisValue
           : formatMeshViewportTimestamp(pointerMillis)
-      const event = pointerMillis === null
-        ? undefined
-        : props.events.find((item) => meshTimestampMillis(
-            item.render_point_timestamp || item.point_timestamp || item.timestamp,
-          ) === pointerMillis)
       const pointItems = pointerMillis === null
         ? []
         : findTracksideFrameMetaIds(seriesCache, pointerMillis)
           .map(resolvedPoint)
           .filter((point): point is ResolvedTracksidePoint => Boolean(point))
-          .sort((left, right) => {
-        const role = (left.meta.role === 'ACTIVE' ? 0 : 1) - (right.meta.role === 'ACTIVE' ? 0 : 1)
-        if (role) return role
-        return pointLabel(left.meta).localeCompare(pointLabel(right.meta), 'zh-CN')
-          || String(left.meta.peerMac || '').localeCompare(String(right.meta.peerMac || ''))
-      })
-      return buildTooltip(pointItems, event, pointerTime)
+      return buildTracksideTooltip(
+        pointItems[0] ? formatMeshViewportTimestamp(pointItems[0].meta.timestampMillis) : pointerTime,
+        pointItems.map(tooltipEntry),
+      )
     },
   }
 

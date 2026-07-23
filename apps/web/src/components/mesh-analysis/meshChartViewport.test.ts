@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   acceptMeshSharedViewport,
   createFullMeshViewport,
+  enforceMinimumMeshViewport,
+  meshDataZoomRequiresCorrection,
   normalizeMeshViewport,
   resolveMeshSharedTimeDomain,
   viewportFromDataZoom,
@@ -148,5 +150,86 @@ describe('MESH chart viewport', () => {
       revision: 3,
     }, domain, 3)
     expect(mirrored).toBe(fromActive)
+  })
+
+  it('expands sub-second windows around the real millisecond center', () => {
+    const domain = {
+      full_start_time: '2026-07-20 13:00:00.000',
+      full_end_time: '2026-07-20 14:00:00.000',
+    }
+    const viewport = {
+      ...domain,
+      start_time: '2026-07-20 13:53:19.181',
+      end_time: '2026-07-20 13:53:19.381',
+      start_percent: 0,
+      end_percent: 100,
+      source: 'programmatic' as const,
+    }
+    expect(enforceMinimumMeshViewport(viewport, domain)).toMatchObject({
+      start_time: '2026-07-20 13:53:18.781',
+      end_time: '2026-07-20 13:53:19.781',
+    })
+    expect(meshDataZoomRequiresCorrection({
+      startValue: viewport.start_time,
+      endValue: viewport.end_time,
+    }, enforceMinimumMeshViewport(viewport, domain)!)).toBe(true)
+    expect(enforceMinimumMeshViewport({
+      ...viewport,
+      start_time: '2026-07-20 13:53:19.181',
+      end_time: '2026-07-20 13:53:20.181',
+    }, domain)).toMatchObject({
+      start_time: '2026-07-20 13:53:19.181',
+      end_time: '2026-07-20 13:53:20.181',
+    })
+    expect(meshDataZoomRequiresCorrection({
+      startValue: '2026-07-20 13:53:19.181',
+      endValue: '2026-07-20 13:53:20.181',
+    }, enforceMinimumMeshViewport({
+      ...viewport,
+      start_time: '2026-07-20 13:53:19.181',
+      end_time: '2026-07-20 13:53:20.181',
+    }, domain)!)).toBe(false)
+  })
+
+  it('clamps minimum windows at both boundaries and keeps short logs full', () => {
+    const domain = {
+      full_start_time: '2026-07-20 13:00:00.000',
+      full_end_time: '2026-07-20 14:00:00.000',
+    }
+    const base = {
+      ...domain,
+      start_percent: 0,
+      end_percent: 100,
+      source: 'programmatic' as const,
+    }
+    expect(enforceMinimumMeshViewport({
+      ...base,
+      start_time: '2026-07-20 13:00:00.100',
+      end_time: '2026-07-20 13:00:00.300',
+    }, domain)).toMatchObject({
+      start_time: '2026-07-20 13:00:00.000',
+      end_time: '2026-07-20 13:00:01.000',
+    })
+    expect(enforceMinimumMeshViewport({
+      ...base,
+      start_time: '2026-07-20 13:59:59.700',
+      end_time: '2026-07-20 13:59:59.900',
+    }, domain)).toMatchObject({
+      start_time: '2026-07-20 13:59:59.000',
+      end_time: '2026-07-20 14:00:00.000',
+    })
+    const shortDomain = {
+      full_start_time: '2026-07-20 13:00:00.181',
+      full_end_time: '2026-07-20 13:00:00.981',
+    }
+    expect(enforceMinimumMeshViewport({
+      ...base,
+      ...shortDomain,
+      start_time: '2026-07-20 13:00:00.300',
+      end_time: '2026-07-20 13:00:00.500',
+    }, shortDomain)).toMatchObject({
+      start_time: shortDomain.full_start_time,
+      end_time: shortDomain.full_end_time,
+    })
   })
 })

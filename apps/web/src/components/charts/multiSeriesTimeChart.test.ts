@@ -5,6 +5,7 @@ import {
   createMultiSeriesTimeChartBaseOption,
   createTimeChartInitOptions,
   createTimeChartLinePresentation,
+  formatTimeChartAxisSecond,
   normalizedApRadioColorKey,
   resolveChartDevicePixelRatio,
   stableTimeChartSeriesColor,
@@ -54,9 +55,9 @@ describe('shared multi-series time chart core', () => {
       grid: Record<string, unknown>
       legend: { type: string }
       toolbox: { feature: Record<string, unknown> }
-      xAxis: { min: string; max: string }
+      xAxis: { min: string; max: string; minInterval: number; axisLabel: { formatter: (value: string | number) => string } }
       yAxis: { name: string }
-      dataZoom: Array<{ startValue: string; endValue: string }>
+      dataZoom: Array<{ startValue: string; endValue: string; minValueSpan: number }>
     }
     expect(option.animation).toBe(false)
     expect(option.legend.type).toBe('scroll')
@@ -65,12 +66,17 @@ describe('shared multi-series time chart core', () => {
     expect(option.xAxis).toMatchObject({
       min: '2026-07-20 09:00:00.000',
       max: '2026-07-20 12:00:00.000',
+      minInterval: 1_000,
     })
     expect(option.yAxis.name).toBe('dBm')
     expect(option.dataZoom[0]).toMatchObject({
       startValue: '2026-07-20 10:00:00.500',
       endValue: '2026-07-20 10:00:03.500',
+      minValueSpan: 1_000,
     })
+    expect(option.dataZoom[1].minValueSpan).toBe(1_000)
+    expect(option.xAxis.axisLabel.formatter('2026-07-20T10:00:00.181Z')).not.toContain('.181')
+    expect(formatTimeChartAxisSecond('2026-07-20T10:00:00.181Z')).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   })
 
   it('disables symbols and emphasis in large mode and keeps AP/Radio colors stable', () => {

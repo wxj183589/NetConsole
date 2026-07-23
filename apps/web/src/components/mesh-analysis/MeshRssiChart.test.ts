@@ -14,8 +14,7 @@ describe('MeshRssiChart', () => {
 
   it('renders one ACTIVE path series with zoom and preloaded standby context', () => {
     expect(source).toContain('components.LegendComponent')
-    expect(source).toContain("type: 'slider'")
-    expect(source).toContain("filterMode: 'none'")
+    expect(source).toContain('createMultiSeriesTimeChartBaseOption')
     expect(source).toContain('buildMeshRssiSeries(props.points, props.showPeer, props.scope)')
     expect(source).toContain('buildMeshRssiTooltip')
     expect(source).toContain('findRenderedSwitchPoint')
