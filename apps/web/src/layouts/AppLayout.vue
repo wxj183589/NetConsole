@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
+import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import {
   Connection,
   DataBoard,
@@ -23,15 +25,23 @@ import {
 } from '../navigation/registry'
 import DesktopRuntimeStatus from '../components/DesktopRuntimeStatus.vue'
 import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
+import OpenPageTabs from '../components/navigation/OpenPageTabs.vue'
 import { navigationTitle, t } from '../i18n/runtime'
+import {
+  useOpenPageTabsStore,
+  type OpenPageTabDefinition,
+} from '../stores/openPageTabs'
 import AppRouteView from './AppRouteView.vue'
 
 const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
 const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
+const BRAND_LOGO_SRC = '/branding/netconsole.png'
 const BUILD_MISMATCH_MESSAGE = '当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。'
 
 const route = useRoute()
 const router = useRouter()
+const openPageTabsStore = useOpenPageTabsStore()
+const { cachedComponentNames } = storeToRefs(openPageTabsStore)
 const version = ref('')
 const backendBuildId = ref('')
 const frontendBuildId = ref('')
@@ -103,11 +113,64 @@ async function selectNavigation(path: string): Promise<void> {
     } catch {
       ElMessage.error('任务中心加载失败')
     }
-    await router.push(path)
+    await openOrActivatePage(path)
     return
   }
-  await router.push(path)
+  await openOrActivatePage(path)
   if (mobile.value) drawerOpen.value = false
+}
+
+function tabDefinitionForRoute(
+  target: RouteLocationNormalizedLoaded | ReturnType<typeof router.resolve>,
+): OpenPageTabDefinition | null {
+  const routeName = typeof target.name === 'string' ? target.name : ''
+  if (
+    !routeName
+    || target.meta.hiddenRoute === true
+    || routeName === 'desktop-tasks'
+    || target.matched.some((record) => record.path === '/desktop/tasks')
+  ) return null
+  const fullTitle = String(target.meta.title || routeName)
+  return {
+    routeName,
+    path: target.fullPath,
+    title: String(target.meta.tabTitle || fullTitle),
+    fullTitle,
+    navigationId: typeof target.meta.navigationId === 'string'
+      ? target.meta.navigationId
+      : undefined,
+    closable: routeName !== 'dashboard',
+    keepAlive: target.meta.keepAlive === true,
+    componentName: typeof target.meta.cacheComponentName === 'string'
+      ? target.meta.cacheComponentName
+      : undefined,
+  }
+}
+
+function resolveRestoredTab(saved: { routeName: string; path: string }): OpenPageTabDefinition | null {
+  try {
+    let resolved = router.resolve(saved.path)
+    if (String(resolved.name || '') !== saved.routeName) {
+      resolved = router.resolve({ name: saved.routeName })
+    }
+    if (String(resolved.name || '') !== saved.routeName) return null
+    return tabDefinitionForRoute(resolved)
+  } catch {
+    return null
+  }
+}
+
+async function openOrActivatePage(path: string): Promise<void> {
+  const target = router.resolve(path)
+  const definition = tabDefinitionForRoute(target)
+  if (definition) {
+    const result = openPageTabsStore.openOrActivate(definition)
+    if (!result.accepted) {
+      ElMessage.warning(t('shell.page_tab_limit', '已打开页面达到上限，请先关闭一个标签。'))
+      return
+    }
+  }
+  await router.push(path)
 }
 
 function openGroup(groupId: string): void {
@@ -134,6 +197,23 @@ watch(
   },
   { immediate: true },
 )
+
+openPageTabsStore.restoreTabs(resolveRestoredTab)
+const restoredActivePath = route.name === 'dashboard'
+  && openPageTabsStore.activeTab
+  && openPageTabsStore.activeTab.routeName !== 'dashboard'
+  ? openPageTabsStore.activeTab.path
+  : null
+watch(
+  () => route.fullPath,
+  () => {
+    const definition = tabDefinitionForRoute(route)
+    if (definition) openPageTabsStore.openOrActivate(definition)
+    else openPageTabsStore.setActiveRoute(null)
+  },
+  { immediate: true, flush: 'sync' },
+)
+if (restoredActivePath) void router.replace(restoredActivePath)
 
 onMounted(async () => {
   window.addEventListener('resize', updateViewport)
@@ -171,13 +251,18 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
       :width="sidebarCollapsed ? 'var(--nc-shell-sidebar-collapsed-width)' : 'var(--nc-shell-sidebar-width)'"
       :class="['app-sidebar', { collapsed: sidebarCollapsed, mobile, open: drawerOpen }]"
     >
-      <div class="brand">
-        <img class="brand-logo" src="/branding/netconsole.png" alt="NetConsole" />
+      <button
+        type="button"
+        class="brand"
+        :aria-label="t('shell.open_dashboard', '打开 Dashboard')"
+        @click="openOrActivatePage('/')"
+      >
+        <img class="brand-logo" :src="BRAND_LOGO_SRC" alt="NetConsole" />
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
           <span>{{ t('shell.console', 'Web Console') }}</span>
         </div>
-      </div>
+      </button>
       <el-menu
         :default-active="activeMenu"
         :default-openeds="openGroups"
@@ -233,6 +318,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           <span>v{{ version || '--' }}</span>
         </div>
       </el-header>
+      <OpenPageTabs />
       <el-main class="app-main">
         <el-alert
           v-if="frontendMismatch"
@@ -242,7 +328,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewport))
           show-icon
           :closable="false"
         />
-        <AppRouteView />
+        <AppRouteView :cached-component-names="cachedComponentNames" />
       </el-main>
     </el-container>
   </el-container>

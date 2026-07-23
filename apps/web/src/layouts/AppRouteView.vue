@@ -1,6 +1,17 @@
+<script setup lang="ts">
+defineProps<{
+  cachedComponentNames: string[]
+}>()
+
+const MAX_CACHED_PAGE_COUNT = 4
+</script>
+
 <template>
   <RouterView v-slot="{ Component, route: viewRoute }">
-    <KeepAlive :max="1">
+    <KeepAlive
+      :include="cachedComponentNames"
+      :max="MAX_CACHED_PAGE_COUNT"
+    >
       <component
         :is="Component"
         v-if="viewRoute.meta.keepAlive"

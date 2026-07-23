@@ -5,6 +5,7 @@ import {
   defineComponent,
   getCurrentInstance,
   h,
+  nextTick,
   onActivated,
   onBeforeUnmount,
   onDeactivated,
@@ -82,11 +83,17 @@ beforeEach(() => {
 
 describe('AppLayout controlled route cache', () => {
   it('keeps one mesh analysis instance while ordinary routes still unmount', async () => {
+    const cachedComponentNames = ref(['MeshAnalysisView'])
+    const CacheHost = defineComponent({
+      setup: () => () => h(AppRouteView, {
+        cachedComponentNames: cachedComponentNames.value,
+      }),
+    })
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{
         path: '/',
-        component: AppRouteView,
+        component: CacheHost,
         children: [
           {
             path: 'rail-transit/mesh-analysis',
@@ -132,6 +139,52 @@ describe('AppLayout controlled route cache', () => {
     expect(mocks.loadChart).toHaveBeenCalledTimes(1)
     expect(ordinaryLifecycle.mounted).toBe(20)
     expect(ordinaryLifecycle.unmounted).toBe(20)
+
+    wrapper.unmount()
+    expect(lifecycle.unmounted).toBe(1)
+  })
+
+  it('unmounts an inactive MESH instance when its tab removes the cache allowlist entry', async () => {
+    const cachedComponentNames = ref(['MeshAnalysisView'])
+    const CacheHost = defineComponent({
+      setup: () => () => h(AppRouteView, {
+        cachedComponentNames: cachedComponentNames.value,
+      }),
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{
+        path: '/',
+        component: CacheHost,
+        children: [
+          {
+            path: 'rail-transit/mesh-analysis',
+            name: 'mesh-analysis',
+            component: MeshPage,
+            meta: { title: 'MESH', keepAlive: true },
+          },
+          {
+            path: 'rail-transit/base-data',
+            name: 'rail-transit-base-data',
+            component: OrdinaryPage,
+            meta: { title: '基础资料' },
+          },
+        ],
+      }],
+    })
+    await router.push('/rail-transit/mesh-analysis')
+    const wrapper = mount(root, { global: { plugins: [router] } })
+    await flushPromises()
+    await router.push('/rail-transit/base-data')
+    await flushPromises()
+
+    cachedComponentNames.value = []
+    await nextTick()
+    await flushPromises()
+
+    expect(lifecycle.mounted).toBe(1)
+    expect(lifecycle.deactivated).toBe(1)
+    expect(lifecycle.unmounted).toBe(1)
 
     wrapper.unmount()
     expect(lifecycle.unmounted).toBe(1)
