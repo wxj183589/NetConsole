@@ -19,6 +19,9 @@ StationTurnbackDirection = Literal["none", "both", "increasing_to_decreasing", "
 StationSourceKind = Literal["device_station_field", "template", "manual", "legacy_ap_derived"]
 StationSourceSyncStatus = Literal["matched", "stale", "conflict", "manual", "legacy", "unavailable"]
 StationSourceMatchStatus = Literal["create", "matched", "conflict", "manual_review"]
+MrPositionCode = Literal["CT", "CW", "unknown"]
+MrPhysicalEnd = Literal["car_1_end", "car_6_end", "unknown"]
+IncreasingDirectionLeadingEnd = MrPhysicalEnd
 
 
 class BaseDataEditSessionDTO(ApiModel):
@@ -139,6 +142,7 @@ class RailTransitSummaryDTO(ApiModel):
     main_path_code: str = "MAIN"
     increasing_direction_name: str = "上行"
     decreasing_direction_name: str = "下行"
+    increasing_direction_leading_end: IncreasingDirectionLeadingEnd = "unknown"
     station_source_group_name: str = "车站"
     station_source_field: str = "station"
     remark: str = ""
@@ -325,7 +329,10 @@ class VehicleMrDTO(ApiModel):
     name: str
     train_id: str = ""
     train_no: str = ""
-    role: str = ""
+    role: str = Field(default="", json_schema_extra={"deprecated": True})
+    mr_position_code: MrPositionCode = "unknown"
+    physical_end: MrPhysicalEnd = "unknown"
+    car_number: int | None = None
     management_ip: str = ""
     station: str = ""
     mac: str = ""
@@ -347,7 +354,8 @@ class TrainDTO(ApiModel):
     train_no: str
     name: str
     mr_count: int = 0
-    roles: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list, json_schema_extra={"deprecated": True})
+    mr_position_codes: list[MrPositionCode] = Field(default_factory=list)
     latest_mesh_status: str = "unknown"
     latest_session_id: str = ""
     issue_count: int = 0

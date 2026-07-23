@@ -105,6 +105,7 @@ export interface RailTransitSummary {
   main_path_code: string
   increasing_direction_name: string
   decreasing_direction_name: string
+  increasing_direction_leading_end: 'car_1_end' | 'car_6_end' | 'unknown'
   station_source_group_name: string
   station_source_field: string
   remark: string
@@ -295,6 +296,9 @@ export interface VehicleMr {
   train_id: string
   train_no: string
   role: string
+  mr_position_code: 'CT' | 'CW' | 'unknown'
+  physical_end: 'car_1_end' | 'car_6_end' | 'unknown'
+  car_number: number | null
   management_ip: string
   station: string
   mac: string
@@ -312,6 +316,7 @@ export interface Train {
   name: string
   mr_count: number
   roles: string[]
+  mr_position_codes: Array<'CT' | 'CW' | 'unknown'>
   latest_mesh_status: string
   latest_session_id: string
   issue_count: number

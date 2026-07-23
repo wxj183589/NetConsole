@@ -22,6 +22,7 @@ import type {
   MergeFieldDiff,
   MergePlanItem,
   Relation,
+  RailTransitSummary,
   Section,
   Station,
   StationSourceCandidate,
@@ -45,6 +46,7 @@ interface BaseDataDraft {
     main_path_code: string
     increasing_direction_name: string
     decreasing_direction_name: string
+    increasing_direction_leading_end: 'car_1_end' | 'car_6_end' | 'unknown'
     station_source_group_name: string
     station_source_field: string
     remark: string
@@ -162,7 +164,7 @@ const trainColumns: NcTableColumn<Train>[] = [
   { key: 'train_no', label: '列车编号', minWidth: 120 },
   { key: 'name', label: '列车名称', valueType: 'name', minWidth: 150 },
   { key: 'mr_count', label: 'MR 数量', valueType: 'number', width: 100 },
-  { key: 'roles', label: 'MR 角色', minWidth: 130, displayValue: (row) => row.roles.join(' / ') || '--' },
+  { key: 'mr_position_codes', label: 'MR 端位代码', minWidth: 130, displayValue: (row) => row.mr_position_codes.join(' / ') || '--' },
   { key: 'latest_mesh_status', label: '最近 Mesh-Link', valueType: 'status', width: 140 },
   { key: 'latest_session_id', label: '最近 Online MR', minWidth: 210, displayValue: (row) => display(row.latest_session_id) },
   { key: 'issues', label: '问题', valueType: 'number', width: 90, displayValue: (row) => row.issue_count || '--' },
@@ -171,7 +173,9 @@ const mrColumns: NcTableColumn<VehicleMr>[] = [
   { key: 'name', label: 'MR 名称', valueType: 'name', minWidth: 170 },
   { key: 'device_id', label: '设备 ID', valueType: 'number', width: 100 },
   { key: 'train_id', label: '所属列车', minWidth: 120 },
-  { key: 'role', label: '角色', width: 80 },
+  { key: 'mr_position_code', label: 'MR 端位代码', width: 110, displayValue: (row) => row.mr_position_code === 'unknown' ? '--' : row.mr_position_code },
+  { key: 'physical_end', label: '物理安装位置', minWidth: 130, displayValue: (row) => physicalEndLabel(row.physical_end) },
+  { key: 'car_number', label: '车厢号', valueType: 'number', width: 90, displayValue: (row) => row.car_number ?? '--' },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125 },
   { key: 'mac', label: 'MAC', valueType: 'mac', minWidth: 150, displayValue: (row) => display(row.mac) },
   { key: 'connection', label: '协议 / 端口', minWidth: 120, displayValue: (row) => `${display(row.protocol)} / ${display(row.port)}` },
@@ -454,6 +458,7 @@ function captureBaselines(): void {
       main_path_code: store.summary?.main_path_code || 'MAIN',
       increasing_direction_name: store.summary?.increasing_direction_name || '上行',
       decreasing_direction_name: store.summary?.decreasing_direction_name || '下行',
+      increasing_direction_leading_end: store.summary?.increasing_direction_leading_end || 'unknown',
       station_source_group_name: store.summary?.station_source_group_name || '车站',
       station_source_field: store.summary?.station_source_field || 'station',
       remark: store.summary?.remark || '',
@@ -593,7 +598,7 @@ function addAp(): void {
 }
 function addMr(): void {
   if (!editingDraft.value) return
-  const row: VehicleMr = { id: temporaryId(), device_id: null, name: '', train_id: '', train_no: '', role: '', management_ip: '', station: '', mac: '', protocol: 'SSH', port: 22, remark: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '' }
+  const row: VehicleMr = { id: temporaryId(), device_id: null, name: '', train_id: '', train_no: '', role: '', mr_position_code: 'unknown', physical_end: 'unknown', car_number: null, management_ip: '', station: '', mac: '', protocol: 'SSH', port: 22, remark: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '' }
   editingDraft.value.mrs.push(row); markMr(row)
 }
 
@@ -636,6 +641,7 @@ function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unk
     main_path_code: metadata.main_path_code,
     increasing_direction_name: metadata.increasing_direction_name,
     decreasing_direction_name: metadata.decreasing_direction_name,
+    increasing_direction_leading_end: metadata.increasing_direction_leading_end,
     station_source_group_name: metadata.station_source_group_name,
     station_source_field: 'station',
     remark: metadata.remark,
@@ -895,6 +901,9 @@ function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' {
   return 'info'
 }
 function display(value: unknown): string { return value === null || value === undefined || value === '' ? '--' : String(value) }
+function physicalEndLabel(value: VehicleMr['physical_end'] | RailTransitSummary['increasing_direction_leading_end']): string {
+  return value === 'car_1_end' ? '1车厢端' : value === 'car_6_end' ? '6车厢端' : '未设置'
+}
 function cloneDto<T>(value: T): T { return structuredClone(toRaw(value)) }
 function defaultStation(values: Partial<Station> = {}): Station {
   return {
@@ -1015,7 +1024,7 @@ function turnbackSummary(row: Station): string {
           </div>
           <el-descriptions :column="3" border class="meta-block">
             <el-descriptions-item label="局点 ID">{{ store.summary?.site_id || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="线路与方向参数" :span="2">站序递增方向 = {{ store.summary?.increasing_direction_name || '上行' }}；站序递减方向 = {{ store.summary?.decreasing_direction_name || '下行' }}</el-descriptions-item>
+            <el-descriptions-item label="线路与方向参数" :span="2">站序递增方向 = {{ store.summary?.increasing_direction_name || '上行' }}；站序递减方向 = {{ store.summary?.decreasing_direction_name || '下行' }}；递增方向行驶头端 = {{ physicalEndLabel(store.summary?.increasing_direction_leading_end || 'unknown') }}</el-descriptions-item>
             <el-descriptions-item label="线路名称">
               <el-input
                 v-if="editing && editingDraft"
@@ -1079,6 +1088,18 @@ function turnbackSummary(row: Station): string {
                 @input="markMetadata"
               />
               <span v-else>{{ store.summary?.decreasing_direction_name || '下行' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="站序递增时的行驶头端">
+              <el-select
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.increasing_direction_leading_end"
+                @change="markMetadata"
+              >
+                <el-option label="1车厢端" value="car_1_end" />
+                <el-option label="6车厢端" value="car_6_end" />
+                <el-option label="未设置" value="unknown" />
+              </el-select>
+              <span v-else>{{ physicalEndLabel(store.summary?.increasing_direction_leading_end || 'unknown') }}</span>
             </el-descriptions-item>
             <el-descriptions-item label="来源分组">
               <el-input
@@ -1214,7 +1235,7 @@ function turnbackSummary(row: Station): string {
               <div class="filter-bar">
                 <el-input v-model="store.mrFilters.query" clearable placeholder="MR 名称 / IP / MAC / 设备 ID" @keyup.enter="store.applyMrFilters" />
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />
-                <el-select v-model="store.mrFilters.mr_role" clearable placeholder="MR 角色"><el-option label="CT" value="CT" /><el-option label="TC" value="TC" /></el-select>
+                <el-select v-model="store.mrFilters.mr_role" clearable placeholder="MR 端位代码"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
                 <el-button type="primary" :disabled="!locked" @click="store.applyMrFilters">应用筛选</el-button>
                 <el-button :disabled="locked || saving" @click="addMr">新增车载 MR</el-button>
               </div>

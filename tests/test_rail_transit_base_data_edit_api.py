@@ -96,7 +96,13 @@ def test_electron_session_can_update_site_metadata_and_preserve_unknown_fields(t
                     "entity_type": "site_metadata",
                     "action": "update",
                     "entity_id": "current",
-                    "values": {"line_name": "新线路", "system_type": "信号", "network_domain": "default", "remark": "已维护"},
+                    "values": {
+                        "line_name": "新线路",
+                        "system_type": "信号",
+                        "network_domain": "default",
+                        "increasing_direction_leading_end": "car_1_end",
+                        "remark": "已维护",
+                    },
                 }],
                 "explicit_confirmation": True,
             },
@@ -106,8 +112,10 @@ def test_electron_session_can_update_site_metadata_and_preserve_unknown_fields(t
     assert saved.status_code == 200
     assert summary["line_name"] == "新线路"
     assert summary["project_type"] == "信号"
+    assert summary["increasing_direction_leading_end"] == "car_1_end"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["custom_owner"] == "保留字段"
+    assert metadata["increasing_direction_leading_end"] == "car_1_end"
 
 
 def test_isolated_electron_session_explains_read_only_and_rejects_write(

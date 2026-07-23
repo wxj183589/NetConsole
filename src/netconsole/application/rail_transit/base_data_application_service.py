@@ -43,6 +43,7 @@ _PLATFORM_LAYOUTS = {"island", "side", "mixed", "stacked_island", "stacked_side"
 _TURNBACK_TYPES = {"none", "crossover", "pocket_track", "tail_track", "loop", "depot_connection", "other", "unknown"}
 _TURNBACK_DIRECTIONS = {"none", "both", "increasing_to_decreasing", "decreasing_to_increasing", "unknown"}
 _SOURCE_KINDS = {"device_station_field", "template", "manual", "legacy_ap_derived"}
+_INCREASING_DIRECTION_LEADING_ENDS = {"car_1_end", "car_6_end", "unknown"}
 
 
 class RailTransitBaseDataApplicationError(RuntimeError):
@@ -208,6 +209,12 @@ class RailTransitBaseDataApplicationService:
             "main_path_code": str(raw.get("main_path_code") or DEFAULT_MAIN_PATH_CODE).strip()[:50] or DEFAULT_MAIN_PATH_CODE,
             "increasing_direction_name": str(raw.get("increasing_direction_name") or "上行").strip()[:50] or "上行",
             "decreasing_direction_name": str(raw.get("decreasing_direction_name") or "下行").strip()[:50] or "下行",
+            "increasing_direction_leading_end": _enum(
+                raw.get("increasing_direction_leading_end"),
+                _INCREASING_DIRECTION_LEADING_ENDS,
+                "unknown",
+                "站序递增方向行驶头端无效",
+            ),
             "station_source_group_name": str(raw.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP).strip()[:100] or DEFAULT_STATION_SOURCE_GROUP,
             "station_source_field": STATION_SOURCE_FIELD,
             "remark": str(raw.get("remark") or "").strip()[:1000],

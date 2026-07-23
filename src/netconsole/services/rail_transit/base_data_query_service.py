@@ -42,6 +42,7 @@ from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
+from netconsole.services.rail_transit.mr_end_role_service import mr_position
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
@@ -126,6 +127,9 @@ class RailTransitBaseDataQueryService:
 
     def get_summary(self, site_id: str) -> RailTransitSummaryDTO:
         meta = self._site_meta(site_id)
+        increasing_direction_leading_end = str(meta.get("increasing_direction_leading_end") or "unknown")
+        if increasing_direction_leading_end not in {"car_1_end", "car_6_end", "unknown"}:
+            increasing_direction_leading_end = "unknown"
         points = self._all_points(site_id, include_runtime=False)
         aps = [item for item in points if self._is_ap_record(item)]
         stations = self._stations(points, site_id=site_id)
@@ -150,6 +154,7 @@ class RailTransitBaseDataQueryService:
             main_path_code=str(meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
             increasing_direction_name=str(meta.get("increasing_direction_name") or "上行"),
             decreasing_direction_name=str(meta.get("decreasing_direction_name") or "下行"),
+            increasing_direction_leading_end=increasing_direction_leading_end,
             station_source_group_name=str(meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP),
             station_source_field=STATION_SOURCE_FIELD,
             remark=str(meta.get("remark") or ""),
@@ -286,7 +291,7 @@ class RailTransitBaseDataQueryService:
             needle = train.casefold()
             items = [item for item in items if needle in f"{item.train_id} {item.train_no}".casefold()]
         if mr_role:
-            items = [item for item in items if item.role.casefold() == mr_role.casefold()]
+            items = [item for item in items if item.mr_position_code.casefold() == mr_role.casefold()]
         if query:
             needle = query.casefold()
             items = [item for item in items if needle in f"{item.name} {item.management_ip} {item.mac} {item.device_id}".casefold()]
@@ -572,6 +577,7 @@ class RailTransitBaseDataQueryService:
                 continue
             item_id = str(row.get("device_uuid") or f"device:{row.get('id')}")
             mesh = mesh_by_id.get(item_id) or mesh_by_name.get(str(row.get("name") or "").casefold())
+            position_code, physical_end, car_number = mr_position(identity.car_end)
             session = session_by_name.get(str(row.get("name") or "").casefold())
             runtime = RelatedRuntimeStatusDTO(
                 mesh_status=mesh.online_status if mesh else "unknown",
@@ -589,6 +595,9 @@ class RailTransitBaseDataQueryService:
                     train_no=identity.train_no,
                     role=identity.car_end,
                     management_ip=str(row.get("primary_address") or ""),
+                    mr_position_code=position_code,
+                    physical_end=physical_end,
+                    car_number=car_number,
                     station=str(row.get("station") or ""),
                     mac=self._display_mac(row.get("mac_address")),
                     protocol=str(row.get("protocol") or ""),
@@ -923,6 +932,7 @@ class RailTransitBaseDataQueryService:
                     mr_count=len(rows),
                     roles=sorted({row.role for row in rows if row.role}),
                     latest_mesh_status="online" if "online" in statuses else statuses[0] if statuses else "unknown",
+                    mr_position_codes=sorted({row.mr_position_code for row in rows if row.mr_position_code != "unknown"}),
                     latest_session_id=sessions[0] if sessions else "",
                     issue_count=len(issue_rows),
                     highest_issue_severity=self._highest(issue_rows),

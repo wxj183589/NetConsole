@@ -26,6 +26,8 @@
 
 解析器按时间和 Radio 识别 ACTIVE/STANDBY/DOWN 等链路记录，规范化 MAC、RSSI、Tx/Rx Busy、链路计数、建立时间和持续时间。缺失指标写空值/N/A；RSSI 最小值、分位数或抖动只从真实有效样本计算，禁止用 0 或默认值补齐。
 
+MR 端位资料与运行结论必须分离：`MR-CT` 固定为 `CT / 1车厢端`，`MR-CW` 固定为 `CW / 6车厢端`，二者都不是固定“车头/车尾”。行程分析接入后，当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + `physical_end`”得到 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 不得用于静默交换 CT/CW。届时切换信号模型使用 `LEADING_END_FAST_DROP`（行驶头端型快速衰减）和 `TRAILING_END_SMOOTH_CROSSOVER`（行驶尾端型平滑交叉）等代码，这些模型用于一致性验证而不是覆盖基础资料结论。
+
 相邻同一物理 AP 的双 Radio 可按参数合并。默认参数：
 
 | 参数 | 默认值 |

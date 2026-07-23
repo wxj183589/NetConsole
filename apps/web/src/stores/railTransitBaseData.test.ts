@@ -54,6 +54,7 @@ describe('Rail Transit base data polling store', () => {
     vi.mocked(getRailTransitSummary).mockReset().mockResolvedValue({
       site_id: 'demo', site_name: '测试局点', line_name: '测试线', project_type: 'PIS', network_type: 'default',
       main_path_code: 'MAIN', increasing_direction_name: '上行', decreasing_direction_name: '下行',
+      increasing_direction_leading_end: 'unknown',
       station_source_group_name: '车站', station_source_field: 'station',
       remark: '', created_at: '', updated_at: '', station_count: 0,
       normal_station_count: 0, special_node_count: 0, source_pending_count: 0, source_conflict_count: 0,

@@ -338,7 +338,7 @@ onBeforeUnmount(() => { disposed = true; checkRunId += 1; clearTimer('refresh');
 
         <section class="result-grid" aria-label="实时检测结果">
           <article v-for="side in ['TC1', 'TC2']" :key="side" class="result-card">
-            <h2>{{ side === 'TC1' ? 'TC1端 / CT车头' : 'TC2端 / CW车尾' }} 实时检测结果</h2>
+            <h2>{{ side === 'TC1' ? 'TC1端 / CT（1车厢端）' : 'TC2端 / CW（6车厢端）' }} 实时检测结果</h2>
             <div class="result-table">
               <div class="result-row result-header"><span>节点 / IP</span><span>状态</span><span>说明</span></div>
               <div v-for="node in (side === 'TC1' ? topology?.tc1_nodes : topology?.tc2_nodes) || []" :key="node.node_id" class="result-row">

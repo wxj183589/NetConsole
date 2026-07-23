@@ -38,12 +38,12 @@ revision 校验 + SQLite BEGIN IMMEDIATE 单事务
 - 局点沿用当前 Site 模型；本阶段不改变“一条线路一个局点”的既有方式。
 - 站点查询优先读取正式 `__base_station__` 资料，再用 AP 点位的 `station_name`、区间起终点作为兼容补充；设备管理来源只用于预览、来源设备数和 `matched/stale/conflict/manual/legacy` 状态。
 - 区间由 `section_name + 起点 + 终点 + 线别` 派生；站点为空但区间有效是合法资料。
-- 线路级 metadata 增加主线路径编码、站序递增/递减方向名称、站点来源分组和固定来源字段。默认 `MAIN / 上行 / 下行 / 车站 / station`，方向判断基于正式节点的 `sort_order`，不直接使用节点编码。
+- 线路级 metadata 增加主线路径编码、站序递增/递减方向名称、`increasing_direction_leading_end`、站点来源分组和固定来源字段。`increasing_direction_leading_end` 仅允许 `car_1_end / car_6_end / unknown`，默认 `unknown`；方向判断基于正式节点的 `sort_order`，不直接使用节点编码。
 - 站点模型包含来源站点值、来源键、节点类型、路径、方向参与、结构、站台形式、端点、折返、启用和来源类型。旧 AP 派生站点保留为 `legacy_ap_derived`，不会启动时自动转换。
 - `ap_extension_points` 可能包含站点标题、设计起点等定位辅助行。Web 轨旁 AP 列表只纳入具有 `ap_name`、有效 MAC 或非空且非 `-` 的 `ap_point_code` 的记录；站点和区间派生仍读取全部定位行。
 - AP 正式名称与 AP 点位编号分字段保留。正式名称为空时页面可显示点位编号，但不得把点位编号写回为正式名称。
 - 列车和车载 MR 来自 `devices` 与 `device_groups`；只读取显式安全字段，不读取账号、密码、Community、Token 或隧道凭据。
-- 当前设备名中的 `MR-CW` 在 Web 角色筛选中映射为尾端 `TC`，原始设备名称不改变；`MR-CT` 映射为 `CT`。
+- 车载 MR 的 `mr_position_code`、`physical_end` 和 `car_number` 是独立的固定安装资料：`MR-CT = CT / 1车厢端 / 1`，`MR-CW = CW / 6车厢端 / 6`。兼容字段 `role` 仍返回原名称解析结果，但不再表示运行头尾。当前运行角色只能由“实际运行方向 + `increasing_direction_leading_end` + 物理安装位置”计算为 `leading_end / trailing_end / turnback_transition / unknown`；RSSI 信号模型只做一致性验证，不能静默交换 CT/CW。
 - AP、MR、设备之间不因 MAC 相同而自动合并。运行态关联继续复用现有 AC 和 Mesh-Link 匹配结果，不接管 AP Identity 生产匹配。
 
 ## 站点来源与模板
@@ -198,7 +198,7 @@ Electron Desktop 受管会话由短期 `desktop_session_token` 显式启用正�
 ## 当前限制
 
 - 真实局点维护只允许正常持久化 Electron 受管会话；站点/区间存在 AP 引用时不能删除，车载 MR 存在 Online MR 历史时不能直接删除；
-- 本阶段不实现区间拓扑自动生成、停车场/车辆段接轨拓扑、折返事件识别、MR 行驶方向识别、车头/车尾模式评分或启动时自动同步站点来源；
+- 本阶段不实现区间拓扑自动生成、停车场/车辆段接轨拓扑、折返事件识别、MR 行驶方向识别、行程区段评分或启动时自动同步站点来源；`mr_end_role_service.py` 已提供运行端位语义与计算规则，但尚未接入 MESH 行程分析、页面或报告；
 - 设备连接、AC 命令、Mesh-Link 刷新和 Online MR 启停；
 - Agent 远程 MR 控制与 `executor=AGENT`；
 - AP Identity 生产接管；

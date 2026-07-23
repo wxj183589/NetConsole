@@ -40,6 +40,11 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     }
     assert any(not item.station and item.section == "A-B 区间" for item in service.list_aps("demo", page_size=200).items)
     assert [item.role for item in mrs.items] == ["CT", "CW"]
+    assert [(item.mr_position_code, item.physical_end, item.car_number) for item in mrs.items] == [
+        ("CT", "car_1_end", 1),
+        ("CW", "car_6_end", 6),
+    ]
+    assert summary.increasing_direction_leading_end == "unknown"
     assert trains.items[0].mr_count == 2
     codes = {item.code for item in issues.items}
     assert {"ap_mac_duplicate", "ap_mileage_invalid", "static_ip_duplicate", "mr_train_unbound"} <= codes

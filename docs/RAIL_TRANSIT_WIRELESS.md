@@ -42,7 +42,7 @@ Web 入口 `/rail-transit/base-data` 复用当前局点 `devices.db`，不新增
 
 `ap_extension_points` 同时保存 AP 点位和站点标题、设计起点等位置辅助行。因此 AP 列表只纳入具有正式名称、有效 MAC 或有效点位编号的记录；站点和区间仍从全部位置行派生。正式名称为空时可显示点位编号，但不得将点位编号伪装成正式 AP 名称。详细契约见 [轨道交通基础资料](RAIL_TRANSIT_BASE_DATA.md)。
 
-车载 MR 名称继续保留设备表原文。当前 `MR-CW` 在 Web 角色筛选中对应尾端 `TC`，不修改原始设备名称。AP 和 MR 的 MAC 各自在本领域查重，不互相合并。
+车载 MR 名称继续保留设备表原文。`MR-CT` 固定表示 `CT / 1车厢端`，`MR-CW` 固定表示 `CW / 6车厢端`；这两个物理安装端位不表示当前行驶方向的头端或尾端。AP 和 MR 的 MAC 各自在本领域查重，不互相合并。
 
 阶段 5C-6A 将正式资料、导入来源和 AC/Mesh-Link/Online MR 运行态分层。运行态只补充展示，不自动覆盖 AP 名称、MAC、站点、区间、里程或 MR 静态身份。合并预览只做精确匹配；冲突必须人工处理，当前 Web 不提供正式写入入口。
 
@@ -82,7 +82,7 @@ Query Service 使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，不实例化�
 | 31～300 秒 | `recent` | 只显示历史/近期状态，不宣称当前在线 |
 | 超过 300 秒 | `stale` | 标记数据过期，不宣称当前在线 |
 
-只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。列车页由 `VehicleMrOnlineQueryService` 组合现有 `AcMeshLinkQueryService`，每列车一行返回 CT/TC 两端；Vue 不重新匹配 AP/MR，也不判断双端、单端、离线或过期。缺失字段返回 `null` 并显示“—”。
+只有 `fresh` 且链路状态属于活动状态时，才计入当前在线和活动链路。列车页由 `VehicleMrOnlineQueryService` 组合现有 `AcMeshLinkQueryService`，每列车一行返回 CT/CW 两个物理端位；Vue 不重新匹配 AP/MR，也不判断双端、单端、离线或过期。缺失字段返回 `null` 并显示“—”。
 
 公开列车状态固定为 `BOTH_ONLINE / ONE_SIDE_ONLINE / BOTH_OFFLINE / STALE / UNKNOWN`。端点状态固定为 `ONLINE / OFFLINE / STALE / UNKNOWN`，匹配状态固定为 `EXACT / NAME_NORMALIZED / MAC_MATCHED / UNMATCHED / UNKNOWN`。Canonical AP Identity 仍只用于 shadow/diagnostics，本轮没有接管生产匹配。
 
