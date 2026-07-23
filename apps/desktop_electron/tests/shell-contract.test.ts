@@ -23,7 +23,7 @@ const devSource = readFileSync(
 
 describe('Electron shell product contract', () => {
   it('uses the branded product title, icon, and hides the default menu unless development opts in', () => {
-    expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole v1.4.1 by wxj'")
+    expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole v1.4.2 by wxj'")
     expect(brandingSource).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
     expect(brandingSource).toContain("resolve(context.resourcesPath, 'branding', 'netconsole.ico')")
     expect(brandingSource).toContain("resolve(context.appPath, '..', '..', 'resources', 'branding', 'netconsole.ico')")

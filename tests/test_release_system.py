@@ -31,7 +31,7 @@ def _write_clean_build_tool_files(app_dist: Path) -> None:
 
 
 def test_version_file_exposes_release_metadata():
-    assert APP_VERSION == "v1.4.1"
+    assert APP_VERSION == "v1.4.2"
     assert BUILD_TIME
     assert GIT_COMMIT
 
