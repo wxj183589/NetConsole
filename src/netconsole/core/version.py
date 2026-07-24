@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 APP_NAME = "NetConsole"
-APP_VERSION = "v1.4.2"
+APP_VERSION = "v1.4.3"
 APP_VERSION_DISPLAY = APP_VERSION
 APP_BYLINE = "by WXJ"
 APP_TITLE_DISPLAY = f"{APP_NAME} {APP_VERSION_DISPLAY} {APP_BYLINE}"

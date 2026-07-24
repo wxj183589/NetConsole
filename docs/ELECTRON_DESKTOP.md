@@ -105,7 +105,7 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m scripts.maintenance.check_desktop_bootstrap --repair
 ```
 
-Electron/Vue 的产品标题统一为 `NetConsole v1.4.2 by wxj`，侧栏使用品牌图片与“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
+Electron/Vue 的产品标题统一为 `NetConsole v1.4.3 by wxj`，侧栏使用品牌图片与“本地网络运维控制台”；内部迁移阶段文案不进入正式界面。
 
 自动开发冒烟：
 

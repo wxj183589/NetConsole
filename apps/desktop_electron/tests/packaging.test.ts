@@ -13,7 +13,7 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toContain('electron-builder')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
-    expect(packageJson.build.productName).toBe('NetConsole v1.4.2 by wxj')
+    expect(packageJson.build.productName).toBe('NetConsole v1.4.3 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({

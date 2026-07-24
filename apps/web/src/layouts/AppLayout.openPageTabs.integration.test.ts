@@ -242,7 +242,7 @@ const tracksideChart = {
 }
 
 vi.mock('../api/client', () => ({
-  getHealth: vi.fn(async () => ({ status: 'ok', version: '1.4.2', build_id: 'test' })),
+  getHealth: vi.fn(async () => ({ status: 'ok', version: '1.4.3', build_id: 'test' })),
   getWebBuildMeta: vi.fn(async () => ({ build_id: 'test' })),
 }))
 
