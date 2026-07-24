@@ -51,8 +51,8 @@
 | --- | --- | --- |
 | Web production build、vue-tsc | 本分支执行 | 不适用 |
 | Electron tests、typecheck、build | 本分支执行 | 不适用 |
-| Backend PyInstaller、Electron unpacked package smoke | `PASS`（2026-07-24，临时数据根启动与受控退出） | 不适用 |
-| NSIS 安装器构建 | `PASS`（2026-07-24，x64 installer 与 blockmap） | 不适用 |
+| Backend PyInstaller、Electron unpacked package smoke | 必须从最终 clean commit 重建；包内 Backend/Web/self-check commit、UTC 时间和 dirty 状态由 smoke 与实际 HEAD 比较，结果见当次交付记录 | 不适用 |
+| NSIS 安装器构建 | 必须在最终提交后执行，installer 与 blockmap 生成结果见当次交付记录；自动构建成功不等同安装验收 | 不适用 |
 | NSIS 安装、启动、卸载 | 无法由单元测试或 installer build 替代 | `PENDING` |
 | 全新普通 Windows 用户、空 AppData | 环境自检逻辑与临时数据根 smoke | `PENDING` |
 | 无 Python/Node/pnpm/Git/源码 | PyInstaller/Electron 制品契约 | `PENDING` |

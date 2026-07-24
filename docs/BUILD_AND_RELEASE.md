@@ -20,10 +20,14 @@ python -m pip check
 
 ## Backend 构建
 
+正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit`；时间固定为 ISO 8601 UTC。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
+
+正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 读取最终 HEAD → 构建 Web/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD → 推送”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+
 先在仓库根目录执行：
 
 ```powershell
-python -m scripts.build.build_release --backend pyinstaller
+python -m scripts.build.build_release --backend pyinstaller --release
 ```
 
 该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.2/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
@@ -64,7 +68,7 @@ node scripts/package-smoke.mjs
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 
-干净 PyInstaller 构建会在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json}`：edition 固定为 `customer`，profile 固定为 `production`，不从源码目录或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析这两个 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR 和 MESH 等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
+干净 PyInstaller 构建会在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`：edition 固定为 `customer`，profile 固定为 `production`，构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析这些 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR 和 MESH 等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
 
 系统设置的“正式包环境自检”验证 Backend、前后端构建标识、只读生产 Feature policy、当前局点、数据根、`tasks.db`、`devices.db`、非秘密凭据状态表、fping/iPerf3、Electron Bridge，以及 REST/WebSocket 中文探针。自检不返回本机绝对路径或凭据。完整功能与人工验收状态见[正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md)。
 

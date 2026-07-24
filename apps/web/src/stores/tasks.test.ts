@@ -85,6 +85,27 @@ describe('Job Center polling store', () => {
     expect(FakeWebSocket.instances[0].readyState).toBe(3)
   })
 
+  it('keeps selected detail separate from sparse list refreshes', async () => {
+    const detail: TaskItem = {
+      ...task,
+      text_integrity: 'current_corrupted',
+      text_integrity_reason: 'worker_protocol_decode_failed',
+      producer_kind: 'local_worker',
+      details: { diagnostic: 'preserved' },
+    }
+    vi.mocked(getTask).mockResolvedValue(detail)
+    vi.mocked(listTasks).mockResolvedValue([{ ...task, text_integrity: 'ok' }])
+    const store = useTaskStore()
+
+    await store.selectTask(task.id)
+    await store.refresh()
+
+    expect(store.selectedDetail).toEqual(detail)
+    expect(store.selected?.details).toEqual({ diagnostic: 'preserved' })
+    expect(store.selected?.text_integrity).toBe('current_corrupted')
+    expect(store.tasks[0].text_integrity).toBe('ok')
+  })
+
   it('keeps logs hidden by default and stops detail/log polling on final cleanup', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout

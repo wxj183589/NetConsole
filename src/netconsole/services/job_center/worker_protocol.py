@@ -6,6 +6,7 @@ import sys
 from typing import Any, BinaryIO, TextIO
 
 _FALLBACK_STDOUT: BinaryIO | None = None
+WORKER_EVENT_TYPES = frozenset({"progress", "log", "finished", "error", "cancelled"})
 
 
 def encode_event(event: dict[str, Any]) -> str:
@@ -110,6 +111,44 @@ def parse_event_line(line: str) -> dict[str, Any] | None:
     event.setdefault("traceback", "")
     event.setdefault("cancelled", False)
     return event
+
+
+def parse_worker_event_line(line: str) -> tuple[dict[str, Any] | None, str]:
+    """Parse one Worker frame and return a stable fatal reason on failure."""
+
+    text = str(line or "").strip()
+    if not text:
+        return None, "worker_protocol_schema_invalid"
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None, "worker_protocol_json_invalid"
+    if not isinstance(value, dict):
+        return None, "worker_protocol_schema_invalid"
+    try:
+        event = parse_event_line(text)
+    except (TypeError, ValueError):
+        return None, "worker_protocol_schema_invalid"
+    if event is None:
+        return None, "worker_protocol_schema_invalid"
+    event_type = str(event.get("type") or "")
+    if event_type not in WORKER_EVENT_TYPES:
+        return None, "worker_protocol_unexpected_message"
+    if not str(event.get("job_id") or "").strip():
+        return None, "worker_protocol_schema_invalid"
+    for key in ("stage", "message", "error", "traceback"):
+        if not isinstance(event.get(key), str):
+            return None, "worker_protocol_schema_invalid"
+    for key in ("current", "total"):
+        value = event.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None, "worker_protocol_schema_invalid"
+    if not isinstance(event.get("cancelled"), bool):
+        return None, "worker_protocol_schema_invalid"
+    result = event.get("result")
+    if result is not None and not isinstance(result, dict):
+        return None, "worker_protocol_schema_invalid"
+    return event, ""
 
 
 def feed_jsonl(buffer: str, chunk: bytes | str) -> tuple[list[dict[str, Any]], list[str], str]:

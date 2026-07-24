@@ -18,9 +18,14 @@ from netconsole.core.feature_flags import (
     profiles_dir,
 )
 from netconsole.core.feature_registry import FeatureStatus, list_features
-from netconsole.core.version import GIT_COMMIT
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 from scripts.build import clean_build_spec
+from scripts.build.build_metadata import (
+    BUILD_METADATA_ENV,
+    BuildMetadataError,
+    collect_build_metadata,
+    encode_build_metadata,
+)
 from scripts.build.build_config import BuildConfig, load_config
 from scripts.build.check_runtime_deps import check_locked_environment
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
@@ -56,20 +61,38 @@ def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="print command plan without compiling"
     )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="require a clean Git worktree and embed release build metadata",
+    )
     args = parser.parse_args()
 
     try:
         config = load_config()
         validate_config(config)
+        build_metadata = collect_build_metadata(
+            config.root,
+            app_version=config.app_version,
+            release=args.release,
+        )
+        clean_build_spec.set_build_metadata(build_metadata)
         print(f"APP_NAME={config.app_name}")
         print(f"APP_VERSION={config.app_version}")
         print(f"BACKEND={args.backend}")
+        print(f"SOURCE_GIT_HEAD={build_metadata['git_commit_full']}")
+        print(f"BUILD_TIME_UTC={build_metadata['build_time_utc']}")
+        print(f"BUILD_DIRTY={str(build_metadata['build_dirty']).lower()}")
         if args.dry_run:
             print_command_plan(config)
             return 0
         if not args.skip_install:
             install_dependencies(args.backend)
-        preflight(config, smoke_test=not args.no_smoke_test)
+        preflight(
+            config,
+            smoke_test=not args.no_smoke_test,
+            build_metadata=build_metadata,
+        )
         build_pyinstaller(
             config,
             smoke_test=not args.no_smoke_test,
@@ -78,7 +101,7 @@ def main() -> int:
         assert_root_clean(config.root)
         validate_release_version_tree(config.release_version_dir)
         return 0
-    except BuildError as exc:
+    except (BuildError, BuildMetadataError) as exc:
         print("BUILD FAILED")
         print(str(exc))
         return 1
@@ -127,7 +150,12 @@ def install_dependencies(backend: str) -> None:
     )
 
 
-def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
+def preflight(
+    config: BuildConfig,
+    *,
+    smoke_test: bool,
+    build_metadata: dict[str, object] | None = None,
+) -> None:
     locked_environment = check_locked_environment(
         config.root / "requirements-build.txt",
         config.root / "constraints.txt",
@@ -137,7 +165,7 @@ def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
     if not locked_environment.ok:
         raise BuildError("构建环境与 constraints.txt 不一致")
     clean_build_spec.validate_tool_sources()
-    build_web_frontend(config)
+    build_web_frontend(config, build_metadata=build_metadata)
     if smoke_test:
         print("[check] source external tools")
         for result in run_tool_smoke_tests():
@@ -148,7 +176,11 @@ def preflight(config: BuildConfig, *, smoke_test: bool) -> None:
             print(f"[OK] {result.name}: {first_line}")
 
 
-def build_web_frontend(config: BuildConfig) -> None:
+def build_web_frontend(
+    config: BuildConfig,
+    *,
+    build_metadata: dict[str, object] | None = None,
+) -> None:
     pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
     if pnpm is None:
         raise BuildError(
@@ -159,13 +191,20 @@ def build_web_frontend(config: BuildConfig) -> None:
             "apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。"
         )
     env = os.environ.copy()
-    env["NETCONSOLE_FRONTEND_GIT_COMMIT"] = GIT_COMMIT
+    metadata = build_metadata or collect_build_metadata(
+        config.root,
+        app_version=config.app_version,
+        release=False,
+    )
+    env[BUILD_METADATA_ENV] = encode_build_metadata(metadata)
     run([pnpm, "build"], cwd=config.web_dir, env=env)
     try:
         validate_web_frontend_meta(
             config.web_dir / "dist",
             expected_version=config.app_version,
-            expected_commit=GIT_COMMIT,
+            expected_commit=str(metadata["git_commit_full"]),
+            expected_build_time=str(metadata["build_time_utc"]),
+            expected_dirty=bool(metadata["build_dirty"]),
         )
     except ValueError as exc:
         raise BuildError(str(exc)) from exc

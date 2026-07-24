@@ -8,7 +8,8 @@ import { activeTaskStatuses } from '../utils/taskStatus'
 
 export const useTaskStore = defineStore('tasks', () => {
   const tasks = ref<TaskItem[]>([])
-  const selected = ref<TaskItem | null>(null)
+  const selectedDetail = ref<TaskItem | null>(null)
+  const selected = selectedDetail
   const logs = ref<TaskLogLine[]>([])
   const loading = ref(false)
   const error = ref('')
@@ -39,7 +40,6 @@ export const useTaskStore = defineStore('tasks', () => {
     loading.value = !tasks.value.length
     try {
       tasks.value = await listTasks()
-      if (selected.value) selected.value = tasks.value.find((task) => task.id === selected.value?.id) || selected.value
       failures.value = 0
       error.value = ''
     } catch (_cause) {
@@ -196,6 +196,7 @@ export const useTaskStore = defineStore('tasks', () => {
   return {
     tasks,
     selected,
+    selectedDetail,
     logs,
     loading,
     error,

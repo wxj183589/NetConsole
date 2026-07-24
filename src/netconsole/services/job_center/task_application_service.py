@@ -8,8 +8,16 @@ from dataclasses import asdict
 from typing import Any
 
 from netconsole.core import app_logger
+from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
-from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
+from netconsole.core.version import APP_VERSION
+from netconsole.models.task_snapshot import (
+    CURRENT_TEXT_SCHEMA_VERSION,
+    TEXT_INTEGRITY_VALUES,
+    TaskEvent,
+    TaskSnapshot,
+    utc_now_iso,
+)
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
@@ -53,6 +61,10 @@ class TaskApplicationService:
         self._job_sites: dict[str, str] = {}
         self._reconcile_on_start = bool(reconcile_on_start)
         self._resource_guard = threading.Lock()
+        build_metadata = current_build_metadata(self.paths.app_root)
+        self._producer_commit = str(
+            build_metadata.get("git_commit_full") or "unknown"
+        )
         self.events.add_guard(self._persist_event)
         if self._reconcile_on_start:
             self.reconcile_orphaned_local_tasks()
@@ -95,6 +107,10 @@ class TaskApplicationService:
             site_name=site_name,
             owner_pid=os.getpid(),
             resource_keys=resource_keys,
+            text_schema_version=CURRENT_TEXT_SCHEMA_VERSION,
+            producer_kind="local_worker",
+            producer_version=APP_VERSION,
+            producer_commit=self._producer_commit,
         )
         repository = self.repository(site_name)
         if resource_keys:
@@ -129,6 +145,9 @@ class TaskApplicationService:
         owner: str = "controller",
         agent: str = "",
         device: str = "",
+        producer_version: str = "",
+        producer_commit: str = "",
+        text_schema_version: int | None = None,
     ) -> TaskSnapshot:
         """创建不由本地 Worker 承载、但仍进入统一任务中心的任务。"""
 
@@ -137,6 +156,8 @@ class TaskApplicationService:
         if repository.get(task_id) is not None:
             raise ValueError(f"任务已存在：{task_id}")
         now = utc_now_iso()
+        producer_kind = self._producer_kind(source)
+        trusted_local = producer_kind in {"local_backend", "local_worker"}
         snapshot = TaskSnapshot(
             task_id=task_id,
             task_type=task_type,
@@ -150,6 +171,19 @@ class TaskApplicationService:
             source=self._task_source(source, default="external"),
             site_name=selected_site,
             owner_pid=0,
+            text_schema_version=(
+                int(text_schema_version)
+                if text_schema_version is not None
+                else CURRENT_TEXT_SCHEMA_VERSION
+                if trusted_local
+                else 0
+            ),
+            producer_kind=producer_kind,
+            producer_version=str(producer_version or (APP_VERSION if trusted_local else "unknown")),
+            producer_commit=str(
+                producer_commit
+                or (self._producer_commit if trusted_local else "unknown")
+            ),
         )
         event = TaskEvent(
             event_id=uuid.uuid4().hex,
@@ -209,11 +243,17 @@ class TaskApplicationService:
     def mark_running(self, job_id: str) -> None:
         self.runtime.mark_running(job_id)
 
-    def feed_stdout(self, job_id: str, chunk: bytes) -> None:
-        self.runtime.feed_stdout(job_id, chunk)
+    def feed_stdout(self, job_id: str, chunk: bytes) -> bool:
+        fatal = self.runtime.feed_stdout(job_id, chunk)
+        if fatal:
+            self._job_sites.pop(job_id, None)
+        return fatal
 
-    def feed_stderr(self, job_id: str, chunk: bytes) -> None:
-        self.runtime.feed_stderr(job_id, chunk)
+    def feed_stderr(self, job_id: str, chunk: bytes) -> bool:
+        fatal = self.runtime.feed_stderr(job_id, chunk)
+        if fatal:
+            self._job_sites.pop(job_id, None)
+        return fatal
 
     def request_cancel(self, job_id: str) -> int:
         return self.runtime.request_cancel(job_id)
@@ -435,11 +475,11 @@ class TaskApplicationService:
                     "type": "error",
                     "job_id": task_id,
                     "stage": "worker_protocol",
-                    "message": "Worker 内部文本协议损坏，任务已停止",
-                    "error": "Worker 内部文本协议损坏，任务已停止",
-                    "error_code": "WORKER_TEXT_PROTOCOL_CORRUPTED",
+                    "message": "Worker 内部通信协议损坏，任务已强制终止。",
+                    "error": "Worker 内部通信协议损坏，任务已强制终止。",
+                    "error_code": "WORKER_PROTOCOL_CORRUPTED",
                     "result": {
-                        "error_code": "WORKER_TEXT_PROTOCOL_CORRUPTED",
+                        "error_code": "WORKER_PROTOCOL_CORRUPTED",
                         "text_integrity": "current_corrupted",
                         "text_integrity_reason": "replacement_character_detected_in_current_event",
                     },
@@ -558,7 +598,63 @@ class TaskApplicationService:
                     "finished_time": event_time if state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED} else values["finished_time"],
                 }
             )
+        self._apply_text_integrity(values, payload, event_time)
         return TaskSnapshot(**values)
+
+    @staticmethod
+    def _apply_text_integrity(
+        values: dict[str, Any], payload: dict[str, Any], event_time: str
+    ) -> None:
+        result = payload.get("result")
+        result_payload = dict(result) if isinstance(result, dict) else {}
+        explicit = str(
+            result_payload.get("text_integrity")
+            or payload.get("text_integrity")
+            or ""
+        )
+        if explicit in TEXT_INTEGRITY_VALUES and explicit != "ok":
+            values["text_integrity"] = explicit
+            values["text_integrity_reason"] = str(
+                result_payload.get("text_integrity_reason")
+                or payload.get("text_integrity_reason")
+                or "explicit_text_integrity"
+            )
+            values["text_integrity_updated_at"] = event_time
+            return
+        if not _contains_replacement_character(payload):
+            return
+        producer_kind = str(values.get("producer_kind") or "legacy")
+        producer_version = str(values.get("producer_version") or "unknown")
+        producer_commit = str(values.get("producer_commit") or "unknown")
+        schema_version = int(values.get("text_schema_version") or 0)
+        if producer_kind == "legacy" or schema_version == 1:
+            integrity = "historical_corrupted"
+            reason = "legacy_task_before_text_schema_v2"
+        elif producer_kind in {"local_worker", "local_backend"}:
+            integrity = "current_corrupted"
+            reason = "replacement_character_detected_in_current_event"
+        elif producer_kind == "agent" and (
+            producer_version != "unknown" or producer_commit != "unknown"
+        ):
+            integrity = "current_corrupted"
+            reason = "replacement_character_detected_in_current_agent_event"
+        else:
+            integrity = "unknown_corrupted"
+            reason = "corrupted_text_producer_version_unknown"
+        values["text_integrity"] = integrity
+        values["text_integrity_reason"] = reason
+        values["text_integrity_updated_at"] = event_time
+
+    @staticmethod
+    def _producer_kind(source: object) -> str:
+        value = str(source or "external").strip().casefold()
+        if value == "agent":
+            return "agent"
+        if value in {"import", "imported"}:
+            return "imported"
+        if value == "legacy":
+            return "legacy"
+        return "local_backend"
 
     @staticmethod
     def _allowed_from(

@@ -40,8 +40,13 @@ export interface TaskItem {
   error_code: string
   error_summary: string
   has_warning: boolean
-  text_integrity?: 'ok' | 'historical_corrupted' | 'current_corrupted'
+  text_integrity?: 'ok' | 'historical_corrupted' | 'current_corrupted' | 'unknown_corrupted'
   text_integrity_reason?: string
+  text_integrity_updated_at?: string
+  text_schema_version?: number
+  producer_kind?: 'local_worker' | 'local_backend' | 'agent' | 'imported' | 'legacy'
+  producer_version?: string
+  producer_commit?: string
   snapshot_id: number | null
   records_count: number | null
   parser_version: string

@@ -144,7 +144,7 @@ def test_task_runtime_rejects_cp936_worker_protocol_without_persisting_corrupted
     detail = JobCenterQueryService(service.paths).get_task("demo", task_id)
     assert restored is not None
     assert restored.status is TaskState.FAILED
-    assert restored.result["error_code"] == "WORKER_TEXT_PROTOCOL_CORRUPTED"
+    assert restored.result["error_code"] == "WORKER_PROTOCOL_CORRUPTED"
     assert "正在验证设备凭据" not in serialized
     assert "�" not in serialized
     assert detail is not None
@@ -173,6 +173,58 @@ def test_task_runtime_rejects_replacement_character_from_current_worker_event(
     assert restored.result["text_integrity_reason"] == "replacement_character_detected_in_current_event"
 
 
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (b"{invalid-json}\n", "worker_protocol_json_invalid"),
+        (b"[]\n", "worker_protocol_schema_invalid"),
+        (
+            json.dumps(
+                {
+                    "type": "progress",
+                    "job_id": "schema-invalid",
+                    "current": "one",
+                }
+            ).encode()
+            + b"\n",
+            "worker_protocol_schema_invalid",
+        ),
+        (
+            json.dumps(
+                {"type": "mystery", "job_id": "unexpected-message"}
+            ).encode()
+            + b"\n",
+            "worker_protocol_unexpected_message",
+        ),
+        (b"x" * 1_048_577, "worker_protocol_frame_too_large"),
+    ],
+    ids=["json-invalid", "not-object", "schema-invalid", "unexpected", "frame-too-large"],
+)
+def test_task_runtime_fails_every_fatal_protocol_reason(
+    tmp_path: Path,
+    payload: bytes,
+    reason: str,
+) -> None:
+    service = _service(tmp_path)
+    task_id = (
+        "schema-invalid"
+        if reason == "worker_protocol_schema_invalid" and b"progress" in payload
+        else "unexpected-message"
+        if reason == "worker_protocol_unexpected_message"
+        else f"fatal-{reason}"
+    )
+    service.prepare(BackgroundJob(job_id=task_id, task_type="demo_task"))
+    service.mark_running(task_id)
+
+    assert service.feed_stdout(task_id, payload) is True
+
+    snapshot = service.get_task(task_id)
+    assert snapshot is not None and snapshot.status is TaskState.FAILED
+    assert snapshot.result["error_code"] == "WORKER_PROTOCOL_CORRUPTED"
+    assert snapshot.result["text_integrity_reason"] == reason
+    assert not service.runtime.is_running(task_id)
+
+
 def test_task_persistence_guard_blocks_corrupted_worker_event(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task_id = "persistence-integrity-guard"
@@ -187,7 +239,7 @@ def test_task_persistence_guard_blocks_corrupted_worker_event(tmp_path: Path) ->
     restored = service.get_task(task_id)
     events = service.list_events(task_id)
     assert restored is not None and restored.status is TaskState.FAILED
-    assert restored.result["error_code"] == "WORKER_TEXT_PROTOCOL_CORRUPTED"
+    assert restored.result["error_code"] == "WORKER_PROTOCOL_CORRUPTED"
     assert all("�" not in json.dumps(event, ensure_ascii=False) for event in events)
 
 
@@ -196,34 +248,63 @@ def test_job_center_reports_backend_text_integrity_for_current_historical_and_ok
 ) -> None:
     service = _service(tmp_path)
     query = JobCenterQueryService(service.paths)
-    for task_id, status, message in (
-        ("current-damaged", TaskState.RUNNING, "当前�异常"),
-        ("historical-damaged", TaskState.COMPLETED, "历史�异常"),
-        ("normal-text", TaskState.COMPLETED, "中文正常"),
-    ):
-        now = utc_now_iso()
-        service.repository("demo").save(
-            TaskSnapshot(
-                task_id=task_id,
-                task_type="demo_task",
-                task_name=task_id,
-                status=status,
-                created_time=now,
-                updated_time=now,
-                message=message,
-                site_name="demo",
-            )
+    now = utc_now_iso()
+    service.repository("demo").save(
+        TaskSnapshot(
+            task_id="current-damaged",
+            task_type="demo_task",
+            task_name="current-damaged",
+            status=TaskState.FAILED,
+            created_time=now,
+            updated_time=now,
+            message="Worker 已停止",
+            site_name="demo",
+            text_integrity="current_corrupted",
+            text_integrity_reason="worker_protocol_decode_failed",
+            text_schema_version=2,
+            producer_kind="local_worker",
         )
+    )
+    service.repository("demo").save(
+        TaskSnapshot(
+            task_id="historical-damaged",
+            task_type="demo_task",
+            task_name="historical-damaged",
+            status=TaskState.COMPLETED,
+            created_time=now,
+            updated_time=now,
+            message="历史损坏记录",
+            site_name="demo",
+            text_integrity="historical_corrupted",
+            text_integrity_reason="legacy_task_before_text_schema_v2",
+        )
+    )
+    service.repository("demo").save(
+        TaskSnapshot(
+            task_id="normal-text",
+            task_type="demo_task",
+            task_name="normal-text",
+            status=TaskState.COMPLETED,
+            created_time=now,
+            updated_time=now,
+            message="中文正常",
+            site_name="demo",
+        )
+    )
 
+    listing = {item.id: item for item in query.list_tasks("demo")}
     current = query.get_task("demo", "current-damaged")
     historical = query.get_task("demo", "historical-damaged")
     normal = query.get_task("demo", "normal-text")
     assert current is not None and current.text_integrity == "current_corrupted"
-    assert current.text_integrity_reason == "replacement_character_detected_in_current_event"
+    assert current.text_integrity_reason == "worker_protocol_decode_failed"
     assert historical is not None and historical.text_integrity == "historical_corrupted"
-    assert historical.text_integrity_reason == "legacy_task_before_encoding_fix"
+    assert historical.text_integrity_reason == "legacy_task_before_text_schema_v2"
     assert normal is not None and normal.text_integrity == "ok"
     assert normal.text_integrity_reason == ""
+    assert listing["current-damaged"].text_integrity == current.text_integrity
+    assert listing["historical-damaged"].text_integrity == historical.text_integrity
+    assert listing["normal-text"].text_integrity == normal.text_integrity
 
 
 def test_task_runtime_enables_utf8_for_worker_process(tmp_path: Path) -> None:
@@ -335,7 +416,178 @@ def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path
 
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "keep"
-        assert conn.execute("SELECT value FROM task_schema_meta WHERE key = 'schema_version'").fetchone()[0] == "1"
+        assert conn.execute("SELECT value FROM task_schema_meta WHERE key = 'schema_version'").fetchone()[0] == "2"
+
+
+def test_task_repository_migrates_legacy_text_integrity_once(tmp_path: Path) -> None:
+    db_path = PathResolver(tmp_path).site_tasks_db_path("demo")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE task_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO task_schema_meta VALUES ('schema_version', '1');
+            CREATE TABLE task_snapshots (
+                task_id TEXT PRIMARY KEY, task_type TEXT NOT NULL, task_name TEXT NOT NULL,
+                created_time TEXT NOT NULL, started_time TEXT NOT NULL DEFAULT '',
+                finished_time TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '',
+                current INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '',
+                device TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '',
+                result_path TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'local',
+                site_name TEXT NOT NULL DEFAULT 'demo', owner_pid INTEGER NOT NULL DEFAULT 0,
+                resource_keys_json TEXT NOT NULL DEFAULT '[]', updated_time TEXT NOT NULL
+            );
+            CREATE TABLE task_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL, event_type TEXT NOT NULL, event_time TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'service', payload_json TEXT NOT NULL DEFAULT '{}'
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO task_snapshots (
+                task_id, task_type, task_name, created_time, status, message, updated_time
+            ) VALUES ('legacy-damaged', 'demo_task', '旧任务', '2026-01-01T00:00:00Z',
+                      'COMPLETED', '已结束', '2026-01-01T00:01:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO task_events (
+                event_id, task_id, event_type, event_time, source, payload_json
+            ) VALUES ('legacy-event', 'legacy-damaged', 'log',
+                      '2026-01-01T00:00:30Z', 'worker', ?)
+            """,
+            (json.dumps({"message": "历史�损坏"}, ensure_ascii=False),),
+        )
+        conn.commit()
+
+    repository = TaskRepository(db_path)
+    migrated = repository.get("legacy-damaged")
+    assert migrated is not None
+    assert migrated.text_integrity == "historical_corrupted"
+    assert migrated.text_integrity_reason == "legacy_task_before_text_schema_v2"
+    assert migrated.producer_kind == "legacy"
+    assert migrated.text_schema_version == 1
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE task_events SET payload_json = ? WHERE event_id = 'legacy-event'",
+            (json.dumps({"message": "后来修改为正常文本"}, ensure_ascii=False),),
+        )
+        conn.commit()
+    TaskRepository(db_path)
+    assert repository.get("legacy-damaged").text_integrity == "historical_corrupted"
+
+
+def test_current_agent_without_version_is_unknown_not_historical(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_external_task(
+        task_id="agent-current-unknown",
+        task_type="traffic_agent_iperf_client",
+        task_name="Agent 当前任务",
+        source="agent",
+        agent="agent-1",
+    )
+    service.record_external_event(
+        "agent-current-unknown",
+        "state",
+        {"state": TaskState.RUNNING.value},
+        source="agent",
+    )
+    updated = service.record_external_event(
+        "agent-current-unknown",
+        "finished",
+        {"result": {"summary": "Agent 返回�损坏"}},
+        source="agent",
+    )
+
+    assert updated.status is TaskState.COMPLETED
+    assert updated.text_integrity == "unknown_corrupted"
+    assert updated.text_integrity_reason == "corrupted_text_producer_version_unknown"
+    assert updated.producer_kind == "agent"
+    assert updated.producer_version == "unknown"
+    query = JobCenterQueryService(service.paths)
+    listing = {item.id: item for item in query.list_tasks("demo")}
+    detail = query.get_task("demo", "agent-current-unknown")
+    assert detail is not None
+    assert listing[detail.id].text_integrity == detail.text_integrity == "unknown_corrupted"
+
+
+def test_known_current_agent_corruption_is_current(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_external_task(
+        task_id="agent-current-known",
+        task_type="traffic_agent_iperf_client",
+        task_name="Agent 当前任务",
+        source="agent",
+        agent="agent-1",
+        producer_version="v1.4.2",
+        producer_commit="1" * 40,
+        text_schema_version=2,
+    )
+    updated = service.record_external_event(
+        "agent-current-known",
+        "error",
+        {"error": "Agent 当前�损坏"},
+        source="agent",
+    )
+
+    assert updated.text_integrity == "current_corrupted"
+    assert updated.text_integrity_reason == "replacement_character_detected_in_current_agent_event"
+
+
+def test_task_list_does_not_scan_one_hundred_thousand_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(tmp_path)
+    now = utc_now_iso()
+    service.repository("demo").save(
+        TaskSnapshot(
+            task_id="large-history",
+            task_type="demo_task",
+            task_name="大事件历史",
+            status=TaskState.COMPLETED,
+            created_time=now,
+            updated_time=now,
+            site_name="demo",
+            text_schema_version=2,
+            producer_kind="local_backend",
+        )
+    )
+    with sqlite3.connect(service.paths.site_tasks_db_path("demo")) as conn:
+        conn.executemany(
+            """
+            INSERT INTO task_events (
+                event_id, task_id, event_type, event_time, source, payload_json
+            ) VALUES (?, 'large-history', 'log', ?, 'service', '{"message":"ok"}')
+            """,
+            ((f"event-{index}", now) for index in range(100_000)),
+        )
+        conn.commit()
+
+    query = JobCenterQueryService(service.paths)
+    statements: list[str] = []
+    original_connect = query._connect
+
+    def traced_connect(path: Path):
+        connection = original_connect(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(query, "_connect", traced_connect)
+    listing = query.list_tasks("demo")
+
+    assert listing[0].id == "large-history"
+    assert not any("task_events" in statement.casefold() for statement in statements)
+    statements.clear()
+    detail = query.get_task("demo", "large-history")
+    assert detail is not None and detail.text_integrity == "ok"
+    assert not any("instr(payload_json" in statement.casefold() for statement in statements)
 
 
 def test_task_repository_handles_concurrent_event_writes(tmp_path: Path) -> None:

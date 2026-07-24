@@ -99,7 +99,7 @@ def get_release_version(explicit_version: str | None = None) -> str:
     return APP_VERSION
 
 
-def render_version_py(version: str, build_time: str, git_commit: str) -> str:
+def render_version_py(version: str, build_time: str = "", git_commit: str = "") -> str:
     return f'''from __future__ import annotations
 
 
@@ -108,8 +108,6 @@ APP_VERSION = "{version}"
 APP_VERSION_DISPLAY = APP_VERSION
 APP_BYLINE = "by WXJ"
 APP_TITLE_DISPLAY = f"{{APP_NAME}} {{APP_VERSION_DISPLAY}} {{APP_BYLINE}}"
-BUILD_TIME = "{build_time}"
-GIT_COMMIT = "{git_commit}"
 APP_AUTHOR = "{APP_AUTHOR}"
 REPOSITORY_PUSH_URLS = (
     "{INTERNAL_REMOTE}",

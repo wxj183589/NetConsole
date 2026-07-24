@@ -39,15 +39,40 @@ function gitOutput(args: string[]): string {
   return execFileSync('git', ['-C', projectRoot, ...args], { encoding: 'utf8' }).trim()
 }
 
-function currentGitCommit(): string {
-  const override = process.env.NETCONSOLE_FRONTEND_GIT_COMMIT?.trim()
-  if (override) return override
-  try {
-    const revision = gitOutput(['rev-parse', '--short=8', 'HEAD'])
-    const dirty = gitOutput(['status', '--porcelain', '--untracked-files=normal'])
-    return dirty ? `${revision}-dirty` : revision
-  } catch {
-    return 'unknown'
+interface BuildMetadata {
+  app_version: string
+  git_commit_full: string
+  git_commit_short: string
+  build_time_utc: string
+  build_dirty: boolean
+  build_source: string
+  frontend_commit: string
+  backend_commit: string
+}
+
+function currentBuildMetadata(): BuildMetadata {
+  const override = process.env.NETCONSOLE_BUILD_METADATA_JSON?.trim()
+  if (override) {
+    const metadata = JSON.parse(override) as BuildMetadata
+    if (
+      metadata.app_version !== appVersion
+      || metadata.frontend_commit !== metadata.git_commit_full
+      || metadata.backend_commit !== metadata.git_commit_full
+      || metadata.git_commit_short !== metadata.git_commit_full.slice(0, 8)
+    ) throw new Error('统一构建元数据不一致')
+    return metadata
+  }
+  const revision = gitOutput(['rev-parse', 'HEAD'])
+  const dirty = Boolean(gitOutput(['status', '--porcelain', '--untracked-files=normal']))
+  return {
+    app_version: appVersion!,
+    git_commit_full: revision,
+    git_commit_short: revision.slice(0, 8),
+    build_time_utc: new Date().toISOString(),
+    build_dirty: dirty,
+    build_source: 'git-development',
+    frontend_commit: revision,
+    backend_commit: revision,
   }
 }
 
@@ -55,13 +80,16 @@ function webBuildMetaPlugin() {
   return {
     name: 'netconsole-web-build-meta',
     closeBundle() {
-      const gitCommit = currentGitCommit()
+      const buildMetadata = currentBuildMetadata()
+      const buildIdentity = buildMetadata.build_dirty
+        ? `${buildMetadata.git_commit_full}-dirty`
+        : buildMetadata.git_commit_full
       const metadata = {
-        app_version: appVersion,
-        git_commit: gitCommit,
-        build_time: new Date().toISOString(),
+        ...buildMetadata,
+        git_commit: buildIdentity,
+        build_time: buildMetadata.build_time_utc,
         navigation_schema_version: navigationSchemaVersion,
-        build_id: `${appVersion}+${gitCommit}`,
+        build_id: `${appVersion}+${buildIdentity}`,
       }
       writeFileSync(
         resolve(projectRoot, 'apps/web/dist/web-build-meta.json'),

@@ -146,6 +146,7 @@ class _RunningLocalProcess:
     wait_thread: threading.Thread | None = None
     cancel_thread: threading.Thread | None = None
     cancel_scheduled: bool = False
+    protocol_fatal_scheduled: bool = False
     finalized: bool = False
     process_tree_closed: bool = False
     forced: bool = False
@@ -446,9 +447,12 @@ class LocalProcessAdapter:
                 payload = chunk.encode("utf-8", errors="strict") if isinstance(chunk, str) else bytes(chunk)
                 with self._service_lock:
                     if is_stderr:
-                        self.task_service.feed_stderr(job_id, payload)
+                        fatal = self.task_service.feed_stderr(job_id, payload)
                     else:
-                        self.task_service.feed_stdout(job_id, payload)
+                        fatal = self.task_service.feed_stdout(job_id, payload)
+                if fatal:
+                    self._schedule_protocol_termination(job_id)
+                    break
         except Exception as exc:
             app_logger.log_error("LOCAL_WORKER_PIPE_READ_FAILED", f"job_id={job_id} error={exc}")
         finally:
@@ -494,6 +498,41 @@ class LocalProcessAdapter:
         if state.done.wait(self._terminate_timeout_seconds):
             return
         self._kill_process(state)
+
+    def _schedule_protocol_termination(self, job_id: str) -> None:
+        with self._state_lock:
+            state = self._states.get(job_id)
+            if state is None or state.done.is_set() or state.protocol_fatal_scheduled:
+                return
+            state.protocol_fatal_scheduled = True
+        thread = threading.Thread(
+            target=self._terminate_protocol_failure,
+            args=(state,),
+            name=f"local-job-protocol-fatal-{state.job_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _terminate_protocol_failure(self, state: _RunningLocalProcess) -> None:
+        app_logger.log_error("WORKER_PROTOCOL_TERMINATE_REQUESTED", f"job_id={state.job_id}")
+        self._terminate_process(state)
+        if state.done.wait(self._terminate_timeout_seconds):
+            return
+        app_logger.log_error("WORKER_PROTOCOL_TERMINATE_TIMEOUT", f"job_id={state.job_id}")
+        self._kill_process(state)
+        app_logger.log_error("WORKER_PROTOCOL_PROCESS_KILLED", f"job_id={state.job_id}")
+        if state.done.wait(self._terminate_timeout_seconds):
+            return
+        if not self._claim_finalization(state):
+            return
+        self._close_process_pipes(state)
+        self._notify_completion(
+            state,
+            exit_code=state.process.poll(),
+            payload=None,
+            cancelled=False,
+        )
+        self._remove_state(state)
 
     def _terminate_process(self, state: _RunningLocalProcess) -> None:
         state.forced = True
@@ -570,6 +609,16 @@ class LocalProcessAdapter:
             if self._states.get(state.job_id) is state:
                 self._states.pop(state.job_id, None)
         state.done.set()
+
+    @staticmethod
+    def _close_process_pipes(state: _RunningLocalProcess) -> None:
+        for pipe in (state.process.stdout, state.process.stderr):
+            if pipe is None:
+                continue
+            try:
+                pipe.close()
+            except Exception:
+                pass
 
     def _bind_process_tree(
         self,

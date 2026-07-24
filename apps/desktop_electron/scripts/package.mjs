@@ -41,6 +41,7 @@ execFileSync(
     'pyinstaller',
     '--skip-install',
     '--no-zip',
+    '--release',
   ],
   { cwd: projectRoot, env, stdio: 'inherit' },
 )

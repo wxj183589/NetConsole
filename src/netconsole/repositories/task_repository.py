@@ -8,7 +8,12 @@ from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
 from netconsole.models.task_state import TaskState
-from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
+from netconsole.models.task_snapshot import (
+    TEXT_INTEGRITY_VALUES,
+    TaskEvent,
+    TaskSnapshot,
+    utc_now_iso,
+)
 
 
 TASK_SCHEMA = """
@@ -16,7 +21,7 @@ CREATE TABLE IF NOT EXISTS task_schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO task_schema_meta(key, value) VALUES ('schema_version', '1');
+INSERT OR IGNORE INTO task_schema_meta(key, value) VALUES ('schema_version', '2');
 
 CREATE TABLE IF NOT EXISTS task_snapshots (
     task_id TEXT PRIMARY KEY,
@@ -41,6 +46,13 @@ CREATE TABLE IF NOT EXISTS task_snapshots (
     site_name TEXT NOT NULL DEFAULT 'demo',
     owner_pid INTEGER NOT NULL DEFAULT 0,
     resource_keys_json TEXT NOT NULL DEFAULT '[]',
+    text_integrity TEXT NOT NULL DEFAULT 'ok',
+    text_integrity_reason TEXT NOT NULL DEFAULT '',
+    text_integrity_updated_at TEXT NOT NULL DEFAULT '',
+    text_schema_version INTEGER NOT NULL DEFAULT 1,
+    producer_kind TEXT NOT NULL DEFAULT 'legacy',
+    producer_version TEXT NOT NULL DEFAULT 'unknown',
+    producer_commit TEXT NOT NULL DEFAULT 'unknown',
     updated_time TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_snapshots_status_updated
@@ -448,10 +460,89 @@ class TaskRepository:
                 changed.append(updated)
         return changed
 
-    @staticmethod
-    def _ensure_schema_compat(conn) -> None:
-        if not TaskRepository._column_exists(conn, "task_snapshots", "resource_keys_json"):
-            conn.execute("ALTER TABLE task_snapshots ADD COLUMN resource_keys_json TEXT NOT NULL DEFAULT '[]'")
+    @classmethod
+    def _ensure_schema_compat(cls, conn) -> None:
+        columns = {
+            "resource_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+            "text_integrity": "TEXT NOT NULL DEFAULT ''",
+            "text_integrity_reason": "TEXT NOT NULL DEFAULT ''",
+            "text_integrity_updated_at": "TEXT NOT NULL DEFAULT ''",
+            "text_schema_version": "INTEGER NOT NULL DEFAULT 1",
+            "producer_kind": "TEXT NOT NULL DEFAULT 'legacy'",
+            "producer_version": "TEXT NOT NULL DEFAULT 'unknown'",
+            "producer_commit": "TEXT NOT NULL DEFAULT 'unknown'",
+        }
+        for column, definition in columns.items():
+            if not cls._column_exists(conn, "task_snapshots", column):
+                conn.execute(f"ALTER TABLE task_snapshots ADD COLUMN {column} {definition}")
+        cls._migrate_legacy_text_integrity(conn)
+        conn.execute(
+            "INSERT INTO task_schema_meta(key, value) VALUES ('schema_version', '2') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+
+    @classmethod
+    def _migrate_legacy_text_integrity(cls, conn) -> None:
+        rows = conn.execute(
+            """
+            SELECT task_id, task_name, message, error_message, result_json,
+                   created_time, updated_time
+            FROM task_snapshots
+            WHERE text_integrity = ''
+            """
+        ).fetchall()
+        if not rows:
+            return
+        task_ids = {str(row["task_id"]) for row in rows}
+        corrupted_events: set[str] = set()
+        for start in range(0, len(task_ids), 500):
+            chunk = sorted(task_ids)[start : start + 500]
+            matches = conn.execute(
+                "SELECT DISTINCT task_id FROM task_events "
+                f"WHERE task_id IN ({','.join('?' for _ in chunk)}) "
+                "AND instr(payload_json, ?) > 0",
+                (*chunk, "\ufffd"),
+            ).fetchall()
+            corrupted_events.update(str(row["task_id"]) for row in matches)
+        for row in rows:
+            task_id = str(row["task_id"])
+            result = cls._json_object(row["result_json"])
+            explicit = str(result.get("text_integrity") or "")
+            if explicit in TEXT_INTEGRITY_VALUES and explicit != "ok":
+                integrity = explicit
+                reason = str(
+                    result.get("text_integrity_reason")
+                    or "legacy_explicit_text_integrity"
+                )
+            elif task_id in corrupted_events or _contains_replacement_character(
+                {
+                    "task_name": row["task_name"],
+                    "message": row["message"],
+                    "error_message": row["error_message"],
+                    "result": result,
+                }
+            ):
+                integrity = "historical_corrupted"
+                reason = "legacy_task_before_text_schema_v2"
+            else:
+                integrity = "ok"
+                reason = ""
+            conn.execute(
+                """
+                UPDATE task_snapshots
+                SET text_integrity = ?, text_integrity_reason = ?,
+                    text_integrity_updated_at = ?, text_schema_version = 1,
+                    producer_kind = 'legacy', producer_version = 'unknown',
+                    producer_commit = 'unknown'
+                WHERE task_id = ? AND text_integrity = ''
+                """,
+                (
+                    integrity,
+                    reason,
+                    str(row["updated_time"] or row["created_time"] or ""),
+                    task_id,
+                ),
+            )
 
     @staticmethod
     def _column_exists(conn, table: str, column: str) -> bool:
@@ -482,8 +573,10 @@ class TaskRepository:
                 task_id, task_type, task_name, created_time, started_time, finished_time,
                 status, progress, stage, current, total, message, owner, device, agent,
                 result_path, error_message, result_json, source, site_name, owner_pid,
-                resource_keys_json, updated_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resource_keys_json, text_integrity, text_integrity_reason,
+                text_integrity_updated_at, text_schema_version, producer_kind,
+                producer_version, producer_commit, updated_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 task_type=excluded.task_type,
                 task_name=excluded.task_name,
@@ -505,6 +598,13 @@ class TaskRepository:
                 site_name=excluded.site_name,
                 owner_pid=excluded.owner_pid,
                 resource_keys_json=excluded.resource_keys_json,
+                text_integrity=excluded.text_integrity,
+                text_integrity_reason=excluded.text_integrity_reason,
+                text_integrity_updated_at=excluded.text_integrity_updated_at,
+                text_schema_version=excluded.text_schema_version,
+                producer_kind=excluded.producer_kind,
+                producer_version=excluded.producer_version,
+                producer_commit=excluded.producer_commit,
                 updated_time=excluded.updated_time
             {transition_guard}
             """,
@@ -531,6 +631,15 @@ class TaskRepository:
                 snapshot.site_name,
                 int(snapshot.owner_pid),
                 json.dumps(list(snapshot.resource_keys or []), ensure_ascii=False, separators=(",", ":")),
+                snapshot.text_integrity
+                if snapshot.text_integrity in TEXT_INTEGRITY_VALUES
+                else "unknown_corrupted",
+                snapshot.text_integrity_reason,
+                snapshot.text_integrity_updated_at,
+                int(snapshot.text_schema_version),
+                snapshot.producer_kind,
+                snapshot.producer_version,
+                snapshot.producer_commit,
                 snapshot.updated_time,
                 *(allowed_values or ()),
             ),
@@ -562,6 +671,17 @@ class TaskRepository:
             site_name=str(row.get("site_name") or "demo"),
             owner_pid=int(row.get("owner_pid") or 0),
             resource_keys=cls._json_list(row.get("resource_keys_json")),
+            text_integrity=str(row.get("text_integrity") or "ok"),
+            text_integrity_reason=str(row.get("text_integrity_reason") or ""),
+            text_integrity_updated_at=str(row.get("text_integrity_updated_at") or ""),
+            text_schema_version=int(
+                row.get("text_schema_version")
+                if row.get("text_schema_version") is not None
+                else 1
+            ),
+            producer_kind=str(row.get("producer_kind") or "legacy"),
+            producer_version=str(row.get("producer_version") or "unknown"),
+            producer_commit=str(row.get("producer_commit") or "unknown"),
             updated_time=str(row["updated_time"]),
         )
 
@@ -600,3 +720,13 @@ class TaskRepository:
             "source": str(values["source"]),
             "payload": cls._json_object(values.get("payload_json")),
         }
+
+
+def _contains_replacement_character(value: object) -> bool:
+    if isinstance(value, str):
+        return "\ufffd" in value
+    if isinstance(value, dict):
+        return any(_contains_replacement_character(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_replacement_character(item) for item in value)
+    return False

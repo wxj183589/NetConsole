@@ -71,6 +71,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('constraints.txt')
     expect(script).toContain('NetConsoleBackend.exe')
     expect(script).toContain("'.venv', 'Scripts', 'python.exe'")
+    expect(script).toContain("'--release'")
   })
 
   it('scans the packaged app for forbidden Qt runtime files', () => {
@@ -104,6 +105,17 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('web.online_mr_analysis')
     expect(script).toContain('web.mesh_analysis_import')
     expect(script).toContain('Electron 包生产功能基线关闭必要能力')
+  })
+
+  it('compares packaged build metadata with the actual Git HEAD', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('build-metadata.json')
+    expect(script).toContain("['-C', projectRoot, 'rev-parse', 'HEAD']")
+    expect(script).toContain('metadata.build_dirty !== false')
+    expect(script).toContain('frontend.git_commit_full')
+    expect(script).toContain('PACKAGED_BACKEND_COMMIT=')
+    expect(script).toContain('PACKAGED_FRONTEND_COMMIT=')
   })
 
   it('requires runtime-versioned NOTICE and a strict CycloneDX SBOM', () => {

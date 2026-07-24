@@ -49,6 +49,7 @@ const artifactDownloadLabel = computed(() => (
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
 const historicalTextDamaged = computed(() => store.selected?.text_integrity === 'historical_corrupted')
 const currentTextDamaged = computed(() => store.selected?.text_integrity === 'current_corrupted')
+const unknownTextDamaged = computed(() => store.selected?.text_integrity === 'unknown_corrupted')
 const showCurrentProcessing = computed(() => {
   const details = selectedDetails.value
   const phase = String(details.phase || '')
@@ -446,8 +447,16 @@ const revealSaved = () => runSavedAction('reveal')
         />
         <el-alert
           v-if="currentTextDamaged"
-          title="当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。"
+          title="当前任务发生文本编码异常，请停止任务并查看应用日志。"
           type="error"
+          :closable="false"
+          show-icon
+          class="detail-alert"
+        />
+        <el-alert
+          v-if="unknownTextDamaged"
+          title="该任务包含已损坏文字，但无法确认产生版本。"
+          type="warning"
           :closable="false"
           show-icon
           class="detail-alert"

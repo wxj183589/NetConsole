@@ -30,7 +30,7 @@ from netconsole.build.clean_build_lock import (
     validate_project_safety,
 )
 from netconsole.core.feature_flags import default_profile
-from netconsole.core.version import APP_VERSION, GIT_COMMIT
+from netconsole.core.version import APP_VERSION
 from scripts.build.check_runtime_deps import (
     check_python_environment,
     check_runtime_deps,
@@ -49,6 +49,14 @@ from scripts.build.pyinstaller_artifact_inventory import (
     write_inventory,
 )
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
+from scripts.build.build_metadata import (
+    BUILD_METADATA_ENV,
+    BuildMetadataError,
+    collect_build_metadata,
+    decode_build_metadata,
+    encode_build_metadata,
+    validate_build_metadata,
+)
 
 CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
@@ -58,6 +66,7 @@ PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_comm
 PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
 PACKAGED_BUILD_INFO_SOURCE = "resources/runtime/build_info.json"
 PACKAGED_FEATURE_FLAGS_SOURCE = "resources/runtime/feature_flags.json"
+PACKAGED_BUILD_METADATA_SOURCE = "resources/runtime/build-metadata.json"
 PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
@@ -81,7 +90,9 @@ ALLOWED_DATA = [
     (DEVICE_COMMAND_PROFILES_SOURCE, "netconsole/assets"),
     (PACKAGED_BUILD_INFO_SOURCE, "netconsole/assets/runtime"),
     (PACKAGED_FEATURE_FLAGS_SOURCE, "netconsole/assets/runtime"),
+    (PACKAGED_BUILD_METADATA_SOURCE, "netconsole/assets/runtime"),
 ]
+_BUILD_METADATA: dict[str, object] | None = None
 FORBIDDEN_DATA = [(item, item) for item in FORBIDDEN_DATAS]
 EXCLUDE_DIRS = [
     *FORBIDDEN_PROJECT_SOURCES,
@@ -341,7 +352,11 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     for source, destination in ALLOWED_DATA:
         if source == DEVICE_COMMAND_PROFILES_SOURCE:
             source_path = write_packaged_device_command_profiles()
-        elif source in {PACKAGED_BUILD_INFO_SOURCE, PACKAGED_FEATURE_FLAGS_SOURCE}:
+        elif source in {
+            PACKAGED_BUILD_INFO_SOURCE,
+            PACKAGED_FEATURE_FLAGS_SOURCE,
+            PACKAGED_BUILD_METADATA_SOURCE,
+        }:
             source_path = write_packaged_runtime_feature_policy()[source]
         else:
             source_path = ROOT / source
@@ -391,6 +406,7 @@ def write_packaged_device_command_profiles() -> Path:
 
 def write_packaged_runtime_feature_policy() -> dict[str, Path]:
     PACKAGED_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
+    build_metadata = require_build_metadata()
     payloads = {
         PACKAGED_BUILD_INFO_SOURCE: {
             "edition": "customer",
@@ -398,6 +414,7 @@ def write_packaged_runtime_feature_policy() -> dict[str, Path]:
             "admin_unlock_enabled": False,
         },
         PACKAGED_FEATURE_FLAGS_SOURCE: default_profile("production"),
+        PACKAGED_BUILD_METADATA_SOURCE: build_metadata,
     }
     paths: dict[str, Path] = {}
     for source, payload in payloads.items():
@@ -408,6 +425,32 @@ def write_packaged_runtime_feature_policy() -> dict[str, Path]:
         )
         paths[source] = path
     return paths
+
+
+def set_build_metadata(payload: dict[str, object]) -> None:
+    global _BUILD_METADATA
+    selected = dict(payload)
+    validate_build_metadata(selected, release=False)
+    _BUILD_METADATA = selected
+
+
+def require_build_metadata() -> dict[str, object]:
+    global _BUILD_METADATA
+    if _BUILD_METADATA is not None:
+        return dict(_BUILD_METADATA)
+    encoded = os.environ.get(BUILD_METADATA_ENV, "")
+    if encoded:
+        _BUILD_METADATA = decode_build_metadata(encoded)
+        return dict(_BUILD_METADATA)
+    try:
+        _BUILD_METADATA = collect_build_metadata(
+            ROOT,
+            app_version=APP_VERSION,
+            release=False,
+        )
+        return dict(_BUILD_METADATA)
+    except BuildMetadataError as exc:
+        raise CleanBuildLockError(str(exc)) from exc
 
 
 def build_non_runtime_module_excludes() -> list[str]:
@@ -550,13 +593,16 @@ def ensure_web_frontend() -> None:
             "apps/web/node_modules 不存在，请先执行 pnpm install --frozen-lockfile。"
         )
     env = os.environ.copy()
-    env["NETCONSOLE_FRONTEND_GIT_COMMIT"] = GIT_COMMIT
+    build_metadata = require_build_metadata()
+    env[BUILD_METADATA_ENV] = encode_build_metadata(build_metadata)
     subprocess.run([pnpm, "build"], cwd=web_dir, check=True, env=env)
     try:
         validate_web_frontend_meta(
             dist_index.parent,
             expected_version=APP_VERSION,
-            expected_commit=GIT_COMMIT,
+            expected_commit=str(build_metadata["git_commit_full"]),
+            expected_build_time=str(build_metadata["build_time_utc"]),
+            expected_dirty=bool(build_metadata["build_dirty"]),
         )
     except ValueError as exc:
         raise CleanBuildLockError(str(exc)) from exc
@@ -695,12 +741,38 @@ def validate_packaged_runtime_feature_policy(app_dist: Path) -> None:
     try:
         build_info = json.loads((runtime / "build_info.json").read_text(encoding="utf-8"))
         feature_flags = json.loads((runtime / "feature_flags.json").read_text(encoding="utf-8"))
+        build_metadata = json.loads((runtime / "build-metadata.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CleanBuildLockError("packaged runtime feature policy is missing or invalid") from exc
     if build_info.get("edition") != "customer" or build_info.get("feature_profile") != "production":
         raise CleanBuildLockError("packaged build_info must use customer/production")
     if feature_flags.get("profile") != "production" or not isinstance(feature_flags.get("features"), dict):
         raise CleanBuildLockError("packaged feature_flags must contain the production baseline")
+    try:
+        validate_build_metadata(
+            build_metadata,
+            release=str(build_metadata.get("build_source") or "") == "git-release",
+        )
+    except BuildMetadataError as exc:
+        raise CleanBuildLockError(str(exc)) from exc
+    if _BUILD_METADATA is None and not os.environ.get(BUILD_METADATA_ENV, ""):
+        try:
+            current_source = collect_build_metadata(
+                ROOT,
+                app_version=APP_VERSION,
+                release=str(build_metadata.get("build_source") or "") == "git-release",
+                build_time_utc=str(build_metadata.get("build_time_utc") or ""),
+            )
+        except BuildMetadataError as exc:
+            raise CleanBuildLockError(str(exc)) from exc
+        if build_metadata != current_source:
+            raise CleanBuildLockError(
+                "packaged build metadata no longer matches the current Git source"
+            )
+        set_build_metadata(build_metadata)
+    expected = require_build_metadata()
+    if build_metadata != expected:
+        raise CleanBuildLockError("packaged build metadata differs from build invocation")
     if (runtime / "feature_flags.local.json").exists() or (app_dist / "runtime" / "feature_flags.local.json").exists():
         raise CleanBuildLockError("packaged runtime must not contain a local feature override")
 
@@ -733,11 +805,14 @@ def load_packaged_distribution_approval() -> dict[str, str]:
 
 
 def validate_packaged_web_frontend(app_dist: Path) -> None:
+    build_metadata = require_build_metadata()
     try:
         validate_web_frontend_meta(
             app_dist / "_internal" / "netconsole" / "assets" / "web",
             expected_version=APP_VERSION,
-            expected_commit=GIT_COMMIT,
+            expected_commit=str(build_metadata["git_commit_full"]),
+            expected_build_time=str(build_metadata["build_time_utc"]),
+            expected_dirty=bool(build_metadata["build_dirty"]),
         )
     except ValueError as exc:
         raise CleanBuildLockError(str(exc)) from exc

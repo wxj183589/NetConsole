@@ -41,6 +41,7 @@ ALLOWED_RUNTIME = (
     "apps/web/dist",
     "resources/device_command_profiles.json",
     "resources/runtime/build_info.json",
+    "resources/runtime/build-metadata.json",
     "resources/runtime/feature_flags.json",
     "resources/tools",
     "resources/tools/windows-x64",

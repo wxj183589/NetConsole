@@ -13,7 +13,7 @@ from netconsole.backend.web_build import FRONTEND_MISMATCH_MESSAGE
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.core.version import APP_VERSION, GIT_COMMIT
+from netconsole.core.version import APP_VERSION
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
@@ -64,10 +64,17 @@ def test_missing_legacy_frontend_metadata_shows_rebuild_warning(tmp_path: Path) 
     assert app.state.frontend_build_id == ""
 
 
-def test_matching_frontend_metadata_serves_clean_index(tmp_path: Path) -> None:
+def test_matching_frontend_metadata_serves_clean_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
-    build_id = f"{APP_VERSION}+{GIT_COMMIT}"
+    commit = "1" * 40
+    build_id = f"{APP_VERSION}+{commit}"
+    monkeypatch.setattr(
+        "netconsole.backend.web_build.current_build_metadata",
+        lambda _root: {"backend_commit": commit, "build_dirty": False},
+    )
     (dist / "index.html").write_text(
         '<!doctype html><html><body><div id="app">current</div></body></html>',
         encoding="utf-8",
@@ -76,7 +83,7 @@ def test_matching_frontend_metadata_serves_clean_index(tmp_path: Path) -> None:
         json.dumps(
             {
                 "app_version": APP_VERSION,
-                "git_commit": GIT_COMMIT,
+                "git_commit": commit,
                 "build_time": "2026-07-15T00:00:00Z",
                 "navigation_schema_version": 1,
                 "build_id": build_id,
@@ -254,15 +261,24 @@ def test_wave2_features_are_released_while_unimplemented_features_stay_hidden(
 
 
 def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> None:
+    expected_commit = "1" * 40
+    old_commit = "2" * 40
     (tmp_path / "index.html").write_text("web", encoding="utf-8")
     (tmp_path / "web-build-meta.json").write_text(
         json.dumps(
             {
                 "app_version": APP_VERSION,
-                "git_commit": "old-commit",
+                "git_commit": old_commit,
+                "git_commit_full": old_commit,
+                "git_commit_short": old_commit[:8],
                 "build_time": "2026-07-15T00:00:00Z",
+                "build_time_utc": "2026-07-15T00:00:00Z",
+                "build_dirty": False,
+                "build_source": "git-release",
+                "frontend_commit": old_commit,
+                "backend_commit": old_commit,
                 "navigation_schema_version": 1,
-                "build_id": f"{APP_VERSION}+old-commit",
+                "build_id": f"{APP_VERSION}+{old_commit}",
             }
         ),
         encoding="utf-8",
@@ -272,7 +288,7 @@ def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> N
         validate_web_frontend_meta(
             tmp_path,
             expected_version=APP_VERSION,
-            expected_commit=GIT_COMMIT,
+            expected_commit=expected_commit,
         )
 
 

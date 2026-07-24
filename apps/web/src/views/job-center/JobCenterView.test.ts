@@ -11,8 +11,10 @@ it('uses Backend text integrity instead of guessing from replacement characters'
   expect(source).toContain('historicalTextDamaged')
   expect(source).toContain("store.selected?.text_integrity === 'historical_corrupted'")
   expect(source).toContain("store.selected?.text_integrity === 'current_corrupted'")
+  expect(source).toContain("store.selected?.text_integrity === 'unknown_corrupted'")
   expect(source).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
-  expect(source).toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+  expect(source).toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
+  expect(source).toContain('该任务包含已损坏文字，但无法确认产生版本。')
   expect(source).not.toContain("value.includes('\\uFFFD')")
 })
 
@@ -316,7 +318,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.mount(root)
     await nextTick()
 
-    expect(alertTitles(root)).toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+    expect(alertTitles(root)).toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
     expect(alertTitles(root)).not.toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
 
     store.selected = {
@@ -327,12 +329,21 @@ describe('Job Center saved artifact capability lifecycle', () => {
     }
     await nextTick()
     expect(alertTitles(root)).toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
-    expect(alertTitles(root)).not.toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+    expect(alertTitles(root)).not.toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
+
+    store.selected = {
+      ...task('unknown-corrupted'),
+      text_integrity: 'unknown_corrupted',
+      text_integrity_reason: 'corrupted_text_producer_version_unknown',
+    }
+    await nextTick()
+    expect(alertTitles(root)).toContain('该任务包含已损坏文字，但无法确认产生版本。')
 
     store.selected = task('normal')
     await nextTick()
     expect(alertTitles(root)).not.toContain('该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。')
-    expect(alertTitles(root)).not.toContain('当前任务发生内部编码错误，请停止任务并查看应用日志。这不是历史日志问题。')
+    expect(alertTitles(root)).not.toContain('当前任务发生文本编码异常，请停止任务并查看应用日志。')
+    expect(alertTitles(root)).not.toContain('该任务包含已损坏文字，但无法确认产生版本。')
     app.unmount()
   })
 

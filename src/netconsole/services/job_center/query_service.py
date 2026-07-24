@@ -137,12 +137,6 @@ class JobCenterQueryService:
                 return None
             values = dict(row)
             if self._table_exists(conn, "task_events"):
-                values["replacement_character_detected"] = bool(
-                    conn.execute(
-                        "SELECT 1 FROM task_events WHERE task_id = ? AND instr(payload_json, ?) > 0 LIMIT 1",
-                        (str(task_id), "\ufffd"),
-                    ).fetchone()
-                )
                 rows = conn.execute(
                     """
                     SELECT payload_json
@@ -250,6 +244,19 @@ class JobCenterQueryService:
 
     def _task_select(self, conn: sqlite3.Connection, *, detail: bool) -> str:
         result_column = ", task.result_json" if detail else ""
+        if self._column_exists(conn, "task_snapshots", "text_integrity"):
+            integrity_columns = """
+                task.text_integrity, task.text_integrity_reason,
+                task.text_integrity_updated_at, task.text_schema_version,
+                task.producer_kind, task.producer_version, task.producer_commit,
+            """
+        else:
+            integrity_columns = """
+                'ok' AS text_integrity, '' AS text_integrity_reason,
+                '' AS text_integrity_updated_at, 1 AS text_schema_version,
+                'legacy' AS producer_kind, 'unknown' AS producer_version,
+                'unknown' AS producer_commit,
+            """
         if self._table_exists(conn, "online_mr_task_sessions"):
             mapping_columns = """
                 mapping.session_id, mapping.device_id, mapping.device_name,
@@ -272,7 +279,7 @@ class JobCenterQueryService:
                    task.owner, task.source, task.device, task.agent,
                    task.created_time, task.started_time, task.finished_time,
                    task.updated_time, task.result_path, task.error_message,
-                   {mapping_columns}{result_column}
+                   {integrity_columns}{mapping_columns}{result_column}
             FROM task_snapshots task
             {join}
         """
@@ -298,7 +305,7 @@ class JobCenterQueryService:
             owner, task_type, status, source, site_name, task_id
         )
         artifact_download = self._artifact_download(owner, task_type, task_id, site_name, status, result)
-        text_integrity, text_integrity_reason = self._text_integrity(row, result, status)
+        text_integrity, text_integrity_reason = self._text_integrity(row)
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
@@ -328,6 +335,15 @@ class JobCenterQueryService:
             has_warning=bool(error_summary and status != "FAILED"),
             text_integrity=text_integrity,
             text_integrity_reason=text_integrity_reason,
+            text_integrity_updated_at=str(row.get("text_integrity_updated_at") or ""),
+            text_schema_version=int(
+                row.get("text_schema_version")
+                if row.get("text_schema_version") is not None
+                else 1
+            ),
+            producer_kind=str(row.get("producer_kind") or "legacy"),
+            producer_version=str(row.get("producer_version") or "unknown"),
+            producer_commit=str(row.get("producer_commit") or "unknown"),
             snapshot_id=self._optional_int(result.get("snapshot_id")),
             records_count=self._optional_int(result.get("records_count")),
             parser_version=redact_web_task_text(self._first_text(result, "parser_version")),
@@ -547,6 +563,13 @@ class JobCenterQueryService:
         ).fetchone() is not None
 
     @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table_name: str, column: str) -> bool:
+        return any(
+            str(row["name"]) == column
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        )
+
+    @staticmethod
     def _json_object(value: object) -> dict[str, Any]:
         try:
             parsed = json.loads(str(value or "{}"))
@@ -593,34 +616,17 @@ class JobCenterQueryService:
         except ValueError:
             return 0.0
 
-    @classmethod
-    def _text_integrity(
-        cls,
-        row: dict[str, object],
-        result: dict[str, Any],
-        status: str,
-    ) -> tuple[str, str]:
-        explicit = str(result.get("text_integrity") or "")
-        if explicit == "current_corrupted":
-            return explicit, str(result.get("text_integrity_reason") or "worker_protocol_decode_failed")
-        replacement_detected = bool(row.get("replacement_character_detected")) or cls._contains_replacement_character(
-            {**row, "result": result}
-        )
-        if not replacement_detected:
-            return "ok", ""
-        if status in cls._ACTIVE_STATES:
-            return "current_corrupted", "replacement_character_detected_in_current_event"
-        return "historical_corrupted", "legacy_task_before_encoding_fix"
-
-    @classmethod
-    def _contains_replacement_character(cls, value: object) -> bool:
-        if isinstance(value, str):
-            return "\ufffd" in value
-        if isinstance(value, dict):
-            return any(cls._contains_replacement_character(item) for item in value.values())
-        if isinstance(value, (list, tuple)):
-            return any(cls._contains_replacement_character(item) for item in value)
-        return False
+    @staticmethod
+    def _text_integrity(row: dict[str, object]) -> tuple[str, str]:
+        integrity = str(row.get("text_integrity") or "ok")
+        if integrity not in {
+            "ok",
+            "current_corrupted",
+            "historical_corrupted",
+            "unknown_corrupted",
+        }:
+            return "unknown_corrupted", "invalid_persisted_text_integrity"
+        return integrity, str(row.get("text_integrity_reason") or "")
 
     @staticmethod
     def _event_label(event_type: str) -> str:

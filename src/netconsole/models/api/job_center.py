@@ -43,6 +43,11 @@ class JobCenterTaskDTO(ApiModel):
     has_warning: bool = False
     text_integrity: str = "ok"
     text_integrity_reason: str = ""
+    text_integrity_updated_at: str = ""
+    text_schema_version: int = 1
+    producer_kind: str = "legacy"
+    producer_version: str = "unknown"
+    producer_commit: str = "unknown"
     snapshot_id: int | None = None
     records_count: int | None = None
     parser_version: str = ""

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from netconsole.core import app_logger
+from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.database import Database
 from netconsole.core.feature_flags import PACKAGED_PRODUCTION_FEATURE_IDS, FeatureGate
 from netconsole.core.runtime_environment import is_packaged_runtime
@@ -108,6 +109,7 @@ class RuntimeSelfCheckService:
         packaged: bool,
     ) -> RuntimeSelfCheckItemDTO:
         build_info = dict(getattr(self.feature_gate, "build_info", {}) or {})
+        build_metadata = current_build_metadata(self.paths.app_root)
         if packaged and (not backend_build_id or not frontend_build_id):
             return _item(
                 "build_contract",
@@ -131,6 +133,21 @@ class RuntimeSelfCheckService:
                 "error",
                 "正式包 build_info 缺失。",
                 "重新生成发布基线和安装包。",
+            )
+        if packaged and (
+            not build_metadata
+            or bool(build_metadata.get("build_dirty"))
+            or str(build_metadata.get("frontend_commit") or "")
+            != str(build_metadata.get("backend_commit") or "")
+            or str(build_metadata.get("git_commit_full") or "")
+            != str(build_metadata.get("backend_commit") or "")
+        ):
+            return _item(
+                "build_contract",
+                "前后端构建一致性",
+                "error",
+                "正式包统一构建元数据缺失、dirty 或提交号不一致。",
+                "从 clean commit 重新生成并安装完整发布包。",
             )
         return _item(
             "build_contract",

@@ -10,6 +10,7 @@ from scripts.build import clean_build_spec
 import pytest
 from scripts.build import release
 from scripts.build import build_release
+from scripts.build.build_metadata import BUILD_METADATA_ENV, decode_build_metadata
 from scripts.build.check_runtime_deps import REQUIRED_TOOLS, check_runtime_deps
 from netconsole.build.clean_build_lock import (
     CleanBuildLockError,
@@ -20,7 +21,40 @@ from netconsole.build.clean_build_lock import (
     validate_pyinstaller_command,
 )
 from netconsole.core.resources import get_changelog_path
-from netconsole.core.version import APP_VERSION, BUILD_TIME, GIT_COMMIT
+from netconsole.core.version import APP_VERSION
+
+
+TEST_COMMIT = "1" * 40
+TEST_BUILD_TIME = "2026-07-15T00:00:00Z"
+
+
+def _build_metadata(
+    *, commit: str = TEST_COMMIT, dirty: bool = False
+) -> dict[str, object]:
+    return {
+        "app_version": APP_VERSION,
+        "git_commit_full": commit,
+        "git_commit_short": commit[:8],
+        "build_time_utc": TEST_BUILD_TIME,
+        "build_dirty": dirty,
+        "build_source": "git-development" if dirty else "git-release",
+        "frontend_commit": commit,
+        "backend_commit": commit,
+    }
+
+
+def _web_metadata(
+    *, app_version: str = APP_VERSION, commit: str = TEST_COMMIT
+) -> dict[str, object]:
+    metadata = _build_metadata(commit=commit)
+    return {
+        **metadata,
+        "app_version": app_version,
+        "git_commit": commit,
+        "build_time": TEST_BUILD_TIME,
+        "navigation_schema_version": 1,
+        "build_id": f"{APP_VERSION}+{commit}",
+    }
 
 
 def _write_clean_build_tool_files(app_dist: Path) -> None:
@@ -30,10 +64,8 @@ def _write_clean_build_tool_files(app_dist: Path) -> None:
         path.write_bytes(b"fixture")
 
 
-def test_version_file_exposes_release_metadata():
+def test_version_file_exposes_only_product_version_metadata():
     assert APP_VERSION == "v1.4.2"
-    assert BUILD_TIME
-    assert GIT_COMMIT
 
 
 def test_release_version_defaults_to_app_version_without_tag_scan():
@@ -49,8 +81,8 @@ def test_render_version_py_contains_single_version_source_fields():
     assert 'APP_NAME = "NetConsole"' in text
     assert 'APP_VERSION = "v1.0.7"' in text
     assert "APP_VERSION_DISPLAY = APP_VERSION" in text
-    assert 'BUILD_TIME = "2026-06-17 12:00:00"' in text
-    assert 'GIT_COMMIT = "abc1234"' in text
+    assert "BUILD_TIME" not in text
+    assert "GIT_COMMIT" not in text
     assert 'APP_AUTHOR = "' in text
     assert "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git" in text
     assert "git@github.com:wxj183589/NetConsole.git" in text
@@ -257,26 +289,20 @@ def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkey
     (web_dir / "dist").mkdir()
     (web_dir / "dist" / "index.html").write_text("stale", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
+    build_metadata = _build_metadata()
 
     def fake_run(command, *, cwd, check, env):
         assert check is True
-        assert env["NETCONSOLE_FRONTEND_GIT_COMMIT"] == GIT_COMMIT
+        assert decode_build_metadata(env[BUILD_METADATA_ENV]) == build_metadata
         calls.append((command, cwd))
         (web_dir / "dist" / "index.html").write_text("web", encoding="utf-8")
         (web_dir / "dist" / "web-build-meta.json").write_text(
-            json.dumps(
-                {
-                    "app_version": APP_VERSION,
-                    "git_commit": GIT_COMMIT,
-                    "build_time": "2026-07-15T00:00:00Z",
-                    "navigation_schema_version": 1,
-                    "build_id": f"{APP_VERSION}+{GIT_COMMIT}",
-                }
-            ),
+            json.dumps(_web_metadata()),
             encoding="utf-8",
         )
 
     monkeypatch.setattr(clean_build_spec, "ROOT", tmp_path)
+    monkeypatch.setattr(clean_build_spec, "_BUILD_METADATA", build_metadata)
     monkeypatch.setattr(clean_build_spec.shutil, "which", lambda _name: "pnpm.cmd")
     monkeypatch.setattr(clean_build_spec.subprocess, "run", fake_run)
 
@@ -285,20 +311,62 @@ def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkey
     assert calls == [(["pnpm.cmd", "build"], web_dir)]
 
 
+def test_clean_build_metadata_is_collected_once_per_process(monkeypatch):
+    build_metadata = _build_metadata(dirty=True)
+    calls = 0
+
+    def fake_collect(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return build_metadata
+
+    monkeypatch.setattr(clean_build_spec, "_BUILD_METADATA", None)
+    monkeypatch.delenv(BUILD_METADATA_ENV, raising=False)
+    monkeypatch.setattr(clean_build_spec, "collect_build_metadata", fake_collect)
+
+    assert clean_build_spec.require_build_metadata() == build_metadata
+    assert clean_build_spec.require_build_metadata() == build_metadata
+    assert calls == 1
+
+
+def test_packaged_metadata_restores_build_snapshot_for_separate_validation_process(
+    tmp_path, monkeypatch
+):
+    build_metadata = _build_metadata(dirty=True)
+    runtime = tmp_path / "_internal" / "netconsole" / "assets" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "build_info.json").write_text(
+        json.dumps({"edition": "customer", "feature_profile": "production"}),
+        encoding="utf-8",
+    )
+    (runtime / "feature_flags.json").write_text(
+        json.dumps({"profile": "production", "features": {}}),
+        encoding="utf-8",
+    )
+    (runtime / "build-metadata.json").write_text(
+        json.dumps(build_metadata),
+        encoding="utf-8",
+    )
+
+    def fake_collect(*_args, **kwargs):
+        assert kwargs["build_time_utc"] == TEST_BUILD_TIME
+        return build_metadata
+
+    monkeypatch.setattr(clean_build_spec, "_BUILD_METADATA", None)
+    monkeypatch.delenv(BUILD_METADATA_ENV, raising=False)
+    monkeypatch.setattr(clean_build_spec, "collect_build_metadata", fake_collect)
+
+    clean_build_spec.validate_packaged_runtime_feature_policy(tmp_path)
+
+    assert clean_build_spec.require_build_metadata() == build_metadata
+
+
 def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
     from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
     (tmp_path / "index.html").write_text("web", encoding="utf-8")
     (tmp_path / "web-build-meta.json").write_text(
-        json.dumps(
-            {
-                "app_version": "v0.0.0",
-                "git_commit": GIT_COMMIT,
-                "build_time": "2026-07-15T00:00:00Z",
-                "navigation_schema_version": 1,
-                "build_id": f"{APP_VERSION}+{GIT_COMMIT}",
-            }
-        ),
+        json.dumps(_web_metadata(app_version="v0.0.0")),
         encoding="utf-8",
     )
 
@@ -306,8 +374,62 @@ def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
         validate_web_frontend_meta(
             tmp_path,
             expected_version=APP_VERSION,
-            expected_commit=GIT_COMMIT,
+            expected_commit=TEST_COMMIT,
         )
+
+
+def test_build_metadata_reads_git_head_and_changes_with_commit(tmp_path: Path) -> None:
+    from scripts.build.build_metadata import collect_build_metadata
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "NetConsole Test"], check=True)
+    marker = tmp_path / "marker.txt"
+    marker.write_text("one", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "marker.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "one"], check=True)
+    first = collect_build_metadata(
+        tmp_path,
+        app_version=APP_VERSION,
+        release=True,
+        build_time_utc=TEST_BUILD_TIME,
+    )
+    marker.write_text("two", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "marker.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "two"], check=True)
+    second = collect_build_metadata(
+        tmp_path,
+        app_version=APP_VERSION,
+        release=True,
+        build_time_utc=TEST_BUILD_TIME,
+    )
+
+    assert first["git_commit_full"] != second["git_commit_full"]
+    assert second["backend_commit"] == second["frontend_commit"] == second["git_commit_full"]
+
+
+def test_dirty_release_build_fails_but_development_is_marked_dirty(tmp_path: Path) -> None:
+    from scripts.build.build_metadata import BuildMetadataError, collect_build_metadata
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "NetConsole Test"], check=True)
+    marker = tmp_path / "marker.txt"
+    marker.write_text("clean", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "marker.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "clean"], check=True)
+    marker.write_text("dirty", encoding="utf-8")
+
+    with pytest.raises(BuildMetadataError, match="工作区干净"):
+        collect_build_metadata(tmp_path, app_version=APP_VERSION, release=True)
+    development = collect_build_metadata(
+        tmp_path,
+        app_version=APP_VERSION,
+        release=False,
+        build_time_utc=TEST_BUILD_TIME,
+    )
+    assert development["build_dirty"] is True
+    assert development["build_source"] == "git-development"
 
 
 def test_clean_build_spec_scans_runtime_import_graph():

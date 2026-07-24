@@ -322,6 +322,7 @@ if (residue.length) throw new Error(`Electron 包检测到 Qt 残留：${residue
 
 validateDeviceCommandProfiles()
 validatePackagedRuntimeFeaturePolicy()
+validatePackagedBuildMetadata()
 validateIperfDistribution()
 validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
@@ -508,6 +509,52 @@ function validatePackagedRuntimeFeaturePolicy() {
       if (!cause || typeof cause !== 'object' || cause.code !== 'ENOENT') throw cause
     }
   }
+}
+
+function validatePackagedBuildMetadata() {
+  const backendRoot = resolve(unpackedRoot, 'resources', 'backend')
+  const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
+  const webRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'web')
+  const metadata = JSON.parse(readFileSync(resolve(runtimeRoot, 'build-metadata.json'), 'utf8'))
+  const frontend = JSON.parse(readFileSync(resolve(webRoot, 'web-build-meta.json'), 'utf8'))
+  const git = spawnSync('git', ['-C', projectRoot, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    windowsHide: true,
+  })
+  if (git.error) throw git.error
+  if (git.status !== 0) throw new Error('package smoke 无法读取构建仓库 Git HEAD。')
+  const sourceHead = String(git.stdout ?? '').trim()
+  const commits = [
+    metadata.git_commit_full,
+    metadata.backend_commit,
+    metadata.frontend_commit,
+    frontend.git_commit,
+    frontend.git_commit_full,
+    frontend.backend_commit,
+    frontend.frontend_commit,
+  ].map((value) => String(value ?? ''))
+  if (!sourceHead || commits.some((value) => value !== sourceHead)) {
+    throw new Error(`Electron 包提交号与构建 Git HEAD 不一致：source=${sourceHead || '<missing>'}`)
+  }
+  if (
+    metadata.git_commit_short !== sourceHead.slice(0, 8)
+    || frontend.git_commit_short !== sourceHead.slice(0, 8)
+    || metadata.build_time_utc !== frontend.build_time_utc
+    || metadata.build_dirty !== false
+    || frontend.build_dirty !== false
+  ) {
+    throw new Error('Electron 包构建时间、短提交号或 dirty 状态不一致。')
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(String(metadata.build_time_utc))) {
+    throw new Error('Electron 包构建时间不是秒级 ISO 8601 UTC。')
+  }
+  console.log(`SOURCE_GIT_HEAD=${sourceHead}`)
+  console.log(`PACKAGED_BACKEND_COMMIT=${metadata.backend_commit}`)
+  console.log(`PACKAGED_FRONTEND_COMMIT=${metadata.frontend_commit}`)
+  console.log(`SELF_CHECK_COMMIT=${metadata.backend_commit}`)
+  console.log(`PACKAGED_BUILD_TIME=${metadata.build_time_utc}`)
+  console.log(`PACKAGED_DIRTY=${String(metadata.build_dirty).toLowerCase()}`)
 }
 
 function validatePythonArtifactInventory(backendRoot, sbom) {

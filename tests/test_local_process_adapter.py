@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -264,6 +265,102 @@ def test_local_process_adapter_streams_progress_before_worker_exit(tmp_path: Pat
     stdout.push(b"")
     process.finish()
     _wait_until(lambda: service.get_task(job_id).status is TaskState.COMPLETED)
+
+
+def test_protocol_fatal_terminates_worker_and_unregisters_runtime(tmp_path: Path) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-protocol-fatal-terminate"
+    process = _FakeProcess(
+        stdout=io.BytesIO(b"\xff"),
+        auto_finish=False,
+        terminate_exits=True,
+    )
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=_PopenFactory(process),
+        process_tree_factory=lambda _process: None,
+        terminate_timeout_seconds=0.03,
+    )
+
+    adapter.start_job(_job(paths, job_id))
+    _wait_until(lambda: not adapter.is_running(job_id))
+
+    snapshot = service.get_task(job_id)
+    assert snapshot is not None
+    assert snapshot.status is TaskState.FAILED
+    assert snapshot.result["error_code"] == "WORKER_PROTOCOL_CORRUPTED"
+    assert snapshot.text_integrity == "current_corrupted"
+    assert process.terminate_called is True
+    assert process.kill_called is False
+    assert service.runtime.is_running(job_id) is False
+    assert service.complete(job_id, 0) is None
+    assert adapter.cancel_job(job_id) is False
+    terminal_states = [
+        event
+        for event in service.list_events(job_id)
+        if event["type"] == "state"
+        and event["payload"].get("state") == TaskState.FAILED.value
+    ]
+    assert len(terminal_states) == 1
+
+
+def test_protocol_fatal_kills_worker_after_terminate_timeout(tmp_path: Path) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-protocol-fatal-kill"
+    process = _FakeProcess(stdout=io.BytesIO(b"\xff"), auto_finish=False)
+    process_tree = _FakeProcessTree()
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=_PopenFactory(process),
+        process_tree_factory=lambda _process: process_tree,
+        terminate_timeout_seconds=0.03,
+    )
+
+    adapter.start_job(_job(paths, job_id))
+    _wait_until(lambda: not adapter.is_running(job_id))
+
+    assert service.get_task(job_id).status is TaskState.FAILED
+    assert process.terminate_called is True
+    assert process.kill_called is True
+    assert process_tree.close_calls == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="正式 Worker 进程树交付目标为 Windows")
+def test_real_worker_bad_bytes_then_sleep_is_stopped_without_manual_complete(
+    tmp_path: Path,
+) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "real-protocol-fatal-sleep"
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def start_bad_worker(_command, **kwargs):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os,time; os.write(1, b'\\xff'); time.sleep(60)",
+            ],
+            **kwargs,
+        )
+        processes.append(process)
+        return process
+
+    adapter = LocalProcessAdapter(
+        service,
+        popen_factory=start_bad_worker,
+        process_tree_factory=lambda _process: None,
+        terminate_timeout_seconds=0.2,
+    )
+
+    started = time.monotonic()
+    adapter.start_job(_job(paths, job_id))
+    assert adapter.wait(job_id, timeout=3)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3
+    assert len(processes) == 1 and processes[0].poll() is not None
+    assert service.get_task(job_id).status is TaskState.FAILED
+    assert service.runtime.is_running(job_id) is False
 
 
 def test_local_process_adapter_binds_tree_closes_once_and_calls_completion(tmp_path: Path) -> None:

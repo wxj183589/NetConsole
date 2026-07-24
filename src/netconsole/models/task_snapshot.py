@@ -7,6 +7,12 @@ from typing import Any
 from netconsole.models.task_state import TaskState
 
 
+CURRENT_TEXT_SCHEMA_VERSION = 2
+TEXT_INTEGRITY_VALUES = frozenset(
+    {"ok", "current_corrupted", "historical_corrupted", "unknown_corrupted"}
+)
+
+
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -36,6 +42,13 @@ class TaskSnapshot:
     site_name: str = "demo"
     owner_pid: int = 0
     resource_keys: list[str] = field(default_factory=list)
+    text_integrity: str = "ok"
+    text_integrity_reason: str = ""
+    text_integrity_updated_at: str = ""
+    text_schema_version: int = CURRENT_TEXT_SCHEMA_VERSION
+    producer_kind: str = "local_backend"
+    producer_version: str = "unknown"
+    producer_commit: str = "unknown"
 
 
 @dataclass(frozen=True)

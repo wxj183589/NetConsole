@@ -39,9 +39,11 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 Worker JSONL 是本程序内部协议，不使用 Windows 当前代码页。Worker 使用 `ensure_ascii=True` 序列化后直接向 `stdout.buffer` 写 ASCII bytes；Electron 启动 Backend、Backend 启动 Worker 时均默认设置 `PYTHONUTF8=1` 和 `PYTHONIOENCODING=utf-8`，Worker 入口同时把标准流重配为 UTF-8。环境变量是附加保护，二进制协议才是代码页无关的主保证。
 
-`TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSONL 或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，不写入损坏事件，并以 `WORKER_TEXT_PROTOCOL_CORRUPTED` 受控失败。持久化入口还有同源防线，记录 `WORKER_PROTOCOL_DECODE_FAILED` 或 `TASK_CURRENT_TEXT_CORRUPTED` 时只包含 task id、事件类型、stream 和 worker mode，不记录原始参数。外部设备字节仍走统一的 UTF-8/BOM/GB18030/cp936 严格候选解码，已经是 Python `str` 的内容不得再次 encode/decode。
+`TaskRuntime` 对 stdout/stderr 各维护 strict 增量 UTF-8 decoder，汉字即使跨任意 chunk 也能恢复；非法 bytes、无效 JSON、协议 schema 错误、超长 frame、未知消息类型或当前 Worker 事件中的 U+FFFD 不执行 `errors="replace"`，也不写入损坏事件。首次 fatal 协议错误立即把任务持久化为 `FAILED / WORKER_PROTOCOL_CORRUPTED`，停止接受该 Worker 的后续事件并注销 Runtime；Adapter 在独立线程执行有界 `terminate -> kill -> Windows Job Object close`，避免 stdout reader 等待自身退出，同时释放任务资源占用并清理 Job/cancel 临时文件。终止、进程退出、取消和超时并发时仍由幂等 finalize 保证唯一终态。相关日志只记录结构化原因、task id 和生命周期动作，不包含原始协议 payload。
 
-旧任务中已经持久化的 `�` 缺少原始字节时不可恢复。Backend 详情返回 `text_integrity=ok | historical_corrupted | current_corrupted` 及 reason；活动任务不能标为历史损坏，Vue 不再递归扫描字段猜测状态，也不替换或改写历史数据库。
+任务快照持久化 `text_integrity / text_integrity_reason / text_integrity_updated_at / text_schema_version / producer_kind / producer_version / producer_commit`。新事件在写入时 O(1) 更新摘要，列表与详情读取同一字段；详情不再扫描完整事件历史，Vue 的 summary 与 `selectedDetail` 分开保存，列表轮询不会覆盖详情。旧 schema 只在迁移时扫描一次已有事件并写回摘要，后续查询复杂度不随事件总数增长。
+
+`text_integrity` 支持 `ok / current_corrupted / historical_corrupted / unknown_corrupted`：当前 Local Worker/Backend 或已知当前版本 Agent 产生的损坏为 `current_corrupted`；schema v1 或明确 legacy 迁移记录为 `historical_corrupted`；未知版本 Agent、未知来源导入或缺少足够生产者证据时为 `unknown_corrupted`，不能仅因任务已结束就标记为历史损坏。旧任务中已经持久化的 `�` 缺少原始字节时不可恢复，系统只报告来源和状态，不替换或改写损坏文本。
 
 ### 一次性敏感 bootstrap
 
