@@ -95,7 +95,7 @@ describe('AppLayout workspace route cache', () => {
             path: 'rail-transit/mesh-analysis',
             name: 'mesh-analysis',
             component: MeshPage,
-            meta: { title: 'MESH', keepAlive: true },
+            meta: { title: 'MESH', workspace: { cache: true } },
           },
           {
             path: 'rail-transit/base-data',
@@ -137,12 +137,12 @@ describe('AppLayout workspace route cache', () => {
     expect(lifecycle.deactivated).toBe(20)
     expect(lifecycle.unmounted).toBe(0)
     expect(mocks.loadChart).toHaveBeenCalledTimes(1)
-    expect(ordinaryLifecycle.mounted).toBe(1)
-    expect(ordinaryLifecycle.unmounted).toBe(0)
+    expect(ordinaryLifecycle.mounted).toBe(20)
+    expect(ordinaryLifecycle.unmounted).toBe(20)
 
     wrapper.unmount()
     expect(lifecycle.unmounted).toBe(1)
-    expect(ordinaryLifecycle.unmounted).toBe(1)
+    expect(ordinaryLifecycle.unmounted).toBe(20)
     workspace.dispose()
   })
 

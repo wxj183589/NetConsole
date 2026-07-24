@@ -14,12 +14,13 @@ function createTestRouter(initial = '/') {
       { path: '/devices', name: 'devices', component: {}, meta: { title: '设备管理' } },
       { path: '/devices/:deviceId', name: 'device-detail', component: {}, meta: {
         title: '设备详情',
-        workspace: { identity: 'resource', resourceParams: ['deviceId'] },
+        workspace: { identity: 'resource', resourceParams: ['deviceId'], allowDuplicate: true },
       } },
       { path: '/mesh', name: 'mesh', component: {}, meta: {
         title: 'MESH',
-        workspace: { identity: 'singleton' },
+        workspace: { identity: 'singleton', cache: true, allowDuplicate: false },
       } },
+      { path: '/settings', name: 'system-settings', component: {}, meta: { title: '系统设置' } },
     ],
   })
   return router.push(initial).then(() => router)
@@ -67,8 +68,10 @@ describe('workspace store', () => {
     expect(store.routeCacheKey('/mesh?session_id=session-pending')).toBe(initialCacheKey)
 
     const duplicate = await store.duplicateTab(mesh.id)
-    expect(duplicate?.cacheKey).not.toBe(initialCacheKey)
-    expect(store.routeCacheKey('/mesh?session_id=session-2')).toBe(duplicate?.cacheKey)
+    expect(duplicate).toBeNull()
+    expect(store.tabs.filter((tab) => tab.routeName === 'mesh')).toHaveLength(1)
+    expect(store.routeCacheKey('/mesh?session_id=session-2')).toBe(initialCacheKey)
+    expect(store.cachedTabs.map((tab) => tab.id)).toEqual([mesh.id])
   })
 
   it('closes the active tab toward the left', async () => {
@@ -126,5 +129,36 @@ describe('workspace store', () => {
       routeFullPath: '/mesh?session_id=session-1',
       title: 'MESH',
     })
+  })
+
+  it('removes site-scoped tabs and restores the checkpoint when switching fails', async () => {
+    const router = await createTestRouter()
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+    await store.openOrActivateRoute('/devices')
+    await store.openOrActivateRoute('/mesh?session_id=mr-id%3A1')
+    const beforeSwitch = store.createSnapshot()
+    const event = vi.fn()
+    window.addEventListener('netconsole:before-site-switch', event)
+
+    const checkpoint = await store.prepareForSiteSwitch(
+      'line-b',
+      '/settings?section=site-storage&site_focus=site-switch-1',
+    )
+
+    expect(checkpoint).toEqual(beforeSwitch)
+    expect(event).toHaveBeenCalledOnce()
+    expect(store.tabs.map((tab) => tab.routeName)).toEqual(['dashboard', 'system-settings'])
+    expect(store.activeTab?.routeFullPath).toContain('section=site-storage')
+    expect(JSON.stringify(store.createSnapshot())).not.toContain('session_id')
+
+    await store.restoreAfterFailedSiteSwitch(checkpoint)
+    expect(store.createSnapshot()).toMatchObject({
+      windowId: beforeSwitch.windowId,
+      activeTabId: beforeSwitch.activeTabId,
+      tabs: beforeSwitch.tabs.map(({ lastActivatedAt: _lastActivatedAt, ...tab }) => expect.objectContaining(tab)),
+    })
+    expect(router.currentRoute.value.query.session_id).toBe('mr-id:1')
+    window.removeEventListener('netconsole:before-site-switch', event)
   })
 })

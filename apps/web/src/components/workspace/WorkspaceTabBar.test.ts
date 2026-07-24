@@ -46,4 +46,29 @@ describe('WorkspaceTabBar', () => {
     expect(store.activeTab?.pinned).toBe(true)
     wrapper.unmount()
   })
+
+  it('disables duplicate for routes that do not explicitly allow it', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', name: 'dashboard', component: {}, meta: { title: 'Dashboard' } },
+        { path: '/mesh', name: 'mesh', component: {}, meta: { title: 'MESH', workspace: { cache: true, allowDuplicate: false } } },
+      ],
+    })
+    await router.push('/')
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+    await store.openOrActivateRoute('/mesh?session_id=mr-id%3A1')
+    const wrapper = mount(WorkspaceTabBar, {
+      global: { plugins: [ElementPlus, router] },
+      attachTo: document.body,
+    })
+
+    await wrapper.get('.workspace-tab.active').trigger('contextmenu')
+    const duplicate = wrapper.findAll('.workspace-tab-context button')[1]
+    expect(duplicate.attributes('disabled')).toBeDefined()
+    expect(await store.duplicateTab()).toBeNull()
+    expect(store.tabs.filter((tab) => tab.routeName === 'mesh')).toHaveLength(1)
+    wrapper.unmount()
+  })
 })

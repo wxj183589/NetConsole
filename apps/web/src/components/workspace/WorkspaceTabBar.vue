@@ -43,7 +43,8 @@ async function runContext(command: string): Promise<void> {
     const result = await workspace.popOutTab(tab.id)
     if (!result.success) ElMessage.error(result.error || '新窗口打开失败')
   } else if (command === 'duplicate') {
-    await workspace.duplicateTab(tab.id)
+    const duplicated = await workspace.duplicateTab(tab.id)
+    if (!duplicated) ElMessage.warning('该页面不允许复制标签')
   } else if (command === 'toggle-pin') {
     tab.pinned ? workspace.unpinTab(tab.id) : workspace.pinTab(tab.id)
   } else if (command === 'close') {
@@ -151,6 +152,7 @@ onBeforeUnmount(() => {
       :x="contextX"
       :y="contextY"
       :tab="contextTab"
+      :allow-duplicate="Boolean(contextTab && workspace.canDuplicateTab(contextTab.id))"
       @command="runContext"
     />
   </div>

@@ -507,6 +507,19 @@ class SiteApplicationService:
                 )
                 raise SiteStorageError("SITE_SWITCH_BLOCKED", "局点切换失败，已恢复原局点") from exc
 
+    def preflight_site_switch(self, site_id: str) -> dict[str, object]:
+        site_id = validate_site_id(site_id)
+        record = self.registry.get(site_id)
+        previous = self.active_site_id()
+        if site_id == previous:
+            raise SiteStorageError("SITE_ALREADY_ACTIVE", "目标局点已经是当前局点")
+        self.ensure_no_active_tasks_anywhere()
+        return {
+            "ready": True,
+            "target_site_id": record.site_id,
+            "previous_site_id": previous,
+        }
+
     def migrate_site(self, site_id: str, destination_root: Path, *, check_cancel: Callable[[], None] | None = None) -> dict[str, object]:
         """把单个局点复制到另一个受控数据根；源目录始终保留。"""
         record = self.registry.get(site_id)

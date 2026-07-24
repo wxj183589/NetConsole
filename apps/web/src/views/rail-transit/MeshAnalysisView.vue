@@ -71,6 +71,8 @@ import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 import { requestWorkspaceTabTitle } from '../../workspace/runtime'
+import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
+import { normalizeMeshSessionIdentifier } from '../../validation/opaqueIdentifier'
 import {
   meshAnalysisRuntimeSnapshot,
   registerMeshAnalysisInstance,
@@ -671,14 +673,10 @@ function releaseTracksideResources(reportDisposed = true): void {
   if (reportDisposed && hadTracksideResources) reportRendererWorkload('chart-disposed')
 }
 
-function normalizeRequestedSessionId(value: unknown): string | null {
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(value) ? value : null
-}
-
 function routeRequestedSessionId(): string | null {
   const currentRoute = router.currentRoute?.value
   if (currentRoute?.name && currentRoute.name !== 'mesh-analysis') return null
-  return normalizeRequestedSessionId(currentRoute?.query.session_id)
+  return normalizeMeshSessionIdentifier(currentRoute?.query.session_id)
 }
 
 function isAbortError(reason: unknown): boolean {
@@ -687,7 +685,7 @@ function isAbortError(reason: unknown): boolean {
 
 async function restoreRendererRecovery(): Promise<void> {
   const recovery = await window.netconsoleDesktop?.getRendererRecoveryState?.()
-  const recoverySessionId = normalizeRequestedSessionId(recovery?.sessionId)
+  const recoverySessionId = normalizeMeshSessionIdentifier(recovery?.sessionId)
   if (!recovery || recovery.module !== 'mesh-analysis' || !recoverySessionId) return
   tracksideRecoveryReason.value = recovery.previousReason
   tracksideRecoveryBlocked.value = recovery.mode === 'safe'
@@ -807,6 +805,7 @@ function disposeMeshAnalysisPage(): void {
   activeSessionIntentPromise = null
   detailGeneration += 1
   window.removeEventListener('keydown', handleRssiLayoutKeydown)
+  window.removeEventListener(BEFORE_SITE_SWITCH_EVENT, disposeMeshAnalysisPage)
   stopOverviewRefresh()
   cancelScrollRestore()
   if (rssiSplitPreferenceTimer) {
@@ -829,6 +828,7 @@ function disposeMeshAnalysisPage(): void {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleRssiLayoutKeydown)
+  window.addEventListener(BEFORE_SITE_SWITCH_EVENT, disposeMeshAnalysisPage)
   await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
   const requestedSessionId = routeRequestedSessionId()
   if (requestedSessionId) await applyRequestedSession(requestedSessionId)
@@ -905,7 +905,7 @@ interface SessionRequestOptions {
 }
 
 async function openMeshAnalysisSession(row: MeshAnalysisSession): Promise<void> {
-  const id = normalizeRequestedSessionId(row.session_id)
+  const id = normalizeMeshSessionIdentifier(row.session_id)
   if (!id) {
     error.value = '分析会话标识无效'
     return
@@ -949,7 +949,7 @@ async function applyRequestedSession(
   requestedSessionId: string | null,
   options: SessionRequestOptions = {},
 ): Promise<void> {
-  const id = normalizeRequestedSessionId(requestedSessionId)
+  const id = normalizeMeshSessionIdentifier(requestedSessionId)
   if (!id) return
   const routedSessionId = routeRequestedSessionId()
   if (options.navigate !== false && routedSessionId && routedSessionId !== id) return
@@ -2088,7 +2088,7 @@ function buildResultLabel(value: string): string {
         </div>
         <NcDataTable table-id="mesh-analysis-sessions:v2" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源">
           <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
-          <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" :disabled="Boolean(openingSessionId && openingSessionId !== row.session_id)" @click.stop="openMeshAnalysisSession(row)">查看</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" @click.stop="openMeshAnalysisSession(row)">查看</el-button></template>
         </NcDataTable>
         <div class="pagination"><span>共 {{ total }} 个来源</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="total" @current-change="(page: number) => { filters.page = page; refreshOverview() }" /></div>
       </template>

@@ -293,6 +293,84 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('opens a backend compound session id with one click', async () => {
+    const session = {
+      session_id: 'c4682b2a-ba83-44f2-8bc9-3d2b37c37237:1',
+      mr_name: '列车06-MR-CT',
+      original_filename: '6CTmeshlog.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [1], warnings: [], sources: [] })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.routerReplace).toHaveBeenCalledWith({
+      name: 'mesh-analysis',
+      query: { session_id: session.session_id },
+    })
+    expect(mocks.getSession).toHaveBeenCalledWith(session.session_id, expect.any(AbortSignal))
+    expect(wrapper.text()).not.toContain('分析会话标识无效')
+    expect(wrapper.text()).toContain('列车06-MR-CT')
+    wrapper.unmount()
+  })
+
+  it('makes different session clicks last-wins and reuses one in-flight request for repeats', async () => {
+    const sessions = ['mr-a:1', 'mr-b:2', 'mr-c:3', 'mr-d:4'].map((sessionId, index) => ({
+      session_id: sessionId,
+      mr_name: `列车0${index + 1}-MR-CT`,
+      original_filename: `${index + 1}CTmeshlog.log`,
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }))
+    const pending = new Map<string, (value: unknown) => void>()
+    mocks.listSessions.mockResolvedValue({ items: sessions, total: 4, page: 1, page_size: 50 })
+    mocks.getSession.mockImplementation((id: string, signal: AbortSignal) => new Promise((resolve, reject) => {
+      pending.set(id, resolve)
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    }))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    const buttons = wrapper.findAll('button').filter((button) => button.text() === '查看')
+
+    for (const button of buttons) {
+      await button.trigger('click')
+      await flushPromises()
+    }
+    const last = sessions.at(-1)!
+    pending.get(last.session_id)?.({ session: last, analysis_params: {}, available_radios: [1], warnings: [], sources: [] })
+    await flushPromises()
+
+    expect(mocks.getSession.mock.calls.map((call) => call[0])).toEqual(sessions.map((item) => item.session_id))
+    expect(wrapper.text()).toContain(last.mr_name)
+    expect(mocks.currentRoute.value.query.session_id).toBe(last.session_id)
+
+    mocks.getSession.mockClear()
+    const repeated = sessions[0]
+    mocks.currentRoute.value.query = {}
+    const repeatedPending: Array<(value: unknown) => void> = []
+    mocks.getSession.mockImplementation((_id: string, _signal: AbortSignal) => new Promise((resolve) => { repeatedPending.push(resolve) }))
+    await wrapper.find('.sessions-toggle').trigger('click')
+    await nextTick()
+    const firstButton = wrapper.findAll('button').filter((button) => button.text() === '查看')[0]
+    for (let index = 0; index < 10; index += 1) void firstButton.trigger('click')
+    await flushPromises()
+    expect(mocks.getSession).toHaveBeenCalledTimes(1)
+    repeatedPending[0]?.({ session: repeated, analysis_params: {}, available_radios: [1], warnings: [], sources: [] })
+    await flushPromises()
+    wrapper.unmount()
+  })
+
   it('keeps the loaded RSSI session, cache, viewport state, and scroll position across 20 route deactivations', async () => {
     let frameId = 0
     const cancelledFrames = new Set<number>()
@@ -419,6 +497,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getSession).toHaveBeenCalledTimes(initialSessionCalls)
     expect(mocks.chartResize.mock.calls.length).toBeGreaterThanOrEqual(initialResizeCalls + 40)
 
+    window.dispatchEvent(new CustomEvent('netconsole:before-site-switch', { detail: { targetSiteId: 'line-b' } }))
+    await flushPromises()
+    expect(initialCache.disposed).toBe(true)
     wrapper.unmount()
     expect(initialCache.disposed).toBe(true)
   })

@@ -88,9 +88,11 @@ class SelfCheckWebSocket {
   close(): void {}
 }
 
+const siteStorageReload = vi.fn(async () => undefined)
+const siteStorageFocus = vi.fn()
 const SiteStoragePanelStub = defineComponent({
   props: { focused: { type: Boolean, default: false } },
-  methods: { focusInitialControl: vi.fn() },
+  methods: { reload: siteStorageReload, focus: siteStorageFocus },
   template: '<section id="site-storage-management" :class="{ \'storage-panel--focused\': focused }" />',
 })
 
@@ -120,6 +122,8 @@ async function changeFeatureMode(wrapper: VueWrapper, value: 'enabled_visible' |
 
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('WebSocket', SelfCheckWebSocket); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
+  siteStorageReload.mockClear()
+  siteStorageFocus.mockClear()
   confirmAction.mockResolvedValue(true)
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
@@ -387,22 +391,22 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('scrolls to and refocuses site storage whenever the route focus parameter changes', async () => {
-    const scrollIntoView = vi.fn()
-    const previous = HTMLElement.prototype.scrollIntoView
-    HTMLElement.prototype.scrollIntoView = scrollIntoView
+  it('reloads and refocuses site storage whenever the route focus parameter changes', async () => {
     const { wrapper, router } = await mounted()
 
     await router.push({ path: '/settings', query: { section: 'site-storage', site_focus: '1' } })
     await flushPromises()
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(siteStorageReload).toHaveBeenCalled()
+    expect(siteStorageFocus).toHaveBeenCalled()
     expect(wrapper.get('#site-storage-management').classes()).toContain('storage-panel--focused')
 
+    const reloadCalls = siteStorageReload.mock.calls.length
+    const focusCalls = siteStorageFocus.mock.calls.length
     await router.push({ path: '/settings', query: { section: 'site-storage', site_focus: '2' } })
     await flushPromises()
-    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    expect(siteStorageReload.mock.calls.length).toBeGreaterThan(reloadCalls)
+    expect(siteStorageFocus.mock.calls.length).toBeGreaterThan(focusCalls)
 
     wrapper.unmount()
-    HTMLElement.prototype.scrollIntoView = previous
   })
 })

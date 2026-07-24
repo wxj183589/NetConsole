@@ -20,7 +20,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 const workspace = useWorkspaceStore()
 const cachedRouteComponents = new Map<string, Component>()
 const cachedWorkspaceComponentNames = computed(() => (
-  workspace.tabs.map((tab) => cacheComponentName(tab.cacheKey))
+  workspace.cachedTabs.map((tab) => cacheComponentName(tab.cacheKey))
 ))
 
 function cacheComponentName(cacheKey: string): string {

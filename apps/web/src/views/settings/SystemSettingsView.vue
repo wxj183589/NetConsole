@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument } from '@element-plus/icons-vue'
@@ -365,14 +365,15 @@ function beforeUnload(event: BeforeUnloadEvent): void { if (anyDirty.value) { ev
 
 async function focusSiteStorage(): Promise<void> {
   if (route.query.section !== 'site-storage') return
+  await siteStoragePanel.value?.reload?.()
   await nextTick()
-  const target = siteStoragePanel.value?.$el as HTMLElement | undefined
-  if (!target) return
-  target.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  siteStoragePanel.value?.focus?.()
   siteStorageFocused.value = true
   if (siteStorageFocusTimer) clearTimeout(siteStorageFocusTimer)
   siteStorageFocusTimer = setTimeout(() => { siteStorageFocused.value = false }, 1600)
 }
+
+onActivated(() => { void focusSiteStorage() })
 
 watch(
   () => [route.query.section, route.query.site_focus],
@@ -619,7 +620,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </div>
     </section>
 
-    <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" />
+    <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" :switch-blocked="saving || anyDirty" />
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
       <el-form label-position="top">

@@ -2,10 +2,12 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/siteStorage'
+import { useWorkspaceStore } from '../stores/workspace'
 import CurrentSiteIndicator from './CurrentSiteIndicator.vue'
 
 vi.mock('../api/siteStorage')
@@ -61,9 +63,12 @@ async function mounted() {
   })
   await router.push('/')
   await router.isReady()
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  await useWorkspaceStore(pinia).initialize(router)
   const wrapper = mount(CurrentSiteIndicator, {
     global: {
-      plugins: [router],
+      plugins: [pinia, router],
       stubs: { ElIcon: { template: '<span><slot /></span>' } },
     },
   })
@@ -77,7 +82,7 @@ beforeEach(() => {
 })
 
 describe('CurrentSiteIndicator', () => {
-  it('shows the real display name instead of the registry id and navigates through Vue Router', async () => {
+  it('shows the real display name and reuses the system settings workspace tab', async () => {
     const { wrapper, router } = await mounted()
     await flushPromises()
 
@@ -92,6 +97,14 @@ describe('CurrentSiteIndicator', () => {
     expect(router.currentRoute.value.name).toBe('system-settings')
     expect(router.currentRoute.value.query.section).toBe('site-storage')
     expect(String(router.currentRoute.value.query.site_focus)).toMatch(/^\d+-1$/)
+    const workspace = useWorkspaceStore()
+    expect(workspace.tabs.filter((tab) => tab.routeName === 'system-settings')).toHaveLength(1)
+
+    await workspace.openOrActivateRoute('/')
+    await wrapper.get('[data-testid="current-site-indicator"]').trigger('click')
+    await flushPromises()
+    expect(workspace.tabs.filter((tab) => tab.routeName === 'system-settings')).toHaveLength(1)
+    expect(String(router.currentRoute.value.query.site_focus)).toMatch(/^\d+-2$/)
     wrapper.unmount()
   })
 

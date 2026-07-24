@@ -144,6 +144,32 @@ describe('WorkspaceWindowController', () => {
     expect(harness.windows[0].getTitle()).toBe('设备：AC1 - NetConsole')
   })
 
+  it('removes site-scoped routes from every window snapshot and can roll them back', () => {
+    const harness = createHarness()
+    const main = harness.controller.ensureMainWindow(false)
+    const state = harness.controller.getWindowState(main)
+    const snapshot = {
+      schemaVersion: 1 as const,
+      windowId: state.windowId,
+      activeTabId: 'settings-tab',
+      tabs: [
+        { id: 'dashboard-tab', instanceId: 'dashboard-instance', routeFullPath: '/', title: 'Dashboard', identityKey: 'singleton:dashboard', cacheKey: 'dashboard:instance', pinned: false, openedAt: 1, lastActivatedAt: 1 },
+        { id: 'mesh-tab', instanceId: 'mesh-instance', routeFullPath: '/rail-transit/mesh-analysis?session_id=mr-id%3A1', title: 'MESH', identityKey: 'singleton:mesh-analysis', cacheKey: 'mesh:instance', pinned: true, openedAt: 2, lastActivatedAt: 2 },
+        { id: 'settings-tab', instanceId: 'settings-instance', routeFullPath: '/settings?section=site-storage', title: '系统设置', identityKey: 'singleton:system-settings', cacheKey: 'settings:instance', pinned: false, openedAt: 3, lastActivatedAt: 3 },
+      ],
+    }
+    harness.controller.saveWindowState(main, snapshot)
+
+    const checkpoint = harness.controller.prepareSiteSwitchSnapshots()
+    const prepared = harness.controller.getWindowState(main).snapshot!
+    expect(prepared.tabs.map((tab) => tab.id)).toEqual(['settings-tab', 'dashboard-tab'])
+    expect(prepared.activeTabId).toBe('settings-tab')
+    expect(JSON.stringify(prepared)).not.toContain('session_id')
+
+    harness.controller.restoreSiteSwitchSnapshots(checkpoint)
+    expect(harness.controller.getWindowState(main).snapshot).toEqual(snapshot)
+  })
+
   it('allows main destruction when close-to-tray is disabled', () => {
     const harness = createHarness()
     harness.setHideMain(false)

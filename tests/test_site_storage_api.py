@@ -35,6 +35,15 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert created.json()["site_id"] == "line-12"
     assert any(item["site_id"] == "line-12" for item in client.get("/api/v1/sites").json())
 
+    preflight = client.post("/api/v1/sites/line-12/activate/preflight")
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.json() == {
+        "ready": True,
+        "target_site_id": "line-12",
+        "previous_site_id": "demo",
+    }
+    assert client.get("/api/v1/sites/active").json()["site_id"] == "demo"
+
     activated = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
     assert activated.status_code == 200, activated.text
     assert activated.json()["restart_required"] is True
@@ -70,7 +79,7 @@ def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
         site_name="line-12",
     )
 
-    response = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+    response = client.post("/api/v1/sites/line-12/activate/preflight")
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
@@ -86,6 +95,10 @@ def test_site_switch_is_blocked_by_active_task(tmp_path: Path) -> None:
         "recoverable": False,
         "stale": False,
     }
+
+    activation = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
+    assert activation.status_code == 409
+    assert activation.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
 
 
 def test_terminal_task_history_does_not_block_site_switch(tmp_path: Path) -> None:

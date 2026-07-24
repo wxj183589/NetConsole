@@ -196,6 +196,36 @@ export class WorkspaceWindowController {
     this.persistManaged(managed)
   }
 
+  prepareSiteSwitchSnapshots(): Map<string, WorkspaceWindowSnapshot | null> {
+    const checkpoint = new Map<string, WorkspaceWindowSnapshot | null>()
+    try {
+      for (const managed of this.managed.values()) {
+        checkpoint.set(managed.windowId, cloneSnapshot(managed.snapshot))
+        managed.snapshot = siteSwitchSnapshot(managed.snapshot, managed.windowId)
+        this.persistManaged(managed, false)
+      }
+      this.layoutStore.flush()
+      return checkpoint
+    } catch (cause) {
+      for (const managed of this.managed.values()) {
+        if (checkpoint.has(managed.windowId)) {
+          managed.snapshot = cloneSnapshot(checkpoint.get(managed.windowId) ?? null)
+          this.persistManaged(managed, false)
+        }
+      }
+      throw cause
+    }
+  }
+
+  restoreSiteSwitchSnapshots(checkpoint: Map<string, WorkspaceWindowSnapshot | null>): void {
+    for (const managed of this.managed.values()) {
+      if (!checkpoint.has(managed.windowId)) continue
+      managed.snapshot = cloneSnapshot(checkpoint.get(managed.windowId) ?? null)
+      this.persistManaged(managed, false)
+    }
+    this.layoutStore.flush()
+  }
+
   setWindowTitle(sourceWindow: unknown, title: string): void {
     const managed = this.findByWindow(sourceWindow)
     if (!managed || managed.window.isDestroyed()) throw new Error('工作区窗口未注册')
@@ -470,4 +500,45 @@ function createInitialSnapshot(
 function activeRoute(snapshot: WorkspaceWindowSnapshot | null): string {
   if (!snapshot) return '/'
   return snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId)?.routeFullPath || '/'
+}
+
+function cloneSnapshot(snapshot: WorkspaceWindowSnapshot | null): WorkspaceWindowSnapshot | null {
+  return snapshot ? { ...snapshot, tabs: snapshot.tabs.map((tab) => ({ ...tab })) } : null
+}
+
+function siteSwitchSnapshot(
+  snapshot: WorkspaceWindowSnapshot | null,
+  windowId: string,
+): WorkspaceWindowSnapshot {
+  if (!snapshot) return createInitialSnapshot(windowId, { routeFullPath: '/', title: 'Dashboard' })
+  const retained: WorkspaceWindowSnapshot['tabs'] = []
+  const retainedPaths = new Set<string>()
+  const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId)
+  for (const tab of active ? [active, ...snapshot.tabs.filter((item) => item.id !== active.id)] : snapshot.tabs) {
+    try {
+      const pathname = new URL(tab.routeFullPath, 'http://127.0.0.1').pathname
+      if ((pathname === '/' || pathname === '/settings') && !retainedPaths.has(pathname)) {
+        retained.push(tab)
+        retainedPaths.add(pathname)
+      }
+    } catch {
+      // 丢弃损坏或越界的旧工作区路由。
+    }
+  }
+  let dashboard = retained.find((tab) => {
+    try { return new URL(tab.routeFullPath, 'http://127.0.0.1').pathname === '/' }
+    catch { return false }
+  })
+  if (!dashboard) {
+    dashboard = createInitialSnapshot(windowId, { routeFullPath: '/', title: 'Dashboard' }).tabs[0]
+    retained.unshift(dashboard)
+  }
+  const activeTabId = retained.some((tab) => tab.id === snapshot.activeTabId)
+    ? snapshot.activeTabId
+    : dashboard.id
+  return {
+    ...snapshot,
+    activeTabId,
+    tabs: retained.map((tab) => ({ ...tab })),
+  }
 }

@@ -13,6 +13,19 @@ import SiteStoragePanel from './SiteStoragePanel.vue'
 vi.mock('../../api/siteStorage')
 vi.mock('../../api/tasks')
 
+const workspace = vi.hoisted(() => ({
+  checkpoint: {
+    schemaVersion: 1 as const,
+    windowId: 'main',
+    activeTabId: 'mesh-tab',
+    tabs: [],
+  },
+  createSnapshot: vi.fn(),
+  prepareForSiteSwitch: vi.fn(),
+  restoreAfterFailedSiteSwitch: vi.fn(),
+}))
+vi.mock('../../stores/workspace', () => ({ useWorkspaceStore: () => workspace }))
+
 const adapter = {
   hostType: 'electron' as const,
   selectDataRootDirectory: vi.fn(async () => ({ cancelled: true })),
@@ -47,8 +60,12 @@ function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  workspace.createSnapshot.mockReturnValue(workspace.checkpoint)
+  workspace.prepareForSiteSwitch.mockResolvedValue(workspace.checkpoint)
+  workspace.restoreAfterFailedSiteSwitch.mockResolvedValue(undefined)
   vi.mocked(api.listSites).mockResolvedValue([site()])
   vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
+  vi.mocked(api.preflightSiteActivation).mockResolvedValue({ ready: true, target_site_id: 'line-12', previous_site_id: 'demo' })
 })
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -106,10 +123,15 @@ describe('SiteStoragePanel', () => {
   })
 
   it('exposes one stable focus target and applies only a visual focus state', async () => {
+    const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => undefined)
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(() => undefined)
     const wrapper = mount(SiteStoragePanel, { props: { focused: true } })
     await flushPromises()
 
     expect(wrapper.get('#site-storage-management').classes()).toContain('storage-panel--focused')
+    await (wrapper.vm as unknown as { focus(): Promise<void> }).focus()
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
     expect(api.activateSite).not.toHaveBeenCalled()
     expect(adapter.restartBackend).not.toHaveBeenCalled()
   })
@@ -170,6 +192,51 @@ describe('SiteStoragePanel', () => {
 
     expect(wrapper.text()).toContain('Backend 重启失败，已恢复原局点。')
     expect(wrapper.get('[data-testid="switch-site-line-12"]').attributes('disabled')).toBeUndefined()
+    expect(workspace.restoreAfterFailedSiteSwitch).toHaveBeenCalledWith(workspace.checkpoint)
+  })
+
+  it('prepares the workspace before activation and reports success only after Backend ready', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    vi.mocked(api.listSites).mockResolvedValue([
+      site(),
+      site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
+    ])
+    vi.mocked(api.activateSite).mockResolvedValueOnce({ restart_required: true })
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
+    await flushPromises()
+
+    expect(workspace.prepareForSiteSwitch).toHaveBeenCalledWith(
+      'line-12',
+      expect.stringMatching(/^\/settings\?section=site-storage&site_focus=site-switch-/),
+    )
+    expect(api.preflightSiteActivation).toHaveBeenCalledWith('line-12')
+    expect(api.activateSite).toHaveBeenCalledWith('line-12')
+    expect(adapter.restartBackend).toHaveBeenCalledWith({ activeSiteId: 'line-12' })
+    expect(vi.mocked(api.preflightSiteActivation).mock.invocationCallOrder[0])
+      .toBeLessThan(workspace.prepareForSiteSwitch.mock.invocationCallOrder[0])
+    expect(workspace.prepareForSiteSwitch.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(api.activateSite).mock.invocationCallOrder[0])
+    expect(vi.mocked(api.activateSite).mock.invocationCallOrder[0])
+      .toBeLessThan(adapter.restartBackend.mock.invocationCallOrder[0])
+    expect(workspace.restoreAfterFailedSiteSwitch).not.toHaveBeenCalled()
+  })
+
+  it('blocks a site switch while system settings have unsaved changes', async () => {
+    vi.mocked(api.listSites).mockResolvedValue([
+      site(),
+      site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
+    ])
+    const wrapper = mount(SiteStoragePanel, { props: { switchBlocked: true } })
+    await flushPromises()
+
+    await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
+    await flushPromises()
+
+    expect(api.activateSite).not.toHaveBeenCalled()
+    expect(workspace.prepareForSiteSwitch).not.toHaveBeenCalled()
   })
 
   it('creates a site only after collecting display name and stable id', async () => {

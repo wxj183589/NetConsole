@@ -6,10 +6,12 @@ import { useRouter } from 'vue-router'
 
 import { getActiveSite, type SiteRecord } from '../api/siteStorage'
 import { getPlatformAdapter } from '../platform/runtime'
+import { useWorkspaceStore } from '../stores/workspace'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
 const router = useRouter()
+const workspace = useWorkspaceStore()
 const runtime = getPlatformAdapter()
 const activeSite = ref<Pick<SiteRecord, 'site_id' | 'display_name'> | null>(null)
 const loadState = ref<LoadState>('loading')
@@ -46,13 +48,14 @@ async function openSiteStorage(): Promise<void> {
   try {
     const settingsRoute = router.getRoutes().find((record) => record.meta.navigationId === 'settings')
     if (!settingsRoute?.name) throw new Error('system settings route is unavailable')
-    await router.push({
+    const target = router.resolve({
       name: settingsRoute.name,
       query: {
         section: 'site-storage',
         site_focus: `${Date.now()}-${++focusSequence}`,
       },
-    })
+    }).fullPath
+    await workspace.openOrActivateRoute(target)
   } catch {
     ElMessage.warning('系统设置页面暂不可用')
   }

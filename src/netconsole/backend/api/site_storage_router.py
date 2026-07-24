@@ -199,6 +199,16 @@ def rebuild_demo(request: Request, payload: SiteDemoRebuildRequest) -> SiteTaskR
 
 
 @router.post(
+    "/sites/{site_id}/activate/preflight",
+    summary="预检局点切换",
+    description="只读检查目标局点与全局阻塞任务，不修改当前局点或数据路径。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def preflight_site_activation(request: Request, site_id: str) -> dict[str, object]:
+    return _call(lambda: _sites(request).preflight_site_switch(site_id))
+
+
+@router.post(
     "/sites/{site_id}/activate",
     summary="切换当前局点",
     description="有活动任务时拒绝；成功后要求 Electron 受控重启 Backend，使所有 Service 使用同一 SiteContext。",
