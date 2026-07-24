@@ -2,12 +2,12 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
-import { tmpdir } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
 
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
+const WINDOWS_TEST_DATA_ROOT = 'D:\\NetConsoleTestData'
 const qtPackagePrefixes = [
   'pyside2',
   'pyside6',
@@ -328,10 +328,10 @@ validateFpingDistribution()
 const runtimeVersions = readElectronRuntimeVersions()
 validateComplianceArtifacts(runtimeVersions)
 
-const smokeRoot = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-package-smoke-'))
-const smokeDataRoot = resolve(smokeRoot, 'data')
-const smokeUserDataRoot = resolve(smokeRoot, 'electron-user-data')
-mkdirSync(smokeDataRoot, { recursive: true })
+mkdirSync(WINDOWS_TEST_DATA_ROOT, { recursive: true })
+const smokeRoot = mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))
+const smokeDataRoot = smokeRoot
+const smokeUserDataRoot = resolve(smokeDataRoot, 'runtime', 'electron', 'user-data')
 mkdirSync(smokeUserDataRoot, { recursive: true })
 try {
   validateFrozenWorkerTextProtocol(smokeRoot)
@@ -343,6 +343,7 @@ try {
       env: {
         ...process.env,
         NETCONSOLE_DATA_ROOT: smokeDataRoot,
+        NETCONSOLE_RUNTIME_MODE: 'test',
         NETCONSOLE_STORAGE_MODE: 'isolated_test',
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
         NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: smokeUserDataRoot,
@@ -361,16 +362,22 @@ try {
 
 console.log('Electron packaged smoke passed with frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
 
-function validateFrozenWorkerTextProtocol(root) {
+function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
-  const jobPath = resolve(root, 'frozen-worker-encoding-job.json')
+  const jobPath = resolve(dataRoot, 'runtime', 'temp', 'frozen-worker-encoding-job.json')
+  mkdirSync(resolve(dataRoot, 'runtime', 'temp'), { recursive: true })
   writeFileSync(jobPath, JSON.stringify({
     job_id: 'package-smoke-worker-encoding',
     task_type: 'open_source_notice_scan',
     params: {},
     cancel_path: '',
   }), 'utf8')
-  const environment = { ...process.env }
+  const environment = {
+    ...process.env,
+    NETCONSOLE_DATA_ROOT: dataRoot,
+    NETCONSOLE_RUNTIME_MODE: 'test',
+    NETCONSOLE_STORAGE_MODE: 'isolated_test',
+  }
   delete environment.PYTHONUTF8
   delete environment.PYTHONIOENCODING
   const result = spawnSync(

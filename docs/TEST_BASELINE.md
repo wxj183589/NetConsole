@@ -9,7 +9,7 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 - pytest 在收集测试模块前创建独立的临时 `NETCONSOLE_DATA_ROOT`。
 - 测试不得读取或写入 `D:\NetConsoleData`、正式局点数据库、真实会话和报告；必须使用 `D:\NetConsoleTestData\<run-id>`。
 - `RuntimeMode.TEST` 未显式给出测试根时必须失败，且测试配置解析不得读取 `HKLM\Software\NetConsole\DataRoot`。
-- PyInstaller Backend 的发布 smoke 与 release contract 必须自行在 `D:\NetConsoleTestData\<run-id>` 创建并清理唯一根，显式传入 `RuntimeMode.TEST` 和 `isolated_test`；不得复用构建机的业务数据根。
+- PyInstaller Backend 的发布 smoke、release contract 与最终 Electron Package Smoke 都必须自行在 `D:\NetConsoleTestData\<run-id>` 创建并清理唯一根，显式传入 `RuntimeMode.TEST` 和 `isolated_test`；不得复用构建机的业务数据根或系统 Temp。
 - 需要特定数据布局时使用 `tmp_path`、测试 fixture 或 Fake 服务；不得依赖当前机器已有 Task、Session 或设备数量。
 - 独立工作树的虚拟环境若未执行 editable 安装，运行会启动 Python 子进程的测试时应显式设置 `PYTHONPATH=src`；不能把 `ModuleNotFoundError: netconsole` 误判为 Worker 业务失败。
 
