@@ -8,6 +8,9 @@ import type {
   RendererReadyReport,
   SelectFileOptions,
   TaskWindowContext,
+  WorkspaceWindowOpenRequest,
+  WorkspaceWindowSnapshot,
+  WorkspaceTabSnapshot,
   UiPreferenceKey,
   SettingsActionId, SettingsDirectoryId, SettingsToolId,
   SiteStorageRestartRequest,
@@ -23,6 +26,36 @@ const SENSITIVE_QUERY_KEY_RE = /(?:token|password|secret|authorization|community
 const MAX_QUERY_FIELDS = 32
 const MAX_QUERY_VALUE_LENGTH = 2_000
 const MAX_API_PATH_LENGTH = 4_096
+const MAX_WORKSPACE_ROUTE_LENGTH = 2_048
+const MAX_WORKSPACE_TITLE_LENGTH = 80
+const MAX_WORKSPACE_TABS = 40
+const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/
+const WORKSPACE_SAFE_TEXT_RE = /^[^\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]{1,512}$/
+const WORKSPACE_INTERNAL_QUERY_KEYS = new Set(['task_window', 'workspace_window', 'workspace_window_id', 'workspace_restore'])
+const WORKSPACE_ALLOWED_PATHS = new Set([
+  '/',
+  '/network/devices',
+  '/ac-management/fit-aps',
+  '/ac-management/extensions',
+  '/rail-transit/wireless-dashboard',
+  '/rail-transit/base-data',
+  '/rail-transit/train-online',
+  '/rail-transit/train-communication',
+  '/rail-transit/trackside-ap-business',
+  '/rail-transit/mesh-analysis',
+  '/rail-transit/online-mr',
+  '/rail-transit/online-mr-analysis',
+  '/config-center',
+  '/device-files',
+  '/network-tools/traffic',
+  '/network-tools/toolbox',
+  '/network-tools/wireless-scan',
+  '/tasks',
+  '/agents',
+  '/settings',
+  '/command-reference',
+  '/logs',
+])
 const WINDOWS_RESERVED_NAME_RE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i
 const COMPOUND_ARTIFACT_SUFFIXES = ['.tar.gz', '.zip.gz']
 const OPENABLE_ARTIFACT_SUFFIXES = [
@@ -71,6 +104,153 @@ export function validateTaskWindowContext(value: unknown): TaskWindowContext {
   return result
 }
 
+export function validateWorkspaceRoute(value: unknown): string {
+  if (typeof value !== 'string') throw new TypeError('workspace route must be a string')
+  const route = value.trim()
+  if (
+    !route.startsWith('/')
+    || route.startsWith('//')
+    || route.length > MAX_WORKSPACE_ROUTE_LENGTH
+    || /[\\#\u0000-\u001f\u007f]/.test(route)
+  ) {
+    throw new TypeError('workspace route is invalid')
+  }
+  let url: URL
+  let decodedPath: string
+  try {
+    const rawDecodedPath = decodeURIComponent(route.split(/[?#]/, 1)[0])
+    if (rawDecodedPath.split('/').some((part) => part === '.' || part === '..')) {
+      throw new TypeError('workspace route traversal is invalid')
+    }
+    url = new URL(route, 'http://127.0.0.1')
+    decodedPath = decodeURIComponent(url.pathname)
+  } catch {
+    throw new TypeError('workspace route encoding is invalid')
+  }
+  if (
+    url.origin !== 'http://127.0.0.1'
+    || decodedPath.split('/').some((part) => part === '.' || part === '..')
+    || (!WORKSPACE_ALLOWED_PATHS.has(decodedPath) && !/^\/devices\/[A-Za-z0-9_-]{1,160}$/.test(decodedPath))
+  ) {
+    throw new TypeError('workspace route is not allowed')
+  }
+  const query = new URLSearchParams()
+  if ([...url.searchParams.keys()].length > MAX_QUERY_FIELDS) {
+    throw new TypeError('workspace route has too many query fields')
+  }
+  for (const key of [...new Set(url.searchParams.keys())].sort()) {
+    if (
+      !QUERY_KEY_RE.test(key)
+      || SENSITIVE_QUERY_KEY_RE.test(key)
+      || key === 'confirm_token'
+      || WORKSPACE_INTERNAL_QUERY_KEYS.has(key)
+      || key.startsWith('__nc_')
+    ) {
+      throw new TypeError('workspace route query is invalid')
+    }
+    for (const item of url.searchParams.getAll(key)) {
+      if (
+        item.length > 1_000
+        || /[\u0000-\u001f\u007f]/.test(item)
+        || /^(?:[A-Za-z]:[\\/]|\\\\|file:)/i.test(item.trim())
+      ) {
+        throw new TypeError('workspace route query value is invalid')
+      }
+      query.append(key, item)
+    }
+  }
+  return `${url.pathname}${query.size ? `?${query.toString()}` : ''}`
+}
+
+export function validateWorkspaceTitle(value: unknown): string {
+  if (typeof value !== 'string') throw new TypeError('workspace title must be a string')
+  const title = value
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (
+    !title
+    || title.length > MAX_WORKSPACE_TITLE_LENGTH
+    || /^(?:[A-Za-z]:[\\/]|\\\\|file:)/i.test(title)
+    || SENSITIVE_QUERY_KEY_RE.test(title)
+    || title.includes('confirm_token')
+  ) {
+    throw new TypeError('workspace title is invalid')
+  }
+  return title
+}
+
+export function validateWorkspaceWindowOpenRequest(value: unknown): WorkspaceWindowOpenRequest {
+  const record = asRecord(value, 'workspace window request')
+  rejectUnknownKeys(record, ['routeFullPath', 'title'])
+  return {
+    routeFullPath: validateWorkspaceRoute(record.routeFullPath),
+    title: validateWorkspaceTitle(record.title),
+  }
+}
+
+export function validateWorkspaceWindowSnapshot(value: unknown): WorkspaceWindowSnapshot {
+  const record = asRecord(value, 'workspace window snapshot')
+  rejectUnknownKeys(record, ['schemaVersion', 'windowId', 'activeTabId', 'tabs'])
+  if (record.schemaVersion !== 1) throw new TypeError('workspace snapshot schema is invalid')
+  const windowId = validateWorkspaceId(record.windowId, 'windowId')
+  const activeTabId = validateWorkspaceId(record.activeTabId, 'activeTabId')
+  if (!Array.isArray(record.tabs) || record.tabs.length === 0 || record.tabs.length > MAX_WORKSPACE_TABS) {
+    throw new TypeError('workspace snapshot tabs are invalid')
+  }
+  const tabs = record.tabs.map(validateWorkspaceTabSnapshot)
+  if (!tabs.some((tab) => tab.id === activeTabId)) throw new TypeError('workspace active tab is invalid')
+  return { schemaVersion: 1, windowId, activeTabId, tabs }
+}
+
+function validateWorkspaceTabSnapshot(value: unknown): WorkspaceTabSnapshot {
+  const record = asRecord(value, 'workspace tab snapshot')
+  rejectUnknownKeys(record, [
+    'id', 'instanceId', 'routeName', 'routeFullPath', 'title', 'identityKey',
+    'cacheKey', 'pinned', 'openedAt', 'lastActivatedAt',
+  ])
+  const id = validateWorkspaceId(record.id, 'tab id')
+  const instanceId = validateWorkspaceId(record.instanceId, 'tab instance id')
+  if (
+    record.routeName !== undefined
+    && (typeof record.routeName !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(record.routeName))
+  ) {
+    throw new TypeError('workspace route name is invalid')
+  }
+  if (
+    typeof record.identityKey !== 'string'
+    || !WORKSPACE_SAFE_TEXT_RE.test(record.identityKey)
+    || typeof record.cacheKey !== 'string'
+    || !WORKSPACE_SAFE_TEXT_RE.test(record.cacheKey)
+    || typeof record.pinned !== 'boolean'
+    || typeof record.openedAt !== 'number'
+    || !Number.isFinite(record.openedAt)
+    || typeof record.lastActivatedAt !== 'number'
+    || !Number.isFinite(record.lastActivatedAt)
+  ) {
+    throw new TypeError('workspace tab fields are invalid')
+  }
+  return {
+    id,
+    instanceId,
+    ...(typeof record.routeName === 'string' ? { routeName: record.routeName } : {}),
+    routeFullPath: validateWorkspaceRoute(record.routeFullPath),
+    title: validateWorkspaceTitle(record.title),
+    identityKey: record.identityKey,
+    cacheKey: record.cacheKey,
+    pinned: record.pinned,
+    openedAt: record.openedAt,
+    lastActivatedAt: record.lastActivatedAt,
+  }
+}
+
+function validateWorkspaceId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !WORKSPACE_ID_RE.test(value)) {
+    throw new TypeError(`${label} is invalid`)
+  }
+  return value
+}
+
 export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
   if (!UI_PREFERENCE_KEYS.includes(value as UiPreferenceKey)) throw new TypeError('UI preference key is invalid')
   return value as UiPreferenceKey
@@ -78,6 +258,10 @@ export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
 
 export function validateUiPreferenceValue(key: UiPreferenceKey, value: unknown): unknown | null {
   if (value === null) return null
+  if (key === 'desktop.close-to-tray') {
+    if (typeof value !== 'boolean') throw new TypeError('close-to-tray preference must be a boolean')
+    return value
+  }
   if (key === 'mesh-analysis-rssi.layout-mode') {
     if (!['compare', 'active-focus', 'trackside-focus'].includes(String(value))) {
       throw new TypeError('UI RSSI layout preference is invalid')
@@ -311,7 +495,7 @@ export function validateRendererReadyReport(value: unknown): RendererHostReport 
   if (!['mounted', 'interactive', 'failed'].includes(String(record.phase))) {
     throw new TypeError('renderer phase is invalid')
   }
-  if (record.surface !== undefined && !['main', 'task-window'].includes(String(record.surface))) {
+  if (record.surface !== undefined && !['main', 'task-window', 'workspace-window'].includes(String(record.surface))) {
     throw new TypeError('renderer surface is invalid')
   }
   return {

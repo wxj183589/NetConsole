@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Refresh, View } from '@element-plus/icons-vue'
@@ -125,6 +125,8 @@ onMounted(() => {
   const taskId = typeof route.query.task_id === 'string' ? route.query.task_id : typeof route.query.task === 'string' ? route.query.task : ''
   if (taskId) void selectContextTask(taskId)
 })
+onActivated(startPolling)
+onDeactivated(stopPolling)
 
 onBeforeUnmount(() => {
   clearSavedCapability()

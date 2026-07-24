@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { Delete, Download, Files, FolderOpened, Refresh, Search, Tickets } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
@@ -817,6 +817,10 @@ onMounted(async () => {
   await loadSessions()
   await recoverTask()
 })
+onActivated(() => {
+  if (task.value && !terminalStates.has(task.value.status)) poll()
+})
+onDeactivated(stopPolling)
 onBeforeUnmount(() => {
   requestController?.abort()
   stopPolling()

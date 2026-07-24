@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, screen, shell, Tray } from 'electron'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext } from '../shared/bridge'
+import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
 import { PythonBackendManager } from './backend-manager'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
@@ -18,7 +19,7 @@ import {
   type RendererFailureActions,
   type RendererProcessFailure,
 } from './renderer-diagnostics'
-import { NETCONSOLE_TASK_WINDOW_TITLE, NETCONSOLE_WINDOW_TITLE, resolveDesktopIconPath } from './branding'
+import { NETCONSOLE_TASK_WINDOW_TITLE, NETCONSOLE_WINDOW_TITLE, resolveDesktopIconPath, resolveTrayIconPath } from './branding'
 import {
   MANAGED_RENDERER_OPEN_LOGS_ACTION,
   MANAGED_RENDERER_OPEN_MAIN_TASKS_ACTION,
@@ -29,6 +30,9 @@ import {
   RendererThemeDisplayGate,
 } from './renderer-theme-display-gate'
 import { TaskWindowController } from './task-window-controller'
+import { TrayController, type TrayMenuItem } from './tray-controller'
+import { WorkspaceLayoutStore, type WorkspaceWindowBounds } from './workspace-layout-store'
+import { WorkspaceWindowController } from './workspace-window-controller'
 import {
   desktopSessionCookiePath,
   installWindowSecurity,
@@ -44,6 +48,12 @@ app.enableSandbox()
 let mainWindow: BrowserWindow | undefined
 let taskWindow: BrowserWindow | undefined
 let taskWindowController: TaskWindowController | undefined
+let workspaceWindowController: WorkspaceWindowController | undefined
+let workspaceLayoutStore: WorkspaceLayoutStore | undefined
+let trayController: TrayController | undefined
+let trayAvailable = false
+let closeToTrayEnabled = true
+let explicitQuitRequested = false
 let backend: PythonBackendManager | undefined
 let allowQuit = false
 let requestedExitCode = 0
@@ -53,6 +63,7 @@ let smokeStableTimer: NodeJS.Timeout | undefined
 let smokeRendererHealthy = false
 let smokeRendererLoading = true
 let taskWindowSmokeStarted = false
+let workspaceTraySmokeStarted = false
 const rendererOrigins = new Set<string>()
 const connectionOrigins = new Set<string>()
 const pathRegistry = new GrantedPathRegistry()
@@ -63,6 +74,7 @@ let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
 let bootstrapStore: DesktopBootstrapStore | undefined
+let uiPreferenceStore: UiPreferenceStore | undefined
 let desktopDataRoot = ''
 let desktopActiveSiteId = ''
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
@@ -82,9 +94,7 @@ const hasSingleInstanceLock = process.env.NETCONSOLE_ISOLATED_SMOKE === '1'
 if (!hasSingleInstanceLock) app.quit()
 
 app.on('second-instance', () => {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.focus()
+  void restoreApplicationWindow()
 })
 
 app.on('before-quit', (event) => {
@@ -93,7 +103,10 @@ app.on('before-quit', (event) => {
   beginShutdownAndExit()
 })
 
-app.on('window-all-closed', () => requestExit(0))
+app.on('window-all-closed', () => {
+  if (trayAvailable && closeToTrayEnabled && !explicitQuitRequested) return
+  requestExit(0)
+})
 process.once('SIGINT', () => requestExit(0))
 process.once('SIGTERM', () => requestExit(0))
 
@@ -142,13 +155,54 @@ async function startDesktop(): Promise<void> {
     () => app.getGPUFeatureStatus() as unknown as Record<string, string>,
     logger,
   )
-  mainWindow = createMainWindow(rendererDevelopment, developmentMenu)
-  startupTimeline.mark('electron.window_created')
-  mainWindow.on('closed', () => {
-    mainWindow = undefined
-    if (!allowQuit) requestExit(0)
+  uiPreferenceStore = new UiPreferenceStore(app.getPath('userData'))
+  const storedCloseToTray = await uiPreferenceStore.get('desktop.close-to-tray')
+  closeToTrayEnabled = typeof storedCloseToTray === 'boolean' ? storedCloseToTray : true
+  workspaceLayoutStore = new WorkspaceLayoutStore(app.getPath('userData'), (event) => logger(event))
+  workspaceWindowController = new WorkspaceWindowController(workspaceLayoutStore, {
+    createWindow: (role, bounds) => {
+      const window = createMainWindow(
+        rendererDevelopment,
+        role === 'main' ? developmentMenu : false,
+        NETCONSOLE_WINDOW_TITLE,
+        bounds,
+      )
+      if (role === 'main') {
+        mainWindow = window
+        window.on('closed', () => {
+          if (mainWindow === window) mainWindow = undefined
+        })
+      }
+      installManagedWindowDiagnostics(window, role === 'main')
+      return window
+    },
+    buildTarget: buildWorkspaceRendererTarget,
+    prepareNavigation: (window, target) => {
+      const browserWindow = window as BrowserWindow
+      rememberManagedRendererTarget(browserWindow, target)
+      armRendererThemeDisplay(browserWindow)
+    },
+    loadLoadingPage: (window) => loadStatusPage(
+      window as BrowserWindow,
+      '正在加载 NetConsole…',
+      '正在加载工作区和页面状态。',
+    ),
+    loadFailurePage: (window, title, detail) => loadStatusPage(
+      window as BrowserWindow,
+      title,
+      detail,
+      true,
+    ),
+    getWorkAreas: () => screen.getAllDisplays().map((display) => ({ ...display.workArea })),
+    shouldHideMainToTray: () => trayAvailable && closeToTrayEnabled,
+    isExplicitQuit: () => explicitQuitRequested || allowQuit,
+    onMainHidden: () => trayController?.displayBackgroundHint(),
+    onVisibleWindowCountChanged: handleVisibleBusinessWindowCount,
+    logger: (event) => logger(event),
+    timeoutMs: RENDERER_THEME_READY_TIMEOUT_MS,
   })
-  installManagedWindowDiagnostics(mainWindow, true)
+  mainWindow = workspaceWindowController.ensureMainWindow(false) as BrowserWindow
+  startupTimeline.mark('electron.window_created')
   taskWindowController = new TaskWindowController({
     createWindow: () => {
       const window = createMainWindow(rendererDevelopment, false, NETCONSOLE_TASK_WINDOW_TITLE)
@@ -157,6 +211,7 @@ async function startDesktop(): Promise<void> {
         if (allowQuit) return
         event.preventDefault()
         window.hide()
+        handleVisibleBusinessWindowCount(workspaceWindowController?.countVisibleBusinessWindows() ?? 0)
       })
       window.on('closed', () => { if (taskWindow === window) taskWindow = undefined })
       return window
@@ -168,13 +223,55 @@ async function startDesktop(): Promise<void> {
     logger: (event) => logger(event),
     timeoutMs: RENDERER_THEME_READY_TIMEOUT_MS,
   })
+  trayController = new TrayController({
+    createTray: () => {
+      const iconPath = resolveTrayIconPath({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+      })
+      if (!existsSync(iconPath)) {
+        logger('ELECTRON_TRAY_ICON_FAILED')
+        throw new Error('tray icon is unavailable')
+      }
+      return new Tray(iconPath)
+    },
+    buildMenu: (template: TrayMenuItem[]) => Menu.buildFromTemplate(
+      template as Parameters<typeof Menu.buildFromTemplate>[0],
+    ),
+    showMainWindow: () => workspaceWindowController?.showMainWindow(),
+    showTaskWindow: async () => { await openTaskWindow({}) },
+    createWorkspaceWindow: async () => {
+      await openWorkspaceWindow({ routeFullPath: '/', title: 'Dashboard' })
+    },
+    setCloseToTrayEnabled: async (enabled) => {
+      await updateCloseToTrayEnabled(enabled)
+    },
+    explicitQuit: requestExplicitQuit,
+    logger: (event) => logger(event),
+  })
+  trayAvailable = trayController.initialize()
+  trayController.updateContext({
+    backendState: 'starting',
+    activeSiteName: desktopActiveSiteId,
+    closeToTrayEnabled,
+    visibleWindowCount: 1,
+  })
   desktopIpc = registerDesktopIpc({
     ipcMain,
     dialog,
     shell,
     window: mainWindow,
-    windowForEvent: (event) => BrowserWindow.fromWebContents(event.sender as Electron.WebContents) ?? mainWindow,
+    windowForEvent: (event) => BrowserWindow.fromWebContents(event.sender as Electron.WebContents)
+      ?? workspaceWindowController?.getMainWindow()
+      ?? mainWindow,
     openTaskWindow,
+    openWorkspaceWindow,
+    getWorkspaceWindowState: (window) => getWorkspaceWindowState(window),
+    saveWorkspaceWindowState: (window, snapshot) => saveWorkspaceWindowState(window, snapshot),
+    setWorkspaceWindowTitle: (window, title) => workspaceWindowController?.setWindowTitle(window, title),
+    getCloseToTrayState,
+    setCloseToTrayEnabled: updateCloseToTrayEnabled,
     restartBackend: restartManagedBackend,
     appInfo: {
       version: app.getVersion(),
@@ -183,15 +280,14 @@ async function startDesktop(): Promise<void> {
     },
     backend,
     pathRegistry,
-    isTrustedSender: (event) => Boolean(
-      (mainWindow && isTrustedRendererSender(event, mainWindow, [...rendererOrigins]))
-      || (taskWindow && isTrustedRendererSender(event, taskWindow, [...rendererOrigins])),
-    ),
+    isTrustedSender: (event) => getAllDesktopWindows().some((window) => (
+      isTrustedRendererSender(event, window, [...rendererOrigins])
+    )),
     onRendererReady: handleRendererReady,
     onRendererWorkload: handleRendererWorkload,
     getRendererRecoveryState,
     logger,
-    uiPreferenceStore: new UiPreferenceStore(app.getPath('userData')),
+    uiPreferenceStore,
   })
   backend.onStatusChange((status) => {
     logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
@@ -200,7 +296,8 @@ async function startDesktop(): Promise<void> {
       ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
       ...(status.error ? { error: '本地后端不可用' } : {}),
     }
-    for (const window of [mainWindow, taskWindow]) {
+    trayController?.updateContext({ backendState: status.state })
+    for (const window of getAllDesktopWindows()) {
       if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.backendStatusChanged, publicStatus)
     }
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1' && status.state === 'failed') {
@@ -234,13 +331,25 @@ async function startDesktop(): Promise<void> {
     if (desktopStorageContext.persistent && desktopActiveSiteId) {
       bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
     }
-    rememberManagedRendererTarget(mainWindow, rendererUrl)
+    trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
+    const restoredMainState = workspaceWindowController.getWindowState(mainWindow)
+    const restoredMainRoute = restoredMainState.snapshot?.tabs.find(
+      (tab) => tab.id === restoredMainState.snapshot?.activeTabId,
+    )?.routeFullPath || '/'
+    const mainRendererTarget = buildWorkspaceRendererTarget(
+      restoredMainRoute,
+      restoredMainState.windowId,
+      'main',
+    )
+    rememberManagedRendererTarget(mainWindow, mainRendererTarget)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
     const rendererWindow = mainWindow
     rendererWindow.webContents.once('dom-ready', () => startupTimeline?.mark('renderer.dom_ready'))
     armRendererThemeDisplay(rendererWindow)
-    void rendererWindow.loadURL(rendererUrl).catch((cause) => {
+    void rendererWindow.loadURL(mainRendererTarget).then(
+      () => workspaceWindowController?.restoreAdditionalWindows(),
+    ).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause)
       if (/ERR_ABORTED/.test(message)) {
         logger('ELECTRON_RENDERER_NAVIGATION_SUPERSEDED')
@@ -272,6 +381,7 @@ function createMainWindow(
   development: boolean,
   developmentMenu = false,
   title = NETCONSOLE_WINDOW_TITLE,
+  bounds: WorkspaceWindowBounds = { x: 80, y: 80, width: 1_360, height: 860 },
 ): BrowserWindow {
   const window = new BrowserWindow({
     title,
@@ -280,8 +390,10 @@ function createMainWindow(
       appPath: app.getAppPath(),
       resourcesPath: process.resourcesPath,
     }),
-    width: 1360,
-    height: 860,
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
     minWidth: 1024,
     minHeight: 680,
     show: false,
@@ -349,7 +461,8 @@ function createMainWindow(
 }
 
 async function restartManagedBackend(update: SiteStorageRestartRequest): Promise<void> {
-  if (!backend || !mainWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
+  const cookieWindow = getAllDesktopWindows()[0]
+  if (!backend || !cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
   if (!desktopStorageContext.persistent) throw new Error('隔离测试模式不允许修改正式局点或数据根')
   const previousRoot = desktopDataRoot
   const previousSite = desktopActiveSiteId
@@ -365,7 +478,7 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
     const backendOrigin = new URL(runtime.baseUrl).origin
     connectionOrigins.add(backendOrigin)
     const cookiePath = desktopSessionCookiePath(rendererDevelopment)
-    await mainWindow.webContents.session.cookies.set({
+    await cookieWindow.webContents.session.cookies.set({
       url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
       name: DESKTOP_SESSION_COOKIE,
       value: runtime.apiToken,
@@ -379,9 +492,16 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
       rendererOrigins.clear()
       rendererOrigins.add(backendOrigin)
     }
-    rememberManagedRendererTarget(mainWindow, rendererUrl)
-    armRendererThemeDisplay(mainWindow)
-    await mainWindow.loadURL(rendererUrl)
+    trayController?.updateContext({ activeSiteName: desktopActiveSiteId })
+    for (const window of getAllDesktopWindows()) {
+      const previousTarget = windowRendererTargets.get(window)
+      if (!previousTarget) continue
+      const previousUrl = new URL(previousTarget)
+      const nextTarget = new URL(`${previousUrl.pathname}${previousUrl.search}`, rendererUrl).toString()
+      rememberManagedRendererTarget(window, nextTarget)
+      armRendererThemeDisplay(window)
+      await window.loadURL(nextTarget)
+    }
   } catch (cause) {
     await backend.stop()
     backend.configureStorage(previousRoot, previousSite)
@@ -409,7 +529,11 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
   installRendererDiagnostics(window, {
     logger,
     canRetry: () => Boolean(windowRendererTargets.get(window)),
-    surface: window === mainWindow ? 'main' : 'task-window',
+    surface: window === mainWindow
+      ? 'main'
+      : window === taskWindow
+        ? 'task-window'
+        : 'workspace-window',
     getLatestWorkload: () => latestRendererWorkloads.get(window.webContents.id),
     hasRecentGpuFailure: () => (
       recentGpuProcessFailureAt > 0
@@ -424,8 +548,37 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
 }
 
 async function openTaskWindow(context: TaskWindowContext): Promise<NativeActionResult> {
-  if (!mainWindow || !rendererUrl || !taskWindowController) return { success: false, error: '任务窗口尚未就绪' }
+  if (!rendererUrl || !taskWindowController || explicitQuitRequested) return { success: false, error: '任务窗口尚未就绪' }
   return taskWindowController.open(context)
+}
+
+async function openWorkspaceWindow(request: WorkspaceWindowOpenRequest): Promise<NativeActionResult> {
+  if (!rendererUrl || !workspaceWindowController || explicitQuitRequested) {
+    return { success: false, error: '工作区窗口尚未就绪' }
+  }
+  return workspaceWindowController.open(request)
+}
+
+function getWorkspaceWindowState(window: unknown): WorkspaceWindowStateResult {
+  if (!workspaceWindowController) throw new Error('工作区窗口尚未就绪')
+  return workspaceWindowController.getWindowState(window)
+}
+
+function saveWorkspaceWindowState(window: unknown, snapshot: WorkspaceWindowSnapshot): void {
+  if (!workspaceWindowController) throw new Error('工作区窗口尚未就绪')
+  workspaceWindowController.saveWindowState(window, snapshot)
+}
+
+function buildWorkspaceRendererTarget(
+  routeFullPath: string,
+  windowId: string,
+  role: 'main' | 'workspace',
+): string {
+  if (!rendererUrl) throw new Error('工作区窗口尚未就绪')
+  const target = new URL(routeFullPath, rendererUrl)
+  if (role === 'workspace') target.searchParams.set('workspace_window', '1')
+  target.searchParams.set('workspace_window_id', windowId)
+  return target.toString()
 }
 
 function buildTaskRendererTarget(context: TaskWindowContext): string {
@@ -479,11 +632,8 @@ async function loadStatusPage(
 }
 
 function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
-  const window = sourceWindow === mainWindow
-    ? mainWindow
-    : sourceWindow === taskWindow
-      ? taskWindow
-      : undefined
+  const window = resolveManagedDesktopWindow(sourceWindow)
+  workspaceWindowController?.acceptRendererReport(report, window)
   if (window === taskWindow) {
     logger(
       'ELECTRON_TASK_WINDOW_READY_REPORT',
@@ -492,7 +642,7 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
   }
   if (window === taskWindow) taskWindowController?.acceptRendererReport(report, taskWindowController.currentWindow)
   if ('resolvedTheme' in report) {
-    if (window && window === mainWindow) windowDisplayGates.get(window)?.acceptResolvedTheme()
+    if (window) windowDisplayGates.get(window)?.acceptResolvedTheme()
     return
   }
   if (report.phase === 'failed' && window && windowDisplayGates.get(window)?.isWaiting()) {
@@ -526,15 +676,18 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     }
     return
   }
+  if (process.env.NETCONSOLE_ELECTRON_WORKSPACE_TRAY_SMOKE === '1') {
+    if (!workspaceTraySmokeStarted) {
+      workspaceTraySmokeStarted = true
+      void runWorkspaceTraySmoke()
+    }
+    return
+  }
   scheduleSmokeStableExit()
 }
 
 function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: unknown): void {
-  const window = sourceWindow === mainWindow
-    ? mainWindow
-    : sourceWindow === taskWindow
-      ? taskWindow
-      : undefined
+  const window = resolveManagedDesktopWindow(sourceWindow)
   if (!window || window.isDestroyed()) return
   const webContentsId = window.webContents.id
   latestRendererWorkloads.set(webContentsId, report)
@@ -542,7 +695,7 @@ function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: un
     'ELECTRON_RENDERER_WORKLOAD',
     [
       `web_contents_id=${webContentsId}`,
-      `surface=${window === mainWindow ? 'main' : 'task-window'}`,
+      `surface=${window === mainWindow ? 'main' : window === taskWindow ? 'task-window' : 'workspace-window'}`,
       `module=${report.module}`,
       `phase=${report.phase}`,
       `session_id=${report.sessionId ?? 'none'}`,
@@ -570,11 +723,7 @@ function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: un
 }
 
 function getRendererRecoveryState(sourceWindow: unknown): RendererRecoveryState | null {
-  const window = sourceWindow === mainWindow
-    ? mainWindow
-    : sourceWindow === taskWindow
-      ? taskWindow
-      : undefined
+  const window = resolveManagedDesktopWindow(sourceWindow)
   if (!window || window.isDestroyed()) return null
   return rendererRecoveries.get(window.webContents.id) ?? null
 }
@@ -595,8 +744,37 @@ async function runTaskWindowSmoke(): Promise<void> {
   }
 }
 
+async function runWorkspaceTraySmoke(): Promise<void> {
+  try {
+    const created = await openWorkspaceWindow({ routeFullPath: '/', title: 'Dashboard' })
+    if (!created.success) throw new Error('workspace window create failed')
+    const additional = workspaceWindowController?.getAllManagedWindows()
+      .find((window) => window !== mainWindow) as BrowserWindow | undefined
+    if (!additional || additional.isDestroyed()) throw new Error('workspace window missing')
+    additional.close()
+    if (!mainWindow || mainWindow.isDestroyed() || !trayAvailable) {
+      throw new Error('tray runtime unavailable')
+    }
+    mainWindow.close()
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 150))
+    if (mainWindow.isVisible() || backend?.getStatus().state !== 'ready') {
+      throw new Error('close-to-tray did not preserve backend')
+    }
+    await workspaceWindowController?.showMainWindow()
+    if (!mainWindow.isVisible()) throw new Error('main window restore failed')
+    logger('ELECTRON_WORKSPACE_TRAY_SMOKE_PASSED')
+    requestExplicitQuit()
+  } catch {
+    logger('ELECTRON_WORKSPACE_TRAY_SMOKE_FAILED')
+    requestExit(2)
+  }
+}
+
 function scheduleSmokeStableExit(): void {
-  if (process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1') return
+  if (
+    process.env.NETCONSOLE_ELECTRON_TASK_WINDOW_SMOKE === '1'
+    || process.env.NETCONSOLE_ELECTRON_WORKSPACE_TRAY_SMOKE === '1'
+  ) return
   if (!smokeRendererHealthy || smokeRendererLoading || smokeStableTimer) return
   smokeStableTimer = setTimeout(() => {
     logger('ELECTRON_SMOKE_RENDERER_STABLE')
@@ -625,11 +803,68 @@ function startSmokeWatchdog(): void {
   smokeRendererHealthy = false
   smokeRendererLoading = true
   taskWindowSmokeStarted = false
+  workspaceTraySmokeStarted = false
   logger('ELECTRON_SMOKE_WATCHDOG_STARTED')
   smokeWatchdogTimer = setTimeout(() => {
     logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')
     requestExit(2)
   }, 30_000)
+}
+
+function getAllDesktopWindows(): BrowserWindow[] {
+  const windows = [
+    ...(workspaceWindowController?.getAllManagedWindows() ?? []),
+    ...(taskWindow && !taskWindow.isDestroyed() ? [taskWindow] : []),
+  ] as BrowserWindow[]
+  return [...new Set(windows)]
+}
+
+function resolveManagedDesktopWindow(value: unknown): BrowserWindow | undefined {
+  return getAllDesktopWindows().find((window) => window === value)
+}
+
+function handleVisibleBusinessWindowCount(count: number): void {
+  trayController?.updateContext({ visibleWindowCount: count })
+  if (count === 0 && (!trayAvailable || !closeToTrayEnabled) && !explicitQuitRequested) {
+    requestExit(0)
+  }
+}
+
+function getCloseToTrayState(): CloseToTrayState {
+  return { enabled: closeToTrayEnabled, available: trayAvailable }
+}
+
+async function updateCloseToTrayEnabled(enabled: boolean): Promise<CloseToTrayState> {
+  closeToTrayEnabled = enabled
+  await uiPreferenceStore?.set('desktop.close-to-tray', enabled)
+  const state = getCloseToTrayState()
+  trayController?.updateContext({ closeToTrayEnabled: enabled })
+  for (const window of getAllDesktopWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.closeToTrayChanged, state)
+  }
+  if (!enabled && (workspaceWindowController?.countVisibleBusinessWindows() ?? 0) === 0) {
+    requestExit(0)
+  }
+  return state
+}
+
+async function restoreApplicationWindow(): Promise<void> {
+  try {
+    await workspaceWindowController?.showMainWindow()
+  } catch {
+    const fallback = workspaceWindowController?.getMostRecentlyFocusedWindow() as BrowserWindow | undefined
+    if (!fallback || fallback.isDestroyed()) return
+    if (fallback.isMinimized()) fallback.restore()
+    if (!fallback.isVisible()) fallback.show()
+    fallback.focus()
+  }
+}
+
+function requestExplicitQuit(): void {
+  if (explicitQuitRequested) return
+  explicitQuitRequested = true
+  logger('ELECTRON_TRAY_EXPLICIT_QUIT')
+  requestExit(0)
 }
 
 function requestExit(code: number): void {
@@ -638,15 +873,17 @@ function requestExit(code: number): void {
 }
 
 function beginShutdownAndExit(): void {
-  shutdownPromise ??= shutdown().finally(() => {
+  if (shutdownPromise) return
+  allowQuit = true
+  workspaceWindowController?.flush()
+  workspaceWindowController?.closeAllForQuit()
+  if (taskWindow && !taskWindow.isDestroyed()) taskWindow.close()
+  trayController?.dispose()
+  shutdownPromise = shutdown().finally(() => {
     traceSmoke('EXIT_REQUESTED')
-    allowQuit = true
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
-    if (taskWindow && !taskWindow.isDestroyed()) taskWindow.destroy()
     app.releaseSingleInstanceLock()
     app.exit(requestedExitCode)
     traceSmoke('EXIT_RETURNED')
-    setImmediate(() => process.exit(requestedExitCode))
   })
 }
 
@@ -662,9 +899,18 @@ async function shutdown(): Promise<void> {
   try {
     taskWindowController?.dispose()
     taskWindowController = undefined
+    workspaceWindowController?.flush()
+  } catch {
+    requestedExitCode = Math.max(requestedExitCode, 1)
+  }
+  try {
     await desktopIpc?.shutdown()
     logger('ELECTRON_DOWNLOADS_STOPPED')
     traceSmoke('DOWNLOADS_STOPPED')
+  } catch {
+    requestedExitCode = Math.max(requestedExitCode, 1)
+  }
+  try {
     await backend?.stop()
     logger('ELECTRON_SHUTDOWN_COMPLETE')
     traceSmoke('BACKEND_STOPPED')
@@ -672,6 +918,9 @@ async function shutdown(): Promise<void> {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
   } finally {
+    workspaceWindowController?.dispose()
+    workspaceWindowController = undefined
+    trayController = undefined
     pathRegistry.clear()
   }
 }

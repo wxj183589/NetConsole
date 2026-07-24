@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from 'node:path'
 
-import type { AppInfo, BackendStatus, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext } from '../shared/bridge'
+import type { AppInfo, BackendStatus, CloseToTrayState, DesktopResolvedTheme, DesktopRuntimeConfig, NativeActionResult, RendererHostReport, RendererRecoveryState, RendererWorkloadReport, SettingsThemeColor, SiteStorageRestartRequest, TaskWindowContext, WorkspaceWindowOpenRequest, WorkspaceWindowSnapshot, WorkspaceWindowStateResult } from '../shared/bridge'
 import {
   DESKTOP_HANDLED_CHANNELS,
   DESKTOP_IPC,
@@ -17,6 +17,9 @@ import {
   validateRendererWorkloadReport,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateWorkspaceTitle,
+  validateWorkspaceWindowOpenRequest,
+  validateWorkspaceWindowSnapshot,
   validateBridgePath,
   validateSiteStorageRestartRequest,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
@@ -80,6 +83,12 @@ export interface DesktopIpcDependencies {
   window: unknown
   windowForEvent?: (event: IpcEventLike) => unknown
   openTaskWindow?: (value: TaskWindowContext) => Promise<NativeActionResult> | NativeActionResult
+  openWorkspaceWindow?: (value: WorkspaceWindowOpenRequest) => Promise<NativeActionResult> | NativeActionResult
+  getWorkspaceWindowState?: (window: unknown) => WorkspaceWindowStateResult
+  saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
+  setWorkspaceWindowTitle?: (window: unknown, title: string) => void
+  getCloseToTrayState?: () => CloseToTrayState
+  setCloseToTrayEnabled?: (enabled: boolean) => Promise<CloseToTrayState> | CloseToTrayState
   restartBackend?: (value: SiteStorageRestartRequest) => Promise<void>
   appInfo: AppInfo
   backend: BackendLike
@@ -123,6 +132,44 @@ export function registerDesktopIpc(
     trusted(async (value) => {
       if (!dependencies.openTaskWindow) return { success: false, error: '任务窗口尚未就绪' }
       return dependencies.openTaskWindow(validateTaskWindowContext(value))
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.openWorkspaceWindow,
+    trusted(async (value) => {
+      if (!dependencies.openWorkspaceWindow) return { success: false, error: '工作区窗口尚未就绪' }
+      return dependencies.openWorkspaceWindow(validateWorkspaceWindowOpenRequest(value))
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.getWorkspaceWindowState,
+    trusted((_value, event) => {
+      if (!dependencies.getWorkspaceWindowState) throw new Error('工作区窗口尚未就绪')
+      return dependencies.getWorkspaceWindowState(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+      )
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.saveWorkspaceWindowState,
+    trusted((value, event) => {
+      if (!dependencies.saveWorkspaceWindowState) throw new Error('工作区窗口尚未就绪')
+      dependencies.saveWorkspaceWindowState(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+        validateWorkspaceWindowSnapshot(value),
+      )
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.getCloseToTrayState,
+    trusted(() => dependencies.getCloseToTrayState?.() ?? { enabled: false, available: false }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.setCloseToTrayEnabled,
+    trusted((value) => {
+      if (typeof value !== 'boolean') throw new TypeError('close-to-tray value is invalid')
+      return dependencies.setCloseToTrayEnabled?.(value)
+        ?? { enabled: false, available: false }
     }),
   )
   dependencies.ipcMain.handle(
@@ -374,6 +421,20 @@ export function registerDesktopIpc(
       dependencies.onRendererReady?.(report, window)
     } catch {
       dependencies.logger?.('ELECTRON_RENDERER_READY_REJECTED')
+    }
+  })
+  dependencies.ipcMain.on(DESKTOP_IPC.setWorkspaceWindowTitle, (event, value) => {
+    if (!dependencies.isTrustedSender(event)) {
+      dependencies.logger?.('ELECTRON_WORKSPACE_TITLE_UNTRUSTED')
+      return
+    }
+    try {
+      dependencies.setWorkspaceWindowTitle?.(
+        dependencies.windowForEvent?.(event) ?? dependencies.window,
+        validateWorkspaceTitle(value),
+      )
+    } catch {
+      dependencies.logger?.('ELECTRON_WORKSPACE_TITLE_REJECTED')
     }
   })
   dependencies.ipcMain.on(DESKTOP_IPC.rendererWorkload, (event, value) => {

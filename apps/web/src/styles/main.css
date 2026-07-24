@@ -17,6 +17,118 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .app-shell, .app-workspace, .app-main, .content-card, .el-table { min-width: 0; }
 .app-shell { position: relative; height: 100%; }
 .app-workspace { flex: 1 1 auto; width: 0; min-width: 0; }
+
+.workspace-tab-bar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex: 0 0 38px;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: 38px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--nc-border-light);
+  background: var(--nc-bg-header);
+}
+
+.workspace-tab-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: stretch;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--nc-scrollbar-thumb) transparent;
+}
+
+.workspace-tab-scroll::-webkit-scrollbar { height: 4px; }
+.workspace-tab-scroll::-webkit-scrollbar-thumb { background: var(--nc-scrollbar-thumb); }
+.workspace-tab-scroll::-webkit-scrollbar-thumb:hover { background: var(--nc-scrollbar-thumb-hover); }
+
+.workspace-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  width: min(220px, 28vw);
+  min-width: 112px;
+  height: 100%;
+  padding: 0 10px;
+  border: 0;
+  border-right: 1px solid var(--nc-border-light);
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--nc-text-secondary);
+  cursor: pointer;
+}
+
+.workspace-tab:hover { background: var(--nc-bg-hover); color: var(--nc-text-primary); }
+.workspace-tab.active {
+  border-bottom-color: var(--nc-accent);
+  background: var(--nc-bg-active);
+  color: var(--nc-text-active);
+}
+
+.workspace-tab__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-tab__pin { flex: 0 0 auto; font-size: 13px; }
+.workspace-tab__close {
+  display: inline-grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 4px;
+  opacity: 0;
+}
+.workspace-tab:hover .workspace-tab__close,
+.workspace-tab.active .workspace-tab__close { opacity: 1; }
+.workspace-tab__close:hover { background: var(--nc-bg-hover); }
+
+.workspace-tab-context {
+  position: fixed;
+  z-index: 5000;
+  display: grid;
+  width: 210px;
+  padding: 6px;
+  border: 1px solid var(--nc-border-light);
+  border-radius: 6px;
+  background: var(--nc-bg-elevated);
+  box-shadow: var(--nc-shadow-floating);
+}
+
+.workspace-tab-context button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nc-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-tab-context button:hover:not(:disabled) { background: var(--nc-bg-hover); }
+.workspace-tab-context button:disabled { color: var(--nc-text-disabled); cursor: default; }
+.workspace-tab-context__divider { height: 1px; margin: 4px 0; background: var(--nc-border-light); }
+.workspace-overflow-menu,
+.workspace-new-page-menu { max-height: min(70vh, 520px); overflow-y: auto; }
+.workspace-overflow-menu .active { color: var(--nc-text-active); background: var(--nc-bg-active); }
+
+@media (max-width: 850px) {
+  .workspace-tab-bar { padding-inline: 4px; }
+  .workspace-tab { width: 150px; min-width: 96px; padding-inline: 8px; }
+}
 .app-sidebar { z-index: 20; display: flex; flex-direction: column; min-height: 0; color: var(--nc-text-primary); background: var(--nc-bg-sidebar); border-right: 1px solid var(--nc-divider); box-shadow: var(--nc-shadow-sidebar); transition: width var(--nc-transition-fast), transform var(--nc-transition-fast); }
 .brand { display: flex; width: 100%; align-items: center; gap: var(--nc-space-3); height: var(--nc-shell-header-height); padding: 0 var(--nc-space-5); color: inherit; background: transparent; border: 0; border-bottom: 1px solid var(--nc-divider); cursor: pointer; font: inherit; letter-spacing: 0; text-align: left; }
 .brand:focus-visible { outline: 2px solid var(--nc-primary); outline-offset: -2px; }

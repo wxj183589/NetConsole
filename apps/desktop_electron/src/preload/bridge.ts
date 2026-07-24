@@ -13,6 +13,9 @@ import {
   validateOnlineMrSessionId,
   validateSelectFileOptions,
   validateTaskWindowContext,
+  validateWorkspaceTitle,
+  validateWorkspaceWindowOpenRequest,
+  validateWorkspaceWindowSnapshot,
   validateUiPreferenceKey, validateUiPreferenceValue,
   validateSettingsActionId, validateSettingsDirectoryId, validateSettingsToolId,
   validateSiteStorageRestartRequest,
@@ -41,6 +44,41 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.openTaskWindow,
       validateTaskWindowContext(context),
     ) as ReturnType<NetConsoleDesktopBridge['openTaskWindow']>,
+    openWorkspaceWindow: (request) => ipcRenderer.invoke(
+      DESKTOP_IPC.openWorkspaceWindow,
+      validateWorkspaceWindowOpenRequest(request),
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['openWorkspaceWindow']>>,
+    getWorkspaceWindowState: () => ipcRenderer.invoke(
+      DESKTOP_IPC.getWorkspaceWindowState,
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['getWorkspaceWindowState']>>,
+    saveWorkspaceWindowState: (snapshot) => ipcRenderer.invoke(
+      DESKTOP_IPC.saveWorkspaceWindowState,
+      validateWorkspaceWindowSnapshot(snapshot),
+    ) as Promise<void>,
+    setWorkspaceWindowTitle: (title) => ipcRenderer.send(
+      DESKTOP_IPC.setWorkspaceWindowTitle,
+      validateWorkspaceTitle(title),
+    ),
+    getCloseToTrayState: () => ipcRenderer.invoke(
+      DESKTOP_IPC.getCloseToTrayState,
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['getCloseToTrayState']>>,
+    setCloseToTrayEnabled: (enabled) => {
+      if (typeof enabled !== 'boolean') throw new TypeError('close-to-tray value is invalid')
+      return ipcRenderer.invoke(
+        DESKTOP_IPC.setCloseToTrayEnabled,
+        enabled,
+      ) as ReturnType<NonNullable<NetConsoleDesktopBridge['setCloseToTrayEnabled']>>
+    },
+    onCloseToTrayChanged: (listener) => {
+      const wrapped = (_event: IpcRendererEvent, value: unknown) => {
+        const record = value as { enabled?: unknown; available?: unknown }
+        if (typeof record?.enabled === 'boolean' && typeof record?.available === 'boolean') {
+          listener({ enabled: record.enabled, available: record.available })
+        }
+      }
+      ipcRenderer.on(DESKTOP_IPC.closeToTrayChanged, wrapped)
+      return () => ipcRenderer.removeListener(DESKTOP_IPC.closeToTrayChanged, wrapped)
+    },
     selectFile: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.selectFile,
       validateSelectFileOptions(options),

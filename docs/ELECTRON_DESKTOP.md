@@ -10,6 +10,16 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 文件管理桌面动作使用独立 `executeFileDesktopAction(fda1_*)` 白名单。Renderer 只能提交 60 秒一次性引用；Electron main 只访问当前受管 Python 的固定回环端点，Service 只允许打开受控根内目录或启动固定 WinSCP。路径、程序、参数和凭据不进入 Renderer，Electron WinSCP 启动参数不含密码。
 
+## 工作区、多窗口与 Windows 通知区域
+
+`WorkspaceWindowController` 统一管理一个主窗口和附加工作区窗口；所有窗口复用同一个 `PythonBackendManager`、动态回环 Origin 和内存桌面会话，不会为标签、窗口或 Vite 另建 Backend。Vue 工作区使用 Pinia 管理标签的路由、实例和缓存键，主进程只持久化受限的导航快照与窗口布局，不保存业务页面响应式状态、绝对路径、Token、密码、`confirm_token` 或设备凭据。
+
+工作区快照位于 Electron `userData/workspace-layout.json`。它使用严格 schema、内部路由/敏感 query 过滤、长度限制和原子替换；文件损坏、过期或多显示器越界时安全回退到主窗口默认布局。Renderer 只能通过白名单 IPC 打开受控内部路由、保存当前所属窗口的快照和更新已清理的窗口标题，不能提供 URL、`BrowserWindow` 参数或本机路径。
+
+Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
+
+默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend 或后台任务；附加工作区窗口正常销毁，任务窗口仍按既有语义隐藏。所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：先 flush 工作区/偏好、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
+
 ## 当前状态
 
 Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。Electron 是唯一正式桌面产品；Qt 源码、运行时与入口已经退出活动仓库。部分业务仍处于自动实现完成但真实设备待验收状态，不能把“零 Qt”误写成全部业务已经现场验收完成。
@@ -102,9 +112,12 @@ Electron/Vue 的产品标题统一为 `NetConsole v1.4.2 by wxj`，侧栏使用�
 ```powershell
 cd apps/desktop_electron
 pnpm smoke:dev
+pnpm smoke:workspace-tray
 ```
 
 冒烟只有在 Electron、Python、Vue runtime adapter 和真实 `/api/health` 全部成功后才以 0 退出，并检查退出链能够回收 Vite、Electron 和 Python。
+
+`smoke:workspace-tray` 使用隔离临时数据根，额外验证受管附加窗口创建/关闭、主窗口隐藏到托盘后 Backend 仍为 ready、恢复主窗口及明确退出后的回收。它不替代 Windows 通知区域右键菜单、真实缩放图标、多显示器布局和安装包的人工点击验收。
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
@@ -245,4 +258,4 @@ pnpm test
 pnpm build
 ```
 
-完整 Windows 安装包、代码签名、升级、托盘和真实发布目录尚未验收；原生保存对话框与关闭后进程残留也仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。
+完整 Windows 安装包、代码签名、升级和真实发布目录尚未验收；工作区与托盘已有单元测试及源码 smoke，但原生托盘菜单、通知区域图标缩放、多显示器恢复、原生保存对话框与关闭后进程残留仍需在本地主工作区人工点击核对，不能从上述源码冒烟推断为通过。

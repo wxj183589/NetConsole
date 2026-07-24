@@ -10,6 +10,8 @@ import {
 } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useWorkspaceStore } from '../stores/workspace'
+
 const counters = vi.hoisted(() => ({
   activeChartRequests: vi.fn(),
   cacheBuilds: vi.fn(),
@@ -444,7 +446,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 420 })
 })
 
-describe('AppLayout open page tabs with real async routes', () => {
+describe('AppLayout workspace tabs with real async routes', () => {
   it('keeps the real async MESH view and its loaded charts across 20 tab round trips', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -452,10 +454,13 @@ describe('AppLayout open page tabs with real async routes', () => {
     })
     await router.push('/rail-transit/mesh-analysis')
     await router.isReady()
+    const pinia = createPinia()
+    const workspace = useWorkspaceStore(pinia)
+    await workspace.initialize(router)
     const wrapper = mount(Root, {
       attachTo: document.body,
       global: {
-        plugins: [createPinia(), router, ElementPlus],
+        plugins: [pinia, router, ElementPlus],
         stubs: { NcDataTable: NcDataTableStub },
       },
     })
@@ -487,6 +492,7 @@ describe('AppLayout open page tabs with real async routes', () => {
     })
     expect(initialCounts.cacheBuilds).toBeGreaterThan(0)
     expect(initialCounts.chartInits).toBeGreaterThan(0)
+    const meshTabId = workspace.activeTabId
     const heapBefore = process.memoryUsage().heapUsed
 
     for (let index = 0; index < 20; index += 1) {
@@ -494,10 +500,8 @@ describe('AppLayout open page tabs with real async routes', () => {
       await baseDataMenu!.trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-base-data-page]').exists()).toBe(true)
-      const meshPageTab = wrapper.findAll('.open-page-tab')
-        .find((item) => item.text().includes('MR 原始 MESH 日志分析'))
-      expect(meshPageTab).toBeDefined()
-      await meshPageTab!.trigger('click')
+      const meshPageTab = wrapper.get(`[data-workspace-tab="${meshTabId}"]`)
+      await meshPageTab.trigger('click')
       await flushPromises()
       expect(wrapper.findComponent({ name: 'MeshAnalysisView' }).vm.$.uid).toBe(initialUid)
       expect(wrapper.find('.mesh-page').classes()).toContain('is-rssi-workspace')
@@ -521,15 +525,15 @@ describe('AppLayout open page tabs with real async routes', () => {
     const baseDataMenu = findButtonByText(wrapper, '.el-menu-item', '基础资料')
     await baseDataMenu!.trigger('click')
     await flushPromises()
-    const meshPageTab = wrapper.findAll('.open-page-tab')
-      .find((item) => item.text().includes('MR 原始 MESH 日志分析'))
-    await meshPageTab!.get('.open-page-tab__close').trigger('click')
+    const meshPageTab = wrapper.get(`[data-workspace-tab="${meshTabId}"]`)
+    await meshPageTab.get('.workspace-tab__close').trigger('click')
     await flushPromises()
 
     expect(counters.cacheDisposals).toHaveBeenCalled()
     expect(counters.chartDisposals).toHaveBeenCalled()
-    expect(wrapper.findAll('.open-page-tab').some((item) => item.text().includes('MR 原始 MESH 日志分析'))).toBe(false)
+    expect(wrapper.find(`[data-workspace-tab="${meshTabId}"]`).exists()).toBe(false)
 
     wrapper.unmount()
+    workspace.dispose()
   })
 })

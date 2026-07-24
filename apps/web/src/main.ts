@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 
 import App from './App.vue'
 import router from './router'
+import { useWorkspaceStore } from './stores/workspace'
 import { getHealth } from './api/client'
 import {
   getPlatformAdapter,
@@ -28,18 +29,25 @@ async function bootstrap(): Promise<void> {
     return
   }
   await initializeSystemAppearance()
-  const application = createApp(App).use(createPinia()).use(router)
+  const pinia = createPinia()
+  const application = createApp(App).use(pinia).use(router)
+  await router.isReady()
   const currentUrl = new URL(window.location.href)
   const surface = currentUrl.pathname === '/desktop/tasks' && currentUrl.searchParams.get('task_window') === '1'
     ? 'task-window'
-    : 'main'
+    : currentUrl.searchParams.get('workspace_window') === '1'
+      ? 'workspace-window'
+      : 'main'
+  if (surface !== 'task-window') {
+    await useWorkspaceStore(pinia).initialize(router)
+  }
   application.mount('#app')
   const runtime = getPlatformAdapter()
   if (runtime.hostType === 'electron') {
     runtime.reportRendererReady(true, 'mounted', surface)
     try {
       const health = await getHealth()
-      if (surface === 'main') runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
+      if (surface !== 'task-window') runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
     } catch {
       runtime.reportRendererReady(false, 'failed', surface)
     }

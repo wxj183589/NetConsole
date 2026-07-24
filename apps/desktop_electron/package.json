@@ -11,6 +11,7 @@
     "dev:codex": "node scripts/dev.mjs --codex",
     "smoke:dev": "node scripts/dev.mjs --smoke",
     "smoke:task-window": "node scripts/dev.mjs --smoke --task-window",
+    "smoke:workspace-tray": "node scripts/dev.mjs --smoke --workspace-tray",
     "profile:mesh-chart": "electron scripts/profile-mesh-chart.cjs",
     "profile:mesh-tooltip-repaint": "electron scripts/profile-mesh-tooltip-repaint.cjs",
     "start": "pnpm run build:main && electron .",

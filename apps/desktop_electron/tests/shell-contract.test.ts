@@ -23,7 +23,7 @@ const devSource = readFileSync(
 
 describe('Electron shell product contract', () => {
   it('uses the branded product title, icon, and hides the default menu unless development opts in', () => {
-    expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole v1.4.2 by wxj'")
+    expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole'")
     expect(brandingSource).toContain('NETCONSOLE_TASK_WINDOW_TITLE')
     expect(brandingSource).toContain("resolve(context.resourcesPath, 'branding', 'netconsole.ico')")
     expect(brandingSource).toContain("resolve(context.appPath, '..', '..', 'resources', 'branding', 'netconsole.ico')")
@@ -44,16 +44,17 @@ describe('Electron shell product contract', () => {
 
   it('starts the smoke watchdog before awaiting the renderer navigation', () => {
     expect(source.indexOf('startSmokeWatchdog()')).toBeLessThan(
-      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
+      source.indexOf('void rendererWindow.loadURL(mainRendererTarget)'),
     )
     expect(source).toContain("logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')")
     expect(source).toContain("logger('ELECTRON_SMOKE_RENDERER_STABLE')")
     expect(source).toContain("logger('ELECTRON_SMOKE_STABILITY_RESET')")
     expect(source).toContain("logger('ELECTRON_SHUTDOWN_COMPLETE')")
     expect(source).toContain('function beginShutdownAndExit(): void')
-    expect(source).toContain("app.on('window-all-closed', () => requestExit(0))")
-    expect(source).toContain('mainWindow.destroy()')
-    expect(source).toContain('setImmediate(() => process.exit(requestedExitCode))')
+    expect(source).toContain("app.on('window-all-closed'")
+    expect(source).toContain('if (trayAvailable && closeToTrayEnabled && !explicitQuitRequested) return')
+    expect(source).toContain('workspaceWindowController?.closeAllForQuit()')
+    expect(source).not.toContain('process.exit(requestedExitCode)')
   })
 
   it('shows an observable system-themed loading page and gates the business renderer theme', () => {
@@ -67,7 +68,7 @@ describe('Electron shell product contract', () => {
       source.indexOf('const runtime = await backend.start()'),
     )
     expect(source.indexOf('armRendererThemeDisplay(rendererWindow)')).toBeLessThan(
-      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
+      source.indexOf('void rendererWindow.loadURL(mainRendererTarget)'),
     )
   })
 
@@ -78,12 +79,12 @@ describe('Electron shell product contract', () => {
     )
     expect(source).toContain('MANAGED_RENDERER_RETRY_ACTION')
     expect(source).not.toContain('href="${escapeHtml(retryUrl)}"')
-    expect(source).toContain('rememberManagedRendererTarget(mainWindow, rendererUrl)')
-    expect(source).toContain('prepareNavigation: (window, target) => rememberManagedRendererTarget')
+    expect(source).toContain('rememberManagedRendererTarget(mainWindow, mainRendererTarget)')
+    expect(source).toContain('prepareNavigation: (window, target) => {')
     expect(source).toContain("new URL('/desktop/tasks', rendererUrl)")
     expect(source).toContain('const windowRendererTargets = new WeakMap<BrowserWindow, string>()')
-    expect(source.indexOf('rememberManagedRendererTarget(mainWindow, rendererUrl)')).toBeLessThan(
-      source.indexOf('void rendererWindow.loadURL(rendererUrl)'),
+    expect(source.indexOf('rememberManagedRendererTarget(mainWindow, mainRendererTarget)')).toBeLessThan(
+      source.indexOf('void rendererWindow.loadURL(mainRendererTarget)'),
     )
     expect(source).toContain('return taskWindowController.open(context)')
     expect(retrySource).toContain('let target = windowRendererTargets.get(window)')
@@ -113,9 +114,9 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('window.hide()')
     expect(source).toContain('if (allowQuit) return')
     expect(source.indexOf('window.hide()')).toBeLessThan(source.indexOf('await backend?.stop()'))
-    expect(source).toContain('taskWindow.destroy()')
+    expect(source).toContain('taskWindow.close()')
     expect(source).toContain('new TaskWindowController')
-    expect(source).toContain('for (const window of [mainWindow, taskWindow])')
+    expect(source).toContain('for (const window of getAllDesktopWindows())')
     expect(source).toContain("error: '本地后端不可用'")
   })
 })
