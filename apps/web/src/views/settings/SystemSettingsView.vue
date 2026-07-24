@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { CopyDocument } from '@element-plus/icons-vue'
 import {
   SETTINGS_TOOL_DEFINITIONS,
   settingsToolMismatchMessage,
@@ -10,7 +11,7 @@ import {
 } from '../../../../desktop_electron/src/shared/bridge'
 
 import {
-  getFeatureSettings, getSystemSettings, previewFeatureSettings, reloadSystemSettings,
+  exitFeatureSettingsPreview, getFeatureSettings, getSystemSettings, reloadSystemSettings,
   restoreFeatureSettings, saveFeatureSettings, saveSystemSettings, getRuntimeSelfCheck,
 } from '../../api/systemSettings'
 import { isFeatureEnabled, loadWebFeatures } from '../../features'
@@ -20,7 +21,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
-import type { FeatureSetting, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
+import type { FeatureSetting, FeatureSettingsSnapshot, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 import NcExecutablePathField from '../../components/settings/NcExecutablePathField.vue'
 
@@ -37,6 +38,15 @@ const form = reactive<SystemSettingsValues>(cloneValues(emptyValues))
 const features = ref<FeatureSetting[]>([])
 const featureBaseline = ref('')
 const featurePreview = ref(false)
+const featureConfigurationName = ref('当前实例运行配置')
+const featureScopeLabel = ref('全局')
+const featureInheritedProfile = ref('full')
+const featureSearch = ref('')
+const featureGroupFilter = ref('all')
+const featureModifiedOnly = ref(false)
+const featurePreviewDrawer = ref(false)
+const activeFeatureGroups = ref<string[]>([])
+const linkedFeatureChanges = ref<Set<string>>(new Set())
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -68,13 +78,38 @@ const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
 const hasBlockingPathError = computed(() => Object.values(pathErrors.value).some(Boolean))
 const featureSwitchAvailable = computed(() => featureConfigurationAllowed.value && isFeatureEnabled('web.feature_switch'))
 const featureColumns: NcTableColumn<FeatureSetting>[] = [
-  { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description' },
-  { key: 'feature_id', label: 'ID', valueType: 'description', alignmentReason: 'code' },
-  { key: 'visible', label: '显示', valueType: 'status' },
-  { key: 'enabled', label: '启用', valueType: 'status' },
-  { key: 'client_package', label: '客户包', valueType: 'status' },
-  { key: 'internal_only', label: '内部', valueType: 'status' },
+  { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description', fixed: 'left' },
+  { key: 'feature_id', label: 'ID', valueType: 'description', alignmentReason: 'code', stretch: 'fill', maxWidth: 960 },
+  { key: 'scope', label: '作用域', valueType: 'status' },
+  { key: 'package_range', label: '发布范围', valueType: 'status' },
+  { key: 'status', label: '状态', valueType: 'status' },
+  { key: 'enabled', label: '运行状态', valueType: 'status', fixed: 'right' },
 ]
+type FeatureMode = 'enabled_visible' | 'enabled_hidden' | 'disabled'
+const baselineFeatures = computed<FeatureSetting[]>(() => featureBaseline.value ? JSON.parse(featureBaseline.value) as FeatureSetting[] : [])
+const baselineFeatureById = computed(() => new Map(baselineFeatures.value.map((item) => [item.feature_id, item])))
+const featureGroups = computed(() => {
+  const search = featureSearch.value.trim().toLocaleLowerCase()
+  const groups = new Map<string, { id: string; title: string; items: FeatureSetting[] }>()
+  for (const item of features.value) {
+    if (featureGroupFilter.value !== 'all' && item.group_id !== featureGroupFilter.value) continue
+    if (search && !`${item.title} ${item.feature_id}`.toLocaleLowerCase().includes(search)) continue
+    if (featureModifiedOnly.value && !isFeatureModified(item)) continue
+    const group = groups.get(item.group_id) ?? { id: item.group_id, title: item.group_title, items: [] }
+    group.items.push(item)
+    groups.set(item.group_id, group)
+  }
+  return [...groups.values()]
+})
+const featureGroupOptions = computed(() => [...new Map(features.value.map((item) => [item.group_id, item.group_title])).entries()])
+const featureChanges = computed(() => features.value.flatMap((item) => {
+  const baselineItem = baselineFeatureById.value.get(item.feature_id)
+  if (!baselineItem || (baselineItem.visible === item.visible && baselineItem.enabled === item.enabled)) return []
+  return [{ item, before: featureMode(baselineItem), after: featureMode(item) }]
+}))
+const dependencyIssues = computed(() => features.value.flatMap((item) => item.enabled
+  ? item.dependencies.filter((dependencyId) => !features.value.find((candidate) => candidate.feature_id === dependencyId)?.enabled).map((dependencyId) => ({ item, dependencyId }))
+  : []))
 
 onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
@@ -228,15 +263,14 @@ async function save(): Promise<void> {
   if (!snapshot.value) return
   const settingsWereDirty = dirty.value
   const featuresWereDirty = featuresDirty.value
-  if (featuresWereDirty && !(await confirmAction('保存功能开关会更新中央 customer profile，是否继续？'))) return
+  if (featuresWereDirty && !(await confirmAction('保存并应用当前实例的全局功能配置？'))) return
   saving.value = true; error.value = ''
   let featureSaved = false
   let saveStage: 'feature_profile' | 'feature_refresh' | 'settings' = featuresWereDirty ? 'feature_profile' : 'settings'
   try {
     if (featuresWereDirty) {
       const data = await saveFeatureSettings(features.value)
-      features.value = data.items; featureBaseline.value = JSON.stringify(data.items)
-      featurePreview.value = data.preview_active
+      acceptFeatureSnapshot(data)
       featureSaved = true
       saveStage = 'feature_refresh'
       await loadWebFeatures(true)
@@ -296,16 +330,26 @@ async function loadFeatureSettings(): Promise<void> {
     resetFeatureConfigurationState()
     return
   }
-  const featureData = await getFeatureSettings()
-  features.value = featureData.items
-  featureBaseline.value = JSON.stringify(featureData.items)
-  featurePreview.value = featureData.preview_active
+  acceptFeatureSnapshot(await getFeatureSettings())
+}
+
+function acceptFeatureSnapshot(data: FeatureSettingsSnapshot): void {
+  features.value = data.items
+  featureBaseline.value = JSON.stringify(data.items)
+  featurePreview.value = data.preview_active
+  featureConfigurationName.value = data.configuration_name
+  featureScopeLabel.value = data.scope_label
+  featureInheritedProfile.value = data.inherited_profile
+  activeFeatureGroups.value = [...new Set(data.items.map((item) => item.group_id))]
+  linkedFeatureChanges.value = new Set()
 }
 
 function resetFeatureConfigurationState(): void {
   features.value = []
   featureBaseline.value = JSON.stringify([])
   featurePreview.value = false
+  featurePreviewDrawer.value = false
+  linkedFeatureChanges.value = new Set()
   featureError.value = ''
 }
 
@@ -313,7 +357,7 @@ function acceptSnapshot(value: SystemSettingsSnapshot): void {
   snapshot.value = value; baseline.value = cloneValues(value.values); Object.assign(form, cloneValues(value.values)); clearToolErrors(); previewAppearance()
 }
 function resetDefaults(): void { if (snapshot.value) { Object.assign(form, cloneValues(snapshot.value.defaults)); clearToolErrors(); previewAppearance() } }
-function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); clearToolErrors(); previewAppearance(); if (featureBaseline.value) features.value = JSON.parse(featureBaseline.value) as FeatureSetting[] }
+function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); clearToolErrors(); previewAppearance(); undoFeatureChanges() }
 function previewAppearance(): void { applySystemAppearance(form) }
 function restoreAppearance(): void { if (baseline.value) applySystemAppearance(baseline.value) }
 function cloneValues(value: SystemSettingsValues): SystemSettingsValues { return { ...value, terminal_paths: { ...value.terminal_paths } } }
@@ -397,17 +441,113 @@ async function launchIpop(): Promise<void> {
   await nativeAction('launch_ipop')
 }
 
-async function previewFeatures(): Promise<void> {
-  if (!await confirmAction('预览会立即影响本次会话导航，是否继续？')) return
-  try {
-    const data = await previewFeatureSettings(features.value); featurePreview.value = data.preview_active; await loadWebFeatures(true)
-  } catch (cause) { showError(cause, '功能开关预览失败') }
+function previewFeatures(): void {
+  featurePreviewDrawer.value = true
 }
 async function restoreFeatures(): Promise<void> {
-  if (!await confirmAction('退出预览并恢复默认 customer profile 表单？')) return
+  if (!await confirmAction(`恢复继承配置 ${featureInheritedProfile.value} 的默认运行状态？`)) return
   try {
-    const data = await restoreFeatureSettings(); features.value = data.items; featureBaseline.value = JSON.stringify(data.items); featurePreview.value = false; await loadWebFeatures(true)
+    acceptFeatureSnapshot(await restoreFeatureSettings()); await loadWebFeatures(true); ElMessage.success('已恢复默认功能配置')
   } catch (cause) { showError(cause, '功能开关恢复失败') }
+}
+async function exitFeaturePreview(): Promise<void> {
+  try {
+    acceptFeatureSnapshot(await exitFeatureSettingsPreview()); await loadWebFeatures(true); ElMessage.success('已退出会话预览')
+  } catch (cause) { showError(cause, '退出功能预览失败') }
+}
+async function saveFeaturesOnly(): Promise<void> {
+  if (!featuresDirty.value || dependencyIssues.value.length) return
+  if (!await confirmAction('保存并立即应用当前实例的全局功能配置？')) return
+  saving.value = true
+  try {
+    acceptFeatureSnapshot(await saveFeatureSettings(features.value))
+    await loadWebFeatures(true)
+    ElMessage.success('功能配置已保存并应用')
+  } catch (cause) { showError(cause, '功能配置保存失败') }
+  finally { saving.value = false }
+}
+function undoFeatureChanges(): void {
+  if (featureBaseline.value) features.value = JSON.parse(featureBaseline.value) as FeatureSetting[]
+  linkedFeatureChanges.value = new Set()
+}
+function featureMode(item: FeatureSetting): FeatureMode {
+  if (!item.enabled) return 'disabled'
+  return item.visible ? 'enabled_visible' : 'enabled_hidden'
+}
+function featureModeLabel(mode: FeatureMode): string {
+  return mode === 'enabled_visible' ? '显示并启用' : mode === 'enabled_hidden' ? '隐藏入口' : '完全禁用'
+}
+async function updateFeatureMode(item: FeatureSetting, mode: FeatureMode): Promise<void> {
+  if (item.locked) return
+  const nextLinked = new Set(linkedFeatureChanges.value)
+  if (mode === 'disabled') {
+    const affected = enabledDependentsOf(item.feature_id)
+    if (affected.length && !await confirmAction(`禁用“${item.title}”将同时禁用 ${affected.map((value) => value.title).join('、')}，是否继续？`)) return
+    for (const dependent of affected) {
+      dependent.enabled = false
+      dependent.visible = false
+      nextLinked.add(dependent.feature_id)
+    }
+    item.enabled = false
+    item.visible = false
+  } else {
+    const dependencies = dependencyClosure(item).filter((dependency) => !dependency.enabled)
+    if (dependencies.length && !await confirmAction(`启用“${item.title}”需要同时启用 ${dependencies.map((value) => value.title).join('、')}，是否继续？`)) return
+    for (const dependency of dependencies) {
+      dependency.enabled = true
+      dependency.visible = true
+      nextLinked.add(dependency.feature_id)
+    }
+    item.enabled = true
+    item.visible = mode === 'enabled_visible'
+  }
+  linkedFeatureChanges.value = nextLinked
+}
+function dependencyClosure(item: FeatureSetting, seen = new Set<string>()): FeatureSetting[] {
+  const result: FeatureSetting[] = []
+  for (const featureId of item.dependencies) {
+    if (seen.has(featureId)) continue
+    seen.add(featureId)
+    const dependency = features.value.find((candidate) => candidate.feature_id === featureId)
+    if (!dependency) continue
+    result.push(...dependencyClosure(dependency, seen), dependency)
+  }
+  return [...new Map(result.map((value) => [value.feature_id, value])).values()]
+}
+function enabledDependentsOf(featureId: string): FeatureSetting[] {
+  const result: FeatureSetting[] = []
+  const queue = [featureId]
+  const seen = new Set(queue)
+  while (queue.length) {
+    const current = queue.shift()!
+    for (const candidate of features.value) {
+      if (!candidate.enabled || seen.has(candidate.feature_id) || !candidate.dependencies.includes(current)) continue
+      seen.add(candidate.feature_id)
+      result.push(candidate)
+      queue.push(candidate.feature_id)
+    }
+  }
+  return result
+}
+function isFeatureModified(item: FeatureSetting): boolean {
+  const baselineItem = baselineFeatureById.value.get(item.feature_id)
+  return item.overridden || Boolean(baselineItem && (baselineItem.visible !== item.visible || baselineItem.enabled !== item.enabled))
+}
+function groupEnabledSummary(items: FeatureSetting[]): string {
+  return `已启用 ${items.filter((item) => item.enabled).length} / ${items.length}`
+}
+function packageRangeLabel(value: FeatureSetting['package_range']): string {
+  return value === 'customer_internal' ? '客户包、内部包' : value === 'internal' ? '内部包' : value === 'internal_only' ? '仅内部' : '未包含'
+}
+function featureStatusLabel(status: FeatureSetting['status']): string {
+  return status === 'DEVELOPMENT' ? '开发中' : status === 'HIDDEN' ? '已隐藏' : status === 'DISABLED' ? '不可用' : '正常'
+}
+function featureStatusTagType(status: FeatureSetting['status']): 'success' | 'warning' | 'info' | 'danger' {
+  return status === 'ENABLED' ? 'success' : status === 'DEVELOPMENT' ? 'warning' : status === 'DISABLED' ? 'danger' : 'info'
+}
+async function copyFeatureId(featureId: string): Promise<void> {
+  try { await navigator.clipboard.writeText(featureId); ElMessage.success('功能 ID 已复制') }
+  catch { ElMessage.error('复制失败') }
 }
 async function confirmAction(text: string): Promise<boolean> {
   return confirm({ type: 'WARNING', title: '确认操作', message: text, confirmText: '确认操作' })
@@ -500,17 +640,86 @@ function message(cause: unknown, fallback: string): string { return cause instan
       </el-form>
     </section>
 
-    <section v-if="featureSwitchAvailable" class="settings-band"><div class="section-heading"><h2>{{ t('settings.features', '功能开关') }}</h2><div><el-tag v-if="featurePreview" type="warning">客户配置预览中</el-tag><el-button data-testid="preview-features" @click="previewFeatures">影响预览</el-button><el-button data-testid="restore-features" @click="restoreFeatures">退出预览/恢复</el-button></div></div>
-      <NcDataTable :data="features" :columns="featureColumns" table-id="system-feature-settings" route-key="/system-settings" max-height="520">
-        <template #cell-visible="{ row }"><el-checkbox v-model="row.visible" :data-testid="`feature-visible-${row.feature_id}`" /></template>
-        <template #cell-enabled="{ row }"><el-checkbox v-model="row.enabled" /></template>
-        <template #cell-client_package="{ row }"><el-checkbox v-model="row.client_package" /></template>
-        <template #cell-internal_only="{ row }"><el-checkbox v-model="row.internal_only" /></template>
-      </NcDataTable>
+    <section v-if="featureSwitchAvailable" class="settings-band feature-settings-band">
+      <div class="section-heading feature-heading">
+        <div>
+          <h2>{{ t('settings.features', '功能开关') }}</h2>
+          <div class="feature-context">
+            <span>当前配置：<strong>{{ featureConfigurationName }}</strong></span>
+            <span>作用范围：<strong>{{ featureScopeLabel }}</strong></span>
+            <span>继承配置：<strong>{{ featureInheritedProfile }}</strong></span>
+          </div>
+        </div>
+        <div class="inline-actions">
+          <el-tag v-if="featurePreview" type="warning">会话预览中</el-tag>
+          <el-button v-if="featurePreview" data-testid="exit-feature-preview" @click="exitFeaturePreview">退出预览</el-button>
+          <el-button data-testid="undo-feature-changes" :disabled="!featuresDirty" @click="undoFeatureChanges">撤销修改</el-button>
+          <el-button data-testid="restore-features" @click="restoreFeatures">恢复默认</el-button>
+          <el-button data-testid="preview-features" :disabled="!featuresDirty" @click="previewFeatures">预览变更</el-button>
+          <el-button data-testid="save-features" type="primary" :loading="saving" :disabled="!featuresDirty || Boolean(dependencyIssues.length)" @click="saveFeaturesOnly">保存并应用</el-button>
+        </div>
+      </div>
+      <el-alert v-if="featurePreview" title="正在预览功能配置，会话预览尚未写入运行时覆盖。" type="warning" :closable="false" />
+      <el-alert v-if="dependencyIssues.length" :title="`存在 ${dependencyIssues.length} 项依赖异常，修复后才能保存。`" type="error" :closable="false" />
+      <div class="feature-filters">
+        <el-input v-model="featureSearch" data-testid="feature-search" clearable placeholder="搜索功能或 ID" />
+        <el-select v-model="featureGroupFilter" data-testid="feature-group-filter">
+          <el-option label="全部分类" value="all" />
+          <el-option v-for="[id, title] in featureGroupOptions" :key="id" :label="title" :value="id" />
+        </el-select>
+        <el-switch v-model="featureModifiedOnly" data-testid="feature-modified-only" active-text="仅显示已修改" />
+      </div>
+      <el-empty v-if="!featureGroups.length" description="没有匹配的功能" />
+      <el-collapse v-else v-model="activeFeatureGroups" class="feature-groups">
+        <el-collapse-item v-for="group in featureGroups" :key="group.id" :name="group.id">
+          <template #title>
+            <span class="feature-group-title">{{ group.title }}</span>
+            <el-tag size="small" type="info">{{ groupEnabledSummary(group.items) }}</el-tag>
+          </template>
+          <NcDataTable :data="group.items" :columns="featureColumns" :table-id="`system-feature-settings-${group.id}`" route-key="/system-settings" max-height="480" :row-key="(row: FeatureSetting) => row.feature_id">
+            <template #cell-title="{ row }"><strong>{{ row.title }}</strong></template>
+            <template #cell-feature_id="{ row }">
+              <div class="feature-id-cell">
+                <code>{{ row.feature_id }}</code>
+                <el-tooltip content="复制功能 ID" placement="top"><el-button link :icon="CopyDocument" :aria-label="`复制 ${row.feature_id}`" @click="copyFeatureId(row.feature_id)" /></el-tooltip>
+              </div>
+            </template>
+            <template #cell-scope><el-tag size="small" type="info">全局</el-tag></template>
+            <template #cell-package_range="{ row }"><el-tag size="small" :type="row.package_range === 'not_included' ? 'info' : row.package_range === 'internal_only' ? 'warning' : 'success'">{{ packageRangeLabel(row.package_range) }}</el-tag></template>
+            <template #cell-status="{ row }">
+              <div class="feature-status-tags">
+                <el-tag size="small" :type="featureStatusTagType(row.status)">{{ featureStatusLabel(row.status) }}</el-tag>
+                <el-tag v-if="isFeatureModified(row)" size="small" type="warning">已修改</el-tag>
+                <el-tooltip v-if="row.locked" :content="row.lock_reason" placement="top"><el-tag size="small" type="info">锁定</el-tag></el-tooltip>
+                <el-tag v-if="dependencyIssues.some((issue) => issue.item.feature_id === row.feature_id)" size="small" type="danger">依赖异常</el-tag>
+              </div>
+            </template>
+            <template #cell-enabled="{ row }">
+              <el-select :model-value="featureMode(row)" :data-testid="`feature-mode-${row.feature_id}`" :disabled="row.locked || row.package_range === 'not_included'" @change="updateFeatureMode(row, $event as FeatureMode)">
+                <el-option label="显示并启用" value="enabled_visible" />
+                <el-option label="隐藏入口" value="enabled_hidden" />
+                <el-option label="完全禁用" value="disabled" />
+              </el-select>
+            </template>
+          </NcDataTable>
+        </el-collapse-item>
+      </el-collapse>
+      <el-drawer v-model="featurePreviewDrawer" title="变更预览" size="480px">
+        <div class="feature-preview-content">
+          <section><h3>直接修改</h3><el-empty v-if="!featureChanges.length" description="无变更" :image-size="56" /><ul v-else><li v-for="change in featureChanges" :key="change.item.feature_id"><strong>{{ change.item.title }}</strong><span>{{ featureModeLabel(change.before) }} → {{ featureModeLabel(change.after) }}</span></li></ul></section>
+          <section><h3>依赖联动</h3><p v-if="!linkedFeatureChanges.size">无</p><ul v-else><li v-for="featureId in linkedFeatureChanges" :key="featureId">{{ features.find((item) => item.feature_id === featureId)?.title }}</li></ul></section>
+          <section><h3>导航变化</h3><p v-if="!featureChanges.some((change) => change.item.visible !== baselineFeatureById.get(change.item.feature_id)?.visible)">无</p><ul v-else><li v-for="change in featureChanges.filter((value) => value.item.visible !== baselineFeatureById.get(value.item.feature_id)?.visible)" :key="change.item.feature_id">{{ change.item.visible ? '显示' : '移除' }}“{{ change.item.title }}”入口</li></ul></section>
+          <section><h3>任务影响</h3><p v-if="!featureChanges.some((change) => change.before !== 'disabled' && change.after === 'disabled')">无</p><ul v-else><li v-for="change in featureChanges.filter((value) => value.before !== 'disabled' && value.after === 'disabled')" :key="change.item.feature_id">禁止创建新的“{{ change.item.title }}”相关任务；历史任务保留可查。</li></ul></section>
+          <section><h3>生效方式</h3><p>保存后立即刷新功能 Gate、导航与路由访问状态。</p></section>
+        </div>
+        <template #footer><el-button @click="featurePreviewDrawer = false">关闭</el-button><el-button type="primary" :disabled="!featuresDirty || Boolean(dependencyIssues.length)" @click="saveFeaturesOnly">保存并应用</el-button></template>
+      </el-drawer>
     </section>
   </section>
 </template>
 
 <style scoped>
-.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1500px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
+.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}
+.feature-settings-band{width:100%;min-width:0}.feature-heading{align-items:flex-start}.feature-context{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:8px;color:var(--nc-text-secondary);font-size:13px}.feature-context strong{color:var(--nc-text-primary);font-weight:600}.feature-filters{display:grid;grid-template-columns:minmax(260px,1fr) 220px auto;align-items:center;gap:12px;margin:16px 0}.feature-groups{border-top:1px solid var(--el-border-color-light)}.feature-group-title{margin-right:10px;font-weight:600}.feature-id-cell,.feature-status-tags{display:flex;align-items:center;gap:6px}.feature-id-cell{min-width:0;justify-content:flex-start}.feature-id-cell code{max-width:calc(100% - 32px);overflow:hidden;color:var(--nc-text-secondary);font-family:Consolas,"Courier New",monospace;text-overflow:ellipsis;white-space:nowrap}.feature-status-tags{flex-wrap:wrap;justify-content:center}.feature-preview-content{display:flex;flex-direction:column;gap:18px}.feature-preview-content section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-light)}.feature-preview-content h3{margin:0 0 10px;font-size:15px}.feature-preview-content p{margin:0;color:var(--nc-text-secondary)}.feature-preview-content ul{display:flex;flex-direction:column;gap:8px;margin:0;padding-left:20px}.feature-preview-content li span{display:block;margin-top:3px;color:var(--nc-text-secondary);font-size:13px}
+@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid,.feature-filters{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}.feature-filters .el-switch{justify-self:start}}
 </style>

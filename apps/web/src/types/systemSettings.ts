@@ -30,13 +30,30 @@ export interface SystemSettingsSnapshot {
 export interface FeatureSetting {
   feature_id: string
   title: string
+  group_id: string
+  group_title: string
+  scope: 'global'
   visible: boolean
   enabled: boolean
+  inherited_visible: boolean
+  inherited_enabled: boolean
   client_package: boolean
   internal_only: boolean
+  package_range: 'customer_internal' | 'internal' | 'internal_only' | 'not_included'
+  status: 'ENABLED' | 'DISABLED' | 'DEVELOPMENT' | 'HIDDEN'
+  dependencies: string[]
+  locked: boolean
+  lock_reason: string
+  overridden: boolean
 }
 
-export interface FeatureSettingsSnapshot { items: FeatureSetting[]; preview_active: boolean }
+export interface FeatureSettingsSnapshot {
+  items: FeatureSetting[]
+  preview_active: boolean
+  configuration_name: string
+  scope_label: string
+  inherited_profile: string
+}
 
 export interface RuntimeSelfCheckItem {
   check_id: string

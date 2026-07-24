@@ -26,6 +26,9 @@ class FeatureItem:
     internal_only: bool = False
     description_key: str | None = None
     status: FeatureStatus = FeatureStatus.ENABLED
+    scope: str = "global"
+    dependencies: tuple[str, ...] = ()
+    runtime_toggleable: bool = True
 
 
 FEATURES: tuple[FeatureItem, ...] = (
@@ -38,8 +41,21 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.command_reference", "nav.command_reference", None, "module"),
     FeatureItem("module.logs", "nav.logs", None, "module"),
     FeatureItem("module.system_settings", "nav.system_settings", None, "module"),
-    FeatureItem("module.feature_switch", "system.feature_flags", None, "module", internal_only=True),
-    FeatureItem("web.agent_management", "Agent 管理", None, "page"),
+    FeatureItem(
+        "module.feature_switch",
+        "system.feature_flags",
+        None,
+        "module",
+        internal_only=True,
+        runtime_toggleable=False,
+    ),
+    FeatureItem(
+        "web.agent_management",
+        "Agent 管理",
+        None,
+        "page",
+        dependencies=("web.job_center",),
+    ),
     FeatureItem("web.job_center", "任务中心", None, "page"),
     FeatureItem("web.device_management", "设备管理（Web）", "module.devices", "page"),
     FeatureItem("web.device_connection_test", "设备连接测试（Web）", "web.device_management", "action"),
@@ -49,8 +65,20 @@ FEATURES: tuple[FeatureItem, ...] = (
         "web.device_management",
         "action",
     ),
-    FeatureItem("web.device_management_write", "设备管理写操作（Web）", "web.device_management", "action"),
-    FeatureItem("web.device_management_collect", "设备采集与诊断（Web）", "web.device_management", "action"),
+    FeatureItem(
+        "web.device_management_write",
+        "设备管理写操作（Web）",
+        "web.device_management",
+        "action",
+        dependencies=("web.device_management",),
+    ),
+    FeatureItem(
+        "web.device_management_collect",
+        "设备采集与诊断（Web）",
+        "web.device_management",
+        "action",
+        dependencies=("web.device_management", "web.job_center"),
+    ),
     FeatureItem("web.device_management_import", "设备导入（Web）", "web.device_management", "action"),
     FeatureItem("web.device_management_export", "设备导出（Web）", "web.device_management", "action"),
     FeatureItem("web.device_management_desktop", "设备桌面联动（Web）", "web.device_management", "action"),
@@ -140,13 +168,25 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.analysis_fping_1s", "online_mr.fping_1s_summary", "rail.online_mr_analysis", "tab"),
     FeatureItem("online_mr.collection_notes", "online_mr.collection_note", "rail.online_mr_collection", "action"),
     FeatureItem("online_mr.agent_packages", "online_mr.agent_packages.entry", "rail.online_mr_collection", "action"),
-    FeatureItem("web.online_mr_realtime", "车载 MR 实时展示", "rail.online_mr_collection", "page"),
+    FeatureItem(
+        "web.online_mr_realtime",
+        "车载 MR 实时展示",
+        "rail.online_mr_collection",
+        "page",
+        dependencies=("web.job_center", "web.rail_transit_base_data"),
+    ),
     FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_analysis", "action"),
     FeatureItem("web.online_mr_parse", "Online MR 会话解析（Web）", "web.online_mr_analysis", "action"),
     FeatureItem("web.online_mr_session_open_location", "打开 Online MR 会话本地位置", "web.online_mr_analysis", "action"),
     FeatureItem("web.online_mr_session_delete", "删除 Online MR 历史会话", "web.online_mr_analysis", "action"),
     FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
-    FeatureItem("web.train_communication_monitoring", "车内通信检测", "module.rail_transit", "page"),
+    FeatureItem(
+        "web.train_communication_monitoring",
+        "车内通信检测",
+        "module.rail_transit",
+        "page",
+        dependencies=("web.rail_transit_base_data", "web.job_center"),
+    ),
     FeatureItem(
         "web.online_mr_local_control",
         "Web 本地 Online MR 受控启停",
@@ -233,7 +273,14 @@ FEATURES: tuple[FeatureItem, ...] = (
         "module.system_settings",
         "action",
     ),
-    FeatureItem("system.feature_flags", "system.feature_flags", "module.feature_switch", "page", internal_only=True),
+    FeatureItem(
+        "system.feature_flags",
+        "system.feature_flags",
+        "module.feature_switch",
+        "page",
+        internal_only=True,
+        runtime_toggleable=False,
+    ),
     FeatureItem(
         "web.command_reference",
         "命令说明（Web）",
@@ -263,10 +310,21 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         internal_only=True,
         status=FeatureStatus.DEVELOPMENT,
+        runtime_toggleable=False,
     ),
 )
 
 FEATURE_BY_ID = {item.feature_id: item for item in FEATURES}
+
+FEATURE_GROUPS = (
+    ("foundation", "基础能力"),
+    ("tasks", "任务与 Agent"),
+    ("devices", "设备与 AC"),
+    ("configuration", "配置与文件"),
+    ("rail_transit", "轨道交通"),
+    ("internal", "内部与实验功能"),
+)
+FEATURE_GROUP_TITLE_BY_ID = dict(FEATURE_GROUPS)
 
 PAGE_FEATURE_BY_PAGE_ID = {
     "devices": "module.devices",
@@ -289,6 +347,37 @@ def get_feature(feature_id: str) -> FeatureItem:
         return FEATURE_BY_ID[feature_id]
     except KeyError as exc:
         raise KeyError(f"Unknown feature id: {feature_id}") from exc
+
+
+def dependencies_of(feature_id: str) -> tuple[str, ...]:
+    item = get_feature(feature_id)
+    values = [item.parent_id, *item.dependencies]
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def group_id_of(feature_id: str) -> str:
+    item = get_feature(feature_id)
+    if item.internal_only or item.status in {FeatureStatus.DEVELOPMENT, FeatureStatus.HIDDEN}:
+        return "internal"
+    lineage = {item.feature_id}
+    parent_id = item.parent_id
+    while parent_id and parent_id not in lineage:
+        lineage.add(parent_id)
+        parent = FEATURE_BY_ID.get(parent_id)
+        parent_id = parent.parent_id if parent else None
+    if lineage & {"web.agent_management", "web.job_center"}:
+        return "tasks"
+    if "module.rail_transit" in lineage or any(
+        value.startswith(("rail.", "online_mr.", "mesh.")) for value in lineage
+    ):
+        return "rail_transit"
+    if lineage & {"module.config_collection", "module.file_management"}:
+        return "configuration"
+    if lineage & {"module.devices", "module.ac"} or any(
+        value.startswith(("devices.", "ac.")) for value in lineage
+    ):
+        return "devices"
+    return "foundation"
 
 
 def list_features() -> tuple[FeatureItem, ...]:

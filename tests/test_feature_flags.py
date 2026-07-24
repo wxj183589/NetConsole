@@ -14,7 +14,9 @@ from netconsole.core.feature_flags import (
     engineer_package_enabled,
     install_runtime_feature_files,
     load_profile,
+    normalize_feature_state,
     save_profile,
+    validate_feature_states,
 )
 from netconsole.core.feature_registry import FEATURE_BY_ID, REMOVED_FEATURE_IDS, FeatureStatus, list_features
 from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
@@ -441,7 +443,7 @@ def test_load_profile_keeps_saved_customer_flags(tmp_path: Path) -> None:
 
     features = load_profile(profile_path, "customer")
 
-    assert features["module.network_tools"] == {"visible": False, "enabled": False, "client_package": False, "internal_only": False}
+    assert features["module.network_tools"] == {"visible": False, "enabled": False, "client_package": True, "internal_only": False}
     assert features["module.system_settings"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert features["module.feature_switch"] == PROTECTED_INTERNAL_STATE
     assert features["system.feature_flags"] == PROTECTED_INTERNAL_STATE
@@ -488,6 +490,55 @@ def test_customer_effective_state_cascades_parent_flags(tmp_path: Path) -> None:
     assert not gate.is_visible("online_mr.advanced_ping")
     assert not gate.is_enabled("online_mr.advanced_ping")
     assert not gate.is_in_client_package("online_mr.advanced_ping")
+
+
+def test_hidden_runtime_entry_stays_enabled_and_keeps_release_metadata(tmp_path: Path) -> None:
+    state = normalize_feature_state(
+        FEATURE_BY_ID["web.device_management"],
+        {
+            "visible": False,
+            "enabled": True,
+            "client_package": True,
+            "internal_only": False,
+        },
+    )
+
+    assert state == {
+        "visible": False,
+        "enabled": True,
+        "client_package": True,
+        "internal_only": False,
+    }
+    features = default_profile("full")["features"]
+    features["web.device_management"] = state
+    assert validate_feature_states(features) == ""
+
+
+def test_disabled_dependency_makes_dependent_feature_unavailable(tmp_path: Path) -> None:
+    write_runtime(
+        tmp_path,
+        "internal",
+        "full",
+        {
+            "web.job_center": {
+                "visible": False,
+                "enabled": False,
+                "client_package": True,
+                "internal_only": False,
+            },
+            "web.agent_management": {
+                "visible": True,
+                "enabled": True,
+                "client_package": True,
+                "internal_only": False,
+            },
+        },
+    )
+
+    gate = FeatureGate(tmp_path)
+
+    assert not gate.is_enabled("web.agent_management")
+    assert not gate.is_visible("web.agent_management")
 
 
 def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) -> None:

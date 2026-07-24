@@ -45,7 +45,18 @@ function snapshot(): SystemSettingsSnapshot {
   return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\\data\\sites\\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
 }
 
-const featureData = { items: [{ feature_id: 'web.agent_management', title: 'Agent', visible: true, enabled: true, client_package: true, internal_only: false }], preview_active: false }
+const featureData = {
+  items: [{
+    feature_id: 'web.agent_management', title: 'Agent 管理', group_id: 'tasks', group_title: '任务与 Agent', scope: 'global' as const,
+    visible: true, enabled: true, inherited_visible: true, inherited_enabled: true,
+    client_package: true, internal_only: false, package_range: 'customer_internal' as const, status: 'ENABLED' as const,
+    dependencies: [], locked: false, lock_reason: '', overridden: false,
+  }],
+  preview_active: false,
+  configuration_name: '当前实例运行配置',
+  scope_label: '全局',
+  inherited_profile: 'full',
+}
 const featureSnapshot = () => ({ ...featureData, items: featureData.items.map((item) => ({ ...item })) })
 const selfCheckSnapshot = () => ({
   status: 'normal' as const,
@@ -99,6 +110,12 @@ async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<type
 async function change(wrapper: VueWrapper, id: string, value: string): Promise<void> {
   const control = wrapper.findComponent(`[data-testid="${id}"]`) as VueWrapper
   control.vm.$emit('update:modelValue', value); control.vm.$emit('change', value); await nextTick()
+}
+
+async function changeFeatureMode(wrapper: VueWrapper, value: 'enabled_visible' | 'enabled_hidden' | 'disabled'): Promise<void> {
+  const control = wrapper.findComponent('[data-testid="feature-mode-web.agent_management"]') as VueWrapper
+  control.vm.$emit('change', value)
+  await nextTick()
 }
 
 beforeEach(() => {
@@ -226,21 +243,22 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('requires confirmation before feature preview and applies the real preview response', async () => {
+  it('shows a non-mutating change preview with read-only release metadata', async () => {
     const { wrapper } = await mounted()
-    confirmAction.mockResolvedValueOnce(true)
-    vi.mocked(api.previewFeatureSettings).mockResolvedValueOnce({ ...featureData, preview_active: true })
+    await changeFeatureMode(wrapper, 'enabled_hidden')
     await wrapper.find('[data-testid="preview-features"]').trigger('click'); await flushPromises()
-    expect(api.previewFeatureSettings).toHaveBeenCalledWith(featureData.items)
-    expect(wrapper.text()).toContain('客户配置预览中')
+    expect(api.previewFeatureSettings).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('变更预览')
+    expect(wrapper.text()).toContain('显示并启用 → 隐藏入口')
+    expect(wrapper.text()).toContain('客户包、内部包')
+    expect(wrapper.find('[data-testid="feature-visible-web.agent_management"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
   it('does not persist either stage when combined changes are not confirmed', async () => {
     const { wrapper } = await mounted()
     await change(wrapper, 'theme', 'dark')
-    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
-    feature.vm.$emit('update:modelValue', false); await nextTick()
+    await changeFeatureMode(wrapper, 'disabled')
     confirmAction.mockResolvedValueOnce(false)
 
     await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
@@ -253,8 +271,7 @@ describe('SystemSettingsView mounted behavior', () => {
   it('does not save normal settings when the feature stage fails', async () => {
     const { wrapper } = await mounted()
     await change(wrapper, 'theme', 'dark')
-    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
-    feature.vm.$emit('update:modelValue', false); await nextTick()
+    await changeFeatureMode(wrapper, 'disabled')
     confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockRejectedValueOnce(new Error('profile write failed'))
 
@@ -269,8 +286,7 @@ describe('SystemSettingsView mounted behavior', () => {
   it('refreshes the effective feature gate and reports a later settings failure as partial success', async () => {
     const { wrapper } = await mounted()
     await change(wrapper, 'theme', 'dark')
-    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
-    feature.vm.$emit('update:modelValue', false); await nextTick()
+    await changeFeatureMode(wrapper, 'disabled')
     confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
     vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('settings conflict'))
@@ -286,8 +302,7 @@ describe('SystemSettingsView mounted behavior', () => {
   it('stops before settings save and reports the exact stage when Gate refresh fails', async () => {
     const { wrapper } = await mounted()
     await change(wrapper, 'theme', 'dark')
-    const feature = wrapper.findComponent('[data-testid="feature-visible-web.agent_management"]') as VueWrapper
-    feature.vm.$emit('update:modelValue', false); await nextTick()
+    await changeFeatureMode(wrapper, 'disabled')
     confirmAction.mockResolvedValueOnce(true)
     vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
     vi.mocked(loadWebFeatures).mockRejectedValueOnce(new Error('gate refresh failed'))

@@ -107,6 +107,11 @@ def preview_feature_settings(request: Request, payload: FeatureSettingsUpdateDTO
     return _call(lambda: _service(request).preview_features(payload))
 
 
+@router.post("/features/preview/exit", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
+def exit_feature_preview(request: Request) -> FeatureSettingsSnapshotDTO:
+    return _call(_service(request).exit_feature_preview)
+
+
 @router.post("/features/restore", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
 def restore_feature_settings(request: Request, payload: ConfirmedAction) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).restore_features(confirmed=payload.confirmed))

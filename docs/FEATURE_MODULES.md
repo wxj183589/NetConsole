@@ -34,7 +34,7 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 `module.snmp_center` 与 `module.wifi_survey` 已从 Registry、profile、入口、业务代码和资源中删除，并进入 `REMOVED_FEATURE_IDS` 防御集合。历史 profile 即使仍携带这两个 key，也必须被忽略且不能重新启用。设备管理 SNMP v1/v2c 和网络工具无线扫描分别属于现有模块，不得借此恢复已删除平台。
 
-状态语义：`ENABLED` 进入正常 Gate/profile 判定；`DISABLED` 强制隐藏、禁用且不进入客户包，任何 profile 不能重开；`DEVELOPMENT` 只允许源码开发环境；`HIDDEN` 保留登记但不提供用户入口。
+状态语义：`ENABLED` 进入正常 Gate/profile 判定；`DISABLED` 强制隐藏、禁用且不进入客户包，任何 profile 不能重开；`DEVELOPMENT` 只允许源码开发环境；`HIDDEN` 保留登记但不提供用户入口。运行时的 `enabled/visible` 与 Registry 状态不同：`enabled=true, visible=false` 表示能力仍可被依赖和调用但不生成导航入口；`enabled=false` 必须同时 `visible=false`，前端路由、后端 API 和任务入口均按统一 Gate 拒绝新访问。
 
 ## 4. 新功能登记流程
 
@@ -52,7 +52,11 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 构建配置可按 internal/customer/engineer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。客户 profile 的 `build_options.engineer_package` 只决定 `both` 是否附加工程师包，不是运行时功能开关。不得在页面用 edition 名称硬编码同一能力的第二套开关。
 
-`client_package` 只表示构建选择或发布元数据。源码开发态的 customer 预览可继续据此模拟客户集合；正式包运行时不得再因为 `client_package=false` 自动关闭稳定业务能力，是否可见和可执行最终由打包基线、Registry 状态及正式包策略共同决定。
+`client_package/internal_only` 只表示构建选择或发布元数据。源码开发态的功能开关页面将其合并为只读“发布范围”标签，更新 DTO 不接受这两个字段；页面保存只写应用数据根 `runtime/feature_flags.local.json` 中的 `visible/enabled` 覆盖，不再修改 `config/profiles/features/customer.json`。覆盖文件使用文件锁与原子替换，恢复默认写回空覆盖集合，发布 profile 和构建选项保持不变。正式包继续忽略该本地覆盖并固定拒绝配置 API。
+
+当前运行时配置作用域只有“全局”。页面显示当前配置、作用范围和继承 profile，并按基础能力、任务与 Agent、设备与 AC、配置与文件、轨道交通、内部与实验功能分组；搜索、仅显示已修改、三状态选择器和右侧变更预览均为 Renderer 展示/轻量联动。独立发布配置管理页、局点/用户覆盖、运行中任务阻断和批量更新尚未实现，不能从当前页面状态推断这些能力已经存在。
+
+Registry 的 `parent_id + dependencies` 共同组成运行时依赖。当前显式补充了 Agent 管理对任务中心、设备采集与诊断对设备管理/任务中心、车载 MR 实时展示对任务中心/轨道交通基础资料、车内通信检测对轨道交通基础资料/任务中心的依赖。Gate 在读取时递归收敛有效状态，保存前拒绝依赖不完整配置；页面启用子功能或禁用依赖时会确认并明确列出联动项。
 
 ## 6. AP Identity 特例
 

@@ -19,6 +19,17 @@ from netconsole.services.external_tool_service import ExternalToolLaunchResult
 TOKEN = "settings-test-session-token-123456"
 
 
+def _runtime_updates(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "feature_id": item["feature_id"],
+            "visible": item["visible"],
+            "enabled": item["enabled"],
+        }
+        for item in items
+    ]
+
+
 def _client(tmp_path: Path) -> tuple[TestClient, PathResolver]:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
     app = create_app(RuntimeMode.DESKTOP, paths=paths, desktop_session_token=TOKEN)
@@ -217,15 +228,10 @@ def test_feature_switch_preview_and_restore_use_real_gate(tmp_path: Path) -> Non
     items = snapshot.json()["items"]
     target = next(item for item in items if item["feature_id"] == "web.agent_management")
     target.update({"visible": False, "enabled": False, "client_package": False})
-    settings_target = next(
-        item for item in items if item["feature_id"] == "web.system_settings"
-    )
-    settings_target.update(
-        {"visible": False, "enabled": False, "client_package": False}
-    )
 
-    assert client.post("/api/settings/features/preview", json={"items": items, "confirmed": False}).status_code == 422
-    preview = client.post("/api/settings/features/preview", json={"items": items, "confirmed": True})
+    updates = _runtime_updates(items)
+    assert client.post("/api/settings/features/preview", json={"items": updates, "confirmed": False}).status_code == 422
+    preview = client.post("/api/settings/features/preview", json={"items": updates, "confirmed": True})
     assert preview.status_code == 200
     effective = client.get("/api/features").json()["items"]
     assert next(item for item in effective if item["feature_id"] == "web.agent_management")["visible"] is False
@@ -234,13 +240,15 @@ def test_feature_switch_preview_and_restore_use_real_gate(tmp_path: Path) -> Non
     assert restored.status_code == 200
     assert restored.json()["preview_active"] is False
     customer_profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    restored_target = customer_profile["features"]["web.agent_management"]
-    assert restored_target["visible"] is True
-    assert restored_target["enabled"] is True
+    assert customer_profile["features"] == {}
     assert customer_profile["build_options"] == {"engineer_package": True}
+    runtime_override = json.loads(
+        (paths.runtime_dir / "feature_flags.local.json").read_text(encoding="utf-8")
+    )
+    assert runtime_override["features"] == {}
 
 
-def test_feature_save_reloads_effective_gate_without_applying_build_profile(
+def test_feature_save_reloads_effective_gate_from_runtime_override(
     tmp_path: Path, monkeypatch
 ) -> None:
     client, _paths = _client(tmp_path)
@@ -268,24 +276,52 @@ def test_feature_save_reloads_effective_gate_without_applying_build_profile(
     target = next(
         item for item in snapshot["items"] if item["feature_id"] == "web.agent_management"
     )
-    target.update({"visible": False, "enabled": False, "client_package": False})
+    assert target["group_title"] == "任务与 Agent"
+    assert target["scope"] == "global"
+    assert target["dependencies"] == ["web.job_center"]
+    target.update({"visible": False, "enabled": True, "client_package": False})
 
     saved = client.put(
         "/api/settings/features",
-        json={"items": snapshot["items"], "confirmed": True},
+        json={"items": _runtime_updates(snapshot["items"]), "confirmed": True},
     )
 
     assert saved.status_code == 200
     assert reload_count == 1
+    saved_target = next(
+        item for item in saved.json()["items"] if item["feature_id"] == "web.agent_management"
+    )
+    assert saved_target["client_package"] is True
+    assert saved_target["package_range"] == "customer_internal"
     effective = client.get("/api/features").json()["items"]
     effective_target = next(
         item for item in effective if item["feature_id"] == "web.agent_management"
     )
     assert effective_target == {
         "feature_id": "web.agent_management",
-        "visible": True,
+        "visible": False,
         "enabled": True,
     }
+    runtime_override = json.loads(
+        (_paths.runtime_dir / "feature_flags.local.json").read_text(encoding="utf-8")
+    )
+    assert runtime_override["features"]["web.agent_management"] == {
+        "visible": False,
+        "enabled": True,
+    }
+
+
+def test_feature_update_rejects_release_fields(tmp_path: Path) -> None:
+    client, _paths = _client(tmp_path)
+    snapshot = client.get("/api/settings/features").json()
+
+    response = client.put(
+        "/api/settings/features",
+        json={"items": snapshot["items"], "confirmed": True},
+    )
+
+    assert response.status_code == 422
+    assert "client_package" in response.text
 
 
 def test_feature_title_uses_readable_fallback_when_translation_is_missing(

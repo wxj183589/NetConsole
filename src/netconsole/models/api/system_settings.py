@@ -60,19 +60,39 @@ class SystemSettingsSnapshotDTO(ApiModel):
 class FeatureStateDTO(ApiModel):
     feature_id: str
     title: str
+    group_id: str
+    group_title: str
+    scope: Literal["global"] = "global"
     visible: bool
     enabled: bool
+    inherited_visible: bool
+    inherited_enabled: bool
     client_package: bool
     internal_only: bool
+    package_range: Literal["customer_internal", "internal", "internal_only", "not_included"]
+    status: Literal["ENABLED", "DISABLED", "DEVELOPMENT", "HIDDEN"]
+    dependencies: list[str] = Field(default_factory=list)
+    locked: bool = False
+    lock_reason: str = ""
+    overridden: bool = False
 
 
 class FeatureSettingsSnapshotDTO(ApiModel):
     items: list[FeatureStateDTO]
     preview_active: bool
+    configuration_name: str = "当前实例运行配置"
+    scope_label: str = "全局"
+    inherited_profile: str
+
+
+class FeatureStateUpdateDTO(ApiModel):
+    feature_id: str
+    visible: bool
+    enabled: bool
 
 
 class FeatureSettingsUpdateDTO(ApiModel):
-    items: list[FeatureStateDTO]
+    items: list[FeatureStateUpdateDTO]
     confirmed: bool
 
 
@@ -100,7 +120,7 @@ def _path_text(value: str) -> str:
 
 
 __all__ = [
-    "FeatureSettingsSnapshotDTO", "FeatureSettingsUpdateDTO", "FeatureStateDTO",
+    "FeatureSettingsSnapshotDTO", "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
     "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",
     "SystemSettingsSaveDTO", "SystemSettingsSnapshotDTO", "SystemSettingsValuesDTO",
 ]

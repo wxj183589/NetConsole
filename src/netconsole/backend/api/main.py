@@ -220,7 +220,7 @@ def create_app(
                 },
             ),
         )
-    feature_gate = FeatureGate(paths.app_root)
+    feature_gate = FeatureGate(paths.app_root, runtime_path=paths.runtime_dir)
     web_process_adapter = LocalProcessAdapter(task_service)
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)

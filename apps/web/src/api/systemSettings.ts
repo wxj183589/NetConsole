@@ -8,8 +8,10 @@ export const saveSystemSettings = (values: SystemSettingsValues, expectedVersion
 export const getFeatureSettings = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features')
 export const saveFeatureSettings = (items: FeatureSetting[]) => featureRequest('/api/settings/features', items, 'PUT')
 export const previewFeatureSettings = (items: FeatureSetting[]) => featureRequest('/api/settings/features/preview', items, 'POST')
+export const exitFeatureSettingsPreview = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/preview/exit', { method: 'POST' })
 export const restoreFeatureSettings = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/restore', { method: 'POST', body: JSON.stringify({ confirmed: true }) })
 
 function featureRequest(path: string, items: FeatureSetting[], method: 'PUT' | 'POST') {
-  return apiRequest<FeatureSettingsSnapshot>(path, { method, body: JSON.stringify({ items, confirmed: true }) })
+  const updates = items.map(({ feature_id, visible, enabled }) => ({ feature_id, visible, enabled }))
+  return apiRequest<FeatureSettingsSnapshot>(path, { method, body: JSON.stringify({ items: updates, confirmed: true }) })
 }
