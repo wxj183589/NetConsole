@@ -57,6 +57,8 @@ interface BaseDataDraft {
     main_path_code: string
     increasing_direction_name: string
     decreasing_direction_name: string
+    increasing_direction_line_side: string
+    decreasing_direction_line_side: string
     increasing_direction_leading_end: 'car_1_end' | 'car_6_end' | 'unknown'
     station_source_group_name: string
     station_source_field: string
@@ -552,6 +554,8 @@ function captureBaselines(): void {
       main_path_code: store.summary?.main_path_code || 'MAIN',
       increasing_direction_name: store.summary?.increasing_direction_name || '上行',
       decreasing_direction_name: store.summary?.decreasing_direction_name || '下行',
+      increasing_direction_line_side: store.summary?.increasing_direction_line_side || '右线',
+      decreasing_direction_line_side: store.summary?.decreasing_direction_line_side || '左线',
       increasing_direction_leading_end: store.summary?.increasing_direction_leading_end || 'unknown',
       station_source_group_name: store.summary?.station_source_group_name || '车站',
       station_source_field: store.summary?.station_source_field || 'station',
@@ -580,6 +584,20 @@ function handlePlanningChange(rows: TracksideApPlanRow[], changed: boolean): voi
 function markMetadata(): void {
   if (!editingDraft.value || locked.value) return
   recordChange('site_metadata', 'current', metadataValues(editingDraft.value.metadata))
+}
+
+function handleLineSideMappingChange(): void {
+  if (!editingDraft.value || locked.value) return
+  markMetadata()
+  for (const section of editingDraft.value.sections) {
+    if (section.manual_override_fields?.includes('line_side')) continue
+    const expected = sectionLineSide(section)
+    if (expected && section.line_side !== expected) {
+      section.line_side = expected
+      markSection(section)
+    }
+  }
+  syncAllAutomaticApLineSides()
 }
 
 function markStation(row: Station): void { recordChange('station', row.id, stationValues(row)) }
@@ -736,7 +754,7 @@ function addAp(): void {
   editingDraft.value.aps.push(row); markAp(row)
 }
 function newTracksideAp(): TracksideAp {
-  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
+  return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', mac: '', management_ip: '', model: '', station: '', section: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
 function addMr(): void {
   if (!editingDraft.value) return
@@ -845,6 +863,8 @@ function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unk
     main_path_code: metadata.main_path_code,
     increasing_direction_name: metadata.increasing_direction_name,
     decreasing_direction_name: metadata.decreasing_direction_name,
+    increasing_direction_line_side: metadata.increasing_direction_line_side,
+    decreasing_direction_line_side: metadata.decreasing_direction_line_side,
     increasing_direction_leading_end: metadata.increasing_direction_leading_end,
     station_source_group_name: metadata.station_source_group_name,
     station_source_field: 'station',
@@ -926,11 +946,78 @@ function handleSectionNodeChange(row: Section, endpoint: 'start' | 'end', value:
 }
 function handleSectionDirectionChange(row: Section, direction: string): void {
   row.line_direction = direction
-  row.line_side = direction
   const increasing = editingDraft.value?.metadata.increasing_direction_name || store.summary?.increasing_direction_name || '上行'
   const decreasing = editingDraft.value?.metadata.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'
   row.direction_role = direction === increasing ? 'increasing' : direction === decreasing ? 'decreasing' : 'none'
+  row.line_side = sectionLineSide(row)
   markSectionField(row, 'line_direction', 'line_side', 'direction_role')
+  syncAutomaticApsForSection(row)
+}
+
+function sectionLineSide(section: Section): string {
+  const metadata = editingDraft.value?.metadata
+  const increasingName = metadata?.increasing_direction_name || store.summary?.increasing_direction_name || '上行'
+  const decreasingName = metadata?.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行'
+  if (section.direction_role === 'increasing' || section.line_direction === increasingName) {
+    return metadata?.increasing_direction_line_side || store.summary?.increasing_direction_line_side || '右线'
+  }
+  if (section.direction_role === 'decreasing' || section.line_direction === decreasingName) {
+    return metadata?.decreasing_direction_line_side || store.summary?.decreasing_direction_line_side || '左线'
+  }
+  return ''
+}
+
+function matchesApSection(row: TracksideAp, section: Section): boolean {
+  const metadata = row.base_metadata || {}
+  return row.section === section.name
+    || Boolean(section.section_code && metadata.section_code === section.section_code)
+    || Boolean(section.generation_key && metadata.section_generation_key === section.generation_key)
+    || Boolean(section.id && metadata.section_id === section.id)
+}
+
+function syncAutomaticApLineSide(row: TracksideAp): boolean {
+  if (!editingDraft.value) return false
+  const section = editingDraft.value.sections.find((item) => matchesApSection(row, item))
+  if (!section) return false
+  const expected = sectionLineSide(section)
+  if (!expected) return false
+  const source = String(row.base_metadata?.line_side_source || (row.line_side ? 'legacy' : 'unavailable'))
+  if (row.line_side && source !== 'section_direction' && source !== 'unavailable') return false
+  const before = JSON.stringify(apValues(row))
+  row.line_side = expected
+  row.line_side_source = 'section_direction'
+  row.line_side_derivation_issue_code = ''
+  row.line_side_derivation_issue_message = ''
+  row.section = section.name
+  row.section_start_station = section.start_station
+  row.section_end_station = section.end_station
+  row.base_metadata = {
+    ...row.base_metadata,
+    line_side_source: 'section_direction',
+    section_id: section.id,
+    section_name: section.name,
+    section_code: section.section_code,
+    section_generation_key: section.generation_key,
+  }
+  if (before === JSON.stringify(apValues(row))) return false
+  markAp(row)
+  return true
+}
+
+function syncAutomaticApsForSection(section: Section): void {
+  if (!editingDraft.value) return
+  for (const row of editingDraft.value.aps) {
+    if (matchesApSection(row, section)) syncAutomaticApLineSide(row)
+  }
+}
+
+function syncAllAutomaticApLineSides(): void {
+  if (!editingDraft.value) return
+  for (const row of editingDraft.value.aps) syncAutomaticApLineSide(row)
+}
+
+function handleApSectionChange(row: TracksideAp): void {
+  if (!syncAutomaticApLineSide(row)) markAp(row)
 }
 
 async function openStationSourcePreview(): Promise<void> {
@@ -1234,10 +1321,12 @@ function applyStationTemplateToDraft(): void {
   editingDraft.value.metadata.main_path_code = String(metadata.main_path_code || editingDraft.value.metadata.main_path_code)
   editingDraft.value.metadata.increasing_direction_name = String(metadata.increasing_direction_name || editingDraft.value.metadata.increasing_direction_name)
   editingDraft.value.metadata.decreasing_direction_name = String(metadata.decreasing_direction_name || editingDraft.value.metadata.decreasing_direction_name)
+  editingDraft.value.metadata.increasing_direction_line_side = String(metadata.increasing_direction_line_side || editingDraft.value.metadata.increasing_direction_line_side)
+  editingDraft.value.metadata.decreasing_direction_line_side = String(metadata.decreasing_direction_line_side || editingDraft.value.metadata.decreasing_direction_line_side)
   editingDraft.value.metadata.station_source_group_name = String(metadata.station_source_group_name || editingDraft.value.metadata.station_source_group_name)
   editingDraft.value.metadata.station_source_field = 'station'
   editingDraft.value.metadata.remark = String(metadata.remark || editingDraft.value.metadata.remark)
-  markMetadata()
+  handleLineSideMappingChange()
   stationTemplateDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 行模板预览到当前草稿，保存后才会写入数据库`)
 }
@@ -1252,6 +1341,8 @@ async function openSectionGenerationPreview(): Promise<void> {
         main_path_code: metadata?.main_path_code || store.summary?.main_path_code || 'MAIN',
         increasing_direction_name: metadata?.increasing_direction_name || store.summary?.increasing_direction_name || '上行',
         decreasing_direction_name: metadata?.decreasing_direction_name || store.summary?.decreasing_direction_name || '下行',
+        increasing_direction_line_side: metadata?.increasing_direction_line_side || store.summary?.increasing_direction_line_side || '右线',
+        decreasing_direction_line_side: metadata?.decreasing_direction_line_side || store.summary?.decreasing_direction_line_side || '左线',
       },
       cloneDto(stations),
       cloneDto(sections),
@@ -1339,6 +1430,7 @@ function applySectionGenerationToDraft(): void {
     applied += 1
   }
   pendingChanges.value = { ...pendingChanges.value }
+  syncAllAutomaticApLineSides()
   updateEditState()
   sectionGenerationDialogVisible.value = false
   ElMessage.success(`已应用 ${applied} 项区间生成结果到当前草稿，保存后才会写入数据库`)
@@ -1794,6 +1886,34 @@ function sectionSourceLabel(row: Section): string {
               />
               <span v-else>{{ store.summary?.decreasing_direction_name || '下行' }}</span>
             </el-descriptions-item>
+            <el-descriptions-item label="递增方向线路侧">
+              <el-select
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.increasing_direction_line_side"
+                filterable
+                allow-create
+                default-first-option
+                @change="handleLineSideMappingChange"
+              >
+                <el-option label="右线" value="右线" />
+                <el-option label="左线" value="左线" />
+              </el-select>
+              <span v-else>{{ store.summary?.increasing_direction_line_side || '右线' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="递减方向线路侧">
+              <el-select
+                v-if="editing && editingDraft"
+                v-model="editingDraft.metadata.decreasing_direction_line_side"
+                filterable
+                allow-create
+                default-first-option
+                @change="handleLineSideMappingChange"
+              >
+                <el-option label="左线" value="左线" />
+                <el-option label="右线" value="右线" />
+              </el-select>
+              <span v-else>{{ store.summary?.decreasing_direction_line_side || '左线' }}</span>
+            </el-descriptions-item>
             <el-descriptions-item label="站序递增时的行驶头端">
               <el-select
                 v-if="editing && editingDraft"
@@ -2006,7 +2126,7 @@ function sectionSourceLabel(row: Section): string {
             <template #cell-point_code="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.point_code" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'point_code') }" @input="markAp(row)" /><span v-else>{{ display(row.point_code) }}</span></template>
             <template #cell-mac="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mac" :class="{ 'field-error': fieldError('trackside_ap', row.id, 'mac') }" @input="markAp(row)" /><span v-else>{{ display(row.mac) }}</span></template>
             <template #cell-station="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.station" @input="markAp(row)" /><span v-else>{{ display(row.station) }}</span></template>
-            <template #cell-section="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.section" @input="markAp(row)" /><span v-else>{{ display(row.section) }}</span></template>
+            <template #cell-section="{ row }"><el-select v-if="canEditRow('trackside_ap', row.id)" v-model="row.section" filterable allow-create default-first-option @change="handleApSectionChange(row)"><el-option v-for="section in sectionRows" :key="section.id" :label="section.name" :value="section.name" /></el-select><span v-else>{{ display(row.section) }}</span></template>
             <template #cell-mileage="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.mileage.raw" @input="markAp(row)" /><span v-else>{{ row.mileage.normalized || row.mileage.raw || '--' }}</span></template>
             <template #cell-direction="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.direction" @input="markAp(row)" /><span v-else>{{ display(row.direction) }}</span></template>
             <template #cell-remark="{ row }"><el-input v-if="canEditRow('trackside_ap', row.id)" v-model="row.remark" @input="markAp(row)" /><span v-else>{{ display(row.remark) }}</span></template>
@@ -2254,6 +2374,8 @@ function sectionSourceLabel(row: Section): string {
           <el-descriptions-item label="主线路径">{{ display(store.stationTemplatePreview.line_metadata.main_path_code) }}</el-descriptions-item>
           <el-descriptions-item label="递增方向">{{ display(store.stationTemplatePreview.line_metadata.increasing_direction_name) }}</el-descriptions-item>
           <el-descriptions-item label="递减方向">{{ display(store.stationTemplatePreview.line_metadata.decreasing_direction_name) }}</el-descriptions-item>
+          <el-descriptions-item label="递增方向线路侧">{{ display(store.stationTemplatePreview.line_metadata.increasing_direction_line_side) }}</el-descriptions-item>
+          <el-descriptions-item label="递减方向线路侧">{{ display(store.stationTemplatePreview.line_metadata.decreasing_direction_line_side) }}</el-descriptions-item>
           <el-descriptions-item label="来源分组">{{ display(store.stationTemplatePreview.line_metadata.station_source_group_name) }}</el-descriptions-item>
           <el-descriptions-item label="来源字段">设备管理 · 站点字段</el-descriptions-item>
           <el-descriptions-item label="备注">{{ display(store.stationTemplatePreview.line_metadata.remark) }}</el-descriptions-item>

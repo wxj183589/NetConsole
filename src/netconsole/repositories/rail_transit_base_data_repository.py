@@ -344,20 +344,18 @@ class RailTransitBaseDataRepository:
             connection.execute(
                 """
                 UPDATE ap_extension_points
-                SET section_name = ?, section_start_station = ?, section_end_station = ?, line_side = ?, updated_at = ?
-                WHERE section_name = ? AND section_start_station = ? AND section_end_station = ? AND line_side = ?
+                SET section_name = ?, section_start_station = ?, section_end_station = ?, updated_at = ?
+                WHERE section_name = ? AND section_start_station = ? AND section_end_station = ?
                   AND COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
                 """,
                 (
                     new_name,
                     str(values.get("start_station") or "").strip(),
                     str(values.get("end_station") or "").strip(),
-                    str(values.get("line_side") or "").strip(),
                     now,
                     old_name,
                     old_start,
                     old_end,
-                    old_side,
                 ),
             )
             if new_name != old_name:

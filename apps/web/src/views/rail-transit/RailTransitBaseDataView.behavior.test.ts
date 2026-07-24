@@ -963,7 +963,7 @@ describe('轨道交通基础资料编辑闭环', () => {
       start_station: '端点',
       direction_role: 'decreasing',
       line_direction: '下行',
-      line_side: '下行',
+      line_side: '左线',
       auto_generated: true,
       source_kind: 'generated',
       generation_key: generatedIncreasingSection.generation_key,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,7 +61,7 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
     service = RailTransitBaseDataQueryService(paths)
 
-    page = service.list_aps("demo", section="A-B", has_issue=False, page_size=200)
+    page = service.list_aps("demo", section="A-B", query="AP-Section", has_issue=True, page_size=200)
     invalid = service.list_issues("demo", severity="error", entity_type="ap", query="里程", page_size=200)
     payload = str(service.list_mrs("demo").model_dump()).casefold()
 
@@ -70,6 +72,52 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     assert "private-user" not in payload
     assert "private-pass" not in payload
     assert "password" not in payload
+
+
+def test_query_non_destructively_completes_empty_line_side_from_formal_section(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    metadata = {
+        "section_code": "SEC-UP",
+        "section_kind": "between_stations",
+        "path_code": "MAIN",
+        "direction_role": "increasing",
+        "line_direction": "上行",
+        "start_node_type": "legacy",
+        "end_node_type": "legacy",
+        "source_kind": "manual",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, section_name, section_start_station,
+                section_end_station, line_side, ap_point_code, source_file,
+                raw_payload_json, created_at, updated_at
+            ) VALUES ('demo', '__base_section__', ?, '高桥西', '高桥', '', '-',
+                      'manual-base-data', ?, '2026-07-25', '2026-07-25')
+            """,
+            ("高桥西-高桥-上行", json.dumps(metadata, ensure_ascii=False)),
+        )
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET section_name = '高桥西-高桥-上行', line_side = '', raw_payload_json = '{}'
+            WHERE ap_name = 'AP-Section'
+            """
+        )
+        connection.commit()
+    before = _fingerprint(db_path)
+
+    ap = next(
+        item
+        for item in RailTransitBaseDataQueryService(paths).list_aps("demo", page_size=200).items
+        if item.name == "AP-Section"
+    )
+
+    assert (ap.line_side, ap.line_side_source) == ("右线", "section_direction")
+    assert ap.base_metadata["section_code"] == "SEC-UP"
+    assert ap.line_side_derivation_issue_code == ""
+    assert _fingerprint(db_path) == before
 
 
 def test_trackside_ap_runtime_uses_unique_mac_and_marks_ambiguous_matches(tmp_path: Path) -> None:

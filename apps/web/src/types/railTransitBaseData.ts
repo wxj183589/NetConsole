@@ -109,6 +109,8 @@ export interface RailTransitSummary {
   main_path_code: string
   increasing_direction_name: string
   decreasing_direction_name: string
+  increasing_direction_line_side: string
+  decreasing_direction_line_side: string
   increasing_direction_leading_end: 'car_1_end' | 'car_6_end' | 'unknown'
   station_source_group_name: string
   station_source_field: string
@@ -356,6 +358,9 @@ export interface TracksideAp {
   section_end_station: string
   mileage: Mileage
   line_side: string
+  line_side_source: 'section_direction' | 'manual' | 'import' | 'legacy' | 'unavailable'
+  line_side_derivation_issue_code: string
+  line_side_derivation_issue_message: string
   direction: string
   radios: MeshRadio[]
   remark: string

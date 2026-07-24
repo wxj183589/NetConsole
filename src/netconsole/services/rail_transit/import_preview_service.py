@@ -17,6 +17,10 @@ from netconsole.models.api.rail_transit_base_data import (
 from netconsole.services.ap_extension_import import AP_SWITCH_PORT_POINT_TABLE, ApExtensionImportService, normalize_ap_mac
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.ap_line_side_service import (
+    derive_ap_line_side,
+    line_side_metadata,
+)
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
 from netconsole.utils.mileage import parse_track_mileage
 
@@ -121,6 +125,8 @@ class RailTransitImportPreviewService:
         if len(rows) > MAX_IMPORT_PREVIEW_ROWS:
             raise ValueError(f"导入预览最多支持 {MAX_IMPORT_PREVIEW_ROWS} 行")
         known_stations, known_sections = self.query_service.known_locations(site_id)
+        formal_sections = self._all_sections(site_id)
+        site_metadata = self.query_service.get_summary(site_id).model_dump()
         try:
             fit_ap_macs = {
                 normalize_ap_mac(detail.ap.mac).normalized
@@ -145,6 +151,43 @@ class RailTransitImportPreviewService:
                 values["ap_name"] = ""
             row_number = int(values.get("source_row") or index)
             row_issues = issues_by_row[row_number]
+            imported_line_side = bool(str(values.get("line_side") or "").strip())
+            base_metadata = self._metadata_object(values.get("raw_payload_json"))
+            derivation = derive_ap_line_side(
+                {
+                    "section": values.get("section_name"),
+                    "section_start_station": values.get("section_start_station"),
+                    "section_end_station": values.get("section_end_station"),
+                    "direction": values.get("direction"),
+                    "line_side": values.get("line_side"),
+                    "base_metadata": base_metadata,
+                },
+                formal_sections,
+                site_metadata,
+                imported_line_side=imported_line_side,
+            )
+            values["line_side"] = derivation.line_side
+            values["raw_payload_json"] = json.dumps(
+                line_side_metadata(base_metadata, derivation),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if derivation.matched_section is not None:
+                values["section_name"] = derivation.matched_section.name
+                values["section_start_station"] = derivation.matched_section.start_station
+                values["section_end_station"] = derivation.matched_section.end_station
+            if derivation.issue_code:
+                row_issues.append(
+                    self._issue(
+                        "warning",
+                        derivation.issue_code,
+                        row_number,
+                        "line_side",
+                        str(values.get("line_side") or ""),
+                        derivation.issue_message,
+                        "核对归属区间、区间方向和导入线路方向",
+                    )
+                )
             row_issues.extend(
                 self._validate_row(
                     values,
@@ -248,6 +291,28 @@ class RailTransitImportPreviewService:
                 ensure_ascii=False,
             )
         return values
+
+    def _all_sections(self, site_id: str) -> list[Any]:
+        result = []
+        page = 1
+        while True:
+            page_data = self.query_service.list_sections(site_id, page=page, page_size=200)
+            result.extend(
+                section
+                for section in page_data.items
+                if section.source_kind != "legacy_ap_derived"
+            )
+            if len(result) >= page_data.total or not page_data.items:
+                return result
+            page += 1
+
+    @staticmethod
+    def _metadata_object(value: object) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     @staticmethod
     def _source_station_name(row: dict[str, Any]) -> str:

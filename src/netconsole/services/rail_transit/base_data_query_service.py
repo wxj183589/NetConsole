@@ -42,6 +42,10 @@ from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.rail_transit.ap_line_side_service import (
+    derive_ap_line_side,
+    line_side_metadata,
+)
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
 from netconsole.services.rail_transit.mr_end_role_service import mr_position
 from netconsole.services.rail_transit.station_source_utils import (
@@ -171,6 +175,8 @@ class RailTransitBaseDataQueryService:
             main_path_code=str(meta.get("main_path_code") or DEFAULT_MAIN_PATH_CODE),
             increasing_direction_name=str(meta.get("increasing_direction_name") or "上行"),
             decreasing_direction_name=str(meta.get("decreasing_direction_name") or "下行"),
+            increasing_direction_line_side=str(meta.get("increasing_direction_line_side") or "右线"),
+            decreasing_direction_line_side=str(meta.get("decreasing_direction_line_side") or "左线"),
             increasing_direction_leading_end=increasing_direction_leading_end,
             station_source_group_name=str(meta.get("station_source_group_name") or DEFAULT_STATION_SOURCE_GROUP),
             station_source_field=STATION_SOURCE_FIELD,
@@ -581,7 +587,35 @@ class RailTransitBaseDataQueryService:
                     base_metadata=base_metadata,
                 )
             )
-        return result
+        formal_sections = [
+            section
+            for section in self._sections(result)
+            if section.source_kind != "legacy_ap_derived"
+        ]
+        site_metadata = self._site_meta(site_id)
+        derived_result: list[TracksideApDTO] = []
+        for item in result:
+            if not self._is_ap_record(item):
+                derived_result.append(item)
+                continue
+            derivation = derive_ap_line_side(
+                item.model_dump(),
+                formal_sections,
+                site_metadata,
+            )
+            derived_result.append(
+                item.model_copy(
+                    update={
+                        "line_side": derivation.line_side,
+                        "line_side_source": derivation.source,
+                        "line_side_derivation_issue_code": derivation.issue_code,
+                        "line_side_derivation_issue_message": derivation.issue_message,
+                        "base_metadata": line_side_metadata(item.base_metadata, derivation),
+                    },
+                    deep=True,
+                )
+            )
+        return derived_result
 
     def _all_mrs(self, site_id: str, *, include_runtime: bool) -> list[VehicleMrDTO]:
         db_path = self.paths.site_db_path(site_id)
@@ -678,6 +712,20 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "ap_mac_duplicate", "ap", ap.id, ap.name, "mac", ap.mac, "同一局点存在重复 AP MAC", "核对 AP 点表"))
             if not ap.station and not ap.section:
                 issues.append(self._issue("warning", "ap_location_missing", "ap", ap.id, ap.name, "station/section", "", "AP 未填写站点或区间", "补充位置归属"))
+            if ap.line_side_derivation_issue_code:
+                issues.append(
+                    self._issue(
+                        "warning",
+                        ap.line_side_derivation_issue_code,
+                        "ap",
+                        ap.id,
+                        ap.name or ap.point_code,
+                        "line_side",
+                        ap.line_side,
+                        ap.line_side_derivation_issue_message,
+                        "核对归属区间、区间方向和线路方向来源",
+                    )
+                )
             if not ap.mileage.raw:
                 issues.append(self._issue("warning", "ap_mileage_missing", "ap", ap.id, ap.name, "mileage", "", "AP 里程为空", "补充正式里程"))
             elif not ap.mileage.valid:

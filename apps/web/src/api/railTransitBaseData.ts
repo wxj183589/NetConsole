@@ -81,6 +81,8 @@ export function previewSectionGeneration(payload: {
     main_path_code: string
     increasing_direction_name: string
     decreasing_direction_name: string
+    increasing_direction_line_side: string
+    decreasing_direction_line_side: string
   }
   stations: Station[]
   current_sections: Section[]

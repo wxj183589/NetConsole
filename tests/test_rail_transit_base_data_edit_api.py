@@ -282,6 +282,153 @@ def test_transactional_save_updates_ap_station_and_plan_with_revision(tmp_path: 
         assert tuple(connection.execute("SELECT primary_address, remark FROM devices WHERE device_uuid = 'mr-01-ct'").fetchone()) == ("10.10.0.11", "统一维护")
 
 
+def test_ap_section_change_recalculates_auto_side_and_mapping_change_preserves_manual_value(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    repository = RailTransitBaseDataRepository(paths)
+
+    def section_values(name: str, code: str, role: str, direction: str, side: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "section_code": code,
+            "section_kind": "between_stations",
+            "path_code": "MAIN",
+            "direction_role": role,
+            "line_direction": direction,
+            "start_node_type": "legacy",
+            "start_station": "高桥西",
+            "end_node_type": "legacy",
+            "end_station": "高桥",
+            "line_side": side,
+            "source_kind": "manual",
+        }
+
+    repository.apply_base_data_changes(
+        "demo",
+        repository.base_data_revision("demo"),
+        [
+            {
+                "entity_type": "section",
+                "action": "create",
+                "entity_id": "new:up",
+                "values": section_values("高桥西-高桥-上行", "SEC-UP", "increasing", "上行", "右线"),
+            },
+            {
+                "entity_type": "section",
+                "action": "create",
+                "entity_id": "new:down",
+                "values": section_values("高桥西-高桥-下行", "SEC-DOWN", "decreasing", "下行", "左线"),
+            },
+        ],
+    )
+    with Database(database).connect() as connection:
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET section_name = '高桥西-高桥-上行', line_side = '', raw_payload_json = '{}'
+            WHERE ap_name = 'AP-Section'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET section_name = '高桥西-高桥-上行', line_side = '右线',
+                raw_payload_json = '{"line_side_source":"manual"}'
+            WHERE ap_name = 'AP-Online'
+            """
+        )
+        connection.commit()
+    mark_base_data_copy(paths)
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        ap = next(
+            item
+            for item in client.get("/api/rail-transit/base-data/aps?page_size=200").json()["items"]
+            if item["name"] == "AP-Section"
+        )
+        assert (ap["line_side"], ap["line_side_source"]) == ("右线", "section_direction")
+        changed = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [
+                    {
+                        "entity_type": "trackside_ap",
+                        "action": "update",
+                        "entity_id": ap["id"],
+                        "values": {
+                            "ap_name": ap["name"],
+                            "ap_point_code": ap["point_code"],
+                            "ap_mac_display": ap["mac"],
+                            "section_name": "高桥西-高桥-下行",
+                            "line_side": ap["line_side"],
+                            "direction": "下行",
+                            "base_metadata": ap["base_metadata"],
+                        },
+                    }
+                ],
+                "explicit_confirmation": True,
+            },
+        )
+        assert changed.status_code == 200
+
+        next_revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        reversed_mapping = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": next_revision,
+                "changes": [
+                    {
+                        "entity_type": "site_metadata",
+                        "action": "update",
+                        "entity_id": "current",
+                        "values": {
+                            "line_name": "测试线",
+                            "system_type": "PIS",
+                            "network_domain": "default",
+                            "increasing_direction_name": "上行",
+                            "decreasing_direction_name": "下行",
+                            "increasing_direction_line_side": "左线",
+                            "decreasing_direction_line_side": "右线",
+                        },
+                    }
+                ],
+                "explicit_confirmation": True,
+            },
+        )
+        summary = client.get("/api/rail-transit/base-data/summary").json()
+
+    assert reversed_mapping.status_code == 200
+    assert summary["increasing_direction_line_side"] == "左线"
+    with Database(database).connect() as connection:
+        auto_row = connection.execute(
+            "SELECT section_name, line_side, raw_payload_json FROM ap_extension_points WHERE ap_name = 'AP-Section'"
+        ).fetchone()
+        manual_row = connection.execute(
+            "SELECT line_side, raw_payload_json FROM ap_extension_points WHERE ap_name = 'AP-Online'"
+        ).fetchone()
+    assert (auto_row[0], auto_row[1]) == ("高桥西-高桥-下行", "右线")
+    assert json.loads(auto_row[2])["line_side_source"] == "section_direction"
+    assert manual_row[0] == "右线"
+    assert json.loads(manual_row[1])["line_side_source"] == "manual"
+    query_service = RailTransitBaseDataQueryService(paths)
+    manual_ap = next(
+        item
+        for item in query_service.list_aps("demo", page_size=200).items
+        if item.name == "AP-Online"
+    )
+    assert any(
+        issue.code == "ap_line_side_section_conflict"
+        for issue in query_service.get_ap("demo", manual_ap.id).issues
+    )
+
+
 def test_generated_section_edit_persists_overrides_and_cascades_all_named_ap_references(tmp_path: Path) -> None:
     paths, database = build_rail_transit_base_data_fixture(tmp_path)
     repository = RailTransitBaseDataRepository(paths)

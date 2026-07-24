@@ -99,6 +99,8 @@ def test_new_template_has_four_sheets_and_round_trips_station_and_section_fields
             "main_path_code": "MAIN",
             "increasing_direction_name": "上行",
             "decreasing_direction_name": "下行",
+            "increasing_direction_line_side": "左线",
+            "decreasing_direction_line_side": "右线",
             "station_source_group_name": "车站",
         },
         stations,
@@ -124,7 +126,10 @@ def test_new_template_has_four_sheets_and_round_trips_station_and_section_fields
     assert station.track_facilities == ["turnback_track", "storage_track"]
     assert station.center_mileage_text == "K12+345.5"
     assert station.center_mileage_m == 12345.5
+    assert preview.line_metadata["increasing_direction_line_side"] == "左线"
+    assert preview.line_metadata["decreasing_direction_line_side"] == "右线"
     assert section is not None
+    assert section.line_side == "左线"
     assert section.generation_key == "MAIN|between|node-low|node-high|increasing"
     assert (section.section_mileage_start_m, section.section_mileage_end_m) == (12345.5, 13000)
     assert section.section_mileage_source == "manual"
@@ -140,7 +145,7 @@ def test_old_three_sheet_template_imports_without_deleting_sections(tmp_path: Pa
     line_sheet = workbook.active
     line_sheet.title = "01_线路参数"
     line_sheet.append(list(LINE_PARAM_HEADERS))
-    line_sheet.append(["测试线", "PIS", "default", "MAIN", "上行", "下行", "车站", "station", ""])
+    line_sheet.append(["测试线", "PIS", "default", "MAIN", "上行", "下行", "右线", "左线", "车站", "station", ""])
     station_sheet = workbook.create_sheet("02_线路节点")
     station_sheet.append([
         "来源站点值",
@@ -281,7 +286,8 @@ def test_old_section_columns_preserve_existing_physical_mileage_and_overrides(
 
     proposed = rows[0].proposed_section
     assert proposed is not None
-    assert rows[0].action == "unchanged"
+    assert rows[0].action == "update"
+    assert proposed.line_side == "右线"
     assert (proposed.section_mileage_start_m, proposed.section_mileage_end_m) == (160, 1801)
     assert proposed.section_mileage_source == "manual"
     assert proposed.manual_override_fields == ["section_mileage_start_m", "section_mileage_source"]
