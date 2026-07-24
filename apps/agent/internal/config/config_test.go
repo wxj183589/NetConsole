@@ -23,10 +23,28 @@ func writeTool(t *testing.T, path string) {
 	}
 }
 
+func testAgentDataRoot(t *testing.T) string {
+	t.Helper()
+	base := `D:\NetConsoleTestData`
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(base, "agent-go-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
+}
+
 func TestLoadAppliesStandardToolPaths(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "config.json")
+	dataRoot := testAgentDataRoot(t)
+	path := filepath.Join(dataRoot, "agents", "test-agent", "config.json")
+	t.Setenv("NETCONSOLE_DATA_ROOT", dataRoot)
 	content := `{"agent":{"id":"a1","name":"Agent","listen_host":"127.0.0.1","listen_port":18080,"data_dir":"data","log_dir":"logs","package_dir":"packages"}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -136,38 +154,51 @@ func TestExplicitToolPathsResolveFromActiveConfigDirectory(t *testing.T) {
 	}
 }
 
-func TestResolveConfigPathHonorsExplicitAndEnvironmentOrder(t *testing.T) {
+func TestResolveConfigPathUsesUnifiedAgentStorage(t *testing.T) {
 	root := t.TempDir()
-	projectConfig := filepath.Join(root, ".local", "agent", "config.json")
-	homeConfig := filepath.Join(root, "home", "config.json")
-	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dataRoot := testAgentDataRoot(t)
+	homeConfig := filepath.Join(dataRoot, "agents", "local", "config.json")
 	if err := os.MkdirAll(filepath.Dir(homeConfig), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(projectConfig, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(homeConfig, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	t.Setenv("NETCONSOLE_DATA_ROOT", dataRoot)
 	t.Setenv("NETCONSOLE_AGENT_CONFIG", "")
-	t.Setenv("NETCONSOLE_AGENT_PROJECT_ROOT", root)
-	t.Setenv("NETCONSOLE_AGENT_HOME", filepath.Join(root, "home"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(root, "localappdata"))
-	if got := ResolveConfigPath(""); got != projectConfig {
-		t.Fatalf("project-local config = %q, want %q", got, projectConfig)
+	t.Setenv("NETCONSOLE_AGENT_HOME", "")
+	if got, err := ResolveConfigPath(""); err != nil || got != homeConfig {
+		t.Fatalf("default config = %q, %v; want %q", got, err, homeConfig)
 	}
 
-	envConfig := filepath.Join(root, "override", "config.json")
+	envConfig := filepath.Join(dataRoot, "agents", "secondary", "config.json")
 	t.Setenv("NETCONSOLE_AGENT_CONFIG", envConfig)
-	if got := ResolveConfigPath(""); got != envConfig {
-		t.Fatalf("environment config = %q, want %q", got, envConfig)
+	if got, err := ResolveConfigPath(""); err != nil || got != envConfig {
+		t.Fatalf("environment config = %q, %v; want %q", got, err, envConfig)
 	}
 
-	if got := ResolveConfigPath("explicit.json"); got != "explicit.json" {
-		t.Fatalf("explicit config = %q, want explicit.json", got)
+	if _, err := ResolveConfigPath(filepath.Join(root, "outside", "config.json")); err == nil {
+		t.Fatal("expected an external config path to be rejected")
+	}
+	if _, err := ResolveConfigPath("config.json"); err == nil {
+		t.Fatal("expected a relative config path to be rejected")
+	}
+}
+
+func TestLoadRejectsRuntimePathOutsideUnifiedAgentStorage(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := testAgentDataRoot(t)
+	configPath := filepath.Join(dataRoot, "agents", "local", "config.json")
+	t.Setenv("NETCONSOLE_DATA_ROOT", dataRoot)
+	content := `{"agent":{"id":"a1","name":"Agent","listen_host":"127.0.0.1","listen_port":18080,"data_dir":"` + filepath.ToSlash(filepath.Join(root, "outside")) + `","log_dir":"logs","package_dir":"packages"}}`
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(configPath); err == nil {
+		t.Fatal("expected an external Agent runtime directory to be rejected")
 	}
 }

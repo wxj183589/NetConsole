@@ -66,7 +66,7 @@ UI 线程只负责创建导出任务描述文件，例如：
 {
   "job_type": "trackside_ap_export",
   "site_name": "demo",
-  "database_path": ".local/data/sites/demo/db/site.sqlite",
+  "database_path": "<data_root>/sites/demo/db/site.sqlite",
   "filters": {},
   "output_path": "<output_dir>/report.xlsx",
   "created_at": "2026-07-09T12:00:00"

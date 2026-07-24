@@ -49,6 +49,13 @@ class FakeChild extends EventEmitter implements ManagedChildProcess {
     })}\n`)
   }
 
+  announceStartupFailure(message: string): void {
+    this.stdout.write(`${JSON.stringify({
+      event: 'netconsole.electron_backend.startup_failed',
+      message,
+    })}\n`)
+  }
+
   exit(code: number | null, signal: NodeJS.Signals | null = null): void {
     this.exitCode = code
     this.emit('exit', code, signal)
@@ -65,6 +72,7 @@ function createManager(options: {
   environment?: NodeJS.ProcessEnv
   runtimeMode?: 'desktop-development' | 'desktop-packaged'
   announcedPort?: number
+  startupFailure?: string
 } = {}) {
   const child = options.child ?? new FakeChild()
   const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
@@ -74,14 +82,17 @@ function createManager(options: {
       && options.environment?.NETCONSOLE_DEV_MODE === '1'
       ? Number(options.environment.NETCONSOLE_DEV_BACKEND_PORT || 0)
       : 0
-    queueMicrotask(() => child.announce((options.announcedPort ?? developmentPort) || 43123))
+    queueMicrotask(() => {
+      if (options.startupFailure) child.announceStartupFailure(options.startupFailure)
+      else child.announce((options.announcedPort ?? developmentPort) || 43123)
+    })
     return child
   }
   const manager = new PythonBackendManager({
     executable: 'C:\\Python\\python.exe',
     argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
     projectRoot: 'C:\\NetConsole',
-    dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+    dataRoot: 'D:\\NetConsoleData',
     runtimeMode: options.runtimeMode ?? 'desktop-development',
     pythonPath: 'C:\\NetConsole\\src',
     startupTimeoutMs: 50,
@@ -105,6 +116,13 @@ function createManager(options: {
 }
 
 describe('PythonBackendManager', () => {
+  it('surfaces a backend data-root conflict before the listening handshake', async () => {
+    const message = 'D:\\NetConsoleData 当前已由另一个 NetConsole Backend 使用。'
+    const { manager } = createManager({ startupFailure: message })
+
+    await expect(manager.start()).rejects.toThrow(message)
+  })
+
   it('starts once, sends the token through stdin, and uses a shell-free hidden child', async () => {
     const { manager, child, spawnCalls } = createManager()
     let handshake = ''
@@ -120,7 +138,7 @@ describe('PythonBackendManager', () => {
     expect(spawnCalls[0].options.shell).toBe(false)
     expect(spawnCalls[0].options.windowsHide).toBe(true)
     expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_DATA_ROOT).toBe(
-      'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+      'D:\\NetConsoleData',
     )
     expect((spawnCalls[0].options.env as NodeJS.ProcessEnv).NETCONSOLE_RUNTIME_MODE).toBe(
       'desktop-development',

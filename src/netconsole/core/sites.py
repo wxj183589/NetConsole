@@ -211,10 +211,13 @@ class SiteManager:
 
     def _load_config(self) -> dict[str, object]:
         self.paths.config_dir.mkdir(parents=True, exist_ok=True)
-        if not self.paths.app_config_path.exists():
+        config_path = self.paths.app_config_path
+        if not config_path.exists() and self.paths.legacy_app_config_path.is_file():
+            config_path = self.paths.legacy_app_config_path
+        if not config_path.exists():
             return {}
         try:
-            with self.paths.app_config_path.open("r", encoding="utf-8") as file:
+            with config_path.open("r", encoding="utf-8") as file:
                 data = json.load(file)
         except (json.JSONDecodeError, OSError):
             data = {}

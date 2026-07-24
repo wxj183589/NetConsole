@@ -35,14 +35,17 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	resolvedConfig := config.ResolveConfigPath(*configPath)
+	resolvedConfig, err := config.ResolveConfigPath(*configPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	cfg, err := config.Load(resolvedConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
-	resolvedTargets := config.ResolveTargetsPath(*targetsPath, cfg.BaseDir)
-	if !filepath.IsAbs(resolvedTargets) {
-		resolvedTargets = filepath.Join(cfg.BaseDir, resolvedTargets)
+	resolvedTargets, err := config.ResolveTargetsPath(*targetsPath, cfg.BaseDir)
+	if err != nil {
+		log.Fatal(err)
 	}
 	targetStore, err := target.Open(resolvedTargets)
 	if err != nil {

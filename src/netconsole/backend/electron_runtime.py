@@ -15,8 +15,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
+from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
+from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.storage_manifest import StorageCompatibilityError, prepare_storage_manifest
 
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
@@ -56,11 +59,17 @@ def read_session_token(stream: TextIO) -> str:
     return token
 
 
-def build_app(options: ElectronRuntimeOptions, session_token: str) -> FastAPI:
+def build_app(
+    options: ElectronRuntimeOptions,
+    session_token: str,
+    *,
+    paths: PathResolver | None = None,
+) -> FastAPI:
     if _SESSION_TOKEN_RE.fullmatch(session_token) is None:
         raise ValueError("invalid Electron runtime session token")
     app = create_app(
         RuntimeMode.DESKTOP,
+        paths=paths,
         desktop_session_token=session_token,
         rail_base_data_write_feature_enabled=True,
         rail_base_data_desktop_write_enabled=True,
@@ -85,42 +94,59 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     options = parse_options(argv)
     control_stream = stdin or sys.stdin
     session_token = read_session_token(control_stream)
-    app = build_app(options, session_token)
-    listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
-    actual_port = int(listener.getsockname()[1])
     try:
+        paths = PathResolver()
+        with BackendInstanceLock(paths):
+            prepare_storage_manifest(paths)
+            app = build_app(options, session_token, paths=paths)
+            listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
+            actual_port = int(listener.getsockname()[1])
+            try:
+                print(
+                    json.dumps(
+                        {
+                            "event": "netconsole.electron_backend.listening",
+                            "host": options.host,
+                            "port": actual_port,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+                server = uvicorn.Server(
+                    uvicorn.Config(
+                        app,
+                        host=options.host,
+                        port=actual_port,
+                        log_level="warning",
+                        access_log=False,
+                    )
+                )
+                control_thread = threading.Thread(
+                    target=watch_control_stream,
+                    args=(control_stream, server),
+                    name="netconsole-electron-control",
+                    daemon=True,
+                )
+                control_thread.start()
+                server.run(sockets=[listener])
+                emit_shutdown_ack(sys.stdout)
+                wait_for_exit_command(control_stream)
+            finally:
+                listener.close()
+    except (BackendInstanceInUseError, StorageCompatibilityError) as exc:
         print(
             json.dumps(
                 {
-                    "event": "netconsole.electron_backend.listening",
-                    "host": options.host,
-                    "port": actual_port,
+                    "event": "netconsole.electron_backend.startup_failed",
+                    "message": str(exc),
                 },
+                ensure_ascii=False,
                 separators=(",", ":"),
             ),
             flush=True,
         )
-        server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                host=options.host,
-                port=actual_port,
-                log_level="warning",
-                access_log=False,
-            )
-        )
-        control_thread = threading.Thread(
-            target=watch_control_stream,
-            args=(control_stream, server),
-            name="netconsole-electron-control",
-            daemon=True,
-        )
-        control_thread.start()
-        server.run(sockets=[listener])
-        emit_shutdown_ack(sys.stdout)
-        wait_for_exit_command(control_stream)
-    finally:
-        listener.close()
+        return 3
     return 0
 
 

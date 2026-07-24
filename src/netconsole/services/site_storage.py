@@ -185,7 +185,7 @@ class SiteRegistryRepository:
                 continue
             try:
                 site_id = validate_site_id(str(item.get("site_id") or ""))
-                root = self._resolve_root(str(item.get("relative_path") or f"data/sites/{site_id}"))
+                root = self._resolve_root(str(item.get("relative_path") or f"sites/{site_id}"))
                 if root.is_dir():
                     records[site_id] = SiteRecord(
                         site_id=site_id,
@@ -287,7 +287,7 @@ class SiteRegistryRepository:
             if str(item.get("site_id") or "").casefold() != wanted:
                 retained.append(item)
                 continue
-            resolved = self._resolve_root(str(item.get("relative_path") or f"data/sites/{wanted}"))
+            resolved = self._resolve_root(str(item.get("relative_path") or f"sites/{wanted}"))
             if resolved != expected:
                 raise SiteStorageError("SITE_REGISTRY_CONFLICT", "Registry 局点路径与清理目标不一致")
             removed = True
@@ -637,33 +637,48 @@ class DataRootApplicationService:
         if destination == self.paths.data_root.resolve():
             raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根与当前路径相同")
         with storage_lock(self.paths, "global-data-migration"):
-            staging = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
+            operation_id = uuid.uuid4().hex
+            staging = destination / "staging" / operation_id
+            payload = staging / "payload"
             try:
+                _write_migration_operation(staging, "created", self.paths.data_root, destination)
                 for source in self.paths.data_root.iterdir():
-                    if source.name in {"runtime", "temp", "bootstrap"}:
+                    if source.name in {"runtime", "staging"}:
                         continue
                     if check_cancel:
                         check_cancel()
-                    target_path = staging / source.name
+                    _write_migration_operation(staging, "copying", self.paths.data_root, destination)
+                    target_path = payload / source.name
                     if source.is_dir():
                         _copy_tree_snapshot(source, target_path, check_cancel=check_cancel)
                     else:
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(source, target_path)
-                _quick_check_site_tree(staging / "data" / "sites")
-                manifest = {"format": "netconsole-data-root-migration", "version": 1, "created_at": _now(), "source": str(self.paths.data_root), "destination": str(destination)}
-                _atomic_json(staging / "migrations" / f"migration-{uuid.uuid4().hex}.json", manifest)
-                if destination.exists():
-                    if any(destination.iterdir()):
-                        raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根必须为空或不存在")
-                    destination.rmdir()
-                _publish_directory(staging, destination)
+                _write_migration_operation(staging, "verifying", self.paths.data_root, destination)
+                _quick_check_site_tree(payload / "sites")
+                manifest = {
+                    "format": "netconsole-data-root-migration",
+                    "version": 2,
+                    "migration_id": operation_id,
+                    "created_at": _now(),
+                    "source": str(self.paths.data_root),
+                    "destination": str(destination),
+                }
+                _atomic_json(payload / "migrations" / f"migration-{operation_id}.json", manifest)
+                occupied = [item for item in destination.iterdir() if item.name != "staging"]
+                if occupied:
+                    raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根必须为空或只包含本次 staging")
+                _write_migration_operation(staging, "committing", self.paths.data_root, destination)
+                for source in payload.iterdir():
+                    _publish_directory(source, destination / source.name)
+                _write_migration_operation(staging, "completed", self.paths.data_root, destination)
+                shutil.rmtree(staging, ignore_errors=True)
                 return {"data_root": str(destination), "restart_required": True, "old_data_root_retained": True}
             except SiteStorageError:
-                shutil.rmtree(staging, ignore_errors=True)
+                _write_migration_operation(staging, "failed", self.paths.data_root, destination)
                 raise
             except Exception as exc:
-                shutil.rmtree(staging, ignore_errors=True)
+                _write_migration_operation(staging, "failed", self.paths.data_root, destination)
                 raise SiteStorageError("DATA_ROOT_MIGRATION_FAILED", "数据根迁移失败，旧数据未改变") from exc
 
     def _validate_target(self, target: Path) -> Path:
@@ -972,13 +987,21 @@ class SitePackageService:
 
 
 def _default_data_root(paths: PathResolver) -> Path:
-    from netconsole.core.runtime_environment import is_packaged_runtime
+    from netconsole.core.runtime_environment import data_root
 
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
-    return (base / "NetConsole" / ("" if is_packaged_runtime() else "Development")).resolve()
+    return data_root()
+
+
+def _write_migration_operation(staging: Path, status: str, source: Path, destination: Path) -> None:
+    staging.mkdir(parents=True, exist_ok=True)
+    common = {"schema_version": 1, "updated_at": _now()}
+    _atomic_json(staging / "manifest.json", {**common, "operation_id": staging.name, "status": status})
+    _atomic_json(staging / "source.json", {**common, "data_root": str(source)})
+    _atomic_json(staging / "target.json", {**common, "data_root": str(destination)})
+    _atomic_json(staging / "status.json", {**common, "status": status})
+    lock_path = staging / "operation.lock"
+    if not lock_path.exists():
+        lock_path.write_text(str(os.getpid()), encoding="ascii")
 
 
 def _publish_directory(source: Path, destination: Path) -> None:

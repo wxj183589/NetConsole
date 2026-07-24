@@ -20,18 +20,18 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     site = paths.ensure_site_dirs()
 
-    assert site == tmp_path / "data" / "sites" / "demo"
+    assert site == tmp_path / "sites" / "demo"
     assert paths.app_root == tmp_path
-    assert paths.data_dir == tmp_path / "data"
-    assert paths.config_dir == tmp_path / "data" / "config"
-    assert paths.app_config_path == tmp_path / "data" / "config" / "app.json"
-    assert paths.settings_path == tmp_path / "data" / "config" / "settings.json"
+    assert paths.data_dir == tmp_path
+    assert paths.config_dir == tmp_path / "config"
+    assert paths.app_config_path == tmp_path / "config" / "application.json"
+    assert paths.settings_path == tmp_path / "config" / "settings.json"
     assert paths.runtime_dir == tmp_path / "runtime"
     assert paths.runtime_cache_dir == tmp_path / "runtime" / "cache"
     assert paths.offline_ap_cache_path == tmp_path / "runtime" / "cache" / "offline_ap_cache.json"
     assert paths.logs_dir == tmp_path / "runtime" / "logs"
     assert paths.app_log_path == tmp_path / "runtime" / "logs" / "app.log"
-    assert paths.sites_dir == tmp_path / "data" / "sites"
+    assert paths.sites_dir == tmp_path / "sites"
     assert paths.site_dir() == site
     assert paths.site_db_path() == site / "db" / "devices.db"
     assert paths.site_metrics_dir() == site / "cache" / "metrics"
@@ -84,15 +84,38 @@ def test_path_resolver_does_not_derive_data_root_from_app_root(tmp_path):
     assert paths.data_root != paths.app_root
 
 
-def test_development_data_root_defaults_to_local_app_data(tmp_path, monkeypatch):
+def test_development_data_root_defaults_to_unified_d_drive_root(tmp_path, monkeypatch):
     source_root = tmp_path / "source"
-    local_app_data = tmp_path / "local-app-data"
     monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
     monkeypatch.setattr(runtime_environment, "is_packaged_runtime", lambda: False)
     monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: source_root)
 
-    assert runtime_environment.data_root() == local_app_data / "NetConsole" / "Development"
+    assert runtime_environment.data_root() == Path(r"D:\NetConsoleData")
+
+
+def test_test_mode_requires_explicit_isolated_data_root(monkeypatch):
+    monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+
+    try:
+        runtime_environment.data_root()
+    except RuntimeError as exc:
+        assert "必须显式设置" in str(exc)
+    else:
+        raise AssertionError("expected missing test data root rejection")
+
+
+def test_test_mode_rejects_real_data_root(monkeypatch):
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", r"D:\NetConsoleData")
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+
+    try:
+        runtime_environment.data_root()
+    except RuntimeError as exc:
+        assert "NetConsoleTestData" in str(exc)
+    else:
+        raise AssertionError("expected production data root rejection in tests")
 
 
 def test_development_data_root_rejects_source_repository(tmp_path, monkeypatch):
@@ -119,8 +142,8 @@ def test_path_resolver_uses_exe_dir_when_frozen(tmp_path, monkeypatch):
     paths = PathResolver()
 
     assert paths.app_root == tmp_path
-    assert paths.data_dir == tmp_path / "local_data" / "data"
-    assert paths.site_db_path() == tmp_path / "local_data" / "data" / "sites" / "demo" / "db" / "devices.db"
+    assert paths.data_dir == tmp_path / "local_data"
+    assert paths.site_db_path() == tmp_path / "local_data" / "sites" / "demo" / "db" / "devices.db"
 
 
 def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
@@ -134,7 +157,7 @@ def test_path_resolver_uses_exe_dir_when_nuitka_compiled(tmp_path, monkeypatch):
     paths.ensure_project_dirs()
 
     assert paths.app_root == tmp_path
-    assert paths.data_dir == tmp_path / "local_data" / "data"
+    assert paths.data_dir == tmp_path / "local_data"
     assert paths.runtime_dir == tmp_path / "local_data" / "runtime"
     assert not (tmp_path / "docs").exists()
     assert not (tmp_path / "tests").exists()

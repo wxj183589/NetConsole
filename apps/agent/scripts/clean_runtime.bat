@@ -1,7 +1,8 @@
 @echo off
 setlocal
 chcp 65001 >nul
-set "AGENT_DATA_ROOT=%LOCALAPPDATA%\NetConsole\Agent"
+if not defined NETCONSOLE_DATA_ROOT set "NETCONSOLE_DATA_ROOT=D:\NetConsoleData"
+set "AGENT_DATA_ROOT=%NETCONSOLE_DATA_ROOT%\agents\local"
 if not exist "%AGENT_DATA_ROOT%" (
   echo [ERROR] Agent data root was not found: %AGENT_DATA_ROOT%
   exit /b 1

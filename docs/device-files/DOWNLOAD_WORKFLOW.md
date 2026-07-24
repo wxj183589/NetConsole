@@ -12,6 +12,6 @@ status + limit/offset`，活动任务优先；下载 descriptor、hidden 和 wai
 
 目标路径由后端决定：
 
-- 普通设备文件默认进入 `data/sites/<site>/downloads/files/<safe_device_name>/`；用户已进入其受控子目录时进入当前目录。
-- 设备必须精确属于“车载-MR”分组并关联 MR Profile，且文件名命中 MESH 规则，才强制进入 `data/sites/<site>/rail_transit/mesh/<mr>/raw/`。
+- 普通设备文件默认进入 `<data_root>/sites/<site>/files/file_manager/downloads/<safe_device_name>/`；用户已进入其受控子目录时进入当前目录。
+- 设备必须精确属于“车载-MR”分组并关联 MR Profile，且文件名命中 MESH 规则，才强制进入 `<data_root>/sites/<site>/files/rail_transit/mesh/<mr>/raw/`。
 - MESH raw 原文件在自动导入失败时仍保留；不得因设备名称包含 `MR` 而推断身份。

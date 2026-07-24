@@ -90,11 +90,8 @@ copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%
   echo @echo off
   echo setlocal EnableExtensions
   echo chcp 65001 ^>nul
-  echo if defined LOCALAPPDATA goto localappdata_ready
-  echo echo [ERROR] LOCALAPPDATA is unavailable; cannot initialize Agent runtime configuration.
-  echo exit /b 1
-  echo :localappdata_ready
-  echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
+  echo if not defined NETCONSOLE_DATA_ROOT set "NETCONSOLE_DATA_ROOT=D:\NetConsoleData"
+  echo if not defined NETCONSOLE_AGENT_HOME set "NETCONSOLE_AGENT_HOME=%%NETCONSOLE_DATA_ROOT%%\agents\local"
   echo if not exist "%%NETCONSOLE_AGENT_HOME%%" mkdir "%%NETCONSOLE_AGENT_HOME%%"
   echo if exist "%%NETCONSOLE_AGENT_HOME%%" goto agent_home_ready
   echo echo [ERROR] Cannot create Agent runtime directory: %%NETCONSOLE_AGENT_HOME%%
@@ -132,7 +129,8 @@ copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%
   echo setlocal EnableExtensions
   echo chcp 65001 ^>nul
   echo cd /d "%%~dp0"
-  echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
+  echo if not defined NETCONSOLE_DATA_ROOT set "NETCONSOLE_DATA_ROOT=D:\NetConsoleData"
+  echo if not defined NETCONSOLE_AGENT_HOME set "NETCONSOLE_AGENT_HOME=%%NETCONSOLE_DATA_ROOT%%\agents\local"
   echo call "%%~dp0init_agent_config.bat"
   echo if errorlevel 1 exit /b 1
   echo start "" "netconsole-agent.exe" --open --config "%%NETCONSOLE_AGENT_HOME%%\config.json" --targets "%%NETCONSOLE_AGENT_HOME%%\targets.json"
@@ -142,7 +140,8 @@ copy /y "%BUILD_ROOT%\mr_collector\dist\netconsole-mr-collector.exe" "%DELIVERY%
   echo setlocal EnableExtensions
   echo chcp 65001 ^>nul
   echo cd /d "%%~dp0"
-  echo set "NETCONSOLE_AGENT_HOME=%%LOCALAPPDATA%%\NetConsole\Agent"
+  echo if not defined NETCONSOLE_DATA_ROOT set "NETCONSOLE_DATA_ROOT=D:\NetConsoleData"
+  echo if not defined NETCONSOLE_AGENT_HOME set "NETCONSOLE_AGENT_HOME=%%NETCONSOLE_DATA_ROOT%%\agents\local"
   echo call "%%~dp0init_agent_config.bat"
   echo if errorlevel 1 exit /b 1
   echo "netconsole-agent-console.exe" --console --open --config "%%NETCONSOLE_AGENT_HOME%%\config.json" --targets "%%NETCONSOLE_AGENT_HOME%%\targets.json"

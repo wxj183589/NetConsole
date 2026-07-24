@@ -6,11 +6,8 @@ for %%I in ("%SCRIPT_DIR%\..\..\..") do set "REPO_ROOT=%%~fI"
 set "DELIVERY=%REPO_ROOT%\dist\agent\windows-x64"
 set "CONFIG_TEMPLATE=%REPO_ROOT%\apps\agent\resources\config\config.example.json"
 set "TARGETS_TEMPLATE=%REPO_ROOT%\apps\agent\resources\config\targets.example.json"
-if not defined LOCALAPPDATA (
-  echo [ERROR] LOCALAPPDATA is unavailable; cannot initialize Agent runtime configuration.
-  exit /b 1
-)
-set "NETCONSOLE_AGENT_HOME=%LOCALAPPDATA%\NetConsole\Agent"
+if not defined NETCONSOLE_DATA_ROOT set "NETCONSOLE_DATA_ROOT=D:\NetConsoleData"
+if not defined NETCONSOLE_AGENT_HOME set "NETCONSOLE_AGENT_HOME=%NETCONSOLE_DATA_ROOT%\agents\local"
 set "EXE=netconsole-agent-console.exe"
 if not exist "%DELIVERY%\%EXE%" (
   echo [ERROR] %EXE% was not found. Run scripts\build_windows.bat first.

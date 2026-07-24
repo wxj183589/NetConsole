@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 
 import type { DesktopResolvedTheme } from '../shared/bridge'
 import type { DesktopStorageMode } from './development-data-root'
+import { DEFAULT_WINDOWS_DATA_ROOT } from './development-data-root'
 
 export const DESKTOP_SAFE_BACKGROUND_COLOR = '#f4f6f8'
 
@@ -34,6 +35,7 @@ export interface DesktopConfigInput {
   appPath: string
   resourcesPath: string
   userDataPath?: string
+  resolvedDataRoot?: string
   bootstrapDataRoot?: string
   bootstrapActiveSiteId?: string
   storageMode?: DesktopStorageMode
@@ -85,23 +87,23 @@ function resolveDesktopDataRoot(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): string {
-  const override = env.NETCONSOLE_DATA_ROOT?.trim() || input.bootstrapDataRoot?.trim()
+  const override = env.NETCONSOLE_DATA_ROOT?.trim()
+    || input.bootstrapDataRoot?.trim()
+    || input.resolvedDataRoot?.trim()
   let candidate: string
   if (override) {
     candidate = resolveDeveloperPath(override, '', 'NETCONSOLE_DATA_ROOT')
   } else if (platform === 'win32') {
-    const localAppData = env.LOCALAPPDATA?.trim()
-    if (!localAppData) throw new Error('LOCALAPPDATA is required to resolve the desktop data root')
-    candidate = resolve(localAppData, 'NetConsole', ...(input.isPackaged ? [] : ['Development']))
+    candidate = resolve(DEFAULT_WINDOWS_DATA_ROOT)
   } else {
-    if (!input.userDataPath) throw new Error('userDataPath is required to resolve the desktop data root')
-    candidate = input.isPackaged
-      ? resolve(input.userDataPath)
-      : resolve(input.userDataPath, 'Development')
+    throw new Error('NETCONSOLE_DATA_ROOT is required outside Windows')
   }
   const fromProject = relative(projectRoot, candidate)
   if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {
     throw new Error('Electron data root must not be inside the project or installation directory')
+  }
+  if (platform === 'win32' && (env.SystemDrive?.trim() || 'C:').toLowerCase() === candidate.slice(0, 2).toLowerCase()) {
+    throw new Error('Electron data root must not be on the system drive')
   }
   return candidate
 }

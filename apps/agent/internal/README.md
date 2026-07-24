@@ -26,7 +26,7 @@
 
 ## 生成与清理
 
-工具执行输出、sidecar 会话和采集包进入 `.local/agent/` 或系统 Agent 数据根，构建物进入 `dist/agent/`；使用 Agent 脚本清理。
+工具执行输出、sidecar 会话和采集包进入统一数据根的 `agents/local/`，构建物进入 `dist/agent/`；使用 Agent 脚本清理。
 
 ## 相关文档
 

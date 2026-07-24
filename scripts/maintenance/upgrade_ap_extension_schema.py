@@ -94,8 +94,8 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="离线补齐 NetConsole AP 扩展信息 schema。")
     parser.add_argument("--db", type=Path, help="单个 devices.db 路径")
-    parser.add_argument("--data-dir", type=Path, default=ROOT / ".local" / "data", help="NetConsole data 目录，默认 ./.local/data")
-    parser.add_argument("--all-sites", action="store_true", help="升级 .local/data/sites 下所有局点数据库")
+    parser.add_argument("--data-dir", type=Path, default=Path(r"D:\NetConsoleData"), help="NetConsole 数据根，默认 D:\\NetConsoleData")
+    parser.add_argument("--all-sites", action="store_true", help="升级数据根 sites/ 下所有局点数据库")
     parser.add_argument("--no-backup", action="store_true", help="不自动备份数据库")
     parser.add_argument("--force", action="store_true", help="跳过源版本检查，仅补本次新增表并写入当前版本")
     args = parser.parse_args()

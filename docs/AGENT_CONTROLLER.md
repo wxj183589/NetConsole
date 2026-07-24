@@ -39,7 +39,7 @@ flowchart LR
 每局点数据库路径由 `PathResolver.site_agents_db_path(site)` 返回：
 
 ```text
-.local/data/sites/<site>/db/agents.db
+<data_root>/sites/<site>/db/agents.db
 ```
 
 `agent_configs` 保存用户配置，`agent_runtime_snapshots` 保存动态状态。两者通过 `agent_id` 关联，但不会与 `tasks.db` 或 `devices.db` 混用。SQLite 使用 WAL、busy timeout、foreign keys、显式事务和按调用创建连接。

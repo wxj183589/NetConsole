@@ -1,9 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
-import { tmpdir } from 'node:os'
 
-const ISOLATED_PREFIX = 'NetConsole-Codex-'
+const WINDOWS_TEST_DATA_ROOT = 'D:\\NetConsoleTestData'
 
 export function discoverProjectPython({ projectRoot, commonRoot, environment = process.env, platform = process.platform, probe = true, log = () => undefined }) {
   log('ELECTRON_PYTHON_DISCOVERY_START')
@@ -32,23 +31,30 @@ export function discoverProjectPython({ projectRoot, commonRoot, environment = p
   return selected.path
 }
 
-export function createIsolatedRuntime(systemTempRoot = tmpdir()) {
-  const root = mkdtempSync(join(resolve(systemTempRoot), ISOLATED_PREFIX))
+export function createIsolatedRuntime(testDataRoot = WINDOWS_TEST_DATA_ROOT, explicitRoot = '') {
+  const base = resolve(testDataRoot)
+  mkdirSync(base, { recursive: true })
+  const root = explicitRoot ? validateIsolatedRoot(explicitRoot, base) : mkdtempSync(join(base, 'electron-'))
+  if (explicitRoot) mkdirSync(root, { recursive: true })
   const runtime = {
     root,
-    dataRoot: resolve(root, 'data'),
+    dataRoot: root,
     runtimeRoot: resolve(root, 'runtime'),
-    userDataRoot: resolve(root, 'electron-user-data'),
+    userDataRoot: resolve(root, 'runtime', 'electron', 'user-data'),
   }
   for (const path of [runtime.dataRoot, runtime.runtimeRoot, runtime.userDataRoot]) mkdirSync(path, { recursive: true })
   return runtime
 }
 
-export function cleanupIsolatedRuntime(root, systemTempRoot = tmpdir()) {
-  const target = resolve(root)
-  const tempRoot = resolve(systemTempRoot)
-  if (!target.startsWith(`${tempRoot}${sep}`) || !basename(target).startsWith(ISOLATED_PREFIX)) {
-    throw new Error('Refusing to clean an unexpected isolated runtime directory')
-  }
+export function cleanupIsolatedRuntime(root, testDataRoot = WINDOWS_TEST_DATA_ROOT) {
+  const target = validateIsolatedRoot(root, resolve(testDataRoot))
   rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+}
+
+function validateIsolatedRoot(value, base) {
+  const target = resolve(value)
+  if (target === base || !target.startsWith(`${base}${sep}`) || !basename(target)) {
+    throw new Error('Refusing to use an unexpected isolated runtime directory')
+  }
+  return target
 }

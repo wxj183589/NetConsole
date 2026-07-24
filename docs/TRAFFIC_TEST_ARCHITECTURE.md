@@ -171,7 +171,7 @@ Controller 正常关闭只停止轮询并将活动映射标记为 `STALE`，不�
 统一运行索引：
 
 ```text
-.local/data/sites/<site>/files/network_tools/traffic/
+<data_root>/sites/<site>/files/network_tools/traffic/
 ├─ parsed/traffic_runs.sqlite
 └─ runs/<traffic_run_id>/
    ├─ events.jsonl
@@ -193,7 +193,7 @@ SQLite 使用 WAL、busy timeout、foreign keys、显式事务、独立连接和
 iPerf interval 不写入 Traffic 库。事实源继续是：
 
 ```text
-.local/data/sites/<site>/files/network_tools/iperf/parsed/iperf_results.sqlite
+<data_root>/sites/<site>/files/network_tools/iperf/parsed/iperf_results.sqlite
 ```
 
 本地和 Agent iPerf 都复用现有 Python parser；Agent 重放用远端事件键幂等写 interval。`traffic_runs.local_iperf_run_id` 只保存关联。

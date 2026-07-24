@@ -63,3 +63,20 @@ def test_data_disk_manager_refuses_protected_categories(tmp_path):
         assert "database" in str(exc)
     else:
         raise AssertionError("protected category cleanup must fail")
+
+
+def test_data_disk_manager_uses_runtime_below_unified_data_root(tmp_path):
+    data_root = tmp_path / "data-root"
+    runtime_cache = data_root / "runtime" / "cache" / "preview.json"
+    site_cache = data_root / "sites" / "demo" / "cache" / "chart.json"
+    for path in (runtime_cache, site_cache):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("cache", encoding="utf-8")
+
+    before = {item.name: item for item in scan_data_disk(data_root)}
+    removed = clean_data_disk(data_root, categories={"cache"})
+
+    assert before["cache"].bytes == len("cache") * 2
+    assert removed == {"cache": len("cache") * 2}
+    assert not runtime_cache.exists()
+    assert not site_cache.exists()

@@ -31,14 +31,14 @@ describe('desktop config', () => {
         NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe',
         NETCONSOLE_WEB_DEV_URL: 'http://127.0.0.1:5173',
         NETCONSOLE_BACKEND_TIMEOUT_MS: '12000',
-        LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+        NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData',
       },
       fileExists: () => true,
     })
 
     expect(config).toMatchObject({
       projectRoot: 'C:\\repo',
-      dataRoot: 'C:\\Users\\tester\\AppData\\Local\\NetConsole\\Development',
+      dataRoot: 'D:\\NetConsoleData',
       runtimeMode: 'desktop-development',
       storageMode: 'persistent',
       backendExecutable: 'C:\\repo\\.venv\\Scripts\\python.exe',
@@ -77,14 +77,13 @@ describe('desktop config', () => {
       platform: 'win32',
       env: {
         NETCONSOLE_PYTHON: 'C:\\untrusted\\python.exe',
-        LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
       },
       fileExists: () => true,
     })
 
     expect(config.backendExecutable).toBe('C:\\installed\\resources\\backend\\NetConsoleBackend.exe')
     expect(config.backendArgumentsPrefix).toEqual(['--electron-backend'])
-    expect(config.dataRoot).toBe('C:\\Users\\tester\\AppData\\Local\\NetConsole')
+    expect(config.dataRoot).toBe('D:\\NetConsoleData')
     expect(config).not.toHaveProperty('backendPythonPath')
   })
 
@@ -102,6 +101,21 @@ describe('desktop config', () => {
     })).toThrow('must not be inside')
   })
 
+  it('rejects a persistent desktop data root on the system drive', () => {
+    expect(() => loadDesktopConfig({
+      isPackaged: false,
+      appPath: 'D:\\repo\\apps\\desktop_electron',
+      resourcesPath: 'D:\\resources',
+      platform: 'win32',
+      env: {
+        NETCONSOLE_PYTHON: 'D:\\repo\\.venv\\Scripts\\python.exe',
+        NETCONSOLE_DATA_ROOT: 'C:\\NetConsoleData',
+        SystemDrive: 'C:',
+      },
+      fileExists: () => true,
+    })).toThrow('system drive')
+  })
+
   it('does not invent demo when persistent bootstrap has no valid site', () => {
     const config = loadDesktopConfig({
       isPackaged: false,
@@ -109,7 +123,7 @@ describe('desktop config', () => {
       resourcesPath: 'C:\\resources',
       platform: 'win32',
       storageMode: 'persistent',
-      env: { NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe', LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local' },
+      env: { NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe' },
       fileExists: () => true,
     })
     expect(config.activeSiteId).toBeUndefined()

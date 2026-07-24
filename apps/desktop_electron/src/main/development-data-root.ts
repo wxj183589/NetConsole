@@ -1,58 +1,121 @@
-import { rmSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, resolve, sep } from 'node:path'
+import { basename, isAbsolute, resolve, sep } from 'node:path'
 
 export type DesktopStorageMode = 'persistent' | 'isolated_test'
 
 export interface DesktopStorageContext {
   mode: DesktopStorageMode
   persistent: boolean
-  temporaryRoot?: string
-  userDataRoot?: string
+  dataRoot: string
+  userDataRoot: string
+  sessionDataRoot: string
+  cacheRoot: string
+  logsRoot: string
+  crashDumpsRoot: string
+  tempRoot: string
 }
 
-const ISOLATED_PREFIX = 'NetConsole-Codex-'
+export const DEFAULT_WINDOWS_DATA_ROOT = 'D:\\NetConsoleData'
+export const WINDOWS_TEST_DATA_ROOT = 'D:\\NetConsoleTestData'
 
 export function resolveDesktopStorageContext(
   environment: NodeJS.ProcessEnv = process.env,
   systemTempRoot = tmpdir(),
+  platform: NodeJS.Platform = process.platform,
 ): DesktopStorageContext {
   const requestedMode = environment.NETCONSOLE_STORAGE_MODE?.trim() || 'persistent'
+  const configuredRoot = environment.NETCONSOLE_DATA_ROOT?.trim()
   if (requestedMode === 'persistent') {
     if (environment.NETCONSOLE_DEV_TEMP_DATA_ROOT === '1' || environment.NETCONSOLE_DEV_TEMP_USER_DATA_ROOT) {
       throw new Error('Persistent desktop runtime must not use temporary storage markers')
     }
-    return { mode: 'persistent', persistent: true }
+    const dataRoot = validatePersistentDataRoot(
+      configuredRoot || (platform === 'win32' ? DEFAULT_WINDOWS_DATA_ROOT : ''),
+      environment,
+      systemTempRoot,
+      platform,
+    )
+    return buildContext('persistent', dataRoot)
   }
-  if (requestedMode !== 'isolated_test' || environment.NETCONSOLE_DEV_TEMP_DATA_ROOT !== '1') {
+  if (
+    requestedMode !== 'isolated_test'
+    || environment.NETCONSOLE_DEV_TEMP_DATA_ROOT !== '1'
+    || environment.NETCONSOLE_RUNTIME_MODE !== 'test'
+  ) {
     throw new Error('Desktop storage mode is invalid')
   }
-  const dataRoot = environment.NETCONSOLE_DATA_ROOT?.trim()
-  const userDataRoot = environment.NETCONSOLE_DEV_TEMP_USER_DATA_ROOT?.trim()
-  if (!dataRoot || !userDataRoot) throw new Error('Isolated desktop runtime paths are missing')
-  const temporaryRoot = validateIsolatedPath(dirname(resolve(dataRoot)), systemTempRoot)
-  if (resolve(dataRoot) !== resolve(temporaryRoot, 'data')) throw new Error('Isolated data root has an invalid layout')
-  if (resolve(userDataRoot) !== resolve(temporaryRoot, 'electron-user-data')) {
-    throw new Error('Isolated Electron userData has an invalid layout')
-  }
-  return {
-    mode: 'isolated_test',
-    persistent: false,
-    temporaryRoot,
-    userDataRoot: resolve(userDataRoot),
-  }
+  if (!configuredRoot) throw new Error('Isolated desktop data root is missing')
+  const dataRoot = validateIsolatedPath(configuredRoot, WINDOWS_TEST_DATA_ROOT)
+  return buildContext('isolated_test', dataRoot)
 }
 
-export function cleanupIsolatedDesktopRuntime(value: string, systemTempRoot = tmpdir()): void {
-  const target = validateIsolatedPath(value, systemTempRoot)
+export function ensureDesktopRuntimePaths(context: DesktopStorageContext): void {
+  for (const path of [
+    context.dataRoot,
+    context.userDataRoot,
+    context.sessionDataRoot,
+    context.cacheRoot,
+    context.logsRoot,
+    context.crashDumpsRoot,
+    context.tempRoot,
+  ]) mkdirSync(path, { recursive: true })
+}
+
+export function cleanupIsolatedDesktopRuntime(value: string, testDataRoot = WINDOWS_TEST_DATA_ROOT): void {
+  const target = validateIsolatedPath(value, testDataRoot)
   rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
 
-function validateIsolatedPath(value: string, systemTempRoot: string): string {
+function buildContext(mode: DesktopStorageMode, dataRoot: string): DesktopStorageContext {
+  const runtimeRoot = resolve(dataRoot, 'runtime')
+  const electronRoot = resolve(runtimeRoot, 'electron')
+  return {
+    mode,
+    persistent: mode === 'persistent',
+    dataRoot,
+    userDataRoot: resolve(electronRoot, 'user-data'),
+    sessionDataRoot: resolve(electronRoot, 'session-data'),
+    cacheRoot: resolve(electronRoot, 'cache'),
+    logsRoot: resolve(runtimeRoot, 'logs'),
+    crashDumpsRoot: resolve(electronRoot, 'crash-dumps'),
+    tempRoot: resolve(runtimeRoot, 'temp'),
+  }
+}
+
+function validateIsolatedPath(value: string, testDataRoot: string): string {
   const target = resolve(value)
-  const tempRoot = resolve(systemTempRoot)
-  if (!target.startsWith(`${tempRoot}${sep}`) || !basename(target).startsWith(ISOLATED_PREFIX)) {
+  const root = resolve(testDataRoot)
+  if (target === root || !target.startsWith(`${root}${sep}`) || !basename(target)) {
     throw new Error('Refusing to use an unexpected isolated desktop runtime')
+  }
+  return target
+}
+
+function validatePersistentDataRoot(
+  value: string,
+  environment: NodeJS.ProcessEnv,
+  systemTempRoot: string,
+  platform: NodeJS.Platform,
+): string {
+  if (!value || !isAbsolute(value)) throw new Error('NETCONSOLE_DATA_ROOT must be an absolute path')
+  const target = resolve(value)
+  const temporary = resolve(systemTempRoot)
+  if (target === temporary || target.startsWith(`${temporary}${sep}`)) {
+    throw new Error('NetConsole data root must not use the system temporary directory')
+  }
+  if (platform === 'win32') {
+    const systemDrive = (environment.SystemDrive?.trim() || 'C:').toLowerCase()
+    if (target.slice(0, 2).toLowerCase() === systemDrive) {
+      throw new Error(`NetConsole 数据根不得位于系统盘：${target}`)
+    }
+    for (const rawRoot of [environment.LOCALAPPDATA, environment.APPDATA]) {
+      if (!rawRoot) continue
+      const root = resolve(rawRoot)
+      if (target === root || target.startsWith(`${root}${sep}`)) {
+        throw new Error(`NetConsole 数据根不得位于 AppData：${target}`)
+      }
+    }
   }
   return target
 }

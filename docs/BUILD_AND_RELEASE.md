@@ -37,7 +37,7 @@ python -m scripts.build.build_release --backend pyinstaller --release
 ```powershell
 python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
 python -m scripts.maintenance.clean_generated_artifacts --target build-temporary --apply `
-  --manifest "$env:LOCALAPPDATA\NetConsole\MigrationReports\generated-cleanup-build-temporary.json"
+  --manifest "D:\NetConsoleData\migrations\generated-cleanup-build-temporary.json"
 ```
 
 该目标只允许删除 `dist/_build/`，不会处理 `dist/v1.4.2/`、`dist/electron/`、`dist/agent/`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
@@ -78,7 +78,7 @@ node scripts/package-smoke.mjs
 
 正式 Windows 用户入口固定为 `dist/electron/win-unpacked/NetConsole.exe`。`build.win.executableName` 必须保持为 `NetConsole`，并由 `package-smoke.mjs` 直接读取该构建配置，禁止在 smoke 脚本重复硬编码名称。`resources/backend/NetConsoleBackend.exe` 仅由 Electron Main 使用 `--electron-backend` 作为受管子进程启动；直接运行它会记录运行日志、显示提示并以非零状态退出，不能尝试启动源码 Electron 开发链。
 
-正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、空 `%LOCALAPPDATA%`、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑局点导入、凭据重录和真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。`nsis.deleteAppDataOnUninstall=false` 是当前数据保护约束。
+正式安装包发布门还需要在 Windows 图形环境完成人工启动、签名、安装/卸载和升级验收；必须额外覆盖全新 Windows 用户、无 Python/Node/pnpm/Git/源码、普通用户、中文用户名或中文数据路径、跨电脑局点导入、凭据重录和真实/仿真 H3C SSH 中文任务日志。单元测试、PyInstaller smoke 或 unpacked Electron smoke 不能替代这些验收。卸载不得删除 `D:\NetConsoleData`，也不得创建 LocalAppData 数据回退。
 
 ## 外部工具与许可证阻塞
 
@@ -98,4 +98,4 @@ apps\agent\scripts\build_windows.bat
 
 ## 不得进入仓库的产物
 
-`dist/`、PyInstaller build/spec 临时目录、Electron unpacked/安装包、`apps/*/node_modules`、虚拟环境、SBOM 临时输出、日志、SQLite 和用户数据均不得提交。源码开发态数据使用 `%LOCALAPPDATA%\NetConsole\Development\`，打包态使用 `%LOCALAPPDATA%\NetConsole\`；仓库根 `data/` 只能作为旧迁移源，迁移核验后应移出仓库归档或删除。
+`dist/`、PyInstaller build/spec 临时目录、Electron unpacked/安装包、`apps/*/node_modules`、虚拟环境、SBOM 临时输出、日志、SQLite 和用户数据均不得提交。源码开发态、打包态和正式包统一使用 `D:\NetConsoleData`；自动测试使用显式 `D:\NetConsoleTestData\<run-id>`。仓库根 `data/` 只能作为旧迁移源，迁移核验后应移出仓库归档或删除。

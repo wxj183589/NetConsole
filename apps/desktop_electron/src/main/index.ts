@@ -9,7 +9,7 @@ import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopCon
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger } from './logger'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
-import { resolveDesktopStorageContext } from './development-data-root'
+import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { StartupTimeline } from './startup-timeline'
@@ -41,8 +41,21 @@ import {
   secureWebPreferences,
 } from './security'
 
-const desktopStorageContext = resolveDesktopStorageContext()
-if (!desktopStorageContext.persistent) app.setPath('userData', desktopStorageContext.userDataRoot!)
+const initialStorageContext = resolveDesktopStorageContext()
+const persistedStorageRoot = initialStorageContext.persistent
+  ? new DesktopBootstrapStore(initialStorageContext.userDataRoot).load().data_root
+  : undefined
+const desktopStorageContext = persistedStorageRoot
+  ? resolveDesktopStorageContext({ ...process.env, NETCONSOLE_DATA_ROOT: persistedStorageRoot })
+  : initialStorageContext
+ensureDesktopRuntimePaths(desktopStorageContext)
+app.setPath('userData', desktopStorageContext.userDataRoot)
+app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
+app.setPath('cache', desktopStorageContext.cacheRoot)
+app.setPath('logs', desktopStorageContext.logsRoot)
+app.setPath('crashDumps', desktopStorageContext.crashDumpsRoot)
+app.setPath('temp', desktopStorageContext.tempRoot)
+assertElectronStoragePaths()
 app.enableSandbox()
 
 let mainWindow: BrowserWindow | undefined
@@ -123,14 +136,19 @@ async function startDesktop(): Promise<void> {
     appPath: app.getAppPath(),
     resourcesPath: process.resourcesPath,
     userDataPath: app.getPath('userData'),
+    resolvedDataRoot: desktopStorageContext.dataRoot,
     bootstrapDataRoot: bootstrap.data_root,
     bootstrapActiveSiteId: bootstrap.active_site_id,
     storageMode: desktopStorageContext.mode,
   })
+  if (resolve(config.dataRoot) !== resolve(desktopStorageContext.dataRoot)) {
+    throw new Error('Electron、Backend 和持久化配置的数据根不一致，已停止启动。')
+  }
   desktopDataRoot = config.dataRoot
   desktopActiveSiteId = config.activeSiteId ?? ''
   logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
   logger('ELECTRON_STORAGE_MODE', `mode=${desktopStorageContext.mode}`)
+  logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${process.env.NETCONSOLE_DATA_ROOT ? 'environment' : 'persistent-config'} fallback_used=false`)
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
   startupTimeline = new StartupTimeline(logger, startupStartedAt)
   startupTimeline.mark('electron.app_ready')
@@ -141,6 +159,7 @@ async function startDesktop(): Promise<void> {
     dataRoot: config.dataRoot,
     activeSiteId: config.activeSiteId,
     runtimeMode: config.runtimeMode,
+    storageMode: config.storageMode,
     pythonPath: config.backendPythonPath,
     rendererOrigin: config.rendererOrigin,
     startupTimeoutMs: config.startupTimeoutMs,
@@ -1047,6 +1066,23 @@ async function shutdown(): Promise<void> {
 function traceSmoke(event: string): void {
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
     process.stderr.write(`[netconsole-smoke] ${event}\n`)
+  }
+}
+
+function assertElectronStoragePaths(): void {
+  const expected: Array<[string, string]> = [
+    ['userData', desktopStorageContext.userDataRoot],
+    ['sessionData', desktopStorageContext.sessionDataRoot],
+    ['cache', desktopStorageContext.cacheRoot],
+    ['logs', desktopStorageContext.logsRoot],
+    ['crashDumps', desktopStorageContext.crashDumpsRoot],
+    ['temp', desktopStorageContext.tempRoot],
+  ]
+  const pathProvider = app as unknown as { getPath: (name: string) => string }
+  for (const [name, target] of expected) {
+    if (resolve(pathProvider.getPath(name)) !== resolve(target)) {
+      throw new Error(`Electron ${name} 路径未重定向到统一数据根。`)
+    }
   }
 }
 

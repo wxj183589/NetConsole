@@ -65,7 +65,7 @@ Electron + Vue + FastAPI/Python Core 是当前正式桌面架构。Qt/PySide6/QF
 | `resources/tools/` | 版本化的 fping/iPerf 运行工具唯一源码来源 |
 | `tools/` | 开发、诊断、维护和协议分析工具，不作为运行时工具来源 |
 
-独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`。Agent 的示例配置位于 `apps/agent/resources/config/`，运行数据和构建产物分别位于 `.local/agent/`、系统应用数据目录和 `dist/agent/`。
+独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`。Agent 的示例配置位于 `apps/agent/resources/config/`，开发与交付运行数据统一位于 `D:\NetConsoleData\agents\local/`，构建产物位于 `dist/agent/`。
 
 ## 模块边界
 

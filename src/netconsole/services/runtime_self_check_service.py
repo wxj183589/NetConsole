@@ -214,7 +214,7 @@ class RuntimeSelfCheckService:
                 "数据根可写",
                 "error",
                 "数据根写入校验失败。",
-                "检查当前用户对 LOCALAPPDATA 数据目录的权限和磁盘空间。",
+                "检查 D:\\NetConsoleData 的目录权限和磁盘空间。",
             )
         finally:
             marker.unlink(missing_ok=True)

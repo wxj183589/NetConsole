@@ -11,6 +11,7 @@ import {
 } from '../shared/bridge'
 import { redactSensitiveText, type DesktopLogger } from './logger'
 import type { StartupMilestone } from './startup-timeline'
+import type { DesktopStorageMode } from './development-data-root'
 
 export interface BackendRuntimeInfo {
   baseUrl: string
@@ -39,6 +40,7 @@ export interface PythonBackendManagerOptions {
   dataRoot: string
   activeSiteId?: string
   runtimeMode: 'desktop-development' | 'desktop-packaged'
+  storageMode?: DesktopStorageMode
   pythonPath?: string
   rendererOrigin?: string
   startupTimeoutMs?: number
@@ -188,8 +190,9 @@ export class PythonBackendManager {
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
       NETCONSOLE_DATA_ROOT: this.options.dataRoot,
+      NETCONSOLE_STORAGE_MODE: this.options.storageMode ?? 'persistent',
       ...(this.options.activeSiteId ? { NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId } : {}),
-      NETCONSOLE_RUNTIME_MODE: this.options.runtimeMode,
+      NETCONSOLE_RUNTIME_MODE: this.options.storageMode === 'isolated_test' ? 'test' : this.options.runtimeMode,
     }
     if (this.options.pythonPath) {
       const existingPythonPath = this.options.environment?.PYTHONPATH ?? process.env.PYTHONPATH
@@ -285,6 +288,10 @@ export class PythonBackendManager {
           return
         }
         if (settled) return
+        if (isStartupFailure(payload)) {
+          finish(new Error(payload.message))
+          return
+        }
         if (!isRuntimeAnnouncement(payload)) return
         if (requestedPort && payload.port !== requestedPort) {
           finish(new Error('Python backend announced an unexpected fixed development port'))
@@ -526,6 +533,17 @@ function isRuntimeAnnouncement(value: unknown): value is {
     && Number.isInteger(payload.port)
     && Number(payload.port) >= 1
     && Number(payload.port) <= 65535
+}
+
+function isStartupFailure(value: unknown): value is {
+  event: 'netconsole.electron_backend.startup_failed'
+  message: string
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const payload = value as Record<string, unknown>
+  return payload.event === 'netconsole.electron_backend.startup_failed'
+    && typeof payload.message === 'string'
+    && payload.message.trim().length > 0
 }
 
 function isShutdownAcknowledgement(value: unknown): boolean {

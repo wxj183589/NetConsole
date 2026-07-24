@@ -82,7 +82,7 @@ function isRejectedPersistentRoot(value: string, systemTempRoot: string): boolea
   const temporary = resolve(systemTempRoot)
   if (candidate === temporary || candidate.startsWith(`${temporary}${sep}`)) return true
   if (candidate.split(/[\\/]/).some((part) => part.startsWith('NetConsole-Codex-'))) return true
-  return !existsSync(resolve(candidate, 'data', 'sites'))
+  return !existsSync(resolve(candidate, 'sites'))
 }
 
 function safePath(value: unknown): string | undefined {

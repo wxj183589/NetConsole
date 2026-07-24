@@ -104,7 +104,7 @@ TCP 与 UDP 参数、正反向和报告阈值分开处理，停止采集时同�
 
 ## 6. 会话文件
 
-会话位于 `.local/data/sites/<site>/files/rail_transit/online_mr/<mr>/sessions/<session>/`。完整 raw/parsed/logs/outputs 布局见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
+会话位于 `<data_root>/sites/<site>/files/rail_transit/online_mr/<mr>/sessions/<session>/`。开发与正式的 `<data_root>` 都是 `D:\NetConsoleData`；自动测试必须使用显式测试根。完整 raw/parsed/logs/outputs 布局见 [DATA_LAYOUT.md](DATA_LAYOUT.md)。
 
 打包先生成 `<session>.zip.tmp`，成功后原子替换 `<session>.zip`；错误时删除临时包并保留 raw 会话。采集失败不能删除现场证据。
 

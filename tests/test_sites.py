@@ -20,9 +20,9 @@ def test_site_manager_creates_demo_and_chinese_site(tmp_path):
 
     assert demo.name == "demo"
     assert legacy_method_demo.name == "demo"
-    assert demo.database_path == tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"
+    assert demo.database_path == tmp_path / "sites" / "demo" / "db" / "devices.db"
     assert chinese.root_path.is_dir()
-    assert chinese.database_path == tmp_path / "data" / "sites" / chinese_site_name / "db" / "devices.db"
+    assert chinese.database_path == tmp_path / "sites" / chinese_site_name / "db" / "devices.db"
 
 
 def test_new_site_root_has_only_minimal_layout(tmp_path):
@@ -44,7 +44,7 @@ def test_demo_site_has_demo_data_and_new_site_is_empty(tmp_path):
     manager.ensure_demo_site()
     empty_site = manager.create_site("空站点")
 
-    demo_repo = DeviceRepository(Database(tmp_path / "data" / "sites" / "demo" / "db" / "devices.db"))
+    demo_repo = DeviceRepository(Database(tmp_path / "sites" / "demo" / "db" / "devices.db"))
     empty_repo = DeviceRepository(Database(empty_site.database_path))
     assert len(demo_repo.list()) == 8
     assert empty_repo.list() == []

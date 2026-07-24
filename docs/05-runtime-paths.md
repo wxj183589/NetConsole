@@ -1,21 +1,26 @@
 # Runtime Paths
 
-`src/netconsole/core/paths.py` 中的 `PathResolver` 是运行路径事实来源。开发态源码、资源和配置定位以仓库根目录为基准，但运行数据不写回源码目录。
+`src/netconsole/core/paths.py` 的 `PathResolver` 是运行路径事实来源。源码、资源和版本化配置仍由仓库定位，但所有运行数据与源码目录解耦。
 
-Windows 源码开发态默认布局：
+本机开发和正式运行共用：
 
 ```text
-%LOCALAPPDATA%/NetConsole/Development/
-├─ data/       # SQLite、局点数据、原始采集和正式业务文件
-├─ runtime/    # Job、Export、缓存、运行配置和应用日志
+D:\NetConsoleData
+├─ config/
+├─ sites/
+├─ runtime/
+│  ├─ electron/
 │  ├─ logs/
-│  └─ cache/
-└─ tmp/        # 手工临时样本
+│  ├─ cache/
+│  └─ temp/
+├─ agents/
+├─ migrations/
+└─ staging/
 ```
 
-`PathResolver.app_root` 与 `data_root` 已解耦：传入源码/安装根不会再隐式把运行数据写到同一目录。测试必须通过临时 `NETCONSOLE_DATA_ROOT` 或显式 `PathResolver(app_root=..., data_root=...)` 隔离；打包程序使用 `%LOCALAPPDATA%\NetConsole\`，不依赖当前工作目录。
+`PathResolver.app_root` 与 `data_root` 已解耦：传入源码或安装根不会把运行数据写回同一目录。测试必须设置 `RuntimeMode.TEST` 和 `NETCONSOLE_DATA_ROOT=D:\NetConsoleTestData\<run-id>`；未显式设置时直接失败。打包程序与 `pnpm dev` 都使用同一持久根，不依赖当前工作目录、LocalAppData 或用户目录。
 
-仓库 `.local/{data,runtime}` 和根 `data/` 是历史数据源，不再是活动运行目录。迁移先运行 `scripts/maintenance/migrate_legacy_runtime_data.py` dry-run，再在确认 manifest 后使用 `--apply --skip-conflicts`；脚本不覆盖目标，SQLite 使用 Backup API 并执行完整性检查。明确测试残留可用 `scripts/maintenance/clean_test_artifacts.py` 先预览再清理。
+仓库 `.local/{data,runtime}` 和根 `data/` 是历史迁移源，不再是活动目录。迁移使用 `scripts/maintenance/migrate_unified_data_root.py` 的 staging、SHA-256、SQLite 校验和冲突保留；来源在核验前不得删除。
 
 源码和工具路径：
 

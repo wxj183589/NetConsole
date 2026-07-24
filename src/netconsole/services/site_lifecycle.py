@@ -123,11 +123,8 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _bootstrap_path() -> Path:
-    app_data = os.environ.get("APPDATA")
-    if app_data:
-        return Path(app_data) / "netconsole-desktop-electron" / "bootstrap.json"
-    return Path.home() / "AppData" / "Roaming" / "netconsole-desktop-electron" / "bootstrap.json"
+def _bootstrap_path(paths: PathResolver) -> Path:
+    return paths.electron_dir / "user-data" / "bootstrap.json"
 
 
 def _database_summary(path: Path) -> tuple[dict[str, int], str, int]:
@@ -199,7 +196,7 @@ def _registry_records(paths: PathResolver) -> list[SiteRecord]:
             continue
         try:
             site_id = str(item.get("site_id") or "")
-            root = repository._resolve_root(str(item.get("relative_path") or f"data/sites/{site_id}"))
+            root = repository._resolve_root(str(item.get("relative_path") or f"sites/{site_id}"))
             if not root.is_dir():
                 continue
             records.append(
@@ -263,7 +260,7 @@ class SiteAuditService:
         used = set(by_id)
         app_config = _read_json(self.paths.app_config_path)
         current_dir = str(app_config.get("current_site") or "")
-        bootstrap = _read_json(_bootstrap_path())
+        bootstrap = _read_json(_bootstrap_path(self.paths))
         bootstrap_active = str(bootstrap.get("active_site_id") or "")
         directories = [path for path in sorted(self.paths.sites_dir.glob("*"), key=lambda item: item.name.casefold()) if path.is_dir() and not path.is_symlink()]
         selected = []
@@ -789,7 +786,7 @@ class SiteCleanupApplicationService:
         current = SiteApplicationCurrent(self.paths).site_id()
         if current in {record.site_id, record.root_path.name}:
             return True
-        bootstrap = _read_json(_bootstrap_path())
+        bootstrap = _read_json(_bootstrap_path(self.paths))
         if str(bootstrap.get("active_site_id") or "") in {record.site_id, record.root_path.name}:
             return True
         registry = _registry_records(self.paths)
@@ -1056,7 +1053,7 @@ class DemoSiteSeedService:
                 "replaced_by_seed_version": DEMO_SEED_VERSION,
                 "old_file_count": len(files),
                 "old_file_manifest_sha256": _manifest_digest(files),
-                "replacement_relative_path": "data/sites/demo",
+                "replacement_relative_path": "sites/demo",
             },
         )
 

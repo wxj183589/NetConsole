@@ -24,7 +24,7 @@
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites
 .\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --site-id demo
-.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --data-root "$env:LOCALAPPDATA\NetConsole\Development" --output "$env:TEMP\netconsole-site-audit.json"
+.\.venv\Scripts\python.exe -m scripts.maintenance.audit_sites --data-root "D:\NetConsoleData" --output "D:\NetConsoleData\migrations\site-audit.json"
 ```
 
 该命令对局点业务数据只读，但会写审计报告。报告中的 `can_delete` 仍不是单阶段删除授权；正式回收必须经过 Application Service 的 prepare/apply、文件哈希复核和受控回收区。
@@ -35,7 +35,7 @@
 
 ## 测试
 
-清理测试只在 pytest 临时目录构造目标，禁止对真实 `data/`、`.local/` 或 `%LOCALAPPDATA%\NetConsole` 做破坏性测试。
+清理测试只在 `D:\NetConsoleTestData\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。
 
 ## 修改规则
 

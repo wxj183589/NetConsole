@@ -6,6 +6,7 @@ from pathlib import Path
 from netconsole.core.runtime_environment import app_root as default_app_root
 from netconsole.core.runtime_environment import data_root as default_data_root
 from netconsole.core.runtime_environment import ensure_runtime_dir
+from netconsole.core.runtime_environment import validate_data_root
 from netconsole.core.runtime_environment import validate_runtime_write_path
 
 
@@ -27,14 +28,16 @@ class PathResolver:
         resolved_app_root = Path(configured_app_root or _default_app_root()).resolve()
         object.__setattr__(self, "app_root", resolved_app_root)
         if configured_data_root is not None:
-            resolved_data_root = Path(configured_data_root).resolve()
+            resolved_data_root = validate_data_root(Path(configured_data_root))
         else:
             resolved_data_root = default_data_root()
         object.__setattr__(self, "data_root", resolved_data_root)
 
     @property
     def data_dir(self) -> Path:
-        return self.data_root / "data"
+        """兼容旧调用名；新布局中业务目录直接位于 data_root。"""
+
+        return self.data_root
 
     @property
     def runtime_dir(self) -> Path:
@@ -50,14 +53,18 @@ class PathResolver:
 
     @property
     def sites_dir(self) -> Path:
-        return self.data_dir / "sites"
+        return self.data_root / "sites"
 
     @property
     def config_dir(self) -> Path:
-        return self.data_dir / "config"
+        return self.data_root / "config"
 
     @property
     def app_config_path(self) -> Path:
+        return self.config_dir / "application.json"
+
+    @property
+    def legacy_app_config_path(self) -> Path:
         return self.config_dir / "app.json"
 
     @property
@@ -70,19 +77,39 @@ class PathResolver:
 
     @property
     def bootstrap_dir(self) -> Path:
-        return self.data_root / "bootstrap"
+        return self.config_dir / "bootstrap"
 
     @property
     def temp_dir(self) -> Path:
-        return self.data_root / "temp"
+        return self.runtime_dir / "temp"
 
     @property
     def archive_dir(self) -> Path:
-        return self.data_root / "archive"
+        return self.migrations_dir / "archive"
 
     @property
     def migrations_dir(self) -> Path:
         return self.data_root / "migrations"
+
+    @property
+    def staging_dir(self) -> Path:
+        return self.data_root / "staging"
+
+    @property
+    def agents_dir(self) -> Path:
+        return self.data_root / "agents"
+
+    @property
+    def electron_dir(self) -> Path:
+        return self.runtime_dir / "electron"
+
+    @property
+    def locks_dir(self) -> Path:
+        return self.runtime_dir / "locks"
+
+    @property
+    def storage_manifest_path(self) -> Path:
+        return self.config_dir / "storage-manifest.json"
 
     @property
     def app_log_path(self) -> Path:
@@ -321,7 +348,7 @@ class PathResolver:
 
     @property
     def shared_runtime_dir(self) -> Path:
-        return self.data_dir / "runtime"
+        return self.config_dir / "runtime"
 
     @property
     def network_profiles_path(self) -> Path:
@@ -335,7 +362,7 @@ class PathResolver:
     def global_security_dir(self) -> Path:
         """跨局点安全材料目录；不随单个局点包导出。"""
 
-        return self.data_dir / "global" / "security"
+        return self.config_dir / "global" / "security"
 
     @property
     def global_known_hosts_path(self) -> Path:
@@ -371,6 +398,10 @@ class PathResolver:
             self.temp_dir,
             self.archive_dir,
             self.migrations_dir,
+            self.staging_dir,
+            self.agents_dir,
+            self.electron_dir,
+            self.locks_dir,
         )
         for path in runtime_paths:
             ensure_runtime_dir(path)

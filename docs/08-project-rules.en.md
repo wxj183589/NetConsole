@@ -62,7 +62,7 @@ Read the version only from `src/netconsole/core/version.py`, user-visible featur
 ## Validation and Release
 
 - During development, run the focused pytest, Vitest, Ruff, Go test, Electron test/typecheck/build/smoke, or architecture single gate that directly covers the change. Full pytest, full frontend test/build, Package Smoke, and the nine architecture gates run on the final real code combination.
-- Tests must not read or write development `.local/data`, formal site databases, real sessions, or reports. Use `tmp_path`, fake services, or an explicit temporary `NETCONSOLE_DATA_ROOT`.
+- Tests must not read or write `D:\NetConsoleData`, formal site databases, real sessions, or reports. Use `D:\NetConsoleTestData\<run-id>`, fake services, or an explicit test `NETCONSOLE_DATA_ROOT`.
 - Electron-only release gates include the nine architecture guards, no Qt dependency/resource/license residue, locked Python constraints, SBOM/Notice, allowlisted local fping/iPerf tools, package smoke, and Windows graphical manual validation.
 - Architecture exceptions must be exact to `rule_id + path` and include reason, owner domain, creation time, expiry time, and test. Directory wildcards, stale exceptions, and deleting tests to pass are forbidden.
 

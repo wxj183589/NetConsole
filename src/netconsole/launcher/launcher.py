@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Sequence
 
 from netconsole.core import app_logger
+from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.storage_manifest import prepare_storage_manifest
 
 if TYPE_CHECKING:
     from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
@@ -82,11 +84,14 @@ def parse_launch_options(argv: Sequence[str]) -> LaunchOptions:
 def launch(argv: Sequence[str] | None = None) -> int:
     options = parse_launch_options(sys.argv[1:] if argv is None else argv)
     paths = PathResolver()
-    instance = SingleInstanceGuard(paths.runtime_dir / "netconsole-launcher.lock")
-    if not instance.acquire():
-        app_logger.log_error("LAUNCHER_ALREADY_RUNNING", f"mode={options.mode}")
+    instance = BackendInstanceLock(paths)
+    try:
+        instance.acquire()
+    except BackendInstanceInUseError as exc:
+        app_logger.log_error("LAUNCHER_ALREADY_RUNNING", str(exc))
         return 3
     try:
+        prepare_storage_manifest(paths)
         return _launch_once(options, paths)
     finally:
         instance.release()

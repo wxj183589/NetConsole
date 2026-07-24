@@ -12,25 +12,25 @@ import {
 describe('Electron desktop storage context', () => {
   it('uses persistent storage without temporary markers', () => {
     expect(resolveDesktopStorageContext({ NETCONSOLE_STORAGE_MODE: 'persistent' }, 'C:\\Temp'))
-      .toEqual({ mode: 'persistent', persistent: true })
+      .toMatchObject({ mode: 'persistent', persistent: true, dataRoot: 'D:\\NetConsoleData' })
   })
 
   it('accepts and cleans only the exact isolated runtime layout', () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'netconsole-electron-test-'))
     const runtimeRoot = join(tempRoot, 'NetConsole-Codex-safe')
-    const dataRoot = join(runtimeRoot, 'data')
-    const userDataRoot = join(runtimeRoot, 'electron-user-data')
+    const dataRoot = runtimeRoot
+    const userDataRoot = join(runtimeRoot, 'runtime', 'electron', 'user-data')
     mkdirSync(dataRoot, { recursive: true })
     mkdirSync(userDataRoot, { recursive: true })
     try {
       const context = resolveDesktopStorageContext({
         NETCONSOLE_STORAGE_MODE: 'isolated_test',
+        NETCONSOLE_RUNTIME_MODE: 'test',
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
         NETCONSOLE_DATA_ROOT: dataRoot,
-        NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: userDataRoot,
       }, tempRoot)
-      expect(context).toMatchObject({ mode: 'isolated_test', persistent: false, temporaryRoot: runtimeRoot, userDataRoot })
-      cleanupIsolatedDesktopRuntime(context.temporaryRoot!, tempRoot)
+      expect(context).toMatchObject({ mode: 'isolated_test', persistent: false, dataRoot: runtimeRoot, userDataRoot })
+      cleanupIsolatedDesktopRuntime(context.dataRoot, tempRoot)
       expect(existsSync(runtimeRoot)).toBe(false)
     } finally {
       rmSync(tempRoot, { recursive: true, force: true })
@@ -44,8 +44,8 @@ describe('Electron desktop storage context', () => {
     }, 'C:\\Temp')).toThrow('must not use temporary')
     expect(() => resolveDesktopStorageContext({
       NETCONSOLE_STORAGE_MODE: 'isolated_test',
+      NETCONSOLE_RUNTIME_MODE: 'test',
       NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
-      NETCONSOLE_DATA_ROOT: 'C:\\Temp\\NetConsole-Codex-safe\\data',
-    }, 'C:\\Temp')).toThrow('paths are missing')
+    }, 'C:\\Temp')).toThrow('data root is missing')
   })
 })

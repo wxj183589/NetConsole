@@ -18,7 +18,7 @@ class DiskCategory:
 
 def scan_data_disk(data_dir: Path, runtime_dir: Path | None = None) -> list[DiskCategory]:
     data_root = Path(data_dir)
-    runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
+    runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root / "runtime"
     sites_root = data_root / "sites"
     categories = [
         DiskCategory("database", sites_root, _size_site_children(sites_root, "db"), False),
@@ -40,7 +40,7 @@ def clean_data_disk(data_dir: Path, runtime_dir: Path | None = None, categories:
     if unsafe:
         raise ValueError(f"Refusing to clean protected categories: {', '.join(sorted(unsafe))}")
     data_root = Path(data_dir)
-    runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root.parent / "runtime"
+    runtime_root = Path(runtime_dir) if runtime_dir is not None else data_root / "runtime"
     result: dict[str, int] = {}
     if "cache" in requested:
         removed = _clear_site_children(data_root / "sites", "cache")

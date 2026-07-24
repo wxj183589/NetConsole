@@ -22,7 +22,14 @@ const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRO
 const taskWindowSmoke = process.argv.includes('--task-window')
 const workspaceTraySmoke = process.argv.includes('--workspace-tray')
 const codex = process.argv.includes('--codex')
-const isolated = codex || smoke || taskWindowSmoke || workspaceTraySmoke
+const isolatedDataArgument = process.argv.indexOf('--isolated-test-data')
+const explicitIsolatedDataRoot = isolatedDataArgument >= 0
+  ? process.argv[isolatedDataArgument + 1]
+  : ''
+if (isolatedDataArgument >= 0 && !explicitIsolatedDataRoot) {
+  throw new Error('--isolated-test-data requires an absolute D:\\NetConsoleTestData\\<run-id> path')
+}
+const isolated = smoke || taskWindowSmoke || workspaceTraySmoke || Boolean(explicitIsolatedDataRoot)
 const codexBackendPort = 8000
 const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
 const codexSessionToken = codex ? randomBytes(32).toString('base64url') : ''
@@ -217,7 +224,7 @@ process.once('SIGINT', requestGracefulSignalShutdown)
 process.once('SIGTERM', requestGracefulSignalShutdown)
 
 try {
-  if (isolated) isolatedRuntime = createIsolatedRuntime()
+  if (isolated) isolatedRuntime = createIsolatedRuntime(undefined, explicitIsolatedDataRoot)
   process.stdout.write(isolated
     ? 'Isolated temporary test runtime - all data will be deleted\n'
     : 'Persistent development runtime\n')
@@ -257,10 +264,10 @@ try {
       NETCONSOLE_PROJECT_ROOT: projectRoot,
       NETCONSOLE_PYTHON: pythonExecutable,
       NETCONSOLE_STORAGE_MODE: isolated ? 'isolated_test' : 'persistent',
+      NETCONSOLE_RUNTIME_MODE: isolated ? 'test' : 'desktop-development',
       ...(isolated ? {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
-        NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: isolatedRuntime.userDataRoot,
         ...(taskWindowSmoke || workspaceTraySmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
         ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),

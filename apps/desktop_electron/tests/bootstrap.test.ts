@@ -18,9 +18,9 @@ describe('desktop bootstrap', () => {
     roots.push(root)
     const store = new DesktopBootstrapStore(root)
 
-    store.save({ schema_version: 1, data_root: 'C:\\NetConsoleData', active_site_id: 'line-12' })
+    store.save({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12' })
 
-    expect(store.load()).toEqual({ schema_version: 1, data_root: 'C:\\NetConsoleData', active_site_id: 'line-12' })
+    expect(store.load()).toEqual({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12' })
     expect(readFileSync(store.path, 'utf8')).not.toMatch(/token|password/i)
   })
 
@@ -37,7 +37,7 @@ describe('desktop bootstrap', () => {
     const root = mkdtempSync(join(tmpdir(), 'netconsole-bootstrap-'))
     const isolated = mkdtempSync(join(tmpdir(), 'NetConsole-Codex-polluted-'))
     roots.push(root, isolated)
-    mkdirSync(join(isolated, 'data', 'sites'), { recursive: true })
+    mkdirSync(join(isolated, 'sites'), { recursive: true })
     const store = new DesktopBootstrapStore(root)
     store.save({ schema_version: 1, data_root: isolated, active_site_id: 'line-12' })
 

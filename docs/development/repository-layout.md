@@ -57,7 +57,7 @@ NetConsole/
 
 ## 4. 应用边界
 
-- `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 运行数据默认写入 `%LOCALAPPDATA%\NetConsole\Agent`，开发态可使用 `.local/agent/`。
+- `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 的开发与交付运行数据统一写入 `D:\NetConsoleData\agents\local`，测试使用显式测试根的 `agents/` 子树。
 - Qt 桌面源码与历史 Web Shell 已回收，`apps/desktop/` 和 `src/netconsole/ui/` 不得重新创建；历史事实通过 Git 与迁移归档查询。
 - `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试和应用级开发脚本；不得复制 Python Core、业务 Service 或 Vue 页面。
 - `apps/web` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
@@ -82,7 +82,7 @@ apps/agent/
 └─ testdata/                    # 需要时放脱敏测试样本，不放运行数据
 ```
 
-`bin/`、`data/`、`dist/`、`logs/`、`packages/`、`tmp/`、`apps/agent/tools/` 不得作为 Agent 源码子目录保留。Agent 开发运行数据使用 `.local/agent/{data,logs,tmp,runtime,packages}`，打包态使用 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`；构建产物统一写入 `dist/agent/`。运行时第三方工具的唯一源码来源是根 `resources/tools/`，Agent 交付包内才生成 `tools/windows-x64/{fping,iperf3}`，不在 `apps/agent/resources/tools/` 或 `apps/agent/tools/` 复制第二份。
+`bin/`、`data/`、`dist/`、`logs/`、`packages/`、`tmp/`、`apps/agent/tools/` 不得作为 Agent 源码子目录保留。Agent 运行数据使用 `<data_root>/agents/local/{data,logs,packages}`；构建产物统一写入 `dist/agent/`。运行时第三方工具的唯一源码来源是根 `resources/tools/`，Agent 交付包内才生成 `tools/windows-x64/{fping,iperf3}`，不在 `apps/agent/resources/tools/` 或 `apps/agent/tools/` 复制第二份。
 
 ## 5. 配置和资源规则
 
@@ -90,19 +90,19 @@ apps/agent/
 - `resources` 放随代码发布的只读资源、规则、命令参考和已审计工具依赖；不得把运行数据或报告写回此目录。
 - 所有文档中的源码文件路径使用 `src/netconsole/...`；Python import、模块或包名仍使用 `netconsole.*`，不得把 import 写成 `src.netconsole.*`。
 - `resources/tools/` 是 fping/iPerf 运行工具的唯一源码来源；`tools/` 只用于开发、诊断、维护和协议分析。`tools/windows-x64/ipop/` 只保存 IPOP 外部工具说明，`IPOP.EXE` 不提交、不打包。
-- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 放在 `.local/agent/` 或 `%LOCALAPPDATA%\NetConsole\Agent\`。Agent 启动脚本可在首次运行时从模板初始化缺失文件，但不得覆盖已有真实配置。
+- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 位于 `<data_root>/agents/local/`。Agent 启动脚本可在首次运行时从模板初始化缺失文件，但不得覆盖已有真实配置。
 - `src/netconsole/assets`、`src/netconsole/resources` 是包内资源，必须通过资源 helper 定位并在打包配置中显式处理。
 - 真实敏感配置只能由用户在本机应用数据目录配置，提交前必须脱敏。
 
 ## 6. 运行数据规则
 
-Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development\`，通过 `PathResolver` 生成实际子目录：
+Windows 源码开发态、打包态和正式包均使用 `D:\NetConsoleData`，通过 `PathResolver` 生成实际子目录：
 
-- `<data_root>/data`：SQLite、局点数据、原始采集、解析库和正式业务文件；
+- `<data_root>/sites`：SQLite、局点数据、原始采集、解析库和正式业务文件；
 - `<data_root>/runtime/logs`：应用日志；
 - `<data_root>/runtime/cache`：Job、Export 和查询缓存；
-- `<data_root>/tmp`：手工临时样本和一次性导出；
-- 打包态优先使用 `%LOCALAPPDATA%\NetConsole\`，不依赖安装目录或当前工作目录。
+- `<data_root>/runtime/temp`：受控临时样本和一次性导出；
+- 自动测试只能使用显式 `<D:\NetConsoleTestData\<run-id>>`，不依赖安装目录或当前工作目录。
 
 正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源；活动进程不得读写，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
@@ -111,7 +111,7 @@ Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development
 - 单元测试和集成测试放在 `tests/`，测试样本放在 `tests/fixtures/`；不得把测试样本放入生产 `resources`。
 - 大体积日志样本必须脱敏，不能包含真实密码、Token、community、私钥或生产敏感地址。
 - 测试不得依赖开发者机器绝对路径；使用 `tmp_path`、显式 `PathResolver` 或项目根定位。
-- 测试生成的数据库、日志、报告、缓存和临时文件必须位于 pytest 临时目录或 `.local`，不能写回源码树。
+- 测试生成的数据库、日志、报告、缓存和临时文件必须位于 `D:\NetConsoleTestData\<run-id>`，不能写回源码树或真实数据根。
 
 ## 8. 脚本目录规则
 
@@ -165,7 +165,7 @@ Windows 源码开发态默认数据根为 `%LOCALAPPDATA%\NetConsole\Development
 | `project/release.py` | `scripts/build/release.py` | 发布辅助脚本 |
 | 根 `build_*.bat` | `scripts/build/` | Windows 构建入口 |
 | 根 `clean_build_spec.py` | `scripts/build/clean_build_spec.py` | PyInstaller 构建检查 |
-| 历史根 `data/` | `%LOCALAPPDATA%/NetConsole/Development/data/` | 无覆盖迁移；冲突保留并审计 |
-| 历史 `.local/data/` | `%LOCALAPPDATA%/NetConsole/Development/data/` | 开发业务数据优先迁移源 |
-| 历史 `.local/runtime/` | `%LOCALAPPDATA%/NetConsole/Development/runtime/` | 运行日志/缓存迁移源 |
+| 历史根 `data/` | `D:\NetConsoleData` | 无覆盖迁移；冲突保留并审计 |
+| 历史 `.local/data/` | `D:\NetConsoleData` | 开发业务数据迁移源 |
+| 历史 `.local/runtime/` | `D:\NetConsoleData\runtime` | 运行日志/缓存迁移源 |
 | 根 `release/` | `dist/` | 构建产物，忽略且不提交 |

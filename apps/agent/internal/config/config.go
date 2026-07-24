@@ -12,6 +12,8 @@ const (
 	DefaultIperf3WindowsX64      = "./tools/windows-x64/iperf3/iperf3.exe"
 	DefaultFpingWindowsX64       = "./tools/windows-x64/fping/fping.exe"
 	DefaultMRCollectorWindowsX64 = "./tools/windows-x64/mr_collector/netconsole-mr-collector.exe"
+	DefaultNetConsoleDataRoot    = `D:\NetConsoleData`
+	DefaultAgentHomeName         = "local"
 )
 
 var executablePath = os.Executable
@@ -62,6 +64,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := validateManagedPath(abs); err != nil {
+		return nil, fmt.Errorf("Agent 配置路径无效: %w", err)
+	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
 		return nil, fmt.Errorf("读取配置失败 %s: %w", abs, err)
@@ -103,6 +108,9 @@ func Load(path string) (*Config, error) {
 		cfg.Power.RestoreOnExit = true
 	}
 	for _, dir := range []string{cfg.DataPath(), cfg.LogPath(), cfg.PackagePath()} {
+		if _, err := validateManagedPath(dir); err != nil {
+			return nil, fmt.Errorf("Agent 运行目录无效: %w", err)
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("创建运行目录失败 %s: %w", dir, err)
 		}
@@ -140,54 +148,82 @@ func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Agent.ListenHost, c.Agent.ListenPort)
 }
 
-// ResolveConfigPath returns the runtime config path without treating an example
-// config as an active configuration. The CLI and environment variables are
-// explicit overrides; the remaining candidates are runtime locations.
-func ResolveConfigPath(explicit string) string {
-	if path := strings.TrimSpace(explicit); path != "" {
-		return path
+// ResolveConfigPath only accepts configuration under the unified data root.
+// It deliberately never falls back to AppData, the source tree, the current
+// directory, or the delivery directory.
+func ResolveConfigPath(explicit string) (string, error) {
+	candidate := strings.TrimSpace(explicit)
+	if candidate == "" {
+		candidate = strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_CONFIG"))
 	}
-	if path := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_CONFIG")); path != "" {
-		return path
-	}
-
-	candidates := make([]string, 0, 4)
-	if root := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_PROJECT_ROOT")); root != "" {
-		candidates = append(candidates, filepath.Join(root, ".local", "agent", "config.json"))
-	}
-	if home := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_HOME")); home != "" {
-		candidates = append(candidates, filepath.Join(home, "config.json"))
-	}
-	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
-		candidates = append(candidates, filepath.Join(localAppData, "NetConsole", "Agent", "config.json"))
-	}
-	if executable, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config.json"))
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
+	if candidate == "" {
+		home, err := ResolveAgentHome()
+		if err != nil {
+			return "", err
 		}
+		candidate = filepath.Join(home, "config.json")
 	}
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return "config.json"
+	return validateManagedPath(candidate)
 }
 
-// ResolveTargetsPath keeps editable targets beside the active config unless
-// the caller or environment explicitly selects another file.
-func ResolveTargetsPath(explicit, configDir string) string {
-	if path := strings.TrimSpace(explicit); path != "" {
-		return path
+// ResolveTargetsPath keeps editable targets beside the active config and
+// rejects paths outside the unified Agent storage subtree.
+func ResolveTargetsPath(explicit, configDir string) (string, error) {
+	candidate := strings.TrimSpace(explicit)
+	if candidate == "" {
+		candidate = strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_TARGETS"))
 	}
-	if path := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_TARGETS")); path != "" {
-		return path
+	if candidate == "" {
+		candidate = filepath.Join(configDir, "targets.json")
 	}
-	if configDir != "" {
-		return filepath.Join(configDir, "targets.json")
+	return validateManagedPath(candidate)
+}
+
+// ResolveAgentHome returns the per-machine Agent runtime directory. An
+// explicit home is accepted only when it remains inside <data_root>/agents.
+func ResolveAgentHome() (string, error) {
+	root, err := agentStorageRoot()
+	if err != nil {
+		return "", err
 	}
-	return "targets.json"
+	configured := strings.TrimSpace(os.Getenv("NETCONSOLE_AGENT_HOME"))
+	if configured == "" {
+		return filepath.Join(root, DefaultAgentHomeName), nil
+	}
+	return validatePathUnder(configured, root)
+}
+
+func agentStorageRoot() (string, error) {
+	dataRoot := strings.TrimSpace(os.Getenv("NETCONSOLE_DATA_ROOT"))
+	if dataRoot == "" {
+		dataRoot = DefaultNetConsoleDataRoot
+	}
+	absDataRoot, err := filepath.Abs(dataRoot)
+	if err != nil {
+		return "", fmt.Errorf("无法解析 NETCONSOLE_DATA_ROOT: %w", err)
+	}
+	return filepath.Join(absDataRoot, "agents"), nil
+}
+
+func validateManagedPath(value string) (string, error) {
+	root, err := agentStorageRoot()
+	if err != nil {
+		return "", err
+	}
+	return validatePathUnder(value, root)
+}
+
+func validatePathUnder(value, root string) (string, error) {
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("路径必须为绝对路径且位于 %s", root)
+	}
+	target := filepath.Clean(value)
+	base := filepath.Clean(root)
+	relative, err := filepath.Rel(base, target)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径必须位于 %s", base)
+	}
+	return target, nil
 }
 
 func (c *Config) resolveRuntimeTool(configured, defaultPath string) string {

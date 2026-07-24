@@ -35,18 +35,20 @@ start_agent.bat
 首次运行 `apps\agent\scripts\start_windows.bat`、交付包的 `start_agent.bat` 或 `start_console.bat` 时，脚本会仅在缺失时自动创建：
 
 ```text
-%LOCALAPPDATA%\NetConsole\Agent\config.json
-%LOCALAPPDATA%\NetConsole\Agent\targets.json
+D:\NetConsoleData\agents\local\config.json
+D:\NetConsoleData\agents\local\targets.json
 ```
 
-源码启动脚本从 `apps/agent/resources/config/` 复制模板；交付包脚本从包内的 `config.example.json` 和 `targets.example.json` 复制。已有真实配置绝不会被覆盖。首次初始化后按提示编辑上述 LocalAppData 文件，再填入现场 MR / iPerf 目标；真实配置不得提交到 Git。
+源码启动脚本从 `apps/agent/resources/config/` 复制模板；交付包脚本从包内的 `config.example.json` 和 `targets.example.json` 复制。已有真实配置绝不会被覆盖。首次初始化后按提示编辑上述统一数据根文件，再填入现场 MR / iPerf 目标；真实配置不得提交到 Git。
 
-开发态需要先把示例配置复制到仓库的 `.local\agent\`，再从仓库根目录启动：
+源码联调同样使用正式数据根；只有自动测试才可显式改用 `D:\NetConsoleTestData\<run-id>`：
 
 ```powershell
-New-Item -ItemType Directory -Force .local\agent | Out-Null
-Copy-Item apps\agent\resources\config\config.example.json .local\agent\config.json
-Copy-Item apps\agent\resources\config\targets.example.json .local\agent\targets.json
+$agentHome = 'D:\NetConsoleData\agents\local'
+New-Item -ItemType Directory -Force $agentHome | Out-Null
+if (!(Test-Path "$agentHome\config.json")) { Copy-Item apps\agent\resources\config\config.example.json "$agentHome\config.json" }
+if (!(Test-Path "$agentHome\targets.json")) { Copy-Item apps\agent\resources\config\targets.example.json "$agentHome\targets.json" }
+$env:NETCONSOLE_DATA_ROOT = 'D:\NetConsoleData'
 $env:NETCONSOLE_AGENT_PROJECT_ROOT = (Get-Location).Path
 Set-Location apps\agent
 go run .\cmd\netconsole-agent --console --open
@@ -56,9 +58,9 @@ go run .\cmd\netconsole-agent --console --open
 
 ## 配置
 
-V1 使用标准库可直接读取的 JSON 配置，不引入 YAML 依赖。版本化模板位于 `apps/agent/resources/config/config.example.json`；真实配置不得放回源码目录。默认查找顺序为：命令行 `--config`、`NETCONSOLE_AGENT_CONFIG`、开发态 `$NETCONSOLE_AGENT_PROJECT_ROOT/.local/agent/config.json`、`NETCONSOLE_AGENT_HOME/config.json`、`%LOCALAPPDATA%\NetConsole\Agent\config.json`、可执行文件旁的 `config.json`。`agent` 运行目录和用户显式配置的相对工具路径均以活动配置文件所在目录为基准；默认工具路径按交付包和源码资源规则解析。主要配置段：
+V1 使用标准库可直接读取的 JSON 配置，不引入 YAML 依赖。版本化模板位于 `apps/agent/resources/config/config.example.json`；真实配置不得放回源码目录。默认配置为 `D:\NetConsoleData\agents\local\config.json`；`NETCONSOLE_DATA_ROOT` 可选择唯一根，`NETCONSOLE_AGENT_HOME`、命令行 `--config` 和 `NETCONSOLE_AGENT_CONFIG` 仅可指定该根 `agents/` 子树中的绝对路径。不存在 LocalAppData、用户目录、当前工作目录、源码目录或可执行文件旁的回退。`agent` 运行目录和用户显式配置的相对工具路径均以活动配置文件所在目录为基准；默认工具路径按交付包和源码资源规则解析。主要配置段：
 
-- `agent`：Agent ID/名称、监听地址；数据、日志和采集包默认相对于活动配置目录写入，开发态即 `.local\agent\{data,logs,packages}`，打包态即 `%LOCALAPPDATA%\NetConsole\Agent\{data,logs,packages}`，也可在配置中覆盖；
+- `agent`：Agent ID/名称、监听地址；数据、日志和采集包默认相对于活动配置目录写入 `D:\NetConsoleData\agents\local\{data,logs,packages}`，配置覆盖也必须仍位于统一根的 `agents/` 子树；
 - `security`：Token 和预留 Web 账号字段；`enable_auth` 默认 `false`；
 - `tools`：Windows x64 `iperf3`、fping 和 MR sidecar 的交付包路径；所有路径均可覆盖，但不会扫描或回退旧目录；
 - `power`：启动防休眠、任务运行时保持屏幕和退出恢复，默认均为 `true`；
@@ -121,7 +123,7 @@ tools/windows-x64/
 
 仓库内置 iPerf3 固定为用户提供并经哈希核验的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`。fping 固定为本地构建的 v5.5 加已归档 Cygwin ICMP 兼容补丁，运行时为 Cygwin 3.6.9-1。两套工具的 `SOURCE_PROVENANCE.json`、固定文件哈希、GPLv3/LGPLv3/链接例外与对应源码说明必须随工具目录一起进入 Agent 包；fping 还必须携带补丁和构建配方。不能用同名未知二进制替换、混入额外文件或在构建时联网补齐。
 
-默认工具路径先检查 Agent 可执行文件同级的 `tools/windows-x64/`，因此真实配置位于 `%LOCALAPPDATA%` 时不会错误查找 `%LOCALAPPDATA%\NetConsole\Agent\tools`；开发态其次检查 `$NETCONSOLE_AGENT_PROJECT_ROOT/resources/tools/windows-x64/`，再从活动配置目录向上查找仓库 `resources/tools/windows-x64/`，最后才回退到配置目录相对路径。用户显式配置的绝对路径直接使用，相对路径仍以 `config.json` 所在目录解析。MR sidecar 使用同一交付包优先规则。`apps/agent/resources/` 只保存 Agent 示例配置；运行时工具不在此目录复制第二份，避免与根 `resources/tools/` 产生双来源。`apps/agent/tools/` 永久禁止使用。
+默认工具路径先检查 Agent 可执行文件同级的 `tools/windows-x64/`；开发态其次检查 `$NETCONSOLE_AGENT_PROJECT_ROOT/resources/tools/windows-x64/`，再从活动配置目录向上查找仓库 `resources/tools/windows-x64/`，最后才回退到配置目录相对路径。用户显式配置的绝对路径直接使用，相对路径仍以 `config.json` 所在目录解析。MR sidecar 使用同一交付包优先规则。`apps/agent/resources/` 只保存 Agent 示例配置；运行时工具不在此目录复制第二份，避免与根 `resources/tools/` 产生双来源。`apps/agent/tools/` 永久禁止使用。
 
 真实 fping 使用独立 `fping` 任务类型，固定调用随 Agent 部署的 fping 5.5 参数，不接受任意命令、工具路径或输出路径。`ping_probe` 继续使用并发 TCP Connect，事件保持 `mode=tcp`，不等同于 ICMP Ping。
 
@@ -160,7 +162,7 @@ POST /api/v1/power/restore
 每个任务写入：
 
 ```text
-%LOCALAPPDATA%\NetConsole\Agent\data\tasks\<task_id>\
+D:\NetConsoleData\agents\local\data\tasks\<task_id>\
 ├─ task.json
 ├─ events.jsonl
 ├─ result.json（支持结构化结果的任务）
@@ -171,7 +173,7 @@ POST /api/v1/power/restore
 └─ meta/
 ```
 
-完成/停止/失败后默认在 `%LOCALAPPDATA%\NetConsole\Agent\packages\<task_id>.zip` 原子提交采集包。包内包含 `manifest.json`、任务/目标/Agent/系统/停止信息、`agent_runtime.log` 和实际存在的 `raw/` 文件。用户停止后的终态为 `cancelled`；自然完成为 `completed`，执行或打包失败为 `failed`。终态只在事件、结果和打包提交完成后发布；打包失败保留任务目录和原始日志。
+完成/停止/失败后默认在 `D:\NetConsoleData\agents\local\packages\<task_id>.zip` 原子提交采集包。包内包含 `manifest.json`、任务/目标/Agent/系统/停止信息、`agent_runtime.log` 和实际存在的 `raw/` 文件。用户停止后的终态为 `cancelled`；自然完成为 `completed`，执行或打包失败为 `failed`。终态只在事件、结果和打包提交完成后发布；打包失败保留任务目录和原始日志。
 
 ## MR Netmiko sidecar 与命令边界
 

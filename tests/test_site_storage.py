@@ -115,7 +115,7 @@ def test_data_root_migration_keeps_old_data_and_verifies_sqlite(tmp_path: Path) 
 
     assert result["old_data_root_retained"] is True
     assert paths.site_db_path("site-one").is_file()
-    assert (target / "data" / "sites" / "site-one" / "db" / "devices.db").is_file()
+    assert (target / "sites" / "site-one" / "db" / "devices.db").is_file()
     assert next((target / "migrations").glob("migration-*.json")).is_file()
 
 

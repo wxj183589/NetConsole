@@ -5,12 +5,12 @@ NetConsole uses SQLite for local management data.
 Main database path relative to the active application data root:
 
 ```text
-data/sites/<site_name>/db/devices.db
+sites/<site_name>/db/devices.db
 ```
 
 The schema in code is the current source of truth for a new database.
 
-The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
+The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does not exist in an explicitly initialized test or demo root, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data. Persistent production roots never silently create a second empty data tree.
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
@@ -77,7 +77,7 @@ CSV import and export use one versioned current template with a Chinese header r
 High-frequency collection data is reserved for future files under:
 
 ```text
-.local/data/sites/<site_name>/metrics/YYYY-MM.db
+sites/<site_name>/cache/metrics/YYYY-MM.db
 ```
 
 No metrics database is created in this stage.

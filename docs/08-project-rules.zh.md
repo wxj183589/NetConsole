@@ -62,7 +62,7 @@
 ## 验证与发布
 
 - 开发阶段先跑与改动直接相关的 pytest、Vitest、Ruff、Go 测试、Electron test/typecheck/build/smoke 或架构单门；全量 pytest、完整前端测试/构建、Package Smoke 和九个架构门只在最终真实代码组合上运行。
-- 测试不得读取或写入开发态 `.local/data`、正式局点数据库、真实会话和报告；使用 `tmp_path`、Fake 服务或显式临时 `NETCONSOLE_DATA_ROOT`。
+- 测试不得读取或写入 `D:\NetConsoleData`、正式局点数据库、真实会话和报告；使用 `D:\NetConsoleTestData\<run-id>`、Fake 服务或显式测试 `NETCONSOLE_DATA_ROOT`。
 - Electron-only 发布门包括九个架构 Guard、无 Qt 依赖/资源/许可证残留、锁定 Python constraints、SBOM/Notice、白名单 fping/iPerf 本地工具、安装包 smoke 和 Windows 图形人工验收。
 - 架构例外必须精确到 `rule_id + path`，含理由、责任域、创建时间、到期时间和测试；禁止目录级通配、陈旧例外或删除测试换通过。
 

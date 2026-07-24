@@ -7,7 +7,7 @@ NetConsole 开发默认先跑与改动直接相关的定向测试，所有待合
 ## 数据隔离
 
 - pytest 在收集测试模块前创建独立的临时 `NETCONSOLE_DATA_ROOT`。
-- 测试不得读取或写入开发态 `.local/data`、正式局点数据库、真实会话和报告。
+- 测试不得读取或写入 `D:\NetConsoleData`、正式局点数据库、真实会话和报告；必须使用 `D:\NetConsoleTestData\<run-id>`。
 - 需要特定数据布局时使用 `tmp_path`、测试 fixture 或 Fake 服务；不得依赖当前机器已有 Task、Session 或设备数量。
 - 独立工作树的虚拟环境若未执行 editable 安装，运行会启动 Python 子进程的测试时应显式设置 `PYTHONPATH=src`；不能把 `ModuleNotFoundError: netconsole` 误判为 Worker 业务失败。
 
