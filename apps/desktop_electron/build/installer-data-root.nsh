@@ -4,11 +4,13 @@
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
 
+!ifndef BUILD_UNINSTALLER
 Var NetConsoleDataRoot
 Var NetConsoleExistingDataRoot
 Var NetConsoleDataRootChanged
 Var NetConsoleDataRootInput
 Var NetConsoleDataRootStatus
+!endif
 
 !macro customInit
   ReadRegStr $NetConsoleExistingDataRoot HKLM "Software\NetConsole" "DataRoot"
@@ -52,6 +54,11 @@ Var NetConsoleDataRootStatus
   WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
 !macroend
 
+; electron-builder compiles an intermediate uninstaller with this include too.
+; Its installer-only page handlers must not be emitted in that compilation,
+; otherwise NSIS treats their intentional absence from the uninstaller flow as
+; a fatal warning.
+!ifndef BUILD_UNINSTALLER
 Function NetConsoleDataRootPageCreate
   nsDialogs::Create 1018
   Pop $0
@@ -149,3 +156,5 @@ Function NetConsoleDataRootPageLeave
     StrCpy $NetConsoleDataRootChanged "1"
   ${EndIf}
 FunctionEnd
+
+!endif

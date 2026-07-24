@@ -39,6 +39,7 @@ describe('Electron-only packaging', () => {
     const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
 
     expect(script).toContain('Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave')
+    expect(script).toContain('!ifndef BUILD_UNINSTALLER')
     expect(script).toContain('选择 NetConsole 数据存放位置')
     expect(script).toContain('GetDriveTypeW')
     expect(script).toContain('禁止将业务数据存放在系统盘')
