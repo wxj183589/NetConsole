@@ -33,6 +33,7 @@ from netconsole.services.export.common_exporters import (
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
 from netconsole.services.trackside_ap_base_export import export_trackside_ap_base_xlsx_task
+from netconsole.services.trackside_ap_rename_export import export_trackside_ap_rename_commands_task
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
@@ -64,6 +65,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "command_reference_markdown",
     "vehicle_mr_history_xlsx",
     "trackside_ap_base_xlsx",
+    "trackside_ap_rename_commands",
 }
 
 
@@ -124,6 +126,9 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_vehicle_mr_history_xlsx(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "trackside_ap_base_xlsx":
         row_count = export_trackside_ap_base_xlsx_task(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "trackside_ap_rename_commands":
+        result = export_trackside_ap_rename_commands_task(tmp_path, payload, progress_callback, should_cancel)
+        row_count = int(result.get("row_count") or 0)
     else:
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():
@@ -137,4 +142,4 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
     replace_output(tmp_path, output_path)
     if job.job_type == "securecrt_sessions":
         return {"path": str(result.get("path") or output_path), "row_count": row_count}
-    return {"path": str(output_path), "row_count": row_count}
+    return {"path": str(output_path), "row_count": row_count, **(result if job.job_type == "trackside_ap_rename_commands" else {})}

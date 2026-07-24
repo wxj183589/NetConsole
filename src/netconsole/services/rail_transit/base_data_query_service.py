@@ -254,6 +254,7 @@ class RailTransitBaseDataQueryService:
     ) -> TracksideApPageDTO:
         items = self._all_aps(site_id, include_runtime=True)
         issues = self._issues(site_id, aps=self._all_aps(site_id, include_runtime=False), mrs=self._all_mrs(site_id, include_runtime=False))
+        issues.extend(self._runtime_ap_issues(items))
         issue_map = self._issue_map(issues, "ap")
         items = [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
         for field, value in (("station", station), ("section", section), ("line_side", line_side)):
@@ -287,6 +288,7 @@ class RailTransitBaseDataQueryService:
             aps=self._all_aps(site_id, include_runtime=False),
             mrs=self._all_mrs(site_id, include_runtime=False),
         )
+        issues.extend(self._runtime_ap_issues(items))
         issue_map = self._issue_map(issues, "ap")
         return [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
 
@@ -294,7 +296,11 @@ class RailTransitBaseDataQueryService:
         item = next((row for row in self._all_aps(site_id, include_runtime=True) if row.id == ap_id), None)
         if item is None:
             return None
-        issues = [issue for issue in self._issues(site_id) if issue.entity_type == "ap" and issue.entity_id == ap_id]
+        issues = [
+            issue
+            for issue in [*self._issues(site_id), *self._runtime_ap_issues([item])]
+            if issue.entity_type == "ap" and issue.entity_id == ap_id
+        ]
         return TracksideApDetailDTO(ap=self._with_ap_issues(item, issues), issues=issues)
 
     def list_mrs(
@@ -485,16 +491,14 @@ class RailTransitBaseDataQueryService:
 
     def _all_points(self, site_id: str, *, include_runtime: bool) -> list[TracksideApDTO]:
         rows = self._read_rows(site_id, "ap_extension_points", _AP_FIELDS)
-        ac_by_mac: dict[str, Any] = {}
-        ac_by_name: dict[str, Any] = {}
+        ac_by_mac: dict[str, list[Any]] = defaultdict(list)
         links_by_ap: dict[str, list[Any]] = defaultdict(list)
         if include_runtime:
             try:
                 for detail in self.ac_query.list_all_ap_details(site_id):
                     mac_key = self._mac_key(detail.ap.mac)
                     if mac_key:
-                        ac_by_mac[mac_key] = detail
-                    ac_by_name[detail.ap.name.casefold()] = detail
+                        ac_by_mac[mac_key].append(detail)
             except (OSError, ValueError, sqlite3.Error):
                 pass
             try:
@@ -508,7 +512,8 @@ class RailTransitBaseDataQueryService:
         for row in rows:
             name = str(row.get("ap_name") or "")
             mac_key = self._mac_key(row.get("ap_mac_norm") or row.get("ap_mac_display"))
-            ac = ac_by_mac.get(mac_key) or ac_by_name.get(name.casefold())
+            ac_matches = ac_by_mac.get(mac_key, []) if mac_key else []
+            ac = ac_matches[0] if len(ac_matches) == 1 else None
             links = links_by_ap.get(mac_key) or links_by_ap.get(name.casefold()) or []
             parsed = self._mileage(row.get("mileage_text"), row.get("mileage_m"))
             record_kind = str(row.get("belong_type") or "")
@@ -538,6 +543,10 @@ class RailTransitBaseDataQueryService:
                 ]
             related_names = sorted({link.mr_name for link in links if link.mr_name})
             runtime = RelatedRuntimeStatusDTO(
+                fit_ap_id=ac.ap.id if ac else "",
+                fit_ap_ac_id=ac.ap.ac_id if ac else "",
+                fit_ap_name=ac.ap.name if ac else "",
+                fit_ap_match_status="matched" if ac else "conflict" if len(ac_matches) > 1 else "unmatched",
                 fit_ap_status=ac.ap.status if ac else "unknown",
                 optical_status=ac.optical.optical_status if ac else "no_data",
                 mesh_status="online" if links else "unknown",
@@ -696,6 +705,23 @@ class RailTransitBaseDataQueryService:
         issues.extend(self._station_issues(stations))
         issues.extend(self._section_issues(sections, stations))
         return issues
+
+    def _runtime_ap_issues(self, aps: list[TracksideApDTO]) -> list[DataQualityIssueDTO]:
+        return [
+            self._issue(
+                "error",
+                "fit_ap_mac_ambiguous",
+                "ap",
+                ap.id,
+                ap.runtime.fit_ap_name or ap.name or ap.point_code,
+                "mac",
+                ap.mac,
+                "同一 AP MAC 匹配到多个 AC FIT-AP，未自动关联",
+                "核对 AC FIT-AP 资源中的重复 MAC",
+            )
+            for ap in aps
+            if ap.runtime.fit_ap_match_status == "conflict"
+        ]
 
     def _unbound_mr_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
         db_path = self.paths.site_db_path(site_id)

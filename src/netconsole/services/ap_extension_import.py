@@ -47,7 +47,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "start_mileage": ("起点里程", "起始里程", "start_mileage"),
     "mileage_text": ("里程", "里程原文", "公里标", "KM", "K标", "桩号", "mileage_text", "mileage"),
     "distance_to_prev_m": ("距上一个AP", "距上一个 AP", "AP间距", "间隔", "distance_to_prev_m"),
-    "ap_point_code": ("AP编号", "点位编号", "AP点位", "轨旁AP编号", "ap_point_code"),
+    "ap_point_code": ("AP编号", "点位编号", "AP点位", "轨旁AP编号", "AP名称编号", "ap_point_code"),
     "ap_name": ("AP名称", "AP名", "AP命名", "AP Name", "ap_name"),
     "ap_mac_display": ("AP MAC", "MAC", "MAC地址", "AP_MAC", "AP MAC地址", "ap_mac", "ap_mac_display"),
     "curve_radius_m": ("曲线半径", "半径", "curve_radius_m"),

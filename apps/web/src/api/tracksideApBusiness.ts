@@ -68,8 +68,17 @@ export function exportTracksideApBase(template = false, rows?: TracksideAp[]): P
   return apiRequest(`${root}/base/export`, { method: 'POST', body: JSON.stringify({ template, ...(rows ? { rows } : {}) }) })
 }
 
+export function exportTracksideApRenameCommands(rows?: TracksideAp[]): Promise<TracksideApTask> {
+  return apiRequest(`${root}/base/rename-commands/export`, { method: 'POST', body: JSON.stringify(rows ? { rows } : {}) })
+}
+
 export const tracksideApBaseDownloadRequest = (artifactId: string, suggestedName: string): BackendDownloadRequest => ({
   apiPath: `${root}/base/artifacts/${encodeURIComponent(artifactId)}/download`,
+  suggestedName,
+})
+
+export const tracksideApRenameCommandDownloadRequest = (artifactId: string, suggestedName: string): BackendDownloadRequest => ({
+  apiPath: `${root}/base/rename-commands/artifacts/${encodeURIComponent(artifactId)}/download`,
   suggestedName,
 })
 

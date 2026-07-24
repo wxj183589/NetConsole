@@ -16,6 +16,7 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApPlanExportRequestDTO,
     TracksideApPlanPreviewDTO,
     TracksideApPlanWriteRequestDTO,
+    TracksideApRenameCommandExportRequestDTO,
     TracksideApUpdateRequestDTO,
 )
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
@@ -27,6 +28,8 @@ _ACTIONS = {
     "trackside_ap_business_export",
     "trackside_ap_plan_save",
     "trackside_ap_plan_export",
+    "trackside_ap_base_export",
+    "trackside_ap_rename_command_export",
 }
 
 
@@ -142,6 +145,43 @@ def download_base_artifact(request: Request, artifact_id: str) -> FileResponse:
             _site_id(request), artifact_id
         )
         return FileResponse(path, filename=name)
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.post(
+    "/base/rename-commands/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.rail_trackside_ap_base_io")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def export_rename_commands(
+    request: Request,
+    payload: TracksideApRenameCommandExportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _application_service(request).start_trackside_ap_rename_command_export(
+            _site_id(request),
+            rows=None if payload.rows is None else [row.model_dump() for row in payload.rows],
+        )
+    except RailTransitWebError as exc:
+        _raise_error(exc)
+
+
+@router.get(
+    "/base/rename-commands/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_base_io"))],
+)
+def download_rename_command_artifact(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _application_service(request).open_trackside_ap_rename_command_export(
+            _site_id(request), artifact_id
+        )
+        return FileResponse(path, filename=name, media_type="text/plain; charset=utf-8")
     except RailTransitWebError as exc:
         _raise_error(exc)
 

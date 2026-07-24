@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   cancelTracksideApTask,
   exportTracksideApPlan,
+  exportTracksideApRenameCommands,
   getTracksideApPlan,
   getTracksideApTask,
   listTracksideApBusiness,
@@ -27,6 +28,7 @@ describe('trackside AP business API', () => {
     await getTracksideApPlan()
     await saveTracksideApPlan([])
     await exportTracksideApPlan(true)
+    await exportTracksideApRenameCommands()
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/trackside-ap-business/rows?station=%E7%AB%99%E7%82%B9A&optical_anomaly_only=true',
@@ -38,6 +40,7 @@ describe('trackside AP business API', () => {
       '/api/rail-transit/trackside-ap-business/plan',
       '/api/rail-transit/trackside-ap-business/plan/save',
       '/api/rail-transit/trackside-ap-business/plan/export',
+      '/api/rail-transit/trackside-ap-business/base/rename-commands/export',
     ])
     expect(tracksideApBusinessDownloadRequest('artifact / 1', '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx')).toEqual({
       apiPath: '/api/rail-transit/trackside-ap-business/artifacts/artifact%20%2F%201/download',

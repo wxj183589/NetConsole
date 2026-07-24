@@ -100,6 +100,10 @@ class MileageDTO(ApiModel):
 
 
 class RelatedRuntimeStatusDTO(ApiModel):
+    fit_ap_id: str = ""
+    fit_ap_ac_id: str = ""
+    fit_ap_name: str = ""
+    fit_ap_match_status: str = "unmatched"
     fit_ap_status: str = "unknown"
     optical_status: str = "no_data"
     mesh_status: str = "unknown"

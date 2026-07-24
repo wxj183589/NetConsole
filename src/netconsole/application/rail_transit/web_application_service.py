@@ -110,6 +110,7 @@ from netconsole.services.trackside_ap_plan_io import (
 )
 from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
 from netconsole.services.trackside_ap_base_export import build_trackside_ap_base_export_name
+from netconsole.services.trackside_ap_rename_export import build_trackside_ap_rename_export_name
 from netconsole.services.vehicle_mr_online import VehicleMrOnlineStore
 from netconsole.services.rail_transit.vehicle_mr_mapping_io import (
     VEHICLE_MR_MAPPING_TEMPLATE_COLUMNS,
@@ -156,6 +157,7 @@ class RailTransitWebApplicationService:
         "web_export_car_network_point_table",
         "web_export_trackside_ap_business",
         "web_export_trackside_ap_base_xlsx",
+        "web_export_trackside_ap_rename_commands",
         "web_export_multi_sheet_xlsx",
         "web_export_table_xlsx",
         "web_export_vehicle_mr_history_xlsx",
@@ -168,6 +170,7 @@ class RailTransitWebApplicationService:
         "car_network_point_table": "web_export_car_network_point_table",
         "trackside_ap_business": "web_export_trackside_ap_business",
         "trackside_ap_base": "web_export_trackside_ap_base_xlsx",
+        "trackside_ap_rename_commands": "web_export_trackside_ap_rename_commands",
         "trackside_ap_plan": "web_export_multi_sheet_xlsx",
         "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
         "vehicle_mr_mapping_template": "web_export_table_xlsx",
@@ -179,6 +182,7 @@ class RailTransitWebApplicationService:
         "web_export_car_network_point_table": "car_network_point_table_export",
         "web_export_trackside_ap_business": "trackside_ap_business_export",
         "web_export_trackside_ap_base_xlsx": "trackside_ap_base_export",
+        "web_export_trackside_ap_rename_commands": "trackside_ap_rename_command_export",
         "web_export_multi_sheet_xlsx": "trackside_ap_plan_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
         "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
@@ -190,6 +194,7 @@ class RailTransitWebApplicationService:
         "car_network_point_table": "car_network_point_table_export",
         "trackside_ap_business": "trackside_ap_business_export",
         "trackside_ap_base": "trackside_ap_base_export",
+        "trackside_ap_rename_commands": "trackside_ap_rename_command_export",
         "trackside_ap_plan": "trackside_ap_plan_export",
         "vehicle_mr_history": "vehicle_mr_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
@@ -670,6 +675,60 @@ class RailTransitWebApplicationService:
         artifact_id: str,
     ) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "trackside_ap_base")
+
+    def start_trackside_ap_rename_command_export(
+        self,
+        site_id: str,
+        *,
+        rows: list[dict[str, object]] | None = None,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        task_id = f"rail-export-{uuid4().hex}"
+        now = datetime.now()
+        site_display_name = self._site_display_name(site_id)
+        try:
+            preferred_name = build_trackside_ap_rename_export_name(site_display_name, now)
+            reservation = self.artifact_store.reserve(
+                site_id=site_id,
+                owner=self._OWNER,
+                source="trackside_ap_rename_commands",
+                artifact_type="txt",
+                task_id=task_id,
+                task_type=self._ARTIFACT_TASK_TYPES["trackside_ap_rename_commands"],
+                output_root=self.paths.trackside_ap_outputs_dir(site_id) / "web_rename_commands",
+                preferred_name=preferred_name,
+                use_display_name_as_file_name=True,
+            )
+        except ValueError as exc:
+            raise RailTransitWebError("SITE_DISPLAY_NAME_INVALID", str(exc)) from exc
+        except WebArtifactError as exc:
+            self._task_window_blocked("轨旁 AP 重命名命令导出", exc)
+        payload: dict[str, object] = {
+            "source_module": "rail.trackside_ap_rename_commands",
+            "site_id": site_id,
+            "site_display_name": site_display_name,
+            "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+        }
+        if rows is not None:
+            payload["draft_rows"] = rows
+        job = replace(
+            ExportTaskSpec(
+                task_type="trackside_ap_rename_commands",
+                output_path=str(reservation.output_path),
+                payload=payload,
+                site_name=site_id,
+            ).to_job(task_id).with_runtime_paths(
+                tmp_path=str(reservation.output_path.with_name(f"{reservation.output_path.name}.{task_id}.tmp")),
+                cancel_path=str(self.paths.runtime_cache_dir / "export_jobs" / f"{task_id}.cancel"),
+            ),
+            site_name=site_id,
+        )
+        return self._start_export(site_id, job, "trackside_ap_rename_command_export", reservation)
+
+    def open_trackside_ap_rename_command_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "trackside_ap_rename_commands", "txt")
 
     def get_trackside_ap_plan(self, site_id: str) -> TracksideApPlanDTO:
         site_id = self._site(site_id)
@@ -2056,6 +2115,7 @@ class RailTransitWebApplicationService:
             "session_deleted", "parsed_data_deleted", "artifacts_deleted",
             "managed_files_deleted", "artifact_count", "mapping_records_deleted",
             "task_records_deleted", "error_code", "error_message",
+            "scanned_count", "valid_command_count", "blocking_error_count",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):

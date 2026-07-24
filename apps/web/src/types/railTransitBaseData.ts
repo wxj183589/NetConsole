@@ -8,6 +8,10 @@ export interface Mileage {
 }
 
 export interface RuntimeStatus {
+  fit_ap_id: string
+  fit_ap_ac_id: string
+  fit_ap_name: string
+  fit_ap_match_status: string
   fit_ap_status: string
   optical_status: string
   mesh_status: string

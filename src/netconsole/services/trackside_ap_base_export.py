@@ -49,8 +49,8 @@ TRACKSIDE_AP_BASE_COLUMNS = (
 )
 
 _FIELD_NOTES = (
-    ("AP名称", "可选", "正式 AP 名称；来源名称等于 MAC 时不会覆盖已采集到的真实名称。"),
-    ("点位编号", "条件必填", "业务点位标识；没有 AP MAC 时必须满足项目既有唯一身份规则。"),
+    ("AP名称", "只读", "AC 当前真实 FIT-AP 名称；未匹配运行态时回退为基础资料中的名称。"),
+    ("点位编号", "条件必填", "项目定义的 AP 点位编号，也是重命名命令的目标名称。"),
     ("AP MAC", "条件必填", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化为 xxxx-xxxx-xxxx。"),
     ("管理 IP", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
     ("型号", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
@@ -151,7 +151,7 @@ def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
     mileage_raw = raw.get("mileage")
     mileage = dict(mileage_raw) if isinstance(mileage_raw, Mapping) else {}
     return {
-        "ap_name": raw.get("name") or raw.get("ap_name") or "",
+        "ap_name": runtime.get("fit_ap_name") or raw.get("name") or raw.get("ap_name") or "",
         "ap_point_code": raw.get("point_code") or raw.get("ap_point_code") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
         "management_ip": raw.get("management_ip") or "",
