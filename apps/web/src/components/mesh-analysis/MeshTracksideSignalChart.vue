@@ -50,6 +50,7 @@ import {
 import {
   assignTracksideSeriesColors,
   createTracksideSeriesPalette,
+  disposeTracksideSeriesColorAssignment,
   type TracksideSeriesColorAssignment,
 } from './tracksideSeriesColors'
 import {
@@ -102,6 +103,7 @@ const emit = defineEmits<{
   'viewport-ready': [viewport: MeshChartViewport]
   'pointer-change': [pointer: MeshSharedPointerChange]
   'workload-phase': [phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed']
+  'workload-profile': [profile: { conflictEdgeCount: number }]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -218,7 +220,9 @@ function handleLocalPointerMove(event: PointerEvent): void {
 }
 
 function rebuildSeriesColors(theme = readNetConsoleChartTokens()): void {
+  disposeTracksideSeriesColorAssignment(seriesColors)
   seriesColors = buildSeriesColors(seriesCache, theme)
+  emit('workload-profile', { conflictEdgeCount: seriesColors.conflictEdgeCount })
 }
 
 function tooltipFrameTimestamp(pointerMillis: number): number | null {
@@ -624,6 +628,7 @@ async function ensureChart(): Promise<boolean> {
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
+    emit('workload-profile', { conflictEdgeCount: seriesColors.conflictEdgeCount })
     reportWorkloadPhase('echarts-init')
     chart = core.init(container.value, undefined, createTimeChartInitOptions(seriesCache.totalRenderedPoints, {
       useDirtyRect: false,
@@ -745,6 +750,7 @@ onBeforeUnmount(() => {
   closePinnedTracksideFrame()
   chart?.dispose()
   chart = null
+  disposeTracksideSeriesColorAssignment(seriesColors)
   disposeTracksideSeriesCache(seriesCache)
   reportWorkloadPhase('chart-disposed')
 })

@@ -28,6 +28,15 @@ const mocks = vi.hoisted(() => ({
   chartResetViewport: vi.fn(),
   chartResize: vi.fn(),
   routerPush: vi.fn(),
+  routerReplace: vi.fn(),
+  currentRoute: {
+    value: {
+      name: 'mesh-analysis',
+      path: '/rail-transit/mesh-analysis',
+      fullPath: '/rail-transit/mesh-analysis',
+      query: {} as Record<string, string>,
+    },
+  },
 }))
 
 vi.mock('../../api/meshAnalysis', () => ({
@@ -63,7 +72,13 @@ vi.mock('../../api/railTransitWeb', () => ({
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: vi.fn().mockResolvedValue(true) }) }))
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource: vi.fn() }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.routerPush }) }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({
+    push: mocks.routerPush,
+    replace: mocks.routerReplace,
+    currentRoute: mocks.currentRoute,
+  }),
+}))
 
 import MeshAnalysisView from './MeshAnalysisView.vue'
 
@@ -184,6 +199,25 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   localStorage.clear()
+  mocks.currentRoute.value = {
+    name: 'mesh-analysis',
+    path: '/rail-transit/mesh-analysis',
+    fullPath: '/rail-transit/mesh-analysis',
+    query: {},
+  }
+  mocks.routerPush.mockResolvedValue(undefined)
+  mocks.routerReplace.mockImplementation(async (target: { name?: string; path?: string; query?: Record<string, string> }) => {
+    const path = target.path || '/rail-transit/mesh-analysis'
+    const query = { ...(target.query || {}) }
+    const encoded = new URLSearchParams(query).toString()
+    mocks.currentRoute.value = {
+      name: target.name || 'mesh-analysis',
+      path,
+      fullPath: `${path}${encoded ? `?${encoded}` : ''}`,
+      query,
+    }
+    return undefined
+  })
   mocks.listProfiles.mockResolvedValue([])
   mocks.listVehicleMrs.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 })
   mocks.prepareContext.mockResolvedValue({ site_id: 'demo', vehicle_mr_count: 0, profile_count: 0, created_count: 0, updated_count: 0 })
@@ -509,13 +543,14 @@ describe('Mesh analysis detail behavior', () => {
 
     const tables = wrapper.findAllComponents(dataTableStub)
     const linkTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-link-details:v3')!
-    const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string }>
+    const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string; width?: number }>
     const linkKeys = resolvedLinkColumns.map((column) => column.key)
     expect(linkKeys.slice(0, 10)).toEqual([
       'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac', 'peer_ap_name',
       'local_rssi_db', 'peer_rssi_db', 'peer_ap_mac',
     ])
-    expect(resolvedLinkColumns.find((column) => column.key === 'timestamp_tag')?.fixed).toBe('left')
+    expect(resolvedLinkColumns.filter((column) => column.fixed === 'left').map((column) => column.key)).toEqual(['record_id'])
+    expect(resolvedLinkColumns.find((column) => column.key === 'section')?.width).toBe(190)
     const switchTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-switch-events:v3')!
     const switchKeys = (switchTable.props('columns') as Array<{ key: string }>).map((column) => column.key)
     expect(switchKeys).toEqual([
@@ -717,8 +752,8 @@ describe('Mesh analysis detail behavior', () => {
     await openButton!.trigger('click')
     await flushPromises()
 
-    expect(mocks.getSession).toHaveBeenCalledWith('session-1')
-    expect(mocks.listBuildOrder).toHaveBeenCalledWith('session-1', expect.objectContaining({ page: 1, page_size: 100, sort_order: 'desc' }))
+    expect(mocks.getSession).toHaveBeenCalledWith('session-1', expect.any(AbortSignal))
+    expect(mocks.listBuildOrder).toHaveBeenCalledWith('session-1', expect.objectContaining({ page: 1, page_size: 100, sort_order: 'desc' }), expect.any(AbortSignal))
     expect(mocks.getActivePath).not.toHaveBeenCalled()
     expect(mocks.getRateSeries).not.toHaveBeenCalled()
     expect(mocks.getCounterDeltas).not.toHaveBeenCalled()

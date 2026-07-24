@@ -8,6 +8,7 @@ import { buildTracksideSeriesCache } from './tracksideSeriesCache'
 import {
   assignTracksideSeriesColors,
   createTracksideSeriesPalette,
+  disposeTracksideSeriesColorAssignment,
   type TracksideSeriesColorAssignment,
 } from './tracksideSeriesColors'
 
@@ -158,5 +159,21 @@ describe('trackside conflict-aware series colors', () => {
     expectEveryConflictUsesDifferentColors(assignment)
     expect(assignment.colorBySeriesId.size).toBe(seriesCount)
     expect(assignment.totalMs).toBeLessThan(targetMs)
+  })
+
+  it('clears the conflict graph and color maps when a chart is disposed', () => {
+    const cache = buildTracksideSeriesCache([
+      series('A', [point('2026-07-20T10:00:00.000Z', 'ACTIVE', 'A')]),
+      series('B', [point('2026-07-20T10:00:00.000Z', 'STANDBY', 'B')]),
+    ])
+    const assignment = assignTracksideSeriesColors(cache, createTracksideSeriesPalette())
+    expect(assignment.conflictEdgeCount).toBeGreaterThan(0)
+
+    disposeTracksideSeriesColorAssignment(assignment)
+
+    expect(assignment.colorBySeriesId.size).toBe(0)
+    expect(assignment.colorIndexBySeriesId.size).toBe(0)
+    expect(assignment.conflictsBySeriesId.size).toBe(0)
+    expect(assignment.conflictEdgeCount).toBe(0)
   })
 })

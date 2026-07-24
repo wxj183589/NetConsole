@@ -49,7 +49,7 @@ describe('App layout foundation', () => {
   })
 
   it('keeps workspace routes alive by isolated tab cache keys', () => {
-    expect(routesSource).toMatch(/name: 'mesh-analysis'.*identity: 'resource'/)
+    expect(routesSource).toMatch(/name: 'mesh-analysis'.*identity: 'singleton'/)
     expect(source).toContain('<AppRouteView />')
     expect(source).toContain('<WorkspaceTabBar />')
     expect(routeViewSource).toContain(':include="cachedWorkspaceComponentNames"')

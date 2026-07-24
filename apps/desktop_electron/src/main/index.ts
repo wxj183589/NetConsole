@@ -779,9 +779,51 @@ function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: un
       `source_file_id=${report.sourceFileId ?? 'none'}`,
       `radio=${report.radio ?? 'none'}`,
       `series_count=${report.seriesCount ?? 'none'}`,
+      `point_count=${report.pointCount ?? 'none'}`,
+      `metadata_count=${report.metadataCount ?? 'none'}`,
+      `conflict_edge_count=${report.conflictEdgeCount ?? 'none'}`,
+      `mesh_instances=${report.meshInstanceCount ?? 'none'}`,
+      `trackside_caches=${report.tracksideCacheCount ?? 'none'}`,
+      `trackside_charts=${report.tracksideChartCount ?? 'none'}`,
+      `active_detail_requests=${report.activeDetailRequests ?? 'none'}`,
       `returned_link_points=${report.returnedLinkPoints ?? 'none'}`,
       `returned_frames=${report.returnedFrames ?? 'none'}`,
       `report_revision=${report.reportRevision}`,
+    ].join(' '),
+  )
+  const rendererPid = window.webContents.getOSProcessId()
+  const memory = app.getAppMetrics().find((metric) => metric.pid === rendererPid)?.memory
+  const meshWindowReports = getAllDesktopWindows()
+    .map((candidate) => latestRendererWorkloads.get(candidate.webContents.id))
+    .filter((candidate): candidate is RendererWorkloadReport => candidate?.module === 'mesh-analysis')
+  const sum = (field: keyof RendererWorkloadReport): number => meshWindowReports.reduce((total, item) => {
+    const value = item[field]
+    return total + (typeof value === 'number' ? value : 0)
+  }, 0)
+  logger(
+    'MESH_MEMORY_PROFILE',
+    [
+      `web_contents_id=${webContentsId}`,
+      `session_id=${report.sessionId ?? 'none'}`,
+      `mesh_tabs=${sum('meshInstanceCount')}`,
+      `mesh_windows=${meshWindowReports.length}`,
+      `rendered_trackside_charts=${sum('tracksideChartCount')}`,
+      `trackside_caches=${sum('tracksideCacheCount')}`,
+      `series=${report.seriesCount ?? 0}`,
+      `points=${report.pointCount ?? 0}`,
+      `metadata=${report.metadataCount ?? 0}`,
+      `conflict_edges=${report.conflictEdgeCount ?? 0}`,
+      `echarts_instances=${report.echartsInstanceCount ?? 0}`,
+      `canvas=${report.canvasCount ?? 0}`,
+      `active_session_api=${sum('activeDetailRequests')}`,
+      `cache_builds=${report.tracksideCacheBuildCount ?? 0}`,
+      `cache_disposes=${report.tracksideCacheDisposeCount ?? 0}`,
+      `echarts_inits=${report.chartInitCount ?? 0}`,
+      `echarts_disposes=${report.chartDisposeCount ?? 0}`,
+      `heap_used_mb=${report.heapUsedBytes == null ? 'unavailable' : (report.heapUsedBytes / 1024 / 1024).toFixed(1)}`,
+      'array_buffer_mb=unavailable',
+      `private_memory_mb=${memory?.privateBytes == null ? 'unavailable' : (memory.privateBytes / 1024).toFixed(1)}`,
+      `resident_set_mb=${memory == null ? 'unavailable' : (memory.workingSetSize / 1024).toFixed(1)}`,
     ].join(' '),
   )
   const recovery = rendererRecoveries.get(webContentsId)

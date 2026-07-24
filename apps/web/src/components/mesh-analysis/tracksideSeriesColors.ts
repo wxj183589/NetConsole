@@ -13,6 +13,23 @@ export interface TracksideSeriesColorAssignment {
   totalMs: number
 }
 
+export function disposeTracksideSeriesColorAssignment(
+  assignment: TracksideSeriesColorAssignment | null | undefined,
+): void {
+  if (!assignment) return
+  for (const conflicts of assignment.conflictsBySeriesId.values()) {
+    if (conflicts instanceof Set) conflicts.clear()
+  }
+  if (assignment.colorBySeriesId instanceof Map) assignment.colorBySeriesId.clear()
+  if (assignment.colorIndexBySeriesId instanceof Map) assignment.colorIndexBySeriesId.clear()
+  if (assignment.conflictsBySeriesId instanceof Map) assignment.conflictsBySeriesId.clear()
+  assignment.conflictEdgeCount = 0
+  assignment.usedColorCount = 0
+  assignment.conflictGraphBuildMs = 0
+  assignment.colorAssignmentMs = 0
+  assignment.totalMs = 0
+}
+
 const TRACKSIDE_BASE_PALETTE = [
   '#2f80ed', '#27ae60', '#9b51e0', '#00a3a3',
   '#d16ba5', '#5b8ff9', '#5ad8a6', '#7b61ff',

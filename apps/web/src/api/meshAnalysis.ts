@@ -35,11 +35,21 @@ export function previewMeshImport(files: File[]): Promise<MeshBundlePreview> {
 }
 export const applyMeshBundleImport = (payload: MeshBundleImportRequest): Promise<RailTransitTask> => apiRequest(`${root}/bundles/import`, { method: 'POST', body: JSON.stringify(payload) })
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
-export const getMeshAnalysisSession = (id: string): Promise<MeshSessionDetail> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}`)
+export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promise<MeshSessionDetail> => apiRequest(
+  `${root}/sessions/${encodeURIComponent(id)}`,
+  signal ? { signal } : undefined,
+)
 export const rebuildMeshAnalysis = (id: string): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/rebuild`, { method: 'POST', body: JSON.stringify({ explicit_confirmation: true }) })
 export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/links${qs(values)}`)
-export const listMeshActiveBuildOrder = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshActiveBuildOrder>> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/active-build-order${qs(values)}`)
+export const listMeshActiveBuildOrder = (
+  id: string,
+  values: Record<string, string | number | boolean | null | undefined>,
+  signal?: AbortSignal,
+): Promise<Page<MeshActiveBuildOrder>> => apiRequest(
+  `${root}/sessions/${encodeURIComponent(id)}/active-build-order${qs(values)}`,
+  signal ? { signal } : undefined,
+)
 export const getMeshActivePathChart = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${encodeURIComponent(id)}/charts/active-path${qs(values)}`)
 export const getMeshTracksideSignalChart = (
   id: string,

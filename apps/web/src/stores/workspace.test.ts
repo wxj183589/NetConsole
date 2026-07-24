@@ -18,7 +18,7 @@ function createTestRouter(initial = '/') {
       } },
       { path: '/mesh', name: 'mesh', component: {}, meta: {
         title: 'MESH',
-        workspace: { identity: 'resource', resourceQuery: ['session_id'] },
+        workspace: { identity: 'singleton' },
       } },
     ],
   })
@@ -50,13 +50,31 @@ describe('workspace store', () => {
     expect(duplicate?.cacheKey).not.toBe(deviceB.cacheKey)
   })
 
-  it('normalizes MESH identity and closes the active tab toward the left', async () => {
+  it('atomically reuses the MESH tab for a new session and keeps its cache key stable', async () => {
     const router = await createTestRouter()
     const store = useWorkspaceStore()
     await store.initialize(router)
     const mesh = await store.openOrActivateRoute('/mesh?z=2&session_id=session-1&a=1')
-    await store.openOrActivateRoute('/mesh?a=1&session_id=session-1&z=2')
+    store.updateTabTitle('MESH：列车06-MR-CT', mesh.id)
+    const initialCacheKey = mesh.cacheKey
+    await store.openOrActivateRoute('/mesh?session_id=session-2')
+
     expect(store.tabs.filter((tab) => tab.identityKey === mesh.identityKey)).toHaveLength(1)
+    expect(mesh.routeFullPath).toBe('/mesh?session_id=session-2')
+    expect(mesh.cacheKey).toBe(initialCacheKey)
+    expect(mesh.title).toBe('MESH：列车06-MR-CT')
+    expect(router.currentRoute.value.fullPath).toBe('/mesh?session_id=session-2')
+    expect(store.routeCacheKey('/mesh?session_id=session-pending')).toBe(initialCacheKey)
+
+    const duplicate = await store.duplicateTab(mesh.id)
+    expect(duplicate?.cacheKey).not.toBe(initialCacheKey)
+    expect(store.routeCacheKey('/mesh?session_id=session-2')).toBe(duplicate?.cacheKey)
+  })
+
+  it('closes the active tab toward the left', async () => {
+    const router = await createTestRouter()
+    const store = useWorkspaceStore()
+    await store.initialize(router)
 
     const device = await store.openOrActivateRoute('/devices/device-a')
     const leftId = store.tabs[store.tabs.findIndex((tab) => tab.id === device.id) - 1].id

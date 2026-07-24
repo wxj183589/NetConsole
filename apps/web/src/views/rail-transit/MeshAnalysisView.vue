@@ -71,6 +71,17 @@ import type { RailTransitTask } from '../../types/railTransitWeb'
 import { downloadBackendResource } from '../../platform/runtime'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 import { requestWorkspaceTabTitle } from '../../workspace/runtime'
+import {
+  meshAnalysisRuntimeSnapshot,
+  registerMeshAnalysisInstance,
+  releaseTracksideReservation,
+  reserveTracksideCache,
+  setMeshDetailRequestActive,
+  setTracksideCacheActive,
+  setTracksideChartActive,
+  setTracksideConflictEdgeCount,
+  unregisterMeshAnalysisInstance,
+} from './meshAnalysisRuntime'
 import type {
   RendererWorkloadPhase,
 } from '../../../../desktop_electron/src/shared/bridge'
@@ -81,11 +92,14 @@ defineOptions({
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const meshRuntimeToken = registerMeshAnalysisInstance()
 const pageActive = ref(true)
 const pageActivatedOnce = ref(false)
 const analysisResultUpdatePending = ref(false)
 const loading = ref(false)
 const detailLoading = ref(false)
+const openingSessionId = ref<string | null>(null)
+const pendingRequestedSessionId = ref<string | null>(null)
 const detailSectionError = ref('')
 const error = ref('')
 const summary = ref<MeshAnalysisSummary | null>(null)
@@ -209,6 +223,11 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let failureCount = 0
 let taskTimer: ReturnType<typeof setTimeout> | null = null
 let detailGeneration = 0
+let activeSessionOpenController: AbortController | null = null
+let activeSessionOpenId: string | null = null
+let activeSessionOpenPromise: Promise<void> | null = null
+let activeSessionIntentId: string | null = null
+let activeSessionIntentPromise: Promise<void> | null = null
 let rssiChartGeneration = 0
 let busyChartGeneration = 0
 let rssiViewportRevision = 0
@@ -287,7 +306,7 @@ const lockedRangeLabel = computed(() => lockedAnalysisRange.value
   : '')
 const isRssiWorkspaceMode = computed(() => activeTab.value === 'rssi')
 const sessionDetailsExpanded = computed(() => (
-  isRssiWorkspaceMode.value ? rssiCompactSessionExpanded.value : sessionExpanded.value
+  !selected.value || (isRssiWorkspaceMode.value ? rssiCompactSessionExpanded.value : sessionExpanded.value)
 ))
 const activePaneAlertMessages = computed(() => [
   rssiFocusLabel.value,
@@ -370,21 +389,21 @@ const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
 ]
 const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'record_id', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
-  { key: 'timestamp', label: '采样时间', valueType: 'datetime', minWidth: 215, fixed: 'left', hideable: false },
-  { key: 'timestamp_tag', label: '采样标识', minWidth: 120, fixed: 'left' },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
-  { key: 'link_role', label: '状态', width: 90, fixed: 'left', hideable: false },
+  { key: 'timestamp', label: '采样时间', valueType: 'datetime', width: 215, hideable: false },
+  { key: 'timestamp_tag', label: '采样标识', width: 120 },
+  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, hideable: false },
+  { key: 'link_role', label: '状态', width: 90, hideable: false },
   { key: 'peer_mac', label: 'PeerMac', valueType: 'mac', minWidth: 145, hideable: false },
   { key: 'peer_ap_name', label: '当前 PEER AP 名称', valueType: 'name', minWidth: 175 },
   { key: 'local_rssi_db', label: 'MR 侧 RSSI 差值', valueType: 'number', minWidth: 130 },
   { key: 'peer_rssi_db', label: 'Peer 侧 RSSI 差值', valueType: 'number', minWidth: 140 },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', width: 130 },
-  { key: 'section', label: '归属区间', width: 150 },
+  { key: 'section', label: '归属区间', width: 190 },
   { key: 'peer_radio', label: 'PEER Radio', minWidth: 105 },
   { key: 'peer_radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 145 },
-  { key: 'establish_time', label: '建链时间', valueType: 'datetime', minWidth: 210 },
-  { key: 'duration_text', label: '链路时长', minWidth: 110 },
+  { key: 'establish_time', label: '建链时间', valueType: 'datetime', width: 210 },
+  { key: 'duration_text', label: '链路时长', width: 140 },
   { key: 'link_count', label: 'LinkCnt', valueType: 'number', width: 90 },
   { key: 'local_noise_dbm', label: 'MR 侧底噪', valueType: 'number', minWidth: 105 },
   { key: 'peer_noise_dbm', label: 'Peer 侧底噪', valueType: 'number', minWidth: 115 },
@@ -598,6 +617,7 @@ function reportRendererWorkload(phase: RendererWorkloadPhase): void {
       jsHeapSizeLimit: number
     }
   }).memory
+  const runtime = meshAnalysisRuntimeSnapshot()
   bridge.reportRendererWorkload?.({
     module: 'mesh-analysis',
     route: '/rail-transit/mesh-analysis',
@@ -613,6 +633,19 @@ function reportRendererWorkload(phase: RendererWorkloadPhase): void {
       seriesCount: tracksideSeriesCache.value?.series.length
         ?? tracksideSignal.value.returned_series,
     } : {}),
+    pointCount: tracksideSeriesCache.value?.totalRenderedPoints ?? 0,
+    metadataCount: tracksideSeriesCache.value?.pointMetaById.size ?? 0,
+    conflictEdgeCount: runtime.conflictEdgeCount,
+    echartsInstanceCount: document.querySelectorAll('[_echarts_instance_]').length,
+    canvasCount: document.querySelectorAll('canvas').length,
+    meshInstanceCount: runtime.meshInstanceCount,
+    tracksideCacheCount: runtime.tracksideCacheCount,
+    tracksideChartCount: runtime.tracksideChartCount,
+    activeDetailRequests: runtime.activeDetailRequests,
+    tracksideCacheBuildCount: runtime.tracksideCacheBuildCount,
+    tracksideCacheDisposeCount: runtime.tracksideCacheDisposeCount,
+    chartInitCount: runtime.chartInitCount,
+    chartDisposeCount: runtime.chartDisposeCount,
     ...(rssiViewport.value?.start_time ? { viewportStart: rssiViewport.value.start_time } : {}),
     ...(rssiViewport.value?.end_time ? { viewportEnd: rssiViewport.value.end_time } : {}),
     ...(memory ? {
@@ -628,29 +661,37 @@ function releaseTracksideResources(reportDisposed = true): void {
   tracksideAbortController?.abort()
   tracksideAbortController = null
   tracksideRequestGeneration += 1
-  if (reportDisposed && (tracksideSeriesCache.value || tracksideSignal.value)) {
-    reportRendererWorkload('chart-disposed')
-  }
+  const hadTracksideResources = Boolean(tracksideSeriesCache.value || tracksideSignal.value)
   disposeTracksideSeriesCache(tracksideSeriesCache.value)
   tracksideSeriesCache.value = null
   tracksideSignal.value = null
+  setTracksideCacheActive(meshRuntimeToken, false)
+  setTracksideChartActive(meshRuntimeToken, false)
+  releaseTracksideReservation(meshRuntimeToken)
+  if (reportDisposed && hadTracksideResources) reportRendererWorkload('chart-disposed')
+}
+
+function normalizeRequestedSessionId(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(value) ? value : null
+}
+
+function routeRequestedSessionId(): string | null {
+  const currentRoute = router.currentRoute?.value
+  if (currentRoute?.name && currentRoute.name !== 'mesh-analysis') return null
+  return normalizeRequestedSessionId(currentRoute?.query.session_id)
+}
+
+function isAbortError(reason: unknown): boolean {
+  return reason instanceof Error && reason.name === 'AbortError'
 }
 
 async function restoreRendererRecovery(): Promise<void> {
   const recovery = await window.netconsoleDesktop?.getRendererRecoveryState?.()
-  if (!recovery || recovery.module !== 'mesh-analysis') return
-  let row = sessions.value.find((item) => item.session_id === recovery.sessionId)
-  if (!row && recovery.sessionId) {
-    try {
-      row = (await getMeshAnalysisSession(recovery.sessionId)).session
-    } catch {
-      return
-    }
-  }
-  if (!row) return
+  const recoverySessionId = normalizeRequestedSessionId(recovery?.sessionId)
+  if (!recovery || recovery.module !== 'mesh-analysis' || !recoverySessionId) return
   tracksideRecoveryReason.value = recovery.previousReason
   tracksideRecoveryBlocked.value = recovery.mode === 'safe'
-  await openSession(row, true)
+  await requestMeshAnalysisSession(recoverySessionId, { preserveRecovery: true })
   chartRadio.value = recovery.radio ?? chartRadio.value
   if (recovery.mode === 'normal') {
     loadedTabs.rssi = true
@@ -661,6 +702,10 @@ async function restoreRendererRecovery(): Promise<void> {
 
 async function restoreRendererRecoveryOnce(): Promise<void> {
   if (rendererRecoveryRestored) return
+  if (routeRequestedSessionId()) {
+    rendererRecoveryRestored = true
+    return
+  }
   if (!rendererRecoveryPromise) {
     rendererRecoveryPromise = restoreRendererRecovery()
       .then(() => { rendererRecoveryRestored = true })
@@ -717,6 +762,16 @@ function pauseMeshAnalysisPage(): void {
     task.value && !terminalStates.has(task.value.status),
   )
   pageActive.value = false
+  if (activeSessionOpenId) {
+    pendingRequestedSessionId.value = activeSessionOpenId
+    activeSessionOpenController?.abort()
+    activeSessionOpenController = null
+    activeSessionOpenId = null
+    activeSessionOpenPromise = null
+    detailGeneration += 1
+    detailLoading.value = false
+    setMeshDetailRequestActive(meshRuntimeToken, false)
+  }
   stopOverviewRefresh()
   stopTaskPolling()
   tracksideObserver?.disconnect()
@@ -729,6 +784,8 @@ function pauseMeshAnalysisPage(): void {
 async function resumeMeshAnalysisPage(): Promise<void> {
   pageActive.value = true
   await nextTick()
+  const requestedSessionId = pendingRequestedSessionId.value || routeRequestedSessionId()
+  if (requestedSessionId) await applyRequestedSession(requestedSessionId)
   await restoreRendererRecoveryOnce()
   if (!pageActive.value) return
   refreshDetailPanels()
@@ -742,6 +799,13 @@ async function resumeMeshAnalysisPage(): Promise<void> {
 
 function disposeMeshAnalysisPage(): void {
   pageActive.value = false
+  activeSessionOpenController?.abort()
+  activeSessionOpenController = null
+  activeSessionOpenId = null
+  activeSessionOpenPromise = null
+  activeSessionIntentId = null
+  activeSessionIntentPromise = null
+  detailGeneration += 1
   window.removeEventListener('keydown', handleRssiLayoutKeydown)
   stopOverviewRefresh()
   cancelScrollRestore()
@@ -758,24 +822,16 @@ function disposeMeshAnalysisPage(): void {
   tracksideObserver?.disconnect()
   tracksideObserver = null
   releaseTracksideResources()
+  setMeshDetailRequestActive(meshRuntimeToken, false)
+  unregisterMeshAnalysisInstance(meshRuntimeToken)
   stopTaskPolling()
 }
 
 onMounted(async () => {
   window.addEventListener('keydown', handleRssiLayoutKeydown)
   await Promise.all([restoreMeshPreferences(), refreshOverview(), recoverTask()])
-  const currentRoute = router.currentRoute?.value
-  const routeSessionId = typeof currentRoute?.query.session_id === 'string'
-    && /^[A-Za-z0-9_-]{1,160}$/.test(currentRoute.query.session_id)
-    ? currentRoute.query.session_id
-    : ''
-  if (routeSessionId && !selected.value) {
-    let row = sessions.value.find((item) => item.session_id === routeSessionId)
-    if (!row) {
-      try { row = (await getMeshAnalysisSession(routeSessionId)).session } catch { /* 资源删除由页面现有空态处理 */ }
-    }
-    if (row) await openSession(row)
-  }
+  const requestedSessionId = routeRequestedSessionId()
+  if (requestedSessionId) await applyRequestedSession(requestedSessionId)
   if (!pageActive.value) return
   await restoreRendererRecoveryOnce()
   if (pageActive.value) scheduleRefresh()
@@ -799,6 +855,15 @@ watch(activeTab, (tab) => {
   }
   refreshDetailPanels()
 })
+watch(
+  () => router.currentRoute?.value?.fullPath,
+  () => {
+    const requestedSessionId = routeRequestedSessionId()
+    if (!requestedSessionId) return
+    pendingRequestedSessionId.value = requestedSessionId
+    if (pageActive.value) void applyRequestedSession(requestedSessionId)
+  },
+)
 watch(tracksideChartVisible, (visible) => {
   if (visible) resizeVisibleRssiCharts()
 })
@@ -833,16 +898,119 @@ async function refreshOverview(silent = false): Promise<void> {
   } finally { loading.value = false }
 }
 
-async function openSession(row: MeshAnalysisSession, preserveRecovery = false): Promise<void> {
-  const keepRecovery = preserveRecovery === true
+interface SessionRequestOptions {
+  force?: boolean
+  navigate?: boolean
+  preserveRecovery?: boolean
+}
+
+async function openMeshAnalysisSession(row: MeshAnalysisSession): Promise<void> {
+  const id = normalizeRequestedSessionId(row.session_id)
+  if (!id) {
+    error.value = '分析会话标识无效'
+    return
+  }
+  if (activeSessionIntentId === id && activeSessionIntentPromise) {
+    await activeSessionIntentPromise
+    return
+  }
+  openingSessionId.value = id
+  const intentPromise = requestMeshAnalysisSession(id)
+  activeSessionIntentId = id
+  activeSessionIntentPromise = intentPromise
+  try {
+    await intentPromise
+  } finally {
+    if (activeSessionIntentPromise === intentPromise) {
+      activeSessionIntentId = null
+      activeSessionIntentPromise = null
+    }
+    if (openingSessionId.value === id) openingSessionId.value = null
+  }
+}
+
+async function requestMeshAnalysisSession(
+  id: string,
+  options: SessionRequestOptions = {},
+): Promise<void> {
+  pendingRequestedSessionId.value = id
+  const currentRoute = router.currentRoute?.value
+  if (options.navigate !== false && currentRoute?.query.session_id !== id) {
+    await router.replace({
+      name: 'mesh-analysis',
+      query: { ...(currentRoute?.query || {}), session_id: id },
+    })
+  }
+  if (options.navigate !== false && routeRequestedSessionId() !== id) return
+  await applyRequestedSession(id, options)
+}
+
+async function applyRequestedSession(
+  requestedSessionId: string | null,
+  options: SessionRequestOptions = {},
+): Promise<void> {
+  const id = normalizeRequestedSessionId(requestedSessionId)
+  if (!id) return
+  const routedSessionId = routeRequestedSessionId()
+  if (options.navigate !== false && routedSessionId && routedSessionId !== id) return
+  pendingRequestedSessionId.value = id
+  if (!pageActive.value) return
+  if (!options.force && selected.value?.session.session_id === id) {
+    if (pendingRequestedSessionId.value === id) pendingRequestedSessionId.value = null
+    return
+  }
+  if (!options.force && activeSessionOpenId === id && activeSessionOpenPromise) {
+    await activeSessionOpenPromise
+    return
+  }
+
+  activeSessionOpenController?.abort()
+  const controller = new AbortController()
   const generation = ++detailGeneration
+  activeSessionOpenController = controller
+  activeSessionOpenId = id
+  setMeshDetailRequestActive(meshRuntimeToken, true)
+  const promise = openSessionById(id, {
+    generation,
+    signal: controller.signal,
+    preserveRecovery: options.preserveRecovery === true,
+  }).catch(async (reason: unknown) => {
+    if (isAbortError(reason) || controller.signal.aborted || generation !== detailGeneration) return
+    error.value = reason instanceof Error ? reason.message : '分析详情加载失败'
+    if (selected.value?.session.session_id !== id) {
+      pendingRequestedSessionId.value = null
+      const currentRoute = router.currentRoute?.value
+      if (currentRoute?.query.session_id === id) {
+        const query = { ...currentRoute.query }
+        delete query.session_id
+        await router.replace({ name: 'mesh-analysis', query })
+      }
+      requestWorkspaceTabTitle('MR 原始 MESH 日志分析')
+    }
+  }).finally(() => {
+    if (generation !== detailGeneration) return
+    activeSessionOpenController = null
+    activeSessionOpenId = null
+    activeSessionOpenPromise = null
+    detailLoading.value = false
+    setMeshDetailRequestActive(meshRuntimeToken, false)
+  })
+  activeSessionOpenPromise = promise
+  await promise
+}
+
+async function openSessionById(
+  id: string,
+  options: { generation: number; signal: AbortSignal; preserveRecovery: boolean },
+): Promise<void> {
+  const { generation, signal, preserveRecovery } = options
   detailLoading.value = true
   analysisResultUpdatePending.value = false
   preserveCachedViewOnTaskCompletion = false
   releaseTracksideResources()
   tracksideWorkloadCycle += 1
   reportedWorkloadPhases.clear()
-  if (!keepRecovery) {
+  if (!preserveRecovery) {
     tracksideRecoveryBlocked.value = false
     tracksideRecoveryReason.value = ''
   }
@@ -855,24 +1023,19 @@ async function openSession(row: MeshAnalysisSession, preserveRecovery = false): 
   artifacts.value = []; rawTail.value = null; detailSectionError.value = ''
   for (const key of Object.keys(loadedTabs)) delete loadedTabs[key]
   activeTab.value = 'build-order'
-  try {
-    const id = row.session_id
-    const detail = await getMeshAnalysisSession(id)
-    if (generation !== detailGeneration) return
-    selected.value = detail
-    requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
-    const currentRoute = router.currentRoute?.value
-    if (currentRoute && currentRoute.query.session_id !== id) {
-      void router.replace({ path: currentRoute.path, query: { session_id: id } })
-    }
-    reportRendererWorkload('session-selected')
-    ensureSharedRssiViewport()
-    restoreSessionExpansionForDetail()
-    await loadBuildOrders(generation)
-    refreshDetailPanels()
-    error.value = ''
-  } catch (reason) { if (generation === detailGeneration) error.value = reason instanceof Error ? reason.message : '分析详情加载失败' }
-  finally { if (generation === detailGeneration) detailLoading.value = false }
+  await nextTick()
+  const detail = await getMeshAnalysisSession(id, signal)
+  if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  selected.value = detail
+  requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
+  reportRendererWorkload('session-selected')
+  ensureSharedRssiViewport()
+  restoreSessionExpansionForDetail()
+  await loadBuildOrders(generation, 1, signal)
+  if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  pendingRequestedSessionId.value = null
+  refreshDetailPanels()
+  error.value = ''
 }
 
 function setSessionExpanded(value: boolean): void {
@@ -894,7 +1057,11 @@ function restoreSessionExpansionForDetail(): void {
   sessionExpanded.value = preference === null ? false : preference === 'true'
 }
 
-async function loadBuildOrders(generation = detailGeneration, page = buildOrderFilters.page): Promise<void> {
+async function loadBuildOrders(
+  generation = detailGeneration,
+  page = buildOrderFilters.page,
+  signal?: AbortSignal,
+): Promise<void> {
   if (!selected.value) return
   buildOrderFilters.page = page
   const result = await listMeshActiveBuildOrder(selected.value.session.session_id, {
@@ -904,8 +1071,8 @@ async function loadBuildOrders(generation = detailGeneration, page = buildOrderF
     station: buildOrderFilters.station || null,
     build_result: buildOrderFilters.build_result || null,
     pingpong_only: buildOrderFilters.pingpong_only || null,
-  })
-  if (generation !== detailGeneration) return
+  }, signal)
+  if (generation !== detailGeneration || signal?.aborted) return
   buildOrders.value = result.items
   buildOrderTotal.value = result.total
   if (chartRadio.value === null) chartRadio.value = result.items.find((item) => item.local_radio !== null)?.local_radio ?? null
@@ -990,6 +1157,10 @@ function isLatestChartRequest(metric: MeshChartMetric, generation: number): bool
 async function loadTracksideSignal(generation = detailGeneration): Promise<void> {
   if (!selected.value) return
   releaseTracksideResources()
+  if (!reserveTracksideCache(meshRuntimeToken, 2)) {
+    ElMessage.warning('当前已有 2 个轨旁图处于加载或缓存状态，请先关闭一个 MESH 标签或释放其图表。')
+    return
+  }
   await nextTick()
   const requestGeneration = ++tracksideRequestGeneration
   const controller = new AbortController()
@@ -1027,12 +1198,14 @@ async function loadTracksideSignal(generation = detailGeneration): Promise<void>
     }
     tracksideSignal.value = markRaw({ ...result, series: [] })
     tracksideSeriesCache.value = cache
+    setTracksideCacheActive(meshRuntimeToken, true)
     reportRendererWorkload('trackside-cache-ready')
     await nextTick()
     observeTracksideChart()
   } catch (reason) {
     if (!(reason instanceof DOMException && reason.name === 'AbortError')) throw reason
   } finally {
+    if (!tracksideSeriesCache.value) releaseTracksideReservation(meshRuntimeToken)
     if (requestGeneration === tracksideRequestGeneration) {
       tracksideAbortController = null
       tracksideLoading.value = false
@@ -1048,7 +1221,13 @@ async function loadTracksideAfterRecovery(): Promise<void> {
 function handleTracksideWorkloadPhase(
   phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed',
 ): void {
+  if (phase === 'echarts-init') setTracksideChartActive(meshRuntimeToken, true)
+  if (phase === 'chart-disposed') setTracksideChartActive(meshRuntimeToken, false)
   reportRendererWorkload(phase)
+}
+
+function handleTracksideWorkloadProfile(profile: { conflictEdgeCount: number }): void {
+  setTracksideConflictEdgeCount(meshRuntimeToken, profile.conflictEdgeCount)
 }
 
 async function loadActivePath(
@@ -1595,16 +1774,16 @@ async function afterTask(): Promise<void> {
     : []
   const targetId = created[0]
   if (targetId) {
-    const target = sessions.value.find((item) => item.session_id === targetId) || { session_id: targetId } as MeshAnalysisSession
-    await openSession(target)
+    await requestMeshAnalysisSession(targetId)
     activeTab.value = 'build-order'
     requestAnimationFrame(() => document.querySelector('.detail-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
     return
   }
   if (selected.value) {
     const selectedId = selected.value.session.session_id
-    const next = sessions.value.find((item) => item.session_id === selectedId)
-    if (['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action) && next) await openSession(next)
+    if (['mesh_schema_rebuild', 'mesh_source_rebuild'].includes(task.value.action)) {
+      await requestMeshAnalysisSession(selectedId, { force: true })
+    }
     else artifacts.value = await listMeshArtifacts(selectedId)
   }
 }
@@ -1731,9 +1910,7 @@ async function rebuildSelected(): Promise<void> {
 async function refreshCachedAnalysisResult(): Promise<void> {
   if (!selected.value) return
   const sessionId = selected.value.session.session_id
-  const next = sessions.value.find((item) => item.session_id === sessionId)
-    || selected.value.session
-  await openSession(next)
+  await requestMeshAnalysisSession(sessionId, { force: true })
 }
 async function recoverTask(): Promise<void> {
   try {
@@ -1909,9 +2086,9 @@ function buildResultLabel(value: string): string {
           <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
           <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
         </div>
-        <NcDataTable table-id="mesh-analysis-sessions:v2" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @row-dblclick="openSession">
+        <NcDataTable table-id="mesh-analysis-sessions:v2" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" border height="340" empty-text="暂无已持久化 Mesh 分析来源">
           <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
-          <template #cell-actions="{ row }"><el-button link type="primary" @click="openSession(row)">查看</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" :disabled="Boolean(openingSessionId && openingSessionId !== row.session_id)" @click.stop="openMeshAnalysisSession(row)">查看</el-button></template>
         </NcDataTable>
         <div class="pagination"><span>共 {{ total }} 个来源</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="total" @current-change="(page: number) => { filters.page = page; refreshOverview() }" /></div>
       </template>
@@ -2092,7 +2269,7 @@ function buildResultLabel(value: string): string {
                     <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
-                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" />
+                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
                     <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" description="暂无轨旁信号数据" :image-size="60" />
                   </div>
                 </div>

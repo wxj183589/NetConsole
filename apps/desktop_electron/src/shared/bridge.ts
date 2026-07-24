@@ -145,6 +145,19 @@ export interface RendererWorkloadReport {
   totalLinkPoints?: number
   returnedLinkPoints?: number
   seriesCount?: number
+  pointCount?: number
+  metadataCount?: number
+  conflictEdgeCount?: number
+  echartsInstanceCount?: number
+  canvasCount?: number
+  meshInstanceCount?: number
+  tracksideCacheCount?: number
+  tracksideChartCount?: number
+  activeDetailRequests?: number
+  tracksideCacheBuildCount?: number
+  tracksideCacheDisposeCount?: number
+  chartInitCount?: number
+  chartDisposeCount?: number
   viewportStart?: string
   viewportEnd?: string
   heapUsedBytes?: number

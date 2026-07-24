@@ -40,7 +40,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeCacheKey = computed(() => activeTab.value?.cacheKey || '')
 
   function routeCacheKey(routeFullPath: string): string {
-    return tabs.value.find((tab) => tab.routeFullPath === routeFullPath)?.cacheKey || routeFullPath
+    const current = activeTab.value
+    if (current?.routeFullPath === routeFullPath) return current.cacheKey
+    const exact = tabs.value.find((tab) => tab.routeFullPath === routeFullPath)
+    if (exact) return exact.cacheKey
+    if (current && router) {
+      const resolved = router.resolve(routeFullPath)
+      if (typeof resolved.name === 'string' && resolved.name === current.routeName) {
+        return current.cacheKey
+      }
+    }
+    return routeFullPath
   }
 
   async function initialize(nextRouter: Router): Promise<void> {
@@ -87,7 +97,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!options.duplicate && canonical.policy.identity !== 'multiple') {
       const existing = tabs.value.find((tab) => tab.identityKey === canonical.identityKey)
       if (existing) {
+        updateTabRouteIntent(existing, canonical)
         if (options.activate !== false) await activateTab(existing.id)
+        else scheduleSave()
         return existing
       }
     }
@@ -284,6 +296,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       openedAt: now,
       lastActivatedAt: now,
     }
+  }
+
+  function updateTabRouteIntent(tab: WorkspaceTab, canonical: CanonicalWorkspaceRoute): void {
+    const sameRoute = tab.routeName === canonical.routeName
+    Object.assign(tab, {
+      ...(canonical.routeName ? { routeName: canonical.routeName } : {}),
+      routeFullPath: canonical.routeFullPath,
+      identityKey: canonical.identityKey,
+      title: sameRoute ? tab.title : canonical.title,
+      lastActivatedAt: Date.now(),
+    })
   }
 
   function sortTabs(): void {

@@ -351,6 +351,8 @@ app.whenReady().then(async () => {
       let chartInitCount = 0
       let chartSetOptionCount = 0
       let chartDisposeCount = 0
+      let cacheBuildCount = 0
+      let cacheDisposeCount = 0
       let layoutSwitchAverageMs = 0
       let layoutSwitchMaximumMs = 0
       let layoutSwitchViewportPreserved = false
@@ -394,6 +396,7 @@ app.whenReady().then(async () => {
         const installMs = performance.now() - installStarted
         const cacheStarted = performance.now()
         const cache = buildCompactCache(tracksideSignal.value.series)
+        cacheBuildCount += 1
         const builtCacheMs = performance.now() - cacheStarted
         const optionStarted = performance.now()
         const option = createOption(cache)
@@ -557,6 +560,7 @@ app.whenReady().then(async () => {
         chart.dispose()
         chartDisposeCount += 1
         clearCompactCache(cache)
+        cacheDisposeCount += 1
         tracksideSignal.value = null
         await collectGarbage()
         sessionProfiles.push({
@@ -576,6 +580,12 @@ app.whenReady().then(async () => {
         point_count: POINT_COUNT,
         frame_count: FRAME_COUNT,
         session_count: SESSION_COUNT,
+        active_api_count: 0,
+        cache_build_count: cacheBuildCount,
+        cache_dispose_count: cacheDisposeCount,
+        chart_init_count: chartInitCount,
+        chart_set_option_count: chartSetOptionCount,
+        chart_dispose_count: chartDisposeCount,
         rendering_mode: ${JSON.stringify(SOFTWARE_RENDERING ? 'software' : 'hardware')},
         renderer,
         dirty_rect_enabled: dirtyRectEnabled,

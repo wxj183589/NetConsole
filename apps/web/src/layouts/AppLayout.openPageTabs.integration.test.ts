@@ -21,6 +21,10 @@ const counters = vi.hoisted(() => ({
   sessionRequests: vi.fn(),
   tracksideChartRequests: vi.fn(),
 }))
+const sessionRequestControl = vi.hoisted(() => ({
+  deferred: false,
+  pending: new Map<string, { resolve: () => void; signal?: AbortSignal }>(),
+}))
 
 const session = {
   session_id: 'session-tabs-integration',
@@ -47,6 +51,41 @@ const session = {
   report_count: 0,
   first_sample_time: '2026-07-24 14:23:20.000',
   last_sample_time: '2026-07-24 14:25:00.000',
+}
+const secondSession = {
+  ...session,
+  session_id: 'session-tabs-second',
+  analysis_time: '2026-07-24 14:31:00',
+  train_name: '列车34',
+  mr_name: 'MR-CW',
+  original_filename: '34-MR-CW.log',
+}
+
+function sessionDetail(selectedSession = session) {
+  return {
+    session: selectedSession,
+    analysis_params: analysisParams,
+    available_radios: [1],
+    warnings: [],
+    sources: [{
+      source_file_id: 1,
+      source_action_id: 'source-action-1',
+      source_type: 'raw',
+      name: selectedSession.original_filename,
+      exists: true,
+      size_bytes: 1024,
+      modified_at: null,
+      compressed: false,
+      tail_available: true,
+      recoverable: true,
+      recovery_source: '',
+      missing_reason: '',
+      rebuild_capability: 'ready',
+      package_name: '',
+      package_sha256: '',
+      bundle_member_id: '',
+    }],
+  }
 }
 
 const analysisParams = {
@@ -257,32 +296,29 @@ vi.mock('../api/meshAnalysis', () => ({
     return activeChart
   }),
   getMeshAnalysisParamsTemplate: vi.fn(async () => analysisParams),
-  getMeshAnalysisSession: vi.fn(async () => {
-    counters.sessionRequests()
-    return {
-      session,
-      analysis_params: analysisParams,
-      available_radios: [1],
-      warnings: [],
-      sources: [{
-        source_file_id: 1,
-        source_action_id: 'source-action-1',
-        source_type: 'raw',
-        name: '06-MR-CT.log',
-        exists: true,
-        size_bytes: 1024,
-        modified_at: null,
-        compressed: false,
-        tail_available: true,
-        recoverable: true,
-        recovery_source: '',
-        missing_reason: '',
-        rebuild_capability: 'ready',
-        package_name: '',
-        package_sha256: '',
-        bundle_member_id: '',
-      }],
-    }
+  getMeshAnalysisSession: vi.fn(async (id: string, signal?: AbortSignal) => {
+    counters.sessionRequests(id, signal)
+    const detail = sessionDetail(id === secondSession.session_id ? secondSession : session)
+    if (!sessionRequestControl.deferred) return detail
+    return new Promise<typeof detail>((resolve, reject) => {
+      const abort = () => {
+        sessionRequestControl.pending.delete(id)
+        reject(new DOMException('aborted', 'AbortError'))
+      }
+      if (signal?.aborted) {
+        abort()
+        return
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      sessionRequestControl.pending.set(id, {
+        signal,
+        resolve: () => {
+          signal?.removeEventListener('abort', abort)
+          sessionRequestControl.pending.delete(id)
+          resolve(detail)
+        },
+      })
+    })
   }),
   getMeshAnalysisSummary: vi.fn(async () => ({
     site_id: 'site-test',
@@ -345,8 +381,8 @@ vi.mock('../api/meshAnalysis', () => ({
     page_size: 100,
   })),
   listMeshAnalysisSessions: vi.fn(async () => ({
-    items: [session],
-    total: 1,
+    items: [session, secondSession],
+    total: 2,
     page: 1,
     page_size: 50,
   })),
@@ -425,12 +461,9 @@ const NcDataTableStub = defineComponent({
   props: { data: { type: Array, default: () => [] } },
   emits: ['row-dblclick'],
   template: `
-    <button
-      v-if="data.length"
-      type="button"
-      data-open-first-row
-      @click="$emit('row-dblclick', data[0])"
-    >打开首行</button>
+    <div v-if="data.length" data-first-row>
+      <slot name="cell-actions" :row="data[0]" />
+    </div>
   `,
 })
 
@@ -440,7 +473,10 @@ function findButtonByText(wrapper: ReturnType<typeof mount>, selector: string, t
 
 beforeEach(() => {
   sessionStorage.clear()
+  localStorage.clear()
   vi.clearAllMocks()
+  sessionRequestControl.deferred = false
+  sessionRequestControl.pending.clear()
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 })
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 960 })
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 420 })
@@ -467,7 +503,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
     await flushPromises()
 
     expect(wrapper.findComponent({ name: 'MeshAnalysisView' }).exists()).toBe(true)
-    await wrapper.get('[data-open-first-row]').trigger('click')
+    await findButtonByText(wrapper, '[data-first-row] button', '查看')!.trigger('click')
     await flushPromises()
     const rssiTab = findButtonByText(wrapper, '.el-tabs__item', 'RSSI 分析')
     expect(rssiTab).toBeDefined()
@@ -492,6 +528,12 @@ describe('AppLayout workspace tabs with real async routes', () => {
     })
     expect(initialCounts.cacheBuilds).toBeGreaterThan(0)
     expect(initialCounts.chartInits).toBeGreaterThan(0)
+    await wrapper.get('.sessions-toggle').trigger('click')
+    await flushPromises()
+    const openButton = findButtonByText(wrapper, '[data-first-row] button', '查看')!
+    for (let index = 0; index < 10; index += 1) await openButton.trigger('click')
+    await flushPromises()
+    expect(counters.sessionRequests).toHaveBeenCalledTimes(1)
     const meshTabId = workspace.activeTabId
     const heapBefore = process.memoryUsage().heapUsed
 
@@ -532,6 +574,63 @@ describe('AppLayout workspace tabs with real async routes', () => {
     expect(counters.cacheDisposals).toHaveBeenCalled()
     expect(counters.chartDisposals).toHaveBeenCalled()
     expect(wrapper.find(`[data-workspace-tab="${meshTabId}"]`).exists()).toBe(false)
+
+    wrapper.unmount()
+    workspace.dispose()
+  })
+
+  it('applies a background MESH session intent once and aborts stale detail requests', async () => {
+    sessionRequestControl.deferred = true
+    const router = createRouter({ history: createMemoryHistory(), routes: appRoutes })
+    await router.push('/rail-transit/mesh-analysis')
+    await router.isReady()
+    const pinia = createPinia()
+    const workspace = useWorkspaceStore(pinia)
+    await workspace.initialize(router)
+    const wrapper = mount(Root, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router, ElementPlus], stubs: { NcDataTable: NcDataTableStub } },
+    })
+    await flushPromises()
+    const meshUid = wrapper.getComponent({ name: 'MeshAnalysisView' }).vm.$.uid
+
+    await workspace.openOrActivateRoute(`/rail-transit/mesh-analysis?session_id=${session.session_id}`)
+    await flushPromises()
+    const firstRequest = sessionRequestControl.pending.get(session.session_id)
+    expect(firstRequest).toBeDefined()
+
+    await workspace.openOrActivateRoute(`/rail-transit/mesh-analysis?session_id=${secondSession.session_id}`)
+    await flushPromises()
+    expect(firstRequest?.signal?.aborted).toBe(true)
+    expect(sessionRequestControl.pending.has(session.session_id)).toBe(false)
+    expect(sessionRequestControl.pending.has(secondSession.session_id)).toBe(true)
+    sessionRequestControl.pending.get(secondSession.session_id)?.resolve()
+    await flushPromises()
+
+    expect(workspace.tabs.filter((tab) => tab.routeName === 'mesh-analysis')).toHaveLength(1)
+    expect(workspace.activeTab?.routeFullPath).toContain(`session_id=${secondSession.session_id}`)
+    expect(wrapper.getComponent({ name: 'MeshAnalysisView' }).vm.$.uid).toBe(meshUid)
+    expect(wrapper.get('.detail-heading h2').text()).toBe(secondSession.mr_name)
+    expect(counters.sessionRequests.mock.calls.map(([id]) => id)).toEqual([
+      session.session_id,
+      secondSession.session_id,
+    ])
+    expect(counters.tracksideChartRequests).not.toHaveBeenCalled()
+
+    sessionRequestControl.deferred = false
+    await workspace.openOrActivateRoute('/rail-transit/base-data')
+    await flushPromises()
+    expect(wrapper.find('[data-base-data-page]').exists()).toBe(true)
+    await workspace.openOrActivateRoute(`/rail-transit/mesh-analysis?session_id=${session.session_id}`)
+    await flushPromises()
+    expect(wrapper.getComponent({ name: 'MeshAnalysisView' }).vm.$.uid).toBe(meshUid)
+    expect(wrapper.get('.detail-heading h2').text()).toBe(session.mr_name)
+    expect(workspace.tabs.filter((tab) => tab.routeName === 'mesh-analysis')).toHaveLength(1)
+    expect(counters.sessionRequests.mock.calls.map(([id]) => id)).toEqual([
+      session.session_id,
+      secondSession.session_id,
+      session.session_id,
+    ])
 
     wrapper.unmount()
     workspace.dispose()
