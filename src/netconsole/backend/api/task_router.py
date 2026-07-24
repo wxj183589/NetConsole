@@ -101,7 +101,8 @@ async def task_events_socket(websocket: WebSocket) -> None:
             "type": "snapshot",
             "time": "",
             "payload": {
-                "tasks": [task.model_dump(mode="json") for task in (task_dto(item) for item in service.list_tasks(limit=200))]
+                "tasks": [task.model_dump(mode="json") for task in (task_dto(item) for item in service.list_tasks(limit=200))],
+                "unicode_probe": "宁波地铁1号线 · 任务已完成",
             },
         }
     )

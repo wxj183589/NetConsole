@@ -67,6 +67,7 @@
 | [表格迁移清单](ui/TABLE_INVENTORY.md) | 所有 Vue 表格的组件、对齐、列宽和整改状态 | Web/UI 开发与验收 | `scripts/ui/export_table_inventory.py` 扫描结果 | 任一表格新增、删除或迁移 |
 | [全局确认对话框](ui/CONFIRMATION_DIALOGS.md) | 统一确认类型、风险文案、键盘和安全边界 | Web/UI 开发 | `apps/web/src/components/feedback` | 新增确认动作、风险等级或弹窗行为变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |
+| [正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md) | 正式生产 Feature、页面/API、自动证据与干净安装人工状态 | 发布维护者、验收人员 | Registry、生产基线、打包 smoke、Windows/跨电脑验收记录 | 正式包功能、Feature 状态或人工验收结果变化 |
 | [独立 Agent](AGENT.md) | Windows Go Agent 的边界、能力和集成状态 | 现场采集/远程执行开发 | `apps/agent/`、Agent API/测试 | Agent 能力、协议、命令或发布方式变化 |
 | [Agent Controller](AGENT_CONTROLLER.md) | 多 Agent 配置、健康检查、认证、REST/WebSocket 与 Web 管理边界 | Agent 控制面开发 | `services/agent`、`repositories/agent_repository.py`、Agent Router | Controller 模型、探测协议、凭据或调度变化 |
 | [Agent 流量测试协议](AGENT_TRAFFIC_API.md) | fping/iPerf 强类型执行、任务事件游标、结果与能力契约 | Agent/流量测试开发 | `apps/agent/internal/{core,fping,iperf,api}`、`AgentHttpClient` | Agent 流量参数、事件、结果或能力变化 |

@@ -47,6 +47,12 @@ const artifactDownloadLabel = computed(() => (
   isTracksideApBusinessArtifactTask(store.selected) ? '保存导出表格' : 'Artifact 下载'
 ))
 const selectedDetails = computed<Record<string, unknown>>(() => store.selected?.details || {})
+const historicalTextDamaged = computed(() => containsReplacementCharacter({
+  message: store.selected?.message,
+  errorSummary: store.selected?.error_summary,
+  details: selectedDetails.value,
+  logs: store.logs,
+}))
 const showCurrentProcessing = computed(() => {
   const details = selectedDetails.value
   const phase = String(details.phase || '')
@@ -100,6 +106,13 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
 ]
+
+function containsReplacementCharacter(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('\uFFFD')
+  if (Array.isArray(value)) return value.some(containsReplacementCharacter)
+  if (value && typeof value === 'object') return Object.values(value).some(containsReplacementCharacter)
+  return false
+}
 
 watch(drawerVisible, (visible) => {
   store.setDetailVisible(visible)
@@ -434,6 +447,14 @@ const revealSaved = () => runSavedAction('reveal')
 
         <el-alert v-if="store.detailError" :title="store.detailError" type="error" :closable="false" show-icon />
         <el-alert v-if="store.selected.error_summary" :title="store.selected.error_summary" :type="store.selected.status === 'FAILED' ? 'error' : 'warning'" :closable="false" show-icon class="detail-alert" />
+        <el-alert
+          v-if="historicalTextDamaged"
+          title="该历史日志在旧版本中已发生编码损坏，原始字节不存在时无法恢复。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="detail-alert"
+        />
 
         <el-descriptions :column="2" border>
           <el-descriptions-item label="任务类型">{{ store.selected.type }}</el-descriptions-item>

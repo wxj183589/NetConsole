@@ -77,6 +77,32 @@ def test_default_desktop_profile_reaches_settings_and_round_trips(tmp_path: Path
     assert persisted["external_terminal/putty_path"].endswith("PuTTY64.exe")
 
 
+def test_runtime_self_check_returns_safe_unicode_and_release_contract(tmp_path: Path) -> None:
+    client, _paths = _client(tmp_path)
+
+    response = client.get("/api/settings/self-check")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["unicode_sample"] == "宁波地铁1号线 · 中文设备 · 任务已完成"
+    assert payload["status"] in {"normal", "warning", "error"}
+    checks = {item["check_id"]: item for item in payload["items"]}
+    assert {
+        "backend_executable",
+        "build_contract",
+        "production_feature_policy",
+        "current_site",
+        "data_root_writable",
+        "tasks_database",
+        "devices_database",
+        "credential_storage",
+        "tool_fping",
+        "tool_iperf3",
+        "unicode_round_trip",
+    } <= checks.keys()
+    assert str(_paths.data_root) not in response.text
+
+
 def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None:
     client, _paths = _client(tmp_path)
     first = client.get("/api/settings").json()

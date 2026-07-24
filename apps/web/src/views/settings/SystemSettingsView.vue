@@ -11,16 +11,16 @@ import {
 
 import {
   getFeatureSettings, getSystemSettings, previewFeatureSettings, reloadSystemSettings,
-  restoreFeatureSettings, saveFeatureSettings, saveSystemSettings,
+  restoreFeatureSettings, saveFeatureSettings, saveSystemSettings, getRuntimeSelfCheck,
 } from '../../api/systemSettings'
 import { isFeatureEnabled, loadWebFeatures } from '../../features'
 import { t } from '../../i18n/runtime'
-import { getPlatformAdapter } from '../../platform/runtime'
+import { getPlatformAdapter, resolveWebSocketUrl } from '../../platform/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
-import type { FeatureSetting, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
+import type { FeatureSetting, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 import NcExecutablePathField from '../../components/settings/NcExecutablePathField.vue'
 
@@ -47,6 +47,9 @@ const siteStoragePanel = ref<InstanceType<typeof SiteStoragePanel> | null>(null)
 const closeToTrayEnabled = ref(true)
 const closeToTrayAvailable = ref(false)
 const closeToTraySaving = ref(false)
+const selfCheck = ref<RuntimeSelfCheckSnapshot | null>(null)
+const selfCheckLoading = ref(false)
+const selfCheckError = ref('')
 const desktopHost = Boolean(window.netconsoleDesktop)
 let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
 let removeCloseToTrayListener: (() => void) | undefined
@@ -77,6 +80,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
   void load()
   void loadCloseToTrayState()
+  void runSelfCheck()
   removeCloseToTrayListener = window.netconsoleDesktop?.onCloseToTrayChanged?.((state) => {
     closeToTrayEnabled.value = state.enabled
     closeToTrayAvailable.value = state.available
@@ -132,6 +136,92 @@ async function updateCloseToTray(value: boolean): Promise<void> {
   } finally {
     closeToTraySaving.value = false
   }
+}
+
+async function runSelfCheck(): Promise<void> {
+  selfCheckLoading.value = true
+  selfCheckError.value = ''
+  try {
+    const backend = await getRuntimeSelfCheck()
+    const items = [...backend.items]
+    items.push({
+      check_id: 'electron_bridge',
+      title: 'Electron Bridge',
+      status: window.netconsoleDesktop ? 'normal' : 'warning',
+      message: window.netconsoleDesktop ? 'Electron 安全桥可用。' : '当前页面未检测到 Electron Bridge。',
+      suggestion: window.netconsoleDesktop ? '' : '请从 NetConsole.exe 打开系统设置。',
+    })
+    items.push({
+      check_id: 'utf8_api_round_trip',
+      title: 'UTF-8 API 往返',
+      status: backend.unicode_sample === '宁波地铁1号线 · 中文设备 · 任务已完成' ? 'normal' : 'error',
+      message: backend.unicode_sample === '宁波地铁1号线 · 中文设备 · 任务已完成' ? 'REST API 中文往返正常。' : 'REST API 中文往返异常。',
+      suggestion: backend.unicode_sample === '宁波地铁1号线 · 中文设备 · 任务已完成' ? '' : '保留日志并联系维护人员。',
+    })
+    items.push(await checkTaskWebSocket())
+    selfCheck.value = { ...backend, items, status: aggregateSelfCheckStatus(items) }
+  } catch (cause) {
+    selfCheckError.value = message(cause, '环境自检失败')
+  } finally {
+    selfCheckLoading.value = false
+  }
+}
+
+function checkTaskWebSocket(): Promise<RuntimeSelfCheckItem> {
+  return new Promise((resolve) => {
+    let settled = false
+    let socket: WebSocket | null = null
+    const finish = (item: RuntimeSelfCheckItem) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      socket?.close()
+      resolve(item)
+    }
+    const timer = window.setTimeout(() => finish({
+      check_id: 'websocket_unicode_round_trip', title: 'WebSocket 中文往返', status: 'error',
+      message: '任务 WebSocket 中文探针超时。', suggestion: '重启 Backend 后重试。',
+    }), 3000)
+    try {
+      socket = new WebSocket(resolveWebSocketUrl('/ws/tasks'))
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as { type?: string; payload?: { unicode_probe?: string } }
+          if (payload.type !== 'snapshot') return
+          const normal = payload.payload?.unicode_probe === '宁波地铁1号线 · 任务已完成'
+          finish({
+            check_id: 'websocket_unicode_round_trip', title: 'WebSocket 中文往返', status: normal ? 'normal' : 'error',
+            message: normal ? '任务 WebSocket 中文往返正常。' : '任务 WebSocket 中文探针不一致。',
+            suggestion: normal ? '' : '重启 Backend 后重试。',
+          })
+        } catch {
+          finish({
+            check_id: 'websocket_unicode_round_trip', title: 'WebSocket 中文往返', status: 'error',
+            message: '任务 WebSocket 返回无效数据。', suggestion: '重启 Backend 后重试。',
+          })
+        }
+      }
+      socket.onerror = () => finish({
+        check_id: 'websocket_unicode_round_trip', title: 'WebSocket 中文往返', status: 'error',
+        message: '任务 WebSocket 无法连接。', suggestion: '检查 Backend 状态后重试。',
+      })
+    } catch {
+      finish({
+        check_id: 'websocket_unicode_round_trip', title: 'WebSocket 中文往返', status: 'error',
+        message: '任务 WebSocket 地址不可用。', suggestion: '请从 NetConsole.exe 打开系统设置。',
+      })
+    }
+  })
+}
+
+function aggregateSelfCheckStatus(items: RuntimeSelfCheckItem[]): RuntimeSelfCheckSnapshot['status'] {
+  if (items.some((item) => item.status === 'error')) return 'error'
+  if (items.some((item) => item.status === 'warning')) return 'warning'
+  return 'normal'
+}
+
+function selfCheckTagType(status: RuntimeSelfCheckItem['status']): 'success' | 'warning' | 'danger' {
+  return status === 'normal' ? 'success' : status === 'warning' ? 'warning' : 'danger'
 }
 
 async function save(): Promise<void> {
@@ -372,6 +462,23 @@ function message(cause: unknown, fallback: string): string { return cause instan
       />
     </section>
 
+    <section class="settings-band">
+      <div class="section-heading">
+        <h2>正式包环境自检</h2>
+        <div class="inline-actions">
+          <el-tag v-if="selfCheck" :type="selfCheckTagType(selfCheck.status)">{{ selfCheck.status === 'normal' ? '正常' : selfCheck.status === 'warning' ? '警告' : '错误' }}</el-tag>
+          <el-button data-testid="runtime-self-check" :loading="selfCheckLoading" @click="runSelfCheck">重新检查</el-button>
+        </div>
+      </div>
+      <el-alert v-if="selfCheckError" :title="selfCheckError" type="error" :closable="false" />
+      <div v-if="selfCheck" class="self-check-grid">
+        <article v-for="item in selfCheck.items" :key="item.check_id">
+          <div><strong>{{ item.title }}</strong><el-tag :type="selfCheckTagType(item.status)" size="small">{{ item.status === 'normal' ? '正常' : item.status === 'warning' ? '警告' : '错误' }}</el-tag></div>
+          <p>{{ item.message }}</p><small v-if="item.suggestion">{{ item.suggestion }}</small>
+        </article>
+      </div>
+    </section>
+
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" />
 
     <section class="settings-band"><h2>{{ t('settings.tools', '工具路径') }}</h2>
@@ -405,5 +512,5 @@ function message(cause: unknown, fallback: string): string { return cause instan
 </template>
 
 <style scoped>
-.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1500px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.section-heading h2{margin-bottom:0}@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
+.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1500px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
 </style>

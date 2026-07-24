@@ -21,6 +21,7 @@ format / format_version / package_id / package_type
 site_id / site_uuid / site_name / site_revision / base_revision
 created_at / source_machine_id / database_schema_version
 checksums / contains_credentials=false
+credential_reentry_count
 ```
 
 `site_id` 是 Registry 的稳定内部标识；`site_uuid` 是跨电脑判断“是否同一局点”的不可变标识。显示名称可修改，不能参与匹配。新局点会创建 `site_uuid`；Legacy 局点必须先完成只读审计，才允许建立同步标识和导出现场/回传包。
@@ -37,7 +38,9 @@ checksums / contains_credentials=false
 - 基准以后新增或变更的非数据库文件、其 SHA-256、来源电脑和可识别任务 ID；
 - 基准中已消失文件的删除请求。
 
-包从不包含 Token、密码、设备凭据、SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 或本机运行日志。`devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码始终清空。
+包从不包含 Token、密码、设备凭据、SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 或本机运行日志。`devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码始终清空。清洗前确有凭据或旧包可确认已配置认证方式的设备会在包内获得非秘密 `needs_reentry` 标记；manifest 的 `credential_reentry_count` 只记录受影响设备数。
+
+导入普通 `.ncsite` 后，设备列表显示“需重新录入”，API 返回 `credential_status / credential_source / credential_error_code`。连接测试在创建 Job 前返回 `CREDENTIAL_REENTRY_REQUIRED`，不会使用空密码尝试认证；重新保存当前电脑的凭据后状态恢复为 `available / local_database`。本流程不引入凭据加密，不改变当前电脑现有凭据存储，也不提供独立凭据迁移包。
 
 ## 回传预检与合并
 

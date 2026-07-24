@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core.feature_flags import PACKAGED_PRODUCTION_FEATURE_IDS
 from netconsole.core.version import APP_VERSION
 from scripts.build import clean_build_spec
 from scripts.build.build_config import BuildConfig, load_config
@@ -70,8 +71,11 @@ def test_clean_build_generates_fixed_packaged_runtime_feature_policy() -> None:
         "admin_unlock_enabled": False,
     }
     assert feature_flags["profile"] == "production"
-    assert "module.system_settings" in feature_flags["features"]
-    assert "web.job_center" in feature_flags["features"]
+    assert all(
+        feature_flags["features"][feature_id]["visible"]
+        and feature_flags["features"][feature_id]["enabled"]
+        for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS
+    )
 
 
 def test_backend_release_allowlist_rejects_project_root_pollution(tmp_path: Path) -> None:

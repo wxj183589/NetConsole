@@ -66,7 +66,7 @@ def parse_event_line(line: str) -> dict[str, Any] | None:
 
 
 def feed_jsonl(buffer: str, chunk: bytes | str) -> tuple[list[dict[str, Any]], list[str], str]:
-    text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else str(chunk)
+    text = chunk.decode("utf-8", errors="strict") if isinstance(chunk, bytes) else str(chunk)
     combined = buffer + text
     lines = combined.split("\n")
     remainder = lines.pop()

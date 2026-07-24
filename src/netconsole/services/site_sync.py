@@ -14,6 +14,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from netconsole.core.device_credential_store import (
+    credential_reentry_count,
+    sanitize_device_credentials_for_package,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.core.version import APP_VERSION
@@ -138,6 +142,9 @@ class SiteSyncService:
                 temp_root / "site",
                 check_cancel=check_cancel,
             )
+            reentry_count = _database_credential_reentry_count(
+                temp_root / "site" / "db" / "devices.db"
+            )
             manifest = self._manifest(
                 record=record,
                 identity=identity,
@@ -146,6 +153,7 @@ class SiteSyncService:
                 extra={
                     "baseline_id": baseline_id,
                     "base_revision": identity["revision"],
+                    "credential_reentry_count": reentry_count,
                     "baseline_files": {
                         name.removeprefix("site/"): digest
                         for name, digest in checksums.items()
@@ -168,6 +176,7 @@ class SiteSyncService:
             "base_revision": identity["revision"],
             "size_bytes": destination.stat().st_size,
             "contains_credentials": False,
+            "credential_reentry_count": reentry_count,
         }
 
     def export_return_package(
@@ -1257,21 +1266,21 @@ def _copy_database(source: Path, target: Path) -> None:
         source_connection.close()
 
 
-def _copy_sanitized_database(source: Path, target: Path) -> None:
+def _copy_sanitized_database(source: Path, target: Path) -> int:
     _copy_database(source, target)
     with closing(connect_sqlite(target)) as connection:
         if "devices" not in _table_names(connection):
-            return
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(devices)")
-        }
-        available = sorted(columns & _CREDENTIAL_COLUMNS)
-        if available:
-            connection.execute(
-                f"UPDATE devices SET {', '.join(f'{_quote(column)} = NULL' for column in available)}"
-            )
-            connection.commit()
+            return 0
+        count = sanitize_device_credentials_for_package(connection)
+        connection.commit()
+        return count
+
+
+def _database_credential_reentry_count(database: Path) -> int:
+    if not database.is_file():
+        return 0
+    with closing(connect_sqlite(database)) as connection:
+        return credential_reentry_count(connection)
 
 
 def _restore_database(source: Path, target: Path) -> None:

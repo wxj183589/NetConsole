@@ -37,3 +37,19 @@ export interface FeatureSetting {
 }
 
 export interface FeatureSettingsSnapshot { items: FeatureSetting[]; preview_active: boolean }
+
+export interface RuntimeSelfCheckItem {
+  check_id: string
+  title: string
+  status: 'normal' | 'warning' | 'error'
+  message: string
+  suggestion: string
+}
+
+export interface RuntimeSelfCheckSnapshot {
+  status: 'normal' | 'warning' | 'error'
+  checked_at: string
+  packaged: boolean
+  unicode_sample: string
+  items: RuntimeSelfCheckItem[]
+}

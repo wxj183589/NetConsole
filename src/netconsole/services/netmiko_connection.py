@@ -207,11 +207,11 @@ def test_device_connection(
                 except Exception:
                     screen_output = ""
                 prompt = _safe_find_prompt(connection) or extract_cli_prompt(screen_output) or prompt
-                message = "Connection succeeded"
+                message = f"{prepared.protocol.upper()} 连接成功"
                 try:
                     safe_send_command(connection, "display clock", read_timeout=10, encoding=prepared.encoding)
-                except Exception as exc:
-                    message = f"Connection succeeded; display clock failed: {sanitize_sensitive_text(str(exc), device)}"
+                except Exception:
+                    message = f"{prepared.protocol.upper()} 连接成功，但会话校验命令未返回预期结果"
                 result = ConnectionTestResult(
                     True,
                     prepared.protocol,
@@ -229,8 +229,11 @@ def test_device_connection(
             classification = classify_connection_exception(exc, target.protocol)
             message = sanitize_sensitive_text(classification.detail, device)
             raw_hint = sanitize_sensitive_text(str(exc), device)
-            if classification.status in {"auth_failed", "unknown_error"} and raw_hint and raw_hint not in message:
-                message = f"{message}（{raw_hint}）"
+            if raw_hint:
+                app_logger.log_debug(
+                    "DEVICE_CONNECTION_TECHNICAL_DETAIL",
+                    f"error_type={exc.__class__.__name__}; detail={raw_hint}",
+                )
             last_result = ConnectionTestResult(
                 False,
                 target.protocol,

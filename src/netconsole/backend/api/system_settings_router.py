@@ -10,10 +10,11 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsConflictError, SettingsFileInvalidError, SettingsStore
 from netconsole.models.api.system_settings import (
     FeatureSettingsSnapshotDTO, FeatureSettingsUpdateDTO, SystemSettingsSaveDTO,
-    SystemSettingsSnapshotDTO,
+    SystemSettingsSnapshotDTO, RuntimeSelfCheckSnapshotDTO,
 )
 from netconsole.services.external_tool_service import launch_ipop
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.runtime_self_check_service import RuntimeSelfCheckService
 
 
 class ConfirmedAction(BaseModel):
@@ -72,6 +73,23 @@ def save_settings(request: Request, payload: SystemSettingsSaveDTO) -> SystemSet
 @router.post("/reload", response_model=SystemSettingsSnapshotDTO, dependencies=[Depends(_desktop)])
 def reload_settings(request: Request) -> SystemSettingsSnapshotDTO:
     return _call(_service(request).reload)
+
+
+@router.get(
+    "/self-check",
+    response_model=RuntimeSelfCheckSnapshotDTO,
+    dependencies=[Depends(_desktop)],
+)
+def runtime_self_check(request: Request) -> RuntimeSelfCheckSnapshotDTO:
+    service = _service(request)
+    return RuntimeSelfCheckService(
+        service.paths,
+        service.feature_gate,
+        service.site_name,
+    ).run(
+        backend_build_id=str(getattr(request.app.state, "backend_build_id", "")),
+        frontend_build_id=str(getattr(request.app.state, "frontend_build_id", "")),
+    )
 
 
 @router.get("/features", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])

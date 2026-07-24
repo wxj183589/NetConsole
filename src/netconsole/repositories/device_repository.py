@@ -6,6 +6,15 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.database import Database
+from netconsole.core.device_credential_store import (
+    CredentialFieldResolution,
+    DEVICE_SECRET_FIELDS,
+    DEVICE_SECRET_STORAGE_FIELDS,
+    ensure_device_credential_schema,
+    read_device_credential_states,
+    replace_device_credential_state,
+    resolve_device_credentials,
+)
 from netconsole.models.device import Device
 from netconsole.utils.natural_sort import natural_text_key
 
@@ -39,25 +48,39 @@ class DeviceRepository:
         record["created_at"] = now
         record["updated_at"] = now
         record.pop("id", None)
+        credential_states: dict[str, CredentialFieldResolution | None] = {}
+        for field in DEVICE_SECRET_FIELDS:
+            credential_states[field] = (
+                CredentialFieldResolution("available", "local_database")
+                if record.get(field)
+                else None
+            )
         columns = list(record.keys())
         placeholders = ", ".join("?" for _ in columns)
         sql = f"INSERT INTO devices ({', '.join(columns)}) VALUES ({placeholders})"
         with self.database.connect() as conn:
+            ensure_device_credential_schema(conn)
             cursor = conn.execute(sql, [record[column] for column in columns])
+            for field, state in credential_states.items():
+                replace_device_credential_state(
+                    conn, str(device.device_uuid), field, state
+                )
             conn.commit()
             return self.get(int(cursor.lastrowid))
 
     def get(self, device_id: int) -> Device:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
+            states = read_device_credential_states(conn)
         if row is None:
             raise KeyError(f"Device not found: {device_id}")
-        return Device.from_mapping(dict(row))
+        return self._device_from_row(row, states)
 
     def get_by_uuid(self, device_uuid: str) -> Device | None:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM devices WHERE device_uuid = ?", (device_uuid,)).fetchone()
-        return Device.from_mapping(dict(row)) if row is not None else None
+            states = read_device_credential_states(conn, [device_uuid])
+        return self._device_from_row(row, states) if row is not None else None
 
     def update(self, device: Device) -> Device:
         if device.id is None:
@@ -67,17 +90,69 @@ class DeviceRepository:
         record.pop("created_at", None)
         record.pop("device_uuid", None)
         device_id = record.pop("id")
-        assignments = ", ".join(f"{column} = ?" for column in record)
+        clear_fields = {
+            str(value)
+            for value in getattr(device, "credential_clear_fields", ())
+            if str(value) in DEVICE_SECRET_FIELDS
+        }
         with self.database.connect() as conn:
+            ensure_device_credential_schema(conn)
+            current = conn.execute(
+                "SELECT * FROM devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"Device not found: {device_id}")
+            current_values = dict(current)
+            current_states = read_device_credential_states(
+                conn, [str(device.device_uuid or current_values.get("device_uuid") or "")]
+            ).get(str(device.device_uuid or current_values.get("device_uuid") or ""), {})
+            state_updates: dict[str, CredentialFieldResolution | None] = {}
+            for field in DEVICE_SECRET_STORAGE_FIELDS:
+                canonical = self._canonical_secret_field(field, device)
+                if canonical in clear_fields:
+                    record[field] = None
+                    if field in DEVICE_SECRET_FIELDS:
+                        state_updates[field] = None
+                    continue
+                value = record.get(field)
+                if value:
+                    if field in DEVICE_SECRET_FIELDS:
+                        state_updates[field] = CredentialFieldResolution(
+                            "available", "local_database"
+                        )
+                    continue
+                persisted_state = current_states.get(canonical)
+                if current_values.get(field) or (
+                    persisted_state
+                    and persisted_state.status
+                    == "needs_reentry"
+                ):
+                    record.pop(field, None)
+                    continue
+                record[field] = None
+                if field in DEVICE_SECRET_FIELDS:
+                    state_updates[field] = None
+            assignments = ", ".join(f"{column} = ?" for column in record)
             conn.execute(
                 f"UPDATE devices SET {assignments} WHERE id = ?",
                 [record[column] for column in record] + [device_id],
             )
+            device_uuid = str(device.device_uuid or current_values.get("device_uuid") or "")
+            for field, state in state_updates.items():
+                replace_device_credential_state(conn, device_uuid, field, state)
             conn.commit()
         return self.get(int(device_id))
 
     def delete(self, device_id: int) -> None:
         with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT device_uuid FROM devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if row is not None and self._table_exists(conn, "device_credential_states"):
+                conn.execute(
+                    "DELETE FROM device_credential_states WHERE device_uuid = ?",
+                    (str(row["device_uuid"]),),
+                )
             conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
             conn.commit()
 
@@ -108,6 +183,11 @@ class DeviceRepository:
             conn.execute(
                 f"DELETE FROM devices WHERE device_uuid IN ({placeholders})", values
             )
+            if self._table_exists(conn, "device_credential_states"):
+                conn.execute(
+                    f"DELETE FROM device_credential_states WHERE device_uuid IN ({placeholders})",
+                    values,
+                )
             conn.commit()
         return values
 
@@ -152,7 +232,10 @@ class DeviceRepository:
                 """,
                 params,
             ).fetchall()
-        devices = [Device.from_mapping(dict(row)) for row in rows]
+            states = read_device_credential_states(
+                conn, [str(row["device_uuid"]) for row in rows]
+            )
+        devices = [self._device_from_row(row, states) for row in rows]
         return sorted(devices, key=_device_natural_sort_key)
 
     def update_group(self, device_id: int, group_id: int | None) -> Device:
@@ -201,6 +284,44 @@ class DeviceRepository:
             )
             conn.commit()
         return cursor.rowcount > 0
+
+    @staticmethod
+    def _canonical_secret_field(field: str, device: Device) -> str:
+        if field != "password":
+            return field
+        return "telnet_password" if bool(device.telnet_enabled) and not bool(device.ssh_enabled) else "ssh_password"
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _device_from_row(
+        row: sqlite3.Row,
+        states: dict[str, dict[str, CredentialFieldResolution]],
+    ) -> Device:
+        raw = dict(row)
+        device_uuid = str(raw.get("device_uuid") or "")
+        values, resolution = resolve_device_credentials(
+            raw, states.get(device_uuid, {})
+        )
+        device = Device.from_mapping(values)
+        device.credential_status = resolution.status
+        device.credential_source = resolution.source
+        device.credential_error_code = resolution.error_code
+        device.credential_field_statuses = {
+            field: state.status for field, state in resolution.fields.items()
+        }
+        device.credential_field_sources = {
+            field: state.source for field, state in resolution.fields.items()
+        }
+        device.credential_field_errors = {
+            field: state.error_code for field, state in resolution.fields.items()
+        }
+        return device
 
 
 def _device_natural_sort_key(device: Device) -> tuple[tuple[object, ...], tuple[object, ...], tuple[object, ...], int]:

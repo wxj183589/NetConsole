@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -16,13 +17,69 @@ class TextDecodeResult:
     text: str
     encoding: str
     used_replacement: bool = False
+    had_bom: bool = False
+    decode_warning: str = ""
+    source: str = ""
+
+    @property
+    def selected_encoding(self) -> str:
+        return self.encoding
+
+    @property
+    def replacement_used(self) -> bool:
+        return self.used_replacement
+
+
+class Utf8IncrementalTextDecoder:
+    """Decode one internal UTF-8 byte stream without corrupting split code points."""
+
+    def __init__(self, *, source: str) -> None:
+        self.source = str(source or "internal_stream")
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def decode(self, data: bytes, *, final: bool = False) -> TextDecodeResult:
+        text = self._decoder.decode(bytes(data), final=final)
+        replaced = "\ufffd" in text
+        return TextDecodeResult(
+            text=text,
+            encoding="utf-8",
+            used_replacement=replaced,
+            decode_warning=(
+                "内部 UTF-8 字节流包含非法序列，已执行受控替代。"
+                if replaced
+                else ""
+            ),
+            source=self.source,
+        )
 
 
 def safe_decode(text: bytes | str) -> str:
     if isinstance(text, bytes):
-        result = decode_bytes_with_fallback(text)
-        return clean_h3c_device_text(result.text)
+        return decode_external_text(text, source="device_output").text
     return clean_h3c_device_text(str(text or ""))
+
+
+def decode_external_text(
+    value: bytes | str,
+    *,
+    source: str,
+    encoding_hint: str | None = None,
+) -> TextDecodeResult:
+    if isinstance(value, str):
+        return TextDecodeResult(
+            clean_device_text(value),
+            "unicode",
+            source=str(source or ""),
+        )
+    candidates: list[str] = []
+    if encoding_hint:
+        candidates.append(str(encoding_hint))
+    candidates.extend(("utf-8-sig", "utf-8", "gb18030", "cp936"))
+    return decode_bytes_with_fallback(
+        value,
+        encodings=tuple(dict.fromkeys(candidates)),
+        source=source,
+    )
 
 
 def decode_text_auto(data: bytes) -> str:
@@ -35,18 +92,31 @@ def decode_bytes_with_fallback(
     *,
     encodings: Iterable[str] = TEXT_ENCODINGS,
     replace_on_failure: bool = True,
+    source: str = "external_bytes",
 ) -> TextDecodeResult:
     raw = bytes(data)
     for encoding in tuple(encodings):
         if encoding.lower().replace("_", "-") == "utf-8-sig" and not raw.startswith(b"\xef\xbb\xbf"):
             continue
         try:
-            return TextDecodeResult(clean_device_text(raw.decode(encoding)), encoding)
+            had_bom = encoding.lower().replace("_", "-") == "utf-8-sig"
+            return TextDecodeResult(
+                clean_device_text(raw.decode(encoding)),
+                encoding,
+                had_bom=had_bom,
+                source=source,
+            )
         except UnicodeDecodeError:
             continue
     if not replace_on_failure:
         raise ValueError(FILE_ENCODING_ERROR)
-    return TextDecodeResult(clean_device_text(raw.decode("utf-8", errors="replace")), "utf-8-replace", True)
+    return TextDecodeResult(
+        clean_device_text(raw.decode("utf-8", errors="replace")),
+        "utf-8-replace",
+        True,
+        decode_warning="所有候选编码均严格解码失败，已执行受控替代。",
+        source=source,
+    )
 
 
 def read_text_auto(path: Path) -> str:
@@ -62,49 +132,17 @@ def read_text_with_encoding(path: Path) -> TextDecodeResult:
 
 
 def clean_device_text(text: str) -> str:
-    normalized = str(text or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
-    return fix_mojibake_text(normalized)
+    return str(text or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def clean_h3c_device_text(text: str) -> str:
-    original = str(text or "")
-    if not _looks_mojibake(original):
-        return clean_device_text(original)
-    candidates = [original]
-    for encoding in H3C_DEVICE_ENCODINGS:
-        try:
-            candidates.append(original.encode(encoding, errors="ignore").decode("utf-8", errors="ignore"))
-        except UnicodeError:
-            continue
-        try:
-            candidates.append(original.encode("utf-8", errors="ignore").decode(encoding, errors="ignore"))
-        except UnicodeError:
-            continue
-    candidates.append(fix_mojibake_text(original))
-    best = min((candidate for candidate in candidates if candidate), key=_mojibake_score)
-    return clean_device_text(best)
+    # 输入已是 Unicode 时不再猜测式 encode/decode，避免二次转码造成不可逆损坏。
+    return clean_device_text(text)
 
 
 def fix_mojibake_text(text: str) -> str:
-    original = str(text or "")
-    if not _looks_mojibake(original):
-        return original
-    candidates = [original]
-    for source_encoding, target_encoding in (
-        ("latin1", "gbk"),
-        ("gbk", "utf-8"),
-        ("utf-8", "gbk"),
-    ):
-        try:
-            candidate = original.encode(source_encoding, errors="ignore").decode(target_encoding, errors="ignore")
-        except UnicodeError:
-            continue
-        if candidate:
-            candidates.append(candidate)
-    cleaned = "".join(char for char in original if char not in MOJIBAKE_MARKERS and char != "?")
-    if cleaned:
-        candidates.append(cleaned)
-    return min(candidates, key=_mojibake_score)
+    # 历史损坏的 str 缺少原始字节，不能安全猜测恢复。
+    return str(text or "")
 
 
 def _looks_mojibake(text: str) -> bool:

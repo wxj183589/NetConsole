@@ -17,6 +17,10 @@
 - 采集回传包导入先预检文件、任务和数据库记录，冲突由用户逐项选择本机或回传值；文件按哈希追加，任务按稳定任务/事件 ID 合并，设备、FIT-AP 和 AP 记录仅在具有稳定 UUID 时执行三方字段合并。
 - 合并前自动创建数据库恢复快照，失败时恢复主库；删除请求只进入审计而不自动执行，旧基础资料等缺少稳定身份的记录保持本机数据并列为未支持项。
 - 正式 Electron 包改为固定生产功能集：不再显示或请求功能配置，包内基线缺失/损坏时回退稳定 Registry 默认；系统设置、局点管理、任务中心和日志不再受 customer profile、本地 override 或 `client_package` 误关影响。
+- 正式生产基线补齐设备写入/采集/导入导出、设备与文件桌面动作、SFTP 浏览下载、列车在线、Online MR 分析、MESH 导入/报告和轨交任务控制；构建与 Electron package smoke 会拒绝缺少必要生产能力的包，internal/development 项仍保持关闭。
+- 普通局点包新增非秘密凭据重录状态：导出继续清空密码、SNMP community 和隧道密码，导入后设备明确显示 `needs_reentry`，连接任务在创建前阻断；当前电脑重新保存凭据后恢复可用。本次不引入凭据加密，也不改变现有本机凭据存储格式。
+- 修复 Worker UTF-8 JSONL 在汉字多字节中间分块时被 `errors="replace"` 提前破坏的问题；stdout/stderr 使用增量解码，新任务消息、progress、log 和 finished 保持 Unicode，旧历史中的 U+FFFD 只提示不可恢复而不猜测改写。
+- 系统设置新增正式包环境自检，覆盖 Backend/构建标识/生产 Feature policy/局点/数据根/任务库/设备库/凭据状态/fping/iPerf3/Electron Bridge，并用真实 REST 与任务 WebSocket 中文探针验证端到端 Unicode。
 - 局点切换改为先核对真实任务宿主：终态历史、死 PID 和无宿主残留任务不再永久阻塞；真实活动任务返回名称、状态和 ID，并可从设置页直接打开任务中心。Backend health ready 后先完成 IPC 再刷新 Renderer，重启失败会恢复原局点并解除按钮 loading。
 
 ### 轨道交通基础资料

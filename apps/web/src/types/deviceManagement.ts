@@ -1,5 +1,6 @@
 export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'ERROR'
 export type DeviceConnectionProtocol = 'SSH' | 'TELNET' | 'SNMP'
+export type DeviceCredentialStatus = 'available' | 'missing' | 'needs_reentry' | 'key_file_missing'
 export type DeviceSecretField =
   | 'ssh_password'
   | 'telnet_password'
@@ -39,6 +40,10 @@ export interface DeviceListItem {
   connection_status: DeviceConnectionStatus
   last_test_task_id: string
   last_test_time: string
+  credential_status: DeviceCredentialStatus
+  credential_source: 'local_database' | 'imported_reference' | 'none'
+  credential_error_code: string
+  credential_message: string
 }
 
 export interface DevicePage {
@@ -478,6 +483,10 @@ export interface DeviceEditProfileResponse extends DeviceWriteRequest {
   tunnel1_secret_configured: boolean
   tunnel2_secret_configured: boolean
   snmp_ro_secret_configured: boolean
+  credential_status: DeviceCredentialStatus
+  credential_source: 'local_database' | 'imported_reference' | 'none'
+  credential_error_code: string
+  credential_message: string
 }
 
 export interface DeviceFormConnectionTestRequest extends DeviceWriteRequest {
@@ -493,6 +502,10 @@ export interface DeviceConnectionTest {
   success: boolean | null
   result_status: string
   failure_category: string
+  error_code: string
+  summary: string
+  retryable: boolean
+  suggested_action: string
   message: string
   safe_message: string
   method: string

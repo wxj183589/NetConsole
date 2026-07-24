@@ -57,6 +57,9 @@ from netconsole.models.api.device_detail import (
     DeviceTransceiverPageDTO,
 )
 from netconsole.services.device_management_web_service import DeviceManagementWebService
+from netconsole.services.device_connection_preflight import (
+    DeviceConnectionPreflightError,
+)
 from netconsole.services.file_contract import artifact_media_type
 
 
@@ -581,6 +584,8 @@ def start_form_connection_test(
     ):
         try:
             return _service(request).start_form_connection_test(payload)
+        except DeviceConnectionPreflightError as exc:
+            _raise_preflight(exc)
         except KeyError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在"
@@ -609,6 +614,8 @@ def start_connection_test(
     ):
         try:
             return _service(request).start_connection_test(device_uuid, payload.protocol)
+        except DeviceConnectionPreflightError as exc:
+            _raise_preflight(exc)
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="设备不存在") from exc
         except ValueError as exc:
@@ -661,12 +668,25 @@ def _query(callback):
     with map_api_errors("设备数据库暂时不可读"):
         try:
             return callback()
+        except DeviceConnectionPreflightError as exc:
+            _raise_preflight(exc)
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="资源不存在"
             ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+def _raise_preflight(exc: DeviceConnectionPreflightError) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "details": exc.details,
+        },
+    ) from exc
 
 
 __all__ = ["router"]

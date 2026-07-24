@@ -7,6 +7,7 @@ import pytest
 
 from netconsole.core import atomic_file
 from netconsole.core.feature_flags import (
+    PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureDisabledError,
     FeatureGate,
     default_profile,
@@ -20,6 +21,34 @@ from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_
 
 
 PROTECTED_INTERNAL_STATE = {"visible": True, "enabled": True, "client_package": False, "internal_only": True}
+FORMALIZED_PRODUCTION_FEATURE_IDS = (
+    "web.device_form_connection_test",
+    "web.device_management_write",
+    "web.device_management_collect",
+    "web.device_management_import",
+    "web.device_management_export",
+    "web.device_management_desktop",
+    "web.file_management_remote",
+    "web.file_management_desktop_actions",
+    "web.online_mr_report_export",
+    "web.online_mr_parse",
+    "web.mesh_analysis_import",
+    "web.mesh_analysis_report_export",
+    "web.rail_task_control",
+    "web.rail_train_online",
+    "web.rail_train_online_refresh",
+    "web.rail_train_online_collect",
+    "web.rail_train_online_history_export",
+    "web.rail_train_online_mapping_write",
+    "web.rail_train_online_mapping_import",
+    "web.rail_train_online_mapping_export",
+    "web.rail_trackside_ap_business_export",
+    "web.rail_trackside_ap_plan",
+    "web.rail_trackside_ap_plan_write",
+    "web.rail_trackside_ap_plan_export",
+    "web.online_mr_analysis",
+    "web.rail_transit_base_data_write",
+)
 
 
 def write_runtime(root: Path, edition: str, profile: str, features: dict[str, dict[str, bool]]) -> None:
@@ -68,7 +97,7 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["web.device_connection_test"].parent_id == "web.device_management"
     form_test = FEATURE_BY_ID["web.device_form_connection_test"]
     assert form_test.parent_id == "web.device_management"
-    assert form_test.status is FeatureStatus.DEVELOPMENT
+    assert form_test.status is FeatureStatus.ENABLED
     assert form_test.default_enabled is True
     assert form_test.default_client_package is True
     for feature_id in (
@@ -79,13 +108,13 @@ def test_feature_registry_lists_expected_features() -> None:
     ):
         feature = FEATURE_BY_ID[feature_id]
         assert feature.parent_id == "web.device_management"
-        assert feature.status is FeatureStatus.DEVELOPMENT
+        assert feature.status is FeatureStatus.ENABLED
         assert feature.default_visible is True
         assert feature.default_enabled is True
         assert feature.default_client_package is True
     desktop_feature = FEATURE_BY_ID["web.device_management_desktop"]
     assert desktop_feature.parent_id == "web.device_management"
-    assert desktop_feature.status is FeatureStatus.DEVELOPMENT
+    assert desktop_feature.status is FeatureStatus.ENABLED
     assert desktop_feature.default_visible is True
     assert desktop_feature.default_enabled is True
     assert desktop_feature.default_client_package is True
@@ -112,6 +141,10 @@ def test_feature_registry_lists_expected_features() -> None:
     assert FEATURE_BY_ID["system.web_console"].parent_id == "module.system_settings"
     assert FEATURE_BY_ID["module.feature_switch"].internal_only is True
     assert FEATURE_BY_ID["system.feature_flags"].internal_only is True
+    assert all(
+        FEATURE_BY_ID[feature_id].status is FeatureStatus.ENABLED
+        for feature_id in FORMALIZED_PRODUCTION_FEATURE_IDS
+    )
 
 
 def test_feature_gate_full_profile_defaults_visible(tmp_path: Path) -> None:
@@ -428,6 +461,11 @@ def test_default_profiles_have_complete_boolean_state() -> None:
     assert payload["features"]["online_mr.advanced_ping"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert payload["features"]["online_mr.iperf_test"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
     assert payload["features"]["mesh.generate_report"] == {"visible": True, "enabled": True, "client_package": True, "internal_only": False}
+    assert all(
+        payload["features"][feature_id]["visible"]
+        and payload["features"][feature_id]["enabled"]
+        for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS
+    )
 
 
 def test_customer_effective_state_cascades_parent_flags(tmp_path: Path) -> None:
@@ -506,17 +544,41 @@ def test_packaged_runtime_ignores_external_overrides_and_protects_core_features(
 
     assert gate.resolution.source == "embedded"
     assert gate.allow_local_override is False
-    for feature_id in (
-        "module.system_settings",
-        "web.system_settings",
-        "web.job_center",
-        "module.logs",
-        "web.logs",
-    ):
-        assert gate.is_visible(feature_id)
-        assert gate.is_enabled(feature_id)
+    for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
+        assert gate.is_visible(feature_id), feature_id
+        assert gate.is_enabled(feature_id), feature_id
     assert not gate.is_visible("module.feature_switch")
     assert not gate.is_visible("system.feature_flags")
+
+
+def test_packaged_runtime_does_not_use_client_package_as_runtime_denial(
+    tmp_path: Path,
+) -> None:
+    install_runtime_feature_files(tmp_path, edition="customer", profile="production")
+    baseline = (
+        tmp_path
+        / "_internal"
+        / "netconsole"
+        / "assets"
+        / "runtime"
+        / "feature_flags.json"
+    )
+    payload = json.loads(baseline.read_text(encoding="utf-8"))
+    payload["features"]["web.device_management_collect"]["client_package"] = False
+    payload["features"]["web.online_mr_local_control"].update(
+        visible=True,
+        enabled=True,
+        client_package=True,
+    )
+    baseline.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    gate = FeatureGate(tmp_path, packaged_runtime=True)
+
+    assert gate.is_visible("web.device_management_collect")
+    assert gate.is_enabled("web.device_management_collect")
+    assert not gate.is_in_client_package("web.device_management_collect")
+    assert not gate.is_visible("web.online_mr_local_control")
+    assert not gate.is_enabled("web.online_mr_local_control")
 
 
 @pytest.mark.parametrize("baseline_state", ["missing", "invalid"])
@@ -540,13 +602,7 @@ def test_packaged_runtime_falls_back_to_registry_when_baseline_unavailable(
     gate = FeatureGate(tmp_path, packaged_runtime=True)
 
     assert gate.resolution.embedded_flags_status == baseline_state
-    for feature_id in (
-        "module.system_settings",
-        "web.system_settings",
-        "web.job_center",
-        "module.logs",
-        "web.logs",
-    ):
+    for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
         assert gate.is_visible(feature_id)
         assert gate.is_enabled(feature_id)
     assert not gate.is_visible("module.feature_switch")

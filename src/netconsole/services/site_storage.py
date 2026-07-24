@@ -19,6 +19,9 @@ from typing import Callable, Iterator
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
+from netconsole.core.device_credential_store import (
+    sanitize_device_credentials_for_package,
+)
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import persistent_storage
@@ -717,6 +720,7 @@ class SitePackageService:
         staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         try:
             manifest_files: dict[str, str] = {}
+            reentry_count = 0
             with tempfile.TemporaryDirectory(prefix="netconsole-site-export-") as temp:
                 root = Path(temp) / "site"
                 for source in _safe_site_files(site.root_path):
@@ -726,7 +730,10 @@ class SitePackageService:
                     target = root / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     if source.name.endswith(".db"):
-                        _copy_sanitized_database(source, target)
+                        reentry_count = max(
+                            reentry_count,
+                            _copy_sanitized_database(source, target),
+                        )
                     else:
                         shutil.copy2(source, target)
                     manifest_files[f"site/{relative}"] = _sha256(target)
@@ -747,6 +754,7 @@ class SitePackageService:
                     "artifacts": [],
                     "checksums": manifest_files,
                     "contains_credentials": False,
+                    "credential_reentry_count": reentry_count,
                 }
                 (Path(temp) / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
                 (Path(temp) / "checksums.json").write_text(json.dumps(manifest_files, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -764,6 +772,7 @@ class SitePackageService:
                 "base_revision": identity["revision"],
                 "size_bytes": destination.stat().st_size,
                 "contains_credentials": False,
+                "credential_reentry_count": reentry_count,
             }
         finally:
             staging.unlink(missing_ok=True)
@@ -830,6 +839,9 @@ class SitePackageService:
                     "base_revision": int(manifest.get("base_revision") or manifest.get("site_revision") or 1),
                     "file_count": len(infos),
                     "contains_credentials": False,
+                    "credential_reentry_count": max(
+                        0, int(manifest.get("credential_reentry_count") or 0)
+                    ),
                     "conflict_count": 0,
                     "conflicts": [],
                     "invalid_count": 0,
@@ -897,6 +909,18 @@ class SitePackageService:
                             with archive.open(info_item) as source, destination.open("wb") as target_file:
                                 shutil.copyfileobj(source, target_file)
                 imported_root = staging / "site"
+                imported_database = imported_root / "db" / "devices.db"
+                reentry_count = 0
+                if imported_database.is_file():
+                    with sqlite3.connect(imported_database) as connection:
+                        reentry_count = sanitize_device_credentials_for_package(
+                            connection,
+                            infer_missing=(
+                                "credential_reentry_count" not in manifest
+                                or int(manifest.get("credential_reentry_count") or 0) > 0
+                            ),
+                        )
+                        connection.commit()
                 _quick_check_site(imported_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
@@ -915,7 +939,8 @@ class SitePackageService:
                     "display_name": name,
                     "package_type": package_type,
                     "backup_created": backup is not None,
-                    "requires_credentials": True,
+                    "requires_credentials": reentry_count > 0,
+                    "credential_reentry_count": reentry_count,
                 }
             except SiteStorageError:
                 if published and backup and target.exists():
@@ -1027,18 +1052,15 @@ def _safe_site_files(root: Path) -> Iterator[Path]:
         yield item
 
 
-def _copy_sanitized_database(source: Path, target: Path) -> None:
+def _copy_sanitized_database(source: Path, target: Path) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     source_connection = sqlite3.connect(source)
     target_connection = sqlite3.connect(target)
     try:
         source_connection.backup(target_connection)
-        columns = {str(row[1]) for row in target_connection.execute("PRAGMA table_info(devices)")}
-        credential_columns = {"password", "ssh_password", "telnet_password", "snmp_ro_community", "tunnel1_password", "tunnel2_password"}
-        available = sorted(columns & credential_columns)
-        if available:
-            target_connection.execute(f"UPDATE devices SET {', '.join(f'{column} = NULL' for column in available)}")
-            target_connection.commit()
+        count = sanitize_device_credentials_for_package(target_connection)
+        target_connection.commit()
+        return count
     finally:
         target_connection.close()
         source_connection.close()

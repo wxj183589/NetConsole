@@ -9,6 +9,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.database import Database
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.backend.api.main import _current_site_name
 from netconsole.services.site_storage import (
     DataRootApplicationService,
@@ -133,15 +134,36 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
     result = SitePackageService(paths, sites).export_site("site-one", package_path)
 
     assert result["contains_credentials"] is False
+    assert result["credential_reentry_count"] == 1
     with zipfile.ZipFile(package_path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["contains_credentials"] is False
+        assert manifest["credential_reentry_count"] == 1
         archive.extract("site/db/devices.db", tmp_path / "inspect")
     with sqlite3.connect(tmp_path / "inspect" / "site" / "db" / "devices.db") as connection:
         row = connection.execute(
             "SELECT password, ssh_password, snmp_ro_community FROM devices WHERE name = 'SW1'"
         ).fetchone()
+        states = connection.execute(
+            "SELECT credential_field, status, source, error_code "
+            "FROM device_credential_states WHERE device_uuid = 'device-1' "
+            "ORDER BY credential_field"
+        ).fetchall()
     assert row == (None, None, None)
+    assert states == [
+        (
+            "snmp_ro_community",
+            "needs_reentry",
+            "imported_reference",
+            "CREDENTIAL_REENTRY_REQUIRED",
+        ),
+        (
+            "ssh_password",
+            "needs_reentry",
+            "imported_reference",
+            "CREDENTIAL_REENTRY_REQUIRED",
+        ),
+    ]
 
 
 def test_site_package_detects_checksum_tampering(tmp_path: Path) -> None:
@@ -184,9 +206,52 @@ def test_import_as_new_site_is_staged_and_registered(tmp_path: Path) -> None:
         package, site_id="imported-site", display_name="导入局点"
     )
 
-    assert result["requires_credentials"] is True
+    assert result["requires_credentials"] is False
+    assert result["credential_reentry_count"] == 0
     assert target_sites.get_site("imported-site")["display_name"] == "导入局点"
     assert target_paths.site_db_path("imported-site").is_file()
+
+
+def test_imported_site_marks_credentials_for_reentry_and_new_secret_clears_marker(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "宁波地铁1号线")
+    with sqlite3.connect(source_paths.site_db_path("source-site")) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, primary_address, ssh_username, "
+            "ssh_password, created_at, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            ("device-imported", "中文设备", "192.0.2.11", "admin", "secret"),
+        )
+        connection.commit()
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+
+    result = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="imported-site",
+        display_name="导入局点",
+    )
+    repository = DeviceRepository(Database(target_paths.site_db_path("imported-site")))
+    imported = repository.get_by_uuid("device-imported")
+
+    assert result["requires_credentials"] is True
+    assert result["credential_reentry_count"] == 1
+    assert imported is not None
+    assert imported.ssh_password is None
+    assert imported.credential_status == "needs_reentry"
+    assert imported.credential_source == "imported_reference"
+    assert imported.credential_error_code == "CREDENTIAL_REENTRY_REQUIRED"
+
+    imported.ssh_password = "new-local-secret"
+    saved = repository.update(imported)
+
+    assert saved.ssh_password == "new-local-secret"
+    assert saved.credential_status == "available"
+    assert saved.credential_source == "local_database"
 
 
 def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:

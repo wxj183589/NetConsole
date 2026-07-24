@@ -166,6 +166,7 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
     displayValue: (row) => [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '—',
   },
   { key: 'updated_at', label: '更新时间', valueType: 'datetime', stretch: 'none' },
+  { key: 'credential_status', label: '凭据状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'], stretch: 'none' },
 ]
@@ -843,6 +844,14 @@ async function deleteSelected(): Promise<void> {
 
 async function startSelectedConnectionTests(): Promise<void> {
   if (!selectedUuids.value.length) return
+  const selected = pageData.value.items.filter((item) => selectedUuids.value.includes(item.device_uuid))
+  const blocked = selected.filter((item) => item.credential_status !== 'available')
+  if (blocked.length) {
+    const first = blocked[0]
+    ElMessage.warning(first.credential_message || `${blocked.length} 台设备缺少可用凭据，请先编辑设备重新录入`)
+    if (blocked.length === 1) await editRow(first)
+    return
+  }
   try {
     const result = await startBatchConnectionTests(selectedUuids.value)
     await presentTasks(result.tasks, `已提交 ${result.tasks.length} 个连接测试任务`)
@@ -1359,6 +1368,13 @@ function errorMessage(cause: unknown, fallback: string): string {
         @row-contextmenu="showContextMenu"
       >
         <template #cell-connection_status="{ row }"><el-tag :type="statusType(row.connection_status)">{{ statusLabel(row.connection_status) }}</el-tag></template>
+        <template #cell-credential_status="{ row }">
+          <el-tooltip :content="row.credential_message || '凭据可用'">
+            <el-tag :type="row.credential_status === 'available' ? 'success' : row.credential_status === 'needs_reentry' ? 'warning' : 'danger'">
+              {{ row.credential_status === 'available' ? '可用' : row.credential_status === 'needs_reentry' ? '需重新录入' : '缺失' }}
+            </el-tag>
+          </el-tooltip>
+        </template>
         <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('web.device_management_write')" @click="editRow(row)">编辑</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('web.device_management_write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
       </NcDataTable>
       <el-pagination
@@ -1428,6 +1444,14 @@ function errorMessage(cause: unknown, fallback: string): string {
 
     <el-dialog v-model="writeVisible" :title="writeMode === 'create' ? '新建设备' : '编辑设备'" width="min(1120px, 96vw)" top="4vh" @closed="closeWriteDialog">
       <el-alert :title="writeMode === 'edit' ? '秘密字段留空会保留原值；输入新值会替换；勾选清除会删除已保存值。' : '秘密字段只用于当前设备保存和后续连接，不会在 API 响应中回显。'" type="info" show-icon :closable="false" />
+      <el-alert
+        v-if="writeMode === 'edit' && detail?.credential_status === 'needs_reentry'"
+        title="该设备凭据来自局点包，请在当前电脑重新录入用户名和密码后保存。"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="state-alert"
+      />
       <el-alert v-if="writeConnectionTest" :title="`${writeConnectionTest.protocol || writeTestProtocol} · ${writeConnectionTest.task_status} · ${writeConnectionTest.safe_message || writeConnectionTest.message || '等待结果'}`" :type="writeConnectionTest.success === true ? 'success' : writeConnectionTest.success === false || writeConnectionTest.task_status === 'FAILED' ? 'error' : 'info'" :description="`Task ID: ${writeConnectionTest.task_id}${writeConnectionTest.failure_category ? `；分类：${writeConnectionTest.failure_category}` : ''}${writeConnectionTest.elapsed_ms != null ? `；耗时：${writeConnectionTest.elapsed_ms} ms` : ''}${writeConnectionTest.suggestion ? `；建议：${writeConnectionTest.suggestion}` : ''}`" show-icon :closable="false" />
       <el-form label-width="118px" class="device-write-form">
         <div class="form-grid">

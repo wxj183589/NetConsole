@@ -96,6 +96,16 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('netconsole_electron_smoke_test'.toLowerCase())
   })
 
+  it('requires the packaged production feature baseline', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('requiredProductionFeatureIds')
+    expect(script).toContain('web.device_management_collect')
+    expect(script).toContain('web.online_mr_analysis')
+    expect(script).toContain('web.mesh_analysis_import')
+    expect(script).toContain('Electron 包生产功能基线关闭必要能力')
+  })
+
   it('requires runtime-versioned NOTICE and a strict CycloneDX SBOM', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
 

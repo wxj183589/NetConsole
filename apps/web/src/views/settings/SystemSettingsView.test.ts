@@ -26,7 +26,12 @@ const settingsBridge = {
   selectSettingsColor: vi.fn(async () => ({ cancelled: false, color: '#2563EB' as const })),
   executeSettingsAction: vi.fn(async () => ({ success: true })),
 }
-vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => settingsBridge }))
+vi.mock('../../platform/runtime', () => ({
+  getPlatformAdapter: () => settingsBridge,
+  getRuntimeConfig: () => ({ hostType: 'electron', apiBaseUrl: '', apiToken: '' }),
+  resolveApiUrl: vi.fn((path: string) => path),
+  resolveWebSocketUrl: vi.fn(() => 'ws://127.0.0.1/ws/tasks'),
+}))
 const confirmAction = vi.hoisted(() => vi.fn())
 vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ confirm: confirmAction }) }))
 
@@ -42,13 +47,51 @@ function snapshot(): SystemSettingsSnapshot {
 
 const featureData = { items: [{ feature_id: 'web.agent_management', title: 'Agent', visible: true, enabled: true, client_package: true, internal_only: false }], preview_active: false }
 const featureSnapshot = () => ({ ...featureData, items: featureData.items.map((item) => ({ ...item })) })
+const selfCheckSnapshot = () => ({
+  status: 'normal' as const,
+  checked_at: '2026-07-24T08:00:00+00:00',
+  packaged: true,
+  unicode_sample: '宁波地铁1号线 · 中文设备 · 任务已完成',
+  items: [{
+    check_id: 'backend_executable',
+    title: 'Backend 可执行文件',
+    status: 'normal' as const,
+    message: '正式包 Backend 可执行文件可用。',
+    suggestion: '',
+  }],
+})
+
+class SelfCheckWebSocket {
+  onmessage: ((event: { data: string }) => void) | null = null
+  onerror: (() => void) | null = null
+
+  constructor(_url: string) {
+    window.setTimeout(() => this.onmessage?.({
+      data: JSON.stringify({
+        type: 'snapshot',
+        payload: { unicode_probe: '宁波地铁1号线 · 任务已完成' },
+      }),
+    }), 0)
+  }
+
+  close(): void {}
+}
+
+const SiteStoragePanelStub = defineComponent({
+  props: { focused: { type: Boolean, default: false } },
+  methods: { focusInitialControl: vi.fn() },
+  template: '<section id="site-storage-management" :class="{ \'storage-panel--focused\': focused }" />',
+})
 
 async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createRouter> }> {
   vi.mocked(api.getSystemSettings).mockResolvedValue(snapshot())
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
+  vi.mocked(api.getRuntimeSelfCheck).mockResolvedValue(selfCheckSnapshot())
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
-  const wrapper = mount(defineComponent({ template: '<RouterView />' }), { global: { plugins: [router] } })
+  const wrapper = mount(defineComponent({ template: '<RouterView />' }), {
+    global: { plugins: [router], stubs: { SiteStoragePanel: SiteStoragePanelStub } },
+  })
   await flushPromises()
   return { wrapper, router }
 }
@@ -59,7 +102,7 @@ async function change(wrapper: VueWrapper, id: string, value: string): Promise<v
 }
 
 beforeEach(() => {
-  vi.clearAllMocks(); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
+  vi.clearAllMocks(); vi.stubGlobal('WebSocket', SelfCheckWebSocket); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
   confirmAction.mockResolvedValue(true)
   vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
@@ -68,9 +111,33 @@ beforeEach(() => {
   settingsBridge.executeSettingsAction.mockResolvedValue({ success: true })
   settingsBridge.getAppInfo.mockResolvedValue({ version: '1.4.2', platform: 'win32', isPackaged: false })
 })
-afterEach(() => Reflect.deleteProperty(window, 'netconsoleDesktop'))
+afterEach(() => {
+  vi.unstubAllGlobals()
+  Reflect.deleteProperty(window, 'netconsoleDesktop')
+})
 
 describe('SystemSettingsView mounted behavior', () => {
+  it('runs the clean-install checks and verifies REST and WebSocket Chinese text', async () => {
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { reportRendererReady: vi.fn() },
+    })
+
+    const { wrapper } = await mounted()
+
+    expect(api.getRuntimeSelfCheck).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('正式包环境自检')
+    await vi.waitFor(() => {
+      expect(wrapper.text()).toContain('REST API 中文往返正常')
+      expect(wrapper.text()).toContain('任务 WebSocket 中文往返正常')
+    })
+
+    await wrapper.find('[data-testid="runtime-self-check"]').trigger('click')
+    await flushPromises()
+    expect(api.getRuntimeSelfCheck).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('synchronizes the close-to-tray setting through the desktop bridge', async () => {
     const setCloseToTrayEnabled = vi.fn(async (enabled: boolean) => ({ enabled, available: true }))
     let listener: ((state: { enabled: boolean; available: boolean }) => void) | undefined

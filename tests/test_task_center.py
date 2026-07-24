@@ -78,6 +78,47 @@ def test_task_repository_persists_snapshot_events_and_wal(tmp_path: Path) -> Non
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
+def test_task_runtime_preserves_chinese_when_utf8_is_split_at_every_byte(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "utf8-byte-split"
+    service.prepare(
+        BackgroundJob(
+            job_id=task_id,
+            task_type="demo_task",
+            params={"task_name": "宁波地铁1号线", "site_name": "demo"},
+        )
+    )
+    service.mark_running(task_id)
+    output = (
+        encode_event(
+            progress_event(task_id, "auth", 1, 2, "SSH 认证失败")
+        )
+        + encode_event(
+            finished_event(
+                task_id,
+                {"device_name": "中文设备"},
+                message="任务已完成",
+            )
+        )
+    ).encode("utf-8")
+
+    for value in output:
+        service.feed_stdout(task_id, bytes((value,)))
+    service.complete(task_id, 0)
+
+    restored = service.get_task(task_id)
+    events = service.list_events(task_id)
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert restored is not None
+    assert restored.status is TaskState.COMPLETED
+    assert "SSH 认证失败" in serialized
+    assert "任务已完成" in serialized
+    assert "中文设备" in serialized
+    assert "�" not in serialized
+
+
 def test_structured_progress_details_persist_and_can_cap_running_progress(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task_id = "structured-progress"
@@ -621,6 +662,7 @@ def test_task_websocket_sends_snapshot_and_hub_event(tmp_path: Path) -> None:
             event = socket.receive_json()
 
     assert snapshot["type"] == "snapshot"
+    assert snapshot["payload"]["unicode_probe"] == "宁波地铁1号线 · 任务已完成"
     assert snapshot["payload"]["tasks"][0]["id"] == "socket-task"
     assert event["type"] == "log"
     assert event["payload"]["message"] == "实时日志"

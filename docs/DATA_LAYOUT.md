@@ -72,7 +72,7 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 ```text
 <data_root>/data/sites/<site>/
 ├─ db/                           # 局点数据库
-│  ├─ devices.db                 # 设备、AC/FIT-AP 等主应用数据
+│  ├─ devices.db                 # 设备、AC/FIT-AP、现有本机凭据及非秘密凭据状态
 │  ├─ tasks.db                   # 任务快照、结构化事件与 Online MR Task/Session 映射
 │  ├─ agents.db                  # Agent 配置与运行状态（不保存明文凭据）
 │  └─ snmp.db                    # 旧版本遗留；当前不创建/读取/自动删除
@@ -112,6 +112,8 @@ Electron Codex/Smoke 使用独立的 `%TEMP%\NetConsole-Codex-*\{data,runtime,el
 │  └─ wireless_scan/
 └─ rail_transit/
 ```
+
+本次跨电脑交付修复不引入凭据加密，也不改变 `devices.db` 中现有本机凭据的存储格式。`device_credential_states` 只保存字段级 `available / missing / needs_reentry / key_file_missing` 状态、来源和安全错误码；普通局点包中的秘密字段始终清空。导入新电脑后，设备资料保留但需在当前电脑重新录入凭据，完成前连接任务不会创建。
 
 ## 5. 轨道交通目录
 

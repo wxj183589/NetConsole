@@ -71,6 +71,73 @@ const requiredComponentNames = [
   'pyinstaller',
   'pyinstaller-hooks-contrib',
 ]
+const requiredProductionFeatureIds = [
+  'desktop.native_bridge',
+  'devices.securecrt_sessions',
+  'module.ac',
+  'module.command_reference',
+  'module.config_collection',
+  'module.devices',
+  'module.file_management',
+  'module.logs',
+  'module.network_tools',
+  'module.rail_transit',
+  'module.system_settings',
+  'network_tools.traffic',
+  'online_mr.advanced_ping',
+  'online_mr.agent_packages',
+  'online_mr.analysis_fping_1s',
+  'online_mr.analysis_link_details',
+  'online_mr.collection_notes',
+  'online_mr.iperf_test',
+  'rail.online_mr_analysis',
+  'rail.online_mr_collection',
+  'web.ac_fit_ap_resources',
+  'web.ac_management',
+  'web.command_reference',
+  'web.config_collection',
+  'web.config_collection_fetch',
+  'web.device_connection_test',
+  'web.device_form_connection_test',
+  'web.device_management',
+  'web.device_management_collect',
+  'web.device_management_desktop',
+  'web.device_management_export',
+  'web.device_management_import',
+  'web.device_management_write',
+  'web.file_management',
+  'web.file_management_desktop_actions',
+  'web.file_management_download',
+  'web.file_management_remote',
+  'web.job_center',
+  'web.logs',
+  'web.mesh_analysis',
+  'web.mesh_analysis_import',
+  'web.mesh_analysis_report_export',
+  'web.network_tools',
+  'web.online_mr_analysis',
+  'web.online_mr_parse',
+  'web.online_mr_realtime',
+  'web.online_mr_report_export',
+  'web.rail_task_control',
+  'web.rail_trackside_ap_business',
+  'web.rail_trackside_ap_business_export',
+  'web.rail_trackside_ap_plan',
+  'web.rail_trackside_ap_plan_export',
+  'web.rail_trackside_ap_plan_write',
+  'web.rail_train_online',
+  'web.rail_train_online_collect',
+  'web.rail_train_online_history_export',
+  'web.rail_train_online_mapping_export',
+  'web.rail_train_online_mapping_import',
+  'web.rail_train_online_mapping_write',
+  'web.rail_train_online_refresh',
+  'web.rail_transit_base_data',
+  'web.rail_transit_base_data_write',
+  'web.system_settings',
+  'web.train_communication_monitoring',
+  'mesh.generate_report',
+]
 const expectedPackagedPythonLicenses = {
   pyinstaller: {
     file: 'PYINSTALLER_COPYING.txt',
@@ -372,6 +439,12 @@ function validatePackagedRuntimeFeaturePolicy() {
   }
   if (featureFlags.profile !== 'production' || !featureFlags.features || typeof featureFlags.features !== 'object') {
     throw new Error('Electron 包缺少有效生产功能基线。')
+  }
+  for (const featureId of requiredProductionFeatureIds) {
+    const state = featureFlags.features[featureId]
+    if (!state || state.visible !== true || state.enabled !== true || state.internal_only === true) {
+      throw new Error(`Electron 包生产功能基线关闭必要能力：${featureId}`)
+    }
   }
   for (const path of [
     resolve(runtimeRoot, 'feature_flags.local.json'),

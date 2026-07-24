@@ -50,6 +50,10 @@ class DeviceListItemDTO(ApiModel):
     connection_status: DeviceConnectionStatus = "UNKNOWN"
     last_test_task_id: str = ""
     last_test_time: str = ""
+    credential_status: str = "missing"
+    credential_source: str = "none"
+    credential_error_code: str = "CREDENTIAL_MISSING"
+    credential_message: str = ""
 
 
 class DevicePageDTO(ApiModel):
@@ -397,6 +401,10 @@ class DeviceConnectionTestDTO(ApiModel):
     success: bool | None = None
     result_status: str = ""
     failure_category: str = ""
+    error_code: str = ""
+    summary: str = ""
+    retryable: bool = False
+    suggested_action: str = ""
     message: str = ""
     safe_message: str = ""
     method: str = ""

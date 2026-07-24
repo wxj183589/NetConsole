@@ -3,10 +3,11 @@
 import sqlite3
 from pathlib import Path
 
+from netconsole.core.device_credential_store import DEVICE_CREDENTIAL_STATE_SCHEMA
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 
 
-CURRENT_SCHEMA_VERSION = "2026.07.18.history_query_indexes"
+CURRENT_SCHEMA_VERSION = "2026.07.24.device_credential_state"
 
 
 class DatabaseSchemaMismatchError(RuntimeError):
@@ -1170,6 +1171,7 @@ class Database:
         return (
             SCHEMA_METADATA_SCHEMA,
             DEVICES_SCHEMA,
+            DEVICE_CREDENTIAL_STATE_SCHEMA,
             DEVICE_GROUPS_SCHEMA,
             COLLECT_RUNS_SCHEMA,
             DEVICE_FACTS_SCHEMA,

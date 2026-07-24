@@ -4,14 +4,16 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.core import app_logger
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_state import TaskState
 from netconsole.services.job_center.worker_protocol import feed_jsonl, parse_event_line
+from netconsole.utils.text_encoding import Utf8IncrementalTextDecoder
 from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
     redact_web_export_text,
@@ -38,6 +40,13 @@ class _RuntimeTask:
     stderr_buffer: str = ""
     terminal_event: dict[str, object] | None = None
     cancel_requested: bool = False
+    stdout_decoder: Utf8IncrementalTextDecoder = field(
+        default_factory=lambda: Utf8IncrementalTextDecoder(source="worker_stdout")
+    )
+    stderr_decoder: Utf8IncrementalTextDecoder = field(
+        default_factory=lambda: Utf8IncrementalTextDecoder(source="worker_stderr")
+    )
+    encoding_logged: bool = False
 
 
 class TaskRuntime:
@@ -88,7 +97,11 @@ class TaskRuntime:
         task = self._tasks.get(job_id)
         if task is None:
             return
-        events, diagnostics, task.stdout_buffer = feed_jsonl(task.stdout_buffer, chunk)
+        decoded = task.stdout_decoder.decode(chunk)
+        self._record_decode_status(task, "stdout", decoded.used_replacement)
+        events, diagnostics, task.stdout_buffer = feed_jsonl(
+            task.stdout_buffer, decoded.text
+        )
         for line in diagnostics:
             message = redact_web_export_text(line) if is_web_export_task(task.launch.job.task_type) else line
             self.events.publish({"type": "diagnostic", "job_id": job_id, "message": message}, source="worker")
@@ -98,7 +111,9 @@ class TaskRuntime:
     def feed_stderr(self, job_id: str, chunk: bytes) -> None:
         task = self._tasks.get(job_id)
         if task is not None:
-            task.stderr_buffer += chunk.decode("utf-8", errors="replace")
+            decoded = task.stderr_decoder.decode(chunk)
+            self._record_decode_status(task, "stderr", decoded.used_replacement)
+            task.stderr_buffer += decoded.text
 
     def request_cancel(self, job_id: str) -> int:
         task = self._tasks.get(job_id)
@@ -117,6 +132,7 @@ class TaskRuntime:
         task = self._tasks.get(job_id)
         if task is None:
             return None
+        self._flush_decoders(task)
         if task.stdout_buffer.strip():
             event = parse_event_line(task.stdout_buffer.strip())
             if event is not None:
@@ -144,6 +160,10 @@ class TaskRuntime:
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
         self.events.publish(payload)
+        app_logger.log_info(
+            "TASK_TEXT_PERSISTED",
+            f"job_id={job_id}; terminal_type={payload.get('type', '')}",
+        )
         self._set_state(job_id, terminal_state)
         self._finish(job_id)
         return payload
@@ -195,6 +215,8 @@ class TaskRuntime:
         return Path(__file__).resolve().parents[4]
 
     def _accept_worker_event(self, task: _RuntimeTask, event: dict[str, object]) -> None:
+        if _contains_replacement_character(event):
+            self._record_decode_status(task, "event", True)
         if is_web_export_task(task.launch.job.task_type):
             event = sanitize_web_export_event(event)
         event_type = str(event.get("type") or "")
@@ -203,6 +225,47 @@ class TaskRuntime:
             return
         if event_type:
             self.events.publish(event, source="worker")
+
+    def _flush_decoders(self, task: _RuntimeTask) -> None:
+        stdout = task.stdout_decoder.decode(b"", final=True)
+        self._record_decode_status(task, "stdout", stdout.used_replacement)
+        if stdout.text:
+            events, diagnostics, task.stdout_buffer = feed_jsonl(
+                task.stdout_buffer, stdout.text
+            )
+            for line in diagnostics:
+                self.events.publish(
+                    {
+                        "type": "diagnostic",
+                        "job_id": task.launch.job.job_id,
+                        "message": line,
+                    },
+                    source="worker",
+                )
+            for event in events:
+                self._accept_worker_event(task, event)
+        stderr = task.stderr_decoder.decode(b"", final=True)
+        self._record_decode_status(task, "stderr", stderr.used_replacement)
+        task.stderr_buffer += stderr.text
+
+    @staticmethod
+    def _record_decode_status(
+        task: _RuntimeTask,
+        stream: str,
+        used_replacement: bool,
+    ) -> None:
+        job_id = task.launch.job.job_id
+        if not task.encoding_logged:
+            app_logger.log_info(
+                "TASK_TEXT_ENCODING_DETECTED",
+                f"job_id={job_id}; encoding=utf-8",
+            )
+            task.encoding_logged = True
+        if used_replacement:
+            app_logger.log_warning(
+                "TASK_TEXT_DECODE_WARNING",
+                f"job_id={job_id}; stream={stream}; encoding=utf-8",
+            )
 
     @staticmethod
     def _finished_terminal_state(event: dict[str, object]) -> TaskState:
@@ -249,3 +312,13 @@ class TaskRuntime:
                     path.unlink()
             except OSError:
                 pass
+
+
+def _contains_replacement_character(value: object) -> bool:
+    if isinstance(value, str):
+        return "\ufffd" in value
+    if isinstance(value, dict):
+        return any(_contains_replacement_character(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_replacement_character(item) for item in value)
+    return False

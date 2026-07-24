@@ -12,9 +12,9 @@ The schema in code is the current source of truth for a new database.
 
 The built-in demonstration site is `demo`. If `data/sites/demo/db/devices.db` does not exist, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data.
 
-If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current E6 migration adds history-query indexes without changing field meaning. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
+If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.
 
-Current schema version: `2026.07.18.history_query_indexes`. Query-plan evidence and rollback boundaries are recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
+Current schema version: `2026.07.24.device_credential_state`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
 Current local tables:
 
@@ -23,6 +23,7 @@ Current local tables:
 - `device_facts`
 - `device_interfaces`
 - `device_lldp_neighbors`
+- `device_credential_states`
 
 ## Device Identity
 
@@ -39,6 +40,12 @@ Devices can support SSH and Telnet at the same time:
 - `telnet_enabled`, `telnet_port`
 
 At least one of SSH or Telnet must be enabled. SSH is enabled by default on port `22`; Telnet is disabled by default on port `23`.
+
+## Device Credential State
+
+Device secrets continue to use the existing local `devices` table storage model. This release does not add DPAPI, a master key, encryption, or a second credential database.
+
+`device_credential_states` stores only non-secret migration state keyed by `device_uuid + credential_field`: `available / missing / needs_reentry / key_file_missing`, source, safe error code and update time. A normal `.ncsite` package clears `password`, SSH/Telnet passwords, SNMP community and tunnel passwords, then records `needs_reentry / imported_reference / CREDENTIAL_REENTRY_REQUIRED` for affected devices. Import preserves device metadata but connection preflight refuses to create a task until the required local credentials are entered again. Saving a replacement secret clears the re-entry marker and restores `available / local_database`.
 
 ## Device SNMP Fields
 

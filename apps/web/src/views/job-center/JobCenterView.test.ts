@@ -7,6 +7,12 @@ import type { TaskItem } from '../../types/task'
 import JobCenterView from './JobCenterView.vue'
 import source from './JobCenterView.vue?raw'
 
+it('warns instead of guessing when historical task text contains replacement characters', () => {
+  expect(source).toContain('historicalTextDamaged')
+  expect(source).toContain('该历史日志在旧版本中已发生编码损坏，原始字节不存在时无法恢复。')
+  expect(source).toContain("value.includes('\\uFFFD')")
+})
+
 const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
   open: vi.fn(),

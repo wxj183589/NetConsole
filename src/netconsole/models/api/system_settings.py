@@ -76,6 +76,22 @@ class FeatureSettingsUpdateDTO(ApiModel):
     confirmed: bool
 
 
+class RuntimeSelfCheckItemDTO(ApiModel):
+    check_id: str
+    title: str
+    status: Literal["normal", "warning", "error"]
+    message: str
+    suggestion: str = ""
+
+
+class RuntimeSelfCheckSnapshotDTO(ApiModel):
+    status: Literal["normal", "warning", "error"]
+    checked_at: str
+    packaged: bool
+    unicode_sample: str
+    items: list[RuntimeSelfCheckItemDTO] = Field(default_factory=list)
+
+
 def _path_text(value: str) -> str:
     value = value.strip()
     if any(ord(character) < 32 for character in value):
@@ -85,5 +101,6 @@ def _path_text(value: str) -> str:
 
 __all__ = [
     "FeatureSettingsSnapshotDTO", "FeatureSettingsUpdateDTO", "FeatureStateDTO",
+    "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",
     "SystemSettingsSaveDTO", "SystemSettingsSnapshotDTO", "SystemSettingsValuesDTO",
 ]

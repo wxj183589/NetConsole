@@ -86,6 +86,11 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.device_group_service import DeviceGroupService
 from netconsole.services.device_import_export import DeviceImportExportService
+from netconsole.services.device_connection_preflight import (
+    DeviceConnectionPreflightError,
+    credential_status_message,
+    validate_device_connection_preflight,
+)
 from netconsole.services.device_web_service import build_https_url, effective_https_port
 from netconsole.services.diagnostic_download_service import DiagnosticDownloadService, run_batch_diagnostic_download
 from netconsole.services.export.export_job import ExportJob
@@ -666,6 +671,7 @@ class DeviceManagementWebService:
                 raise ValueError(
                     f"设备 {device.name or device_uuid} 未启用连接协议"
                 )
+            self._validate_connection_preflight(device, protocol)
             planned.append((device_uuid, protocol))
         references: list[DeviceTaskReferenceDTO] = []
         for device_uuid, protocol in planned:
@@ -1355,7 +1361,9 @@ class DeviceManagementWebService:
         if existing is None:
             record.pop("id", None)
             record.pop("device_uuid", None)
-        return Device.from_mapping(record)
+        device = Device.from_mapping(record)
+        device.credential_clear_fields = tuple(clear_secret_fields)
+        return device
 
     def _trackside_ap_business(
         self,
@@ -2419,10 +2427,10 @@ class DeviceManagementWebService:
             device,
             protocol,
         )
-        self._validate_form_connection_test(
+        self._validate_connection_preflight(
             device,
             protocol,
-            credential_sources,
+            credential_sources=credential_sources,
         )
         if ephemeral_credentials and not bool(
             getattr(self.process_adapter, "supports_runtime_bootstrap", False)
@@ -2467,7 +2475,6 @@ class DeviceManagementWebService:
                     "recovery_policy": "fail_closed"
                     if ephemeral_credentials
                     else "saved_reference",
-                    "_emit_log_events": True,
                     "_cancel_grace_ms": 1000,
                 },
             )
@@ -2488,6 +2495,7 @@ class DeviceManagementWebService:
         device = self._require_device(device_repository, device_uuid)
         selected_protocol = protocol.strip().upper()
         self._validate_protocol_enabled(device, selected_protocol)
+        self._validate_connection_preflight(device, selected_protocol)
         with self._start_lock:
             active = next(
                 (
@@ -2519,7 +2527,6 @@ class DeviceManagementWebService:
                     "device": device_uuid,
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
-                    "_emit_log_events": True,
                     "_cancel_grace_ms": 1000,
                 },
             )
@@ -2629,6 +2636,33 @@ class DeviceManagementWebService:
                 raise ValueError(f"请输入 SSH 隧道{label}密码")
 
     @staticmethod
+    def _validate_connection_preflight(
+        device: Device,
+        protocol: str,
+        *,
+        credential_sources: dict[str, str] | None = None,
+    ) -> None:
+        try:
+            validate_device_connection_preflight(
+                device,
+                protocol,
+                credential_sources=credential_sources,
+            )
+        except DeviceConnectionPreflightError as exc:
+            detail = (
+                f"code={exc.code}; device_uuid={device.device_uuid or ''}; "
+                f"protocol={str(protocol or '').upper()}"
+            )
+            if exc.code == "CREDENTIAL_REENTRY_REQUIRED":
+                app_logger.log_warning("CREDENTIAL_REENTRY_REQUIRED", detail)
+            app_logger.log_warning("DEVICE_CONNECTION_PREFLIGHT_FAILED", detail)
+            raise
+        app_logger.log_info(
+            "CREDENTIAL_STATUS_RESOLVED",
+            f"device_uuid={device.device_uuid or ''}; protocol={str(protocol or '').upper()}",
+        )
+
+    @staticmethod
     def _capabilities(device: Device) -> DeviceCapabilityDTO:
         versions = [
             version
@@ -2668,6 +2702,15 @@ class DeviceManagementWebService:
             connection_status=self._connection_status(latest_test),
             last_test_task_id=latest_test.task_id if latest_test else "",
             last_test_time=latest_test.updated_time if latest_test else "",
+            credential_status=str(getattr(device, "credential_status", "missing")),
+            credential_source=str(getattr(device, "credential_source", "none")),
+            credential_error_code=str(
+                getattr(device, "credential_error_code", "CREDENTIAL_MISSING")
+            ),
+            credential_message=credential_status_message(
+                str(getattr(device, "credential_status", "missing")),
+                str(getattr(device, "credential_error_code", "CREDENTIAL_MISSING")),
+            ),
         )
 
     def _write_result_item(
@@ -2863,6 +2906,13 @@ class DeviceManagementWebService:
             success=result.get("success") if isinstance(result.get("success"), bool) else None,
             result_status=str(result.get("status") or ""),
             failure_category=str(result.get("failure_category") or ""),
+            error_code=str(result.get("error_code") or ""),
+            summary=str(result.get("summary") or ""),
+            retryable=bool(result.get("retryable")),
+            suggested_action=sanitize_sensitive_text(
+                str(result.get("suggested_action") or result.get("suggestion") or ""),
+                device,
+            ),
             message=sanitize_sensitive_text(str(result.get("message") or snapshot.message or snapshot.error_message or ""), device),
             safe_message=sanitize_sensitive_text(str(result.get("safe_message") or result.get("message") or snapshot.message or snapshot.error_message or ""), device),
             method=str(result.get("method") or ""),
@@ -2902,6 +2952,7 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
     selected: Device | None = None
     try:
         DeviceManagementWebService._validate_protocol_enabled(device, protocol)
+        DeviceManagementWebService._validate_connection_preflight(device, protocol)
         context.check_cancelled()
         context.progress("resolving_credential", 2, 7, "连接凭据已安全解析")
         if protocol == "SNMP":
@@ -2946,6 +2997,10 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                 context.progress(stage, current, 7, message)
 
             try:
+                app_logger.log_info(
+                    "DEVICE_CONNECTION_STARTED",
+                    f"device_uuid={device_uuid}; protocol={protocol}",
+                )
                 result = test_device_connection(
                     selected,
                     phase_callback=report_phase,
@@ -2980,6 +3035,10 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
         )
         payload.update(
             failure_category=failure_category,
+            error_code=_connection_error_code(payload),
+            summary=_connection_summary(payload, protocol),
+            retryable=not bool(payload["success"]),
+            suggested_action=str(payload.get("suggestion") or ""),
             safe_message=safe_message,
             message=safe_message,
             tested_at=datetime.now(UTC).isoformat(),
@@ -2988,7 +3047,16 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
         terminal_stage = "succeeded" if bool(payload["success"]) else "failed"
         context.progress(terminal_stage, 7, 7, safe_message)
         if not bool(payload["success"]):
+            if payload["error_code"] == "AUTHENTICATION_FAILED":
+                app_logger.log_warning(
+                    "DEVICE_CONNECTION_AUTH_FAILED",
+                    f"device_uuid={device_uuid}; protocol={protocol}",
+                )
             payload["terminal_state"] = TaskState.FAILED.value
+        app_logger.log_info(
+            "DEVICE_CONNECTION_COMPLETED",
+            f"device_uuid={device_uuid}; protocol={protocol}; success={bool(payload['success'])}",
+        )
         return payload
     finally:
         if form_input:
@@ -3122,6 +3190,15 @@ def _form_test_credentials(
             ephemeral[field] = raw
         elif existing is not None and field not in cleared and getattr(existing, field):
             sources[field] = "saved_device"
+        elif (
+            existing is not None
+            and field not in cleared
+            and str(
+                getattr(existing, "credential_field_statuses", {}).get(field) or ""
+            )
+            == "needs_reentry"
+        ):
+            sources[field] = "needs_reentry"
         else:
             sources[field] = "none"
     return sources, ephemeral
@@ -3157,6 +3234,40 @@ def _connection_failure_category(payload: dict[str, object]) -> str:
         "tcp_failed": "tcp_connection_failed",
         "unknown_error": "ssh_connection_failed",
     }.get(status, status or "connection_failed")
+
+
+def _connection_error_code(payload: dict[str, object]) -> str:
+    if bool(payload.get("success")):
+        return ""
+    status = str(payload.get("status") or "").casefold()
+    protocol = str(payload.get("protocol") or "").upper()
+    if status == "auth_failed":
+        return "AUTHENTICATION_FAILED"
+    if status == "ssh_banner_failed":
+        return "SSH_NEGOTIATION_FAILED"
+    if status == "timeout":
+        return "CONNECTION_TIMEOUT"
+    if status in {
+        "address_resolution_failed",
+        "connection_refused",
+        "tcp_failed",
+    }:
+        return "TCP_UNREACHABLE"
+    if protocol == "TELNET":
+        return "TELNET_LOGIN_FAILED"
+    return "UNEXPECTED_ERROR"
+
+
+def _connection_summary(payload: dict[str, object], protocol: str) -> str:
+    if bool(payload.get("success")):
+        return f"{protocol} 连接成功"
+    return {
+        "AUTHENTICATION_FAILED": f"{protocol} 认证失败",
+        "SSH_NEGOTIATION_FAILED": "SSH 握手失败",
+        "CONNECTION_TIMEOUT": f"{protocol} 连接超时",
+        "TCP_UNREACHABLE": "设备端口不可达",
+        "TELNET_LOGIN_FAILED": "Telnet 登录失败",
+    }.get(_connection_error_code(payload), f"{protocol} 连接失败")
 
 
 def _clear_secret_mapping(values: dict[str, str]) -> None:

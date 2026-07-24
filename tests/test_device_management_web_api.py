@@ -224,8 +224,10 @@ def _fixture(tmp_path: Path, *, app_root: Path | None = None):
             primary_address="192.0.2.12",
             group_id=onboard.id,
             device_type="AC",
+            ssh_username="admin",
             ssh_password="secret-password",
             telnet_enabled=1,
+            telnet_username="admin",
             telnet_password="telnet-secret",
             snmp_enabled=1,
             snmp_v2c_enabled=1,
@@ -597,11 +599,95 @@ def test_connection_test_submits_safe_job_and_recovers_by_task_id(tmp_path: Path
         "device",
         "app_root",
         "data_root",
-        "_emit_log_events",
         "_cancel_grace_ms",
     }
     assert "secret-password" not in str(adapter.jobs[0].to_dict())
     assert "private-community" not in str(adapter.jobs[0].to_dict())
+
+
+def test_saved_connection_preflight_blocks_missing_credentials_before_task_creation(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, _devices, _facts, _mr, sw = _fixture(tmp_path)
+
+    response = client.post(
+        f"/api/device-management/devices/{sw.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "CREDENTIAL_MISSING"
+    assert response.json()["detail"]["details"]["credential_status"] == "missing"
+    assert adapter.jobs == []
+
+
+def test_imported_credential_reentry_blocks_task_until_device_is_saved(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    with devices.database.connect() as connection:
+        connection.execute(
+            "UPDATE devices SET password = NULL, ssh_password = NULL WHERE device_uuid = ?",
+            (mr.device_uuid,),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO device_credential_states "
+            "(device_uuid, credential_field, status, source, error_code, updated_at) "
+            "VALUES (?, 'ssh_password', 'needs_reentry', 'imported_reference', "
+            "'CREDENTIAL_REENTRY_REQUIRED', datetime('now'))",
+            (mr.device_uuid,),
+        )
+        connection.commit()
+
+    blocked = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+
+    assert blocked.status_code == 422
+    assert blocked.json()["detail"]["code"] == "CREDENTIAL_REENTRY_REQUIRED"
+    assert adapter.jobs == []
+    listed = client.get("/api/device-management/devices").json()["items"]
+    item = next(value for value in listed if value["device_uuid"] == mr.device_uuid)
+    assert item["credential_status"] == "needs_reentry"
+    assert "重新录入" in item["credential_message"]
+
+    saved = client.put(
+        f"/api/device-management/devices/{mr.device_uuid}",
+        json={
+            "name": mr.name,
+            "primary_address": mr.primary_address,
+            "device_type": mr.device_type,
+            "ssh_enabled": True,
+            "ssh_username": "admin",
+            "ssh_password": "new-local-secret",
+            "telnet_enabled": False,
+        },
+    )
+    started = client.post(
+        f"/api/device-management/devices/{mr.device_uuid}/connection-tests",
+        json={"protocol": "SSH"},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["device"]["credential_status"] == "available"
+    assert started.status_code == 202
+    assert len(adapter.jobs) == 1
+
+
+def test_batch_connection_preflight_is_atomic_when_one_device_has_no_credentials(
+    tmp_path: Path,
+) -> None:
+    client, _service, adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+
+    response = client.post(
+        "/api/device-management/devices/batch-connection-tests",
+        json={"device_uuids": [mr.device_uuid, sw.device_uuid]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "CREDENTIAL_MISSING"
+    assert adapter.jobs == []
 
 
 def test_connection_test_reuses_active_task(tmp_path: Path) -> None:
